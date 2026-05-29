@@ -7,32 +7,39 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/open-cli-collective/codereview-cli/internal/version"
 )
 
 func main() {
-	switch arg := firstArg(); arg {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run dispatches on the first argument and returns the process exit code. It
+// takes its args and writers as parameters (rather than reading os.Args /
+// os.Stdout directly) so it is testable without spawning a process.
+func run(args []string, stdout, stderr io.Writer) int {
+	var arg string
+	if len(args) > 0 {
+		arg = args[0]
+	}
+	switch arg {
 	case "--version", "-v", "version":
-		fmt.Printf("cr %s (%s, %s)\n", version.Version, version.Commit, version.Date)
+		fmt.Fprintf(stdout, "cr %s (%s, %s)\n", version.Version, version.Commit, version.Date)
+		return 0
 	case "", "--help", "-h", "help":
-		usage(os.Stdout)
+		usage(stdout)
+		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "cr: unknown command %q\n\n", arg)
-		usage(os.Stderr)
-		os.Exit(2)
+		fmt.Fprintf(stderr, "cr: unknown command %q\n\n", arg)
+		usage(stderr)
+		return 2
 	}
 }
 
-func firstArg() string {
-	if len(os.Args) < 2 {
-		return ""
-	}
-	return os.Args[1]
-}
-
-func usage(w *os.File) {
+func usage(w io.Writer) {
 	fmt.Fprint(w, `cr - Open CLI Collective code-review CLI (scaffold)
 
 Usage:
