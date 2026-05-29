@@ -25,8 +25,9 @@ make check   # tidy + lint + test + build — the local pre-push gate
 make clean   # remove build artifacts
 ```
 
-`make check` covers everything CI gates on (`build`/`test`/`lint`) plus a local
-`go mod tidy` verification, so a green local `check` predicts a green CI run.
+`make check` covers the `build`/`test`/`lint` CI gates plus a local `go mod tidy`
+verification, so a green local `check` predicts a green CI run. The `pr-title`
+gate is enforced by CI only (it checks the PR title) and has no local equivalent.
 
 ## CI
 
