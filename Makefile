@@ -15,7 +15,7 @@ lint:
 	golangci-lint run
 
 fmt:
-	gofmt -w .
+	go fmt ./...
 
 tidy:
 	go mod tidy

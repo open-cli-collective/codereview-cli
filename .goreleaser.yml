@@ -63,11 +63,13 @@ changelog:
       - "^chore:"
       - "Merge pull request"
   groups:
+    # match the shared conventional-commit grammar incl. scopes and `!`
+    # (feat(cli):, fix(api)!:) so release-gating commits aren't dumped in Other.
     - title: Features
-      regexp: '^feat:'
+      regexp: '^feat(\([^)]+\))?!?:'
       order: 0
     - title: Bug Fixes
-      regexp: '^fix:'
+      regexp: '^fix(\([^)]+\))?!?:'
       order: 1
     - title: Other
       order: 999
