@@ -18,8 +18,8 @@ func TestRun(t *testing.T) {
 	}{
 		{name: "version flag", args: []string{"--version"}, wantCode: 0, wantStdout: "cr " + version.Version},
 		{name: "version subcommand", args: []string{"version"}, wantCode: 0, wantStdout: "cr " + version.Version},
-		{name: "short version flag", args: []string{"-v"}, wantCode: 0, wantStdout: "cr " + version.Version},
 		{name: "no args shows usage", args: nil, wantCode: 0, wantStdout: "Usage:"},
+		{name: "dash-v is not version", args: []string{"-v"}, wantCode: 2, wantStderr: "unknown command"},
 		{name: "help flag shows usage", args: []string{"--help"}, wantCode: 0, wantStdout: "Usage:"},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: 2, wantStderr: "unknown command"},
 	}

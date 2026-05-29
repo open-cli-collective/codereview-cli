@@ -26,7 +26,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		arg = args[0]
 	}
 	switch arg {
-	case "--version", "-v", "version":
+	// no "-v" alias: it conventionally means --verbose, so reserve it for the
+	// real command surface rather than binding it to version now.
+	case "--version", "version":
 		fmt.Fprintf(stdout, "cr %s (%s, %s)\n", version.Version, version.Commit, version.Date)
 		return 0
 	case "", "--help", "-h", "help":

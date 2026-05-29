@@ -33,12 +33,19 @@ install:
 	go install ./cmd/cr
 
 # goreleaser wrappers. `snapshot` builds locally without publishing (the same
-# build CI's release.yml runs); `release` is the real publish (CI uses it via the
-# reusable workflow — run locally only with the right env/tokens).
+# build CI's release.yml runs). `release` is the real publish and is intended for
+# CI (via the reusable release workflow); it is guarded so a stray local run with
+# GITHUB_TOKEN/GORELEASER_* in the environment can't accidentally publish — set
+# CONFIRM_RELEASE=1 to override.
 snapshot:
 	goreleaser release --snapshot --clean
 
 release:
+ifneq ($(CONFIRM_RELEASE),1)
+	@echo "make release publishes a live release; this is CI-only." >&2
+	@echo "Re-run with CONFIRM_RELEASE=1 if you really mean to publish locally." >&2
+	@exit 1
+endif
 	goreleaser release --clean
 
 clean:
