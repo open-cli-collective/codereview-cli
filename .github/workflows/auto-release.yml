@@ -1,0 +1,31 @@
+name: Auto Release
+
+# On push to main, decide whether to cut a release and mint the tag. Identity
+# (tag prefix + version file) comes from packaging/identity.yml. The actual logic
+# lives in the shared reusable workflow; this caller just wires triggers/secrets.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Compute the tag but do not push it"
+        type: boolean
+        default: true
+
+# The tag push uses the dedicated RELEASE_TAG_TOKEN via a credential helper, not
+# GITHUB_TOKEN — so the pushed tag retriggers release.yml.
+permissions:
+  contents: read
+
+jobs:
+  auto-release:
+    uses: open-cli-collective/.github/.github/workflows/auto-release.yml@v1
+    with:
+      # push is live (false); workflow_dispatch honors the checkbox. Compare
+      # against both true and 'true' because a workflow_dispatch boolean input
+      # may surface as a real boolean or the string "true" depending on context
+      # — this is robust to either and always yields a real boolean.
+      dry-run: ${{ github.event_name == 'workflow_dispatch' && (inputs.dry-run == true || inputs.dry-run == 'true') }}
+    secrets:
+      tag-token: ${{ secrets.RELEASE_TAG_TOKEN }}

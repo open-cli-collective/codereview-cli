@@ -1,0 +1,75 @@
+version: 2
+
+project_name: codereview-cli
+
+before:
+  hooks:
+    # `make tidy` runs `go mod tidy` then fails if go.mod/go.sum changed — a
+    # mutating tidy must fail the release, not proceed silently. Reusing the
+    # Makefile target keeps one definition and handles the no-go.sum case.
+    - make tidy
+    - go test ./...
+
+# Single pure-Go build: codereview-cli has no credstore/Keychain code yet, so no
+# CGO is needed (CGO_ENABLED=0 everywhere, static binaries). The CGO-darwin split
+# build + keychain_probe land when the real CLI adds the credential store.
+builds:
+  - id: cr
+    main: ./cmd/cr
+    binary: cr
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/open-cli-collective/codereview-cli/internal/version.Version={{.Version}}
+      - -X github.com/open-cli-collective/codereview-cli/internal/version.Commit={{.Commit}}
+      - -X github.com/open-cli-collective/codereview-cli/internal/version.Date={{.Date}}
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "cr_v{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  # Idempotent re-runs: a retried release overwrites the same assets instead of
+  # erroring on "asset already exists" (release-preflight hard-requires this).
+  replace_existing_artifacts: true
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - "Merge pull request"
+  groups:
+    # match the shared conventional-commit grammar incl. scopes and `!`
+    # (feat(cli):, fix(api)!:) so release-gating commits aren't dumped in Other.
+    - title: Features
+      regexp: '^feat(\([^)]+\))?!?:'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^fix(\([^)]+\))?!?:'
+      order: 1
+    - title: Other
+      order: 999

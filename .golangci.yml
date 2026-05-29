@@ -18,6 +18,13 @@ linters:
     - errorlint     # error wrapping correctness
     - exhaustive    # exhaustive enum switches
   settings:
+    errcheck:
+      # writes to stdout/stderr are conventionally unchecked in a CLI (family
+      # precedent); a failed terminal write isn't actionable.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
     misspell:
       locale: US
   exclusions:
