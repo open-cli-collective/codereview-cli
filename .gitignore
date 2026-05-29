@@ -1,0 +1,22 @@
+# Go build output
+/bin/
+/dist/
+*.test
+
+# Coverage
+coverage.out
+coverage.html
+*.coverprofile
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local tooling state
+.twapp-*.json
