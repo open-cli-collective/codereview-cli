@@ -4,34 +4,58 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
+  build-platform:                          # OS matrix — NOT a required check
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: open-cli-collective/.github/actions/go-build@v1
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
-        with:
-          version: v2.12.2
+  build:                                   # required aggregate — stable bare name
+    needs: [build-platform]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      # Fail only on a real failure/cancellation; a skipped leg must NOT fail
+      # the gate (which `== 'success'` would do).
+      - if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: echo "::error::a build-platform leg failed or was cancelled" && exit 1
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: open-cli-collective/.github/actions/go-test@v1
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
 
-      - name: Tidy, test, and build
-        run: make tidy test build
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-cli-collective/.github/actions/go-lint@v1
+        with:
+          go-version-file: go.mod
+
+  pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: open-cli-collective/.github/actions/pr-title@v1
+        with:
+          title: ${{ github.event.pull_request.title }}

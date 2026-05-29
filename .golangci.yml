@@ -1,0 +1,33 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+# repo-layout.md §5 canonical floor linter set — every family repo MUST enable
+# at least these. gosec + errorlint matter because every CLI handles credentials.
+linters:
+  enable:
+    - errcheck      # unchecked errors
+    - govet         # go vet checks
+    - ineffassign   # ineffectual assignments
+    - staticcheck   # static analysis
+    - unused        # unused code
+    - misspell      # spelling mistakes
+    - revive        # style/lint rules
+    - gosec         # security issues
+    - errorlint     # error wrapping correctness
+    - exhaustive    # exhaustive enum switches
+  settings:
+    misspell:
+      locale: US
+  exclusions:
+    rules:
+      # tests are noisy for these; exclude per §5.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - errorlint
+          - gosec
+      - linters:
+          - errcheck
+        source: "defer.*\\.Close\\(\\)"
