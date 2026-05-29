@@ -25,8 +25,8 @@ make check   # tidy + lint + test + build — the local pre-push gate
 make clean   # remove build artifacts
 ```
 
-`make check` mirrors what CI gates on, so a green local `check` predicts a green
-CI run.
+`make check` covers everything CI gates on (`build`/`test`/`lint`) plus a local
+`go mod tidy` verification, so a green local `check` predicts a green CI run.
 
 ## CI
 

@@ -22,12 +22,11 @@ linters:
       locale: US
   exclusions:
     rules:
-      # tests are noisy for these; exclude per §5.
+      # tests are excluded from errcheck per §5 (errorlint/gosec stay on — no
+      # noise to justify dropping them, and a pilot shouldn't widen the floor).
       - path: _test\.go
         linters:
           - errcheck
-          - errorlint
-          - gosec
       - linters:
           - errcheck
         source: "defer.*\\.Close\\(\\)"
