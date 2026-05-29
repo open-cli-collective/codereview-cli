@@ -1,4 +1,4 @@
-.PHONY: all build test lint tidy check clean
+.PHONY: all build test test-cover lint fmt tidy check install snapshot release clean
 
 all: check
 
@@ -8,8 +8,14 @@ build:
 test:
 	go test -v ./...
 
+test-cover:
+	go test -coverprofile=coverage.out ./...
+
 lint:
 	golangci-lint run
+
+fmt:
+	gofmt -w .
 
 tidy:
 	go mod tidy
@@ -22,6 +28,18 @@ tidy:
 	fi
 
 check: tidy lint test build
+
+install:
+	go install ./cmd/cr
+
+# goreleaser wrappers. `snapshot` builds locally without publishing (the same
+# build CI's release.yml runs); `release` is the real publish (CI uses it via the
+# reusable workflow — run locally only with the right env/tokens).
+snapshot:
+	goreleaser release --snapshot --clean
+
+release:
+	goreleaser release --clean
 
 clean:
 	rm -rf bin/ dist/ coverage.out coverage.html

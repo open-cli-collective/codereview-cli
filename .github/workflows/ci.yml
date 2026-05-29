@@ -52,6 +52,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+  identity-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-cli-collective/.github/actions/identity-check@v1   # distribution.md §8.2
+
   pr-title:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

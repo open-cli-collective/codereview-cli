@@ -15,7 +15,7 @@ project.
 
 Configure the `main` branch with:
 
-- required status checks: `lint`, `test`
+- required status checks: `build`, `test`, `lint`, `pr-title`, `identity-check`
 - at least one approving review
 - dismiss stale approvals on new commits
 - require conversation resolution

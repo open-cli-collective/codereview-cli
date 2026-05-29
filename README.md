@@ -19,7 +19,7 @@ Use GitHub branch protection on `main` with:
 - required pull request reviews
 - at least one approval
 - stale review dismissal
-- required status checks for `lint` and `test`
+- required status checks for `build`, `test`, `lint`, `pr-title`, and `identity-check`
 - no direct pushes
 - squash merge only
 
@@ -30,7 +30,9 @@ make tidy
 make lint
 make test
 make build
+make snapshot   # local goreleaser build (no publish)
 ```
 
-The current tree includes only a placeholder Go package so these checks
-stay green until the real CLI is added.
+The tree currently holds a scaffold `cr` binary (`cmd/cr`) that reports its
+build version, plus the CI and release machinery, ahead of the real command
+surface.

@@ -1,0 +1,27 @@
+name: Release
+
+# Triggered by the release tag that auto-release.yml mints (or a manual tag
+# push). Builds with GoReleaser and publishes the GitHub release. codereview-cli
+# declares no packaging channels yet, so the reusable workflow's channel jobs
+# (homebrew/winget/chocolatey/linux) all skip — GitHub-release archives only.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Build + render but skip publishing (only meaningful from a tag ref)"
+        type: boolean
+        default: true
+
+# The reusable workflow's goreleaser job publishes the release via GITHUB_TOKEN.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: open-cli-collective/.github/.github/workflows/release.yml@v1
+    with:
+      # boolean on both events: workflow_dispatch honors the input; tag push is live.
+      dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || false }}

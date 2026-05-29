@@ -44,10 +44,27 @@ gate is enforced by CI only (it checks the PR title) and has no local equivalent
 The Go toolchain version comes from `go.mod` (`go-version-file: go.mod`) — never
 hardcode a second value in the workflow.
 
+## Release
+
+Releases are driven by the shared reusable workflows at `@v1`:
+
+- **`.github/workflows/auto-release.yml`** — on push to `main`, cuts a release
+  tag (`v{MAJOR}.{MINOR}.{run-number}`, from `version.txt` + the run number) when
+  the merge is a `feat:`/`fix:` touching release-worthy paths. The tag is pushed
+  with `RELEASE_TAG_TOKEN` (a repo secret) so it retriggers the release workflow.
+- **`.github/workflows/release.yml`** — on that tag, builds with GoReleaser and
+  publishes the GitHub release (archives + checksums).
+
+Identity lives in `packaging/identity.yml` (binary, tag prefix, archive template),
+validated in CI by the `identity-check` job. codereview-cli currently ships
+**GitHub-release archives only** — no Homebrew/winget/chocolatey/linux channels
+and no CGO/Keychain build; those are added when the real CLI implements them.
+
+Local: `make snapshot` runs the exact GoReleaser build CI uses, without
+publishing. Bump `version.txt` (MAJOR.MINOR) to start a new minor series.
+
 ## Repo policy
 
 Branch protection on `main`: required PR with 1 approval, required status checks
-`build`/`test`/`lint`/`pr-title`, signed commits, linear history, squash-merge
-only, delete-branch-on-merge. Release machinery (`version.txt`, `.goreleaser.yml`,
-`packaging/identity.yml`, the reusable release callers, and the `identity-check`
-required check) arrives in a follow-up.
+`build`/`test`/`lint`/`pr-title`/`identity-check`, signed commits, linear history,
+squash-merge only, delete-branch-on-merge.

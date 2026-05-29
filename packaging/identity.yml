@@ -1,0 +1,17 @@
+schema: open-cli-identity/v1
+repo: codereview-cli
+binary: cr
+goreleaser_config: .goreleaser.yml
+tag:
+  prefix: v
+  version_scheme: major_minor_run_patch
+archives:
+  name_template: "cr_v{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+# No `packages:` section by design — codereview-cli currently ships only the
+# GitHub-release archives. packaging/{chocolatey,winget} are README stubs, not
+# implemented channels; declaring them would make identity-check require real
+# nuspec/winget manifests and run secretless channel jobs. Channels (and the
+# homebrew canonical_cask) are added when each is actually implemented.
+
+version_file: version.txt
