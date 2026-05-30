@@ -58,6 +58,17 @@ func TestPersistentProfileFlagPopulatesOptions(t *testing.T) {
 	}
 }
 
+func TestCompletionCommandIsNotExposed(t *testing.T) {
+	cmd, _ := NewCommand()
+	err := Execute(cmd, []string{"completion"})
+	if err == nil {
+		t.Fatal("Execute(completion) error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
 func TestOutputShapeFlagsDeferred(t *testing.T) {
 	tests := [][]string{
 		{"--json"},

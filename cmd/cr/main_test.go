@@ -16,10 +16,10 @@ func TestRun(t *testing.T) {
 		wantStdout string // substring expected on stdout
 		wantStderr string // substring expected on stderr
 	}{
-		{name: "version flag", args: []string{"--version"}, wantCode: 0, wantStdout: "cr " + version.Version},
-		{name: "version subcommand", args: []string{"version"}, wantCode: 0, wantStdout: "cr " + version.Version},
+		{name: "version flag", args: []string{"--version"}, wantCode: 0, wantStdout: "cr " + version.Info() + "\n"},
+		{name: "version subcommand", args: []string{"version"}, wantCode: 0, wantStdout: "cr " + version.Info() + "\n"},
 		{name: "no args shows usage", args: nil, wantCode: 0, wantStdout: "Usage:"},
-		{name: "profile flag accepted", args: []string{"--profile", "work", "version"}, wantCode: 0, wantStdout: "cr " + version.Version},
+		{name: "profile flag accepted", args: []string{"--profile", "work", "version"}, wantCode: 0, wantStdout: "cr " + version.Info() + "\n"},
 		{name: "json deferred", args: []string{"--json"}, wantCode: 2, wantStderr: "unknown flag"},
 		{name: "verbose deferred", args: []string{"--verbose"}, wantCode: 2, wantStderr: "unknown flag"},
 		{name: "dash-v is not version", args: []string{"-v"}, wantCode: 2, wantStderr: "unknown shorthand flag"},
@@ -34,8 +34,11 @@ func TestRun(t *testing.T) {
 			if code != tt.wantCode {
 				t.Errorf("run(%q) exit code = %d, want %d", tt.args, code, tt.wantCode)
 			}
-			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
+			if tt.wantStdout != "" && tt.wantStdout == "Usage:" && !strings.Contains(stdout.String(), tt.wantStdout) {
 				t.Errorf("run(%q) stdout = %q, want substring %q", tt.args, stdout.String(), tt.wantStdout)
+			}
+			if tt.wantStdout != "" && tt.wantStdout != "Usage:" && stdout.String() != tt.wantStdout {
+				t.Errorf("run(%q) stdout = %q, want %q", tt.args, stdout.String(), tt.wantStdout)
 			}
 			if tt.wantStderr != "" && !strings.Contains(stderr.String(), tt.wantStderr) {
 				t.Errorf("run(%q) stderr = %q, want substring %q", tt.args, stderr.String(), tt.wantStderr)

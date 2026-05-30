@@ -52,6 +52,7 @@ func NewCommand() (*cobra.Command, *Options) {
 			return cmd.Help()
 		},
 	}
+	cmd.CompletionOptions.DisableDefaultCmd = true
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return exitcode.Usage(err)
 	})
