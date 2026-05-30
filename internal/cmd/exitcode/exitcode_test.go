@@ -16,6 +16,7 @@ func TestFromError(t *testing.T) {
 		{name: "usage", err: Usage(errors.New("bad args")), want: UsageError},
 		{name: "auth config", err: AuthConfig(errors.New("missing token")), want: AuthConfigError},
 		{name: "upstream", err: Upstream(errors.New("rate limited")), want: UpstreamError},
+		{name: "success code with error becomes failure", err: With(Success, errors.New("bad success")), want: Failure},
 		{name: "out of range coded error", err: With(99, errors.New("bad code")), want: Failure},
 	}
 

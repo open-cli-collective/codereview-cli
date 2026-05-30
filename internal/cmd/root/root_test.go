@@ -27,11 +27,12 @@ func TestNewCommandHelpAndVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd, opts := NewCommand()
 			var out bytes.Buffer
-			opts.Stdout = &out
-			cmd.SetOut(&out)
-			cmd.SetErr(&out)
+			cmd, _ := NewCommandWithOptions(&Options{
+				Stdin:  strings.NewReader(""),
+				Stdout: &out,
+				Stderr: &out,
+			})
 
 			if err := Execute(cmd, tt.args); err != nil {
 				t.Fatalf("Execute(%q): %v", tt.args, err)
@@ -44,11 +45,12 @@ func TestNewCommandHelpAndVersion(t *testing.T) {
 }
 
 func TestPersistentProfileFlagPopulatesOptions(t *testing.T) {
-	cmd, opts := NewCommand()
 	var out bytes.Buffer
-	opts.Stdout = &out
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
+	cmd, opts := NewCommandWithOptions(&Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &out,
+		Stderr: &out,
+	})
 
 	if err := Execute(cmd, []string{"--profile", "work", "version"}); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -140,6 +142,25 @@ func TestExecuteMapsCobraUsageErrors(t *testing.T) {
 				t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
 			}
 		})
+	}
+}
+
+func TestUnknownCommandPreflightUsesCobraFind(t *testing.T) {
+	cmd, _ := NewCommand()
+	_, _, err := cmd.Find([]string{"bogus"})
+	if err == nil {
+		t.Fatal("Find(bogus) error = nil, want cobra unknown-command error")
+	}
+
+	got := Execute(cmd, []string{"bogus"})
+	if got == nil {
+		t.Fatal("Execute(bogus) error = nil, want usage error")
+	}
+	if got.Error() != err.Error() {
+		t.Fatalf("Execute(bogus) error = %q, want Find error %q", got, err)
+	}
+	if code := exitcode.FromError(got); code != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", code, exitcode.UsageError)
 	}
 }
 

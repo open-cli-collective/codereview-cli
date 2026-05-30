@@ -43,6 +43,9 @@ func With(code int, err error) error {
 	if err == nil {
 		return nil
 	}
+	if code == Success {
+		code = Failure
+	}
 	return &codedError{code: code, err: err}
 }
 
@@ -70,7 +73,7 @@ func FromError(err error) int {
 	var coded exitCoder
 	if errors.As(err, &coded) {
 		switch code := coded.ExitCode(); code {
-		case Success, Failure, UsageError, AuthConfigError, UpstreamError:
+		case Failure, UsageError, AuthConfigError, UpstreamError:
 			return code
 		default:
 			return Failure

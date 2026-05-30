@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -35,7 +34,15 @@ func DefaultOptions() *Options {
 
 // NewCommand builds a fresh cr root command and its injectable options.
 func NewCommand() (*cobra.Command, *Options) {
-	opts := DefaultOptions()
+	return NewCommandWithOptions(DefaultOptions())
+}
+
+// NewCommandWithOptions builds a fresh cr root command using caller-provided
+// options and wires the command output streams from those options.
+func NewCommandWithOptions(opts *Options) (*cobra.Command, *Options) {
+	if opts == nil {
+		opts = DefaultOptions()
+	}
 	var showVersion bool
 
 	cmd := &cobra.Command{
@@ -53,6 +60,9 @@ func NewCommand() (*cobra.Command, *Options) {
 		},
 	}
 	cmd.CompletionOptions.DisableDefaultCmd = true
+	cmd.SetIn(opts.Stdin)
+	cmd.SetOut(opts.Stdout)
+	cmd.SetErr(opts.Stderr)
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return exitcode.Usage(err)
 	})
@@ -84,9 +94,14 @@ func newVersionCommand(opts *Options) *cobra.Command {
 	}
 }
 
-// Execute runs cmd with args and maps cobra parse errors into cr usage errors.
+// Execute runs cmd with args and maps unknown commands into cr usage errors.
 func Execute(cmd *cobra.Command, args []string) error {
 	cmd.SetArgs(args)
+	if !isHelpCommand(args) {
+		if _, _, err := cmd.Find(args); err != nil {
+			return exitcode.Usage(err)
+		}
+	}
 	err := cmd.Execute()
 	if err == nil {
 		return nil
@@ -94,14 +109,11 @@ func Execute(cmd *cobra.Command, args []string) error {
 	if exitcode.FromError(err) != exitcode.Failure {
 		return err
 	}
-	if isCobraUnknownCommand(err) {
-		return exitcode.Usage(err)
-	}
 	return err
 }
 
-func isCobraUnknownCommand(err error) bool {
-	return strings.HasPrefix(err.Error(), "unknown command ")
+func isHelpCommand(args []string) bool {
+	return len(args) > 0 && args[0] == "help"
 }
 
 // RegisterAll applies child-command registrars to a root command tree.
