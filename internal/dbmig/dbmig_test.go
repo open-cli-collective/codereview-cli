@@ -216,6 +216,27 @@ func TestApplyRejectsMalformedMeta(t *testing.T) {
 				seedMeta(t, db, -1)
 			},
 		},
+		{
+			name: "missing created_at column",
+			setup: func(t *testing.T, db *sql.DB) {
+				execSQL(t, db, "CREATE TABLE meta (schema_version INTEGER NOT NULL)")
+				execSQL(t, db, "INSERT INTO meta (schema_version) VALUES (?)", 0)
+			},
+		},
+		{
+			name: "nullable created_at column",
+			setup: func(t *testing.T, db *sql.DB) {
+				execSQL(t, db, "CREATE TABLE meta (schema_version INTEGER NOT NULL, created_at TEXT)")
+				execSQL(t, db, "INSERT INTO meta (schema_version, created_at) VALUES (?, ?)", 0, time.Now().UTC().Format(time.RFC3339Nano))
+			},
+		},
+		{
+			name: "wrong schema_version type",
+			setup: func(t *testing.T, db *sql.DB) {
+				execSQL(t, db, "CREATE TABLE meta (schema_version TEXT NOT NULL, created_at TEXT NOT NULL)")
+				execSQL(t, db, "INSERT INTO meta (schema_version, created_at) VALUES (?, ?)", "0", time.Now().UTC().Format(time.RFC3339Nano))
+			},
+		},
 	}
 
 	for _, tt := range tests {
