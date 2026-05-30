@@ -244,6 +244,30 @@ func TestAllocateRunRecoveryRejectsExistingRunID(t *testing.T) {
 	}
 }
 
+func TestClassifyAllocateConstraintForRecoveryMode(t *testing.T) {
+	store := openStore(t)
+	params := validAllocateRunParams()
+	params.RunID = "existing-run"
+	allocateRun(t, store, params)
+
+	retry, err := classifyAllocateConstraint(context.Background(), store.db, params, errors.New("constraint failed"))
+	if !errors.Is(err, ErrRunExists) {
+		t.Fatalf("classify existing run error = %v, want ErrRunExists", err)
+	}
+	if retry {
+		t.Fatal("classify existing run retry = true, want false")
+	}
+
+	params.RunID = "missing-run"
+	retry, err = classifyAllocateConstraint(context.Background(), store.db, params, errors.New("constraint failed"))
+	if err != nil {
+		t.Fatalf("classify missing run error = %v, want nil", err)
+	}
+	if !retry {
+		t.Fatal("classify missing run retry = false, want true")
+	}
+}
+
 func TestAllocateRunPreservesPRFirstSeenAndUpdatesURL(t *testing.T) {
 	store := openStore(t)
 	params := validAllocateRunParams()
@@ -325,9 +349,45 @@ func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 			_, err := s.AllocateRun(context.Background(), params)
 			return err
 		}},
+		{name: "allocate empty pr url", run: func(_ *testing.T, s *Store) error {
+			params := validAllocateRunParams()
+			params.PRURL = ""
+			_, err := s.AllocateRun(context.Background(), params)
+			return err
+		}},
+		{name: "allocate empty sha", run: func(_ *testing.T, s *Store) error {
+			params := validAllocateRunParams()
+			params.SHA = ""
+			_, err := s.AllocateRun(context.Background(), params)
+			return err
+		}},
+		{name: "allocate empty base sha", run: func(_ *testing.T, s *Store) error {
+			params := validAllocateRunParams()
+			params.BaseSHA = ""
+			_, err := s.AllocateRun(context.Background(), params)
+			return err
+		}},
+		{name: "allocate empty profile", run: func(_ *testing.T, s *Store) error {
+			params := validAllocateRunParams()
+			params.Profile = ""
+			_, err := s.AllocateRun(context.Background(), params)
+			return err
+		}},
+		{name: "allocate empty posting identity", run: func(_ *testing.T, s *Store) error {
+			params := validAllocateRunParams()
+			params.PostingIdentity = ""
+			_, err := s.AllocateRun(context.Background(), params)
+			return err
+		}},
 		{name: "allocate zero started_at", run: func(_ *testing.T, s *Store) error {
 			params := validAllocateRunParams()
 			params.StartedAt = time.Time{}
+			_, err := s.AllocateRun(context.Background(), params)
+			return err
+		}},
+		{name: "allocate empty artifact path", run: func(_ *testing.T, s *Store) error {
+			params := validAllocateRunParams()
+			params.ArtifactPath = ""
 			_, err := s.AllocateRun(context.Background(), params)
 			return err
 		}},
@@ -343,10 +403,40 @@ func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 			session.SessionRowID = ""
 			return s.InsertSession(context.Background(), session)
 		}},
+		{name: "session missing run id", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			session.RunID = ""
+			return s.InsertSession(context.Background(), session)
+		}},
+		{name: "session missing provider session id", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			session.ProviderSessionID = ""
+			return s.InsertSession(context.Background(), session)
+		}},
 		{name: "session bad role", run: func(t *testing.T, s *Store) error {
 			run := allocateRun(t, s, validAllocateRunParams())
 			session := validSession(run.RunID)
 			session.Role = SessionRole("manager")
+			return s.InsertSession(context.Background(), session)
+		}},
+		{name: "session missing adapter", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			session.Adapter = ""
+			return s.InsertSession(context.Background(), session)
+		}},
+		{name: "session missing model", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			session.Model = ""
+			return s.InsertSession(context.Background(), session)
+		}},
+		{name: "session zero started_at", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			session.StartedAt = time.Time{}
 			return s.InsertSession(context.Background(), session)
 		}},
 		{name: "finding missing id", run: func(t *testing.T, s *Store) error {
@@ -357,6 +447,22 @@ func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 			finding.FindingID = ""
 			return s.InsertFinding(context.Background(), finding)
 		}},
+		{name: "finding missing run id", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			insertSession(t, s, session)
+			finding := validFinding(run.RunID, session.SessionRowID)
+			finding.RunID = ""
+			return s.InsertFinding(context.Background(), finding)
+		}},
+		{name: "finding missing session row id", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			insertSession(t, s, session)
+			finding := validFinding(run.RunID, session.SessionRowID)
+			finding.SessionRowID = ""
+			return s.InsertFinding(context.Background(), finding)
+		}},
 		{name: "finding bad severity", run: func(t *testing.T, s *Store) error {
 			run := allocateRun(t, s, validAllocateRunParams())
 			session := validSession(run.RunID)
@@ -364,6 +470,63 @@ func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 			finding := validFinding(run.RunID, session.SessionRowID)
 			finding.Severity = review.Severity("medium")
 			return s.InsertFinding(context.Background(), finding)
+		}},
+		{name: "finding missing file path", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			insertSession(t, s, session)
+			finding := validFinding(run.RunID, session.SessionRowID)
+			finding.FilePath = ""
+			return s.InsertFinding(context.Background(), finding)
+		}},
+		{name: "finding bad side", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			insertSession(t, s, session)
+			finding := validFinding(run.RunID, session.SessionRowID)
+			side := review.DiffSide("BOTH")
+			finding.Side = &side
+			return s.InsertFinding(context.Background(), finding)
+		}},
+		{name: "finding bad anchoring", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			insertSession(t, s, session)
+			finding := validFinding(run.RunID, session.SessionRowID)
+			finding.Anchoring = review.Anchoring("file")
+			return s.InsertFinding(context.Background(), finding)
+		}},
+		{name: "finding missing body", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			session := validSession(run.RunID)
+			insertSession(t, s, session)
+			finding := validFinding(run.RunID, session.SessionRowID)
+			finding.Body = ""
+			return s.InsertFinding(context.Background(), finding)
+		}},
+		{name: "planned action missing action id", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			action := validPlannedAction(run.RunID)
+			action.ActionID = ""
+			return s.InsertPlannedAction(context.Background(), action)
+		}},
+		{name: "planned action missing run id", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			action := validPlannedAction(run.RunID)
+			action.RunID = ""
+			return s.InsertPlannedAction(context.Background(), action)
+		}},
+		{name: "planned action bad kind", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			action := validPlannedAction(run.RunID)
+			action.Kind = PlannedActionKind("comment")
+			return s.InsertPlannedAction(context.Background(), action)
+		}},
+		{name: "planned action zero planned_at", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			action := validPlannedAction(run.RunID)
+			action.PlannedAt = time.Time{}
+			return s.InsertPlannedAction(context.Background(), action)
 		}},
 		{name: "planned action missing payload", run: func(t *testing.T, s *Store) error {
 			run := allocateRun(t, s, validAllocateRunParams())
@@ -377,9 +540,55 @@ func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 			action.Status = PlannedActionStatus("done")
 			return s.InsertPlannedAction(context.Background(), action)
 		}},
+		{name: "planned action negative attempts", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			action := validPlannedAction(run.RunID)
+			action.Attempts = -1
+			return s.InsertPlannedAction(context.Background(), action)
+		}},
 		{name: "named session missing name", run: func(_ *testing.T, s *Store) error {
 			named := validNamedSession()
 			named.Name = ""
+			return s.UpsertNamedSession(context.Background(), named)
+		}},
+		{name: "named session missing profile", run: func(_ *testing.T, s *Store) error {
+			named := validNamedSession()
+			named.Profile = ""
+			return s.UpsertNamedSession(context.Background(), named)
+		}},
+		{name: "named session missing provider", run: func(_ *testing.T, s *Store) error {
+			named := validNamedSession()
+			named.Provider = ""
+			return s.UpsertNamedSession(context.Background(), named)
+		}},
+		{name: "named session missing adapter", run: func(_ *testing.T, s *Store) error {
+			named := validNamedSession()
+			named.Adapter = ""
+			return s.UpsertNamedSession(context.Background(), named)
+		}},
+		{name: "named session missing model", run: func(_ *testing.T, s *Store) error {
+			named := validNamedSession()
+			named.Model = ""
+			return s.UpsertNamedSession(context.Background(), named)
+		}},
+		{name: "named session missing host", run: func(_ *testing.T, s *Store) error {
+			named := validNamedSession()
+			named.Host = ""
+			return s.UpsertNamedSession(context.Background(), named)
+		}},
+		{name: "named session missing provider session id", run: func(_ *testing.T, s *Store) error {
+			named := validNamedSession()
+			named.ProviderSessionID = ""
+			return s.UpsertNamedSession(context.Background(), named)
+		}},
+		{name: "named session zero created_at", run: func(_ *testing.T, s *Store) error {
+			named := validNamedSession()
+			named.CreatedAt = time.Time{}
+			return s.UpsertNamedSession(context.Background(), named)
+		}},
+		{name: "named session zero last_used_at", run: func(_ *testing.T, s *Store) error {
+			named := validNamedSession()
+			named.LastUsedAt = time.Time{}
 			return s.UpsertNamedSession(context.Background(), named)
 		}},
 	}
@@ -425,7 +634,13 @@ func TestCloseStopsWriterAndRejectsMutation(t *testing.T) {
 func openStore(t *testing.T) *Store {
 	t.Helper()
 
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	return openStoreAt(t, filepath.Join(t.TempDir(), "ledger.db"))
+}
+
+func openStoreAt(t *testing.T, path string) *Store {
+	t.Helper()
+
+	store, err := Open(context.Background(), path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

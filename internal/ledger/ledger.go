@@ -462,10 +462,39 @@ func allocateRunTx(ctx context.Context, db *sql.DB, params AllocateRunParams) (R
 		if err == nil {
 			return run, nil
 		}
-		if !isSQLiteConstraintError(err) || params.RunID != "" {
+		retry, classifyErr := classifyAllocateConstraint(ctx, db, params, err)
+		if classifyErr != nil {
+			return Run{}, classifyErr
+		}
+		if !retry {
 			return Run{}, err
 		}
 	}
+}
+
+func classifyAllocateConstraint(ctx context.Context, db *sql.DB, params AllocateRunParams, err error) (bool, error) {
+	if !isSQLiteConstraintError(err) {
+		return false, err
+	}
+	if params.RunID == "" {
+		return true, nil
+	}
+	exists, existsErr := runIDExists(ctx, db, params.RunID)
+	if existsErr != nil {
+		return false, existsErr
+	}
+	if exists {
+		return false, fmt.Errorf("%w: %s", ErrRunExists, params.RunID)
+	}
+	return true, nil
+}
+
+func runIDExists(ctx context.Context, db *sql.DB, runID string) (bool, error) {
+	var exists int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM runs WHERE run_id = ?", runID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("ledger: check run id after constraint: %w", err)
+	}
+	return exists > 0, nil
 }
 
 func allocateRunOnce(ctx context.Context, db *sql.DB, params AllocateRunParams) (Run, error) {
