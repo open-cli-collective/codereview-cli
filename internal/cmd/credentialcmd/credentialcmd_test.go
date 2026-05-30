@@ -2,6 +2,8 @@ package credentialcmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
 func TestSetCredentialStdinJSONWritesFileBackend(t *testing.T) {
@@ -33,6 +36,16 @@ func TestSetCredentialStdinJSONWritesFileBackend(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "distinctive-token") {
 		t.Fatalf("stdout leaked secret: %q", out.String())
+	}
+	var got view.CredentialWrite
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Ref != "codereview/work" || got.Key != credentials.GitTokenKey || !got.Written {
+		t.Fatalf("credential write JSON = %#v, want written git token", got)
+	}
+	if got.Backend != "file" || got.BackendSource != "explicit" {
+		t.Fatalf("backend JSON = (%q,%q), want (file,explicit)", got.Backend, got.BackendSource)
 	}
 	assertStored(t, "work", credentials.GitTokenKey, "distinctive-token")
 }
@@ -189,6 +202,25 @@ func TestInitPersistsExplicitBackendWhenExistingAPIKeySatisfiesConfig(t *testing
 	}
 	if cfg.Keyring.Backend != "file" {
 		t.Fatalf("keyring.backend = %q, want file", cfg.Keyring.Backend)
+	}
+}
+
+func TestInitAPIKeyAuthRejectsMissingSecretWithoutWritingDanglingConfig(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"init",
+		"--non-interactive",
+		"--llm-auth", string(config.LLMAuthAPIKey),
+	})
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if _, err := config.Load(path); !errors.Is(err, config.ErrNotConfigured) {
+		t.Fatalf("Load after failed init error = %v, want ErrNotConfigured", err)
 	}
 }
 

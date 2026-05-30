@@ -169,6 +169,41 @@ func TestConfigShowReservedAuthModeExitCode(t *testing.T) {
 	}
 }
 
+func TestConfigClearDefaultClearsActiveProfileOnlyAndPreservesData(t *testing.T) {
+	path := saveTestConfig(t, fileBackendConfig(t))
+	dataFile := filepath.Join(os.Getenv("XDG_DATA_HOME"), "codereview", "runs", "sentinel.txt")
+	// #nosec G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if err := os.MkdirAll(filepath.Dir(dataFile), 0o700); err != nil {
+		t.Fatalf("MkdirAll data sentinel: %v", err)
+	}
+	// #nosec G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if err := os.WriteFile(dataFile, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("WriteFile data sentinel: %v", err)
+	}
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
+	seedFileBackend(t, "work-llm", map[string]string{credentials.LLMAPIKeyKey: "llm-token"})
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "clear", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigClear
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if len(got.Cleared) != 1 || got.Cleared[0].Ref != "codereview/home" {
+		t.Fatalf("cleared = %#v, want active home only", got.Cleared)
+	}
+	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
+	assertFileBackendPresent(t, "work", credentials.GitTokenKey)
+	assertFileBackendPresent(t, "work-llm", credentials.LLMAPIKeyKey)
+	// #nosec G304,G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if got, err := os.ReadFile(dataFile); err != nil || string(got) != "keep" {
+		t.Fatalf("data sentinel = (%q,%v), want kept", got, err)
+	}
+}
+
 func TestConfigClearAllDeletesEveryDeclaredRef(t *testing.T) {
 	path := saveTestConfig(t, fileBackendConfig(t))
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
