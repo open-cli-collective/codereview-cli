@@ -10,8 +10,9 @@ ship the `cr` binary. The repository is currently a scaffold: it holds the Go
 module, CI wiring, repo policy, and packaging placeholders before the command
 surface lands.
 
-The only Go code today is `internal/placeholder`, which keeps the tree compiling
-until the real CLI is added.
+The current Go code is a small scaffold binary in `cmd/cr` plus shared version
+plumbing in `internal/version`. It exists so the tree compiles and the checks
+stay green until the real CLI is added.
 
 ## Quick Commands
 
@@ -57,7 +58,8 @@ Local convenience copy, if present: `../cli-common/docs/distribution.md`
 
 ## Shared Automation
 
-Use this repository for shared action and reusable workflow implementations.
+Use `open-cli-collective/.github` for shared action and reusable workflow
+implementations.
 
 ```md
 Source of truth: https://github.com/open-cli-collective/.github
