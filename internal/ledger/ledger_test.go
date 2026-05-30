@@ -42,6 +42,10 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 			t.Fatalf("index %s does not exist", index)
 		}
 	}
+	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
+	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
+		t.Fatalf("runs_resume columns = %#v, want %#v", got, wantResumeIndex)
+	}
 }
 
 func TestForeignKeyCascadeDeletesRunChildren(t *testing.T) {
@@ -242,6 +246,16 @@ func TestAllocateRunRecoveryRejectsExistingRunID(t *testing.T) {
 	if got.ArtifactPath != original.ArtifactPath {
 		t.Fatalf("ArtifactPath = %q, want original %q", got.ArtifactPath, original.ArtifactPath)
 	}
+	pr, err := store.GetPR(context.Background(), original.PRKey)
+	if err != nil {
+		t.Fatalf("GetPR original: %v", err)
+	}
+	if pr.PRURL != "https://example.test/pr/36" {
+		t.Fatalf("PRURL = %q, want original URL", pr.PRURL)
+	}
+	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM runs"); count != 1 {
+		t.Fatalf("runs count = %d, want 1", count)
+	}
 }
 
 func TestClassifyAllocateConstraintForRecoveryMode(t *testing.T) {
@@ -289,6 +303,96 @@ func TestAllocateRunPreservesPRFirstSeenAndUpdatesURL(t *testing.T) {
 	if !pr.FirstSeenAt.Equal(first.StartedAt) {
 		t.Fatalf("FirstSeenAt = %s, want first run started_at %s", pr.FirstSeenAt, first.StartedAt)
 	}
+}
+
+func TestAllocateRunRollsBackPRUpsertWhenRunInsertFails(t *testing.T) {
+	store := openStore(t)
+	params := validAllocateRunParams()
+
+	execSQL(t, store.db, `CREATE TRIGGER fail_runs_insert
+BEFORE INSERT ON runs
+BEGIN
+  INSERT INTO missing_table VALUES (1);
+END`)
+
+	_, err := store.AllocateRun(context.Background(), params)
+	if err == nil {
+		t.Fatal("AllocateRun error = nil, want trigger failure")
+	}
+	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM prs WHERE pr_key = ?", params.PRKey); count != 0 {
+		t.Fatalf("prs count for failed allocation = %d, want 0", count)
+	}
+	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM runs WHERE run_id = ?", params.RunID); count != 0 {
+		t.Fatalf("runs count for failed allocation = %d, want 0", count)
+	}
+}
+
+func TestInvalidMutationsLeaveTargetTablesUnchanged(t *testing.T) {
+	t.Run("allocate run", func(t *testing.T) {
+		store := openStore(t)
+		params := validAllocateRunParams()
+		params.PRKey = ""
+
+		_, err := store.AllocateRun(context.Background(), params)
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("AllocateRun error = %v, want ErrInvalidInput", err)
+		}
+		assertTableCount(t, store.db, "prs", 0)
+		assertTableCount(t, store.db, "runs", 0)
+	})
+
+	t.Run("session", func(t *testing.T) {
+		store := openStore(t)
+		run := allocateRun(t, store, validAllocateRunParams())
+		session := validSession(run.RunID)
+		session.SessionRowID = ""
+
+		err := store.InsertSession(context.Background(), session)
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("InsertSession error = %v, want ErrInvalidInput", err)
+		}
+		assertTableCount(t, store.db, "sessions", 0)
+	})
+
+	t.Run("finding", func(t *testing.T) {
+		store := openStore(t)
+		run := allocateRun(t, store, validAllocateRunParams())
+		session := validSession(run.RunID)
+		insertSession(t, store, session)
+		finding := validFinding(run.RunID, session.SessionRowID)
+		finding.FindingID = ""
+
+		err := store.InsertFinding(context.Background(), finding)
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("InsertFinding error = %v, want ErrInvalidInput", err)
+		}
+		assertTableCount(t, store.db, "findings", 0)
+	})
+
+	t.Run("planned action", func(t *testing.T) {
+		store := openStore(t)
+		run := allocateRun(t, store, validAllocateRunParams())
+		action := validPlannedAction(run.RunID)
+		action.ActionID = ""
+
+		err := store.InsertPlannedAction(context.Background(), action)
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("InsertPlannedAction error = %v, want ErrInvalidInput", err)
+		}
+		assertTableCount(t, store.db, "planned_actions", 0)
+	})
+
+	t.Run("named session", func(t *testing.T) {
+		store := openStore(t)
+		session := validNamedSession()
+		session.Name = ""
+
+		err := store.UpsertNamedSession(context.Background(), session)
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("UpsertNamedSession error = %v, want ErrInvalidInput", err)
+		}
+		assertTableCount(t, store.db, "named_sessions", 0)
+	})
 }
 
 func TestTypedPersistenceRoundTrips(t *testing.T) {
@@ -798,6 +902,40 @@ func queryString(t *testing.T, db *sql.DB, query string, args ...any) string {
 	return got
 }
 
+func execSQL(t *testing.T, db *sql.DB, statement string, args ...any) {
+	t.Helper()
+
+	if _, err := db.ExecContext(context.Background(), statement, args...); err != nil {
+		t.Fatalf("exec %q: %v", statement, err)
+	}
+}
+
+func assertTableCount(t *testing.T, db *sql.DB, table string, want int) {
+	t.Helper()
+
+	var query string
+	switch table {
+	case "prs":
+		query = "SELECT COUNT(*) FROM prs"
+	case "runs":
+		query = "SELECT COUNT(*) FROM runs"
+	case "sessions":
+		query = "SELECT COUNT(*) FROM sessions"
+	case "findings":
+		query = "SELECT COUNT(*) FROM findings"
+	case "planned_actions":
+		query = "SELECT COUNT(*) FROM planned_actions"
+	case "named_sessions":
+		query = "SELECT COUNT(*) FROM named_sessions"
+	default:
+		t.Fatalf("unsupported table %q", table)
+	}
+	got := queryInt(t, db, query)
+	if got != want {
+		t.Fatalf("%s count = %d, want %d", table, got, want)
+	}
+}
+
 func tableExists(t *testing.T, db *sql.DB, name string) bool {
 	t.Helper()
 	return queryInt(t, db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", name) == 1
@@ -806,6 +944,37 @@ func tableExists(t *testing.T, db *sql.DB, name string) bool {
 func indexExists(t *testing.T, db *sql.DB, name string) bool {
 	t.Helper()
 	return queryInt(t, db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", name) == 1
+}
+
+func indexColumns(t *testing.T, db *sql.DB, name string) []string {
+	t.Helper()
+
+	var query string
+	switch name {
+	case "runs_resume":
+		query = "PRAGMA index_info(runs_resume)"
+	default:
+		t.Fatalf("unsupported index %q", name)
+	}
+	rows, err := db.QueryContext(context.Background(), query)
+	if err != nil {
+		t.Fatalf("PRAGMA index_info(%s): %v", name, err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var seqno, cid int
+		var column string
+		if err := rows.Scan(&seqno, &cid, &column); err != nil {
+			t.Fatalf("scan index_info(%s): %v", name, err)
+		}
+		columns = append(columns, column)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("index_info(%s) rows: %v", name, err)
+	}
+	return columns
 }
 
 func strPtr(value string) *string {
