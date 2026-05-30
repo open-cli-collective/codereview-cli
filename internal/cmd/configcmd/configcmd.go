@@ -53,13 +53,20 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return cmderr.Config(err)
 			}
-			store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
+			backendFlagSet := cmderr.BackendFlagChanged(cmd)
+			store, err := credentials.OpenStore(opts.Backend, backendFlagSet, cfg)
+			var storeErr error
+			if err != nil {
+				storeErr = err
+			}
+			if store != nil {
+				defer store.Close()
+			}
+			backend, source, err := backendMetadata(store, opts.Backend, backendFlagSet, cfg)
 			if err != nil {
 				return cmderr.Credential(err)
 			}
-			defer store.Close()
-			backend, source := store.Backend()
-			statuses, err := credentialStatuses(store, refs)
+			statuses, err := credentialStatuses(store, refs, storeErr)
 			if err != nil {
 				return cmderr.Credential(err)
 			}
@@ -145,7 +152,15 @@ func configPath(opts *root.Options) (string, error) {
 	return config.Path()
 }
 
-func credentialStatuses(store *credstore.Store, refs []config.CredentialRef) ([]view.CredentialStatus, error) {
+func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg config.File) (credstore.Backend, credstore.Source, error) {
+	if store != nil {
+		backend, source := store.Backend()
+		return backend, source, nil
+	}
+	return credentials.BackendMetadata(flagValue, flagSet, cfg)
+}
+
+func credentialStatuses(store *credstore.Store, refs []config.CredentialRef, storeErr error) ([]view.CredentialStatus, error) {
 	statuses := make([]view.CredentialStatus, 0, len(refs))
 	for _, ref := range refs {
 		parsed, err := credentials.ParseRef(ref.Ref)
@@ -156,21 +171,30 @@ func credentialStatuses(store *credstore.Store, refs []config.CredentialRef) ([]
 		if err != nil {
 			return nil, err
 		}
-		present, err := store.Exists(parsed.Profile, key)
-		if err != nil {
-			return nil, err
+		var present bool
+		statusErr := storeErr
+		if store != nil {
+			present, statusErr = store.Exists(parsed.Profile, key)
 		}
 		statuses = append(statuses, view.CredentialStatus{
 			Purpose: ref.Purpose,
 			Ref:     ref.Ref,
 			Mode:    ref.Mode,
-			Keys: []view.KeyStatus{{
-				Key:     key,
-				Present: present,
-			}},
+			Keys:    []view.KeyStatus{keyStatus(key, present, statusErr)},
 		})
 	}
 	return statuses, nil
+}
+
+func keyStatus(key string, present bool, err error) view.KeyStatus {
+	if err != nil {
+		return view.KeyStatus{Key: key, Status: "unknown", Error: err.Error()}
+	}
+	status := "missing"
+	if present {
+		status = "present"
+	}
+	return view.KeyStatus{Key: key, Present: &present, Status: status}
 }
 
 func refsToClear(cfg config.File, profileName string, all bool) ([]config.CredentialRef, error) {

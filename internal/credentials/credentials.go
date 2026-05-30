@@ -4,6 +4,8 @@ package credentials
 import (
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -79,6 +81,41 @@ func OpenStore(flagValue string, flagSet bool, cfg config.File) (*credstore.Stor
 		return nil, err
 	}
 	return store, nil
+}
+
+// BackendMetadata reports the selected backend/source without opening the store.
+func BackendMetadata(flagValue string, flagSet bool, cfg config.File) (credstore.Backend, credstore.Source, error) {
+	opts, err := StoreOptions(flagValue, flagSet, cfg)
+	if err != nil {
+		return "", "", err
+	}
+	if opts.Backend != "" {
+		return opts.Backend, credstore.SourceExplicit, nil
+	}
+	if value := os.Getenv(BackendEnvVar()); value != "" {
+		backend, err := credstore.ParseBackend(value)
+		if err != nil {
+			return "", "", fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+		}
+		return backend, credstore.SourceEnv, nil
+	}
+	if opts.ConfigBackend != "" {
+		backend, err := credstore.ParseBackend(string(opts.ConfigBackend))
+		if err != nil {
+			return "", "", fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+		}
+		return backend, credstore.SourceConfig, nil
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return credstore.BackendKeychain, credstore.SourceAuto, nil
+	case "windows":
+		return credstore.BackendWinCred, credstore.SourceAuto, nil
+	case "linux":
+		return credstore.BackendSecretService, credstore.SourceAuto, nil
+	default:
+		return "", "", credstore.ErrBackendNotImplemented
+	}
 }
 
 // KeyForPurpose returns the keyring key expected for a config credential ref.

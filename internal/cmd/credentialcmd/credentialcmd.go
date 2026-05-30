@@ -337,7 +337,11 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 		return err
 	}
 	if !hasGitSecret {
-		_, err = fmt.Fprintf(opts.Stderr, "Next: cr set-credential --ref %s --key %s --stdin\n", gitRef, credentials.GitTokenKey)
+		backendArg := ""
+		if backendFlagSet && !persistExplicitBackend {
+			backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
+		}
+		_, err = fmt.Fprintf(opts.Stderr, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, gitRef, credentials.GitTokenKey)
 	}
 	return err
 }

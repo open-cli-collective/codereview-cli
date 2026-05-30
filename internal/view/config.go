@@ -33,7 +33,9 @@ type CredentialStatus struct {
 // KeyStatus reports one non-secret key name and whether a value exists.
 type KeyStatus struct {
 	Key     string `json:"key"`
-	Present bool   `json:"present"`
+	Present *bool  `json:"present,omitempty"`
+	Status  string `json:"status"`
+	Error   string `json:"error,omitempty"`
 }
 
 // LLMCredential describes how cr accounts for LLM credentials.
@@ -149,11 +151,7 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 				return err
 			}
 			for _, key := range ref.Keys {
-				state := "missing"
-				if key.Present {
-					state = "present"
-				}
-				if _, err := fmt.Fprintf(w, "    %s: %s\n", key.Key, state); err != nil {
+				if _, err := fmt.Fprintf(w, "    %s: %s\n", key.Key, key.Status); err != nil {
 					return err
 				}
 			}

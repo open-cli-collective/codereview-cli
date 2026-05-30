@@ -89,6 +89,33 @@ func TestConfigShowJSON(t *testing.T) {
 	}
 }
 
+func TestConfigShowReportsUnknownPresenceWhenKeyringCannotBeQueried(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "")
+	cfg := testConfig()
+	cfg.Keyring.Backend = "file"
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "show", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigShow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Backend != "file" || got.BackendSource != "config" {
+		t.Fatalf("backend = (%q,%q), want (file,config)", got.Backend, got.BackendSource)
+	}
+	if len(got.CredentialRefs) != 1 || len(got.CredentialRefs[0].Keys) != 1 {
+		t.Fatalf("credential refs = %#v, want one key status", got.CredentialRefs)
+	}
+	key := got.CredentialRefs[0].Keys[0]
+	if key.Status != "unknown" || key.Present != nil || key.Error == "" {
+		t.Fatalf("key status = %#v, want unknown with error and no present bool", key)
+	}
+}
+
 func TestRootJSONFlagStillDeferred(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)

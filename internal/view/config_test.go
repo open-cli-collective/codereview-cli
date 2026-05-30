@@ -135,13 +135,18 @@ func homeProfile() config.Profile {
 }
 
 func credentialStatus(purpose, ref, mode, key string, present bool) CredentialStatus {
+	status := "missing"
+	if present {
+		status = "present"
+	}
 	return CredentialStatus{
 		Purpose: purpose,
 		Ref:     ref,
 		Mode:    mode,
 		Keys: []KeyStatus{{
 			Key:     key,
-			Present: present,
+			Present: &present,
+			Status:  status,
 		}},
 	}
 }

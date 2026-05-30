@@ -99,6 +99,28 @@ func TestSetCredentialExitCodeClasses(t *testing.T) {
 		}
 	})
 
+	t.Run("json error envelope", func(t *testing.T) {
+		cmd, out, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("token"))
+		err := root.Execute(cmd, []string{
+			"--backend", "memory",
+			"set-credential",
+			"--ref", "codereview/work",
+			"--key", "bad_key",
+			"--stdin",
+			"--json",
+		})
+		if got := exitcode.FromError(err); got != exitcode.UsageError {
+			t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+		}
+		var got view.CredentialWrite
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+		}
+		if got.Written || got.Error == "" || got.Ref != "codereview/work" || got.Key != "bad_key" {
+			t.Fatalf("credential write JSON = %#v, want written=false error envelope", got)
+		}
+	})
+
 	t.Run("wrong service ref", func(t *testing.T) {
 		cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("token"))
 		err := root.Execute(cmd, []string{
@@ -176,6 +198,30 @@ func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
 		t.Fatalf("keyring.backend = %q, want file", cfg.Keyring.Backend)
 	}
 	assertStored(t, "default", credentials.GitTokenKey, "init-token")
+}
+
+func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "memory",
+		"init",
+		"--non-interactive",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Keyring.Backend != "" {
+		t.Fatalf("keyring.backend = %q, want empty runtime-only backend", cfg.Keyring.Backend)
+	}
+	if !strings.Contains(errOut.String(), "cr --backend memory set-credential") {
+		t.Fatalf("stderr = %q, want backend-preserving set-credential hint", errOut.String())
+	}
 }
 
 func TestInitPersistsExplicitBackendWhenExistingAPIKeySatisfiesConfig(t *testing.T) {

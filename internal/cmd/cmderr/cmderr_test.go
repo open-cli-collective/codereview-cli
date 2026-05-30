@@ -50,4 +50,9 @@ func TestCredentialErrorMapping(t *testing.T) {
 			t.Fatalf("Credential(%v) exit code = %d, want %d", err, got, exitcode.AuthConfigError)
 		}
 	}
+
+	err := Credential(errors.New("unexpected write failure"))
+	if got := exitcode.FromError(err); got != exitcode.Failure {
+		t.Fatalf("unexpected credential error exit code = %d, want %d", got, exitcode.Failure)
+	}
 }

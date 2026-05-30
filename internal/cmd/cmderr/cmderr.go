@@ -41,7 +41,7 @@ func Credential(err error) error {
 		errors.Is(err, credstore.ErrBackendNotImplemented):
 		return exitcode.AuthConfig(err)
 	default:
-		return exitcode.AuthConfig(err)
+		return err
 	}
 }
 
