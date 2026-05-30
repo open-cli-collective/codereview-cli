@@ -110,6 +110,10 @@ func ensureMeta(ctx context.Context, db *sql.DB) (int, error) {
 		_ = tx.Rollback()
 	}()
 
+	metaExists, err := metaTableExists(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS meta (
 schema_version INTEGER NOT NULL,
 created_at     TEXT NOT NULL
@@ -128,6 +132,9 @@ created_at     TEXT NOT NULL
 	var version int
 	switch count {
 	case 0:
+		if metaExists {
+			return 0, fmt.Errorf("%w: existing meta table has no rows", ErrInvalidMeta)
+		}
 		version = 0
 		if _, err := tx.ExecContext(
 			ctx,
@@ -153,6 +160,17 @@ created_at     TEXT NOT NULL
 		return 0, fmt.Errorf("dbmig: commit meta transaction: %w", err)
 	}
 	return version, nil
+}
+
+func metaTableExists(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var count int
+	if err := tx.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+	).Scan(&count); err != nil {
+		return false, fmt.Errorf("%w: checking meta table existence: %w", ErrInvalidMeta, err)
+	}
+	return count > 0, nil
 }
 
 type metaColumn struct {

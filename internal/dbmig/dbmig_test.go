@@ -82,6 +82,50 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestApplyResumesFromExistingVersion(t *testing.T) {
+	db := openTestDB(t)
+	seedMeta(t, db, 1)
+	execSQL(t, db, "CREATE TABLE widgets (id INTEGER PRIMARY KEY)")
+
+	calls := []int{}
+	migrations := []Migration{
+		trackedMigration(1, "create widgets", &calls, "CREATE TABLE widgets (id INTEGER PRIMARY KEY)"),
+		trackedMigration(2, "create reviews", &calls, "CREATE TABLE reviews (id INTEGER PRIMARY KEY)"),
+		trackedMigration(3, "create findings", &calls, "CREATE TABLE findings (id INTEGER PRIMARY KEY)"),
+	}
+
+	result, err := Apply(context.Background(), db, migrations)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	wantApplied := []AppliedMigration{
+		{Version: 2, Name: "create reviews"},
+		{Version: 3, Name: "create findings"},
+	}
+	if result.PreviousVersion != 1 {
+		t.Fatalf("PreviousVersion = %d, want 1", result.PreviousVersion)
+	}
+	if result.CurrentVersion != 3 {
+		t.Fatalf("CurrentVersion = %d, want 3", result.CurrentVersion)
+	}
+	if !reflect.DeepEqual(result.Applied, wantApplied) {
+		t.Fatalf("Applied = %#v, want %#v", result.Applied, wantApplied)
+	}
+	if !reflect.DeepEqual(calls, []int{2, 3}) {
+		t.Fatalf("migration calls = %#v, want []int{2, 3}", calls)
+	}
+	if version := currentSchemaVersion(t, db); version != 3 {
+		t.Fatalf("schema_version = %d, want 3", version)
+	}
+	if !tableExists(t, db, "reviews") {
+		t.Fatal("reviews table does not exist")
+	}
+	if !tableExists(t, db, "findings") {
+		t.Fatal("findings table does not exist")
+	}
+}
+
 func TestApplyRefusesDatabaseNewerThanCode(t *testing.T) {
 	db := openTestDB(t)
 	seedMeta(t, db, 2)
@@ -211,6 +255,12 @@ func TestApplyRejectsMalformedMeta(t *testing.T) {
 			},
 		},
 		{
+			name: "existing empty table",
+			setup: func(t *testing.T, db *sql.DB) {
+				createMeta(t, db)
+			},
+		},
+		{
 			name: "negative version",
 			setup: func(t *testing.T, db *sql.DB) {
 				seedMeta(t, db, -1)
@@ -324,17 +374,35 @@ func sqlMigration(version int, name string, statements ...string) Migration {
 }
 
 func countedMigration(version int, name string, count *int, statements ...string) Migration {
-	migration := sqlMigration(version, name, statements...)
-	migration.Up = func(ctx context.Context, tx *sql.Tx) error {
-		(*count)++
-		for _, statement := range statements {
-			if _, err := tx.ExecContext(ctx, statement); err != nil {
-				return err
+	return Migration{
+		Version: version,
+		Name:    name,
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			(*count)++
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
 			}
-		}
-		return nil
+			return nil
+		},
 	}
-	return migration
+}
+
+func trackedMigration(version int, name string, calls *[]int, statements ...string) Migration {
+	return Migration{
+		Version: version,
+		Name:    name,
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			*calls = append(*calls, version)
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
 }
 
 func noopMigration(version int, name string) Migration {
