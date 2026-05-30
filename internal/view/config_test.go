@@ -57,6 +57,38 @@ func TestRenderConfigTextSubscriptionCredentialIsAdapterManaged(t *testing.T) {
 	}
 }
 
+func TestRenderConfigTextExactHomeShape(t *testing.T) {
+	var out bytes.Buffer
+	show := NewConfigShow("home", homeProfile(), dataConfig(), []config.CredentialRef{
+		{Purpose: "git", Ref: "codereview/home", Mode: "pat"},
+	})
+
+	if err := RenderConfigText(&out, show); err != nil {
+		t.Fatalf("RenderConfigText: %v", err)
+	}
+	want := `Profile: home
+Git:
+  Host: github.com
+  Auth mode: pat
+  Credential ref: codereview/home
+Reviewer credentials: self-review uses git credentials
+LLM:
+  Provider: anthropic
+  Auth: subscription
+  Adapter: claude_cli
+  Credential ref: adapter-managed; not stored by cr
+Review policy:
+  Major event: comment
+  Allow self approve: false
+Data retention:
+  Max age days: 90
+  Enforcement: at_write
+`
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
 func TestRenderConfigJSON(t *testing.T) {
 	var out bytes.Buffer
 	show := NewConfigShow("work", workProfile(), dataConfig(), []config.CredentialRef{

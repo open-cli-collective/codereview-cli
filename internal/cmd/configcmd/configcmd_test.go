@@ -141,6 +141,23 @@ profiles:
 	}
 }
 
+func TestConfigShowReservedAuthModeExitCode(t *testing.T) {
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.Git.AuthMode = config.GitAuthModeOAuthDevice
+	cfg.Profiles["home"] = profile
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "show"})
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("Execute error = %v, want ErrUnsupported", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
+	}
+}
+
 func newTestCommand(path string) (*cobra.Command, *bytes.Buffer) {
 	var out bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{

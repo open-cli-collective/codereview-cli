@@ -101,6 +101,32 @@ func TestLoadMissingConfig(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsEmptyAndMultipleDocuments(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty", body: ""},
+		{name: "multiple documents", body: `default_profile: home
+profiles: {}
+---
+default_profile: other
+profiles: {}
+`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			writeFile(t, path, tt.body)
+			_, err := Load(path)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	writeFile(t, path, `default_profile: home
@@ -196,6 +222,15 @@ func TestCredentialRefs(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMissingDefaultProfile(t *testing.T) {
+	cfg := validFile()
+	cfg.DefaultProfile = "missing"
+
+	if err := Validate(cfg); !errors.Is(err, ErrProfileNotFound) {
+		t.Fatalf("Validate error = %v, want ErrProfileNotFound", err)
+	}
+}
+
 func TestCredentialRefsRejectReservedGitAuthModes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -261,6 +296,34 @@ func TestAPIKeyLLMRequiresCredentialRef(t *testing.T) {
 
 	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("Validate error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestValidateRejectsInvalidCredentialRefs(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*File)
+	}{
+		{name: "subscription LLM stored ref", mutate: func(cfg *File) {
+			profile := cfg.Profiles["home"]
+			profile.LLM.CredentialRef = "codereview/home-llm"
+			cfg.Profiles["home"] = profile
+		}},
+		{name: "empty reviewer credential ref", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.ReviewerCredentials.CredentialRef = ""
+			cfg.Profiles["work"] = profile
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			tt.mutate(&cfg)
+			if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Validate error = %v, want ErrInvalid", err)
+			}
+		})
 	}
 }
 
