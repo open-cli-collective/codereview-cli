@@ -57,6 +57,26 @@ func TestPRKeyAndResumeScope(t *testing.T) {
 		t.Fatalf("PRKey = %q, want encoded segment key", prKey)
 	}
 
+	withUnderscore, err := PRKey("github", "open_cli", "repo_name", 12)
+	if err != nil {
+		t.Fatalf("PRKey with underscore: %v", err)
+	}
+	if withUnderscore != "github_open%5Fcli_repo%5Fname_12" {
+		t.Fatalf("PRKey with underscore = %q, want underscore escaped inside segments", withUnderscore)
+	}
+
+	first, err := PRKey("a_b", "c", "d", 1)
+	if err != nil {
+		t.Fatalf("first PRKey: %v", err)
+	}
+	second, err := PRKey("a", "b_c", "d", 1)
+	if err != nil {
+		t.Fatalf("second PRKey: %v", err)
+	}
+	if first == second {
+		t.Fatalf("PRKey collision: %q == %q", first, second)
+	}
+
 	scope, err := ResumeScope("work profile", "rian@example.com")
 	if err != nil {
 		t.Fatalf("ResumeScope: %v", err)
@@ -156,17 +176,42 @@ func TestRunPaths(t *testing.T) {
 	if paths.AgentLogsDir != filepath.Join(runDir, "agent-logs") {
 		t.Fatalf("AgentLogsDir = %q", paths.AgentLogsDir)
 	}
-	if got := paths.SlicePatch("harness:arch", "dir/file.go"); got != filepath.Join(runDir, "slices", "harness%3Aarch", "dir%2Ffile.go.patch") {
-		t.Fatalf("SlicePatch = %q", got)
+	slicePatch, err := paths.SlicePatch("harness:arch", "dir/file.go")
+	if err != nil {
+		t.Fatalf("SlicePatch: %v", err)
 	}
-	if got := paths.AgentLog("harness:arch"); got != filepath.Join(runDir, "agent-logs", "harness%3Aarch.jsonl") {
-		t.Fatalf("AgentLog = %q", got)
+	if slicePatch != filepath.Join(runDir, "slices", "harness%3Aarch", "dir%2Ffile.go.patch") {
+		t.Fatalf("SlicePatch = %q", slicePatch)
+	}
+	agentLog, err := paths.AgentLog("harness:arch")
+	if err != nil {
+		t.Fatalf("AgentLog: %v", err)
+	}
+	if agentLog != filepath.Join(runDir, "agent-logs", "harness%3Aarch.jsonl") {
+		t.Fatalf("AgentLog = %q", agentLog)
 	}
 	if paths.LockFile != filepath.Join("data", AppDir, "locks", prKey+"__aaaaaaa__"+keyHash+".lock") {
 		t.Fatalf("LockFile = %q", paths.LockFile)
 	}
 	if got := layout.HTTPCacheDir(); got != filepath.Join("cache", AppDir, "http") {
 		t.Fatalf("HTTPCacheDir = %q", got)
+	}
+}
+
+func TestArtifactHelpersRejectEmptyComponents(t *testing.T) {
+	paths := RunPaths{
+		SlicesDir:    filepath.Join("run", "slices"),
+		AgentLogsDir: filepath.Join("run", "agent-logs"),
+	}
+
+	if _, err := paths.SlicePatch("", "file.go"); err == nil {
+		t.Fatal("SlicePatch empty agent error = nil, want error")
+	}
+	if _, err := paths.SlicePatch("agent", ""); err == nil {
+		t.Fatal("SlicePatch empty file error = nil, want error")
+	}
+	if _, err := paths.AgentLog(""); err == nil {
+		t.Fatal("AgentLog empty agent error = nil, want error")
 	}
 }
 

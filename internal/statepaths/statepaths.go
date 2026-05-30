@@ -133,13 +133,22 @@ func (l Layout) Run(spec RunSpec) (RunPaths, error) {
 }
 
 // SlicePatch returns the artifact path for an agent/file diff slice.
-func (p RunPaths) SlicePatch(agentID, filePath string) string {
-	return filepath.Join(p.SlicesDir, Encode(agentID), Encode(filePath)+".patch")
+func (p RunPaths) SlicePatch(agentID, filePath string) (string, error) {
+	if err := requireNonEmpty("agent ID", agentID); err != nil {
+		return "", err
+	}
+	if err := requireNonEmpty("file path", filePath); err != nil {
+		return "", err
+	}
+	return filepath.Join(p.SlicesDir, Encode(agentID), Encode(filePath)+".patch"), nil
 }
 
 // AgentLog returns the tailable JSONL log path for an agent.
-func (p RunPaths) AgentLog(agentID string) string {
-	return filepath.Join(p.AgentLogsDir, Encode(agentID)+".jsonl")
+func (p RunPaths) AgentLog(agentID string) (string, error) {
+	if err := requireNonEmpty("agent ID", agentID); err != nil {
+		return "", err
+	}
+	return filepath.Join(p.AgentLogsDir, Encode(agentID)+".jsonl"), nil
 }
 
 // DataRoot resolves cr's app data root without creating it.
@@ -196,6 +205,10 @@ func Decode(value string) string {
 	return percent.Decode(value)
 }
 
+func encodePRKeySegment(value string) string {
+	return percent.Encode(value, disallowedRunes(value)+"_")
+}
+
 // PRKey returns the encoded PR key path segment.
 func PRKey(host, owner, repo string, number int) (string, error) {
 	if err := requireNonEmpty("host", host); err != nil {
@@ -210,7 +223,7 @@ func PRKey(host, owner, repo string, number int) (string, error) {
 	if number <= 0 {
 		return "", fmt.Errorf("statepaths: PR number must be positive")
 	}
-	return strings.Join([]string{Encode(host), Encode(owner), Encode(repo), strconv.Itoa(number)}, "_"), nil
+	return strings.Join([]string{encodePRKeySegment(host), encodePRKeySegment(owner), encodePRKeySegment(repo), strconv.Itoa(number)}, "_"), nil
 }
 
 // ResumeScope returns the encoded profile/posting-identity path segment.
