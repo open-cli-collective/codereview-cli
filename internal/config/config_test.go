@@ -197,16 +197,42 @@ func TestCredentialRefs(t *testing.T) {
 }
 
 func TestCredentialRefsRejectReservedGitAuthModes(t *testing.T) {
-	cfg := validFile().normalized()
-	profile := cfg.Profiles["home"]
-	profile.Git.AuthMode = GitAuthModeOAuthDevice
-
-	refs, err := CredentialRefs(profile)
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("CredentialRefs error = %v, want ErrUnsupported", err)
+	tests := []struct {
+		name    string
+		profile func() Profile
+	}{
+		{name: "git oauth_device", profile: func() Profile {
+			profile := validFile().normalized().Profiles["home"]
+			profile.Git.AuthMode = GitAuthModeOAuthDevice
+			return profile
+		}},
+		{name: "git github_app", profile: func() Profile {
+			profile := validFile().normalized().Profiles["home"]
+			profile.Git.AuthMode = GitAuthModeGitHubApp
+			return profile
+		}},
+		{name: "reviewer oauth_device", profile: func() Profile {
+			profile := validFile().normalized().Profiles["work"]
+			profile.ReviewerCredentials.AuthMode = GitAuthModeOAuthDevice
+			return profile
+		}},
+		{name: "reviewer github_app", profile: func() Profile {
+			profile := validFile().normalized().Profiles["work"]
+			profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
+			return profile
+		}},
 	}
-	if refs != nil {
-		t.Fatalf("CredentialRefs = %#v, want nil", refs)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			refs, err := CredentialRefs(tt.profile())
+			if !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("CredentialRefs error = %v, want ErrUnsupported", err)
+			}
+			if refs != nil {
+				t.Fatalf("CredentialRefs = %#v, want nil", refs)
+			}
+		})
 	}
 }
 
@@ -264,10 +290,65 @@ func TestValidationCoversAgentSourcesReviewPolicyAndRetention(t *testing.T) {
 	}
 
 	cfg = validFile()
-	cfg.Data.Retention.MaxAgeDays = -1
+	cfg.Data.Retention.MaxAgeDays = intPtr(-1)
 	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("bad retention Validate error = %v, want ErrInvalid", err)
 	}
+}
+
+func TestRetentionMaxAgeDefaultAndExplicitZero(t *testing.T) {
+	t.Run("omitted defaults to 90", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yml")
+		writeFile(t, path, `default_profile: home
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/home
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+data:
+  retention:
+    enforcement: at_write
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := cfg.Data.Retention.MaxAgeDaysValue(); got != 90 {
+			t.Fatalf("MaxAgeDaysValue = %d, want 90", got)
+		}
+	})
+
+	t.Run("explicit zero means keep forever", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yml")
+		writeFile(t, path, `default_profile: home
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/home
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+data:
+  retention:
+    max_age_days: 0
+    enforcement: at_write
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := cfg.Data.Retention.MaxAgeDaysValue(); got != 0 {
+			t.Fatalf("MaxAgeDaysValue = %d, want 0", got)
+		}
+	})
 }
 
 func validFile() File {
@@ -321,11 +402,15 @@ func validFile() File {
 		},
 		Data: DataConfig{
 			Retention: RetentionConfig{
-				MaxAgeDays:  90,
+				MaxAgeDays:  intPtr(90),
 				Enforcement: RetentionAtWrite,
 			},
 		},
 	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }
 
 func writeFile(t *testing.T, path, body string) {

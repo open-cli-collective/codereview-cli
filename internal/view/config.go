@@ -130,7 +130,7 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 	if _, err := fmt.Fprintln(w, "Data retention:"); err != nil {
 		return err
 	}
-	if err := writeKV(w, "  Max age days", fmt.Sprint(show.Data.Retention.MaxAgeDays)); err != nil {
+	if err := writeKV(w, "  Max age days", fmt.Sprint(show.Data.Retention.MaxAgeDaysValue())); err != nil {
 		return err
 	}
 	return writeKV(w, "  Enforcement", string(show.Data.Retention.Enforcement))

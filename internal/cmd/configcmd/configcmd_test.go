@@ -210,9 +210,13 @@ func testConfig() config.File {
 		},
 		Data: config.DataConfig{
 			Retention: config.RetentionConfig{
-				MaxAgeDays:  90,
+				MaxAgeDays:  intPtr(90),
 				Enforcement: config.RetentionAtWrite,
 			},
 		},
 	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }

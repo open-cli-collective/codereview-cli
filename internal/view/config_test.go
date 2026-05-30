@@ -129,8 +129,12 @@ func workProfile() config.Profile {
 func dataConfig() config.DataConfig {
 	return config.DataConfig{
 		Retention: config.RetentionConfig{
-			MaxAgeDays:  90,
+			MaxAgeDays:  intPtr(90),
 			Enforcement: config.RetentionAtWrite,
 		},
 	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }

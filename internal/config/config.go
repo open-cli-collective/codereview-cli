@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	serviceName = "codereview"
-	fileName    = "config.yml"
-	dirPerm     = 0o700
-	filePerm    = 0o600
+	serviceName                = "codereview"
+	fileName                   = "config.yml"
+	dirPerm                    = 0o700
+	filePerm                   = 0o600
+	defaultRetentionMaxAgeDays = 90
 )
 
 var (
@@ -86,7 +87,7 @@ type DataConfig struct {
 
 // RetentionConfig controls run-data lifecycle behavior.
 type RetentionConfig struct {
-	MaxAgeDays  int                  `yaml:"max_age_days,omitempty" json:"max_age_days"`
+	MaxAgeDays  *int                 `yaml:"max_age_days,omitempty" json:"max_age_days"`
 	Enforcement RetentionEnforcement `yaml:"enforcement,omitempty" json:"enforcement"`
 }
 
@@ -465,8 +466,8 @@ func validateProfile(name string, profile Profile) error {
 }
 
 func validateRetention(retention RetentionConfig) error {
-	if retention.MaxAgeDays < 0 {
-		return invalid("data.retention.max_age_days %d is invalid", retention.MaxAgeDays)
+	if retention.MaxAgeDaysValue() < 0 {
+		return invalid("data.retention.max_age_days %d is invalid", retention.MaxAgeDaysValue())
 	}
 	if !retention.Enforcement.Valid() {
 		return invalid("data.retention.enforcement %q is invalid", retention.Enforcement)
@@ -500,10 +501,23 @@ func (p ReviewPolicy) normalized() ReviewPolicy {
 }
 
 func (r RetentionConfig) normalized() RetentionConfig {
+	if r.MaxAgeDays == nil {
+		maxAgeDays := defaultRetentionMaxAgeDays
+		r.MaxAgeDays = &maxAgeDays
+	}
 	if r.Enforcement == "" {
 		r.Enforcement = RetentionAtWrite
 	}
 	return r
+}
+
+// MaxAgeDaysValue returns the configured max age, applying the default when
+// max_age_days was omitted. A configured zero still means keep forever.
+func (r RetentionConfig) MaxAgeDaysValue() int {
+	if r.MaxAgeDays == nil {
+		return defaultRetentionMaxAgeDays
+	}
+	return *r.MaxAgeDays
 }
 
 func invalid(format string, args ...any) error {
