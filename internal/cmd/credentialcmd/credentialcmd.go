@@ -274,7 +274,8 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 			return cmderr.Credential(err)
 		}
 	}
-	if backendFlagSet && len(writes) > 0 {
+	persistExplicitBackend := backendFlagSet && (len(writes) > 0 || profile.LLM.Auth == config.LLMAuthAPIKey)
+	if persistExplicitBackend {
 		if cfg.Keyring.Backend != "" && cfg.Keyring.Backend != opts.Backend {
 			return exitcode.Usage(fmt.Errorf("--backend %q conflicts with existing keyring.backend %q", opts.Backend, cfg.Keyring.Backend))
 		}
@@ -319,7 +320,7 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 		if flags.overwrite {
 			setOpts = append(setOpts, credstore.WithOverwrite())
 		}
-		if err := writeBundles(store, writes, setOpts...); err != nil {
+		if _, err := writeBundles(store, writes, setOpts...); err != nil {
 			return cmderr.Credential(err)
 		}
 	}
@@ -435,17 +436,27 @@ func preflightNoOverwrite(store *credstore.Store, writes map[string]map[string]s
 	return nil
 }
 
-func writeBundles(store *credstore.Store, writes map[string]map[string]string, opts ...credstore.SetOpt) error {
+func writeBundles(store *credstore.Store, writes map[string]map[string]string, opts ...credstore.SetOpt) ([]string, error) {
+	var writtenRefs []string
 	for _, ref := range sortedRefs(writes) {
 		parsed, err := credentials.ParseRef(ref)
 		if err != nil {
-			return err
+			return writtenRefs, err
 		}
-		if _, err := store.SetBundle(parsed.Profile, writes[ref], opts...); err != nil {
-			return err
+		result, err := store.SetBundle(parsed.Profile, writes[ref], opts...)
+		if err != nil {
+			cleanupRefs := append([]string(nil), writtenRefs...)
+			if len(result.RollbackFailed) > 0 {
+				cleanupRefs = append(cleanupRefs, ref)
+			}
+			if len(cleanupRefs) > 0 {
+				return writtenRefs, fmt.Errorf("init wrote credentials before failing on %s; credential refs needing cleanup: %v: %w", ref, cleanupRefs, err)
+			}
+			return writtenRefs, err
 		}
+		writtenRefs = append(writtenRefs, ref)
 	}
-	return nil
+	return writtenRefs, nil
 }
 
 func sortedRefs(writes map[string]map[string]string) []string {

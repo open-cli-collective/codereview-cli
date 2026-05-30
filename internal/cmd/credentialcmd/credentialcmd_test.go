@@ -165,6 +165,33 @@ func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
 	assertStored(t, "default", credentials.GitTokenKey, "init-token")
 }
 
+func TestInitPersistsExplicitBackendWhenExistingAPIKeySatisfiesConfig(t *testing.T) {
+	hermeticFileBackend(t)
+	seedFileBackend(t, "default-llm", credentials.LLMAPIKeyKey, "llm-token")
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd, out, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"init",
+		"--non-interactive",
+		"--llm-auth", string(config.LLMAuthAPIKey),
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String()+errOut.String(), "llm-token") {
+		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Keyring.Backend != "file" {
+		t.Fatalf("keyring.backend = %q, want file", cfg.Keyring.Backend)
+	}
+}
+
 func TestInitMergeReplaceAndBackendConflictSemantics(t *testing.T) {
 	hermeticFileBackend(t)
 	path := filepath.Join(t.TempDir(), "config.yml")
@@ -238,6 +265,34 @@ func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 				t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
 			}
 		})
+	}
+}
+
+func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendMemory,
+	})
+	if err != nil {
+		t.Fatalf("Open memory store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.SetBundle("b", map[string]string{credentials.GitTokenKey: "existing"}); err != nil {
+		t.Fatalf("seed b bundle: %v", err)
+	}
+
+	written, err := writeBundles(store, map[string]map[string]string{
+		"codereview/a": {credentials.GitTokenKey: "new"},
+		"codereview/b": {credentials.GitTokenKey: "conflict"},
+	})
+	if err == nil {
+		t.Fatal("writeBundles error = nil, want conflict")
+	}
+	if len(written) != 1 || written[0] != "codereview/a" {
+		t.Fatalf("written refs = %#v, want codereview/a", written)
+	}
+	if !strings.Contains(err.Error(), "credential refs needing cleanup: [codereview/a]") {
+		t.Fatalf("error = %v, want cleanup ref", err)
 	}
 }
 
