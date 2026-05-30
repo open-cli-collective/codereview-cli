@@ -75,6 +75,30 @@ func TestForeignKeyCascadeDeletesRunChildren(t *testing.T) {
 	}
 }
 
+func TestForeignKeyCascadeDeletesSessionChildren(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	session := validSession(run.RunID)
+	insertSession(t, store, session)
+	insertFinding(t, store, validFinding(run.RunID, session.SessionRowID))
+	insertPlannedAction(t, store, validPlannedAction(run.RunID))
+
+	execSQL(t, store.db, "DELETE FROM sessions WHERE session_row_id = ?", session.SessionRowID)
+
+	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM runs"); count != 1 {
+		t.Fatalf("runs count = %d, want 1", count)
+	}
+	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM sessions"); count != 0 {
+		t.Fatalf("sessions count = %d, want 0", count)
+	}
+	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM findings"); count != 0 {
+		t.Fatalf("findings count = %d, want 0", count)
+	}
+	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM planned_actions"); count != 0 {
+		t.Fatalf("planned_actions count = %d, want 0", count)
+	}
+}
+
 func TestRunUniqueResumeAttemptConstraint(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, validAllocateRunParams())
@@ -262,9 +286,10 @@ func TestClassifyAllocateConstraintForRecoveryMode(t *testing.T) {
 	store := openStore(t)
 	params := validAllocateRunParams()
 	params.RunID = "existing-run"
-	allocateRun(t, store, params)
+	run := allocateRun(t, store, params)
+	duplicateRunIDErr := duplicateRunIDConstraintError(t, store, run)
 
-	retry, err := classifyAllocateConstraint(context.Background(), store.db, params, errors.New("constraint failed"))
+	retry, err := classifyAllocateConstraint(context.Background(), store.db, params, duplicateRunIDErr)
 	if !errors.Is(err, ErrRunExists) {
 		t.Fatalf("classify existing run error = %v, want ErrRunExists", err)
 	}
@@ -273,12 +298,46 @@ func TestClassifyAllocateConstraintForRecoveryMode(t *testing.T) {
 	}
 
 	params.RunID = "missing-run"
-	retry, err = classifyAllocateConstraint(context.Background(), store.db, params, errors.New("constraint failed"))
+	retry, err = classifyAllocateConstraint(context.Background(), store.db, params, duplicateRunIDErr)
+	if err == nil {
+		t.Fatal("classify missing run id constraint error = nil, want original constraint")
+	}
+	if retry {
+		t.Fatal("classify missing run id constraint retry = true, want false")
+	}
+
+	resumeErr := duplicateResumeAttemptConstraintError(t, store, run)
+	retry, err = classifyAllocateConstraint(context.Background(), store.db, params, resumeErr)
 	if err != nil {
-		t.Fatalf("classify missing run error = %v, want nil", err)
+		t.Fatalf("classify recovery resume collision error = %v, want nil", err)
 	}
 	if !retry {
-		t.Fatal("classify missing run retry = false, want true")
+		t.Fatal("classify recovery resume collision retry = false, want true")
+	}
+
+	params.RunID = ""
+	retry, err = classifyAllocateConstraint(context.Background(), store.db, params, resumeErr)
+	if err != nil {
+		t.Fatalf("classify fresh resume collision error = %v, want nil", err)
+	}
+	if !retry {
+		t.Fatal("classify fresh resume collision retry = false, want true")
+	}
+
+	params.RunID = "missing-run"
+	foreignKeyErr := missingSessionForeignKeyConstraintError(t, store)
+	retry, err = classifyAllocateConstraint(context.Background(), store.db, params, foreignKeyErr)
+	if err == nil {
+		t.Fatal("classify foreign-key constraint error = nil, want original constraint")
+	}
+	if retry {
+		t.Fatal("classify foreign-key constraint retry = true, want false")
+	}
+}
+
+func TestSQLiteConstraintClassificationRequiresDriverError(t *testing.T) {
+	if isSQLiteConstraintError(errors.New("constraint failed")) {
+		t.Fatal("isSQLiteConstraintError(text error) = true, want false")
 	}
 }
 
@@ -720,6 +779,35 @@ func TestStorageValueParsers(t *testing.T) {
 	}
 }
 
+func TestWriteReturnsWriterResultAfterDispatchDespiteContextCancellation(t *testing.T) {
+	store := openStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- store.write(ctx, func(context.Context, *sql.DB) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+
+	<-entered
+	cancel()
+	close(release)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("write error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("write did not return")
+	}
+}
+
 func TestCloseStopsWriterAndRejectsMutation(t *testing.T) {
 	store := openStore(t)
 	if err := store.Close(); err != nil {
@@ -732,6 +820,43 @@ func TestCloseStopsWriterAndRejectsMutation(t *testing.T) {
 	_, err := store.AllocateRun(context.Background(), validAllocateRunParams())
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("AllocateRun after Close error = %v, want ErrClosed", err)
+	}
+
+	readChecks := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "GetPR", run: func() error {
+			_, err := store.GetPR(context.Background(), "github_open-cli_codereview-cli_36")
+			return err
+		}},
+		{name: "GetRun", run: func() error {
+			_, err := store.GetRun(context.Background(), "run-1")
+			return err
+		}},
+		{name: "GetSession", run: func() error {
+			_, err := store.GetSession(context.Background(), "session-row-1")
+			return err
+		}},
+		{name: "ListFindings", run: func() error {
+			_, err := store.ListFindings(context.Background(), "run-1")
+			return err
+		}},
+		{name: "ListPlannedActions", run: func() error {
+			_, err := store.ListPlannedActions(context.Background(), "run-1")
+			return err
+		}},
+		{name: "GetNamedSession", run: func() error {
+			_, err := store.GetNamedSession(context.Background(), "daily")
+			return err
+		}},
+	}
+	for _, check := range readChecks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.run(); !errors.Is(err, ErrClosed) {
+				t.Fatalf("%s after Close error = %v, want ErrClosed", check.name, err)
+			}
+		})
 	}
 }
 
@@ -868,6 +993,72 @@ func insertPlannedAction(t *testing.T, store *Store, action PlannedAction) {
 	if err := store.InsertPlannedAction(context.Background(), action); err != nil {
 		t.Fatalf("InsertPlannedAction: %v", err)
 	}
+}
+
+func duplicateRunIDConstraintError(t *testing.T, store *Store, run Run) error {
+	t.Helper()
+
+	_, err := store.db.ExecContext(
+		context.Background(),
+		`INSERT INTO runs (
+			run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode,
+			started_at, artifact_path
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.RunID, run.PRKey, run.SHA, run.BaseSHA, run.Attempt+1, run.Profile, run.PostingIdentity,
+		run.PostMode.String(), encodeTime(run.StartedAt.Add(time.Minute)), "/tmp/duplicate-run-id",
+	)
+	if err == nil {
+		t.Fatal("duplicate run id insert error = nil, want constraint failure")
+	}
+	if !isSQLiteConstraintError(err) {
+		t.Fatalf("duplicate run id error = %v, want SQLite constraint", err)
+	}
+	return err
+}
+
+func duplicateResumeAttemptConstraintError(t *testing.T, store *Store, run Run) error {
+	t.Helper()
+
+	_, err := store.db.ExecContext(
+		context.Background(),
+		`INSERT INTO runs (
+			run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode,
+			started_at, artifact_path
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"manual-run", run.PRKey, run.SHA, run.BaseSHA, run.Attempt, run.Profile, run.PostingIdentity,
+		run.PostMode.String(), encodeTime(run.StartedAt.Add(time.Minute)), "/tmp/duplicate-resume",
+	)
+	if err == nil {
+		t.Fatal("duplicate resume attempt insert error = nil, want constraint failure")
+	}
+	if !isSQLiteConstraintError(err) {
+		t.Fatalf("duplicate resume attempt error = %v, want SQLite constraint", err)
+	}
+	return err
+}
+
+func missingSessionForeignKeyConstraintError(t *testing.T, store *Store) error {
+	t.Helper()
+
+	session := validSession("missing-run")
+	session.SessionRowID = "missing-run-session"
+	_, err := store.db.ExecContext(
+		context.Background(),
+		`INSERT INTO sessions (
+			session_row_id, run_id, provider_session_id, role, agent_id, adapter, model, effort,
+			started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create, cost_usd
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		session.SessionRowID, session.RunID, session.ProviderSessionID, session.Role.String(), session.AgentID,
+		session.Adapter, session.Model, session.Effort, encodeTime(session.StartedAt), encodeOptionalTime(session.CompletedAt),
+		session.DurationMS, session.TokensIn, session.TokensOut, session.CacheRead, session.CacheCreate, session.CostUSD,
+	)
+	if err == nil {
+		t.Fatal("missing run session insert error = nil, want constraint failure")
+	}
+	if !isSQLiteConstraintError(err) {
+		t.Fatalf("missing run session error = %v, want SQLite constraint", err)
+	}
+	return err
 }
 
 func validNamedSession() NamedSession {

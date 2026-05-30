@@ -15,7 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/open-cli-collective/codereview-cli/internal/dbmig"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
-	_ "modernc.org/sqlite" // register the SQLite database/sql driver.
+	sqlite "modernc.org/sqlite" // register the SQLite database/sql driver.
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
@@ -23,6 +24,7 @@ const (
 	SchemaVersion = 1
 	// DefaultBusyTimeout is the SQLite busy timeout configured at open.
 	DefaultBusyTimeout = 5 * time.Second
+	writeQueueSize     = 64
 )
 
 var (
@@ -348,7 +350,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 
 	store := &Store{
 		db:     db,
-		writes: make(chan writeRequest),
+		writes: make(chan writeRequest, writeQueueSize),
 		done:   make(chan struct{}),
 	}
 	go store.writer()
@@ -399,12 +401,18 @@ func (s *Store) write(ctx context.Context, fn func(context.Context, *sql.DB) err
 		return ctx.Err()
 	}
 
-	select {
-	case err := <-req.res:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
+	// Once dispatched, report the writer result rather than racing context
+	// cancellation against a write that may already have committed.
+	return <-req.res
+}
+
+func (s *Store) checkOpen() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosed
 	}
+	return nil
 }
 
 func configureSQLite(ctx context.Context, db *sql.DB) error {
@@ -476,17 +484,19 @@ func classifyAllocateConstraint(ctx context.Context, db *sql.DB, params Allocate
 	if !isSQLiteConstraintError(err) {
 		return false, err
 	}
-	if params.RunID == "" {
+	if params.RunID != "" {
+		exists, existsErr := runIDExists(ctx, db, params.RunID)
+		if existsErr != nil {
+			return false, existsErr
+		}
+		if exists {
+			return false, fmt.Errorf("%w: %s", ErrRunExists, params.RunID)
+		}
+	}
+	if isResumeAttemptConstraintError(err) {
 		return true, nil
 	}
-	exists, existsErr := runIDExists(ctx, db, params.RunID)
-	if existsErr != nil {
-		return false, existsErr
-	}
-	if exists {
-		return false, fmt.Errorf("%w: %s", ErrRunExists, params.RunID)
-	}
-	return true, nil
+	return false, err
 }
 
 func runIDExists(ctx context.Context, db *sql.DB, runID string) (bool, error) {
@@ -576,6 +586,9 @@ func (s *Store) GetPR(ctx context.Context, prKey string) (PR, error) {
 	if strings.TrimSpace(prKey) == "" {
 		return PR{}, invalidInput("pr_key", prKey)
 	}
+	if err := s.checkOpen(); err != nil {
+		return PR{}, err
+	}
 	var pr PR
 	var firstSeenAt string
 	err := s.db.QueryRowContext(ctx, "SELECT pr_key, pr_url, first_seen_at FROM prs WHERE pr_key = ?", prKey).
@@ -598,6 +611,9 @@ func (s *Store) GetPR(ctx context.Context, prKey string) (PR, error) {
 func (s *Store) GetRun(ctx context.Context, runID string) (Run, error) {
 	if strings.TrimSpace(runID) == "" {
 		return Run{}, invalidInput("run_id", runID)
+	}
+	if err := s.checkOpen(); err != nil {
+		return Run{}, err
 	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode,
@@ -662,6 +678,9 @@ func (s *Store) GetSession(ctx context.Context, sessionRowID string) (Session, e
 	if strings.TrimSpace(sessionRowID) == "" {
 		return Session{}, invalidInput("session_row_id", sessionRowID)
 	}
+	if err := s.checkOpen(); err != nil {
+		return Session{}, err
+	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT session_row_id, run_id, provider_session_id, role, agent_id, adapter, model, effort,
 	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create, cost_usd
@@ -700,6 +719,9 @@ INSERT INTO findings (
 func (s *Store) ListFindings(ctx context.Context, runID string) ([]Finding, error) {
 	if strings.TrimSpace(runID) == "" {
 		return nil, invalidInput("run_id", runID)
+	}
+	if err := s.checkOpen(); err != nil {
+		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT finding_id, run_id, session_row_id, severity, file_path, side, line, diff_position, anchoring, body
@@ -753,6 +775,9 @@ INSERT INTO planned_actions (
 func (s *Store) ListPlannedActions(ctx context.Context, runID string) ([]PlannedAction, error) {
 	if strings.TrimSpace(runID) == "" {
 		return nil, invalidInput("run_id", runID)
+	}
+	if err := s.checkOpen(); err != nil {
+		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,
@@ -809,6 +834,9 @@ ON CONFLICT(name) DO UPDATE SET
 func (s *Store) GetNamedSession(ctx context.Context, name string) (NamedSession, error) {
 	if strings.TrimSpace(name) == "" {
 		return NamedSession{}, invalidInput("name", name)
+	}
+	if err := s.checkOpen(); err != nil {
+		return NamedSession{}, err
 	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT name, profile, provider, adapter, model, host, provider_session_id, created_at, last_used_at
@@ -1211,7 +1239,28 @@ func invalidInput(field, value string) error {
 }
 
 func isSQLiteConstraintError(err error) bool {
-	return strings.Contains(err.Error(), "constraint")
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	return sqliteErr.Code()&0xff == sqlite3.SQLITE_CONSTRAINT
+}
+
+func isResumeAttemptConstraintError(err error) bool {
+	message := err.Error()
+	for _, column := range []string{
+		"runs.pr_key",
+		"runs.sha",
+		"runs.base_sha",
+		"runs.profile",
+		"runs.posting_identity",
+		"runs.attempt",
+	} {
+		if !strings.Contains(message, column) {
+			return false
+		}
+	}
+	return true
 }
 
 var schemaStatements = []string{
@@ -1266,7 +1315,7 @@ var schemaStatements = []string{
 	`CREATE TABLE findings (
   finding_id     TEXT PRIMARY KEY,
   run_id         TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-  session_row_id TEXT NOT NULL REFERENCES sessions(session_row_id),
+  session_row_id TEXT NOT NULL REFERENCES sessions(session_row_id) ON DELETE CASCADE,
   severity       TEXT NOT NULL,
   file_path      TEXT NOT NULL,
   side           TEXT,
@@ -1280,7 +1329,7 @@ var schemaStatements = []string{
   action_id      TEXT PRIMARY KEY,
   run_id         TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
   kind           TEXT NOT NULL,
-  finding_id     TEXT,
+  finding_id     TEXT REFERENCES findings(finding_id) ON DELETE CASCADE,
   thread_id      TEXT,
   planned_at     TEXT NOT NULL,
   payload_json   TEXT NOT NULL,
