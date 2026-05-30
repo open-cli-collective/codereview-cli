@@ -1,9 +1,11 @@
 package review
 
 import (
+	"bytes"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -185,13 +187,13 @@ func TestEnumParsingAndValidity(t *testing.T) {
 func TestAllEnumConstantsParseAndValidate(t *testing.T) {
 	tests := []struct {
 		name   string
-		values []string
+		values []interface{ String() string }
 		parse  func(string) (string, bool)
 		valid  func(string) bool
 	}{
 		{
 			name:   "review event",
-			values: []string{"approve", "comment", "request_changes"},
+			values: []interface{ String() string }{ReviewEventApprove, ReviewEventComment, ReviewEventRequestChanges},
 			parse: func(s string) (string, bool) {
 				got, err := ParseReviewEvent(s)
 				return got.String(), err == nil
@@ -200,7 +202,7 @@ func TestAllEnumConstantsParseAndValidate(t *testing.T) {
 		},
 		{
 			name:   "thread decision",
-			values: []string{"skip", "summarize_only", "summarize_and_resolve"},
+			values: []interface{ String() string }{ThreadDecisionSkip, ThreadDecisionSummarizeOnly, ThreadDecisionSummarizeAndResolve},
 			parse: func(s string) (string, bool) {
 				got, err := ParseThreadDecision(s)
 				return got.String(), err == nil
@@ -209,7 +211,7 @@ func TestAllEnumConstantsParseAndValidate(t *testing.T) {
 		},
 		{
 			name:   "anchor kind",
-			values: []string{"line", "file"},
+			values: []interface{ String() string }{AnchorKindLine, AnchorKindFile},
 			parse: func(s string) (string, bool) {
 				got, err := ParseAnchorKind(s)
 				return got.String(), err == nil
@@ -218,7 +220,7 @@ func TestAllEnumConstantsParseAndValidate(t *testing.T) {
 		},
 		{
 			name:   "diff side",
-			values: []string{"LEFT", "RIGHT"},
+			values: []interface{ String() string }{DiffSideLeft, DiffSideRight},
 			parse: func(s string) (string, bool) {
 				got, err := ParseDiffSide(s)
 				return got.String(), err == nil
@@ -227,7 +229,7 @@ func TestAllEnumConstantsParseAndValidate(t *testing.T) {
 		},
 		{
 			name:   "anchoring",
-			values: []string{"inline", "file-level-native", "file-level-fallback", "rollup-only"},
+			values: []interface{ String() string }{AnchoringInline, AnchoringFileLevelNative, AnchoringFileLevelFallback, AnchoringRollupOnly},
 			parse: func(s string) (string, bool) {
 				got, err := ParseAnchoring(s)
 				return got.String(), err == nil
@@ -238,7 +240,8 @@ func TestAllEnumConstantsParseAndValidate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, value := range tt.values {
+			for _, typedValue := range tt.values {
+				value := typedValue.String()
 				t.Run(value, func(t *testing.T) {
 					got, ok := tt.parse(value)
 					if !ok {
@@ -251,6 +254,70 @@ func TestAllEnumConstantsParseAndValidate(t *testing.T) {
 						t.Fatalf("Valid(%q) = false, want true", value)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestAnchorValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		anchor  Anchor
+		wantErr string
+	}{
+		{
+			name: "line",
+			anchor: Anchor{
+				Kind: AnchorKindLine,
+				Side: DiffSideRight,
+				Line: 42,
+			},
+		},
+		{
+			name:   "file",
+			anchor: Anchor{Kind: AnchorKindFile},
+		},
+		{
+			name:    "line missing side",
+			anchor:  Anchor{Kind: AnchorKindLine, Line: 42},
+			wantErr: "invalid diff side",
+		},
+		{
+			name:    "line missing line",
+			anchor:  Anchor{Kind: AnchorKindLine, Side: DiffSideRight},
+			wantErr: "positive line",
+		},
+		{
+			name:    "file with side",
+			anchor:  Anchor{Kind: AnchorKindFile, Side: DiffSideRight},
+			wantErr: "cannot set side",
+		},
+		{
+			name:    "file with line",
+			anchor:  Anchor{Kind: AnchorKindFile, Line: 42},
+			wantErr: "cannot set line",
+		},
+		{
+			name:    "bad kind",
+			anchor:  Anchor{Kind: AnchorKind("range")},
+			wantErr: "invalid anchor kind",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.anchor.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() error = nil, want substring %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %q, want substring %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -293,12 +360,73 @@ func TestFindingIDOptionalityAndDomainShapes(t *testing.T) {
 	}
 }
 
+func TestFindingValidate(t *testing.T) {
+	valid := Finding{
+		Severity: SeverityMajor,
+		FilePath: "internal/review/review.go",
+		Anchor: Anchor{
+			Kind: AnchorKindLine,
+			Side: DiffSideRight,
+			Line: 42,
+		},
+		Body:      "finding body",
+		Anchoring: AnchoringInline,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*Finding)
+		wantErr string
+	}{
+		{
+			name: "bad severity",
+			mutate: func(f *Finding) {
+				f.Severity = Severity("urgent")
+			},
+			wantErr: "invalid severity",
+		},
+		{
+			name: "bad anchor",
+			mutate: func(f *Finding) {
+				f.Anchor.Line = 0
+			},
+			wantErr: "positive line",
+		},
+		{
+			name: "bad anchoring",
+			mutate: func(f *Finding) {
+				f.Anchoring = Anchoring("comment")
+			},
+			wantErr: "invalid anchoring",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			finding := valid
+			tt.mutate(&finding)
+			err := finding.Validate()
+			if err == nil {
+				t.Fatalf("Validate() error = nil, want substring %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestProductionImportsAreStdlibOnly(t *testing.T) {
 	_, testFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
 	dir := filepath.Dir(testFile)
+	repoRoot, modulePath := repoRootAndModule(t, dir)
+	stdlib := stdlibImports(t, repoRoot)
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(dir, func(file string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -319,8 +447,11 @@ func TestProductionImportsAreStdlibOnly(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if strings.Contains(path, ".") {
-				t.Fatalf("production import %q is not stdlib-only", path)
+			if strings.HasPrefix(path, modulePath+"/") || path == modulePath {
+				t.Fatalf("production import %q is internal to this module", path)
+			}
+			if _, ok := stdlib[path]; !ok {
+				t.Fatalf("production import %q is not in the standard library", path)
 			}
 		}
 		return nil
@@ -328,4 +459,34 @@ func TestProductionImportsAreStdlibOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WalkDir(%s): %v", dir, err)
 	}
+}
+
+func repoRootAndModule(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-m", "-f", "{{.Dir}} {{.Path}}")
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list module: %v", err)
+	}
+	parts := strings.Fields(string(output))
+	if len(parts) != 2 {
+		t.Fatalf("go list module output = %q, want dir and path", output)
+	}
+	return parts[0], parts[1]
+}
+
+func stdlibImports(t *testing.T, repoRoot string) map[string]struct{} {
+	t.Helper()
+	cmd := exec.Command("go", "list", "std")
+	cmd.Dir = repoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list std: %v", err)
+	}
+	imports := make(map[string]struct{})
+	for _, path := range bytes.Fields(output) {
+		imports[string(path)] = struct{}{}
+	}
+	return imports
 }

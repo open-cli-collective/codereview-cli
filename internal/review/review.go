@@ -260,6 +260,29 @@ type Anchor struct {
 	Line int        `json:"line,omitempty"`
 }
 
+// Validate checks domain-local anchor field consistency.
+func (a Anchor) Validate() error {
+	switch a.Kind {
+	case AnchorKindLine:
+		if !a.Side.Valid() {
+			return invalidValue("diff side", a.Side.String())
+		}
+		if a.Line <= 0 {
+			return fmt.Errorf("line anchor requires a positive line")
+		}
+	case AnchorKindFile:
+		if a.Side != "" {
+			return fmt.Errorf("file anchor cannot set side")
+		}
+		if a.Line != 0 {
+			return fmt.Errorf("file anchor cannot set line")
+		}
+	default:
+		return invalidValue("anchor kind", a.Kind.String())
+	}
+	return nil
+}
+
 // Finding is a provider-neutral review finding.
 type Finding struct {
 	ID        FindingID `json:"finding_id,omitempty"`
@@ -268,6 +291,20 @@ type Finding struct {
 	Anchor    Anchor    `json:"anchor"`
 	Body      string    `json:"body"`
 	Anchoring Anchoring `json:"anchoring,omitempty"`
+}
+
+// Validate checks domain-local finding field consistency.
+func (f Finding) Validate() error {
+	if !f.Severity.Valid() {
+		return invalidValue("severity", f.Severity.String())
+	}
+	if err := f.Anchor.Validate(); err != nil {
+		return err
+	}
+	if f.Anchoring != "" && !f.Anchoring.Valid() {
+		return invalidValue("anchoring", f.Anchoring.String())
+	}
+	return nil
 }
 
 // ThreadAction is the orchestrator's chosen action for an existing PR thread.
