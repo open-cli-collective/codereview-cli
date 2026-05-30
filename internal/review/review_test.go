@@ -3,6 +3,7 @@ package review
 import (
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -181,6 +182,80 @@ func TestEnumParsingAndValidity(t *testing.T) {
 	}
 }
 
+func TestAllEnumConstantsParseAndValidate(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []string
+		parse  func(string) (string, bool)
+		valid  func(string) bool
+	}{
+		{
+			name:   "review event",
+			values: []string{"approve", "comment", "request_changes"},
+			parse: func(s string) (string, bool) {
+				got, err := ParseReviewEvent(s)
+				return got.String(), err == nil
+			},
+			valid: func(s string) bool { return ReviewEvent(s).Valid() },
+		},
+		{
+			name:   "thread decision",
+			values: []string{"skip", "summarize_only", "summarize_and_resolve"},
+			parse: func(s string) (string, bool) {
+				got, err := ParseThreadDecision(s)
+				return got.String(), err == nil
+			},
+			valid: func(s string) bool { return ThreadDecision(s).Valid() },
+		},
+		{
+			name:   "anchor kind",
+			values: []string{"line", "file"},
+			parse: func(s string) (string, bool) {
+				got, err := ParseAnchorKind(s)
+				return got.String(), err == nil
+			},
+			valid: func(s string) bool { return AnchorKind(s).Valid() },
+		},
+		{
+			name:   "diff side",
+			values: []string{"LEFT", "RIGHT"},
+			parse: func(s string) (string, bool) {
+				got, err := ParseDiffSide(s)
+				return got.String(), err == nil
+			},
+			valid: func(s string) bool { return DiffSide(s).Valid() },
+		},
+		{
+			name:   "anchoring",
+			values: []string{"inline", "file-level-native", "file-level-fallback", "rollup-only"},
+			parse: func(s string) (string, bool) {
+				got, err := ParseAnchoring(s)
+				return got.String(), err == nil
+			},
+			valid: func(s string) bool { return Anchoring(s).Valid() },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, value := range tt.values {
+				t.Run(value, func(t *testing.T) {
+					got, ok := tt.parse(value)
+					if !ok {
+						t.Fatalf("parse(%q) failed, want success", value)
+					}
+					if got != value {
+						t.Fatalf("parse(%q) = %q, want %q", value, got, value)
+					}
+					if !tt.valid(value) {
+						t.Fatalf("Valid(%q) = false, want true", value)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestFindingIDOptionalityAndDomainShapes(t *testing.T) {
 	raw := Finding{
 		Severity: SeverityMajor,
@@ -224,28 +299,33 @@ func TestProductionImportsAreStdlibOnly(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	dir := filepath.Dir(testFile)
-	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
-	if err != nil {
-		t.Fatalf("Glob: %v", err)
-	}
-
 	fset := token.NewFileSet()
-	for _, file := range files {
+	err := filepath.WalkDir(dir, func(file string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(file) != ".go" {
+			return nil
+		}
 		if strings.HasSuffix(file, "_test.go") {
-			continue
+			return nil
 		}
 		parsed, err := parser.ParseFile(fset, file, nil, parser.ImportsOnly)
 		if err != nil {
-			t.Fatalf("ParseFile(%s): %v", file, err)
+			return err
 		}
 		for _, imported := range parsed.Imports {
 			path, err := strconv.Unquote(imported.Path.Value)
 			if err != nil {
-				t.Fatalf("Unquote import path %s: %v", imported.Path.Value, err)
+				return err
 			}
 			if strings.Contains(path, ".") {
 				t.Fatalf("production import %q is not stdlib-only", path)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(%s): %v", dir, err)
 	}
 }
