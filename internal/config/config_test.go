@@ -231,6 +231,27 @@ func TestValidateRejectsMissingDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestKeyringBackendRoundTripAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := validFile()
+	cfg.Keyring.Backend = "memory"
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Keyring.Backend != "memory" {
+		t.Fatalf("keyring.backend = %q, want memory", got.Keyring.Backend)
+	}
+
+	cfg.Keyring.Backend = "bogus"
+	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Validate invalid backend error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestCredentialRefsRejectReservedGitAuthModes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -312,6 +333,21 @@ func TestValidateRejectsInvalidCredentialRefs(t *testing.T) {
 		{name: "empty reviewer credential ref", mutate: func(cfg *File) {
 			profile := cfg.Profiles["work"]
 			profile.ReviewerCredentials.CredentialRef = ""
+			cfg.Profiles["work"] = profile
+		}},
+		{name: "git ref invalid chars", mutate: func(cfg *File) {
+			profile := cfg.Profiles["home"]
+			profile.Git.CredentialRef = "codereview/bad.profile"
+			cfg.Profiles["home"] = profile
+		}},
+		{name: "git ref wrong service", mutate: func(cfg *File) {
+			profile := cfg.Profiles["home"]
+			profile.Git.CredentialRef = "other/home"
+			cfg.Profiles["home"] = profile
+		}},
+		{name: "llm ref invalid chars", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.LLM.CredentialRef = "codereview/work.llm"
 			cfg.Profiles["work"] = profile
 		}},
 	}

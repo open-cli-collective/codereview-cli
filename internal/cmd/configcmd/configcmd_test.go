@@ -9,11 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -75,6 +77,15 @@ func TestConfigShowJSON(t *testing.T) {
 	}
 	if got.LLMCredential.Ref != "codereview/work-llm" {
 		t.Fatalf("llm credential = %#v, want work LLM ref", got.LLMCredential)
+	}
+	if got.Backend != "memory" || got.BackendSource != "config" {
+		t.Fatalf("backend = (%q,%q), want (memory,config)", got.Backend, got.BackendSource)
+	}
+	if got.CredentialRef != "codereview/work" {
+		t.Fatalf("credential_ref = %q, want codereview/work", got.CredentialRef)
+	}
+	if len(got.CredentialRefs) != 3 {
+		t.Fatalf("credential_refs len = %d, want 3", len(got.CredentialRefs))
 	}
 }
 
@@ -158,6 +169,46 @@ func TestConfigShowReservedAuthModeExitCode(t *testing.T) {
 	}
 }
 
+func TestConfigClearAllDeletesEveryDeclaredRef(t *testing.T) {
+	path := saveTestConfig(t, fileBackendConfig(t))
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
+	seedFileBackend(t, "work-llm", map[string]string{credentials.LLMAPIKeyKey: "llm-token"})
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "clear", "--all", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigClear
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Backend != "file" || got.BackendSource != "config" {
+		t.Fatalf("backend = (%q,%q), want (file,config)", got.Backend, got.BackendSource)
+	}
+	if len(got.Cleared) != 4 {
+		t.Fatalf("cleared = %#v, want 4 refs including empty reviewer ref", got.Cleared)
+	}
+	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
+	assertFileBackendMissing(t, "work", credentials.GitTokenKey)
+	assertFileBackendMissing(t, "work-llm", credentials.LLMAPIKeyKey)
+}
+
+func TestConfigClearProfileAllRejectedBeforeDelete(t *testing.T) {
+	path := saveTestConfig(t, fileBackendConfig(t))
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+	assertFileBackendPresent(t, "home", credentials.GitTokenKey)
+}
+
 func newTestCommand(path string) (*cobra.Command, *bytes.Buffer) {
 	var out bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
@@ -168,6 +219,61 @@ func newTestCommand(path string) (*cobra.Command, *bytes.Buffer) {
 	})
 	Register(cmd, opts)
 	return cmd, &out
+}
+
+func fileBackendConfig(t *testing.T) config.File {
+	t.Helper()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
+	cfg := testConfig()
+	cfg.Keyring.Backend = "file"
+	return cfg
+}
+
+func seedFileBackend(t *testing.T, profile string, values map[string]string) {
+	t.Helper()
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendFile,
+	})
+	if err != nil {
+		t.Fatalf("Open file backend: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.SetBundle(profile, values, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle(%s): %v", profile, err)
+	}
+}
+
+func assertFileBackendPresent(t *testing.T, profile, key string) {
+	t.Helper()
+	if !fileBackendExists(t, profile, key) {
+		t.Fatalf("file backend %s/%s missing, want present", profile, key)
+	}
+}
+
+func assertFileBackendMissing(t *testing.T, profile, key string) {
+	t.Helper()
+	if fileBackendExists(t, profile, key) {
+		t.Fatalf("file backend %s/%s present, want missing", profile, key)
+	}
+}
+
+func fileBackendExists(t *testing.T, profile, key string) bool {
+	t.Helper()
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendFile,
+	})
+	if err != nil {
+		t.Fatalf("Open file backend: %v", err)
+	}
+	defer store.Close()
+	present, err := store.Exists(profile, key)
+	if err != nil {
+		t.Fatalf("Exists(%s,%s): %v", profile, key, err)
+	}
+	return present
 }
 
 func saveTestConfig(t *testing.T, cfg config.File) string {
@@ -192,6 +298,7 @@ func writeRawConfig(t *testing.T, path, body string) {
 func testConfig() config.File {
 	return config.File{
 		DefaultProfile: "home",
+		Keyring:        config.KeyringConfig{Backend: "memory"},
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{

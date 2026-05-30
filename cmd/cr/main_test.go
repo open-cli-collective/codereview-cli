@@ -74,9 +74,83 @@ func TestRunConfigShowJSON(t *testing.T) {
 	}
 }
 
+func TestRunCredentialCommandsDoNotLeakSecrets(t *testing.T) {
+	statedirtest.Hermetic(t)
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
+	const (
+		firstSecret  = "distinctive-secret-one"
+		secondSecret = "distinctive-secret-two"
+	)
+	t.Setenv("CR_TOKEN_ONE", firstSecret)
+	t.Setenv("CR_TOKEN_TWO", secondSecret)
+
+	runs := []struct {
+		name     string
+		args     []string
+		stdin    string
+		wantCode int
+	}{
+		{
+			name: "init",
+			args: []string{
+				"--backend", "file",
+				"init",
+				"--non-interactive",
+				"--git-token-from-env", "CR_TOKEN_ONE",
+			},
+		},
+		{
+			name:     "config show",
+			args:     []string{"--backend", "file", "config", "show", "--json"},
+			wantCode: 0,
+		},
+		{
+			name: "existing credential failure",
+			args: []string{
+				"--backend", "file",
+				"set-credential",
+				"--ref", "codereview/default",
+				"--key", "git_token",
+				"--from-env", "CR_TOKEN_TWO",
+			},
+			wantCode: 2,
+		},
+		{
+			name: "set overwrite",
+			args: []string{
+				"--backend", "file",
+				"set-credential",
+				"--ref", "codereview/default",
+				"--key", "git_token",
+				"--from-env", "CR_TOKEN_TWO",
+				"--overwrite",
+			},
+			wantCode: 0,
+		},
+		{
+			name:     "config clear",
+			args:     []string{"--backend", "file", "config", "clear", "--json"},
+			wantCode: 0,
+		},
+	}
+
+	for _, runCase := range runs {
+		t.Run(runCase.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(runCase.args, strings.NewReader(runCase.stdin), &stdout, &stderr)
+			if code != runCase.wantCode {
+				t.Fatalf("run exit code = %d, want %d; stderr=%q", code, runCase.wantCode, stderr.String())
+			}
+			assertNoSecretLeak(t, stdout.String(), firstSecret, secondSecret)
+			assertNoSecretLeak(t, stderr.String(), firstSecret, secondSecret)
+		})
+	}
+}
+
 func mainTestConfig() config.File {
 	return config.File{
 		DefaultProfile: "home",
+		Keyring:        config.KeyringConfig{Backend: "memory"},
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{
@@ -92,5 +166,14 @@ func mainTestConfig() config.File {
 				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
 			},
 		},
+	}
+}
+
+func assertNoSecretLeak(t *testing.T, output string, secrets ...string) {
+	t.Helper()
+	for _, secret := range secrets {
+		if strings.Contains(output, secret) {
+			t.Fatalf("output leaked secret %q: %q", secret, output)
+		}
 	}
 }

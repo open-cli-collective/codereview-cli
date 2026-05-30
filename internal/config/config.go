@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedir"
 	"gopkg.in/yaml.v3"
 )
@@ -36,8 +37,14 @@ var (
 // File is the root config.yml schema.
 type File struct {
 	DefaultProfile string             `yaml:"default_profile" json:"default_profile"`
+	Keyring        KeyringConfig      `yaml:"keyring,omitempty" json:"keyring"`
 	Profiles       map[string]Profile `yaml:"profiles" json:"profiles"`
 	Data           DataConfig         `yaml:"data,omitempty" json:"data"`
+}
+
+// KeyringConfig carries non-secret keyring backend preferences.
+type KeyringConfig struct {
+	Backend string `yaml:"backend,omitempty" json:"backend,omitempty"`
 }
 
 // Profile is one named review profile.
@@ -353,6 +360,9 @@ func Validate(cfg File) error {
 	if _, ok := cfg.Profiles[cfg.DefaultProfile]; !ok {
 		return fmt.Errorf("%w: %s", ErrProfileNotFound, cfg.DefaultProfile)
 	}
+	if err := validateKeyring(cfg.Keyring); err != nil {
+		return err
+	}
 	if err := validateRetention(cfg.Data.Retention.normalized()); err != nil {
 		return err
 	}
@@ -423,12 +433,18 @@ func validateProfile(name string, profile Profile) error {
 	if strings.TrimSpace(profile.Git.CredentialRef) == "" {
 		return invalid("profiles.%s.git.credential_ref is required", name)
 	}
+	if err := validateCredentialRef(fmt.Sprintf("profiles.%s.git.credential_ref", name), profile.Git.CredentialRef); err != nil {
+		return err
+	}
 	if profile.ReviewerCredentials != nil {
 		if !profile.ReviewerCredentials.AuthMode.Valid() {
 			return invalid("profiles.%s.reviewer_credentials.auth_mode %q is invalid", name, profile.ReviewerCredentials.AuthMode)
 		}
 		if strings.TrimSpace(profile.ReviewerCredentials.CredentialRef) == "" {
 			return invalid("profiles.%s.reviewer_credentials.credential_ref is required", name)
+		}
+		if err := validateCredentialRef(fmt.Sprintf("profiles.%s.reviewer_credentials.credential_ref", name), profile.ReviewerCredentials.CredentialRef); err != nil {
+			return err
 		}
 	}
 	if !profile.LLM.Provider.Valid() {
@@ -446,6 +462,11 @@ func validateProfile(name string, profile Profile) error {
 	if profile.LLM.Auth == LLMAuthSubscription && strings.TrimSpace(profile.LLM.CredentialRef) != "" {
 		return invalid("profiles.%s.llm.credential_ref must be empty for subscription auth", name)
 	}
+	if profile.LLM.Auth == LLMAuthAPIKey {
+		if err := validateCredentialRef(fmt.Sprintf("profiles.%s.llm.credential_ref", name), profile.LLM.CredentialRef); err != nil {
+			return err
+		}
+	}
 	for index, source := range profile.AgentSources {
 		if strings.TrimSpace(source) == "" {
 			return invalid("profiles.%s.agent_sources[%d] is required", name, index)
@@ -461,6 +482,28 @@ func validateProfile(name string, profile Profile) error {
 		if _, err := time.ParseDuration(profile.ReviewPolicy.ResolveAfter); err != nil {
 			return invalid("profiles.%s.review_policy.resolve_after %q is invalid: %v", name, profile.ReviewPolicy.ResolveAfter, err)
 		}
+	}
+	return nil
+}
+
+func validateKeyring(keyring KeyringConfig) error {
+	backend := strings.TrimSpace(keyring.Backend)
+	if backend == "" {
+		return nil
+	}
+	if _, err := credstore.ParseBackend(backend); err != nil {
+		return fmt.Errorf("%w: keyring.backend %q is invalid: %w", ErrInvalid, backend, err)
+	}
+	return nil
+}
+
+func validateCredentialRef(field, ref string) error {
+	service, _, err := credstore.ParseRef(ref)
+	if err != nil {
+		return fmt.Errorf("%w: %s is invalid: %w", ErrInvalid, field, err)
+	}
+	if service != serviceName {
+		return invalid("%s must use service %q", field, serviceName)
 	}
 	return nil
 }

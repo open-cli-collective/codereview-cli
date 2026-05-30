@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
@@ -18,6 +19,7 @@ type RegisterFunc func(rootCmd *cobra.Command, opts *Options)
 // Options carries root-level command dependencies and persistent options.
 type Options struct {
 	Profile    string
+	Backend    string
 	ConfigPath string
 	Stdin      io.Reader
 	Stdout     io.Writer
@@ -69,6 +71,7 @@ func NewCommandWithOptions(opts *Options) (*cobra.Command, *Options) {
 	})
 	cmd.Flags().BoolVar(&showVersion, "version", false, "Print the build version")
 	cmd.PersistentFlags().StringVar(&opts.Profile, "profile", "", "Profile name")
+	cmd.PersistentFlags().StringVar(&opts.Backend, credstore.BackendFlagName, "", credstore.BackendFlagUsage())
 	cmd.AddCommand(newVersionCommand(opts))
 
 	return cmd, opts

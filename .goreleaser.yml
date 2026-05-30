@@ -10,18 +10,44 @@ before:
     - make tidy
     - go test ./...
 
-# Single pure-Go build: codereview-cli has no credstore/Keychain code yet, so no
-# CGO is needed (CGO_ENABLED=0 everywhere, static binaries). The CGO-darwin split
-# build + keychain_probe land when the real CLI adds the credential store.
 builds:
-  - id: cr
+  # Darwin builds need CGO so cli-common/credstore can link the Keychain
+  # backend. Linux and Windows stay CGO-off/static.
+  - id: cr-darwin
+    main: ./cmd/cr
+    binary: cr
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    overrides:
+      - goos: darwin
+        goarch: amd64
+        goamd64: v1
+        env:
+          - CGO_ENABLED=1
+          - "CC=xcrun clang -arch x86_64"
+      - goos: darwin
+        goarch: arm64
+        goarm64: v8.0
+        env:
+          - CGO_ENABLED=1
+          - "CC=xcrun clang -arch arm64"
+    ldflags:
+      - -s -w
+      - -X github.com/open-cli-collective/codereview-cli/internal/version.Version={{.Version}}
+      - -X github.com/open-cli-collective/codereview-cli/internal/version.Commit={{.Commit}}
+      - -X github.com/open-cli-collective/codereview-cli/internal/version.Date={{.Date}}
+  - id: cr-unix-win
     main: ./cmd/cr
     binary: cr
     env:
       - CGO_ENABLED=0
     goos:
       - linux
-      - darwin
       - windows
     goarch:
       - amd64
