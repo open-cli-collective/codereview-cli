@@ -1,4 +1,4 @@
-.PHONY: all build test test-cover lint fmt tidy check install snapshot release clean
+.PHONY: all build test test-cover lint fmt tidy deps check install snapshot release clean
 
 all: check
 
@@ -27,7 +27,11 @@ tidy:
 		fi; \
 	fi
 
-check: tidy lint test build
+deps:
+	go mod download
+	go mod verify
+
+check: tidy fmt lint test build
 
 install:
 	go install ./cmd/cr

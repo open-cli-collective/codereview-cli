@@ -4,6 +4,8 @@
 // `go build`/`go run` development builds.
 package version
 
+import "fmt"
+
 var (
 	// Version is the release version (e.g. "0.1.42"); "dev" for local builds.
 	Version = "dev"
@@ -12,3 +14,8 @@ var (
 	// Date is the build timestamp.
 	Date = "unknown"
 )
+
+// Info returns the formatted version string shown by `cr version`.
+func Info() string {
+	return fmt.Sprintf("%s (%s, %s)", Version, Commit, Date)
+}
