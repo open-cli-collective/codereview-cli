@@ -1,8 +1,7 @@
 // Command cr is the Open CLI Collective code-review CLI.
 //
-// This is currently a scaffold entry point: it reports its build version so the
-// release machinery (goreleaser, the reusable release workflow) has a real
-// binary to build and ship. The actual review command surface lands separately.
+// This entry point stays thin: command construction and exit-code mapping live
+// under internal/cmd so tests can exercise the same tree main uses.
 package main
 
 import (
@@ -10,7 +9,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/open-cli-collective/codereview-cli/internal/version"
+	"github.com/spf13/cobra"
+
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 )
 
 func main() {
@@ -21,33 +23,20 @@ func main() {
 // takes its args and writers as parameters (rather than reading os.Args /
 // os.Stdout directly) so it is testable without spawning a process.
 func run(args []string, stdout, stderr io.Writer) int {
-	var arg string
-	if len(args) > 0 {
-		arg = args[0]
+	cmd, opts := buildRootCommand()
+	opts.Stdout = stdout
+	opts.Stderr = stderr
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+
+	err := root.Execute(cmd, args)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.FromError(err)
 	}
-	switch arg {
-	// no "-v" alias: it conventionally means --verbose, so reserve it for the
-	// real command surface rather than binding it to version now.
-	case "--version", "version":
-		fmt.Fprintf(stdout, "cr %s (%s, %s)\n", version.Version, version.Commit, version.Date)
-		return 0
-	case "", "--help", "-h", "help":
-		usage(stdout)
-		return 0
-	default:
-		fmt.Fprintf(stderr, "cr: unknown command %q\n\n", arg)
-		usage(stderr)
-		return 2
-	}
+	return exitcode.Success
 }
 
-func usage(w io.Writer) {
-	fmt.Fprint(w, `cr - Open CLI Collective code-review CLI (scaffold)
-
-Usage:
-  cr version    Print the build version
-  cr help       Show this help
-
-The review command surface is not yet implemented.
-`)
+func buildRootCommand() (*cobra.Command, *root.Options) {
+	return root.NewCommand()
 }

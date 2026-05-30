@@ -1,10 +1,10 @@
 # codereview-cli
 
-Repository scaffold for the future Open CLI Collective code review CLI.
+Open CLI Collective code review CLI.
 
-The actual review program is still pending. This repo exists to hold the
-module, CI, repo policy, and packaging conventions before the command
-surface lands.
+The review pipeline is still pending. The current binary provides the Cobra
+root, version command, and command wiring seam that future review commands will
+attach to.
 
 ## Current shape
 
@@ -33,6 +33,6 @@ make build
 make snapshot   # local goreleaser build (no publish)
 ```
 
-The tree currently holds a scaffold `cr` binary (`cmd/cr`) that reports its
-build version, plus the CI and release machinery, ahead of the real command
+The tree currently holds a scaffold `cr` binary (`cmd/cr`) with a Cobra root and
+version command, plus the CI and release machinery, ahead of the review command
 surface.

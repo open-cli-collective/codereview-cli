@@ -5,14 +5,15 @@ Collective standards and automation remain canonical in their own repositories.
 
 ## Project Overview
 
-codereview-cli is the future Open CLI Collective code-review CLI, intended to
-ship the `cr` binary. The repository is currently a scaffold: it holds the Go
-module, CI wiring, repo policy, and packaging placeholders before the command
-surface lands.
+codereview-cli is the Open CLI Collective code-review CLI, intended to ship the
+`cr` binary. The repository currently has the root command scaffold, Go module,
+CI wiring, repo policy, and packaging placeholders before the review pipeline
+lands.
 
-The current Go code is a small scaffold binary in `cmd/cr` plus shared version
+The current Go code is a Cobra root in `internal/cmd/root`, a thin `cmd/cr`
+entrypoint, shared exit-code mapping in `internal/cmd/exitcode`, and version
 plumbing in `internal/version`. It exists so the tree compiles and the checks
-stay green until the real CLI is added.
+stay green while the real review commands are added.
 
 ## Quick Commands
 
@@ -21,7 +22,8 @@ make build   # compile the binary
 make test    # go test ./...
 make lint    # golangci-lint run
 make tidy    # go mod tidy and verify go.mod is unchanged
-make check   # tidy + lint + test + build
+make deps    # download and verify Go modules
+make check   # tidy + fmt + lint + test + build
 make clean   # remove build artifacts
 ```
 
@@ -36,7 +38,11 @@ make clean   # remove build artifacts
   `.github/workflows/auto-release.yml`, and `.github/workflows/release.yml`
 - Packaging identity: `packaging/identity.yml`
 - Current distribution status: GitHub release archives only; package channels
-  can be added when the real CLI needs them.
+  can be added when the review pipeline needs them.
+- Application package layering follows the active codereview implementation
+  plan: command glue in `internal/cmd/*`, presentation in `internal/output` or
+  `internal/view`, state/config adapters in `internal/config` and
+  `internal/statepaths`, provider/LLM adapters in their owning packages.
 
 ## Shared Standards
 

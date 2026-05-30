@@ -19,7 +19,10 @@ func TestRun(t *testing.T) {
 		{name: "version flag", args: []string{"--version"}, wantCode: 0, wantStdout: "cr " + version.Version},
 		{name: "version subcommand", args: []string{"version"}, wantCode: 0, wantStdout: "cr " + version.Version},
 		{name: "no args shows usage", args: nil, wantCode: 0, wantStdout: "Usage:"},
-		{name: "dash-v is not version", args: []string{"-v"}, wantCode: 2, wantStderr: "unknown command"},
+		{name: "profile flag accepted", args: []string{"--profile", "work", "version"}, wantCode: 0, wantStdout: "cr " + version.Version},
+		{name: "json deferred", args: []string{"--json"}, wantCode: 2, wantStderr: "unknown flag"},
+		{name: "verbose deferred", args: []string{"--verbose"}, wantCode: 2, wantStderr: "unknown flag"},
+		{name: "dash-v is not version", args: []string{"-v"}, wantCode: 2, wantStderr: "unknown shorthand flag"},
 		{name: "help flag shows usage", args: []string{"--help"}, wantCode: 0, wantStdout: "Usage:"},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: 2, wantStderr: "unknown command"},
 	}
@@ -36,6 +39,9 @@ func TestRun(t *testing.T) {
 			}
 			if tt.wantStderr != "" && !strings.Contains(stderr.String(), tt.wantStderr) {
 				t.Errorf("run(%q) stderr = %q, want substring %q", tt.args, stderr.String(), tt.wantStderr)
+			}
+			if tt.wantCode != 0 && stdout.String() != "" {
+				t.Errorf("run(%q) stdout = %q, want empty on failure", tt.args, stdout.String())
 			}
 		})
 	}
