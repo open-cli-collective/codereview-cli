@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Claude entrypoint for the codereview-cli repository.
+Codex entrypoint for the codereview-cli repository.
 
 ## Start Here
 
