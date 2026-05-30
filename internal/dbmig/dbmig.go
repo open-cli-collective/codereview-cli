@@ -1,4 +1,8 @@
 // Package dbmig applies forward-only SQLite schema migrations.
+//
+// Apply works with database/sql so callers own SQLite connection setup. The cr
+// ledger startup path should still enforce its own connection contract,
+// including single-writer behavior or db.SetMaxOpenConns(1).
 package dbmig
 
 import (
@@ -114,6 +118,8 @@ func ensureMeta(ctx context.Context, db *sql.DB) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// CREATE handles fresh databases; validation immediately after catches an
+	// existing malformed table because IF NOT EXISTS does not change it.
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS meta (
 schema_version INTEGER NOT NULL,
 created_at     TEXT NOT NULL
@@ -122,6 +128,9 @@ created_at     TEXT NOT NULL
 	}
 	if err := validateMetaShape(ctx, tx); err != nil {
 		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS meta_single_row ON meta ((1))"); err != nil {
+		return 0, fmt.Errorf("%w: enforcing single-row meta invariant: %w", ErrInvalidMeta, err)
 	}
 
 	var count int
@@ -243,7 +252,7 @@ func applyMigration(ctx context.Context, db *sql.DB, migration Migration) error 
 		return fmt.Errorf("dbmig: apply migration %d %q: %w", migration.Version, migration.Name, err)
 	}
 
-	result, err := tx.ExecContext(ctx, "UPDATE meta SET schema_version = ?", migration.Version)
+	result, err := tx.ExecContext(ctx, "UPDATE meta SET schema_version = ? WHERE rowid = (SELECT MIN(rowid) FROM meta)", migration.Version)
 	if err != nil {
 		return fmt.Errorf("%w: updating schema_version for migration %d: %w", ErrInvalidMeta, migration.Version, err)
 	}

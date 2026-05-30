@@ -45,6 +45,7 @@ func TestApplyFreshDBAppliesMigrationsAndRecordsVersion(t *testing.T) {
 	if !tableExists(t, db, "reviews") {
 		t.Fatal("reviews table does not exist")
 	}
+	assertMetaSingleRowConstraint(t, db)
 
 	createdAt := metaCreatedAt(t, db)
 	if _, err := time.Parse(time.RFC3339Nano, createdAt); err != nil {
@@ -432,6 +433,23 @@ func insertMeta(t *testing.T, db *sql.DB, version int) {
 	t.Helper()
 
 	execSQL(t, db, "INSERT INTO meta (schema_version, created_at) VALUES (?, ?)", version, time.Now().UTC().Format(time.RFC3339Nano))
+}
+
+func assertMetaSingleRowConstraint(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	_, err := db.ExecContext(
+		context.Background(),
+		"INSERT INTO meta (schema_version, created_at) VALUES (?, ?)",
+		0,
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	if err == nil {
+		t.Fatal("second meta row insert error = nil, want single-row constraint failure")
+	}
+	if version := currentSchemaVersion(t, db); version != 2 {
+		t.Fatalf("schema_version = %d after rejected second row, want 2", version)
+	}
 }
 
 func currentSchemaVersion(t *testing.T, db *sql.DB) int {
