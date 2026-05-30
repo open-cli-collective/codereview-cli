@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/open-cli-collective/cli-common/statedirtest"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/version"
 )
 
@@ -49,5 +51,46 @@ func TestRun(t *testing.T) {
 				t.Errorf("run(%q) stdout = %q, want empty on failure", tt.args, stdout.String())
 			}
 		})
+	}
+}
+
+func TestRunConfigShowJSON(t *testing.T) {
+	statedirtest.Hermetic(t)
+	path, err := config.Path()
+	if err != nil {
+		t.Fatalf("config Path: %v", err)
+	}
+	if err := config.Save(path, mainTestConfig()); err != nil {
+		t.Fatalf("config Save: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"config", "show", "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"active_profile": "home"`) {
+		t.Fatalf("stdout = %q, want active profile JSON", stdout.String())
+	}
+}
+
+func mainTestConfig() config.File {
+	return config.File{
+		DefaultProfile: "home",
+		Profiles: map[string]config.Profile{
+			"home": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/home",
+				},
+				LLM: config.LLMConfig{
+					Provider: config.LLMProviderAnthropic,
+					Auth:     config.LLMAuthSubscription,
+					Adapter:  config.LLMAdapterClaudeCLI,
+				},
+				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+			},
+		},
 	}
 }

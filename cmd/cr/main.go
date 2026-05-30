@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/configcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 )
@@ -34,9 +35,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func buildRootCommand(stdin io.Reader, stdout, stderr io.Writer) (*cobra.Command, *root.Options) {
-	return root.NewCommandWithOptions(&root.Options{
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		Stdin:  stdin,
 		Stdout: stdout,
 		Stderr: stderr,
 	})
+	root.RegisterAll(cmd, opts, configcmd.Register)
+	return cmd, opts
 }

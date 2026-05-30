@@ -17,10 +17,11 @@ type RegisterFunc func(rootCmd *cobra.Command, opts *Options)
 
 // Options carries root-level command dependencies and persistent options.
 type Options struct {
-	Profile string
-	Stdin   io.Reader
-	Stdout  io.Writer
-	Stderr  io.Writer
+	Profile    string
+	ConfigPath string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
 }
 
 // DefaultOptions returns root options wired to the process stdio streams.
