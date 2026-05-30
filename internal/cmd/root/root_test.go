@@ -21,6 +21,7 @@ func TestNewCommandHelpAndVersion(t *testing.T) {
 		{name: "no args", args: nil, wantOutput: "Usage:"},
 		{name: "help flag", args: []string{"--help"}, wantOutput: "Usage:"},
 		{name: "help command", args: []string{"help"}, wantOutput: "Usage:"},
+		{name: "help command topic", args: []string{"help", "version"}, wantOutput: "Print the build version"},
 		{name: "version flag", args: []string{"--version"}, wantOutput: "cr " + version.Info()},
 		{name: "version command", args: []string{"version"}, wantOutput: "cr " + version.Info()},
 	}
@@ -128,6 +129,7 @@ func TestRegisterAll(t *testing.T) {
 func TestExecuteMapsCobraUsageErrors(t *testing.T) {
 	tests := [][]string{
 		{"bogus"},
+		{"help", "bogus"},
 		{"version", "extra"},
 	}
 

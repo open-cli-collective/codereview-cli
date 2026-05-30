@@ -97,7 +97,11 @@ func newVersionCommand(opts *Options) *cobra.Command {
 // Execute runs cmd with args and maps unknown commands into cr usage errors.
 func Execute(cmd *cobra.Command, args []string) error {
 	cmd.SetArgs(args)
-	if !isHelpCommand(args) {
+	if isHelpCommand(args) && len(args) > 1 {
+		if _, _, err := cmd.Find(args[1:]); err != nil {
+			return exitcode.Usage(err)
+		}
+	} else if !isHelpCommand(args) {
 		if _, _, err := cmd.Find(args); err != nil {
 			return exitcode.Usage(err)
 		}
@@ -105,9 +109,6 @@ func Execute(cmd *cobra.Command, args []string) error {
 	err := cmd.Execute()
 	if err == nil {
 		return nil
-	}
-	if exitcode.FromError(err) != exitcode.Failure {
-		return err
 	}
 	return err
 }
