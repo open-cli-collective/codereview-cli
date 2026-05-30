@@ -84,12 +84,34 @@ func TestPRKeyAndResumeScope(t *testing.T) {
 	if scope != "work%20profile__rian%40example.com" {
 		t.Fatalf("ResumeScope = %q, want encoded profile and identity", scope)
 	}
+
+	withUnderscoreScope, err := ResumeScope("work_profile", "monit_reviewer")
+	if err != nil {
+		t.Fatalf("ResumeScope with underscore: %v", err)
+	}
+	if withUnderscoreScope != "work%5Fprofile__monit%5Freviewer" {
+		t.Fatalf("ResumeScope with underscore = %q, want underscore escaped inside segments", withUnderscoreScope)
+	}
+
+	firstScope, err := ResumeScope("a_", "b")
+	if err != nil {
+		t.Fatalf("first ResumeScope: %v", err)
+	}
+	secondScope, err := ResumeScope("a", "_b")
+	if err != nil {
+		t.Fatalf("second ResumeScope: %v", err)
+	}
+	if firstScope == secondScope {
+		t.Fatalf("ResumeScope collision: %q == %q", firstScope, secondScope)
+	}
 }
 
 func TestKeyHashUsesUnambiguousTupleFraming(t *testing.T) {
 	one := KeyHash("ab", "c", "d", "e", "f")
 	two := KeyHash("a", "bc", "d", "e", "f")
 	again := KeyHash("ab", "c", "d", "e", "f")
+	differentProfile := KeyHash("ab", "c", "d", "profile", "f")
+	differentIdentity := KeyHash("ab", "c", "d", "e", "identity")
 
 	if len(one) != 12 {
 		t.Fatalf("KeyHash length = %d, want 12", len(one))
@@ -102,6 +124,12 @@ func TestKeyHashUsesUnambiguousTupleFraming(t *testing.T) {
 	}
 	if one == two {
 		t.Fatalf("KeyHash boundary collision: %q == %q", one, two)
+	}
+	if one == differentProfile {
+		t.Fatalf("KeyHash ignores profile: %q == %q", one, differentProfile)
+	}
+	if one == differentIdentity {
+		t.Fatalf("KeyHash ignores posting identity: %q == %q", one, differentIdentity)
 	}
 }
 
@@ -152,7 +180,6 @@ func TestRunPaths(t *testing.T) {
 
 	prKey := "github_open-cli_codereview-cli_34"
 	scope := "work__monit%2Freviewer"
-	keyHash := KeyHash(prKey, headSHA, baseSHA, "work", "monit/reviewer")
 	runDir := filepath.Join("data", AppDir, "runs", prKey, headSHA, baseSHA, scope, "001")
 
 	if got := layout.LedgerDB(); got != filepath.Join("data", AppDir, "ledger.db") {
@@ -190,7 +217,7 @@ func TestRunPaths(t *testing.T) {
 	if agentLog != filepath.Join(runDir, "agent-logs", "harness%3Aarch.jsonl") {
 		t.Fatalf("AgentLog = %q", agentLog)
 	}
-	if paths.LockFile != filepath.Join("data", AppDir, "locks", prKey+"__aaaaaaa__"+keyHash+".lock") {
+	if paths.LockFile != filepath.Join("data", AppDir, "locks", prKey+"__aaaaaaa__62574572babb.lock") {
 		t.Fatalf("LockFile = %q", paths.LockFile)
 	}
 	if got := layout.HTTPCacheDir(); got != filepath.Join("cache", AppDir, "http") {

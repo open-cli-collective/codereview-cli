@@ -206,6 +206,10 @@ func Decode(value string) string {
 }
 
 func encodePRKeySegment(value string) string {
+	return encodeDelimiterSegment(value)
+}
+
+func encodeDelimiterSegment(value string) string {
 	return percent.Encode(value, disallowedRunes(value)+"_")
 }
 
@@ -234,7 +238,7 @@ func ResumeScope(profile, postingIdentity string) (string, error) {
 	if err := requireNonEmpty("posting identity", postingIdentity); err != nil {
 		return "", err
 	}
-	return Encode(profile) + "__" + Encode(postingIdentity), nil
+	return encodeDelimiterSegment(profile) + "__" + encodeDelimiterSegment(postingIdentity), nil
 }
 
 // KeyHash returns the 12-character hash over the full resume-key tuple.
