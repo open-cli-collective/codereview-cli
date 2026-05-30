@@ -262,6 +262,8 @@ func TestRunSpecValidation(t *testing.T) {
 		wantErr string
 	}{
 		{name: "empty host", mutate: func(s *RunSpec) { s.Host = "" }, wantErr: "host"},
+		{name: "empty owner", mutate: func(s *RunSpec) { s.Owner = "" }, wantErr: "owner"},
+		{name: "empty repo", mutate: func(s *RunSpec) { s.Repo = "" }, wantErr: "repo"},
 		{name: "empty profile", mutate: func(s *RunSpec) { s.Profile = "" }, wantErr: "profile"},
 		{name: "empty identity", mutate: func(s *RunSpec) { s.PostingIdentity = "" }, wantErr: "posting identity"},
 		{name: "bad pr number", mutate: func(s *RunSpec) { s.PRNumber = 0 }, wantErr: "PR number"},

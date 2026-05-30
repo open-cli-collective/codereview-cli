@@ -247,7 +247,9 @@ func KeyHash(prKey, headSHA, baseSHA, profile, postingIdentity string) string {
 	return hex.EncodeToString(hash[:])[:12]
 }
 
-// FormatAttempt returns the zero-padded run attempt path segment.
+// FormatAttempt returns the run attempt path segment. Attempts below 1000 are
+// zero-padded for readability; lexicographic sorting is not guaranteed after
+// that because the design intentionally does not cap attempt numbers at 999.
 func FormatAttempt(attempt int) (string, error) {
 	if attempt <= 0 {
 		return "", fmt.Errorf("statepaths: attempt must be positive")
