@@ -129,6 +129,34 @@ func TestReviewRequestValidate(t *testing.T) {
 	}
 }
 
+func TestStateEnumsValidate(t *testing.T) {
+	prStates := []PRState{PRStateOpen, PRStateClosed, PRStateMerged}
+	for _, state := range prStates {
+		if !state.Valid() {
+			t.Fatalf("PRState(%q).Valid() = false, want true", state)
+		}
+	}
+	if PRState("OPEN").Valid() {
+		t.Fatal(`PRState("OPEN").Valid() = true, want false`)
+	}
+
+	reviewStates := []ReviewState{
+		ReviewStateApproved,
+		ReviewStateChangesRequested,
+		ReviewStateCommented,
+		ReviewStateDismissed,
+		ReviewStatePending,
+	}
+	for _, state := range reviewStates {
+		if !state.Valid() {
+			t.Fatalf("ReviewState(%q).Valid() = false, want true", state)
+		}
+	}
+	if ReviewState("APPROVED").Valid() {
+		t.Fatal(`ReviewState("APPROVED").Valid() = true, want false`)
+	}
+}
+
 func mutateInline(comment InlineComment, mutate func(*InlineComment)) InlineComment {
 	mutate(&comment)
 	return comment

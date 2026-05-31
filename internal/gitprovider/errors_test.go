@@ -40,3 +40,14 @@ func TestWrapErrorNilKindReturnsOriginalError(t *testing.T) {
 		t.Fatalf("WrapError(nil, op, nil) = %v, want nil", got)
 	}
 }
+
+func TestProviderErrorZeroValueDoesNotPanic(t *testing.T) {
+	err := (&ProviderError{}).Error()
+	if err == "" {
+		t.Fatal("zero ProviderError Error() = empty string, want non-empty")
+	}
+	withOp := (&ProviderError{Op: OperationGetPR}).Error()
+	if withOp == "" {
+		t.Fatal("ProviderError with op Error() = empty string, want non-empty")
+	}
+}

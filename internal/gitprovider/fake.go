@@ -204,7 +204,7 @@ func (f *Fake) GetDiff(_ context.Context, ref PRRef) (UnifiedDiff, error) {
 }
 
 // GetFileAtRef returns the canned file contents for the full ref/path selector.
-func (f *Fake) GetFileAtRef(_ context.Context, ref PRRef, path string, gitRef string) ([]byte, error) {
+func (f *Fake) GetFileAtRef(_ context.Context, ref PRRef, gitRef string, path string) ([]byte, error) {
 	selector, err := newFileSelector(ref, gitRef, path)
 	if err != nil {
 		return nil, err

@@ -73,22 +73,22 @@ func TestFakeFileAndTreeReadsAreKeyedByFullSelectorAndCopied(t *testing.T) {
 		t.Fatalf("SetTreeAtRef: %v", err)
 	}
 
-	file, err := fake.GetFileAtRef(ctx, ref, ".codereview/agents/a.yml", "refs/heads/main")
+	file, err := fake.GetFileAtRef(ctx, ref, "refs/heads/main", ".codereview/agents/a.yml")
 	if err != nil {
 		t.Fatalf("GetFileAtRef: %v", err)
 	}
 	file[0] = 'x'
-	fileAgain, err := fake.GetFileAtRef(ctx, ref, ".codereview/agents/a.yml", "refs/heads/main")
+	fileAgain, err := fake.GetFileAtRef(ctx, ref, "refs/heads/main", ".codereview/agents/a.yml")
 	if err != nil {
 		t.Fatalf("GetFileAtRef again: %v", err)
 	}
 	if string(fileAgain) != "agent" {
 		t.Fatalf("GetFileAtRef returned mutable backing storage: %q", fileAgain)
 	}
-	if _, err := fake.GetFileAtRef(ctx, ref, ".codereview/agents/a.yml", "refs/heads/other"); !errors.Is(err, ErrNotFound) {
+	if _, err := fake.GetFileAtRef(ctx, ref, "refs/heads/other", ".codereview/agents/a.yml"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetFileAtRef wrong git ref error = %v, want ErrNotFound", err)
 	}
-	if _, err := fake.GetFileAtRef(ctx, ref, ".codereview/agents/missing.yml", "refs/heads/main"); !errors.Is(err, ErrNotFound) {
+	if _, err := fake.GetFileAtRef(ctx, ref, "refs/heads/main", ".codereview/agents/missing.yml"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetFileAtRef wrong path error = %v, want ErrNotFound", err)
 	}
 
@@ -298,7 +298,7 @@ func TestFakeInjectedErrorsCoverErrorReturningMethods(t *testing.T) {
 			return err
 		}},
 		{OperationGetFileAtRef, func(f *Fake) error {
-			_, err := f.GetFileAtRef(ctx, ref, "README.md", "base-sha")
+			_, err := f.GetFileAtRef(ctx, ref, "base-sha", "README.md")
 			return err
 		}},
 		{OperationListTreeAtRef, func(f *Fake) error {
@@ -360,7 +360,7 @@ func TestFakeReadModelsAreLosslessAndIsolatedByRef(t *testing.T) {
 		Ref:    ref,
 		Title:  "Add provider",
 		URL:    "https://github.com/open-cli-collective/codereview-cli/pull/14",
-		State:  "open",
+		State:  PRStateOpen,
 		Author: Identity{Login: "rianjs", ID: "user-1", DisplayName: "Rian"},
 		Head:   PRBranchRef{Host: "github.com", Owner: "rianjs", Repo: "codereview-cli", Name: "feature", Ref: "refs/heads/feature", SHA: "head-sha"},
 		Base:   PRBranchRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Name: "main", Ref: "refs/heads/main", SHA: "base-sha"},
@@ -369,7 +369,7 @@ func TestFakeReadModelsAreLosslessAndIsolatedByRef(t *testing.T) {
 		Ref:    other,
 		Title:  "Other provider",
 		URL:    "https://github.com/open-cli-collective/other/pull/99",
-		State:  "closed",
+		State:  PRStateClosed,
 		Author: Identity{Login: "other", ID: "user-2", DisplayName: "Other"},
 		Head:   PRBranchRef{Host: "github.com", Owner: "other", Repo: "other", Name: "feature", Ref: "refs/heads/feature", SHA: "other-head"},
 		Base:   PRBranchRef{Host: "github.com", Owner: "open-cli-collective", Repo: "other", Name: "main", Ref: "refs/heads/main", SHA: "other-base"},
@@ -378,7 +378,7 @@ func TestFakeReadModelsAreLosslessAndIsolatedByRef(t *testing.T) {
 		ID:          "review-1",
 		Body:        "sha=head-sha base=base-sha",
 		Author:      pr.Author,
-		State:       "COMMENTED",
+		State:       ReviewStateCommented,
 		Event:       review.ReviewEventComment,
 		CommitSHA:   "head-sha",
 		URL:         "https://github.com/open-cli-collective/codereview-cli/pull/14#pullrequestreview-1",
@@ -388,7 +388,7 @@ func TestFakeReadModelsAreLosslessAndIsolatedByRef(t *testing.T) {
 		ID:          "review-2",
 		Body:        "sha=other-head base=other-base",
 		Author:      otherPR.Author,
-		State:       "APPROVED",
+		State:       ReviewStateApproved,
 		Event:       review.ReviewEventApprove,
 		CommitSHA:   "other-head",
 		URL:         "https://github.com/open-cli-collective/other/pull/99#pullrequestreview-2",

@@ -28,6 +28,14 @@ func (e *ProviderError) Error() string {
 	switch {
 	case e == nil:
 		return "<nil>"
+	case e.Kind == nil && e.Op != "" && e.Err != nil:
+		return fmt.Sprintf("%s: %v", e.Op, e.Err)
+	case e.Kind == nil && e.Err != nil:
+		return e.Err.Error()
+	case e.Kind == nil && e.Op != "":
+		return fmt.Sprintf("%s: provider error", e.Op)
+	case e.Kind == nil:
+		return "gitprovider: provider error"
 	case e.Op != "" && e.Err != nil:
 		return fmt.Sprintf("%s: %v: %v", e.Op, e.Kind, e.Err)
 	case e.Op != "":
@@ -39,15 +47,12 @@ func (e *ProviderError) Error() string {
 	}
 }
 
-// Is makes both Kind and the wrapped cause errors.Is-matchable.
+// Is makes Kind errors.Is-matchable. Unwrap exposes Err to the standard chain.
 func (e *ProviderError) Is(target error) bool {
 	if e == nil || target == nil {
 		return false
 	}
-	if errors.Is(e.Kind, target) {
-		return true
-	}
-	return errors.Is(e.Err, target)
+	return errors.Is(e.Kind, target)
 }
 
 func (e *ProviderError) Unwrap() error {

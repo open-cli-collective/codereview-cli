@@ -8,7 +8,7 @@ type GitProvider interface {
 
 	GetPR(ctx context.Context, ref PRRef) (PR, error)
 	GetDiff(ctx context.Context, ref PRRef) (UnifiedDiff, error)
-	GetFileAtRef(ctx context.Context, ref PRRef, path string, gitRef string) ([]byte, error)
+	GetFileAtRef(ctx context.Context, ref PRRef, gitRef string, path string) ([]byte, error)
 	ListTreeAtRef(ctx context.Context, ref PRRef, gitRef string, path string) ([]TreeEntry, error)
 	ListInlineThreads(ctx context.Context, ref PRRef) ([]InlineThread, error)
 	ListReviews(ctx context.Context, ref PRRef) ([]Review, error)

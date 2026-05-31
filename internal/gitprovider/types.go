@@ -59,13 +59,33 @@ type PRBranchRef struct {
 	SHA   string
 }
 
+// PRState is a normalized provider-neutral pull request state.
+type PRState string
+
+// Pull request states.
+const (
+	PRStateOpen   PRState = "open"
+	PRStateClosed PRState = "closed"
+	PRStateMerged PRState = "merged"
+)
+
+// Valid reports whether s is one of the known pull request states.
+func (s PRState) Valid() bool {
+	switch s {
+	case PRStateOpen, PRStateClosed, PRStateMerged:
+		return true
+	default:
+		return false
+	}
+}
+
 // PR is the provider-neutral pull request snapshot used by later pipeline
 // stages.
 type PR struct {
 	Ref    PRRef
 	Title  string
 	URL    string
-	State  string
+	State  PRState
 	Author Identity
 	Head   PRBranchRef
 	Base   PRBranchRef
@@ -172,12 +192,34 @@ type IssueComment struct {
 	UpdatedAt time.Time
 }
 
+// ReviewState is a normalized provider-neutral pull request review state.
+type ReviewState string
+
+// Pull request review states.
+const (
+	ReviewStateApproved         ReviewState = "approved"
+	ReviewStateChangesRequested ReviewState = "changes_requested"
+	ReviewStateCommented        ReviewState = "commented"
+	ReviewStateDismissed        ReviewState = "dismissed"
+	ReviewStatePending          ReviewState = "pending"
+)
+
+// Valid reports whether s is one of the known review states.
+func (s ReviewState) Valid() bool {
+	switch s {
+	case ReviewStateApproved, ReviewStateChangesRequested, ReviewStateCommented, ReviewStateDismissed, ReviewStatePending:
+		return true
+	default:
+		return false
+	}
+}
+
 // Review is a provider-neutral pull-request review record.
 type Review struct {
 	ID          ReviewID
 	Body        string
 	Author      Identity
-	State       string
+	State       ReviewState
 	Event       review.ReviewEvent
 	CommitSHA   string
 	URL         string
