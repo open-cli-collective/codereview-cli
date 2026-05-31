@@ -21,7 +21,7 @@ import (
 
 const (
 	// SchemaVersion is the current ledger schema version.
-	SchemaVersion = 1
+	SchemaVersion = 2
 	// DefaultBusyTimeout is the SQLite busy timeout configured at open.
 	DefaultBusyTimeout = 5 * time.Second
 	writeQueueSize     = 64
@@ -294,20 +294,21 @@ type Finding struct {
 
 // PlannedAction records one outbox action planned for a run.
 type PlannedAction struct {
-	ActionID    string
-	RunID       string
-	Kind        PlannedActionKind
-	FindingID   *string
-	ThreadID    *string
-	PlannedAt   time.Time
-	PayloadJSON string
-	Status      PlannedActionStatus
-	Required    bool
-	Attempts    int
-	AttemptedAt *time.Time
-	PostedAt    *time.Time
-	UpstreamID  *string
-	Error       *string
+	ActionID     string
+	RunID        string
+	Kind         PlannedActionKind
+	FindingID    *string
+	ThreadID     *string
+	PlannedAt    time.Time
+	PayloadJSON  string
+	Status       PlannedActionStatus
+	Required     bool
+	Attempts     int
+	AttemptedAt  *time.Time
+	PostedAt     *time.Time
+	UpstreamID   *string
+	Error        *string
+	FailureClass *string
 }
 
 // NamedSession records cross-run provider session reuse metadata.
@@ -429,18 +430,28 @@ func configureSQLite(ctx context.Context, db *sql.DB) error {
 }
 
 func migrations() []dbmig.Migration {
-	return []dbmig.Migration{{
-		Version: 1,
-		Name:    "ledger schema",
-		Up: func(ctx context.Context, tx *sql.Tx) error {
-			for _, statement := range schemaStatements {
-				if _, err := tx.ExecContext(ctx, statement); err != nil {
-					return err
+	return []dbmig.Migration{
+		{
+			Version: 1,
+			Name:    "ledger schema",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				for _, statement := range schemaStatements {
+					if _, err := tx.ExecContext(ctx, statement); err != nil {
+						return err
+					}
 				}
-			}
-			return nil
+				return nil
+			},
 		},
-	}}
+		{
+			Version: 2,
+			Name:    "planned action failure class",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, `ALTER TABLE planned_actions ADD COLUMN failure_class TEXT`)
+				return err
+			},
+		},
+	}
 }
 
 // AllocateRun creates a run and allocates its attempt transactionally.
@@ -758,11 +769,11 @@ func (s *Store) InsertPlannedAction(ctx context.Context, action PlannedAction) e
 		_, err := db.ExecContext(ctx, `
 INSERT INTO planned_actions (
 	action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,
-	required, attempts, attempted_at, posted_at, upstream_id, error
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	required, attempts, attempted_at, posted_at, upstream_id, error, failure_class
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			action.ActionID, action.RunID, action.Kind.String(), action.FindingID, action.ThreadID, encodeTime(action.PlannedAt),
 			action.PayloadJSON, action.Status.String(), required, action.Attempts, encodeOptionalTime(action.AttemptedAt),
-			encodeOptionalTime(action.PostedAt), action.UpstreamID, action.Error,
+			encodeOptionalTime(action.PostedAt), action.UpstreamID, action.Error, action.FailureClass,
 		)
 		if err != nil {
 			return fmt.Errorf("ledger: insert planned action: %w", err)
@@ -781,7 +792,7 @@ func (s *Store) ListPlannedActions(ctx context.Context, runID string) ([]Planned
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,
-	required, attempts, attempted_at, posted_at, upstream_id, error
+	required, attempts, attempted_at, posted_at, upstream_id, error, failure_class
 FROM planned_actions WHERE run_id = ? ORDER BY action_id`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("ledger: list planned actions: %w", err)
@@ -810,10 +821,10 @@ func (s *Store) UpdatePlannedAction(ctx context.Context, action PlannedAction) e
 	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
 		result, err := db.ExecContext(ctx, `
 UPDATE planned_actions
-SET status = ?, attempts = ?, attempted_at = ?, posted_at = ?, upstream_id = ?, error = ?
+SET status = ?, attempts = ?, attempted_at = ?, posted_at = ?, upstream_id = ?, error = ?, failure_class = ?
 WHERE action_id = ? AND run_id = ?`,
 			action.Status.String(), action.Attempts, encodeOptionalTime(action.AttemptedAt),
-			encodeOptionalTime(action.PostedAt), action.UpstreamID, action.Error, action.ActionID, action.RunID,
+			encodeOptionalTime(action.PostedAt), action.UpstreamID, action.Error, action.FailureClass, action.ActionID, action.RunID,
 		)
 		if err != nil {
 			return fmt.Errorf("ledger: update planned action: %w", err)
@@ -1000,6 +1011,9 @@ func validatePlannedAction(action PlannedAction) error {
 	if action.Attempts < 0 {
 		return invalidInput("attempts", fmt.Sprint(action.Attempts))
 	}
+	if action.FailureClass != nil && strings.TrimSpace(*action.FailureClass) == "" {
+		return invalidInput("failure_class", "")
+	}
 	return nil
 }
 
@@ -1168,21 +1182,22 @@ func scanFinding(row interface{ Scan(...any) error }) (Finding, error) {
 
 func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, error) {
 	var (
-		action      PlannedAction
-		kind        string
-		findingID   sql.NullString
-		threadID    sql.NullString
-		plannedAt   string
-		status      string
-		required    int
-		attemptedAt sql.NullString
-		postedAt    sql.NullString
-		upstreamID  sql.NullString
-		errorText   sql.NullString
+		action       PlannedAction
+		kind         string
+		findingID    sql.NullString
+		threadID     sql.NullString
+		plannedAt    string
+		status       string
+		required     int
+		attemptedAt  sql.NullString
+		postedAt     sql.NullString
+		upstreamID   sql.NullString
+		errorText    sql.NullString
+		failureClass sql.NullString
 	)
 	if err := row.Scan(
 		&action.ActionID, &action.RunID, &kind, &findingID, &threadID, &plannedAt, &action.PayloadJSON,
-		&status, &required, &action.Attempts, &attemptedAt, &postedAt, &upstreamID, &errorText,
+		&status, &required, &action.Attempts, &attemptedAt, &postedAt, &upstreamID, &errorText, &failureClass,
 	); err != nil {
 		return PlannedAction{}, err
 	}
@@ -1213,6 +1228,7 @@ func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, erro
 	}
 	action.UpstreamID = stringPtrFromNull(upstreamID)
 	action.Error = stringPtrFromNull(errorText)
+	action.FailureClass = stringPtrFromNull(failureClass)
 	return action, nil
 }
 

@@ -120,10 +120,9 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{ExitCode: exitFailed}, err
 	}
 	actions = sortActions(actions)
-	failureClasses := make(map[string]failureClass)
 
 	if !hasRelevantPending(actions) {
-		outcome, exitCode := finalOutcome(req.DesiredOutcome, actions, failureClasses)
+		outcome, exitCode := finalOutcome(req.DesiredOutcome, actions)
 		if err := opts.Store.CompleteRun(ctx, req.Run.RunID, outcome, opts.Now().UTC()); err != nil {
 			return Result{ExitCode: exitFailed}, err
 		}
@@ -144,6 +143,8 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 		match, err := reconcileAction(req, actions, actions[i], state)
 		if err != nil {
+			// Reconciliation is best-effort; dispatch planning below performs the
+			// authoritative local validation and terminal state update.
 			continue
 		}
 		if !match.ok {
@@ -154,6 +155,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		actions[i].PostedAt = &now
 		actions[i].UpstreamID = strPtr(match.upstreamID)
 		actions[i].Error = nil
+		actions[i].FailureClass = nil
 		if err := opts.Store.UpdatePlannedAction(ctx, actions[i]); err != nil {
 			return Result{ExitCode: exitFailed}, err
 		}
@@ -168,10 +170,9 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 		plan, err := buildActionPlan(req, actions[i])
 		if err != nil {
-			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err); updateErr != nil {
+			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err, failureTerminal); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
 			}
-			failureClasses[actions[i].ActionID] = failureTerminal
 			continue
 		}
 
@@ -199,6 +200,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 			actions[i].PostedAt = &now
 			actions[i].UpstreamID = strPtr(upstreamID)
 			actions[i].Error = nil
+			actions[i].FailureClass = nil
 			if err := opts.Store.UpdatePlannedAction(ctx, actions[i]); err != nil {
 				return Result{ExitCode: exitFailed}, err
 			}
@@ -213,7 +215,6 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 				return Result{ExitCode: exitFailed}, completeErr
 			}
 			result := summarize(actions, ledger.OutcomeAborted, exitUpstream, true)
-			result.Aborted = true
 			return result, nil
 		}
 
@@ -232,6 +233,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 				actions[i].PostedAt = &now
 				actions[i].UpstreamID = strPtr(match.upstreamID)
 				actions[i].Error = nil
+				actions[i].FailureClass = nil
 				if updateErr := opts.Store.UpdatePlannedAction(ctx, actions[i]); updateErr != nil {
 					return Result{ExitCode: exitFailed}, updateErr
 				}
@@ -244,10 +246,9 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 				}
 				continue
 			}
-			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err); updateErr != nil {
+			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err, conflictClass); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
 			}
-			failureClasses[actions[i].ActionID] = conflictClass
 			continue
 		}
 
@@ -258,14 +259,13 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 				return Result{ExitCode: exitFailed}, updateErr
 			}
 		case failureTerminal, failureAuth:
-			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err); updateErr != nil {
+			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err, failureClass); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
 			}
-			failureClasses[actions[i].ActionID] = failureClass
 		}
 	}
 
-	outcome, exitCode := finalOutcome(req.DesiredOutcome, actions, failureClasses)
+	outcome, exitCode := finalOutcome(req.DesiredOutcome, actions)
 	if err := opts.Store.CompleteRun(ctx, req.Run.RunID, outcome, opts.Now().UTC()); err != nil {
 		return Result{ExitCode: exitFailed}, err
 	}
@@ -349,6 +349,9 @@ func reconcileAction(req Request, actions []ledger.PlannedAction, action ledger.
 	case ledger.PlannedActionSubmitReview:
 		return reconcileSubmitReview(req, action, state), nil
 	case ledger.PlannedActionResolveThread:
+		if _, err := decodePayload[ResolveThreadPayload](action); err != nil {
+			return reconcileMatch{}, err
+		}
 		return reconcileResolve(action, actions, state), nil
 	default:
 		return reconcileMatch{}, fmt.Errorf("outbox: unsupported action kind %q", action.Kind)
@@ -617,12 +620,14 @@ func dispatch(ctx context.Context, provider gitprovider.GitProvider, ref gitprov
 func recordPendingError(ctx context.Context, store Store, action *ledger.PlannedAction, err error) error {
 	action.Status = ledger.PlannedActionPending
 	action.Error = strPtr(err.Error())
+	action.FailureClass = nil
 	return store.UpdatePlannedAction(ctx, *action)
 }
 
-func markFailedTerminal(ctx context.Context, store Store, action *ledger.PlannedAction, err error) error {
+func markFailedTerminal(ctx context.Context, store Store, action *ledger.PlannedAction, err error, class failureClass) error {
 	action.Status = ledger.PlannedActionFailedTerminal
 	action.Error = strPtr(err.Error())
+	action.FailureClass = failureClassPtr(class)
 	return store.UpdatePlannedAction(ctx, *action)
 }
 
@@ -633,6 +638,26 @@ const (
 	failureRetryable
 	failureAuth
 )
+
+const (
+	failureClassStorageTerminal = "terminal"
+	failureClassStorageAuth     = "auth"
+)
+
+func failureClassPtr(class failureClass) *string {
+	value := failureClassStorageTerminal
+	if class == failureAuth {
+		value = failureClassStorageAuth
+	}
+	return &value
+}
+
+func terminalFailureClass(action ledger.PlannedAction) failureClass {
+	if action.FailureClass != nil && *action.FailureClass == failureClassStorageAuth {
+		return failureAuth
+	}
+	return failureTerminal
+}
 
 func classifyProviderError(err error) failureClass {
 	switch {
@@ -658,24 +683,25 @@ func classifyConflictCause(err error) failureClass {
 	}
 }
 
-func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction, failureClasses map[string]failureClass) (ledger.Outcome, int) {
+func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction) (ledger.Outcome, int) {
 	hasRequiredPending := false
 	hasRequiredTerminal := false
 	hasAuthTerminal := false
 	for _, action := range actions {
-		if irrelevant(action) || !action.Required {
+		if !action.Required {
 			continue
 		}
 		switch action.Status {
+		case ledger.PlannedActionSuperseded, ledger.PlannedActionPlannedOnly:
+			continue
 		case ledger.PlannedActionPending:
 			hasRequiredPending = true
 		case ledger.PlannedActionFailedTerminal:
 			hasRequiredTerminal = true
-			if failureClasses[action.ActionID] == failureAuth {
+			if terminalFailureClass(action) == failureAuth {
 				hasAuthTerminal = true
 			}
 		case ledger.PlannedActionPosted:
-		case ledger.PlannedActionSuperseded, ledger.PlannedActionPlannedOnly:
 		default:
 			hasRequiredPending = true
 		}
@@ -717,7 +743,7 @@ func irrelevant(action ledger.PlannedAction) bool {
 
 func hasRelevantPending(actions []ledger.PlannedAction) bool {
 	for _, action := range actions {
-		if action.Status == ledger.PlannedActionPending && !irrelevant(action) {
+		if action.Status == ledger.PlannedActionPending {
 			return true
 		}
 	}

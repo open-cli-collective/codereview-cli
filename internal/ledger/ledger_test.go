@@ -42,6 +42,9 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 			t.Fatalf("index %s does not exist", index)
 		}
 	}
+	if !columnExists(t, store.db, "planned_actions", "failure_class") {
+		t.Fatal("planned_actions.failure_class column does not exist")
+	}
 	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
 	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
 		t.Fatalf("runs_resume columns = %#v, want %#v", got, wantResumeIndex)
@@ -517,6 +520,7 @@ func TestUpdatePlannedActionPersistsMutableFields(t *testing.T) {
 	action.PostedAt = &postedAt
 	action.UpstreamID = strPtr("comment-123")
 	action.Error = nil
+	action.FailureClass = strPtr("auth")
 
 	if err := store.UpdatePlannedAction(context.Background(), action); err != nil {
 		t.Fatalf("UpdatePlannedAction: %v", err)
@@ -798,6 +802,12 @@ func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 			run := allocateRun(t, s, validAllocateRunParams())
 			action := validPlannedAction(run.RunID)
 			action.Attempts = -1
+			return s.InsertPlannedAction(context.Background(), action)
+		}},
+		{name: "planned action empty failure class", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			action := validPlannedAction(run.RunID)
+			action.FailureClass = strPtr(" ")
 			return s.InsertPlannedAction(context.Background(), action)
 		}},
 		{name: "named session missing name", run: func(_ *testing.T, s *Store) error {
@@ -1226,6 +1236,35 @@ func tableExists(t *testing.T, db *sql.DB, name string) bool {
 func indexExists(t *testing.T, db *sql.DB, name string) bool {
 	t.Helper()
 	return queryInt(t, db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", name) == 1
+}
+
+func columnExists(t *testing.T, db *sql.DB, table string, name string) bool {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid          int
+			column       string
+			columnType   string
+			notNull      int
+			defaultValue sql.NullString
+			primaryKey   int
+		)
+		if err := rows.Scan(&cid, &column, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan table_info(%s): %v", table, err)
+		}
+		if column == name {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table_info(%s) rows: %v", table, err)
+	}
+	return false
 }
 
 func indexColumns(t *testing.T, db *sql.DB, name string) []string {

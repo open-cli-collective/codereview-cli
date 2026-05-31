@@ -661,6 +661,7 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 		wantOutcome ledger.Outcome
 		wantExit    int
 		wantStatus  ledger.PlannedActionStatus
+		wantClass   *string
 	}{
 		{
 			name:        "retryable pending incomplete",
@@ -668,6 +669,7 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 			wantOutcome: ledger.OutcomeIncomplete,
 			wantExit:    exitUpstream,
 			wantStatus:  ledger.PlannedActionPending,
+			wantClass:   nil,
 		},
 		{
 			name:        "auth terminal exit auth",
@@ -675,6 +677,7 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 			wantOutcome: ledger.OutcomeFailed,
 			wantExit:    exitAuth,
 			wantStatus:  ledger.PlannedActionFailedTerminal,
+			wantClass:   strPtr(failureClassStorageAuth),
 		},
 		{
 			name:        "auth chain terminal exit auth",
@@ -682,6 +685,7 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 			wantOutcome: ledger.OutcomeFailed,
 			wantExit:    exitAuth,
 			wantStatus:  ledger.PlannedActionFailedTerminal,
+			wantClass:   strPtr(failureClassStorageAuth),
 		},
 		{
 			name:        "untyped terminal exit failed",
@@ -689,6 +693,7 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 			wantOutcome: ledger.OutcomeFailed,
 			wantExit:    exitFailed,
 			wantStatus:  ledger.PlannedActionFailedTerminal,
+			wantClass:   strPtr(failureClassStorageTerminal),
 		},
 	}
 	for _, tt := range tests {
@@ -707,10 +712,32 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 				t.Fatalf("Post result = %#v, want %s exit %d", result, tt.wantOutcome, tt.wantExit)
 			}
 			action := actionByID(t, store, run.RunID, "rollup-1")
-			if action.Status != tt.wantStatus || action.Attempts != 1 || action.Error == nil {
+			if action.Status != tt.wantStatus || action.Attempts != 1 || action.Error == nil || !sameStringPtr(action.FailureClass, tt.wantClass) {
 				t.Fatalf("action = %#v, want %s with one attempt and error", action, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestPostPersistedAuthFailureClassDrivesRerunExitAuth(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	action := plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup"})
+	action.Status = ledger.PlannedActionFailedTerminal
+	action.Error = strPtr("login expired")
+	action.FailureClass = strPtr(failureClassStorageAuth)
+	insertAction(t, store, action)
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.Outcome != ledger.OutcomeFailed || result.ExitCode != exitAuth {
+		t.Fatalf("Post result = %#v, want failed exit auth", result)
+	}
+	if len(provider.reads) != 0 || len(provider.writes) != 0 {
+		t.Fatalf("provider reads/writes = %#v/%#v, want none", provider.reads, provider.writes)
 	}
 }
 
@@ -905,6 +932,46 @@ func TestPostResolveThreadDoesNotReconcileWithoutPostedSameRunReply(t *testing.T
 	action := actionByID(t, store, run.RunID, "resolve-1")
 	if action.Status != ledger.PlannedActionPending || action.Attempts != 1 || action.Error == nil {
 		t.Fatalf("resolve action = %#v, want pending after retryable resolve attempt", action)
+	}
+}
+
+func TestPostResolveMalformedPayloadFailsBeforeReconciliation(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	ref := testPRRef()
+	reply := plannedAction(run.RunID, "reply-1", ledger.PlannedActionThreadReply, false, "thread-1", ThreadReplyPayload{Body: "posted reply"})
+	reply.Status = ledger.PlannedActionPosted
+	reply.PostedAt = strPtrTime(testTime())
+	reply.UpstreamID = strPtr("comment-reply")
+	insertAction(t, store, reply)
+	insertAction(t, store, ledger.PlannedAction{
+		ActionID:    "resolve-1",
+		RunID:       run.RunID,
+		Kind:        ledger.PlannedActionResolveThread,
+		ThreadID:    strPtr("thread-1"),
+		PlannedAt:   testTime(),
+		PayloadJSON: `{bad-json`,
+		Status:      ledger.PlannedActionPending,
+		Required:    true,
+	})
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{{ID: gitprovider.ThreadID("thread-1"), Resolved: true}}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.Outcome != ledger.OutcomeFailed || result.ExitCode != exitFailed {
+		t.Fatalf("Post result = %#v, want failed exit 1", result)
+	}
+	if len(provider.writes) != 0 {
+		t.Fatalf("provider writes = %#v, want none", provider.writes)
+	}
+	action := actionByID(t, store, run.RunID, "resolve-1")
+	if action.Status != ledger.PlannedActionFailedTerminal || action.Attempts != 0 || action.Error == nil || !sameStringPtr(action.FailureClass, strPtr(failureClassStorageTerminal)) {
+		t.Fatalf("resolve action = %#v, want failed terminal without attempts", action)
 	}
 }
 
@@ -1207,6 +1274,13 @@ func ptrOutcome(outcome ledger.Outcome) *ledger.Outcome {
 
 func strPtrTime(value time.Time) *time.Time {
 	return &value
+}
+
+func sameStringPtr(got *string, want *string) bool {
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	return *got == *want
 }
 
 func assertActionBody(t *testing.T, body string, run ledger.Run, actionID string, kind string, outcome string) {
