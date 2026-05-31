@@ -640,8 +640,8 @@ const (
 )
 
 const (
-	failureClassStorageTerminal = "terminal"
-	failureClassStorageAuth     = "auth"
+	failureClassStorageTerminal = ledger.PlannedActionFailureClassTerminal
+	failureClassStorageAuth     = ledger.PlannedActionFailureClassAuth
 )
 
 func failureClassPtr(class failureClass) *string {

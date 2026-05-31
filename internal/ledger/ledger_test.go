@@ -51,6 +51,51 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesVersion1LedgerAndPreservesPlannedActions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	plannedAt := time.Date(2026, 5, 30, 12, 2, 0, 0, time.UTC)
+	seedVersion1Ledger(t, path, plannedAt)
+
+	store := openStoreAt(t, path)
+	if version := queryInt(t, store.db, "SELECT schema_version FROM meta"); version != SchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", version, SchemaVersion)
+	}
+	if !columnExists(t, store.db, "planned_actions", "failure_class") {
+		t.Fatal("planned_actions.failure_class column does not exist")
+	}
+
+	actions, err := store.ListPlannedActions(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	want := PlannedAction{
+		ActionID:    "action-1",
+		RunID:       "run-1",
+		Kind:        PlannedActionRollupComment,
+		PlannedAt:   plannedAt,
+		PayloadJSON: `{"body":"hello"}`,
+		Status:      PlannedActionPending,
+		Required:    true,
+	}
+	if !reflect.DeepEqual(actions, []PlannedAction{want}) {
+		t.Fatalf("ListPlannedActions after migration = %#v, want %#v", actions, []PlannedAction{want})
+	}
+
+	actions[0].Status = PlannedActionFailedTerminal
+	actions[0].Error = strPtr("auth failed")
+	actions[0].FailureClass = strPtr(PlannedActionFailureClassAuth)
+	if err := store.UpdatePlannedAction(context.Background(), actions[0]); err != nil {
+		t.Fatalf("UpdatePlannedAction: %v", err)
+	}
+	updated, err := store.ListPlannedActions(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("ListPlannedActions after update: %v", err)
+	}
+	if !reflect.DeepEqual(updated, actions) {
+		t.Fatalf("ListPlannedActions after failure_class update = %#v, want %#v", updated, actions)
+	}
+}
+
 func TestForeignKeyCascadeDeletesRunChildren(t *testing.T) {
 	store := openStore(t)
 	ctx := context.Background()
@@ -547,6 +592,21 @@ func TestUpdatePlannedActionMissingRow(t *testing.T) {
 	}
 }
 
+func TestListPlannedActionsRejectsUnknownFailureClass(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	action := validPlannedAction(run.RunID)
+	action.FindingID = nil
+	insertPlannedAction(t, store, action)
+
+	execSQL(t, store.db, "UPDATE planned_actions SET failure_class = ? WHERE action_id = ?", "network", action.ActionID)
+
+	_, err := store.ListPlannedActions(context.Background(), run.RunID)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("ListPlannedActions unknown failure class error = %v, want ErrInvalidInput", err)
+	}
+}
+
 func TestCompleteRunPersistsOutcomeAndCompletionTime(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, validAllocateRunParams())
@@ -810,6 +870,12 @@ func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 			action.FailureClass = strPtr(" ")
 			return s.InsertPlannedAction(context.Background(), action)
 		}},
+		{name: "planned action bad failure class", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			action := validPlannedAction(run.RunID)
+			action.FailureClass = strPtr("network")
+			return s.InsertPlannedAction(context.Background(), action)
+		}},
 		{name: "named session missing name", run: func(_ *testing.T, s *Store) error {
 			named := validNamedSession()
 			named.Name = ""
@@ -980,6 +1046,41 @@ func openStoreAt(t *testing.T, path string) *Store {
 		}
 	})
 	return store
+}
+
+func seedVersion1Ledger(t *testing.T, path string, plannedAt time.Time) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	for _, statement := range schemaStatements {
+		execSQL(t, db, statement)
+	}
+	execSQL(t, db, `CREATE TABLE meta (
+schema_version INTEGER NOT NULL,
+created_at     TEXT NOT NULL
+)`)
+	execSQL(t, db, "CREATE UNIQUE INDEX meta_single_row ON meta ((1))")
+	execSQL(t, db, "INSERT INTO meta (schema_version, created_at) VALUES (?, ?)", 1, encodeTime(time.Date(2026, 5, 30, 11, 59, 0, 0, time.UTC)))
+	execSQL(t, db, "INSERT INTO prs (pr_key, pr_url, first_seen_at) VALUES (?, ?, ?)", "pr-1", "https://example.test/pr/1", encodeTime(time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)))
+	execSQL(t, db, `INSERT INTO runs (
+run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode, started_at, artifact_path
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"run-1", "pr-1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		1, "default", "reviewer@example.com", PostModeLive.String(), encodeTime(time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC)), "/tmp/run-1",
+	)
+	execSQL(t, db, `INSERT INTO planned_actions (
+action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,
+required, attempts, attempted_at, posted_at, upstream_id, error
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"action-1", "run-1", PlannedActionRollupComment.String(), nil, nil, encodeTime(plannedAt), `{"body":"hello"}`,
+		PlannedActionPending.String(), 1, 0, nil, nil, nil, nil,
+	)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
 }
 
 func validAllocateRunParams() AllocateRunParams {

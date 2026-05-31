@@ -200,6 +200,12 @@ func ParsePlannedActionStatus(value string) (PlannedActionStatus, error) {
 	return status, nil
 }
 
+// PlannedActionFailureClass values stored for terminal post-phase failures.
+const (
+	PlannedActionFailureClassTerminal = "terminal"
+	PlannedActionFailureClassAuth     = "auth"
+)
+
 // Store owns the SQLite connection and serializes mutating ledger writes.
 type Store struct {
 	db       *sql.DB
@@ -1011,10 +1017,19 @@ func validatePlannedAction(action PlannedAction) error {
 	if action.Attempts < 0 {
 		return invalidInput("attempts", fmt.Sprint(action.Attempts))
 	}
-	if action.FailureClass != nil && strings.TrimSpace(*action.FailureClass) == "" {
-		return invalidInput("failure_class", "")
+	if action.FailureClass != nil && !validPlannedActionFailureClass(*action.FailureClass) {
+		return invalidInput("failure_class", *action.FailureClass)
 	}
 	return nil
+}
+
+func validPlannedActionFailureClass(value string) bool {
+	switch value {
+	case PlannedActionFailureClassTerminal, PlannedActionFailureClassAuth:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateNamedSession(session NamedSession) error {
@@ -1228,7 +1243,13 @@ func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, erro
 	}
 	action.UpstreamID = stringPtrFromNull(upstreamID)
 	action.Error = stringPtrFromNull(errorText)
-	action.FailureClass = stringPtrFromNull(failureClass)
+	if failureClass.Valid {
+		if !validPlannedActionFailureClass(failureClass.String) {
+			return PlannedAction{}, invalidInput("failure_class", failureClass.String)
+		}
+		value := failureClass.String
+		action.FailureClass = &value
+	}
 	return action, nil
 }
 
