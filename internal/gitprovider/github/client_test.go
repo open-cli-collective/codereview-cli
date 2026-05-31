@@ -15,20 +15,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
-func TestClientImplementsReadProviderOnly(_ *testing.T) {
-	var _ readProvider = (*Client)(nil)
-}
-
-type readProvider interface {
-	WhoAmI(ctx context.Context, creds gitprovider.Credential) (gitprovider.Identity, error)
-	GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.PR, error)
-	GetDiff(ctx context.Context, ref gitprovider.PRRef) (gitprovider.UnifiedDiff, error)
-	GetFileAtRef(ctx context.Context, ref gitprovider.PRRef, gitRef string, path string) ([]byte, error)
-	ListTreeAtRef(ctx context.Context, ref gitprovider.PRRef, gitRef string, path string) ([]gitprovider.TreeEntry, error)
-	ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.InlineThread, error)
-	ListReviews(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.Review, error)
-	ListIssueComments(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.IssueComment, error)
-	Capabilities() gitprovider.ProviderCaps
+func TestClientImplementsGitProvider(_ *testing.T) {
+	var _ gitprovider.GitProvider = (*Client)(nil)
 }
 
 func TestCapabilities(t *testing.T) {

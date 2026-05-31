@@ -50,6 +50,37 @@ func (c *Client) doREST(ctx context.Context, op gitprovider.Operation, method, e
 	return body, resp.Header, nil
 }
 
+func (c *Client) doRESTJSON(ctx context.Context, op gitprovider.Operation, method, endpoint string, in any, out any) error {
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	setHeaders(req, c.token, acceptJSON)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return mapTransportError(op, err)
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return gitprovider.WrapError(gitprovider.ErrRetryable, op, readErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return mapWriteHTTPStatus(op, resp.StatusCode, body)
+	}
+	if out != nil {
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("%w: decode GitHub response: %w", ErrValidation, err)
+		}
+	}
+	return nil
+}
+
 func doRESTPages[T any](ctx context.Context, c *Client, op gitprovider.Operation, endpoint, accept string) ([]T, error) {
 	var all []T
 	next := endpoint
@@ -69,6 +100,10 @@ func doRESTPages[T any](ctx context.Context, c *Client, op gitprovider.Operation
 }
 
 func (c *Client) doGraphQL(ctx context.Context, op gitprovider.Operation, query string, variables map[string]any, out any) error {
+	return c.doGraphQLWithErrorMapper(ctx, op, query, variables, out, mapGraphQLErrors)
+}
+
+func (c *Client) doGraphQLWithErrorMapper(ctx context.Context, op gitprovider.Operation, query string, variables map[string]any, out any, mapErrors func(gitprovider.Operation, []graphQLError) error) error {
 	payload, err := json.Marshal(graphQLRequest{Query: query, Variables: variables})
 	if err != nil {
 		return err
@@ -97,7 +132,7 @@ func (c *Client) doGraphQL(ctx context.Context, op gitprovider.Operation, query 
 		return fmt.Errorf("%w: decode GraphQL response: %w", ErrValidation, err)
 	}
 	if len(envelope.Errors) > 0 {
-		return mapGraphQLErrors(op, envelope.Errors)
+		return mapErrors(op, envelope.Errors)
 	}
 	if out == nil {
 		return nil
@@ -153,6 +188,27 @@ func mapHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
 		}
 		return fmt.Errorf("%w: %w", ErrValidation, err)
 	}
+}
+
+func mapWriteHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
+	err := fmt.Errorf("github: status %d: %s", status, sanitizedBody(body))
+	if status == http.StatusUnprocessableEntity {
+		if isCommitBoundWriteOperation(op) && isStaleSHABody(body) {
+			return gitprovider.WrapError(gitprovider.ErrStaleSHA, op, err)
+		}
+		return fmt.Errorf("%w: %w", ErrValidation, err)
+	}
+	return mapHTTPStatus(op, status, body)
+}
+
+func isCommitBoundWriteOperation(op gitprovider.Operation) bool {
+	return op == gitprovider.OperationPostInlineComment || op == gitprovider.OperationSubmitReview
+}
+
+func isStaleSHABody(body []byte) bool {
+	normalized := strings.ToLower(string(body))
+	return strings.Contains(normalized, "commit_id") &&
+		strings.Contains(normalized, "not the head commit")
 }
 
 func sanitizedBody(body []byte) string {
