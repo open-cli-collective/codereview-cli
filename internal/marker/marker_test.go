@@ -82,6 +82,29 @@ func TestParseActionRoundTrip(t *testing.T) {
 			BaseSHA:  "basesha",
 			Outcome:  RollupOutcomeNothingToReview,
 		},
+		{
+			RunID:    "run-3",
+			ActionID: "action-3",
+			Kind:     ActionKindSubmitReview,
+			SHA:      "headsha",
+			BaseSHA:  "basesha",
+		},
+		{
+			RunID:    "run-4",
+			ActionID: "action-4",
+			Kind:     ActionKindRollupComment,
+			SHA:      "headsha",
+			BaseSHA:  "basesha",
+			Outcome:  RollupOutcomeRequestChanges,
+		},
+		{
+			RunID:    "run-5",
+			ActionID: "action-5",
+			Kind:     ActionKindRollupComment,
+			SHA:      "headsha",
+			BaseSHA:  "basesha",
+			Outcome:  RollupOutcomeComment,
+		},
 	}
 
 	for _, want := range tests {
@@ -302,15 +325,15 @@ func TestParseThreadSummaryRejectsMalformedMarkers(t *testing.T) {
 
 func TestFindActions(t *testing.T) {
 	first := ActionMarker{
-		RunID:    "run-1",
-		ActionID: "action-1",
+		RunID:    "run-z",
+		ActionID: "action-z",
 		Kind:     ActionKindInlineComment,
 		SHA:      "head-1",
 		BaseSHA:  "base-1",
 	}
 	second := ActionMarker{
-		RunID:    "run-2",
-		ActionID: "action-2",
+		RunID:    "run-a",
+		ActionID: "action-a",
 		Kind:     ActionKindRollupComment,
 		SHA:      "head-2",
 		BaseSHA:  "base-2",
@@ -332,8 +355,8 @@ func TestFindActions(t *testing.T) {
 }
 
 func TestFindThreadSummaries(t *testing.T) {
-	first := ThreadSummaryMarker{RunID: "run-1", ActionID: "action-1"}
-	second := ThreadSummaryMarker{RunID: "run-2", ActionID: "action-2"}
+	first := ThreadSummaryMarker{RunID: "run-z", ActionID: "action-z"}
+	second := ThreadSummaryMarker{RunID: "run-a", ActionID: "action-a"}
 	body := strings.Join([]string{
 		mustRenderThreadSummary(t, first),
 		"<!-- codereview:thread-summary:run-id=bad:action= -->",
