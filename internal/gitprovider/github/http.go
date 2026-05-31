@@ -193,12 +193,16 @@ func mapHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
 func mapWriteHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
 	err := fmt.Errorf("github: status %d: %s", status, sanitizedBody(body))
 	if status == http.StatusUnprocessableEntity {
-		if isStaleSHABody(body) {
+		if isCommitBoundWriteOperation(op) && isStaleSHABody(body) {
 			return gitprovider.WrapError(gitprovider.ErrStaleSHA, op, err)
 		}
 		return fmt.Errorf("%w: %w", ErrValidation, err)
 	}
 	return mapHTTPStatus(op, status, body)
+}
+
+func isCommitBoundWriteOperation(op gitprovider.Operation) bool {
+	return op == gitprovider.OperationPostInlineComment || op == gitprovider.OperationSubmitReview
 }
 
 func isStaleSHABody(body []byte) bool {

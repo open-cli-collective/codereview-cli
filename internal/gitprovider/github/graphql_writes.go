@@ -56,8 +56,12 @@ func (c *Client) ReplyToThread(ctx context.Context, ref gitprovider.PRRef, threa
 		return "", err
 	}
 	id := data.AddPullRequestReviewThreadReply.Comment.ID
-	if id == "" {
-		id = stringIDFromInt(data.AddPullRequestReviewThreadReply.Comment.DatabaseID)
+	if strings.TrimSpace(id) == "" {
+		var idErr error
+		id, idErr = requireWriteID("thread reply comment ID", data.AddPullRequestReviewThreadReply.Comment.DatabaseID)
+		if idErr != nil {
+			return "", idErr
+		}
 	}
 	return gitprovider.CommentID(id), nil
 }

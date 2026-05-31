@@ -178,6 +178,75 @@ func TestRESTWriteErrorTaxonomy(t *testing.T) {
 	}
 }
 
+func TestPostIssueCommentStaleLooking422IsValidation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requireJSONWrite(t, r)
+		if r.URL.EscapedPath() != "/repos/open%20cli/repo+name/issues/42/comments" {
+			t.Fatalf("path = %s, want issue comments path", r.URL.EscapedPath())
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"commit_id head-sha is not the head commit for this pull request"}`))
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	_, err := client.PostIssueComment(context.Background(), testPRRef(), "rollup body")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("PostIssueComment error = %v, want ErrValidation", err)
+	}
+	if errors.Is(err, gitprovider.ErrStaleSHA) {
+		t.Fatalf("PostIssueComment error = %v, did not want ErrStaleSHA", err)
+	}
+}
+
+func TestRESTWriteSuccessfulResponsesRequireIDs(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Client) error
+	}{
+		{
+			name: "inline comment",
+			call: func(client *Client) error {
+				_, err := client.PostInlineComment(context.Background(), testPRRef(), validLineComment())
+				return err
+			},
+		},
+		{
+			name: "issue comment",
+			call: func(client *Client) error {
+				_, err := client.PostIssueComment(context.Background(), testPRRef(), "rollup body")
+				return err
+			},
+		},
+		{
+			name: "review",
+			call: func(client *Client) error {
+				_, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
+					CommitSHA: "head-sha",
+					Event:     review.ReviewEventComment,
+					Body:      "review body",
+				})
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requireJSONWrite(t, r)
+				writeJSON(t, w, map[string]any{"id": 0})
+			}))
+			defer server.Close()
+			client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+			err := tt.call(client)
+			if !errors.Is(err, ErrValidation) {
+				t.Fatalf("error = %v, want ErrValidation", err)
+			}
+		})
+	}
+}
+
 func validLineComment() gitprovider.InlineComment {
 	return gitprovider.InlineComment{
 		CommitSHA:   "head-sha",

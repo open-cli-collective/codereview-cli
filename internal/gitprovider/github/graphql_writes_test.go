@@ -115,3 +115,19 @@ func TestAlreadyResolvedGraphQLErrorIsResolveThreadLocal(t *testing.T) {
 		t.Fatalf("ReplyToThread already-resolved error = %v, want shared classifier fallback", err)
 	}
 }
+
+func TestReplyToThreadSuccessfulResponseRequiresID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = readGraphQLRequestAtEndpoint(t, r)
+		writeJSON(t, w, map[string]any{"data": map[string]any{"addPullRequestReviewThreadReply": map[string]any{
+			"comment": map[string]any{},
+		}}})
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	_, err := client.ReplyToThread(context.Background(), testPRRef(), "thread-1", "body")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("ReplyToThread error = %v, want ErrValidation", err)
+	}
+}

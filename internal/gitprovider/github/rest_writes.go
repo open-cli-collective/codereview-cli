@@ -62,7 +62,11 @@ func (c *Client) PostInlineComment(ctx context.Context, ref gitprovider.PRRef, c
 	if err := c.doRESTJSON(ctx, gitprovider.OperationPostInlineComment, http.MethodPost, endpoint, payload, &response); err != nil {
 		return "", err
 	}
-	return gitprovider.CommentID(stringIDFromInt(response.ID)), nil
+	id, err := requireWriteID("pull request comment ID", response.ID)
+	if err != nil {
+		return "", err
+	}
+	return gitprovider.CommentID(id), nil
 }
 
 // PostIssueComment posts a pull-request issue comment.
@@ -78,7 +82,11 @@ func (c *Client) PostIssueComment(ctx context.Context, ref gitprovider.PRRef, bo
 	if err := c.doRESTJSON(ctx, gitprovider.OperationPostIssueComment, http.MethodPost, endpoint, issueCommentRequest{Body: body}, &response); err != nil {
 		return "", err
 	}
-	return gitprovider.CommentID(stringIDFromInt(response.ID)), nil
+	id, err := requireWriteID("issue comment ID", response.ID)
+	if err != nil {
+		return "", err
+	}
+	return gitprovider.CommentID(id), nil
 }
 
 // SubmitReview submits the final pull-request review event.
@@ -99,7 +107,11 @@ func (c *Client) SubmitReview(ctx context.Context, ref gitprovider.PRRef, reques
 	if err := c.doRESTJSON(ctx, gitprovider.OperationSubmitReview, http.MethodPost, endpoint, payload, &response); err != nil {
 		return "", err
 	}
-	return gitprovider.ReviewID(stringIDFromInt(response.ID)), nil
+	id, err := requireWriteID("review ID", response.ID)
+	if err != nil {
+		return "", err
+	}
+	return gitprovider.ReviewID(id), nil
 }
 
 func reviewEvent(event review.ReviewEvent) (string, error) {
@@ -120,4 +132,11 @@ func requireWriteValue(name string, value string) error {
 		return fmt.Errorf("%w: %s is required", ErrValidation, name)
 	}
 	return nil
+}
+
+func requireWriteID(name string, id int64) (string, error) {
+	if id <= 0 {
+		return "", fmt.Errorf("%w: %s missing from successful GitHub response", ErrValidation, name)
+	}
+	return stringIDFromInt(id), nil
 }
