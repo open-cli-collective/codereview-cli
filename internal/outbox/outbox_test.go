@@ -286,6 +286,102 @@ func TestPostReconcilesPreexistingActionsAndPostsOnlyMissingAction(t *testing.T)
 	}
 }
 
+func TestPostReconcilesNonInlineMarkersOnlyFromPostingIdentity(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	ref := testPRRef()
+	limiter := &spyLimiter{}
+
+	insertAction(t, store, plannedAction(run.RunID, "reply-1", ledger.PlannedActionThreadReply, true, "thread-1", ThreadReplyPayload{Body: "reply body"}))
+	insertAction(t, store, plannedAction(run.RunID, "summary-1", ledger.PlannedActionThreadReply, true, "thread-2", ThreadReplyPayload{Body: "summary body", Summary: true}))
+	insertAction(t, store, plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup body"}))
+	insertAction(t, store, plannedAction(run.RunID, "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{
+		Body:  "review body",
+		Event: review.ReviewEventComment,
+	}))
+
+	replyMarker := mustRenderAction(t, marker.ActionMarker{
+		RunID:    run.RunID,
+		ActionID: "reply-1",
+		Kind:     marker.ActionKindThreadReply,
+		SHA:      run.SHA,
+		BaseSHA:  run.BaseSHA,
+	})
+	summaryMarker := mustRenderThreadSummary(t, marker.ThreadSummaryMarker{RunID: run.RunID, ActionID: "summary-1"})
+	rollupMarker := mustRenderAction(t, marker.ActionMarker{
+		RunID:    run.RunID,
+		ActionID: "rollup-1",
+		Kind:     marker.ActionKindRollupComment,
+		SHA:      run.SHA,
+		BaseSHA:  run.BaseSHA,
+		Outcome:  string(ledger.OutcomeComment),
+	})
+	submitMarker := mustRenderAction(t, marker.ActionMarker{
+		RunID:    run.RunID,
+		ActionID: "submit-1",
+		Kind:     marker.ActionKindSubmitReview,
+		SHA:      run.SHA,
+		BaseSHA:  run.BaseSHA,
+	})
+	other := gitprovider.Identity{Login: "other", ID: "other-id"}
+
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{
+		{
+			ID: gitprovider.ThreadID("thread-1"),
+			Comments: []gitprovider.ThreadComment{
+				{ID: gitprovider.CommentID("comment-other-reply"), Author: other, Body: replyMarker},
+				{ID: gitprovider.CommentID("comment-bot-reply"), Author: botIdentity(), Body: replyMarker},
+			},
+		},
+		{
+			ID: gitprovider.ThreadID("thread-2"),
+			Comments: []gitprovider.ThreadComment{
+				{ID: gitprovider.CommentID("comment-other-summary"), Author: other, Body: summaryMarker},
+				{ID: gitprovider.CommentID("comment-bot-summary"), Author: botIdentity(), Body: summaryMarker},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
+	if err := provider.SetIssueComments(ref, []gitprovider.IssueComment{
+		{ID: gitprovider.CommentID("issue-other-rollup"), Author: other, Body: rollupMarker},
+		{ID: gitprovider.CommentID("issue-bot-rollup"), Author: botIdentity(), Body: rollupMarker},
+	}); err != nil {
+		t.Fatalf("SetIssueComments: %v", err)
+	}
+	if err := provider.SetReviews(ref, []gitprovider.Review{
+		{ID: gitprovider.ReviewID("review-other-submit"), Author: other, Body: submitMarker},
+		{ID: gitprovider.ReviewID("review-bot-submit"), Author: botIdentity(), Body: submitMarker},
+	}); err != nil {
+		t.Fatalf("SetReviews: %v", err)
+	}
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.Outcome != ledger.OutcomeComment || result.ExitCode != exitOK {
+		t.Fatalf("Post result = %#v, want comment exit 0", result)
+	}
+	if len(provider.writes) != 0 || limiter.calls != 0 {
+		t.Fatalf("writes = %#v limiter calls = %d, want no writes", provider.writes, limiter.calls)
+	}
+
+	wantUpstreams := map[string]string{
+		"reply-1":   "comment-bot-reply",
+		"summary-1": "comment-bot-summary",
+		"rollup-1":  "issue-bot-rollup",
+		"submit-1":  "review-bot-submit",
+	}
+	for actionID, upstreamID := range wantUpstreams {
+		action := actionByID(t, store, run.RunID, actionID)
+		if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != upstreamID {
+			t.Fatalf("%s after reconciliation = %#v, want posted upstream %s", actionID, action, upstreamID)
+		}
+	}
+}
+
 func TestPostValidationRejectsBadWiringBeforeSideEffects(t *testing.T) {
 	run := testRun(ledger.PostModeLive)
 	tests := []struct {
@@ -338,6 +434,64 @@ func TestPostSkipsPlannedOnlyRowsDuringIOAndFinalization(t *testing.T) {
 	if len(provider.reads) != 0 {
 		t.Fatalf("provider reads = %#v, want none", provider.reads)
 	}
+}
+
+func TestPostFinalizationIgnoresOptionalFailuresAndPlannedOnlyRows(t *testing.T) {
+	t.Run("optional terminal failure is non-fatal", func(t *testing.T) {
+		store := openStore(t)
+		run := allocateRun(t, store, ledger.PostModeLive)
+		provider := newRecordingProvider()
+		limiter := &spyLimiter{}
+		insertAction(t, store, ledger.PlannedAction{
+			ActionID:    "optional-bad-json",
+			RunID:       run.RunID,
+			Kind:        ledger.PlannedActionRollupComment,
+			PlannedAt:   testTime(),
+			PayloadJSON: `{bad-json`,
+			Status:      ledger.PlannedActionPending,
+			Required:    false,
+		})
+
+		result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
+		if err != nil {
+			t.Fatalf("Post: %v", err)
+		}
+		if result.Outcome != ledger.OutcomeComment || result.ExitCode != exitOK || result.FailedTerminal != 1 {
+			t.Fatalf("Post result = %#v, want comment exit 0 with optional terminal failure", result)
+		}
+		if limiter.calls != 0 || len(provider.writes) != 0 {
+			t.Fatalf("limiter calls = %d writes = %#v, want none", limiter.calls, provider.writes)
+		}
+		assertRunOutcome(t, store, run.RunID, ptrOutcome(ledger.OutcomeComment))
+	})
+
+	t.Run("required malformed planned-only row is excluded", func(t *testing.T) {
+		store := openStore(t)
+		run := allocateRun(t, store, ledger.PostModeLive)
+		provider := newRecordingProvider()
+		action := ledger.PlannedAction{
+			ActionID:    "planned-only-bad-json",
+			RunID:       run.RunID,
+			Kind:        ledger.PlannedActionRollupComment,
+			PlannedAt:   testTime(),
+			PayloadJSON: `{bad-json`,
+			Status:      ledger.PlannedActionPlannedOnly,
+			Required:    true,
+		}
+		insertAction(t, store, action)
+
+		result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
+		if err != nil {
+			t.Fatalf("Post: %v", err)
+		}
+		if result.Outcome != ledger.OutcomeComment || result.ExitCode != exitOK || result.FailedTerminal != 0 {
+			t.Fatalf("Post result = %#v, want planned-only excluded from finalization", result)
+		}
+		if len(provider.reads) != 0 || len(provider.writes) != 0 {
+			t.Fatalf("provider reads/writes = %#v/%#v, want none", provider.reads, provider.writes)
+		}
+		assertRunOutcome(t, store, run.RunID, ptrOutcome(ledger.OutcomeComment))
+	})
 }
 
 func TestPostReadFailureDoesNotWriteOrFinalize(t *testing.T) {
@@ -693,6 +847,65 @@ func TestPostConflictFallback(t *testing.T) {
 			t.Fatalf("rollup status = %s, want failed_terminal", got.Status)
 		}
 	})
+
+	for _, tt := range []struct {
+		name     string
+		cause    error
+		wantExit int
+	}{
+		{name: "wrapped auth fails terminal with auth exit", cause: gitprovider.ErrAuth, wantExit: exitAuth},
+		{name: "wrapped permission fails terminal with auth exit", cause: gitprovider.ErrPermission, wantExit: exitAuth},
+		{name: "wrapped not found fails terminal", cause: gitprovider.ErrNotFound, wantExit: exitFailed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := openStore(t)
+			run := allocateRun(t, store, ledger.PostModeLive)
+			provider := newRecordingProvider()
+			provider.SetError(gitprovider.OperationPostIssueComment, gitprovider.WrapError(gitprovider.ErrConflict, gitprovider.OperationPostIssueComment, tt.cause))
+			insertAction(t, store, plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup"}))
+
+			result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
+			if err != nil {
+				t.Fatalf("Post: %v", err)
+			}
+			if result.Outcome != ledger.OutcomeFailed || result.ExitCode != tt.wantExit {
+				t.Fatalf("Post result = %#v, want failed exit %d", result, tt.wantExit)
+			}
+			if !reflect.DeepEqual(provider.writes, []string{"PostIssueComment"}) {
+				t.Fatalf("provider writes = %#v, want one rollup attempt", provider.writes)
+			}
+			if got := actionByID(t, store, run.RunID, "rollup-1"); got.Status != ledger.PlannedActionFailedTerminal || got.Attempts != 1 || got.Error == nil {
+				t.Fatalf("rollup status = %#v, want failed_terminal with one attempt", got)
+			}
+		})
+	}
+}
+
+func TestPostResolveThreadDoesNotReconcileWithoutPostedSameRunReply(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	ref := testPRRef()
+	provider.SetError(gitprovider.OperationResolveThread, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationResolveThread, nil))
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{{ID: gitprovider.ThreadID("thread-1"), Resolved: true}}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
+	insertAction(t, store, plannedAction(run.RunID, "resolve-1", ledger.PlannedActionResolveThread, true, "thread-1", ResolveThreadPayload{}))
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.Outcome != ledger.OutcomeIncomplete || result.ExitCode != exitUpstream {
+		t.Fatalf("Post result = %#v, want incomplete exit 5", result)
+	}
+	if !reflect.DeepEqual(provider.writes, []string{"ResolveThread"}) {
+		t.Fatalf("provider writes = %#v, want resolve attempt", provider.writes)
+	}
+	action := actionByID(t, store, run.RunID, "resolve-1")
+	if action.Status != ledger.PlannedActionPending || action.Attempts != 1 || action.Error == nil {
+		t.Fatalf("resolve action = %#v, want pending after retryable resolve attempt", action)
+	}
 }
 
 func TestTokenBucketValidationAndCancellation(t *testing.T) {
@@ -728,12 +941,10 @@ func TestTokenBucketIsHostKeyedAndSpacesSameHost(t *testing.T) {
 	if err := bucket.Wait(ctx, "github.com"); err != nil {
 		t.Fatalf("first github Wait: %v", err)
 	}
-	otherStart := time.Now()
-	if err := bucket.Wait(ctx, "gitlab.com"); err != nil {
+	otherCtx, otherCancel := context.WithTimeout(ctx, interval/4)
+	defer otherCancel()
+	if err := bucket.Wait(otherCtx, "gitlab.com"); err != nil {
 		t.Fatalf("gitlab Wait: %v", err)
-	}
-	if elapsed := time.Since(otherStart); elapsed >= interval/2 {
-		t.Fatalf("other host Wait took %v, want below %v", elapsed, interval/2)
 	}
 	sameStart := time.Now()
 	if err := bucket.Wait(ctx, "github.com"); err != nil {
