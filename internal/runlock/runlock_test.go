@@ -1,3 +1,5 @@
+//go:build unix || windows
+
 package runlock
 
 import (
@@ -62,8 +64,18 @@ func TestDistinctLockPathsCanBeHeldTogether(t *testing.T) {
 }
 
 func TestAcquireRejectsEmptyPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
 	if _, err := Acquire(" "); err == nil {
 		t.Fatal("Acquire empty path error = nil, want error")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Acquire empty path created %#v, want no filesystem side effects", entries)
 	}
 }
 
