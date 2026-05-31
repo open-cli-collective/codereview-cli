@@ -178,18 +178,38 @@ func restURL(base *url.URL, parts ...string) string {
 }
 
 func restFileURL(base *url.URL, owner, repo, filePath, gitRef string) (string, error) {
-	if strings.TrimSpace(filePath) == "" {
-		return "", fmt.Errorf("%w: path is required", ErrValidation)
+	normalizedPath, err := validateFilePath(filePath)
+	if err != nil {
+		return "", err
 	}
 	u, err := url.Parse(restURL(base, "repos", owner, repo, "contents"))
 	if err != nil {
 		return "", err
 	}
-	u.Path = strings.TrimSuffix(u.Path, "/") + "/" + strings.TrimPrefix(filePath, "/")
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/" + normalizedPath
 	q := u.Query()
 	q.Set("ref", gitRef)
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+func validateFilePath(filePath string) (string, error) {
+	if strings.TrimSpace(filePath) == "" {
+		return "", fmt.Errorf("%w: path is required", ErrValidation)
+	}
+	normalized := strings.Trim(filePath, "/")
+	if normalized == "" {
+		return "", fmt.Errorf("%w: path is required", ErrValidation)
+	}
+	for _, segment := range strings.Split(normalized, "/") {
+		if segment == "" {
+			return "", fmt.Errorf("%w: path must not contain empty segments", ErrValidation)
+		}
+		if segment == "." || segment == ".." {
+			return "", fmt.Errorf("%w: path must not contain dot segments", ErrValidation)
+		}
+	}
+	return normalized, nil
 }
 
 func nextLink(header string) string {

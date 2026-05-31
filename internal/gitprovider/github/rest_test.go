@@ -149,6 +149,27 @@ func TestGetPRStateMapping(t *testing.T) {
 	}
 }
 
+func TestGetFileAtRefRejectsUnsafePathBeforeRequest(t *testing.T) {
+	ref := testPRRef()
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	for _, path := range []string{"../secret", "dir/../secret", "dir//file.go", "/"} {
+		_, err := client.GetFileAtRef(context.Background(), ref, "head-sha", path)
+		if !errors.Is(err, ErrValidation) {
+			t.Fatalf("GetFileAtRef(%q) error = %v, want ErrValidation", path, err)
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want no requests for unsafe paths", requests)
+	}
+}
+
 func TestRESTPagination(t *testing.T) {
 	ref := testPRRef()
 	requests := map[string]int{}
