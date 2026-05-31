@@ -11,10 +11,10 @@ import (
 
 func TestRenderConfigTextStoredCredentialRefs(t *testing.T) {
 	var out bytes.Buffer
-	show := NewConfigShow("work", workProfile(), dataConfig(), []config.CredentialRef{
-		{Purpose: "git", Ref: "codereview/work", Mode: "pat"},
-		{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "pat"},
-		{Purpose: "llm", Ref: "codereview/work-llm", Mode: "api_key"},
+	show := NewConfigShow("work", workProfile(), dataConfig(), []CredentialStatus{
+		credentialStatus("git", "codereview/work", "pat", "git_token", true),
+		credentialStatus("reviewer_credentials", "codereview/work-reviewer", "pat", "git_token", false),
+		credentialStatus("llm", "codereview/work-llm", "api_key", "llm_api_key", true),
 	})
 
 	if err := RenderConfigText(&out, show); err != nil {
@@ -26,6 +26,8 @@ func TestRenderConfigTextStoredCredentialRefs(t *testing.T) {
 		"Credential ref: codereview/work",
 		"Credential ref: codereview/work-reviewer",
 		"Credential ref: codereview/work-llm",
+		"git_token: present",
+		"llm_api_key: present",
 		"Allow self approve: true",
 		"Resolve threads: never",
 		"Max age days: 90",
@@ -41,8 +43,8 @@ func TestRenderConfigTextStoredCredentialRefs(t *testing.T) {
 
 func TestRenderConfigTextSubscriptionCredentialIsAdapterManaged(t *testing.T) {
 	var out bytes.Buffer
-	show := NewConfigShow("home", homeProfile(), dataConfig(), []config.CredentialRef{
-		{Purpose: "git", Ref: "codereview/home", Mode: "pat"},
+	show := NewConfigShow("home", homeProfile(), dataConfig(), []CredentialStatus{
+		credentialStatus("git", "codereview/home", "pat", "git_token", false),
 	})
 
 	if err := RenderConfigText(&out, show); err != nil {
@@ -59,8 +61,8 @@ func TestRenderConfigTextSubscriptionCredentialIsAdapterManaged(t *testing.T) {
 
 func TestRenderConfigTextExactHomeShape(t *testing.T) {
 	var out bytes.Buffer
-	show := NewConfigShow("home", homeProfile(), dataConfig(), []config.CredentialRef{
-		{Purpose: "git", Ref: "codereview/home", Mode: "pat"},
+	show := NewConfigShow("home", homeProfile(), dataConfig(), []CredentialStatus{
+		credentialStatus("git", "codereview/home", "pat", "git_token", false),
 	})
 
 	if err := RenderConfigText(&out, show); err != nil {
@@ -77,6 +79,9 @@ LLM:
   Auth: subscription
   Adapter: claude_cli
   Credential ref: adapter-managed; not stored by cr
+Credentials:
+  - git: codereview/home (pat)
+    git_token: missing
 Review policy:
   Major event: comment
   Allow self approve: false
@@ -91,8 +96,8 @@ Data retention:
 
 func TestRenderConfigJSON(t *testing.T) {
 	var out bytes.Buffer
-	show := NewConfigShow("work", workProfile(), dataConfig(), []config.CredentialRef{
-		{Purpose: "git", Ref: "codereview/work", Mode: "pat"},
+	show := NewConfigShow("work", workProfile(), dataConfig(), []CredentialStatus{
+		credentialStatus("git", "codereview/work", "pat", "git_token", true),
 	})
 
 	if err := RenderConfigJSON(&out, show); err != nil {
@@ -126,6 +131,23 @@ func homeProfile() config.Profile {
 			Adapter:  config.LLMAdapterClaudeCLI,
 		},
 		ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+	}
+}
+
+func credentialStatus(purpose, ref, mode, key string, present bool) CredentialStatus {
+	status := "missing"
+	if present {
+		status = "present"
+	}
+	return CredentialStatus{
+		Purpose: purpose,
+		Ref:     ref,
+		Mode:    mode,
+		Keys: []KeyStatus{{
+			Key:     key,
+			Present: &present,
+			Status:  status,
+		}},
 	}
 }
 

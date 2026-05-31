@@ -12,11 +12,30 @@ import (
 
 // ConfigShow is the presentation model for `cr config show`.
 type ConfigShow struct {
-	ActiveProfile  string                 `json:"active_profile"`
-	Profile        config.Profile         `json:"profile"`
-	Data           config.DataConfig      `json:"data"`
-	CredentialRefs []config.CredentialRef `json:"credential_refs"`
-	LLMCredential  LLMCredential          `json:"llm_credential"`
+	ActiveProfile  string             `json:"active_profile"`
+	Profile        config.Profile     `json:"profile"`
+	Data           config.DataConfig  `json:"data"`
+	Backend        string             `json:"backend,omitempty"`
+	BackendSource  string             `json:"backend_source,omitempty"`
+	CredentialRef  string             `json:"credential_ref,omitempty"`
+	CredentialRefs []CredentialStatus `json:"credential_refs"`
+	LLMCredential  LLMCredential      `json:"llm_credential"`
+}
+
+// CredentialStatus reports key presence for one declared credential ref.
+type CredentialStatus struct {
+	Purpose string      `json:"purpose"`
+	Ref     string      `json:"ref"`
+	Mode    string      `json:"mode"`
+	Keys    []KeyStatus `json:"keys,omitempty"`
+}
+
+// KeyStatus reports one non-secret key name and whether a value exists.
+type KeyStatus struct {
+	Key     string `json:"key"`
+	Present *bool  `json:"present,omitempty"`
+	Status  string `json:"status"`
+	Error   string `json:"error,omitempty"`
 }
 
 // LLMCredential describes how cr accounts for LLM credentials.
@@ -26,15 +45,17 @@ type LLMCredential struct {
 }
 
 // NewConfigShow builds the config presentation model.
-func NewConfigShow(profileName string, profile config.Profile, data config.DataConfig, refs []config.CredentialRef) ConfigShow {
+func NewConfigShow(profileName string, profile config.Profile, data config.DataConfig, refs []CredentialStatus) ConfigShow {
 	llmCredential := LLMCredential{Mode: "adapter_managed"}
 	if profile.LLM.Auth == config.LLMAuthAPIKey {
 		llmCredential = LLMCredential{Mode: "stored_ref", Ref: profile.LLM.CredentialRef}
 	}
+	credentialRef := profile.Git.CredentialRef
 	return ConfigShow{
 		ActiveProfile:  profileName,
 		Profile:        profile,
 		Data:           data,
+		CredentialRef:  credentialRef,
 		CredentialRefs: refs,
 		LLMCredential:  llmCredential,
 	}
@@ -44,6 +65,16 @@ func NewConfigShow(profileName string, profile config.Profile, data config.DataC
 func RenderConfigText(w io.Writer, show ConfigShow) error {
 	if _, err := fmt.Fprintf(w, "Profile: %s\n", show.ActiveProfile); err != nil {
 		return err
+	}
+	if show.Backend != "" {
+		if err := writeKV(w, "Keyring backend", show.Backend); err != nil {
+			return err
+		}
+	}
+	if show.BackendSource != "" {
+		if err := writeKV(w, "Keyring backend source", show.BackendSource); err != nil {
+			return err
+		}
 	}
 	if _, err := fmt.Fprintln(w, "Git:"); err != nil {
 		return err
@@ -111,6 +142,22 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 		}
 	}
 
+	if len(show.CredentialRefs) > 0 {
+		if _, err := fmt.Fprintln(w, "Credentials:"); err != nil {
+			return err
+		}
+		for _, ref := range show.CredentialRefs {
+			if _, err := fmt.Fprintf(w, "  - %s: %s (%s)\n", ref.Purpose, ref.Ref, ref.Mode); err != nil {
+				return err
+			}
+			for _, key := range ref.Keys {
+				if _, err := fmt.Fprintf(w, "    %s: %s\n", key.Key, key.Status); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	if _, err := fmt.Fprintln(w, "Review policy:"); err != nil {
 		return err
 	}
@@ -141,6 +188,62 @@ func RenderConfigJSON(w io.Writer, show ConfigShow) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(show)
+}
+
+// ConfigClear is the presentation model for `cr config clear`.
+type ConfigClear struct {
+	Backend       string                 `json:"backend"`
+	BackendSource string                 `json:"backend_source"`
+	Cleared       []ClearedCredentialRef `json:"cleared"`
+}
+
+// ClearedCredentialRef describes the keys removed from one credential ref.
+type ClearedCredentialRef struct {
+	Ref  string   `json:"ref"`
+	Keys []string `json:"keys"`
+}
+
+// RenderConfigClearText writes a stable human-readable clear summary.
+func RenderConfigClearText(w io.Writer, result ConfigClear) error {
+	if err := writeKV(w, "Keyring backend", result.Backend); err != nil {
+		return err
+	}
+	if err := writeKV(w, "Keyring backend source", result.BackendSource); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Cleared credentials:"); err != nil {
+		return err
+	}
+	for _, cleared := range result.Cleared {
+		if _, err := fmt.Fprintf(w, "  - %s: %d key(s)\n", cleared.Ref, len(cleared.Keys)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RenderConfigClearJSON writes the clear summary as indented JSON.
+func RenderConfigClearJSON(w io.Writer, result ConfigClear) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
+// CredentialWrite is the JSON envelope for `cr set-credential`.
+type CredentialWrite struct {
+	Ref           string `json:"ref"`
+	Key           string `json:"key"`
+	Backend       string `json:"backend,omitempty"`
+	BackendSource string `json:"backend_source,omitempty"`
+	Written       bool   `json:"written"`
+	Error         string `json:"error,omitempty"`
+}
+
+// RenderCredentialWriteJSON writes a set-credential result envelope.
+func RenderCredentialWriteJSON(w io.Writer, result CredentialWrite) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
 }
 
 func writeKV(w io.Writer, key, value string) error {
