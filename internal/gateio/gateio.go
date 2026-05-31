@@ -91,8 +91,7 @@ type markerRecord struct {
 }
 
 type staleRun struct {
-	run     ledger.Run
-	summary gate.RunSummary
+	run ledger.Run
 }
 
 // Evaluate acquires live gate state, calls the pure kernel, and executes
@@ -130,10 +129,16 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 	}()
 
-	for {
+	for attempts := 0; ; attempts++ {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		state, err := buildLocalState(ctx, opts, req)
 		if err != nil {
 			return Result{}, err
+		}
+		if attempts > len(state.staleRuns)+2 {
+			return Result{}, fmt.Errorf("gateio: stale-base cleanup exceeded retry limit")
 		}
 
 		decision := gate.Decide(state.kernel)
@@ -158,7 +163,7 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 
 // AbortIfBaseMoved aborts run when the PR base ref no longer matches run.BaseSHA.
 func AbortIfBaseMoved(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
-	if err := validateOptions(&opts); err != nil {
+	if err := validateAbortOptions(&opts); err != nil {
 		return Result{}, err
 	}
 	if err := validateRequest(req); err != nil {
@@ -218,22 +223,27 @@ func buildLocalState(ctx context.Context, opts Options, req Request) (gateState,
 	}
 	for _, run := range runs {
 		state.runByID[run.RunID] = run
+		if run.BaseSHA != req.PR.Base.SHA {
+			state.staleRuns = append(state.staleRuns, staleRun{run: run})
+			continue
+		}
 		summary, err := summarizeRun(ctx, opts.Store, run)
 		if err != nil {
 			return gateState{}, err
 		}
-		if run.BaseSHA == req.PR.Base.SHA {
-			state.kernel.ExactRuns = append(state.kernel.ExactRuns, summary)
-			continue
-		}
-		state.staleRuns = append(state.staleRuns, staleRun{run: run, summary: summary})
+		state.kernel.ExactRuns = append(state.kernel.ExactRuns, summary)
 	}
 	return state, nil
 }
 
 func attachExternalState(ctx context.Context, opts Options, req Request, state gateState) (gateState, error) {
 	for _, stale := range state.staleRuns {
-		candidate, probe, err := summarizeStaleCandidate(opts, req, stale.run, stale.summary)
+		summary, err := summarizeRun(ctx, opts.Store, stale.run)
+		if err != nil {
+			state.releaseStaleLocks()
+			return gateState{}, err
+		}
+		candidate, probe, err := summarizeStaleCandidate(opts, req, stale.run, summary)
 		if err != nil {
 			state.releaseStaleLocks()
 			return gateState{}, err
@@ -478,8 +488,9 @@ func classifyMarkers(records []markerRecord, headSHA, baseSHA string) gate.PRSum
 		currentPartial = newest(currentPartial, &record)
 	}
 	if len(submits) > 0 {
-		record := newestSubmit(submits)
-		return gate.PRSummary{State: gate.PRStateCompleteReview, RunID: record.marker.RunID}
+		if record, ok := newestSubmit(submits); ok {
+			return gate.PRSummary{State: gate.PRStateCompleteReview, RunID: record.marker.RunID}
+		}
 	}
 	if currentNoDiff != nil {
 		return gate.PRSummary{State: gate.PRStateCompleteNoDiff, RunID: currentNoDiff.marker.RunID, Outcome: gate.PROutcomeNothingToReview}
@@ -517,7 +528,7 @@ func abortStaleRuns(ctx context.Context, opts Options, state gateState, runIDs [
 	for _, runID := range runIDs {
 		probe, ok := state.staleLocks[runID]
 		if !ok || probe.lock == nil {
-			continue
+			return fmt.Errorf("gateio: stale abort target %q was not locked", runID)
 		}
 		if err := opts.Store.CompleteRun(ctx, runID, ledger.OutcomeAborted, opts.now()); err != nil {
 			return err
@@ -601,14 +612,24 @@ func (r Request) postingKey() string {
 }
 
 func validateOptions(opts *Options) error {
+	if err := validateAbortOptions(opts); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.Layout.DataRoot) == "" {
+		return fmt.Errorf("gateio: layout data root is required")
+	}
+	if opts.StaleHeartbeatThreshold <= 0 {
+		return fmt.Errorf("gateio: stale heartbeat threshold must be positive")
+	}
+	return nil
+}
+
+func validateAbortOptions(opts *Options) error {
 	if opts.Store == nil {
 		return fmt.Errorf("gateio: store is required")
 	}
 	if opts.Provider == nil {
 		return fmt.Errorf("gateio: provider is required")
-	}
-	if opts.StaleHeartbeatThreshold <= 0 {
-		return fmt.Errorf("gateio: stale heartbeat threshold must be positive")
 	}
 	return nil
 }
@@ -713,12 +734,15 @@ func newest(current *markerRecord, candidate *markerRecord) *markerRecord {
 	return current
 }
 
-func newestSubmit(submits map[string]markerRecord) markerRecord {
+func newestSubmit(submits map[string]markerRecord) (markerRecord, bool) {
 	var selected *markerRecord
 	for _, record := range submits {
 		selected = newest(selected, &record)
 	}
-	return *selected
+	if selected == nil {
+		return markerRecord{}, false
+	}
+	return *selected, true
 }
 
 func emitWarnings(w io.Writer, warnings []string) {

@@ -68,6 +68,11 @@ func TestEvaluateLocalResumeSkipsExternalFailures(t *testing.T) {
 	opts := fixture.opts()
 	provider := &countingProvider{GitProvider: fixture.provider}
 	opts.Provider = provider
+	opts.Store = plannedActionErrorStore{
+		Store: fixture.store,
+		runID: stale.RunID,
+		err:   errors.New("unexpected stale action lookup"),
+	}
 	opts.Acquire = func(path string) (Lock, error) {
 		if path == stalePath {
 			return nil, errors.New("unexpected stale lock probe")
@@ -260,6 +265,7 @@ func TestEvaluateStaleBaseLockAuthority(t *testing.T) {
 			if tt.holdOldLock {
 				fixture.locks.hold(t, fixture.lockPathForRun(t, run))
 			}
+			beforeRuns := fixture.listRuns(t)
 			var warnings bytes.Buffer
 			opts := fixture.opts()
 			opts.Warnings = &warnings
@@ -271,6 +277,13 @@ func TestEvaluateStaleBaseLockAuthority(t *testing.T) {
 			defer releaseResultLock(t, result)
 			if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh || result.Run.RunID == "" {
 				t.Fatalf("Evaluate = %#v, want fresh continuation after stale-base handling", result)
+			}
+			if result.Run.RunID == run.RunID || result.Run.BaseSHA != testBaseSHA {
+				t.Fatalf("fresh run = %#v, want new current-base run", result.Run)
+			}
+			afterRuns := fixture.listRuns(t)
+			if len(afterRuns) != len(beforeRuns)+1 {
+				t.Fatalf("runs after Evaluate = %d, want %d", len(afterRuns), len(beforeRuns)+1)
 			}
 			gotRun, err := fixture.store.GetRun(context.Background(), run.RunID)
 			if err != nil {
@@ -471,6 +484,46 @@ func TestEvaluateAbortsIfBaseMoved(t *testing.T) {
 	}
 }
 
+func TestEvaluateAbortsResumedRunIfBaseMoved(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-current", testBaseSHA, ledger.PostModeLive)
+	moved := fixture.req.PR
+	moved.Base.SHA = testOldBase
+	if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+		t.Fatalf("SetPR moved: %v", err)
+	}
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Status != StatusBaseMovedAbort || result.Decision.Kind != gate.DecisionError {
+		t.Fatalf("Evaluate = %#v, want base moved abort", result)
+	}
+	got, err := fixture.store.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Outcome == nil || *got.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("resumed outcome = %v, want aborted", got.Outcome)
+	}
+}
+
+func TestAbortIfBaseMovedDoesNotRequireStaleThreshold(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-current", testBaseSHA, ledger.PostModeLive)
+	opts := fixture.opts()
+	opts.StaleHeartbeatThreshold = 0
+
+	result, err := AbortIfBaseMoved(context.Background(), opts, fixture.req, run)
+	if err != nil {
+		t.Fatalf("AbortIfBaseMoved: %v", err)
+	}
+	if result.Status != StatusContinue {
+		t.Fatalf("AbortIfBaseMoved = %#v, want continue", result)
+	}
+}
+
 func TestGateRunStateMapsLedgerOutcomes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -541,6 +594,23 @@ func TestEvaluateRejectsNonPositiveStaleThreshold(t *testing.T) {
 	opts.StaleHeartbeatThreshold = 0
 	if _, err := Evaluate(context.Background(), opts, fixture.req); err == nil {
 		t.Fatal("Evaluate threshold 0 error = nil, want error")
+	}
+}
+
+func TestEvaluateRejectsMissingLayoutDataRoot(t *testing.T) {
+	fixture := newFixture(t)
+	opts := fixture.opts()
+	opts.Layout.DataRoot = ""
+	if _, err := Evaluate(context.Background(), opts, fixture.req); err == nil {
+		t.Fatal("Evaluate missing data root error = nil, want error")
+	}
+}
+
+func TestAbortStaleRunsRequiresLockedTarget(t *testing.T) {
+	fixture := newFixture(t)
+	err := abortStaleRuns(context.Background(), fixture.opts(), gateState{staleLocks: map[string]staleProbe{}}, []string{"missing-run"})
+	if err == nil {
+		t.Fatal("abortStaleRuns missing lock error = nil, want error")
 	}
 }
 
@@ -665,6 +735,19 @@ type countingProvider struct {
 	gitprovider.GitProvider
 	issueComments int
 	reviews       int
+}
+
+type plannedActionErrorStore struct {
+	Store
+	runID string
+	err   error
+}
+
+func (s plannedActionErrorStore) ListPlannedActions(ctx context.Context, runID string) ([]ledger.PlannedAction, error) {
+	if runID == s.runID {
+		return nil, s.err
+	}
+	return s.Store.ListPlannedActions(ctx, runID)
 }
 
 func (p *countingProvider) ListIssueComments(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.IssueComment, error) {
