@@ -107,6 +107,48 @@ func TestRESTReadMethodsMapResponses(t *testing.T) {
 	}
 }
 
+func TestGetPRStateMapping(t *testing.T) {
+	ref := testPRRef()
+	tests := []struct {
+		name   string
+		state  string
+		merged bool
+		want   gitprovider.PRState
+	}{
+		{name: "open", state: "open", want: gitprovider.PRStateOpen},
+		{name: "closed", state: "closed", want: gitprovider.PRStateClosed},
+		{name: "merged", state: "closed", merged: true, want: gitprovider.PRStateMerged},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.EscapedPath() != "/repos/open%20cli/repo+name/pulls/42" {
+					t.Fatalf("unexpected request path %s", r.URL.String())
+				}
+				writeJSON(t, w, prResponse{
+					Title:   "State test",
+					HTMLURL: "https://github.com/open-cli/repo/pull/42",
+					State:   tt.state,
+					Merged:  tt.merged,
+					User:    userResponse{Login: "author"},
+					Head:    branchResponse{Ref: "feature", SHA: "head-sha"},
+					Base:    branchResponse{Ref: "main", SHA: "base-sha"},
+				})
+			}))
+			defer server.Close()
+			client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+			pr, err := client.GetPR(context.Background(), ref)
+			if err != nil {
+				t.Fatalf("GetPR: %v", err)
+			}
+			if pr.State != tt.want {
+				t.Fatalf("GetPR state = %q, want %q", pr.State, tt.want)
+			}
+		})
+	}
+}
+
 func TestRESTPagination(t *testing.T) {
 	ref := testPRRef()
 	requests := map[string]int{}
