@@ -198,6 +198,14 @@ func TestPRScopedReadsRejectSlashInOwnerRepoBeforeRequest(t *testing.T) {
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("GetPR slash repo error = %v, want ErrValidation", err)
 	}
+	_, err = client.GetPR(context.Background(), gitprovider.PRRef{Host: "github.com", Owner: ".", Repo: "repo", Number: 1})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("GetPR dot owner error = %v, want ErrValidation", err)
+	}
+	_, err = client.GetPR(context.Background(), gitprovider.PRRef{Host: "github.com", Owner: "open-cli", Repo: "..", Number: 1})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("GetPR dot repo error = %v, want ErrValidation", err)
+	}
 	if requests != 0 {
 		t.Fatalf("requests = %d, want no requests for invalid path segments", requests)
 	}

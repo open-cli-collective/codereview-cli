@@ -226,5 +226,8 @@ func validatePathSegment(name, value string) error {
 	if strings.Contains(value, "/") {
 		return fmt.Errorf("%w: %s must not contain slash", ErrValidation, name)
 	}
+	if value == "." || value == ".." {
+		return fmt.Errorf("%w: %s must not be a dot segment", ErrValidation, name)
+	}
 	return nil
 }
