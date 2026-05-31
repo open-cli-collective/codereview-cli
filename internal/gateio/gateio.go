@@ -286,6 +286,11 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 		if !ok {
 			return Result{}, false, fmt.Errorf("gateio: resume run %q was not loaded", decision.RunID)
 		}
+		if baseResult, err := AbortIfBaseMoved(ctx, opts, req, run); err != nil {
+			return Result{}, false, err
+		} else if baseResult.Status == StatusBaseMovedAbort {
+			return baseResult, false, nil
+		}
 		*releaseCurrent = false
 		result.Status = StatusContinue
 		result.Run = run
@@ -300,6 +305,11 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 		run, err := allocateFresh(ctx, opts, req)
 		if err != nil {
 			return Result{}, false, err
+		}
+		if baseResult, err := AbortIfBaseMoved(ctx, opts, req, run); err != nil {
+			return Result{}, false, err
+		} else if baseResult.Status == StatusBaseMovedAbort {
+			return baseResult, false, nil
 		}
 		*releaseCurrent = false
 		result.Status = StatusContinue

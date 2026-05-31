@@ -66,6 +66,8 @@ func TestEvaluateLocalResumeSkipsExternalFailures(t *testing.T) {
 	stale := fixture.allocateRun(t, "run-stale", testOldBase, ledger.PostModeLive)
 	stalePath := fixture.lockPathForRun(t, stale)
 	opts := fixture.opts()
+	provider := &countingProvider{GitProvider: fixture.provider}
+	opts.Provider = provider
 	opts.Acquire = func(path string) (Lock, error) {
 		if path == stalePath {
 			return nil, errors.New("unexpected stale lock probe")
@@ -82,6 +84,9 @@ func TestEvaluateLocalResumeSkipsExternalFailures(t *testing.T) {
 	defer releaseResultLock(t, result)
 	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionResume || result.Run.RunID != run.RunID {
 		t.Fatalf("Evaluate = %#v, want local resume of %s", result, run.RunID)
+	}
+	if provider.issueComments != 0 || provider.reviews != 0 {
+		t.Fatalf("marker reads = issueComments:%d reviews:%d, want none", provider.issueComments, provider.reviews)
 	}
 }
 
@@ -264,6 +269,9 @@ func TestEvaluateStaleBaseLockAuthority(t *testing.T) {
 				t.Fatalf("Evaluate: %v", err)
 			}
 			defer releaseResultLock(t, result)
+			if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh || result.Run.RunID == "" {
+				t.Fatalf("Evaluate = %#v, want fresh continuation after stale-base handling", result)
+			}
 			gotRun, err := fixture.store.GetRun(context.Background(), run.RunID)
 			if err != nil {
 				t.Fatalf("GetRun stale: %v", err)
@@ -286,6 +294,8 @@ func TestEvaluateRerunSupersedesResumable(t *testing.T) {
 	stalePath := fixture.lockPathForRun(t, stale)
 	fixture.req.Flags.Rerun = true
 	opts := fixture.opts()
+	provider := &countingProvider{GitProvider: fixture.provider}
+	opts.Provider = provider
 	opts.Acquire = func(path string) (Lock, error) {
 		if path == stalePath {
 			return nil, errors.New("unexpected stale lock probe")
@@ -308,6 +318,9 @@ func TestEvaluateRerunSupersedesResumable(t *testing.T) {
 	}
 	if gotOld.Outcome == nil || *gotOld.Outcome != ledger.OutcomeAborted {
 		t.Fatalf("old outcome = %v, want aborted", gotOld.Outcome)
+	}
+	if provider.issueComments != 0 || provider.reviews != 0 {
+		t.Fatalf("marker reads = issueComments:%d reviews:%d, want none", provider.issueComments, provider.reviews)
 	}
 }
 
@@ -431,6 +444,30 @@ func TestAbortIfBaseMoved(t *testing.T) {
 	}
 	if got.Outcome == nil || *got.Outcome != ledger.OutcomeAborted {
 		t.Fatalf("outcome = %v, want aborted", got.Outcome)
+	}
+}
+
+func TestEvaluateAbortsIfBaseMoved(t *testing.T) {
+	fixture := newFixture(t)
+	moved := fixture.req.PR
+	moved.Base.SHA = testOldBase
+	if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+		t.Fatalf("SetPR moved: %v", err)
+	}
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Status != StatusBaseMovedAbort || result.Decision.Kind != gate.DecisionError {
+		t.Fatalf("Evaluate = %#v, want base moved abort", result)
+	}
+	runs := fixture.listRuns(t)
+	if len(runs) != 1 {
+		t.Fatalf("runs = %d, want allocated aborted run", len(runs))
+	}
+	if runs[0].Outcome == nil || *runs[0].Outcome != ledger.OutcomeAborted {
+		t.Fatalf("allocated outcome = %v, want aborted", runs[0].Outcome)
 	}
 }
 
@@ -622,6 +659,22 @@ type memoryLocks struct {
 type memoryLock struct {
 	path  string
 	locks *memoryLocks
+}
+
+type countingProvider struct {
+	gitprovider.GitProvider
+	issueComments int
+	reviews       int
+}
+
+func (p *countingProvider) ListIssueComments(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.IssueComment, error) {
+	p.issueComments++
+	return p.GitProvider.ListIssueComments(ctx, ref)
+}
+
+func (p *countingProvider) ListReviews(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.Review, error) {
+	p.reviews++
+	return p.GitProvider.ListReviews(ctx, ref)
 }
 
 func newMemoryLocks() *memoryLocks {
