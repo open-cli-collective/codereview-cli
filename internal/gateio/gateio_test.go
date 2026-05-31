@@ -3,6 +3,7 @@ package gateio
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -56,6 +57,31 @@ func TestEvaluateResumesLocalRunBeforePRState(t *testing.T) {
 	}
 	if runs := fixture.listRuns(t); len(runs) != 1 {
 		t.Fatalf("runs after resume = %d, want no fresh allocation", len(runs))
+	}
+}
+
+func TestEvaluateLocalResumeSkipsExternalFailures(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-resume", testBaseSHA, ledger.PostModeLive)
+	stale := fixture.allocateRun(t, "run-stale", testOldBase, ledger.PostModeLive)
+	stalePath := fixture.lockPathForRun(t, stale)
+	opts := fixture.opts()
+	opts.Acquire = func(path string) (Lock, error) {
+		if path == stalePath {
+			return nil, errors.New("unexpected stale lock probe")
+		}
+		return fixture.locks.acquire(path)
+	}
+	fixture.provider.SetError(gitprovider.OperationListIssueComments, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListIssueComments, errors.New("comments unavailable")))
+	fixture.provider.SetError(gitprovider.OperationListReviews, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListReviews, errors.New("reviews unavailable")))
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionResume || result.Run.RunID != run.RunID {
+		t.Fatalf("Evaluate = %#v, want local resume of %s", result, run.RunID)
 	}
 }
 
@@ -117,6 +143,32 @@ func TestEvaluatePRMarkerDecisions(t *testing.T) {
 			wantKind:   gate.DecisionRepair,
 			wantRunID:  "run-partial",
 			wantOut:    gate.PROutcomeRequestChanges,
+		},
+		{
+			name: "paired rollup and submit review exits early",
+			seed: func(t *testing.T, f *fixture) {
+				rollup := mustRenderAction(t, marker.ActionMarker{RunID: "run-paired", ActionID: "rollup-1", Kind: marker.ActionKindRollupComment, SHA: testHeadSHA, BaseSHA: testBaseSHA, Outcome: marker.RollupOutcomeRequestChanges})
+				submit := mustRenderAction(t, marker.ActionMarker{RunID: "run-paired", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview, SHA: testHeadSHA, BaseSHA: testBaseSHA})
+				setIssueComments(t, f, []gitprovider.IssueComment{{ID: "issue-1", Author: f.req.PostingIdentity, Body: rollup, CreatedAt: testNow}})
+				setReviews(t, f, []gitprovider.Review{{ID: "review-1", Author: f.req.PostingIdentity, Body: submit, SubmittedAt: testNow.Add(time.Minute)}})
+			},
+			wantStatus: StatusEarlyExit,
+			wantKind:   gate.DecisionEarlyExit,
+			wantRunID:  "run-paired",
+		},
+		{
+			name: "current complete marker beats stale marker",
+			seed: func(t *testing.T, f *fixture) {
+				current := mustRenderAction(t, marker.ActionMarker{RunID: "run-current", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview, SHA: testHeadSHA, BaseSHA: testBaseSHA})
+				stale := mustRenderAction(t, marker.ActionMarker{RunID: "run-stale-marker", ActionID: "rollup-1", Kind: marker.ActionKindRollupComment, SHA: testHeadSHA, BaseSHA: testOldBase, Outcome: marker.RollupOutcomeComment})
+				setIssueComments(t, f, []gitprovider.IssueComment{
+					{ID: "issue-current", Author: f.req.PostingIdentity, Body: current, CreatedAt: testNow},
+					{ID: "issue-stale", Author: f.req.PostingIdentity, Body: stale, CreatedAt: testNow.Add(time.Minute)},
+				})
+			},
+			wantStatus: StatusEarlyExit,
+			wantKind:   gate.DecisionEarlyExit,
+			wantRunID:  "run-current",
 		},
 		{
 			name: "stale-base marker allocates fresh",
@@ -230,9 +282,19 @@ func TestEvaluateStaleBaseLockAuthority(t *testing.T) {
 func TestEvaluateRerunSupersedesResumable(t *testing.T) {
 	fixture := newFixture(t)
 	old := fixture.allocateRun(t, "run-old", testBaseSHA, ledger.PostModeLive)
+	stale := fixture.allocateRun(t, "run-stale", testOldBase, ledger.PostModeLive)
+	stalePath := fixture.lockPathForRun(t, stale)
 	fixture.req.Flags.Rerun = true
+	opts := fixture.opts()
+	opts.Acquire = func(path string) (Lock, error) {
+		if path == stalePath {
+			return nil, errors.New("unexpected stale lock probe")
+		}
+		return fixture.locks.acquire(path)
+	}
+	fixture.provider.SetError(gitprovider.OperationListIssueComments, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListIssueComments, errors.New("comments unavailable")))
 
-	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	result, err := Evaluate(context.Background(), opts, fixture.req)
 	if err != nil {
 		t.Fatalf("Evaluate rerun: %v", err)
 	}
@@ -246,6 +308,50 @@ func TestEvaluateRerunSupersedesResumable(t *testing.T) {
 	}
 	if gotOld.Outcome == nil || *gotOld.Outcome != ledger.OutcomeAborted {
 		t.Fatalf("old outcome = %v, want aborted", gotOld.Outcome)
+	}
+}
+
+func TestEvaluateRetryPostsUnsupportedSkipsExternalState(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+	insertAction(t, fixture.store, plannedAction(run.RunID, "pending-required", ledger.PlannedActionPending, true, nil))
+	if err := fixture.store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, testNow); err != nil {
+		t.Fatalf("CompleteRun failed: %v", err)
+	}
+	stale := fixture.allocateRun(t, "run-stale", testOldBase, ledger.PostModeLive)
+	stalePath := fixture.lockPathForRun(t, stale)
+	fixture.req.Flags.RetryPosts = true
+	opts := fixture.opts()
+	opts.Acquire = func(path string) (Lock, error) {
+		if path == stalePath {
+			return nil, errors.New("unexpected stale lock probe")
+		}
+		return fixture.locks.acquire(path)
+	}
+	fixture.provider.SetError(gitprovider.OperationListReviews, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListReviews, errors.New("reviews unavailable")))
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate retry-posts: %v", err)
+	}
+	if result.Status != StatusRetryPostsUnsupported || result.Decision.Kind != gate.DecisionRetryPosts || result.Decision.RunID != run.RunID {
+		t.Fatalf("Evaluate = %#v, want retry-posts unsupported for %s", result, run.RunID)
+	}
+}
+
+func TestEvaluateDryRunFreshDoesNotAllocate(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.req.Flags.DryRun = true
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate dry-run: %v", err)
+	}
+	if result.Status != StatusDryRunFresh || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want dry-run fresh", result)
+	}
+	if runs := fixture.listRuns(t); len(runs) != 0 {
+		t.Fatalf("runs after dry-run = %d, want no allocation", len(runs))
 	}
 }
 
@@ -264,6 +370,42 @@ func TestEvaluateDryRunSurfacesKernelErrors(t *testing.T) {
 	}
 	if runs := fixture.listRuns(t); len(runs) != 0 {
 		t.Fatalf("runs after dry-run error = %d, want no allocation", len(runs))
+	}
+}
+
+func TestEvaluateRejectsMismatchedRequestIdentity(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Request)
+		wantErr string
+	}{
+		{
+			name: "pr snapshot ref",
+			mutate: func(req *Request) {
+				req.PR.Ref.Number++
+			},
+			wantErr: "PR snapshot ref",
+		},
+		{
+			name: "pr key",
+			mutate: func(req *Request) {
+				req.PRKey = "github_other_repo_22"
+			},
+			wantErr: "pr key",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			tt.mutate(&fixture.req)
+			_, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+			if err == nil {
+				t.Fatal("Evaluate error = nil, want mismatch error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Evaluate error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -289,6 +431,35 @@ func TestAbortIfBaseMoved(t *testing.T) {
 	}
 	if got.Outcome == nil || *got.Outcome != ledger.OutcomeAborted {
 		t.Fatalf("outcome = %v, want aborted", got.Outcome)
+	}
+}
+
+func TestGateRunStateMapsLedgerOutcomes(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome *ledger.Outcome
+		want    gate.RunState
+	}{
+		{name: "running", want: gate.RunStateRunning},
+		{name: "incomplete", outcome: outcomePtr(ledger.OutcomeIncomplete), want: gate.RunStateIncomplete},
+		{name: "approved", outcome: outcomePtr(ledger.OutcomeApproved), want: gate.RunStateApproved},
+		{name: "request changes", outcome: outcomePtr(ledger.OutcomeRequestChanges), want: gate.RunStateRequestChanges},
+		{name: "comment", outcome: outcomePtr(ledger.OutcomeComment), want: gate.RunStateComment},
+		{name: "nothing to review", outcome: outcomePtr(ledger.OutcomeNothingToReview), want: gate.RunStateNothingToReview},
+		{name: "dry run", outcome: outcomePtr(ledger.OutcomeDryRun), want: gate.RunStateDryRun},
+		{name: "aborted", outcome: outcomePtr(ledger.OutcomeAborted), want: gate.RunStateAborted},
+		{name: "failed", outcome: outcomePtr(ledger.OutcomeFailed), want: gate.RunStateFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := gateRunState(tt.outcome)
+			if err != nil {
+				t.Fatalf("gateRunState: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("gateRunState = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -544,6 +715,10 @@ func plannedAction(runID, actionID string, status ledger.PlannedActionStatus, re
 }
 
 func timePtr(value time.Time) *time.Time {
+	return &value
+}
+
+func outcomePtr(value ledger.Outcome) *ledger.Outcome {
 	return &value
 }
 

@@ -90,6 +90,11 @@ type markerRecord struct {
 	order  int
 }
 
+type staleRun struct {
+	run     ledger.Run
+	summary gate.RunSummary
+}
+
 // Evaluate acquires live gate state, calls the pure kernel, and executes
 // non-repair decisions.
 func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
@@ -126,72 +131,28 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 	}()
 
 	for {
-		state, err := buildState(ctx, opts, req)
+		state, err := buildLocalState(ctx, opts, req)
 		if err != nil {
 			return Result{}, err
 		}
-		decision := gate.Decide(state.kernel)
-		result := Result{Decision: decision, Warnings: append([]string(nil), decision.Warnings...)}
 
-		switch decision.Kind {
-		case gate.DecisionResume:
-			state.releaseStaleLocks()
-			run, ok := state.runByID[decision.RunID]
-			if !ok {
-				return Result{}, fmt.Errorf("gateio: resume run %q was not loaded", decision.RunID)
-			}
-			releaseCurrent = false
-			result.Status = StatusContinue
-			result.Run = run
-			result.Lock = currentLock
-			emitWarnings(opts.Warnings, result.Warnings)
-			return result, nil
-		case gate.DecisionFresh:
-			state.releaseStaleLocks()
-			if err := abortRuns(ctx, opts, decision.SupersedeRunIDs); err != nil {
-				return Result{}, err
-			}
-			run, err := allocateFresh(ctx, opts, req)
+		decision := gate.Decide(state.kernel)
+		if !localDecisionApplies(req.Flags, decision) {
+			state, err = attachExternalState(ctx, opts, req, state)
 			if err != nil {
 				return Result{}, err
 			}
-			releaseCurrent = false
-			result.Status = StatusContinue
-			result.Run = run
-			result.Lock = currentLock
-			emitWarnings(opts.Warnings, result.Warnings)
-			return result, nil
-		case gate.DecisionEarlyExit:
-			state.releaseStaleLocks()
-			result.Status = StatusEarlyExit
-			emitWarnings(opts.Warnings, result.Warnings)
-			return result, nil
-		case gate.DecisionAbortStale:
-			if err := abortStaleRuns(ctx, opts, state, decision.AbortStaleRunIDs); err != nil {
-				state.releaseStaleLocks()
-				return Result{}, err
-			}
-			state.releaseStaleLocks()
-			continue
-		case gate.DecisionRepair:
-			state.releaseStaleLocks()
-			result.Status = StatusRepairUnsupported
-			emitWarnings(opts.Warnings, result.Warnings)
-			return result, nil
-		case gate.DecisionRetryPosts:
-			state.releaseStaleLocks()
-			result.Status = StatusRetryPostsUnsupported
-			emitWarnings(opts.Warnings, result.Warnings)
-			return result, nil
-		case gate.DecisionError:
-			state.releaseStaleLocks()
-			result.Status = StatusError
-			emitWarnings(opts.Warnings, result.Warnings)
-			return result, nil
-		default:
-			state.releaseStaleLocks()
-			return Result{}, fmt.Errorf("gateio: unsupported gate decision %q", decision.Kind)
+			decision = gate.Decide(state.kernel)
 		}
+
+		result, retry, err := executeDecision(ctx, opts, req, state, decision, currentLock, &releaseCurrent)
+		if err != nil {
+			return Result{}, err
+		}
+		if retry {
+			continue
+		}
+		return result, nil
 	}
 }
 
@@ -227,6 +188,7 @@ func AbortIfBaseMoved(ctx context.Context, opts Options, req Request, run ledger
 type gateState struct {
 	kernel     gate.Request
 	runByID    map[string]ledger.Run
+	staleRuns  []staleRun
 	staleLocks map[string]staleProbe
 }
 
@@ -238,7 +200,7 @@ func (s gateState) releaseStaleLocks() {
 	}
 }
 
-func buildState(ctx context.Context, opts Options, req Request) (gateState, error) {
+func buildLocalState(ctx context.Context, opts Options, req Request) (gateState, error) {
 	runs, err := opts.Store.ListRunsForHeadScope(ctx, ledger.ListRunsForHeadScopeParams{
 		PRKey:           req.PRKey,
 		SHA:             req.PR.Head.SHA,
@@ -250,7 +212,7 @@ func buildState(ctx context.Context, opts Options, req Request) (gateState, erro
 	}
 
 	state := gateState{
-		kernel:     gate.Request{Flags: req.Flags},
+		kernel:     gate.Request{Flags: req.Flags, PR: gate.PRSummary{State: gate.PRStateFresh}},
 		runByID:    make(map[string]ledger.Run, len(runs)),
 		staleLocks: make(map[string]staleProbe),
 	}
@@ -264,14 +226,21 @@ func buildState(ctx context.Context, opts Options, req Request) (gateState, erro
 			state.kernel.ExactRuns = append(state.kernel.ExactRuns, summary)
 			continue
 		}
-		candidate, probe, err := summarizeStaleCandidate(opts, req, run, summary)
+		state.staleRuns = append(state.staleRuns, staleRun{run: run, summary: summary})
+	}
+	return state, nil
+}
+
+func attachExternalState(ctx context.Context, opts Options, req Request, state gateState) (gateState, error) {
+	for _, stale := range state.staleRuns {
+		candidate, probe, err := summarizeStaleCandidate(opts, req, stale.run, stale.summary)
 		if err != nil {
 			state.releaseStaleLocks()
 			return gateState{}, err
 		}
 		state.kernel.StaleBaseCandidates = append(state.kernel.StaleBaseCandidates, candidate)
 		if probe.lock != nil {
-			state.staleLocks[run.RunID] = probe
+			state.staleLocks[stale.run.RunID] = probe
 		}
 	}
 
@@ -292,6 +261,83 @@ func buildState(ctx context.Context, opts Options, req Request) (gateState, erro
 		}
 	}
 	return state, nil
+}
+
+func localDecisionApplies(flags gate.Flags, decision gate.Decision) bool {
+	switch decision.Kind {
+	case gate.DecisionResume, gate.DecisionRetryPosts, gate.DecisionError:
+		return true
+	case gate.DecisionFresh:
+		return flags.Rerun
+	case gate.DecisionEarlyExit, gate.DecisionRepair, gate.DecisionAbortStale:
+		return false
+	default:
+		return false
+	}
+}
+
+func executeDecision(ctx context.Context, opts Options, req Request, state gateState, decision gate.Decision, currentLock Lock, releaseCurrent *bool) (Result, bool, error) {
+	result := Result{Decision: decision, Warnings: append([]string(nil), decision.Warnings...)}
+
+	switch decision.Kind {
+	case gate.DecisionResume:
+		state.releaseStaleLocks()
+		run, ok := state.runByID[decision.RunID]
+		if !ok {
+			return Result{}, false, fmt.Errorf("gateio: resume run %q was not loaded", decision.RunID)
+		}
+		*releaseCurrent = false
+		result.Status = StatusContinue
+		result.Run = run
+		result.Lock = currentLock
+		emitWarnings(opts.Warnings, result.Warnings)
+		return result, false, nil
+	case gate.DecisionFresh:
+		state.releaseStaleLocks()
+		if err := abortRuns(ctx, opts, decision.SupersedeRunIDs); err != nil {
+			return Result{}, false, err
+		}
+		run, err := allocateFresh(ctx, opts, req)
+		if err != nil {
+			return Result{}, false, err
+		}
+		*releaseCurrent = false
+		result.Status = StatusContinue
+		result.Run = run
+		result.Lock = currentLock
+		emitWarnings(opts.Warnings, result.Warnings)
+		return result, false, nil
+	case gate.DecisionEarlyExit:
+		state.releaseStaleLocks()
+		result.Status = StatusEarlyExit
+		emitWarnings(opts.Warnings, result.Warnings)
+		return result, false, nil
+	case gate.DecisionAbortStale:
+		if err := abortStaleRuns(ctx, opts, state, decision.AbortStaleRunIDs); err != nil {
+			state.releaseStaleLocks()
+			return Result{}, false, err
+		}
+		state.releaseStaleLocks()
+		return Result{}, true, nil
+	case gate.DecisionRepair:
+		state.releaseStaleLocks()
+		result.Status = StatusRepairUnsupported
+		emitWarnings(opts.Warnings, result.Warnings)
+		return result, false, nil
+	case gate.DecisionRetryPosts:
+		state.releaseStaleLocks()
+		result.Status = StatusRetryPostsUnsupported
+		emitWarnings(opts.Warnings, result.Warnings)
+		return result, false, nil
+	case gate.DecisionError:
+		state.releaseStaleLocks()
+		result.Status = StatusError
+		emitWarnings(opts.Warnings, result.Warnings)
+		return result, false, nil
+	default:
+		state.releaseStaleLocks()
+		return Result{}, false, fmt.Errorf("gateio: unsupported gate decision %q", decision.Kind)
+	}
 }
 
 func summarizeRun(ctx context.Context, store Store, run ledger.Run) (gate.RunSummary, error) {
@@ -561,8 +607,18 @@ func validateRequest(req Request) error {
 	if err := req.PRRef.Validate(); err != nil {
 		return err
 	}
+	if req.PR.Ref != req.PRRef {
+		return fmt.Errorf("gateio: PR snapshot ref %+v does not match request ref %+v", req.PR.Ref, req.PRRef)
+	}
 	if strings.TrimSpace(req.PRKey) == "" {
 		return fmt.Errorf("gateio: pr key is required")
+	}
+	expectedPRKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		return err
+	}
+	if req.PRKey != expectedPRKey {
+		return fmt.Errorf("gateio: pr key %q does not match request ref %q", req.PRKey, expectedPRKey)
 	}
 	if strings.TrimSpace(req.Profile) == "" {
 		return fmt.Errorf("gateio: profile is required")
