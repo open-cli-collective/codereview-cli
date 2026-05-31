@@ -501,6 +501,97 @@ func TestTypedPersistenceRoundTrips(t *testing.T) {
 	}
 }
 
+func TestUpdatePlannedActionPersistsMutableFields(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+
+	action := validPlannedAction(run.RunID)
+	action.FindingID = nil
+	insertPlannedAction(t, store, action)
+
+	attemptedAt := time.Date(2026, 5, 30, 12, 7, 0, 0, time.UTC)
+	postedAt := time.Date(2026, 5, 30, 12, 8, 0, 0, time.UTC)
+	action.Status = PlannedActionPosted
+	action.Attempts = 2
+	action.AttemptedAt = &attemptedAt
+	action.PostedAt = &postedAt
+	action.UpstreamID = strPtr("comment-123")
+	action.Error = nil
+
+	if err := store.UpdatePlannedAction(context.Background(), action); err != nil {
+		t.Fatalf("UpdatePlannedAction: %v", err)
+	}
+
+	actions, err := store.ListPlannedActions(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	if !reflect.DeepEqual(actions, []PlannedAction{action}) {
+		t.Fatalf("ListPlannedActions after update = %#v, want %#v", actions, []PlannedAction{action})
+	}
+}
+
+func TestUpdatePlannedActionMissingRow(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	action := validPlannedAction(run.RunID)
+	action.FindingID = nil
+
+	err := store.UpdatePlannedAction(context.Background(), action)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdatePlannedAction missing row error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCompleteRunPersistsOutcomeAndCompletionTime(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	completedAt := time.Date(2026, 5, 30, 12, 9, 0, 0, time.UTC)
+
+	if err := store.CompleteRun(context.Background(), run.RunID, OutcomeRequestChanges, completedAt); err != nil {
+		t.Fatalf("CompleteRun: %v", err)
+	}
+
+	got, err := store.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Outcome == nil || *got.Outcome != OutcomeRequestChanges {
+		t.Fatalf("GetRun outcome = %v, want %q", got.Outcome, OutcomeRequestChanges)
+	}
+	if got.CompletedAt == nil || !got.CompletedAt.Equal(completedAt) {
+		t.Fatalf("GetRun completed_at = %v, want %v", got.CompletedAt, completedAt)
+	}
+}
+
+func TestCompleteRunRejectsInvalidInputs(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	completedAt := time.Date(2026, 5, 30, 12, 9, 0, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		runID       string
+		outcome     Outcome
+		completedAt time.Time
+		want        error
+	}{
+		{name: "empty run id", runID: "", outcome: OutcomeApproved, completedAt: completedAt, want: ErrInvalidInput},
+		{name: "invalid outcome", runID: run.RunID, outcome: Outcome("bad"), completedAt: completedAt, want: ErrInvalidInput},
+		{name: "zero completed at", runID: run.RunID, outcome: OutcomeApproved, completedAt: time.Time{}, want: ErrInvalidInput},
+		{name: "missing run", runID: "missing-run", outcome: OutcomeApproved, completedAt: completedAt, want: ErrNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := store.CompleteRun(context.Background(), tt.runID, tt.outcome, tt.completedAt)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("CompleteRun error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 	tests := []struct {
 		name string

@@ -802,6 +802,65 @@ FROM planned_actions WHERE run_id = ? ORDER BY action_id`, runID)
 	return actions, nil
 }
 
+// UpdatePlannedAction updates the mutable outbox state for an existing action.
+func (s *Store) UpdatePlannedAction(ctx context.Context, action PlannedAction) error {
+	if err := validatePlannedAction(action); err != nil {
+		return err
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		result, err := db.ExecContext(ctx, `
+UPDATE planned_actions
+SET status = ?, attempts = ?, attempted_at = ?, posted_at = ?, upstream_id = ?, error = ?
+WHERE action_id = ? AND run_id = ?`,
+			action.Status.String(), action.Attempts, encodeOptionalTime(action.AttemptedAt),
+			encodeOptionalTime(action.PostedAt), action.UpstreamID, action.Error, action.ActionID, action.RunID,
+		)
+		if err != nil {
+			return fmt.Errorf("ledger: update planned action: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("ledger: update planned action rows affected: %w", err)
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// CompleteRun records the terminal post-phase outcome for a run.
+func (s *Store) CompleteRun(ctx context.Context, runID string, outcome Outcome, completedAt time.Time) error {
+	if strings.TrimSpace(runID) == "" {
+		return invalidInput("run_id", runID)
+	}
+	if !outcome.Valid() {
+		return invalidInput("outcome", outcome.String())
+	}
+	if completedAt.IsZero() {
+		return invalidInput("completed_at", "")
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		result, err := db.ExecContext(ctx, `
+UPDATE runs
+SET outcome = ?, completed_at = ?
+WHERE run_id = ?`,
+			outcome.String(), encodeTime(completedAt), runID,
+		)
+		if err != nil {
+			return fmt.Errorf("ledger: complete run: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("ledger: complete run rows affected: %w", err)
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 // UpsertNamedSession inserts or updates a named provider session row.
 func (s *Store) UpsertNamedSession(ctx context.Context, session NamedSession) error {
 	if err := validateNamedSession(session); err != nil {
