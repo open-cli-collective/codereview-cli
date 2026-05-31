@@ -264,6 +264,14 @@ type AllocateRunParams struct {
 	ArtifactPath    string
 }
 
+// ListRunsForHeadScopeParams identifies local rows for one PR/head/profile/identity scope.
+type ListRunsForHeadScopeParams struct {
+	PRKey           string
+	SHA             string
+	Profile         string
+	PostingIdentity string
+}
+
 // Session records LLM session usage for a run.
 type Session struct {
 	SessionRowID      string
@@ -647,6 +655,42 @@ FROM runs WHERE run_id = ?`, runID)
 	return run, nil
 }
 
+// ListRunsForHeadScope lists runs for one PR/head/profile/identity across bases.
+func (s *Store) ListRunsForHeadScope(ctx context.Context, params ListRunsForHeadScopeParams) ([]Run, error) {
+	if err := validateListRunsForHeadScopeParams(params); err != nil {
+		return nil, err
+	}
+	if err := s.checkOpen(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode,
+	started_at, heartbeat_at, completed_at, outcome, artifact_path,
+	blocking_count, major_count, minor_count, nits_count
+FROM runs
+WHERE pr_key = ? AND sha = ? AND profile = ? AND posting_identity = ?
+ORDER BY base_sha, attempt DESC, started_at DESC, run_id`,
+		params.PRKey, params.SHA, params.Profile, params.PostingIdentity,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: list runs for head scope: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []Run
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ledger: list runs for head scope rows: %w", err)
+	}
+	return runs, nil
+}
+
 // DeleteRun deletes a run and lets SQLite cascade child rows.
 func (s *Store) DeleteRun(ctx context.Context, runID string) error {
 	if strings.TrimSpace(runID) == "" {
@@ -878,6 +922,35 @@ WHERE run_id = ?`,
 	})
 }
 
+// UpdateHeartbeat records the latest liveness timestamp for a run.
+func (s *Store) UpdateHeartbeat(ctx context.Context, runID string, heartbeatAt time.Time) error {
+	if strings.TrimSpace(runID) == "" {
+		return invalidInput("run_id", runID)
+	}
+	if heartbeatAt.IsZero() {
+		return invalidInput("heartbeat_at", "")
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		result, err := db.ExecContext(ctx, `
+UPDATE runs
+SET heartbeat_at = ?
+WHERE run_id = ?`,
+			encodeTime(heartbeatAt), runID,
+		)
+		if err != nil {
+			return fmt.Errorf("ledger: update heartbeat: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("ledger: update heartbeat rows affected: %w", err)
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 // UpsertNamedSession inserts or updates a named provider session row.
 func (s *Store) UpsertNamedSession(ctx context.Context, session NamedSession) error {
 	if err := validateNamedSession(session); err != nil {
@@ -925,6 +998,21 @@ FROM named_sessions WHERE name = ?`, name)
 		return NamedSession{}, fmt.Errorf("ledger: get named session: %w", err)
 	}
 	return session, nil
+}
+
+func validateListRunsForHeadScopeParams(params ListRunsForHeadScopeParams) error {
+	required := map[string]string{
+		"pr_key":           params.PRKey,
+		"sha":              params.SHA,
+		"profile":          params.Profile,
+		"posting_identity": params.PostingIdentity,
+	}
+	for name, value := range required {
+		if strings.TrimSpace(value) == "" {
+			return invalidInput(name, value)
+		}
+	}
+	return nil
 }
 
 func validateAllocateRunParams(params AllocateRunParams) error {

@@ -217,6 +217,97 @@ func TestAllocateRunSeparatesAttemptSequencesByResumeKey(t *testing.T) {
 	}
 }
 
+func TestListRunsForHeadScope(t *testing.T) {
+	store := openStore(t)
+	base := validAllocateRunParams()
+	first := allocateRun(t, store, base)
+
+	secondParams := base
+	secondParams.RunID = ""
+	secondParams.StartedAt = secondParams.StartedAt.Add(time.Minute)
+	secondParams.ArtifactPath = "/tmp/run-2"
+	second := allocateRun(t, store, secondParams)
+
+	staleParams := base
+	staleParams.RunID = "run-stale"
+	staleParams.BaseSHA = "cccccccccccccccccccccccccccccccccccccccc"
+	staleParams.ArtifactPath = "/tmp/run-stale"
+	stale := allocateRun(t, store, staleParams)
+
+	for _, mutate := range []func(*AllocateRunParams){
+		func(p *AllocateRunParams) {
+			p.RunID = "run-other-head"
+			p.SHA = "dddddddddddddddddddddddddddddddddddddddd"
+		},
+		func(p *AllocateRunParams) { p.RunID = "run-other-profile"; p.Profile = "other" },
+		func(p *AllocateRunParams) { p.RunID = "run-other-identity"; p.PostingIdentity = "other@example.com" },
+	} {
+		params := base
+		params.ArtifactPath = "/tmp/" + params.RunID
+		mutate(&params)
+		allocateRun(t, store, params)
+	}
+
+	got, err := store.ListRunsForHeadScope(context.Background(), ListRunsForHeadScopeParams{
+		PRKey:           base.PRKey,
+		SHA:             base.SHA,
+		Profile:         base.Profile,
+		PostingIdentity: base.PostingIdentity,
+	})
+	if err != nil {
+		t.Fatalf("ListRunsForHeadScope: %v", err)
+	}
+	wantIDs := []string{second.RunID, first.RunID, stale.RunID}
+	if gotIDs := runIDs(got); !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("ListRunsForHeadScope IDs = %#v, want %#v", gotIDs, wantIDs)
+	}
+}
+
+func TestListRunsForHeadScopeValidation(t *testing.T) {
+	store := openStore(t)
+	valid := ListRunsForHeadScopeParams{
+		PRKey:           "github_open-cli_codereview-cli_36",
+		SHA:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Profile:         "default",
+		PostingIdentity: "reviewer@example.com",
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ListRunsForHeadScopeParams)
+	}{
+		{name: "pr key", mutate: func(p *ListRunsForHeadScopeParams) { p.PRKey = "" }},
+		{name: "sha", mutate: func(p *ListRunsForHeadScopeParams) { p.SHA = "" }},
+		{name: "profile", mutate: func(p *ListRunsForHeadScopeParams) { p.Profile = "" }},
+		{name: "posting identity", mutate: func(p *ListRunsForHeadScopeParams) { p.PostingIdentity = "" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := valid
+			tt.mutate(&params)
+			if _, err := store.ListRunsForHeadScope(context.Background(), params); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("ListRunsForHeadScope error = %v, want ErrInvalidInput", err)
+			}
+		})
+	}
+}
+
+func TestUpdateHeartbeat(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	heartbeat := time.Date(2026, 5, 30, 12, 2, 0, 0, time.UTC)
+
+	if err := store.UpdateHeartbeat(context.Background(), run.RunID, heartbeat); err != nil {
+		t.Fatalf("UpdateHeartbeat: %v", err)
+	}
+	got, err := store.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.HeartbeatAt == nil || !got.HeartbeatAt.Equal(heartbeat) {
+		t.Fatalf("HeartbeatAt = %v, want %v", got.HeartbeatAt, heartbeat)
+	}
+}
+
 func TestAllocateRunConcurrentSameKey(t *testing.T) {
 	store := openStore(t)
 	ctx := context.Background()
@@ -1106,6 +1197,14 @@ func allocateRun(t *testing.T, store *Store, params AllocateRunParams) Run {
 		t.Fatalf("AllocateRun: %v", err)
 	}
 	return run
+}
+
+func runIDs(runs []Run) []string {
+	ids := make([]string, 0, len(runs))
+	for _, run := range runs {
+		ids = append(ids, run.RunID)
+	}
+	return ids
 }
 
 func validSession(runID string) Session {
