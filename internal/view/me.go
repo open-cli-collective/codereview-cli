@@ -19,9 +19,9 @@ type MeProfile struct {
 	CredentialSource      string `json:"credential_source"`
 	Host                  string `json:"host"`
 	Login                 string `json:"login"`
-	ID                    string `json:"id,omitempty"`
-	DisplayName           string `json:"display_name,omitempty"`
-	PreviousIdentityCache string `json:"previous_identity_cache,omitempty"`
+	ID                    string `json:"id"`
+	DisplayName           string `json:"display_name"`
+	PreviousIdentityCache string `json:"previous_identity_cache"`
 	IdentityCacheUpdated  bool   `json:"identity_cache_updated"`
 }
 

@@ -130,6 +130,10 @@ func normalizeForUpdate(cfg config.File) config.File {
 	}
 	profiles := make(map[string]config.Profile, len(cfg.Profiles))
 	for name, profile := range cfg.Profiles {
+		if profile.ReviewerCredentials != nil {
+			reviewerCredentials := *profile.ReviewerCredentials
+			profile.ReviewerCredentials = &reviewerCredentials
+		}
 		profiles[name] = profile
 	}
 	cfg.Profiles = profiles

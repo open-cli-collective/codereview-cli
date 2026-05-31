@@ -201,6 +201,30 @@ func TestMeMissingProfileExitCode(t *testing.T) {
 	}
 }
 
+func TestMeMissingProfileDoesNotOpenResolverFactory(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	var out bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: path,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &out,
+		Stderr:     &out,
+	})
+	factoryOpened := false
+	RegisterWithFactory(cmd, opts, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		factoryOpened = true
+		return &fakeResolver{}, nil, nil
+	})
+
+	err := root.Execute(cmd, []string{"--profile", "missing", "me"})
+	if !errors.Is(err, config.ErrProfileNotFound) {
+		t.Fatalf("Execute error = %v, want ErrProfileNotFound", err)
+	}
+	if factoryOpened {
+		t.Fatal("resolver factory opened for missing profile")
+	}
+}
+
 func TestMeMissingConfigExitCode(t *testing.T) {
 	cmd, _ := newTestCommand(filepath.Join(t.TempDir(), "missing.yml"), &fakeResolver{})
 

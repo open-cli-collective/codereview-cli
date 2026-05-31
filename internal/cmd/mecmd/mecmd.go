@@ -69,6 +69,11 @@ func runMe(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory 
 	if err != nil {
 		return view.MeResult{}, cmderr.Config(err)
 	}
+	if !all {
+		if _, _, err := config.ResolveProfile(cfg, opts.Profile); err != nil {
+			return view.MeResult{}, mapRunError(err)
+		}
+	}
 	resolver, cleanup, err := factory(cmd, opts, cfg)
 	if err != nil {
 		return view.MeResult{}, err

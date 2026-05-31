@@ -2,7 +2,6 @@ package view
 
 import (
 	"bytes"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -53,11 +52,22 @@ func TestRenderMeJSON(t *testing.T) {
 	if err := RenderMeJSON(&out, result); err != nil {
 		t.Fatalf("RenderMeJSON: %v", err)
 	}
-	var decoded MeResult
-	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
-		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
-	}
-	if len(decoded.Profiles) != 1 || decoded.Profiles[0].CredentialSource != "git" || decoded.Profiles[0].Login != "rianjs" {
-		t.Fatalf("decoded = %#v, want one git profile", decoded)
+	want := `{
+  "profiles": [
+    {
+      "profile": "home",
+      "credential_source": "git",
+      "host": "github.com",
+      "login": "rianjs",
+      "id": "",
+      "display_name": "",
+      "previous_identity_cache": "",
+      "identity_cache_updated": false
+    }
+  ]
+}
+`
+	if got := out.String(); got != want {
+		t.Fatalf("JSON = %q, want %q", got, want)
 	}
 }

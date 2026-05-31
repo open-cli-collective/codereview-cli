@@ -87,6 +87,60 @@ func TestRefreshAllSortedAndAtomicOnFailure(t *testing.T) {
 	}
 }
 
+func TestRefreshAllReviewerCredentialsRollbackOnFailure(t *testing.T) {
+	cfg := config.File{
+		DefaultProfile: "reviewer",
+		Profiles: map[string]config.Profile{
+			"reviewer": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/reviewer-git",
+					IdentityCache: "git-cache",
+				},
+				ReviewerCredentials: &config.ReviewerCredentials{
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/reviewer",
+					IdentityCache: "old-bot",
+				},
+			},
+			"z-failing": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/failing",
+					IdentityCache: "old-failing",
+				},
+			},
+		},
+	}
+	resolver := &fakeResolver{
+		identities: map[string]gitprovider.Identity{
+			"codereview/reviewer": {Login: "new-bot"},
+		},
+		errs: map[string]error{
+			"codereview/failing": errors.New("lookup failed"),
+		},
+	}
+
+	updated, results, changed, err := RefreshAll(context.Background(), cfg, resolver)
+	if err == nil {
+		t.Fatal("RefreshAll error = nil, want failure")
+	}
+	if changed || results != nil {
+		t.Fatalf("changed=%v results=%#v, want no partial success", changed, results)
+	}
+	if got := updated.Profiles["reviewer"].ReviewerCredentials.IdentityCache; got != "old-bot" {
+		t.Fatalf("returned reviewer cache = %q, want original", got)
+	}
+	if got := cfg.Profiles["reviewer"].ReviewerCredentials.IdentityCache; got != "old-bot" {
+		t.Fatalf("input reviewer cache = %q, want original", got)
+	}
+	if len(resolver.calls) != 2 || resolver.calls[0].CredentialRef != "codereview/reviewer" || resolver.calls[1].CredentialRef != "codereview/failing" {
+		t.Fatalf("resolver calls = %#v, want reviewer then failing", resolver.calls)
+	}
+}
+
 func TestRefreshEmptyLoginDoesNotClearCache(t *testing.T) {
 	cfg := testConfig()
 	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
