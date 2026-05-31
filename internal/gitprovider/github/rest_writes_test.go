@@ -156,6 +156,7 @@ func TestRESTWriteErrorTaxonomy(t *testing.T) {
 		{name: "retryable", code: http.StatusTooManyRequests, body: `{"message":"rate limited"}`, want: gitprovider.ErrRetryable},
 		{name: "stale sha", code: http.StatusUnprocessableEntity, body: `{"message":"commit_id head-sha is not the head commit for this pull request"}`, want: gitprovider.ErrStaleSHA},
 		{name: "generic validation", code: http.StatusUnprocessableEntity, body: `{"message":"line is not part of the diff"}`, want: ErrValidation, not: gitprovider.ErrStaleSHA},
+		{name: "non head-commit 422 with commit id", code: http.StatusUnprocessableEntity, body: `{"message":"commit_id does not match the expected format"}`, want: ErrValidation, not: gitprovider.ErrStaleSHA},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

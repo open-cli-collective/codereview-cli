@@ -58,6 +58,8 @@ func (c *Client) ReplyToThread(ctx context.Context, ref gitprovider.PRRef, threa
 	id := data.AddPullRequestReviewThreadReply.Comment.ID
 	if strings.TrimSpace(id) == "" {
 		var idErr error
+		// GitProvider IDs are provider-owned strings; GitHub databaseId matches
+		// the REST numeric ID form already used for review and issue comments.
 		id, idErr = requireWriteID("thread reply comment ID", data.AddPullRequestReviewThreadReply.Comment.DatabaseID)
 		if idErr != nil {
 			return "", idErr

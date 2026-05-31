@@ -56,6 +56,8 @@ func (c *Client) PostInlineComment(ctx context.Context, ref gitprovider.PRRef, c
 		payload.Line = comment.Line
 	case review.AnchorKindFile:
 		payload.SubjectType = "file"
+	default:
+		return "", fmt.Errorf("%w: unsupported inline comment subject type %q", ErrValidation, comment.SubjectType)
 	}
 	var response commentWriteResponse
 	endpoint := restURL(c.baseURL, "repos", ref.Owner, ref.Repo, "pulls", fmt.Sprint(ref.Number), "comments")

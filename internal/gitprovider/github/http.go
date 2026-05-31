@@ -208,9 +208,7 @@ func isCommitBoundWriteOperation(op gitprovider.Operation) bool {
 func isStaleSHABody(body []byte) bool {
 	normalized := strings.ToLower(string(body))
 	return strings.Contains(normalized, "commit_id") &&
-		(strings.Contains(normalized, "not the head commit") ||
-			strings.Contains(normalized, "does not match") ||
-			strings.Contains(normalized, "not part of"))
+		strings.Contains(normalized, "not the head commit")
 }
 
 func sanitizedBody(body []byte) string {
