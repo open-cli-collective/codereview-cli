@@ -214,6 +214,20 @@ func TestRESTPaginationRejectsOffHostNextLink(t *testing.T) {
 	}
 }
 
+func TestNextPageURLRejectsEnterpriseBasePathEscape(t *testing.T) {
+	client := mustClient(t, Options{
+		Host:       "github.example.com",
+		Token:      "token",
+		BaseURL:    "https://github.example.com/api/v3/",
+		GraphQLURL: "https://github.example.com/api/graphql",
+	})
+
+	_, err := client.nextPageURL(`<https://github.example.com/repos/open-cli/repo/pulls/42/reviews?page=2>; rel="next"`)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("nextPageURL off-base-path error = %v, want ErrValidation", err)
+	}
+}
+
 func TestHTTPErrorTaxonomy(t *testing.T) {
 	tests := []struct {
 		status int

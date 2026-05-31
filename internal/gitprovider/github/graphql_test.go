@@ -33,6 +33,7 @@ func TestListTreeAtRefUsesGraphQLVariables(t *testing.T) {
 						"entries": []map[string]any{
 							{"name": "security.yml", "path": ".codereview/agents/security.yml", "type": "blob", "oid": "blob-sha"},
 							{"name": "backend", "path": ".codereview/agents/backend", "type": "tree", "oid": "tree-sha"},
+							{"name": "shared", "path": "vendor/shared", "type": "commit", "oid": "submodule-sha"},
 						},
 					},
 				},
@@ -49,8 +50,9 @@ func TestListTreeAtRefUsesGraphQLVariables(t *testing.T) {
 	want := []gitprovider.TreeEntry{
 		{Path: ".codereview/agents/security.yml", Type: "blob", SHA: "blob-sha"},
 		{Path: ".codereview/agents/backend", Type: "tree", SHA: "tree-sha"},
+		{Path: "vendor/shared", Type: "commit", SHA: "submodule-sha"},
 	}
-	if len(entries) != len(want) || entries[0] != want[0] || entries[1] != want[1] {
+	if len(entries) != len(want) || entries[0] != want[0] || entries[1] != want[1] || entries[2] != want[2] {
 		t.Fatalf("entries = %#v, want %#v", entries, want)
 	}
 }
@@ -110,6 +112,9 @@ func TestListInlineThreadsPaginatesThreadsAndNestedComments(t *testing.T) {
 	}
 	if threads[0].Comments[1].ID != "comment-2" || threads[0].Comments[1].Author.Login != "reviewer" {
 		t.Fatalf("nested comment not appended: %#v", threads[0].Comments)
+	}
+	if threads[0].Comments[1].Author.ID != "1102" || threads[0].Comments[1].Author.DisplayName != "reviewer name" {
+		t.Fatalf("nested comment author = %#v, want id and display name", threads[0].Comments[1].Author)
 	}
 	if threads[1].Side != review.DiffSideLeft || threads[1].Comments[0].CommitSHA != "base-sha" {
 		t.Fatalf("second thread = %#v", threads[1])
@@ -236,7 +241,7 @@ func commentNodeResponse(id string, databaseID int, body, author, commit, path s
 		"id":         id,
 		"databaseId": databaseID,
 		"body":       body,
-		"author":     map[string]any{"login": author},
+		"author":     map[string]any{"login": author, "id": databaseID + 1000, "name": author + " name"},
 		"commit":     map[string]any{"oid": commit},
 		"path":       path,
 		"line":       line,

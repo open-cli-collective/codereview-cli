@@ -163,6 +163,27 @@ func TestWhoAmIRejectsInvalidCredentialBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestCredentialValidationUsesCallingOperation(t *testing.T) {
+	_, err := New(Options{Host: "github.com", Token: " "})
+	var constructorErr *gitprovider.ProviderError
+	if !errors.As(err, &constructorErr) {
+		t.Fatalf("New blank token error = %v, want ProviderError", err)
+	}
+	if constructorErr.Op != "" {
+		t.Fatalf("New blank token op = %q, want empty constructor op", constructorErr.Op)
+	}
+
+	client := mustClient(t, Options{Host: "github.com", Token: "token"})
+	_, err = client.WhoAmI(context.Background(), gitprovider.Credential{Type: "oauth", Token: "token"})
+	var whoamiErr *gitprovider.ProviderError
+	if !errors.As(err, &whoamiErr) {
+		t.Fatalf("WhoAmI invalid credential error = %v, want ProviderError", err)
+	}
+	if whoamiErr.Op != gitprovider.OperationWhoAmI {
+		t.Fatalf("WhoAmI invalid credential op = %q, want %q", whoamiErr.Op, gitprovider.OperationWhoAmI)
+	}
+}
+
 func TestPRScopedReadsRejectHostMismatchBeforeRequest(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

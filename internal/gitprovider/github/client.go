@@ -84,10 +84,10 @@ func NewFromGitConfig(git config.GitConfig, store TokenStore, opts Options) (*Cl
 	}
 	token, err := store.Get(parsed.Profile, key)
 	if err != nil {
-		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, gitprovider.OperationWhoAmI, fmt.Errorf("read git credential: %w", err))
+		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("read git credential: %w", err))
 	}
 	credential := gitprovider.Credential{Type: credentialTypePAT, Token: token}
-	if err := validateCredential(credential); err != nil {
+	if err := validateCredential("", credential); err != nil {
 		return nil, gitprovider.Credential{}, err
 	}
 	opts.Host = host
@@ -106,7 +106,7 @@ func New(opts Options) (*Client, error) {
 		return nil, err
 	}
 	credential := gitprovider.Credential{Type: credentialTypePAT, Token: opts.Token}
-	if err := validateCredential(credential); err != nil {
+	if err := validateCredential("", credential); err != nil {
 		return nil, err
 	}
 	baseURL, graphQLURL, err := resolveURLs(normalizedHost, opts.BaseURL, opts.GraphQLURL)
@@ -142,12 +142,12 @@ func (c *Client) Capabilities() gitprovider.ProviderCaps {
 	}
 }
 
-func validateCredential(creds gitprovider.Credential) error {
+func validateCredential(op gitprovider.Operation, creds gitprovider.Credential) error {
 	if creds.Type != credentialTypePAT {
-		return gitprovider.WrapError(gitprovider.ErrAuth, gitprovider.OperationWhoAmI, fmt.Errorf("unsupported credential type %q", creds.Type))
+		return gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("unsupported credential type %q", creds.Type))
 	}
 	if strings.TrimSpace(creds.Token) == "" {
-		return gitprovider.WrapError(gitprovider.ErrAuth, gitprovider.OperationWhoAmI, fmt.Errorf("credential token is required"))
+		return gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("credential token is required"))
 	}
 	return nil
 }

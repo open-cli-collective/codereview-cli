@@ -59,7 +59,7 @@ type issueCommentResponse struct {
 
 // WhoAmI returns the identity for the supplied credential.
 func (c *Client) WhoAmI(ctx context.Context, creds gitprovider.Credential) (gitprovider.Identity, error) {
-	if err := validateCredential(creds); err != nil {
+	if err := validateCredential(gitprovider.OperationWhoAmI, creds); err != nil {
 		return gitprovider.Identity{}, err
 	}
 	var user userResponse
@@ -206,8 +206,9 @@ func (c *Client) branchRef(branch branchResponse, ref gitprovider.PRRef) gitprov
 		Owner: owner,
 		Repo:  repoName,
 		Name:  branch.Ref,
-		Ref:   "refs/heads/" + branch.Ref,
-		SHA:   branch.SHA,
+		// GitHub pull request refs are branch names, not full refspecs.
+		Ref: "refs/heads/" + branch.Ref,
+		SHA: branch.SHA,
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
@@ -158,6 +159,9 @@ func sanitizedBody(body []byte) string {
 	body = bytes.TrimSpace(body)
 	if len(body) > 256 {
 		body = body[:256]
+		for len(body) > 0 && !utf8.Valid(body) {
+			body = body[:len(body)-1]
+		}
 	}
 	return string(body)
 }
@@ -224,7 +228,7 @@ func (c *Client) nextPageURL(header string) (string, error) {
 	if basePath == "" {
 		basePath = "/"
 	}
-	if !strings.HasPrefix(parsed.EscapedPath(), basePath) {
+	if basePath != "/" && !strings.HasPrefix(parsed.EscapedPath(), basePath) {
 		return "", fmt.Errorf("%w: pagination URL path escapes GitHub REST base", ErrValidation)
 	}
 	return parsed.String(), nil

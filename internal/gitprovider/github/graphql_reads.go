@@ -52,6 +52,10 @@ query($owner: String!, $repo: String!, $number: Int!, $threadAfter: String) {
               body
               author {
                 login
+                ... on User {
+                  id: databaseId
+                  name
+                }
               }
               commit {
                 oid
@@ -85,6 +89,10 @@ query($threadID: ID!, $commentAfter: String) {
           body
           author {
             login
+            ... on User {
+              id: databaseId
+              name
+            }
           }
           commit {
             oid
@@ -324,6 +332,8 @@ func normalizeTreeEntryType(value string) (string, error) {
 		return "blob", nil
 	case "tree":
 		return "tree", nil
+	case "commit":
+		return "commit", nil
 	default:
 		return "", fmt.Errorf("%w: unknown tree entry type %q", ErrValidation, value)
 	}
