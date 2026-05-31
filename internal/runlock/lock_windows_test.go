@@ -5,8 +5,7 @@ package runlock
 import "testing"
 
 func TestWindowsLockRangeIsSingleByteAtZero(t *testing.T) {
-	lockRange := windowsByteRange()
-	if lockRange.offsetLow != 0 || lockRange.offsetHigh != 0 || lockRange.lengthLow != 1 || lockRange.lengthHigh != 0 {
-		t.Fatalf("windows lock range = %#v, want byte 0 length 1", lockRange)
+	if windowsLockOffsetLow != 0 || windowsLockOffsetHigh != 0 || windowsLockLengthLow != 1 || windowsLockLengthHigh != 0 {
+		t.Fatalf("windows lock range = offset %d/%d length %d/%d, want byte 0 length 1", windowsLockOffsetLow, windowsLockOffsetHigh, windowsLockLengthLow, windowsLockLengthHigh)
 	}
 }

@@ -80,7 +80,8 @@ func TestAcquireRejectsEmptyPath(t *testing.T) {
 }
 
 func TestAcquireStatepathsLockFile(t *testing.T) {
-	layout := statepaths.NewLayout(filepath.Join(t.TempDir(), statepaths.AppDir), filepath.Join(t.TempDir(), statepaths.AppDir))
+	base := t.TempDir()
+	layout := statepaths.NewLayout(filepath.Join(base, "data", statepaths.AppDir), filepath.Join(base, "cache", statepaths.AppDir))
 	paths, err := layout.Run(statepaths.RunSpec{
 		Host:            "github",
 		Owner:           "open-cli",
@@ -165,10 +166,10 @@ func TestRunlockHelperProcess(_ *testing.T) {
 	if os.Getenv(helperEnv) != "1" {
 		return
 	}
-	if len(os.Args) == 0 {
+	path, ok := helperLockPath(os.Args)
+	if !ok {
 		os.Exit(2)
 	}
-	path := os.Args[len(os.Args)-1]
 	lock, err := Acquire(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Acquire helper lock: %v\n", err)
@@ -179,6 +180,15 @@ func TestRunlockHelperProcess(_ *testing.T) {
 	}()
 	fmt.Fprintln(os.Stdout, "ready")
 	select {}
+}
+
+func helperLockPath(args []string) (string, bool) {
+	for i, arg := range args {
+		if arg == "--" && i+1 < len(args) {
+			return args[i+1], true
+		}
+	}
+	return "", false
 }
 
 func acquireLock(t *testing.T, path string) *Lock {

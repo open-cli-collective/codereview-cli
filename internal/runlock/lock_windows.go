@@ -17,40 +17,22 @@ const (
 	windowsLockLengthHigh uint32 = 0
 )
 
-type windowsLockRange struct {
-	offsetLow  uint32
-	offsetHigh uint32
-	lengthLow  uint32
-	lengthHigh uint32
-}
-
 func platformSupported() error {
 	return nil
 }
 
-func windowsByteRange() windowsLockRange {
-	return windowsLockRange{
-		offsetLow:  windowsLockOffsetLow,
-		offsetHigh: windowsLockOffsetHigh,
-		lengthLow:  windowsLockLengthLow,
-		lengthHigh: windowsLockLengthHigh,
-	}
-}
-
 func windowsOverlapped() windows.Overlapped {
-	lockRange := windowsByteRange()
-	return windows.Overlapped{Offset: lockRange.offsetLow, OffsetHigh: lockRange.offsetHigh}
+	return windows.Overlapped{Offset: windowsLockOffsetLow, OffsetHigh: windowsLockOffsetHigh}
 }
 
 func lockFile(file *os.File) error {
-	lockRange := windowsByteRange()
 	overlapped := windowsOverlapped()
 	err := windows.LockFileEx(
 		windows.Handle(file.Fd()),
 		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
 		0,
-		lockRange.lengthLow,
-		lockRange.lengthHigh,
+		windowsLockLengthLow,
+		windowsLockLengthHigh,
 		&overlapped,
 	)
 	if err == nil {
@@ -63,9 +45,8 @@ func lockFile(file *os.File) error {
 }
 
 func unlockFile(file *os.File) error {
-	lockRange := windowsByteRange()
 	overlapped := windowsOverlapped()
-	if err := windows.UnlockFileEx(windows.Handle(file.Fd()), 0, lockRange.lengthLow, lockRange.lengthHigh, &overlapped); err != nil {
+	if err := windows.UnlockFileEx(windows.Handle(file.Fd()), 0, windowsLockLengthLow, windowsLockLengthHigh, &overlapped); err != nil {
 		return fmt.Errorf("runlock: release %s: %w", file.Name(), err)
 	}
 	return nil
