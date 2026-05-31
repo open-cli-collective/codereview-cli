@@ -10,6 +10,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
 // Config maps config package errors to scriptable command errors.
@@ -41,6 +42,33 @@ func Credential(err error) error {
 		errors.Is(err, credstore.ErrBackendNotImplemented):
 		return exitcode.AuthConfig(err)
 	default:
+		return err
+	}
+}
+
+// Provider maps git-provider errors to scriptable command errors.
+func Provider(err error) error {
+	var providerErr *gitprovider.ProviderError
+	if errors.As(err, &providerErr) && providerErr.Kind != nil {
+		return providerKind(err, providerErr.Kind)
+	}
+	return providerKind(err, err)
+}
+
+func providerKind(err error, kind error) error {
+	switch {
+	case errors.Is(kind, gitprovider.ErrAuth), errors.Is(kind, gitprovider.ErrPermission):
+		return exitcode.AuthConfig(err)
+	case errors.Is(kind, gitprovider.ErrRetryable):
+		return exitcode.Upstream(err)
+	case errors.Is(kind, gitprovider.ErrNotFound),
+		errors.Is(kind, gitprovider.ErrConflict),
+		errors.Is(kind, gitprovider.ErrStaleSHA):
+		return exitcode.With(exitcode.Failure, err)
+	default:
+		// Unknown provider errors intentionally fall through. exitcode.FromError
+		// maps unwrapped errors to generic failure without inventing retry/auth
+		// semantics for future provider sentinels.
 		return err
 	}
 }
