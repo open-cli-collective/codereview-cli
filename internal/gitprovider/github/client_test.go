@@ -63,6 +63,13 @@ func TestNewFromGitConfigBuildsPATClientAndCredential(t *testing.T) {
 	}
 }
 
+func TestNewRequiresExplicitHost(t *testing.T) {
+	_, err := New(Options{Token: "token"})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("New without host error = %v, want ErrValidation", err)
+	}
+}
+
 func TestNewFromGitConfigRejectsReservedAuthModesAndHostConflict(t *testing.T) {
 	store := tokenStore{"work": {credentials.GitTokenKey: "token"}}
 	for _, mode := range []config.GitAuthMode{config.GitAuthModeOAuthDevice, config.GitAuthModeGitHubApp} {
@@ -174,6 +181,28 @@ func TestPRScopedReadsRejectHostMismatchBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestPRScopedReadsRejectSlashInOwnerRepoBeforeRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Host: "github.com", Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	_, err := client.GetPR(context.Background(), gitprovider.PRRef{Host: "github.com", Owner: "open/cli", Repo: "repo", Number: 1})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("GetPR slash owner error = %v, want ErrValidation", err)
+	}
+	_, err = client.GetPR(context.Background(), gitprovider.PRRef{Host: "github.com", Owner: "open-cli", Repo: "repo/name", Number: 1})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("GetPR slash repo error = %v, want ErrValidation", err)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want no requests for invalid path segments", requests)
+	}
+}
+
 type tokenStore map[string]map[string]string
 
 func (s tokenStore) Get(profile, key string) (string, error) {
@@ -192,6 +221,9 @@ func mustClient(t *testing.T, opts Options) *Client {
 	t.Helper()
 	if opts.Token == "" {
 		opts.Token = "token"
+	}
+	if opts.Host == "" {
+		opts.Host = defaultHost
 	}
 	client, err := New(opts)
 	if err != nil {

@@ -101,11 +101,7 @@ func NewFromGitConfig(git config.GitConfig, store TokenStore, opts Options) (*Cl
 
 // New builds a GitHub client from explicit options.
 func New(opts Options) (*Client, error) {
-	host := opts.Host
-	if strings.TrimSpace(host) == "" {
-		host = defaultHost
-	}
-	normalizedHost, err := normalizeHost(host)
+	normalizedHost, err := normalizeHost(opts.Host)
 	if err != nil {
 		return nil, err
 	}
@@ -166,6 +162,12 @@ func (c *Client) validatePRRef(ref gitprovider.PRRef) error {
 	if !strings.EqualFold(ref.Host, c.host) {
 		return fmt.Errorf("%w: PR host %q does not match client host %q", ErrValidation, ref.Host, c.host)
 	}
+	if err := validatePathSegment("owner", ref.Owner); err != nil {
+		return err
+	}
+	if err := validatePathSegment("repo", ref.Repo); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -218,4 +220,11 @@ func ensureTrailingSlash(u *url.URL) *url.URL {
 		copied.Path += "/"
 	}
 	return &copied
+}
+
+func validatePathSegment(name, value string) error {
+	if strings.Contains(value, "/") {
+		return fmt.Errorf("%w: %s must not contain slash", ErrValidation, name)
+	}
+	return nil
 }

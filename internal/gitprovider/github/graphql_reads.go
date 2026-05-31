@@ -232,7 +232,11 @@ func (c *Client) ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) (
 		for _, node := range data.Repository.PullRequest.ReviewThreads.Nodes {
 			comments := make([]gitprovider.ThreadComment, 0, len(node.Comments.Nodes))
 			for _, comment := range node.Comments.Nodes {
-				comments = append(comments, mapThreadComment(node.ID, comment))
+				mapped, err := mapThreadComment(node.ID, comment)
+				if err != nil {
+					return nil, err
+				}
+				comments = append(comments, mapped)
 			}
 			if node.Comments.PageInfo.HasNextPage {
 				more, err := c.fetchThreadComments(ctx, node.ID, node.Comments.PageInfo.EndCursor)
@@ -241,11 +245,15 @@ func (c *Client) ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) (
 				}
 				comments = append(comments, more...)
 			}
+			side, err := parseDiffSide(node.DiffSide)
+			if err != nil {
+				return nil, err
+			}
 			threads = append(threads, gitprovider.InlineThread{
 				ID:          gitprovider.ThreadID(node.ID),
 				Resolved:    node.IsResolved,
 				Path:        node.Path,
-				Side:        parseDiffSide(node.DiffSide),
+				Side:        side,
 				Line:        node.Line,
 				SubjectType: anchorKind(node.Line),
 				CommitSHA:   firstCommitSHA(comments),
@@ -272,7 +280,11 @@ func (c *Client) fetchThreadComments(ctx context.Context, threadID string, after
 			return nil, err
 		}
 		for _, comment := range data.Node.Comments.Nodes {
-			comments = append(comments, mapThreadComment(threadID, comment))
+			mapped, err := mapThreadComment(threadID, comment)
+			if err != nil {
+				return nil, err
+			}
+			comments = append(comments, mapped)
 		}
 		if !data.Node.Comments.PageInfo.HasNextPage {
 			return comments, nil
@@ -281,10 +293,14 @@ func (c *Client) fetchThreadComments(ctx context.Context, threadID string, after
 	}
 }
 
-func mapThreadComment(threadID string, comment commentNode) gitprovider.ThreadComment {
+func mapThreadComment(threadID string, comment commentNode) (gitprovider.ThreadComment, error) {
 	id := comment.ID
 	if id == "" {
 		id = stringIDFromInt(comment.DatabaseID)
+	}
+	side, err := parseDiffSide(comment.DiffSide)
+	if err != nil {
+		return gitprovider.ThreadComment{}, err
 	}
 	return gitprovider.ThreadComment{
 		ID:          gitprovider.CommentID(id),
@@ -293,13 +309,13 @@ func mapThreadComment(threadID string, comment commentNode) gitprovider.ThreadCo
 		Author:      identityFromUser(comment.Author),
 		CommitSHA:   comment.Commit.OID,
 		Path:        comment.Path,
-		Side:        parseDiffSide(comment.DiffSide),
+		Side:        side,
 		Line:        comment.Line,
 		SubjectType: anchorKind(comment.Line),
 		URL:         comment.URL,
 		CreatedAt:   comment.CreatedAt,
 		UpdatedAt:   comment.UpdatedAt,
-	}
+	}, nil
 }
 
 func normalizeTreeEntryType(value string) (string, error) {
@@ -313,12 +329,15 @@ func normalizeTreeEntryType(value string) (string, error) {
 	}
 }
 
-func parseDiffSide(value string) review.DiffSide {
+func parseDiffSide(value string) (review.DiffSide, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", nil
+	}
 	side, err := review.ParseDiffSide(value)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("%w: unknown diff side %q", ErrValidation, value)
 	}
-	return side
+	return side, nil
 }
 
 func anchorKind(line int) review.AnchorKind {

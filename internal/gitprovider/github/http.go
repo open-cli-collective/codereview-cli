@@ -59,7 +59,10 @@ func doRESTPages[T any](ctx context.Context, c *Client, op gitprovider.Operation
 			return nil, err
 		}
 		all = append(all, page...)
-		next = nextLink(header.Get("Link"))
+		next, err = c.nextPageURL(header.Get("Link"))
+		if err != nil {
+			return nil, err
+		}
 	}
 	return all, nil
 }
@@ -200,6 +203,31 @@ func nextLink(header string) string {
 		return link
 	}
 	return ""
+}
+
+func (c *Client) nextPageURL(header string) (string, error) {
+	next := nextLink(header)
+	if next == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(next)
+	if err != nil {
+		return "", fmt.Errorf("%w: invalid pagination URL", ErrValidation)
+	}
+	if !parsed.IsAbs() {
+		parsed = c.baseURL.ResolveReference(parsed)
+	}
+	if parsed.Scheme != c.baseURL.Scheme || !strings.EqualFold(parsed.Host, c.baseURL.Host) {
+		return "", fmt.Errorf("%w: pagination URL host does not match GitHub REST host", ErrValidation)
+	}
+	basePath := c.baseURL.EscapedPath()
+	if basePath == "" {
+		basePath = "/"
+	}
+	if !strings.HasPrefix(parsed.EscapedPath(), basePath) {
+		return "", fmt.Errorf("%w: pagination URL path escapes GitHub REST base", ErrValidation)
+	}
+	return parsed.String(), nil
 }
 
 func stringIDFromInt(id int64) string {

@@ -149,6 +149,29 @@ func TestRESTPagination(t *testing.T) {
 	}
 }
 
+func TestRESTPaginationRejectsOffHostNextLink(t *testing.T) {
+	ref := testPRRef()
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.EscapedPath() != "/repos/open%20cli/repo+name/pulls/42/reviews" {
+			t.Fatalf("unexpected request %s", r.URL.String())
+		}
+		w.Header().Set("Link", `<https://evil.example.com/repos/open%20cli/repo+name/pulls/42/reviews?page=2>; rel="next"`)
+		writeJSON(t, w, []reviewResponse{{ID: 1, State: "COMMENTED"}})
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	_, err := client.ListReviews(context.Background(), ref)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("ListReviews off-host next error = %v, want ErrValidation", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want only first-page request", requests)
+	}
+}
+
 func TestHTTPErrorTaxonomy(t *testing.T) {
 	tests := []struct {
 		status int

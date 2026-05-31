@@ -146,6 +146,23 @@ func TestGraphQLErrorTaxonomy(t *testing.T) {
 	}
 }
 
+func TestListInlineThreadsRejectsUnknownDiffSide(t *testing.T) {
+	ref := testPRRef()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = readGraphQLRequest(t, r)
+		writeJSON(t, w, threadPageResponse("", false, []map[string]any{
+			threadNodeResponse("thread-1", false, "main.go", 10, "SIDEWAYS", false, "", nil),
+		}))
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL})
+
+	_, err := client.ListInlineThreads(context.Background(), ref)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("ListInlineThreads unknown side error = %v, want ErrValidation", err)
+	}
+}
+
 func containsInterpolatedExpression(query, expression string) bool {
 	return len(query) > 0 && len(expression) > 0 && strings.Contains(query, expression)
 }
