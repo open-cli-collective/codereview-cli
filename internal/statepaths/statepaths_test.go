@@ -220,6 +220,22 @@ func TestRunPaths(t *testing.T) {
 	if paths.LockFile != filepath.Join("data", AppDir, "locks", prKey+"__aaaaaaa__62574572babb.lock") {
 		t.Fatalf("LockFile = %q", paths.LockFile)
 	}
+	lockFile, err := layout.LockFile(LockSpec{
+		Host:            spec.Host,
+		Owner:           spec.Owner,
+		Repo:            spec.Repo,
+		PRNumber:        spec.PRNumber,
+		HeadSHA:         spec.HeadSHA,
+		BaseSHA:         spec.BaseSHA,
+		Profile:         spec.Profile,
+		PostingIdentity: spec.PostingIdentity,
+	})
+	if err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	if lockFile != paths.LockFile {
+		t.Fatalf("LockFile() = %q, want Run().LockFile %q", lockFile, paths.LockFile)
+	}
 	if got := layout.HTTPCacheDir(); got != filepath.Join("cache", AppDir, "http") {
 		t.Fatalf("HTTPCacheDir = %q", got)
 	}
@@ -282,6 +298,49 @@ func TestRunSpecValidation(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Run() error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLockSpecValidation(t *testing.T) {
+	layout := NewLayout("data", "cache")
+	valid := LockSpec{
+		Host:            "github",
+		Owner:           "open-cli",
+		Repo:            "codereview-cli",
+		PRNumber:        34,
+		HeadSHA:         headSHA,
+		BaseSHA:         baseSHA,
+		Profile:         "work",
+		PostingIdentity: "reviewer",
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*LockSpec)
+		wantErr string
+	}{
+		{name: "empty host", mutate: func(s *LockSpec) { s.Host = "" }, wantErr: "host"},
+		{name: "empty owner", mutate: func(s *LockSpec) { s.Owner = "" }, wantErr: "owner"},
+		{name: "empty repo", mutate: func(s *LockSpec) { s.Repo = "" }, wantErr: "repo"},
+		{name: "empty profile", mutate: func(s *LockSpec) { s.Profile = "" }, wantErr: "profile"},
+		{name: "empty identity", mutate: func(s *LockSpec) { s.PostingIdentity = "" }, wantErr: "posting identity"},
+		{name: "bad pr number", mutate: func(s *LockSpec) { s.PRNumber = 0 }, wantErr: "PR number"},
+		{name: "short head sha", mutate: func(s *LockSpec) { s.HeadSHA = strings.Repeat("a", 39) }, wantErr: "head SHA"},
+		{name: "uppercase base sha", mutate: func(s *LockSpec) { s.BaseSHA = strings.Repeat("B", 40) }, wantErr: "base SHA"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := valid
+			tt.mutate(&spec)
+			_, err := layout.LockFile(spec)
+			if err == nil {
+				t.Fatalf("LockFile() error = nil, want substring %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LockFile() error = %q, want substring %q", err, tt.wantErr)
 			}
 		})
 	}

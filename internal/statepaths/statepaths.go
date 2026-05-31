@@ -42,6 +42,18 @@ type RunSpec struct {
 	Attempt         int
 }
 
+// LockSpec identifies one review resume key's lock file.
+type LockSpec struct {
+	Host            string
+	Owner           string
+	Repo            string
+	PRNumber        int
+	HeadSHA         string
+	BaseSHA         string
+	Profile         string
+	PostingIdentity string
+}
+
 // RunPaths contains all per-run artifact paths.
 type RunPaths struct {
 	Dir            string
@@ -116,10 +128,21 @@ func (l Layout) Run(spec RunSpec) (RunPaths, error) {
 	if err != nil {
 		return RunPaths{}, err
 	}
+	lockFile, err := l.LockFile(LockSpec{
+		Host:            spec.Host,
+		Owner:           spec.Owner,
+		Repo:            spec.Repo,
+		PRNumber:        spec.PRNumber,
+		HeadSHA:         spec.HeadSHA,
+		BaseSHA:         spec.BaseSHA,
+		Profile:         spec.Profile,
+		PostingIdentity: spec.PostingIdentity,
+	})
+	if err != nil {
+		return RunPaths{}, err
+	}
 
 	runDir := filepath.Join(l.DataRoot, "runs", prKey, spec.HeadSHA, spec.BaseSHA, scope, attempt)
-	keyHash := KeyHash(prKey, spec.HeadSHA, spec.BaseSHA, spec.Profile, spec.PostingIdentity)
-	lockFile := filepath.Join(l.DataRoot, "locks", prKey+"__"+spec.HeadSHA[:7]+"__"+keyHash+".lock")
 
 	return RunPaths{
 		Dir:            runDir,
@@ -130,6 +153,25 @@ func (l Layout) Run(spec RunSpec) (RunPaths, error) {
 		AgentLogsDir:   filepath.Join(runDir, "agent-logs"),
 		LockFile:       lockFile,
 	}, nil
+}
+
+// LockFile returns the advisory run-lock path for spec's resume key.
+func (l Layout) LockFile(spec LockSpec) (string, error) {
+	prKey, err := PRKey(spec.Host, spec.Owner, spec.Repo, spec.PRNumber)
+	if err != nil {
+		return "", err
+	}
+	if err := validateSHA("head SHA", spec.HeadSHA); err != nil {
+		return "", err
+	}
+	if err := validateSHA("base SHA", spec.BaseSHA); err != nil {
+		return "", err
+	}
+	if _, err := ResumeScope(spec.Profile, spec.PostingIdentity); err != nil {
+		return "", err
+	}
+	keyHash := KeyHash(prKey, spec.HeadSHA, spec.BaseSHA, spec.Profile, spec.PostingIdentity)
+	return filepath.Join(l.DataRoot, "locks", prKey+"__"+spec.HeadSHA[:7]+"__"+keyHash+".lock"), nil
 }
 
 // SlicePatch returns the artifact path for an agent/file diff slice.
