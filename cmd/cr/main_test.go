@@ -28,6 +28,7 @@ func TestRun(t *testing.T) {
 		{name: "verbose deferred", args: []string{"--verbose"}, wantCode: 2, wantStderr: "unknown flag", wantEmptyStdout: true},
 		{name: "dash-v is not version", args: []string{"-v"}, wantCode: 2, wantStderr: "unknown shorthand flag", wantEmptyStdout: true},
 		{name: "help flag shows usage", args: []string{"--help"}, wantCode: 0, wantStdout: "Usage:", wantStdoutSubstring: true},
+		{name: "me command wired", args: []string{"me", "--help"}, wantCode: 0, wantStdout: "Resolve and cache", wantStdoutSubstring: true},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: 2, wantStderr: "unknown command", wantEmptyStdout: true},
 	}
 

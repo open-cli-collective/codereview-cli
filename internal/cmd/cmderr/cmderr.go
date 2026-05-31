@@ -10,6 +10,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
 // Config maps config package errors to scriptable command errors.
@@ -40,6 +41,22 @@ func Credential(err error) error {
 		errors.Is(err, credstore.ErrStoreClosed),
 		errors.Is(err, credstore.ErrBackendNotImplemented):
 		return exitcode.AuthConfig(err)
+	default:
+		return err
+	}
+}
+
+// Provider maps git-provider errors to scriptable command errors.
+func Provider(err error) error {
+	switch {
+	case errors.Is(err, gitprovider.ErrAuth), errors.Is(err, gitprovider.ErrPermission):
+		return exitcode.AuthConfig(err)
+	case errors.Is(err, gitprovider.ErrRetryable):
+		return exitcode.Upstream(err)
+	case errors.Is(err, gitprovider.ErrNotFound),
+		errors.Is(err, gitprovider.ErrConflict),
+		errors.Is(err, gitprovider.ErrStaleSHA):
+		return exitcode.With(exitcode.Failure, err)
 	default:
 		return err
 	}

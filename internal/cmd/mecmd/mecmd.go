@@ -1,0 +1,165 @@
+// Package mecmd wires the `cr me` command surface.
+package mecmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/open-cli-collective/cli-common/credstore"
+	"github.com/spf13/cobra"
+
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/identity"
+	"github.com/open-cli-collective/codereview-cli/internal/view"
+)
+
+// IdentityResolverFactory builds the resolver used by `cr me`.
+type IdentityResolverFactory func(cmd *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error)
+
+// Register attaches the me command to rootCmd.
+func Register(rootCmd *cobra.Command, opts *root.Options) {
+	RegisterWithFactory(rootCmd, opts, NewGitHubResolver)
+}
+
+// RegisterWithFactory attaches the me command with an injected resolver factory.
+func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory IdentityResolverFactory) {
+	var jsonOutput bool
+	var all bool
+	cmd := &cobra.Command{
+		Use:   "me",
+		Short: "Resolve and cache the active git-host identity",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("me takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if all && opts.Profile != "" {
+				return exitcode.Usage(fmt.Errorf("me --all cannot be combined with --profile"))
+			}
+			result, err := runMe(cmd.Context(), cmd, opts, factory, all)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return view.RenderMeJSON(opts.Stdout, result)
+			}
+			return view.RenderMeText(opts.Stdout, result)
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit JSON")
+	cmd.Flags().BoolVar(&all, "all", false, "Refresh every configured profile")
+	rootCmd.AddCommand(cmd)
+}
+
+func runMe(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory IdentityResolverFactory, all bool) (view.MeResult, error) {
+	path, err := configPath(opts)
+	if err != nil {
+		return view.MeResult{}, exitcode.AuthConfig(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return view.MeResult{}, cmderr.Config(err)
+	}
+	resolver, cleanup, err := factory(cmd, opts, cfg)
+	if err != nil {
+		return view.MeResult{}, err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	var updated config.File
+	var results []identity.ProfileResult
+	var changed bool
+	if all {
+		updated, results, changed, err = identity.RefreshAll(ctx, cfg, resolver)
+	} else {
+		updated, results, changed, err = identity.Refresh(ctx, cfg, opts.Profile, resolver)
+	}
+	if err != nil {
+		return view.MeResult{}, mapRunError(err)
+	}
+	if changed {
+		if err := config.Save(path, updated); err != nil {
+			return view.MeResult{}, cmderr.Config(err)
+		}
+	}
+	return view.NewMeResult(results), nil
+}
+
+func mapRunError(err error) error {
+	switch {
+	case errors.Is(err, config.ErrInvalid),
+		errors.Is(err, config.ErrNotConfigured),
+		errors.Is(err, config.ErrProfileNotFound),
+		errors.Is(err, config.ErrUnsupported):
+		return cmderr.Config(err)
+	case errors.Is(err, gitprovider.ErrAuth),
+		errors.Is(err, gitprovider.ErrPermission),
+		errors.Is(err, gitprovider.ErrRetryable),
+		errors.Is(err, gitprovider.ErrNotFound),
+		errors.Is(err, gitprovider.ErrConflict),
+		errors.Is(err, gitprovider.ErrStaleSHA):
+		return cmderr.Provider(err)
+	case errors.Is(err, credentials.ErrInvalidBackendSelection),
+		errors.Is(err, credentials.ErrWrongService),
+		errors.Is(err, credstore.ErrRefEmpty),
+		errors.Is(err, credstore.ErrRefSegmentCount),
+		errors.Is(err, credstore.ErrRefInvalidChar),
+		errors.Is(err, credstore.ErrKeyNotAllowed),
+		errors.Is(err, credstore.ErrExists),
+		errors.Is(err, credstore.ErrFilePassphraseRequired),
+		errors.Is(err, credstore.ErrSecretServiceFailClosed),
+		errors.Is(err, credstore.ErrStoreClosed),
+		errors.Is(err, credstore.ErrBackendNotImplemented):
+		return cmderr.Credential(err)
+	}
+	return err
+}
+
+func configPath(opts *root.Options) (string, error) {
+	if opts != nil && opts.ConfigPath != "" {
+		return opts.ConfigPath, nil
+	}
+	return config.Path()
+}
+
+// NewGitHubResolver builds the production identity resolver.
+func NewGitHubResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
+	store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
+	if err != nil {
+		return nil, nil, cmderr.Credential(err)
+	}
+	return &GitHubResolver{Store: store}, func() { _ = store.Close() }, nil
+}
+
+// GitHubResolver resolves identities through the CR-08 GitHub adapter.
+type GitHubResolver struct {
+	Store     githubprovider.TokenStore
+	Options   githubprovider.Options
+	NewClient func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
+}
+
+// ResolveIdentity resolves one configured GitHub identity.
+func (r *GitHubResolver) ResolveIdentity(ctx context.Context, git config.GitConfig) (gitprovider.Identity, error) {
+	newClient := r.NewClient
+	if newClient == nil {
+		newClient = githubprovider.NewFromGitConfig
+	}
+	client, credential, err := newClient(git, r.Store, r.Options)
+	if err != nil {
+		return gitprovider.Identity{}, err
+	}
+	return client.WhoAmI(ctx, credential)
+}
+
+var _ identity.Resolver = (*GitHubResolver)(nil)
