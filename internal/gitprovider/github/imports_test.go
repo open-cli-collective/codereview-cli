@@ -1,4 +1,4 @@
-package gitprovider
+package github
 
 import (
 	"bytes"
@@ -13,30 +13,26 @@ import (
 	"testing"
 )
 
-func TestProductionImportsStayInDataLayer(t *testing.T) {
+func TestProductionImportsStayInAdapterLayer(t *testing.T) {
 	_, testFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
 	dir := filepath.Dir(testFile)
 	repoRoot, modulePath := repoRootAndModule(t, dir)
-	allowedInternalImport := modulePath + "/internal/review"
+	allowedInternal := map[string]struct{}{
+		modulePath + "/internal/config":      {},
+		modulePath + "/internal/credentials": {},
+		modulePath + "/internal/gitprovider": {},
+		modulePath + "/internal/review":      {},
+	}
 	stdlib := stdlibImports(t, repoRoot)
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(dir, func(file string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() {
-			if file != dir {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if filepath.Ext(file) != ".go" {
-			return nil
-		}
-		if strings.HasSuffix(file, "_test.go") {
+		if entry.IsDir() || filepath.Ext(file) != ".go" || strings.HasSuffix(file, "_test.go") {
 			return nil
 		}
 		parsed, err := parser.ParseFile(fset, file, nil, parser.ImportsOnly)
@@ -48,11 +44,11 @@ func TestProductionImportsStayInDataLayer(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if path == allowedInternalImport {
+			if _, ok := allowedInternal[path]; ok {
 				continue
 			}
 			if strings.HasPrefix(path, modulePath+"/") || path == modulePath {
-				t.Fatalf("production import %q is outside the allowed provider data-layer imports", path)
+				t.Fatalf("production import %q is outside allowed adapter-layer imports", path)
 			}
 			if _, ok := stdlib[path]; !ok {
 				t.Fatalf("production import %q is not in the standard library", path)
