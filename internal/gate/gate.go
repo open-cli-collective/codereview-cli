@@ -279,6 +279,9 @@ func Decide(req Request) Decision {
 		if decision := validateRun(*req.PartialRun); decision.Kind == DecisionError {
 			return decision
 		}
+		if req.PartialRun.RunID != req.PR.RunID {
+			return invalidInput(fmt.Sprintf("partial marker run ID %q does not match local row run ID %q", req.PR.RunID, req.PartialRun.RunID))
+		}
 	}
 
 	decision := decidePR(req.PR, req.PartialRun)
@@ -410,6 +413,9 @@ func validateRunShape(run RunSummary) Decision {
 	}
 	if !run.State.Valid() {
 		return invalidInput(fmt.Sprintf("run %q has invalid state %q", run.RunID, run.State))
+	}
+	if run.Attempt <= 0 {
+		return invalidInput(fmt.Sprintf("run %q has non-positive attempt %d", run.RunID, run.Attempt))
 	}
 	if run.RequiredPending < 0 || run.RequiredFailedTerminal < 0 {
 		return invalidInput(fmt.Sprintf("run %q has negative required action counts", run.RunID))

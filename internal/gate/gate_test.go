@@ -259,6 +259,17 @@ func TestDecideInvalidInputs(t *testing.T) {
 			want: ErrorInvalidInput,
 		},
 		{
+			name: "non-positive attempt",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.ExactRuns = []RunSummary{{
+					RunID:    "run-zero",
+					PostMode: PostModeLive,
+					State:    RunStateApproved,
+				}}
+			}),
+			want: ErrorInvalidInput,
+		},
+		{
 			name: "unknown failure class",
 			req: requestWithPR(PRSummary{
 				State:   PRStatePartial,
@@ -298,6 +309,17 @@ func TestDecideInvalidInputs(t *testing.T) {
 				State:   PRStatePartial,
 				RunID:   "run-no-diff",
 				Outcome: PROutcomeNothingToReview,
+			}),
+			want: ErrorInvalidInput,
+		},
+		{
+			name: "partial local run must match marker run ID",
+			req: requestWithPR(PRSummary{
+				State:   PRStatePartial,
+				RunID:   "run-marker",
+				Outcome: PROutcomeApproved,
+			}, func(req *Request) {
+				req.PartialRun = ptrRun(liveRun("run-other", 1, RunStateFailed))
 			}),
 			want: ErrorInvalidInput,
 		},
