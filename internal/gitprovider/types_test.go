@@ -16,8 +16,11 @@ func TestPRRefValidate(t *testing.T) {
 	}{
 		{name: "valid"},
 		{name: "missing host", mutate: func(ref *PRRef) { ref.Host = "" }, wantErr: "host"},
+		{name: "blank host", mutate: func(ref *PRRef) { ref.Host = "  " }, wantErr: "host"},
 		{name: "missing owner", mutate: func(ref *PRRef) { ref.Owner = "" }, wantErr: "owner"},
+		{name: "blank owner", mutate: func(ref *PRRef) { ref.Owner = "  " }, wantErr: "owner"},
 		{name: "missing repo", mutate: func(ref *PRRef) { ref.Repo = "" }, wantErr: "repo"},
+		{name: "blank repo", mutate: func(ref *PRRef) { ref.Repo = "  " }, wantErr: "repo"},
 		{name: "bad number", mutate: func(ref *PRRef) { ref.Number = 0 }, wantErr: "PR number"},
 	}
 
@@ -60,8 +63,11 @@ func TestInlineCommentValidate(t *testing.T) {
 		{name: "valid line", comment: validLine},
 		{name: "valid file", comment: validFile},
 		{name: "missing commit", comment: mutateInline(validLine, func(c *InlineComment) { c.CommitSHA = "" }), wantErr: "commit SHA"},
+		{name: "blank commit", comment: mutateInline(validLine, func(c *InlineComment) { c.CommitSHA = "  " }), wantErr: "commit SHA"},
 		{name: "missing body", comment: mutateInline(validLine, func(c *InlineComment) { c.Body = "" }), wantErr: "body"},
+		{name: "blank body", comment: mutateInline(validLine, func(c *InlineComment) { c.Body = "  " }), wantErr: "body"},
 		{name: "missing path", comment: mutateInline(validLine, func(c *InlineComment) { c.Path = "" }), wantErr: "path"},
+		{name: "blank path", comment: mutateInline(validLine, func(c *InlineComment) { c.Path = "  " }), wantErr: "path"},
 		{name: "line missing side", comment: mutateInline(validLine, func(c *InlineComment) { c.Side = "" }), wantErr: "side"},
 		{name: "line missing line", comment: mutateInline(validLine, func(c *InlineComment) { c.Line = 0 }), wantErr: "line"},
 		{name: "file has side", comment: mutateInline(validFile, func(c *InlineComment) { c.Side = review.DiffSideRight }), wantErr: "side"},
@@ -98,8 +104,10 @@ func TestReviewRequestValidate(t *testing.T) {
 	}{
 		{name: "valid", request: valid},
 		{name: "missing commit", request: mutateReview(valid, func(r *ReviewRequest) { r.CommitSHA = "" }), wantErr: "commit SHA"},
+		{name: "blank commit", request: mutateReview(valid, func(r *ReviewRequest) { r.CommitSHA = "  " }), wantErr: "commit SHA"},
 		{name: "bad event", request: mutateReview(valid, func(r *ReviewRequest) { r.Event = "changes_requested" }), wantErr: "review event"},
 		{name: "missing body", request: mutateReview(valid, func(r *ReviewRequest) { r.Body = "" }), wantErr: "body"},
+		{name: "blank body", request: mutateReview(valid, func(r *ReviewRequest) { r.Body = "  " }), wantErr: "body"},
 	}
 
 	for _, tt := range tests {

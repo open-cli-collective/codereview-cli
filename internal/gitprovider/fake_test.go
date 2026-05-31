@@ -3,7 +3,9 @@ package gitprovider
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
@@ -18,6 +20,45 @@ func TestFakeCapabilities(t *testing.T) {
 	fake.SetCapabilities(caps)
 	if got := fake.Capabilities(); got != caps {
 		t.Fatalf("Capabilities() = %#v, want %#v", got, caps)
+	}
+}
+
+func TestFakeIdentityAndDiffSuccessPaths(t *testing.T) {
+	ctx := context.Background()
+	ref := testPRRef()
+	other := PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "other", Number: 99}
+	var fake Fake
+	identity := Identity{Login: "reviewer", ID: "user-1", DisplayName: "Reviewer"}
+	diff := UnifiedDiff{Raw: "diff --git a/main.go b/main.go"}
+	otherDiff := UnifiedDiff{Raw: "diff --git a/other.go b/other.go"}
+	fake.SetIdentity(identity)
+	if err := fake.SetDiff(ref, diff); err != nil {
+		t.Fatalf("SetDiff(ref): %v", err)
+	}
+	if err := fake.SetDiff(other, otherDiff); err != nil {
+		t.Fatalf("SetDiff(other): %v", err)
+	}
+
+	gotIdentity, err := fake.WhoAmI(ctx, Credential{Type: "pat", Token: "token"})
+	if err != nil {
+		t.Fatalf("WhoAmI: %v", err)
+	}
+	if gotIdentity != identity {
+		t.Fatalf("WhoAmI() = %#v, want %#v", gotIdentity, identity)
+	}
+	gotDiff, err := fake.GetDiff(ctx, ref)
+	if err != nil {
+		t.Fatalf("GetDiff(ref): %v", err)
+	}
+	if gotDiff != diff {
+		t.Fatalf("GetDiff(ref) = %#v, want %#v", gotDiff, diff)
+	}
+	gotOtherDiff, err := fake.GetDiff(ctx, other)
+	if err != nil {
+		t.Fatalf("GetDiff(other): %v", err)
+	}
+	if gotOtherDiff != otherDiff {
+		t.Fatalf("GetDiff(other) = %#v, want %#v", gotOtherDiff, otherDiff)
 	}
 }
 
@@ -141,14 +182,26 @@ func TestFakeValidatesThreadAndIssueWrites(t *testing.T) {
 	if _, err := fake.ReplyToThread(ctx, ref, "", "body"); err == nil {
 		t.Fatal("ReplyToThread empty thread ID error = nil, want error")
 	}
+	if _, err := fake.ReplyToThread(ctx, ref, "  ", "body"); err == nil {
+		t.Fatal("ReplyToThread blank thread ID error = nil, want error")
+	}
 	if _, err := fake.ReplyToThread(ctx, ref, "thread-1", ""); err == nil {
 		t.Fatal("ReplyToThread empty body error = nil, want error")
+	}
+	if _, err := fake.ReplyToThread(ctx, ref, "thread-1", "  "); err == nil {
+		t.Fatal("ReplyToThread blank body error = nil, want error")
 	}
 	if err := fake.ResolveThread(ctx, ref, ""); err == nil {
 		t.Fatal("ResolveThread empty thread ID error = nil, want error")
 	}
+	if err := fake.ResolveThread(ctx, ref, "  "); err == nil {
+		t.Fatal("ResolveThread blank thread ID error = nil, want error")
+	}
 	if _, err := fake.PostIssueComment(ctx, ref, ""); err == nil {
 		t.Fatal("PostIssueComment empty body error = nil, want error")
+	}
+	if _, err := fake.PostIssueComment(ctx, ref, "  "); err == nil {
+		t.Fatal("PostIssueComment blank body error = nil, want error")
 	}
 
 	if _, err := fake.ReplyToThread(ctx, ref, "thread-1", "body"); err != nil {
@@ -168,6 +221,60 @@ func TestFakeValidatesThreadAndIssueWrites(t *testing.T) {
 	}
 	if got := fake.RecordedIssueComments(ref); len(got) != 1 || got[0] != "body" {
 		t.Fatalf("RecordedIssueComments = %#v, want one body comment", got)
+	}
+}
+
+func TestFakeRecordsReviewsByPRRefAndCopies(t *testing.T) {
+	ctx := context.Background()
+	ref := testPRRef()
+	other := PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "other", Number: 99}
+	var fake Fake
+	request := testReviewRequest()
+
+	firstID, err := fake.SubmitReview(ctx, ref, request)
+	if err != nil {
+		t.Fatalf("SubmitReview first: %v", err)
+	}
+	secondID, err := fake.SubmitReview(ctx, ref, mutateReview(request, func(r *ReviewRequest) { r.Body = "second" }))
+	if err != nil {
+		t.Fatalf("SubmitReview second: %v", err)
+	}
+	if firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("SubmitReview IDs = %q and %q, want distinct generated IDs", firstID, secondID)
+	}
+	if len(fake.RecordedReviews(other)) != 0 {
+		t.Fatalf("RecordedReviews(other) = non-empty, want empty")
+	}
+	records := fake.RecordedReviews(ref)
+	if len(records) != 2 {
+		t.Fatalf("RecordedReviews(ref) len = %d, want 2", len(records))
+	}
+	records[0].Body = "mutated"
+	again := fake.RecordedReviews(ref)
+	if again[0].Body != request.Body {
+		t.Fatalf("RecordedReviews returned mutable backing storage: %#v", again)
+	}
+}
+
+func TestFakeSetErrorCanClearInjection(t *testing.T) {
+	ctx := context.Background()
+	ref := testPRRef()
+	var fake Fake
+	pr := PR{Ref: ref, Title: "Add provider"}
+	if err := fake.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	fake.SetError(OperationGetPR, WrapError(ErrRetryable, OperationGetPR, nil))
+	if _, err := fake.GetPR(ctx, ref); !errors.Is(err, ErrRetryable) {
+		t.Fatalf("GetPR injected error = %v, want ErrRetryable", err)
+	}
+	fake.SetError(OperationGetPR, nil)
+	got, err := fake.GetPR(ctx, ref)
+	if err != nil {
+		t.Fatalf("GetPR after clearing injection: %v", err)
+	}
+	if got != pr {
+		t.Fatalf("GetPR after clearing injection = %#v, want %#v", got, pr)
 	}
 }
 
@@ -243,10 +350,12 @@ func TestFakeInjectedErrorsCoverErrorReturningMethods(t *testing.T) {
 	}
 }
 
-func TestFakeReadModelsUseDownstreamFields(t *testing.T) {
+func TestFakeReadModelsAreLosslessAndIsolatedByRef(t *testing.T) {
 	ctx := context.Background()
 	ref := testPRRef()
+	other := PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "other", Number: 99}
 	var fake Fake
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	pr := PR{
 		Ref:    ref,
 		Title:  "Add provider",
@@ -256,35 +365,110 @@ func TestFakeReadModelsUseDownstreamFields(t *testing.T) {
 		Head:   PRBranchRef{Host: "github.com", Owner: "rianjs", Repo: "codereview-cli", Name: "feature", Ref: "refs/heads/feature", SHA: "head-sha"},
 		Base:   PRBranchRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Name: "main", Ref: "refs/heads/main", SHA: "base-sha"},
 	}
+	otherPR := PR{
+		Ref:    other,
+		Title:  "Other provider",
+		URL:    "https://github.com/open-cli-collective/other/pull/99",
+		State:  "closed",
+		Author: Identity{Login: "other", ID: "user-2", DisplayName: "Other"},
+		Head:   PRBranchRef{Host: "github.com", Owner: "other", Repo: "other", Name: "feature", Ref: "refs/heads/feature", SHA: "other-head"},
+		Base:   PRBranchRef{Host: "github.com", Owner: "open-cli-collective", Repo: "other", Name: "main", Ref: "refs/heads/main", SHA: "other-base"},
+	}
+	reviews := []Review{{
+		ID:          "review-1",
+		Body:        "sha=head-sha base=base-sha",
+		Author:      pr.Author,
+		State:       "COMMENTED",
+		Event:       review.ReviewEventComment,
+		CommitSHA:   "head-sha",
+		URL:         "https://github.com/open-cli-collective/codereview-cli/pull/14#pullrequestreview-1",
+		SubmittedAt: now,
+	}}
+	otherReviews := []Review{{
+		ID:          "review-2",
+		Body:        "sha=other-head base=other-base",
+		Author:      otherPR.Author,
+		State:       "APPROVED",
+		Event:       review.ReviewEventApprove,
+		CommitSHA:   "other-head",
+		URL:         "https://github.com/open-cli-collective/other/pull/99#pullrequestreview-2",
+		SubmittedAt: now.Add(time.Hour),
+	}}
+	comments := []IssueComment{{
+		ID:        "comment-1",
+		Body:      "sha=head-sha base=base-sha",
+		Author:    pr.Author,
+		URL:       "https://github.com/open-cli-collective/codereview-cli/pull/14#issuecomment-1",
+		CreatedAt: now,
+		UpdatedAt: now.Add(time.Minute),
+	}}
+	otherComments := []IssueComment{{
+		ID:        "comment-2",
+		Body:      "sha=other-head base=other-base",
+		Author:    otherPR.Author,
+		URL:       "https://github.com/open-cli-collective/other/pull/99#issuecomment-2",
+		CreatedAt: now.Add(time.Hour),
+		UpdatedAt: now.Add(2 * time.Hour),
+	}}
 	if err := fake.SetPR(ref, pr); err != nil {
-		t.Fatalf("SetPR: %v", err)
+		t.Fatalf("SetPR(ref): %v", err)
 	}
-	if err := fake.SetReviews(ref, []Review{{ID: "review-1", Body: "sha=head-sha base=base-sha", Author: pr.Author, Event: review.ReviewEventComment, CommitSHA: "head-sha"}}); err != nil {
-		t.Fatalf("SetReviews: %v", err)
+	if err := fake.SetPR(other, otherPR); err != nil {
+		t.Fatalf("SetPR(other): %v", err)
 	}
-	if err := fake.SetIssueComments(ref, []IssueComment{{ID: "comment-1", Body: "sha=head-sha base=base-sha", Author: pr.Author}}); err != nil {
-		t.Fatalf("SetIssueComments: %v", err)
+	if err := fake.SetReviews(ref, reviews); err != nil {
+		t.Fatalf("SetReviews(ref): %v", err)
+	}
+	if err := fake.SetReviews(other, otherReviews); err != nil {
+		t.Fatalf("SetReviews(other): %v", err)
+	}
+	if err := fake.SetIssueComments(ref, comments); err != nil {
+		t.Fatalf("SetIssueComments(ref): %v", err)
+	}
+	if err := fake.SetIssueComments(other, otherComments); err != nil {
+		t.Fatalf("SetIssueComments(other): %v", err)
 	}
 
 	gotPR, err := fake.GetPR(ctx, ref)
 	if err != nil {
-		t.Fatalf("GetPR: %v", err)
+		t.Fatalf("GetPR(ref): %v", err)
 	}
-	if gotPR.Head.Owner != "rianjs" || gotPR.Base.Owner != "open-cli-collective" {
-		t.Fatalf("GetPR branch repo identity = head %#v base %#v", gotPR.Head, gotPR.Base)
+	if gotPR != pr {
+		t.Fatalf("GetPR(ref) = %#v, want %#v", gotPR, pr)
+	}
+	gotOtherPR, err := fake.GetPR(ctx, other)
+	if err != nil {
+		t.Fatalf("GetPR(other): %v", err)
+	}
+	if gotOtherPR != otherPR {
+		t.Fatalf("GetPR(other) = %#v, want %#v", gotOtherPR, otherPR)
 	}
 	gotReviews, err := fake.ListReviews(ctx, ref)
 	if err != nil {
-		t.Fatalf("ListReviews: %v", err)
+		t.Fatalf("ListReviews(ref): %v", err)
 	}
-	if len(gotReviews) != 1 || gotReviews[0].CommitSHA != "head-sha" || gotReviews[0].Author.Login != "rianjs" {
-		t.Fatalf("ListReviews = %#v, want commit SHA and author fields", gotReviews)
+	if !reflect.DeepEqual(gotReviews, reviews) {
+		t.Fatalf("ListReviews(ref) = %#v, want %#v", gotReviews, reviews)
+	}
+	gotOtherReviews, err := fake.ListReviews(ctx, other)
+	if err != nil {
+		t.Fatalf("ListReviews(other): %v", err)
+	}
+	if !reflect.DeepEqual(gotOtherReviews, otherReviews) {
+		t.Fatalf("ListReviews(other) = %#v, want %#v", gotOtherReviews, otherReviews)
 	}
 	gotComments, err := fake.ListIssueComments(ctx, ref)
 	if err != nil {
-		t.Fatalf("ListIssueComments: %v", err)
+		t.Fatalf("ListIssueComments(ref): %v", err)
 	}
-	if len(gotComments) != 1 || gotComments[0].Author.Login != "rianjs" {
-		t.Fatalf("ListIssueComments = %#v, want author field", gotComments)
+	if !reflect.DeepEqual(gotComments, comments) {
+		t.Fatalf("ListIssueComments(ref) = %#v, want %#v", gotComments, comments)
+	}
+	gotOtherComments, err := fake.ListIssueComments(ctx, other)
+	if err != nil {
+		t.Fatalf("ListIssueComments(other): %v", err)
+	}
+	if !reflect.DeepEqual(gotOtherComments, otherComments) {
+		t.Fatalf("ListIssueComments(other) = %#v, want %#v", gotOtherComments, otherComments)
 	}
 }

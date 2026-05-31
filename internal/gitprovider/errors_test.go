@@ -30,3 +30,13 @@ func TestProviderErrorMatchesKindAndCause(t *testing.T) {
 		t.Fatalf("ProviderError.Op = %q, want %q", providerErr.Op, OperationPostIssueComment)
 	}
 }
+
+func TestWrapErrorNilKindReturnsOriginalError(t *testing.T) {
+	raw := errors.New("raw")
+	if got := WrapError(nil, OperationGetPR, raw); !errors.Is(got, raw) {
+		t.Fatalf("WrapError(nil, op, raw) = %v, want original error", got)
+	}
+	if got := WrapError(nil, OperationGetPR, nil); got != nil {
+		t.Fatalf("WrapError(nil, op, nil) = %v, want nil", got)
+	}
+}

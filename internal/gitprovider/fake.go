@@ -306,8 +306,8 @@ func (f *Fake) ReplyToThread(_ context.Context, ref PRRef, threadID ThreadID, bo
 	if err := ref.Validate(); err != nil {
 		return "", err
 	}
-	if threadID == "" {
-		return "", fmt.Errorf("thread ID is required")
+	if err := requireNonEmpty("thread ID", string(threadID)); err != nil {
+		return "", err
 	}
 	if err := requireNonEmpty("body", body); err != nil {
 		return "", err
@@ -327,8 +327,8 @@ func (f *Fake) ResolveThread(_ context.Context, ref PRRef, threadID ThreadID) er
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	if threadID == "" {
-		return fmt.Errorf("thread ID is required")
+	if err := requireNonEmpty("thread ID", string(threadID)); err != nil {
+		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
