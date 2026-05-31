@@ -171,6 +171,121 @@ func TestPostReconcilesMarkersOnlyFromPostingIdentity(t *testing.T) {
 	}
 }
 
+func TestPostReconcilesPreexistingActionsAndPostsOnlyMissingAction(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	ref := testPRRef()
+	limiter := &spyLimiter{}
+
+	insertAction(t, store, plannedAction(run.RunID, "reply-1", ledger.PlannedActionThreadReply, true, "thread-1", ThreadReplyPayload{Body: "reply body"}))
+	insertAction(t, store, plannedAction(run.RunID, "summary-1", ledger.PlannedActionThreadReply, true, "thread-2", ThreadReplyPayload{Body: "summary body", Summary: true}))
+	insertAction(t, store, plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup body"}))
+	insertAction(t, store, plannedAction(run.RunID, "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{
+		Body:  "review body",
+		Event: review.ReviewEventComment,
+	}))
+	postedReply := plannedAction(run.RunID, "reply-resolved", ledger.PlannedActionThreadReply, false, "thread-resolved", ThreadReplyPayload{Body: "posted reply"})
+	postedReply.Status = ledger.PlannedActionPosted
+	postedReply.PostedAt = strPtrTime(testTime())
+	postedReply.UpstreamID = strPtr("comment-resolved-reply")
+	insertAction(t, store, postedReply)
+	insertAction(t, store, plannedAction(run.RunID, "resolve-1", ledger.PlannedActionResolveThread, true, "thread-resolved", ResolveThreadPayload{}))
+	insertAction(t, store, plannedAction(run.RunID, "inline-1", ledger.PlannedActionInlineComment, true, "", InlineCommentPayload{
+		Body:        "inline body",
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        12,
+		SubjectType: review.AnchorKindLine,
+	}))
+
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{
+		{
+			ID: gitprovider.ThreadID("thread-1"),
+			Comments: []gitprovider.ThreadComment{{
+				ID:     gitprovider.CommentID("comment-reply"),
+				Author: botIdentity(),
+				Body: mustRenderAction(t, marker.ActionMarker{
+					RunID:    run.RunID,
+					ActionID: "reply-1",
+					Kind:     marker.ActionKindThreadReply,
+					SHA:      run.SHA,
+					BaseSHA:  run.BaseSHA,
+				}),
+			}},
+		},
+		{
+			ID: gitprovider.ThreadID("thread-2"),
+			Comments: []gitprovider.ThreadComment{{
+				ID:     gitprovider.CommentID("comment-summary"),
+				Author: botIdentity(),
+				Body:   mustRenderThreadSummary(t, marker.ThreadSummaryMarker{RunID: run.RunID, ActionID: "summary-1"}),
+			}},
+		},
+		{ID: gitprovider.ThreadID("thread-resolved"), Resolved: true},
+	}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
+	if err := provider.SetIssueComments(ref, []gitprovider.IssueComment{{
+		ID:     gitprovider.CommentID("issue-rollup"),
+		Author: botIdentity(),
+		Body: mustRenderAction(t, marker.ActionMarker{
+			RunID:    run.RunID,
+			ActionID: "rollup-1",
+			Kind:     marker.ActionKindRollupComment,
+			SHA:      run.SHA,
+			BaseSHA:  run.BaseSHA,
+			Outcome:  string(ledger.OutcomeComment),
+		}),
+	}}); err != nil {
+		t.Fatalf("SetIssueComments: %v", err)
+	}
+	if err := provider.SetReviews(ref, []gitprovider.Review{{
+		ID:     gitprovider.ReviewID("review-submit"),
+		Author: botIdentity(),
+		Body: mustRenderAction(t, marker.ActionMarker{
+			RunID:    run.RunID,
+			ActionID: "submit-1",
+			Kind:     marker.ActionKindSubmitReview,
+			SHA:      run.SHA,
+			BaseSHA:  run.BaseSHA,
+		}),
+	}}); err != nil {
+		t.Fatalf("SetReviews: %v", err)
+	}
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.Outcome != ledger.OutcomeComment || result.ExitCode != exitOK {
+		t.Fatalf("Post result = %#v, want comment exit 0", result)
+	}
+	if !reflect.DeepEqual(provider.writes, []string{"PostInlineComment"}) {
+		t.Fatalf("provider writes = %#v, want only missing inline write", provider.writes)
+	}
+	if limiter.calls != 1 {
+		t.Fatalf("limiter calls = %d, want one for missing inline", limiter.calls)
+	}
+
+	wantUpstreams := map[string]string{
+		"reply-1":   "comment-reply",
+		"summary-1": "comment-summary",
+		"rollup-1":  "issue-rollup",
+		"submit-1":  "review-submit",
+		"resolve-1": "thread-resolved",
+	}
+	for actionID, upstreamID := range wantUpstreams {
+		action := actionByID(t, store, run.RunID, actionID)
+		if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != upstreamID {
+			t.Fatalf("%s after reconciliation = %#v, want posted upstream %s", actionID, action, upstreamID)
+		}
+	}
+	if got := actionByID(t, store, run.RunID, "inline-1"); got.Status != ledger.PlannedActionPosted || got.Attempts != 1 {
+		t.Fatalf("inline after missing write = %#v, want posted with one attempt", got)
+	}
+}
+
 func TestPostValidationRejectsBadWiringBeforeSideEffects(t *testing.T) {
 	run := testRun(ledger.PostModeLive)
 	tests := []struct {
@@ -315,6 +430,76 @@ func TestPostLocalValidationFailsTerminalWithoutLimiterOrProvider(t *testing.T) 
 	}
 }
 
+func TestPostLocalValidationFailsTerminalWithoutLimiterOrProviderByActionKind(t *testing.T) {
+	tests := []struct {
+		name   string
+		action ledger.PlannedAction
+	}{
+		{
+			name: "inline invalid provider request",
+			action: plannedAction("run-1", "inline-1", ledger.PlannedActionInlineComment, true, "", InlineCommentPayload{
+				Body:        "inline",
+				Side:        review.DiffSideRight,
+				Line:        1,
+				SubjectType: review.AnchorKindLine,
+			}),
+		},
+		{
+			name:   "thread reply missing target",
+			action: plannedAction("run-1", "reply-1", ledger.PlannedActionThreadReply, true, "", ThreadReplyPayload{Body: "reply"}),
+		},
+		{
+			name: "resolve malformed json",
+			action: ledger.PlannedAction{
+				ActionID:    "resolve-1",
+				RunID:       "run-1",
+				Kind:        ledger.PlannedActionResolveThread,
+				ThreadID:    strPtr("thread-1"),
+				PlannedAt:   testTime(),
+				PayloadJSON: `{bad-json`,
+				Status:      ledger.PlannedActionPending,
+				Required:    true,
+			},
+		},
+		{
+			name:   "rollup missing body",
+			action: plannedAction("run-1", "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "   "}),
+		},
+		{
+			name: "submit invalid provider request",
+			action: plannedAction("run-1", "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{
+				Body:  "review",
+				Event: review.ReviewEvent("invalid"),
+			}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := openStore(t)
+			run := allocateRun(t, store, ledger.PostModeLive)
+			provider := newRecordingProvider()
+			limiter := &spyLimiter{}
+			tt.action.RunID = run.RunID
+			insertAction(t, store, tt.action)
+
+			result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
+			if err != nil {
+				t.Fatalf("Post: %v", err)
+			}
+			if result.Outcome != ledger.OutcomeFailed || result.ExitCode != exitFailed {
+				t.Fatalf("Post result = %#v, want failed exit 1", result)
+			}
+			if limiter.calls != 0 || len(provider.writes) != 0 {
+				t.Fatalf("limiter calls = %d writes = %#v, want none", limiter.calls, provider.writes)
+			}
+			action := actionByID(t, store, run.RunID, tt.action.ActionID)
+			if action.Status != ledger.PlannedActionFailedTerminal || action.Attempts != 0 || action.Error == nil {
+				t.Fatalf("bad action = %#v, want failed terminal without attempts", action)
+			}
+		})
+	}
+}
+
 func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -333,6 +518,13 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 		{
 			name:        "auth terminal exit auth",
 			err:         gitprovider.WrapError(gitprovider.ErrAuth, gitprovider.OperationPostIssueComment, nil),
+			wantOutcome: ledger.OutcomeFailed,
+			wantExit:    exitAuth,
+			wantStatus:  ledger.PlannedActionFailedTerminal,
+		},
+		{
+			name:        "auth chain terminal exit auth",
+			err:         terseAuthError{},
 			wantOutcome: ledger.OutcomeFailed,
 			wantExit:    exitAuth,
 			wantStatus:  ledger.PlannedActionFailedTerminal,
@@ -524,6 +716,34 @@ func TestTokenBucketValidationAndCancellation(t *testing.T) {
 	}
 }
 
+func TestTokenBucketIsHostKeyedAndSpacesSameHost(t *testing.T) {
+	interval := 40 * time.Millisecond
+	bucket, err := NewTokenBucket(interval, 1)
+	if err != nil {
+		t.Fatalf("NewTokenBucket: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := bucket.Wait(ctx, "github.com"); err != nil {
+		t.Fatalf("first github Wait: %v", err)
+	}
+	otherStart := time.Now()
+	if err := bucket.Wait(ctx, "gitlab.com"); err != nil {
+		t.Fatalf("gitlab Wait: %v", err)
+	}
+	if elapsed := time.Since(otherStart); elapsed >= interval/2 {
+		t.Fatalf("other host Wait took %v, want below %v", elapsed, interval/2)
+	}
+	sameStart := time.Now()
+	if err := bucket.Wait(ctx, "github.com"); err != nil {
+		t.Fatalf("second github Wait: %v", err)
+	}
+	if elapsed := time.Since(sameStart); elapsed < interval/2 {
+		t.Fatalf("same host Wait took %v, want at least %v", elapsed, interval/2)
+	}
+}
+
 type noopLimiter struct{}
 
 func (noopLimiter) Wait(context.Context, string) error { return nil }
@@ -546,6 +766,12 @@ func (l *spyLimiter) Wait(context.Context, string) error {
 type countingStore struct {
 	listCalls int
 }
+
+type terseAuthError struct{}
+
+func (terseAuthError) Error() string { return "login expired" }
+
+func (terseAuthError) Unwrap() error { return gitprovider.ErrAuth }
 
 func (s *countingStore) ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error) {
 	s.listCalls++
@@ -768,6 +994,10 @@ func ptrOutcome(outcome ledger.Outcome) *ledger.Outcome {
 	return &outcome
 }
 
+func strPtrTime(value time.Time) *time.Time {
+	return &value
+}
+
 func assertActionBody(t *testing.T, body string, run ledger.Run, actionID string, kind string, outcome string) {
 	t.Helper()
 	if !marker.HasSkip(body) {
@@ -795,6 +1025,15 @@ func mustRenderAction(t *testing.T, action marker.ActionMarker) string {
 	text, err := marker.RenderAction(action)
 	if err != nil {
 		t.Fatalf("RenderAction(%#v): %v", action, err)
+	}
+	return text
+}
+
+func mustRenderThreadSummary(t *testing.T, summary marker.ThreadSummaryMarker) string {
+	t.Helper()
+	text, err := marker.RenderThreadSummary(summary)
+	if err != nil {
+		t.Fatalf("RenderThreadSummary(%#v): %v", summary, err)
 	}
 	return text
 }

@@ -120,9 +120,10 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{ExitCode: exitFailed}, err
 	}
 	actions = sortActions(actions)
+	failureClasses := make(map[string]failureClass)
 
 	if !hasRelevantPending(actions) {
-		outcome, exitCode := finalOutcome(req.DesiredOutcome, actions)
+		outcome, exitCode := finalOutcome(req.DesiredOutcome, actions, failureClasses)
 		if err := opts.Store.CompleteRun(ctx, req.Run.RunID, outcome, opts.Now().UTC()); err != nil {
 			return Result{ExitCode: exitFailed}, err
 		}
@@ -170,6 +171,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
 			}
+			failureClasses[actions[i].ActionID] = failureTerminal
 			continue
 		}
 
@@ -235,7 +237,8 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 				}
 				continue
 			}
-			if classifyConflictCause(err) == failureRetryable {
+			conflictClass := classifyConflictCause(err)
+			if conflictClass == failureRetryable {
 				if updateErr := recordPendingError(ctx, opts.Store, &actions[i], err); updateErr != nil {
 					return Result{ExitCode: exitFailed}, updateErr
 				}
@@ -244,10 +247,12 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
 			}
+			failureClasses[actions[i].ActionID] = conflictClass
 			continue
 		}
 
-		switch classifyProviderError(err) {
+		failureClass := classifyProviderError(err)
+		switch failureClass {
 		case failureRetryable:
 			if updateErr := recordPendingError(ctx, opts.Store, &actions[i], err); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
@@ -256,10 +261,11 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
 			}
+			failureClasses[actions[i].ActionID] = failureClass
 		}
 	}
 
-	outcome, exitCode := finalOutcome(req.DesiredOutcome, actions)
+	outcome, exitCode := finalOutcome(req.DesiredOutcome, actions, failureClasses)
 	if err := opts.Store.CompleteRun(ctx, req.Run.RunID, outcome, opts.Now().UTC()); err != nil {
 		return Result{ExitCode: exitFailed}, err
 	}
@@ -510,6 +516,9 @@ func buildActionPlan(req Request, action ledger.PlannedAction) (actionPlan, erro
 		}
 		return actionPlan{action: action, body: body, threadID: gitprovider.ThreadID(*action.ThreadID)}, nil
 	case ledger.PlannedActionResolveThread:
+		if _, err := decodePayload[ResolveThreadPayload](action); err != nil {
+			return actionPlan{}, err
+		}
 		if action.ThreadID == nil || strings.TrimSpace(*action.ThreadID) == "" {
 			return actionPlan{}, fmt.Errorf("outbox: resolve thread target is required")
 		}
@@ -649,7 +658,7 @@ func classifyConflictCause(err error) failureClass {
 	}
 }
 
-func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction) (ledger.Outcome, int) {
+func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction, failureClasses map[string]failureClass) (ledger.Outcome, int) {
 	hasRequiredPending := false
 	hasRequiredTerminal := false
 	hasAuthTerminal := false
@@ -662,8 +671,7 @@ func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction) (ledge
 			hasRequiredPending = true
 		case ledger.PlannedActionFailedTerminal:
 			hasRequiredTerminal = true
-			if action.Error != nil && strings.Contains(*action.Error, gitprovider.ErrAuth.Error()) ||
-				action.Error != nil && strings.Contains(*action.Error, gitprovider.ErrPermission.Error()) {
+			if failureClasses[action.ActionID] == failureAuth {
 				hasAuthTerminal = true
 			}
 		case ledger.PlannedActionPosted:
