@@ -203,15 +203,8 @@ func TestMeMissingProfileExitCode(t *testing.T) {
 
 func TestMeMissingProfileDoesNotOpenResolverFactory(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
-	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
-		ConfigPath: path,
-		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &out,
-	})
 	factoryOpened := false
-	RegisterWithFactory(cmd, opts, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
 		factoryOpened = true
 		return &fakeResolver{}, nil, nil
 	})
@@ -243,10 +236,11 @@ func TestMeReservedAuthModeExitCode(t *testing.T) {
 	home.Git.AuthMode = config.GitAuthModeOAuthDevice
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
-	resolver := &fakeResolver{errs: map[string]error{
-		"codereview/home": config.ErrUnsupported,
-	}}
-	cmd, _ := newTestCommand(path, resolver)
+	factoryOpened := false
+	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		factoryOpened = true
+		return &fakeResolver{}, nil, nil
+	})
 
 	err := root.Execute(cmd, []string{"me"})
 	if !errors.Is(err, config.ErrUnsupported) {
@@ -254,6 +248,51 @@ func TestMeReservedAuthModeExitCode(t *testing.T) {
 	}
 	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
 		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
+	}
+	if factoryOpened {
+		t.Fatal("resolver factory opened for unsupported auth mode")
+	}
+}
+
+func TestMeReviewerReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["work"]
+	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	factoryOpened := false
+	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		factoryOpened = true
+		return &fakeResolver{}, nil, nil
+	})
+
+	err := root.Execute(cmd, []string{"--profile", "work", "me"})
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("Execute error = %v, want ErrUnsupported", err)
+	}
+	if factoryOpened {
+		t.Fatal("resolver factory opened for unsupported reviewer auth mode")
+	}
+}
+
+func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["work"]
+	work.ReviewerCredentials.AuthMode = config.GitAuthModeOAuthDevice
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	factoryOpened := false
+	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		factoryOpened = true
+		return &fakeResolver{}, nil, nil
+	})
+
+	err := root.Execute(cmd, []string{"me", "--all"})
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("Execute error = %v, want ErrUnsupported", err)
+	}
+	if factoryOpened {
+		t.Fatal("resolver factory opened for unsupported auth mode in --all")
 	}
 }
 
@@ -355,6 +394,12 @@ func (f *fakeResolver) ResolveIdentity(_ context.Context, git config.GitConfig) 
 }
 
 func newTestCommand(path string, resolver identity.Resolver) (*cobra.Command, *bytes.Buffer) {
+	return newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		return resolver, nil, nil
+	})
+}
+
+func newTestCommandWithFactory(path string, factory IdentityResolverFactory) (*cobra.Command, *bytes.Buffer) {
 	var out bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		ConfigPath: path,
@@ -362,9 +407,7 @@ func newTestCommand(path string, resolver identity.Resolver) (*cobra.Command, *b
 		Stdout:     &out,
 		Stderr:     &out,
 	})
-	RegisterWithFactory(cmd, opts, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
-		return resolver, nil, nil
-	})
+	RegisterWithFactory(cmd, opts, factory)
 	return cmd, &out
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -69,10 +70,8 @@ func runMe(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory 
 	if err != nil {
 		return view.MeResult{}, cmderr.Config(err)
 	}
-	if !all {
-		if _, _, err := config.ResolveProfile(cfg, opts.Profile); err != nil {
-			return view.MeResult{}, mapRunError(err)
-		}
+	if err := prevalidateIdentityProfiles(cfg, opts.Profile, all); err != nil {
+		return view.MeResult{}, mapRunError(err)
 	}
 	resolver, cleanup, err := factory(cmd, opts, cfg)
 	if err != nil {
@@ -99,6 +98,40 @@ func runMe(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory 
 		}
 	}
 	return view.NewMeResult(results), nil
+}
+
+func prevalidateIdentityProfiles(cfg config.File, profileName string, all bool) error {
+	if !all {
+		name, profile, err := config.ResolveProfile(cfg, profileName)
+		if err != nil {
+			return err
+		}
+		return prevalidateIdentityProfile(name, profile)
+	}
+	names := make([]string, 0, len(cfg.Profiles))
+	for name := range cfg.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := prevalidateIdentityProfile(name, cfg.Profiles[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func prevalidateIdentityProfile(name string, profile config.Profile) error {
+	if profile.ReviewerCredentials != nil {
+		if !profile.ReviewerCredentials.AuthMode.Supported() {
+			return fmt.Errorf("%w: profiles.%s.reviewer_credentials.auth_mode %q", config.ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
+		}
+		return nil
+	}
+	if !profile.Git.AuthMode.Supported() {
+		return fmt.Errorf("%w: profiles.%s.git.auth_mode %q", config.ErrUnsupported, name, profile.Git.AuthMode)
+	}
+	return nil
 }
 
 func mapRunError(err error) error {
