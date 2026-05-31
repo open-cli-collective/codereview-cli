@@ -220,7 +220,18 @@ func TestDecideCrossProduct(t *testing.T) {
 					runWithPending(liveRun("run-new", 3, RunStateApproved), 0, 1),
 				}
 			}),
-			want: Decision{Kind: DecisionRetryPosts, RunID: "run-new"},
+			want: Decision{Kind: DecisionRetryPosts, RunID: "run-running"},
+		},
+		{
+			name: "retry posts can target incomplete run with required work",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.Flags.RetryPosts = true
+				req.ExactRuns = []RunSummary{
+					runWithPending(liveRun("run-complete", 1, RunStateApproved), 1, 0),
+					runWithPending(liveRun("run-incomplete", 2, RunStateIncomplete), 0, 1),
+				}
+			}),
+			want: Decision{Kind: DecisionRetryPosts, RunID: "run-incomplete"},
 		},
 		{
 			name: "retry posts wins before resumable exact row and stale-base abort",
@@ -247,8 +258,6 @@ func TestDecideCrossProduct(t *testing.T) {
 				req.ExactRuns = []RunSummary{
 					liveRun("run-posted", 1, RunStateApproved),
 					runWithPending(dryRun("run-dry", 2, RunStateDryRun), 1, 0),
-					runWithPending(liveRun("run-running", 3, RunStateRunning), 1, 0),
-					runWithPending(liveRun("run-incomplete", 4, RunStateIncomplete), 0, 1),
 				}
 			}),
 			want: Decision{
@@ -265,6 +274,24 @@ func TestDecideCrossProduct(t *testing.T) {
 			}, func(req *Request) {
 				req.Flags.DryRun = true
 				req.ExactRuns = []RunSummary{liveRun("run-resume", 1, RunStateRunning)}
+			}),
+			want: Decision{Kind: DecisionFresh, Message: "dry-run bypasses live gate"},
+		},
+		{
+			name: "dry-run with rerun returns fresh",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.Flags.DryRun = true
+				req.Flags.Rerun = true
+				req.ExactRuns = []RunSummary{liveRun("run-resume", 1, RunStateRunning)}
+			}),
+			want: Decision{Kind: DecisionFresh, Message: "dry-run bypasses live gate"},
+		},
+		{
+			name: "dry-run with retry-posts returns fresh",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.Flags.DryRun = true
+				req.Flags.RetryPosts = true
+				req.ExactRuns = []RunSummary{runWithPending(liveRun("run-retry", 1, RunStateFailed), 1, 0)}
 			}),
 			want: Decision{Kind: DecisionFresh, Message: "dry-run bypasses live gate"},
 		},
@@ -289,22 +316,6 @@ func TestDecideInvalidInputs(t *testing.T) {
 			name: "mutually exclusive flags",
 			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
 				req.Flags.Rerun = true
-				req.Flags.RetryPosts = true
-			}),
-			want: ErrorMutuallyExclusiveFlags,
-		},
-		{
-			name: "dry-run and rerun flags are mutually exclusive",
-			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
-				req.Flags.DryRun = true
-				req.Flags.Rerun = true
-			}),
-			want: ErrorMutuallyExclusiveFlags,
-		},
-		{
-			name: "dry-run and retry-posts flags are mutually exclusive",
-			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
-				req.Flags.DryRun = true
 				req.Flags.RetryPosts = true
 			}),
 			want: ErrorMutuallyExclusiveFlags,

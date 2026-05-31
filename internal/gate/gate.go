@@ -383,16 +383,10 @@ func decidePR(pr PRSummary, partialRun *RunSummary) Decision {
 }
 
 func validateFlags(flags Flags) Decision {
-	switch {
-	case flags.Rerun && flags.RetryPosts:
+	if flags.Rerun && flags.RetryPosts {
 		return errorDecision(ErrorMutuallyExclusiveFlags, "--rerun and --retry-posts are mutually exclusive")
-	case flags.DryRun && flags.Rerun:
-		return errorDecision(ErrorMutuallyExclusiveFlags, "--dry-run and --rerun are mutually exclusive")
-	case flags.DryRun && flags.RetryPosts:
-		return errorDecision(ErrorMutuallyExclusiveFlags, "--dry-run and --retry-posts are mutually exclusive")
-	default:
-		return Decision{}
 	}
+	return Decision{}
 }
 
 func validateRuns(runs []RunSummary) Decision {
@@ -499,7 +493,7 @@ func resumable(run RunSummary) bool {
 }
 
 func retryEligible(run RunSummary) bool {
-	return run.PostMode == PostModeLive && !resumable(run) && run.RequiredPending+run.RequiredFailedTerminal > 0
+	return run.PostMode == PostModeLive && run.RequiredPending+run.RequiredFailedTerminal > 0
 }
 
 func invalidInput(message string) Decision {
