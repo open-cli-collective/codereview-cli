@@ -282,6 +282,23 @@ func TestHTTPErrorTaxonomy(t *testing.T) {
 	}
 }
 
+func TestRESTRead422DoesNotMapStaleSHA(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"commit_id head-sha is not the head commit for this pull request"}`))
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	_, err := client.WhoAmI(context.Background(), gitprovider.Credential{Type: credentialTypePAT, Token: "token"})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("read 422 error = %v, want ErrValidation", err)
+	}
+	if errors.Is(err, gitprovider.ErrStaleSHA) {
+		t.Fatalf("read 422 error = %v, did not want ErrStaleSHA", err)
+	}
+}
+
 func requestHostURL(r *http.Request) string {
 	return "http://" + r.Host
 }
