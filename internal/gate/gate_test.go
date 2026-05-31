@@ -56,6 +56,17 @@ func TestDecideCrossProduct(t *testing.T) {
 			want: Decision{Kind: DecisionResume, RunID: "run-new"},
 		},
 		{
+			name: "resumable exact row wins before stale-base abort",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.ExactRuns = []RunSummary{liveRun("run-resume", 2, RunStateIncomplete)}
+				req.StaleBaseCandidates = []StaleBaseCandidate{{
+					Run:       liveRun("run-stale", 1, RunStateRunning),
+					LockState: LockStateFree,
+				}}
+			}),
+			want: Decision{Kind: DecisionResume, RunID: "run-resume"},
+		},
+		{
 			name: "partial marker with failed local row stops",
 			req: requestWithPR(PRSummary{
 				State:   PRStatePartial,
@@ -126,6 +137,21 @@ func TestDecideCrossProduct(t *testing.T) {
 			want: Decision{Kind: DecisionAbortStale, AbortStaleRunIDs: []string{"run-stale"}},
 		},
 		{
+			name: "stale local candidates aggregate aborts and preserve warnings",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.StaleBaseCandidates = []StaleBaseCandidate{
+					{Run: liveRun("run-free-1", 1, RunStateRunning), LockState: LockStateFree},
+					{Run: liveRun("run-held", 2, RunStateIncomplete), LockState: LockStateHeld, HeartbeatStale: true},
+					{Run: liveRun("run-free-2", 3, RunStateIncomplete), LockState: LockStateFree},
+				}
+			}),
+			want: Decision{
+				Kind:             DecisionAbortStale,
+				AbortStaleRunIDs: []string{"run-free-1", "run-free-2"},
+				Warnings:         []string{"stale-base run run-held is locked and has a stale heartbeat"},
+			},
+		},
+		{
 			name: "stale local candidate with held stale heartbeat warns and continues",
 			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
 				req.StaleBaseCandidates = []StaleBaseCandidate{{
@@ -169,6 +195,10 @@ func TestDecideCrossProduct(t *testing.T) {
 					liveRun("run-resume", 1, RunStateIncomplete),
 					liveRun("run-complete", 2, RunStateApproved),
 				}
+				req.StaleBaseCandidates = []StaleBaseCandidate{{
+					Run:       liveRun("run-stale", 3, RunStateRunning),
+					LockState: LockStateFree,
+				}}
 			}),
 			want: Decision{
 				Kind:            DecisionFresh,
@@ -187,6 +217,24 @@ func TestDecideCrossProduct(t *testing.T) {
 				}
 			}),
 			want: Decision{Kind: DecisionRetryPosts, RunID: "run-new"},
+		},
+		{
+			name: "retry posts wins before resumable exact row and stale-base abort",
+			req: requestWithPR(PRSummary{
+				State: PRStateCompleteReview,
+				RunID: "run-complete",
+			}, func(req *Request) {
+				req.Flags.RetryPosts = true
+				req.ExactRuns = []RunSummary{
+					liveRun("run-resume", 1, RunStateIncomplete),
+					runWithPending(liveRun("run-retry", 2, RunStateFailed), 1, 0),
+				}
+				req.StaleBaseCandidates = []StaleBaseCandidate{{
+					Run:       liveRun("run-stale", 3, RunStateRunning),
+					LockState: LockStateFree,
+				}}
+			}),
+			want: Decision{Kind: DecisionRetryPosts, RunID: "run-retry"},
 		},
 		{
 			name: "retry posts errors when no live row is eligible",
