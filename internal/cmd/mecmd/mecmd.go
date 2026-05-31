@@ -26,7 +26,7 @@ type IdentityResolverFactory func(cmd *cobra.Command, opts *root.Options, cfg co
 
 // Register attaches the me command to rootCmd.
 func Register(rootCmd *cobra.Command, opts *root.Options) {
-	RegisterWithFactory(rootCmd, opts, NewGitHubResolver)
+	RegisterWithFactory(rootCmd, opts, newGitHubResolver)
 }
 
 // RegisterWithFactory attaches the me command with an injected resolver factory.
@@ -152,6 +152,8 @@ func mapRunError(err error) error {
 		errors.Is(err, gitprovider.ErrConflict),
 		errors.Is(err, gitprovider.ErrStaleSHA):
 		return cmderr.Provider(err)
+	// Keep this list in sync with cmderr.Credential. The explicit guard avoids
+	// accidentally classifying arbitrary errors as credential-domain failures.
 	case errors.Is(err, credentials.ErrInvalidBackendSelection),
 		errors.Is(err, credentials.ErrWrongService),
 		errors.Is(err, credstore.ErrRefEmpty),
@@ -175,33 +177,31 @@ func configPath(opts *root.Options) (string, error) {
 	return config.Path()
 }
 
-// NewGitHubResolver builds the production identity resolver.
-func NewGitHubResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
+func newGitHubResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
 	store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
 	if err != nil {
 		return nil, nil, cmderr.Credential(err)
 	}
-	return &GitHubResolver{Store: store}, func() { _ = store.Close() }, nil
+	return &githubResolver{store: store}, func() { _ = store.Close() }, nil
 }
 
-// GitHubResolver resolves identities through the CR-08 GitHub adapter.
-type GitHubResolver struct {
-	Store     githubprovider.TokenStore
-	Options   githubprovider.Options
+type githubResolver struct {
+	store     githubprovider.TokenStore
+	options   githubprovider.Options
 	NewClient func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
 }
 
 // ResolveIdentity resolves one configured GitHub identity.
-func (r *GitHubResolver) ResolveIdentity(ctx context.Context, git config.GitConfig) (gitprovider.Identity, error) {
+func (r *githubResolver) ResolveIdentity(ctx context.Context, git config.GitConfig) (gitprovider.Identity, error) {
 	newClient := r.NewClient
 	if newClient == nil {
 		newClient = githubprovider.NewFromGitConfig
 	}
-	client, credential, err := newClient(git, r.Store, r.Options)
+	client, credential, err := newClient(git, r.store, r.options)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}
 	return client.WhoAmI(ctx, credential)
 }
 
-var _ identity.Resolver = (*GitHubResolver)(nil)
+var _ identity.Resolver = (*githubResolver)(nil)

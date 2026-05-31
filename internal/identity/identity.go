@@ -13,9 +13,9 @@ import (
 
 const (
 	// SourceGit means the profile's git credentials provide the posting identity.
-	SourceGit = "git"
+	SourceGit CredentialSource = "git"
 	// SourceReviewer means reviewer_credentials provide the posting identity.
-	SourceReviewer = "reviewer_credentials"
+	SourceReviewer CredentialSource = "reviewer_credentials"
 )
 
 // CredentialSource identifies which configured credential was used.
@@ -60,6 +60,8 @@ func RefreshAll(ctx context.Context, cfg config.File, resolver Resolver) (config
 	}
 	sort.Strings(names)
 
+	// Keep a second independent copy: updated may be mutated before a later
+	// profile fails, while original is returned for rollback semantics.
 	updated := normalizeForUpdate(original)
 	results := make([]ProfileResult, 0, len(names))
 	changed := false
@@ -97,7 +99,7 @@ func refreshProfile(ctx context.Context, name string, profile config.Profile, re
 				return config.Profile{}, ProfileResult{}, false, fmt.Errorf("identity: reviewer credentials missing for profile %q", name)
 			}
 			profile.ReviewerCredentials.IdentityCache = live.Login
-		default:
+		case SourceGit:
 			profile.Git.IdentityCache = live.Login
 		}
 	}
@@ -130,6 +132,8 @@ func normalizeForUpdate(cfg config.File) config.File {
 	}
 	profiles := make(map[string]config.Profile, len(cfg.Profiles))
 	for name, profile := range cfg.Profiles {
+		// refreshProfile mutates ReviewerCredentials.IdentityCache in-place.
+		// Keep this copy routine in sync with any future mutable Profile fields.
 		if profile.ReviewerCredentials != nil {
 			reviewerCredentials := *profile.ReviewerCredentials
 			profile.ReviewerCredentials = &reviewerCredentials

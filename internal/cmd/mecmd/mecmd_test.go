@@ -58,9 +58,9 @@ func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 	}))
 	defer server.Close()
 	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
-		return &GitHubResolver{
-			Store: store,
-			Options: githubprovider.Options{
+		return &githubResolver{
+			store: store,
+			options: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
 			},
@@ -391,9 +391,9 @@ func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 	}))
 	defer server.Close()
 
-	resolver := &GitHubResolver{
-		Store: store,
-		Options: githubprovider.Options{
+	resolver := &githubResolver{
+		store: store,
+		options: githubprovider.Options{
 			BaseURL:    server.URL,
 			GraphQLURL: server.URL + "/graphql",
 		},

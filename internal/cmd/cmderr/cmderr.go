@@ -66,6 +66,9 @@ func providerKind(err error, kind error) error {
 		errors.Is(kind, gitprovider.ErrStaleSHA):
 		return exitcode.With(exitcode.Failure, err)
 	default:
+		// Unknown provider errors intentionally fall through. exitcode.FromError
+		// maps unwrapped errors to generic failure without inventing retry/auth
+		// semantics for future provider sentinels.
 		return err
 	}
 }
