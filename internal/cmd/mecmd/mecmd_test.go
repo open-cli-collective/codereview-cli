@@ -46,14 +46,32 @@ func TestMeDefaultProfileUpdatesGitCacheAndRendersText(t *testing.T) {
 
 func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 	const token = "distinctive-secret-token"
+	store := openFileStore(t)
+	if _, err := store.SetBundle("home", map[string]string{credentials.GitTokenKey: token}, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle home: %v", err)
+	}
 	path := saveTestConfig(t, testConfig())
-	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
-		"codereview/home": {Login: "live-home", ID: "1"},
-	}}
-	cmd, out := newTestCommand(path, resolver)
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths = append(auths, r.Header.Get("Authorization"))
+		writeJSON(t, w, map[string]any{"login": "live-home", "id": 1})
+	}))
+	defer server.Close()
+	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		return &GitHubResolver{
+			Store: store,
+			Options: githubprovider.Options{
+				BaseURL:    server.URL,
+				GraphQLURL: server.URL + "/graphql",
+			},
+		}, nil, nil
+	})
 
 	if err := root.Execute(cmd, []string{"me", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
+	}
+	if len(auths) != 1 || auths[0] != "Bearer "+token {
+		t.Fatalf("auths = %#v, want token used for provider request", auths)
 	}
 	if strings.Contains(out.String(), token) {
 		t.Fatalf("stdout leaked token: %q", out.String())
@@ -164,27 +182,38 @@ func TestMeEmptyLoginDoesNotClearCache(t *testing.T) {
 
 func TestMeUnchangedCacheDoesNotRewriteConfig(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
-	infoBefore, err := os.Stat(path)
+	// #nosec G304 -- test path is controlled by t.TempDir.
+	before, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("Stat before: %v", err)
+		t.Fatalf("ReadFile before: %v", err)
 	}
 	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
 		"codereview/home": {Login: "old-home"},
 	}}
-	cmd, out := newTestCommand(path, resolver)
+	saveCalled := false
 
-	if err := root.Execute(cmd, []string{"me"}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	infoAfter, err := os.Stat(path)
+	result, err := runMeWithSaver(context.Background(), &cobra.Command{}, &root.Options{ConfigPath: path}, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		return resolver, nil, nil
+	}, false, func(string, config.File) error {
+		saveCalled = true
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("Stat after: %v", err)
+		t.Fatalf("runMeWithSaver: %v", err)
 	}
-	if !infoAfter.ModTime().Equal(infoBefore.ModTime()) {
-		t.Fatalf("config modtime changed from %s to %s", infoBefore.ModTime(), infoAfter.ModTime())
+	if saveCalled {
+		t.Fatal("save called for unchanged identity cache")
 	}
-	if !strings.Contains(out.String(), "Identity cache updated: false") {
-		t.Fatalf("stdout = %q, want unchanged cache", out.String())
+	if len(result.Profiles) != 1 || result.Profiles[0].IdentityCacheUpdated {
+		t.Fatalf("result = %#v, want unchanged cache", result)
+	}
+	// #nosec G304 -- test path is controlled by t.TempDir.
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile after: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config bytes changed\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -224,6 +253,29 @@ func TestMeMissingConfigExitCode(t *testing.T) {
 	err := root.Execute(cmd, []string{"me"})
 	if !errors.Is(err, config.ErrNotConfigured) {
 		t.Fatalf("Execute error = %v, want ErrNotConfigured", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
+	}
+}
+
+func TestMeProductionMissingGitCredentialExitCode(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	var out bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: path,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &out,
+		Stderr:     &out,
+	})
+	Register(cmd, opts)
+
+	err := root.Execute(cmd, []string{"me"})
+	if !errors.Is(err, gitprovider.ErrAuth) {
+		t.Fatalf("Execute error = %v, want ErrAuth", err)
+	}
+	if !errors.Is(err, credstore.ErrNotFound) {
+		t.Fatalf("Execute error = %v, want missing credential cause", err)
 	}
 	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
 		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
@@ -313,16 +365,7 @@ func TestMeProviderErrorExitCode(t *testing.T) {
 }
 
 func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
-	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
-		AllowedKeys: credentials.AllowedKeys(),
-		Backend:     credstore.BackendFile,
-	})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := openFileStore(t)
 	if _, err := store.SetBundle("work", map[string]string{credentials.GitTokenKey: "git-token"}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle work: %v", err)
 	}
@@ -427,6 +470,21 @@ func loadTestConfig(t *testing.T, path string) config.File {
 		t.Fatalf("Load: %v", err)
 	}
 	return cfg
+}
+
+func openFileStore(t *testing.T) *credstore.Store {
+	t.Helper()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendFile,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 func testConfig() config.File {

@@ -62,6 +62,10 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Ide
 }
 
 func runMe(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory IdentityResolverFactory, all bool) (view.MeResult, error) {
+	return runMeWithSaver(ctx, cmd, opts, factory, all, config.Save)
+}
+
+func runMeWithSaver(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory IdentityResolverFactory, all bool, saveConfig func(string, config.File) error) (view.MeResult, error) {
 	path, err := configPath(opts)
 	if err != nil {
 		return view.MeResult{}, exitcode.AuthConfig(err)
@@ -93,7 +97,7 @@ func runMe(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory 
 		return view.MeResult{}, mapRunError(err)
 	}
 	if changed {
-		if err := config.Save(path, updated); err != nil {
+		if err := saveConfig(path, updated); err != nil {
 			return view.MeResult{}, cmderr.Config(err)
 		}
 	}

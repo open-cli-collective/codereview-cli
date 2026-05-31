@@ -31,6 +31,8 @@ func TestCredentialErrorMapping(t *testing.T) {
 	usageErrors := []error{
 		credentials.ErrInvalidBackendSelection,
 		credentials.ErrWrongService,
+		credstore.ErrRefEmpty,
+		credstore.ErrRefSegmentCount,
 		credstore.ErrRefInvalidChar,
 		credstore.ErrKeyNotAllowed,
 		credstore.ErrExists,
@@ -44,6 +46,7 @@ func TestCredentialErrorMapping(t *testing.T) {
 	authErrors := []error{
 		credstore.ErrFilePassphraseRequired,
 		credstore.ErrSecretServiceFailClosed,
+		credstore.ErrStoreClosed,
 		credstore.ErrBackendNotImplemented,
 	}
 	for _, err := range authErrors {
