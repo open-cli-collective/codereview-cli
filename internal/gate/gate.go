@@ -245,8 +245,8 @@ type Decision struct {
 
 // Decide applies the codereview gate state machine to summarized inputs.
 func Decide(req Request) Decision {
-	if req.Flags.Rerun && req.Flags.RetryPosts {
-		return errorDecision(ErrorMutuallyExclusiveFlags, "--rerun and --retry-posts are mutually exclusive")
+	if decision := validateFlags(req.Flags); decision.Kind == DecisionError {
+		return decision
 	}
 	if req.Flags.DryRun {
 		return Decision{Kind: DecisionFresh, Message: "dry-run bypasses live gate"}
@@ -322,14 +322,11 @@ func decideStaleBase(candidates []StaleBaseCandidate) ([]string, Decision) {
 	var abortRunIDs []string
 	for _, candidate := range candidates {
 		run := candidate.Run
-		if decision := validateRunShape(run); decision.Kind == DecisionError {
+		if decision := validateRun(run); decision.Kind == DecisionError {
 			return warnings, decision
 		}
 		if !resumable(run) {
 			continue
-		}
-		if run.RunID == "" {
-			return warnings, invalidInput("stale-base candidate is missing run ID")
 		}
 		if !candidate.LockState.Valid() {
 			return warnings, invalidInput(fmt.Sprintf("stale-base candidate %q has invalid lock state %q", run.RunID, candidate.LockState))
@@ -366,8 +363,7 @@ func decidePR(pr PRSummary, partialRun *RunSummary) Decision {
 		if resumable(*partialRun) {
 			return errorDecision(ErrorPartialResumableInconsistent, "partial marker local row is resumable; local resume should have won")
 		}
-		switch partialRun.State {
-		case RunStateFailed:
+		if partialRun.State == RunStateFailed {
 			return Decision{
 				Kind:         DecisionError,
 				RunID:        partialRun.RunID,
@@ -376,15 +372,26 @@ func decidePR(pr PRSummary, partialRun *RunSummary) Decision {
 				FailureClass: partialRun.FailureClass,
 				Message:      "partial marker run failed; use --retry-posts after fixing the cause or --rerun",
 			}
-		case RunStateAborted:
-			return Decision{Kind: DecisionFresh, RunID: partialRun.RunID, Outcome: pr.Outcome, Message: "partial marker belongs to aborted run; run fresh"}
-		case RunStateRunning, RunStateIncomplete, RunStateApproved, RunStateRequestChanges, RunStateComment, RunStateNothingToReview, RunStateDryRun:
-			return invalidInput(fmt.Sprintf("partial marker local row %q has unsupported state %q", partialRun.RunID, partialRun.State))
-		default:
-			return invalidInput(fmt.Sprintf("partial marker local row %q has unsupported state %q", partialRun.RunID, partialRun.State))
 		}
+		if partialRun.State == RunStateAborted {
+			return Decision{Kind: DecisionFresh, RunID: partialRun.RunID, Outcome: pr.Outcome, Message: "partial marker belongs to aborted run; run fresh"}
+		}
+		return invalidInput(fmt.Sprintf("partial marker local row %q has unsupported state %q", partialRun.RunID, partialRun.State))
 	default:
 		return invalidInput(fmt.Sprintf("invalid PR state %q", pr.State))
+	}
+}
+
+func validateFlags(flags Flags) Decision {
+	switch {
+	case flags.Rerun && flags.RetryPosts:
+		return errorDecision(ErrorMutuallyExclusiveFlags, "--rerun and --retry-posts are mutually exclusive")
+	case flags.DryRun && flags.Rerun:
+		return errorDecision(ErrorMutuallyExclusiveFlags, "--dry-run and --rerun are mutually exclusive")
+	case flags.DryRun && flags.RetryPosts:
+		return errorDecision(ErrorMutuallyExclusiveFlags, "--dry-run and --retry-posts are mutually exclusive")
+	default:
+		return Decision{}
 	}
 }
 
@@ -429,13 +436,16 @@ func validateRunShape(run RunSummary) Decision {
 func validatePR(pr PRSummary) Decision {
 	switch pr.State {
 	case PRStateFresh, PRStateStaleBase:
+		if pr.State == PRStateStaleBase && pr.RunID == "" {
+			return invalidInput("stale-base marker is missing run ID")
+		}
 		return Decision{}
 	case PRStateCompleteReview:
 		if pr.RunID == "" {
 			return invalidInput("complete review marker is missing run ID")
 		}
-		if pr.Outcome != "" && !pr.Outcome.Valid() {
-			return invalidInput(fmt.Sprintf("complete review marker has invalid outcome %q", pr.Outcome))
+		if pr.Outcome != "" {
+			return invalidInput("complete review marker must not carry an outcome")
 		}
 		return Decision{}
 	case PRStateCompleteNoDiff:
@@ -489,7 +499,7 @@ func resumable(run RunSummary) bool {
 }
 
 func retryEligible(run RunSummary) bool {
-	return run.PostMode == PostModeLive && run.RequiredPending+run.RequiredFailedTerminal > 0
+	return run.PostMode == PostModeLive && !resumable(run) && run.RequiredPending+run.RequiredFailedTerminal > 0
 }
 
 func invalidInput(message string) Decision {

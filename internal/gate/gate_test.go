@@ -56,13 +56,16 @@ func TestDecideCrossProduct(t *testing.T) {
 			want: Decision{Kind: DecisionResume, RunID: "run-new"},
 		},
 		{
-			name: "resumable exact row wins before stale-base abort",
-			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+			name: "resumable exact row wins before stale-base abort and PR gate",
+			req: requestWithPR(PRSummary{
+				State: PRStateCompleteReview,
+				RunID: "run-complete",
+			}, func(req *Request) {
 				req.ExactRuns = []RunSummary{liveRun("run-resume", 2, RunStateIncomplete)}
-				req.StaleBaseCandidates = []StaleBaseCandidate{{
-					Run:       liveRun("run-stale", 1, RunStateRunning),
-					LockState: LockStateFree,
-				}}
+				req.StaleBaseCandidates = []StaleBaseCandidate{
+					{Run: liveRun("run-stale-free", 1, RunStateRunning), LockState: LockStateFree},
+					{Run: liveRun("run-stale-held", 3, RunStateRunning), LockState: LockStateHeld, HeartbeatStale: true},
+				}
 			}),
 			want: Decision{Kind: DecisionResume, RunID: "run-resume"},
 		},
@@ -213,6 +216,7 @@ func TestDecideCrossProduct(t *testing.T) {
 				req.ExactRuns = []RunSummary{
 					runWithPending(liveRun("run-old", 1, RunStateFailed), 1, 0),
 					runWithPending(dryRun("run-dry", 4, RunStateDryRun), 5, 5),
+					runWithPending(liveRun("run-running", 5, RunStateRunning), 10, 0),
 					runWithPending(liveRun("run-new", 3, RunStateApproved), 0, 1),
 				}
 			}),
@@ -243,6 +247,8 @@ func TestDecideCrossProduct(t *testing.T) {
 				req.ExactRuns = []RunSummary{
 					liveRun("run-posted", 1, RunStateApproved),
 					runWithPending(dryRun("run-dry", 2, RunStateDryRun), 1, 0),
+					runWithPending(liveRun("run-running", 3, RunStateRunning), 1, 0),
+					runWithPending(liveRun("run-incomplete", 4, RunStateIncomplete), 0, 1),
 				}
 			}),
 			want: Decision{
@@ -283,6 +289,22 @@ func TestDecideInvalidInputs(t *testing.T) {
 			name: "mutually exclusive flags",
 			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
 				req.Flags.Rerun = true
+				req.Flags.RetryPosts = true
+			}),
+			want: ErrorMutuallyExclusiveFlags,
+		},
+		{
+			name: "dry-run and rerun flags are mutually exclusive",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.Flags.DryRun = true
+				req.Flags.Rerun = true
+			}),
+			want: ErrorMutuallyExclusiveFlags,
+		},
+		{
+			name: "dry-run and retry-posts flags are mutually exclusive",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.Flags.DryRun = true
 				req.Flags.RetryPosts = true
 			}),
 			want: ErrorMutuallyExclusiveFlags,
@@ -339,6 +361,34 @@ func TestDecideInvalidInputs(t *testing.T) {
 			want: ErrorInvalidInput,
 		},
 		{
+			name: "stale candidate without run ID is invalid even when terminal",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.StaleBaseCandidates = []StaleBaseCandidate{{
+					Run: RunSummary{
+						Attempt:  1,
+						PostMode: PostModeLive,
+						State:    RunStateApproved,
+					},
+					LockState: LockStateFree,
+				}}
+			}),
+			want: ErrorInvalidInput,
+		},
+		{
+			name: "invalid non-resumable stale candidate is rejected",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.StaleBaseCandidates = []StaleBaseCandidate{{
+					Run: RunSummary{
+						RunID:    "run-terminal",
+						PostMode: PostModeLive,
+						State:    RunStateApproved,
+					},
+					LockState: LockStateFree,
+				}}
+			}),
+			want: ErrorInvalidInput,
+		},
+		{
 			name: "unknown PR state",
 			req:  requestWithPR(PRSummary{State: PRState("old")}),
 			want: ErrorInvalidInput,
@@ -377,6 +427,22 @@ func TestDecideInvalidInputs(t *testing.T) {
 				State:   PRStateCompleteNoDiff,
 				RunID:   "run-bad",
 				Outcome: PROutcomeApproved,
+			}),
+			want: ErrorInvalidInput,
+		},
+		{
+			name: "complete review rejects outcome",
+			req: requestWithPR(PRSummary{
+				State:   PRStateCompleteReview,
+				RunID:   "run-review",
+				Outcome: PROutcomeApproved,
+			}),
+			want: ErrorInvalidInput,
+		},
+		{
+			name: "stale-base PR marker requires run ID",
+			req: requestWithPR(PRSummary{
+				State: PRStateStaleBase,
 			}),
 			want: ErrorInvalidInput,
 		},
