@@ -42,9 +42,57 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 			t.Fatalf("index %s does not exist", index)
 		}
 	}
+	if !columnExists(t, store.db, "planned_actions", "failure_class") {
+		t.Fatal("planned_actions.failure_class column does not exist")
+	}
 	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
 	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
 		t.Fatalf("runs_resume columns = %#v, want %#v", got, wantResumeIndex)
+	}
+}
+
+func TestOpenMigratesVersion1LedgerAndPreservesPlannedActions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	plannedAt := time.Date(2026, 5, 30, 12, 2, 0, 0, time.UTC)
+	seedVersion1Ledger(t, path, plannedAt)
+
+	store := openStoreAt(t, path)
+	if version := queryInt(t, store.db, "SELECT schema_version FROM meta"); version != SchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", version, SchemaVersion)
+	}
+	if !columnExists(t, store.db, "planned_actions", "failure_class") {
+		t.Fatal("planned_actions.failure_class column does not exist")
+	}
+
+	actions, err := store.ListPlannedActions(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	want := PlannedAction{
+		ActionID:    "action-1",
+		RunID:       "run-1",
+		Kind:        PlannedActionRollupComment,
+		PlannedAt:   plannedAt,
+		PayloadJSON: `{"body":"hello"}`,
+		Status:      PlannedActionPending,
+		Required:    true,
+	}
+	if !reflect.DeepEqual(actions, []PlannedAction{want}) {
+		t.Fatalf("ListPlannedActions after migration = %#v, want %#v", actions, []PlannedAction{want})
+	}
+
+	actions[0].Status = PlannedActionFailedTerminal
+	actions[0].Error = strPtr("auth failed")
+	actions[0].FailureClass = strPtr(PlannedActionFailureClassAuth)
+	if err := store.UpdatePlannedAction(context.Background(), actions[0]); err != nil {
+		t.Fatalf("UpdatePlannedAction: %v", err)
+	}
+	updated, err := store.ListPlannedActions(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("ListPlannedActions after update: %v", err)
+	}
+	if !reflect.DeepEqual(updated, actions) {
+		t.Fatalf("ListPlannedActions after failure_class update = %#v, want %#v", updated, actions)
 	}
 }
 
@@ -501,6 +549,113 @@ func TestTypedPersistenceRoundTrips(t *testing.T) {
 	}
 }
 
+func TestUpdatePlannedActionPersistsMutableFields(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+
+	action := validPlannedAction(run.RunID)
+	action.FindingID = nil
+	insertPlannedAction(t, store, action)
+
+	attemptedAt := time.Date(2026, 5, 30, 12, 7, 0, 0, time.UTC)
+	postedAt := time.Date(2026, 5, 30, 12, 8, 0, 0, time.UTC)
+	action.Status = PlannedActionPosted
+	action.Attempts = 2
+	action.AttemptedAt = &attemptedAt
+	action.PostedAt = &postedAt
+	action.UpstreamID = strPtr("comment-123")
+	action.Error = nil
+	action.FailureClass = strPtr("auth")
+
+	if err := store.UpdatePlannedAction(context.Background(), action); err != nil {
+		t.Fatalf("UpdatePlannedAction: %v", err)
+	}
+
+	actions, err := store.ListPlannedActions(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	if !reflect.DeepEqual(actions, []PlannedAction{action}) {
+		t.Fatalf("ListPlannedActions after update = %#v, want %#v", actions, []PlannedAction{action})
+	}
+}
+
+func TestUpdatePlannedActionMissingRow(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	action := validPlannedAction(run.RunID)
+	action.FindingID = nil
+
+	err := store.UpdatePlannedAction(context.Background(), action)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdatePlannedAction missing row error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListPlannedActionsRejectsUnknownFailureClass(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	action := validPlannedAction(run.RunID)
+	action.FindingID = nil
+	insertPlannedAction(t, store, action)
+
+	execSQL(t, store.db, "UPDATE planned_actions SET failure_class = ? WHERE action_id = ?", "network", action.ActionID)
+
+	_, err := store.ListPlannedActions(context.Background(), run.RunID)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("ListPlannedActions unknown failure class error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestCompleteRunPersistsOutcomeAndCompletionTime(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	completedAt := time.Date(2026, 5, 30, 12, 9, 0, 0, time.UTC)
+
+	if err := store.CompleteRun(context.Background(), run.RunID, OutcomeRequestChanges, completedAt); err != nil {
+		t.Fatalf("CompleteRun: %v", err)
+	}
+
+	got, err := store.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Outcome == nil || *got.Outcome != OutcomeRequestChanges {
+		t.Fatalf("GetRun outcome = %v, want %q", got.Outcome, OutcomeRequestChanges)
+	}
+	if got.CompletedAt == nil || !got.CompletedAt.Equal(completedAt) {
+		t.Fatalf("GetRun completed_at = %v, want %v", got.CompletedAt, completedAt)
+	}
+}
+
+func TestCompleteRunRejectsInvalidInputs(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	completedAt := time.Date(2026, 5, 30, 12, 9, 0, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		runID       string
+		outcome     Outcome
+		completedAt time.Time
+		want        error
+	}{
+		{name: "empty run id", runID: "", outcome: OutcomeApproved, completedAt: completedAt, want: ErrInvalidInput},
+		{name: "invalid outcome", runID: run.RunID, outcome: Outcome("bad"), completedAt: completedAt, want: ErrInvalidInput},
+		{name: "zero completed at", runID: run.RunID, outcome: OutcomeApproved, completedAt: time.Time{}, want: ErrInvalidInput},
+		{name: "missing run", runID: "missing-run", outcome: OutcomeApproved, completedAt: completedAt, want: ErrNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := store.CompleteRun(context.Background(), tt.runID, tt.outcome, tt.completedAt)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("CompleteRun error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -709,6 +864,18 @@ func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 			action.Attempts = -1
 			return s.InsertPlannedAction(context.Background(), action)
 		}},
+		{name: "planned action empty failure class", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			action := validPlannedAction(run.RunID)
+			action.FailureClass = strPtr(" ")
+			return s.InsertPlannedAction(context.Background(), action)
+		}},
+		{name: "planned action bad failure class", run: func(t *testing.T, s *Store) error {
+			run := allocateRun(t, s, validAllocateRunParams())
+			action := validPlannedAction(run.RunID)
+			action.FailureClass = strPtr("network")
+			return s.InsertPlannedAction(context.Background(), action)
+		}},
 		{name: "named session missing name", run: func(_ *testing.T, s *Store) error {
 			named := validNamedSession()
 			named.Name = ""
@@ -879,6 +1046,41 @@ func openStoreAt(t *testing.T, path string) *Store {
 		}
 	})
 	return store
+}
+
+func seedVersion1Ledger(t *testing.T, path string, plannedAt time.Time) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	for _, statement := range schemaStatements {
+		execSQL(t, db, statement)
+	}
+	execSQL(t, db, `CREATE TABLE meta (
+schema_version INTEGER NOT NULL,
+created_at     TEXT NOT NULL
+)`)
+	execSQL(t, db, "CREATE UNIQUE INDEX meta_single_row ON meta ((1))")
+	execSQL(t, db, "INSERT INTO meta (schema_version, created_at) VALUES (?, ?)", 1, encodeTime(time.Date(2026, 5, 30, 11, 59, 0, 0, time.UTC)))
+	execSQL(t, db, "INSERT INTO prs (pr_key, pr_url, first_seen_at) VALUES (?, ?, ?)", "pr-1", "https://example.test/pr/1", encodeTime(time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)))
+	execSQL(t, db, `INSERT INTO runs (
+run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode, started_at, artifact_path
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"run-1", "pr-1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		1, "default", "reviewer@example.com", PostModeLive.String(), encodeTime(time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC)), "/tmp/run-1",
+	)
+	execSQL(t, db, `INSERT INTO planned_actions (
+action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,
+required, attempts, attempted_at, posted_at, upstream_id, error
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"action-1", "run-1", PlannedActionRollupComment.String(), nil, nil, encodeTime(plannedAt), `{"body":"hello"}`,
+		PlannedActionPending.String(), 1, 0, nil, nil, nil, nil,
+	)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
 }
 
 func validAllocateRunParams() AllocateRunParams {
@@ -1135,6 +1337,35 @@ func tableExists(t *testing.T, db *sql.DB, name string) bool {
 func indexExists(t *testing.T, db *sql.DB, name string) bool {
 	t.Helper()
 	return queryInt(t, db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", name) == 1
+}
+
+func columnExists(t *testing.T, db *sql.DB, table string, name string) bool {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid          int
+			column       string
+			columnType   string
+			notNull      int
+			defaultValue sql.NullString
+			primaryKey   int
+		)
+		if err := rows.Scan(&cid, &column, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan table_info(%s): %v", table, err)
+		}
+		if column == name {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table_info(%s) rows: %v", table, err)
+	}
+	return false
 }
 
 func indexColumns(t *testing.T, db *sql.DB, name string) []string {
