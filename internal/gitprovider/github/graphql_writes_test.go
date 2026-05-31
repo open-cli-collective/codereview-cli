@@ -116,6 +116,25 @@ func TestAlreadyResolvedGraphQLErrorIsResolveThreadLocal(t *testing.T) {
 	}
 }
 
+func TestReplyToThreadUsesDatabaseIDFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = readGraphQLRequestAtEndpoint(t, r)
+		writeJSON(t, w, map[string]any{"data": map[string]any{"addPullRequestReviewThreadReply": map[string]any{
+			"comment": map[string]any{"databaseId": 401},
+		}}})
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	commentID, err := client.ReplyToThread(context.Background(), testPRRef(), "thread-1", "body")
+	if err != nil {
+		t.Fatalf("ReplyToThread: %v", err)
+	}
+	if commentID != "401" {
+		t.Fatalf("reply comment ID = %q, want 401", commentID)
+	}
+}
+
 func TestReplyToThreadSuccessfulResponseRequiresID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = readGraphQLRequestAtEndpoint(t, r)

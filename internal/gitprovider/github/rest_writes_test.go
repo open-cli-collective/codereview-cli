@@ -178,6 +178,28 @@ func TestRESTWriteErrorTaxonomy(t *testing.T) {
 	}
 }
 
+func TestSubmitReviewStaleSHA422(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requireJSONWrite(t, r)
+		if r.URL.EscapedPath() != "/repos/open%20cli/repo+name/pulls/42/reviews" {
+			t.Fatalf("path = %s, want reviews path", r.URL.EscapedPath())
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"commit_id head-sha is not the head commit for this pull request"}`))
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	_, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
+		CommitSHA: "head-sha",
+		Event:     review.ReviewEventComment,
+		Body:      "review body",
+	})
+	if !errors.Is(err, gitprovider.ErrStaleSHA) {
+		t.Fatalf("SubmitReview error = %v, want ErrStaleSHA", err)
+	}
+}
+
 func TestPostIssueCommentStaleLooking422IsValidation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requireJSONWrite(t, r)
@@ -242,6 +264,44 @@ func TestRESTWriteSuccessfulResponsesRequireIDs(t *testing.T) {
 			err := tt.call(client)
 			if !errors.Is(err, ErrValidation) {
 				t.Fatalf("error = %v, want ErrValidation", err)
+			}
+		})
+	}
+}
+
+func TestSubmitReviewMapsEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event review.ReviewEvent
+		want  string
+	}{
+		{name: "approve", event: review.ReviewEventApprove, want: "APPROVE"},
+		{name: "comment", event: review.ReviewEventComment, want: "COMMENT"},
+		{name: "request changes", event: review.ReviewEventRequestChanges, want: "REQUEST_CHANGES"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requireJSONWrite(t, r)
+				body := readJSONMap(t, r)
+				if body["event"] != tt.want {
+					t.Fatalf("event = %#v, want %q; full body=%#v", body["event"], tt.want, body)
+				}
+				writeJSON(t, w, map[string]any{"id": 301})
+			}))
+			defer server.Close()
+			client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+			id, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
+				CommitSHA: "head-sha",
+				Event:     tt.event,
+				Body:      "review body",
+			})
+			if err != nil {
+				t.Fatalf("SubmitReview: %v", err)
+			}
+			if id != "301" {
+				t.Fatalf("review ID = %q, want 301", id)
 			}
 		})
 	}
