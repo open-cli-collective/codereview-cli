@@ -169,11 +169,11 @@ func AbortIfBaseMoved(ctx context.Context, opts Options, req Request, run ledger
 	if err := validateRequest(req); err != nil {
 		return Result{}, err
 	}
-	pr, err := opts.Provider.GetPR(ctx, req.PRRef)
+	decision, moved, err := baseMovedDecision(ctx, opts, req, run.BaseSHA)
 	if err != nil {
 		return Result{}, err
 	}
-	if pr.Base.SHA == run.BaseSHA {
+	if !moved {
 		return Result{Status: StatusContinue, Run: run}, nil
 	}
 	now := opts.now()
@@ -181,13 +181,24 @@ func AbortIfBaseMoved(ctx context.Context, opts Options, req Request, run ledger
 		return Result{}, err
 	}
 	return Result{
-		Status: StatusBaseMovedAbort,
-		Run:    run,
-		Decision: gate.Decision{
-			Kind:    gate.DecisionError,
-			Message: fmt.Sprintf("base moved from %s to %s", run.BaseSHA, pr.Base.SHA),
-		},
+		Status:   StatusBaseMovedAbort,
+		Run:      run,
+		Decision: decision,
 	}, nil
+}
+
+func baseMovedDecision(ctx context.Context, opts Options, req Request, baseSHA string) (gate.Decision, bool, error) {
+	pr, err := opts.Provider.GetPR(ctx, req.PRRef)
+	if err != nil {
+		return gate.Decision{}, false, err
+	}
+	if pr.Base.SHA == baseSHA {
+		return gate.Decision{}, false, nil
+	}
+	return gate.Decision{
+		Kind:    gate.DecisionError,
+		Message: fmt.Sprintf("base moved from %s to %s", baseSHA, pr.Base.SHA),
+	}, true, nil
 }
 
 type gateState struct {
@@ -309,17 +320,19 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 		return result, false, nil
 	case gate.DecisionFresh:
 		state.releaseStaleLocks()
+		if baseDecision, moved, err := baseMovedDecision(ctx, opts, req, req.PR.Base.SHA); err != nil {
+			return Result{}, false, err
+		} else if moved {
+			result.Status = StatusBaseMovedAbort
+			result.Decision = baseDecision
+			return result, false, nil
+		}
 		if err := abortRuns(ctx, opts, decision.SupersedeRunIDs); err != nil {
 			return Result{}, false, err
 		}
 		run, err := allocateFresh(ctx, opts, req)
 		if err != nil {
 			return Result{}, false, err
-		}
-		if baseResult, err := AbortIfBaseMoved(ctx, opts, req, run); err != nil {
-			return Result{}, false, err
-		} else if baseResult.Status == StatusBaseMovedAbort {
-			return baseResult, false, nil
 		}
 		*releaseCurrent = false
 		result.Status = StatusContinue

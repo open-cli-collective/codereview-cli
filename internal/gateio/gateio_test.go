@@ -337,6 +337,27 @@ func TestEvaluateRerunSupersedesResumable(t *testing.T) {
 	}
 }
 
+func TestEvaluateRerunDoesNotMutateWhenBaseRefetchFails(t *testing.T) {
+	fixture := newFixture(t)
+	old := fixture.allocateRun(t, "run-old", testBaseSHA, ledger.PostModeLive)
+	fixture.req.Flags.Rerun = true
+	fixture.provider.SetError(gitprovider.OperationGetPR, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, errors.New("pr unavailable")))
+
+	if _, err := Evaluate(context.Background(), fixture.opts(), fixture.req); err == nil {
+		t.Fatal("Evaluate rerun GetPR error = nil, want error")
+	}
+	gotOld, err := fixture.store.GetRun(context.Background(), old.RunID)
+	if err != nil {
+		t.Fatalf("GetRun old: %v", err)
+	}
+	if gotOld.Outcome != nil {
+		t.Fatalf("old outcome = %v, want unchanged running run", gotOld.Outcome)
+	}
+	if runs := fixture.listRuns(t); len(runs) != 1 {
+		t.Fatalf("runs after failed rerun = %d, want no fresh allocation", len(runs))
+	}
+}
+
 func TestEvaluateRetryPostsUnsupportedSkipsExternalState(t *testing.T) {
 	fixture := newFixture(t)
 	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
@@ -378,6 +399,18 @@ func TestEvaluateDryRunFreshDoesNotAllocate(t *testing.T) {
 	}
 	if runs := fixture.listRuns(t); len(runs) != 0 {
 		t.Fatalf("runs after dry-run = %d, want no allocation", len(runs))
+	}
+}
+
+func TestEvaluateFreshDoesNotAllocateWhenBaseRefetchFails(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.provider.SetError(gitprovider.OperationGetPR, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, errors.New("pr unavailable")))
+
+	if _, err := Evaluate(context.Background(), fixture.opts(), fixture.req); err == nil {
+		t.Fatal("Evaluate fresh GetPR error = nil, want error")
+	}
+	if runs := fixture.listRuns(t); len(runs) != 0 {
+		t.Fatalf("runs after failed fresh = %d, want no allocation", len(runs))
 	}
 }
 
@@ -476,11 +509,8 @@ func TestEvaluateAbortsIfBaseMoved(t *testing.T) {
 		t.Fatalf("Evaluate = %#v, want base moved abort", result)
 	}
 	runs := fixture.listRuns(t)
-	if len(runs) != 1 {
-		t.Fatalf("runs = %d, want allocated aborted run", len(runs))
-	}
-	if runs[0].Outcome == nil || *runs[0].Outcome != ledger.OutcomeAborted {
-		t.Fatalf("allocated outcome = %v, want aborted", runs[0].Outcome)
+	if len(runs) != 0 {
+		t.Fatalf("runs = %d, want no allocation after base moved", len(runs))
 	}
 }
 
