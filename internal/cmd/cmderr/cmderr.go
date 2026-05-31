@@ -48,14 +48,22 @@ func Credential(err error) error {
 
 // Provider maps git-provider errors to scriptable command errors.
 func Provider(err error) error {
+	var providerErr *gitprovider.ProviderError
+	if errors.As(err, &providerErr) && providerErr.Kind != nil {
+		return providerKind(err, providerErr.Kind)
+	}
+	return providerKind(err, err)
+}
+
+func providerKind(err error, kind error) error {
 	switch {
-	case errors.Is(err, gitprovider.ErrAuth), errors.Is(err, gitprovider.ErrPermission):
+	case errors.Is(kind, gitprovider.ErrAuth), errors.Is(kind, gitprovider.ErrPermission):
 		return exitcode.AuthConfig(err)
-	case errors.Is(err, gitprovider.ErrRetryable):
+	case errors.Is(kind, gitprovider.ErrRetryable):
 		return exitcode.Upstream(err)
-	case errors.Is(err, gitprovider.ErrNotFound),
-		errors.Is(err, gitprovider.ErrConflict),
-		errors.Is(err, gitprovider.ErrStaleSHA):
+	case errors.Is(kind, gitprovider.ErrNotFound),
+		errors.Is(kind, gitprovider.ErrConflict),
+		errors.Is(kind, gitprovider.ErrStaleSHA):
 		return exitcode.With(exitcode.Failure, err)
 	default:
 		return err

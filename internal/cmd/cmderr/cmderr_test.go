@@ -71,6 +71,7 @@ func TestProviderErrorMapping(t *testing.T) {
 		{name: "not found", err: gitprovider.WrapError(gitprovider.ErrNotFound, gitprovider.OperationWhoAmI, errors.New("missing")), want: exitcode.Failure, is: gitprovider.ErrNotFound},
 		{name: "conflict", err: gitprovider.WrapError(gitprovider.ErrConflict, gitprovider.OperationWhoAmI, errors.New("conflict")), want: exitcode.Failure, is: gitprovider.ErrConflict},
 		{name: "stale sha", err: gitprovider.WrapError(gitprovider.ErrStaleSHA, gitprovider.OperationWhoAmI, errors.New("stale")), want: exitcode.Failure, is: gitprovider.ErrStaleSHA},
+		{name: "primary stale sha beats retryable cause", err: gitprovider.WrapError(gitprovider.ErrStaleSHA, gitprovider.OperationWhoAmI, gitprovider.ErrRetryable), want: exitcode.Failure, is: gitprovider.ErrStaleSHA},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
