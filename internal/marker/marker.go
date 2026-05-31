@@ -189,6 +189,7 @@ func FindThreadSummaries(body string) []ThreadSummaryMarker {
 }
 
 // SanitizeModelContent escapes codereview marker openings in model-authored text.
+// It leaves unrelated HTML comment syntax to the caller's output-context escaping.
 func SanitizeModelContent(text string) string {
 	return strings.ReplaceAll(text, htmlCommentOpen+markerPrefix, "&lt;!-- "+markerPrefix)
 }
@@ -307,13 +308,20 @@ func findCodereviewComments(body string) []string {
 			break
 		}
 		start += searchFrom
-		end := strings.Index(body[start:], htmlCommentClose)
-		if end == -1 {
-			break
+		payloadStart := start + len(startNeedle)
+		end := strings.Index(body[payloadStart:], htmlCommentClose)
+		nextStart := strings.Index(body[payloadStart:], startNeedle)
+		if nextStart != -1 && (end == -1 || nextStart < end) {
+			searchFrom = payloadStart + nextStart
+			continue
 		}
-		end += start + len(htmlCommentClose)
+		if end == -1 {
+			searchFrom = payloadStart
+			continue
+		}
+		end += payloadStart + len(htmlCommentClose)
 		comments = append(comments, body[start:end])
-		searchFrom = start + 1
+		searchFrom = end
 	}
 	return comments
 }

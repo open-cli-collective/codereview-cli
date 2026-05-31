@@ -66,49 +66,89 @@ func TestRenderAction(t *testing.T) {
 }
 
 func TestParseActionRoundTrip(t *testing.T) {
-	tests := []ActionMarker{
+	tests := []struct {
+		name   string
+		marker ActionMarker
+	}{
 		{
-			RunID:    "run-1",
-			ActionID: "action-1",
-			Kind:     ActionKindThreadReply,
-			SHA:      "headsha",
-			BaseSHA:  "basesha",
+			name: "inline comment",
+			marker: ActionMarker{
+				RunID:    "run-1",
+				ActionID: "action-1",
+				Kind:     ActionKindInlineComment,
+				SHA:      "headsha",
+				BaseSHA:  "basesha",
+			},
 		},
 		{
-			RunID:    "run-2",
-			ActionID: "action-2",
-			Kind:     ActionKindRollupComment,
-			SHA:      "headsha",
-			BaseSHA:  "basesha",
-			Outcome:  RollupOutcomeNothingToReview,
+			name: "thread reply",
+			marker: ActionMarker{
+				RunID:    "run-2",
+				ActionID: "action-2",
+				Kind:     ActionKindThreadReply,
+				SHA:      "headsha",
+				BaseSHA:  "basesha",
+			},
 		},
 		{
-			RunID:    "run-3",
-			ActionID: "action-3",
-			Kind:     ActionKindSubmitReview,
-			SHA:      "headsha",
-			BaseSHA:  "basesha",
+			name: "submit review",
+			marker: ActionMarker{
+				RunID:    "run-3",
+				ActionID: "action-3",
+				Kind:     ActionKindSubmitReview,
+				SHA:      "headsha",
+				BaseSHA:  "basesha",
+			},
 		},
 		{
-			RunID:    "run-4",
-			ActionID: "action-4",
-			Kind:     ActionKindRollupComment,
-			SHA:      "headsha",
-			BaseSHA:  "basesha",
-			Outcome:  RollupOutcomeRequestChanges,
+			name: "rollup approved",
+			marker: ActionMarker{
+				RunID:    "run-4",
+				ActionID: "action-4",
+				Kind:     ActionKindRollupComment,
+				SHA:      "headsha",
+				BaseSHA:  "basesha",
+				Outcome:  RollupOutcomeApproved,
+			},
 		},
 		{
-			RunID:    "run-5",
-			ActionID: "action-5",
-			Kind:     ActionKindRollupComment,
-			SHA:      "headsha",
-			BaseSHA:  "basesha",
-			Outcome:  RollupOutcomeComment,
+			name: "rollup request changes",
+			marker: ActionMarker{
+				RunID:    "run-5",
+				ActionID: "action-5",
+				Kind:     ActionKindRollupComment,
+				SHA:      "headsha",
+				BaseSHA:  "basesha",
+				Outcome:  RollupOutcomeRequestChanges,
+			},
+		},
+		{
+			name: "rollup comment",
+			marker: ActionMarker{
+				RunID:    "run-6",
+				ActionID: "action-6",
+				Kind:     ActionKindRollupComment,
+				SHA:      "headsha",
+				BaseSHA:  "basesha",
+				Outcome:  RollupOutcomeComment,
+			},
+		},
+		{
+			name: "rollup nothing to review",
+			marker: ActionMarker{
+				RunID:    "run-7",
+				ActionID: "action-7",
+				Kind:     ActionKindRollupComment,
+				SHA:      "headsha",
+				BaseSHA:  "basesha",
+				Outcome:  RollupOutcomeNothingToReview,
+			},
 		},
 	}
 
-	for _, want := range tests {
-		t.Run(want.Kind, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := tt.marker
 			text := mustRenderAction(t, want)
 			got, err := ParseAction(text)
 			if err != nil {
@@ -265,8 +305,11 @@ func TestRenderThreadSummaryRejectsInvalidMarkers(t *testing.T) {
 		marker ThreadSummaryMarker
 	}{
 		{name: "empty run ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.RunID = "" })},
+		{name: "empty action ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.ActionID = "" })},
+		{name: "whitespace run ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.RunID = "run 1" })},
 		{name: "whitespace action ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.ActionID = "action 1" })},
 		{name: "colon run ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.RunID = "run:1" })},
+		{name: "colon action ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.ActionID = "action:1" })},
 		{name: "comment terminator action ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.ActionID = "action-->" })},
 	}
 
@@ -342,6 +385,7 @@ func TestFindActions(t *testing.T) {
 	body := strings.Join([]string{
 		"intro",
 		mustRenderAction(t, first),
+		"<!-- codereview:run-id=unclosed:action=bad:kind=inline_comment:sha=head:base=base",
 		"<!-- codereview:run-id=bad:action=bad:kind=rollup_comment:sha=head:base=base -->",
 		mustRenderThreadSummary(t, ThreadSummaryMarker{RunID: "run-3", ActionID: "action-3"}),
 		mustRenderAction(t, second),
@@ -359,6 +403,7 @@ func TestFindThreadSummaries(t *testing.T) {
 	second := ThreadSummaryMarker{RunID: "run-a", ActionID: "action-a"}
 	body := strings.Join([]string{
 		mustRenderThreadSummary(t, first),
+		"<!-- codereview:thread-summary:run-id=unclosed:action=bad",
 		"<!-- codereview:thread-summary:run-id=bad:action= -->",
 		mustRenderAction(t, ActionMarker{
 			RunID:    "run-3",
