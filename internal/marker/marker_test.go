@@ -232,6 +232,30 @@ func TestRenderAndParseThreadSummary(t *testing.T) {
 	}
 }
 
+func TestRenderThreadSummaryRejectsInvalidMarkers(t *testing.T) {
+	valid := ThreadSummaryMarker{
+		RunID:    "run-1",
+		ActionID: "action-1",
+	}
+	tests := []struct {
+		name   string
+		marker ThreadSummaryMarker
+	}{
+		{name: "empty run ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.RunID = "" })},
+		{name: "whitespace action ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.ActionID = "action 1" })},
+		{name: "colon run ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.RunID = "run:1" })},
+		{name: "comment terminator action ID", marker: withThreadSummaryMarker(valid, func(m *ThreadSummaryMarker) { m.ActionID = "action-->" })},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, err := RenderThreadSummary(tt.marker); err == nil {
+				t.Fatalf("RenderThreadSummary(%#v) = %q, want error", tt.marker, got)
+			}
+		})
+	}
+}
+
 func TestParseThreadSummaryRejectsMalformedMarkers(t *testing.T) {
 	tests := []struct {
 		name string
@@ -407,6 +431,11 @@ func mustRenderThreadSummary(t *testing.T, marker ThreadSummaryMarker) string {
 }
 
 func withActionMarker(marker ActionMarker, mutate func(*ActionMarker)) ActionMarker {
+	mutate(&marker)
+	return marker
+}
+
+func withThreadSummaryMarker(marker ThreadSummaryMarker, mutate func(*ThreadSummaryMarker)) ThreadSummaryMarker {
 	mutate(&marker)
 	return marker
 }
