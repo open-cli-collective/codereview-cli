@@ -3,10 +3,12 @@ package gateio
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
+	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -144,15 +148,16 @@ func TestEvaluatePRMarkerDecisions(t *testing.T) {
 			wantOut:    gate.PROutcomeNothingToReview,
 		},
 		{
-			name: "partial rollup is repair unsupported",
+			name: "partial rollup repairs through outbox",
 			seed: func(t *testing.T, f *fixture) {
 				body := mustRenderAction(t, marker.ActionMarker{RunID: "run-partial", ActionID: "rollup-1", Kind: marker.ActionKindRollupComment, SHA: testHeadSHA, BaseSHA: testBaseSHA, Outcome: marker.RollupOutcomeRequestChanges})
 				setIssueComments(t, f, []gitprovider.IssueComment{{ID: "issue-1", Author: f.req.PostingIdentity, Body: body, CreatedAt: testNow}})
 			},
-			wantStatus: StatusRepairUnsupported,
+			wantStatus: StatusRepairExecuted,
 			wantKind:   gate.DecisionRepair,
 			wantRunID:  "run-partial",
 			wantOut:    gate.PROutcomeRequestChanges,
+			wantRuns:   1,
 		},
 		{
 			name: "paired rollup and submit review exits early",
@@ -227,7 +232,90 @@ func TestEvaluateIgnoresForgedOtherAuthorMarkers(t *testing.T) {
 	}
 }
 
-func TestEvaluatePartialRunScopeMismatchRepairs(t *testing.T) {
+func TestEvaluatePartialRepairPostsSingleReview(t *testing.T) {
+	fixture := newFixture(t)
+	setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeApproved)
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate repair: %v", err)
+	}
+	if result.Status != StatusRepairExecuted || result.Run.RunID != "run-repair" {
+		t.Fatalf("Evaluate repair = %#v, want repair execution for marker run", result)
+	}
+	if result.OutboxResult.Outcome != ledger.OutcomeApproved || result.OutboxResult.ExitCode != 0 || result.OutboxResult.Posted != 1 {
+		t.Fatalf("OutboxResult = %#v, want one approved review post", result.OutboxResult)
+	}
+	if got := fixture.provider.RecordedIssueComments(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("issue comment writes = %d, want no duplicate rollup", len(got))
+	}
+	reviews := fixture.provider.RecordedReviews(fixture.req.PRRef)
+	if len(reviews) != 1 {
+		t.Fatalf("review writes = %d, want exactly one submit_review", len(reviews))
+	}
+	if reviews[0].Event != review.ReviewEventApprove {
+		t.Fatalf("review event = %q, want approve", reviews[0].Event)
+	}
+	markers := marker.FindActions(reviews[0].Body)
+	if len(markers) != 1 || markers[0].RunID != "run-repair" || markers[0].ActionID != repairSubmitReviewActionID || markers[0].Kind != marker.ActionKindSubmitReview {
+		t.Fatalf("review markers = %#v, want repair submit marker", markers)
+	}
+	run, err := fixture.store.GetRun(context.Background(), "run-repair")
+	if err != nil {
+		t.Fatalf("GetRun repair: %v", err)
+	}
+	if run.Outcome == nil || *run.Outcome != ledger.OutcomeApproved {
+		t.Fatalf("repair run outcome = %v, want approved", run.Outcome)
+	}
+	action := actionByID(t, fixture.store, "run-repair", repairSubmitReviewActionID)
+	if action.Kind != ledger.PlannedActionSubmitReview || !action.Required || action.Status != ledger.PlannedActionPosted {
+		t.Fatalf("repair action = %#v, want posted required submit_review", action)
+	}
+	var payload outbox.SubmitReviewPayload
+	if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode repair payload: %v", err)
+	}
+	if payload.Body != repairSubmitReviewBody || payload.Event != review.ReviewEventApprove {
+		t.Fatalf("repair payload = %#v, want pinned body/event", payload)
+	}
+}
+
+func TestEvaluatePartialRepairConcurrentAttemptsPostOneReview(t *testing.T) {
+	fixture := newFixture(t)
+	setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeComment)
+	limiter := newBlockingLimiter()
+	opts := fixture.opts()
+	opts.Limiter = limiter
+
+	type evalResult struct {
+		result Result
+		err    error
+	}
+	done := make(chan evalResult, 1)
+	go func() {
+		result, err := Evaluate(context.Background(), opts, fixture.req)
+		done <- evalResult{result: result, err: err}
+	}()
+	<-limiter.entered
+
+	if _, err := Evaluate(context.Background(), opts, fixture.req); !errors.Is(err, runlock.ErrHeld) {
+		t.Fatalf("concurrent repair error = %v, want ErrHeld", err)
+	}
+	close(limiter.release)
+
+	first := <-done
+	if first.err != nil {
+		t.Fatalf("first Evaluate repair: %v", first.err)
+	}
+	if first.result.Status != StatusRepairExecuted {
+		t.Fatalf("first result = %#v, want repair executed", first.result)
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 1 {
+		t.Fatalf("review writes = %d, want exactly one", len(got))
+	}
+}
+
+func TestEvaluatePartialRunScopeMismatchErrors(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.allocateRun(t, "run-partial", testOldBase, ledger.PostModeLive)
 	body := mustRenderAction(t, marker.ActionMarker{RunID: "run-partial", ActionID: "rollup-1", Kind: marker.ActionKindRollupComment, SHA: testHeadSHA, BaseSHA: testBaseSHA, Outcome: marker.RollupOutcomeApproved})
@@ -237,8 +325,8 @@ func TestEvaluatePartialRunScopeMismatchRepairs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if result.Status != StatusRepairUnsupported || result.Decision.Kind != gate.DecisionRepair {
-		t.Fatalf("Evaluate = %#v, want repair unsupported for scoped mismatch", result)
+	if result.Status != StatusError || result.Decision.Kind != gate.DecisionError || result.Decision.ErrorReason != gate.ErrorInvalidInput {
+		t.Fatalf("Evaluate = %#v, want invalid-input status for scoped mismatch", result)
 	}
 }
 
@@ -358,13 +446,31 @@ func TestEvaluateRerunDoesNotMutateWhenBaseRefetchFails(t *testing.T) {
 	}
 }
 
-func TestEvaluateRetryPostsUnsupportedSkipsExternalState(t *testing.T) {
+func TestEvaluateRetryPostsExecutesOnlyMissingReview(t *testing.T) {
 	fixture := newFixture(t)
 	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
-	insertAction(t, fixture.store, plannedAction(run.RunID, "pending-required", ledger.PlannedActionPending, true, nil))
+	rollup := plannedAction(run.RunID, "rollup-1", ledger.PlannedActionPosted, true, nil)
+	rollup.PayloadJSON = payloadJSON(t, outbox.RollupCommentPayload{Body: "existing rollup"})
+	rollup.PostedAt = timePtr(testNow.Add(-time.Minute))
+	rollup.UpstreamID = strPtr("issue-rollup")
+	insertAction(t, fixture.store, rollup)
+	insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventRequestChanges))
 	if err := fixture.store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, testNow); err != nil {
 		t.Fatalf("CompleteRun failed: %v", err)
 	}
+	setPartialRollup(t, fixture, run.RunID, marker.RollupOutcomeRequestChanges)
+
+	plain, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate failed partial: %v", err)
+	}
+	if plain.Status != StatusError || plain.Decision.ErrorReason != gate.ErrorPartialFailed {
+		t.Fatalf("plain Evaluate = %#v, want failed partial guidance", plain)
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("plain review writes = %d, want no auto-repair", len(got))
+	}
+
 	stale := fixture.allocateRun(t, "run-stale", testOldBase, ledger.PostModeLive)
 	stalePath := fixture.lockPathForRun(t, stale)
 	fixture.req.Flags.RetryPosts = true
@@ -375,15 +481,172 @@ func TestEvaluateRetryPostsUnsupportedSkipsExternalState(t *testing.T) {
 		}
 		return fixture.locks.acquire(path)
 	}
-	fixture.provider.SetError(gitprovider.OperationListReviews, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListReviews, errors.New("reviews unavailable")))
 
 	result, err := Evaluate(context.Background(), opts, fixture.req)
 	if err != nil {
 		t.Fatalf("Evaluate retry-posts: %v", err)
 	}
-	if result.Status != StatusRetryPostsUnsupported || result.Decision.Kind != gate.DecisionRetryPosts || result.Decision.RunID != run.RunID {
-		t.Fatalf("Evaluate = %#v, want retry-posts unsupported for %s", result, run.RunID)
+	if result.Status != StatusRetryPostsExecuted || result.Decision.Kind != gate.DecisionRetryPosts || result.Decision.RunID != run.RunID {
+		t.Fatalf("Evaluate = %#v, want retry-posts execution for %s", result, run.RunID)
 	}
+	if result.OutboxResult.Outcome != ledger.OutcomeRequestChanges || result.OutboxResult.ExitCode != 0 {
+		t.Fatalf("OutboxResult = %#v, want request_changes success", result.OutboxResult)
+	}
+	if got := fixture.provider.RecordedIssueComments(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("issue comment writes = %d, want no duplicate rollup", len(got))
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 1 {
+		t.Fatalf("review writes = %d, want exactly one submit_review", len(got))
+	}
+	submit := actionByID(t, fixture.store, run.RunID, "submit-1")
+	if submit.Status != ledger.PlannedActionPosted || submit.Error != nil || submit.FailureClass != nil {
+		t.Fatalf("submit after retry = %#v, want posted with cleared failure", submit)
+	}
+}
+
+func TestEvaluateAbortedPartialIsAuditOnly(t *testing.T) {
+	fixture := newFixture(t)
+	aborted := fixture.allocateRun(t, "run-aborted", testBaseSHA, ledger.PostModeLive)
+	if err := fixture.store.CompleteRun(context.Background(), aborted.RunID, ledger.OutcomeAborted, testNow); err != nil {
+		t.Fatalf("CompleteRun aborted: %v", err)
+	}
+	setPartialRollup(t, fixture, aborted.RunID, marker.RollupOutcomeComment)
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate aborted partial: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh || result.Run.RunID == aborted.RunID {
+		t.Fatalf("Evaluate = %#v, want fresh run for aborted partial", result)
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("review writes = %d, want no repair post", len(got))
+	}
+}
+
+func TestEvaluateRetryPostsIneligibleDoesNotPost(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.req.Flags.RetryPosts = true
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate retry-posts ineligible: %v", err)
+	}
+	if result.Status != StatusError || result.Decision.ErrorReason != gate.ErrorRetryPostsIneligible {
+		t.Fatalf("Evaluate = %#v, want retry-posts eligibility error", result)
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("review writes = %d, want none", len(got))
+	}
+}
+
+func TestEvaluateRetryPostsUnprovableOutcomeDoesNotMutate(t *testing.T) {
+	tests := []struct {
+		name string
+		seed func(*testing.T, *fixture, ledger.Run)
+	}{
+		{
+			name: "conflicting submit events",
+			seed: func(t *testing.T, f *fixture, run ledger.Run) {
+				insertAction(t, f.store, submitReviewAction(t, run.RunID, "submit-approve", ledger.PlannedActionFailedTerminal, true, review.ReviewEventApprove))
+				insertAction(t, f.store, submitReviewAction(t, run.RunID, "submit-comment", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+			},
+		},
+		{
+			name: "required inline only",
+			seed: func(t *testing.T, f *fixture, run ledger.Run) {
+				insertAction(t, f.store, ledger.PlannedAction{
+					ActionID:  "inline-1",
+					RunID:     run.RunID,
+					Kind:      ledger.PlannedActionInlineComment,
+					PlannedAt: testNow,
+					PayloadJSON: payloadJSON(t, outbox.InlineCommentPayload{
+						Body:        "inline",
+						Path:        "main.go",
+						Side:        review.DiffSideRight,
+						Line:        1,
+						SubjectType: review.AnchorKindLine,
+					}),
+					Status:   ledger.PlannedActionPending,
+					Required: true,
+				})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+			tt.seed(t, fixture, run)
+			if err := fixture.store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, testNow); err != nil {
+				t.Fatalf("CompleteRun failed: %v", err)
+			}
+			before, err := fixture.store.ListPlannedActions(context.Background(), run.RunID)
+			if err != nil {
+				t.Fatalf("ListPlannedActions before: %v", err)
+			}
+			fixture.req.Flags.RetryPosts = true
+
+			result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+			if err != nil {
+				t.Fatalf("Evaluate retry-posts: %v", err)
+			}
+			if result.Status != StatusError || result.Decision.ErrorReason != gate.ErrorInvalidInput {
+				t.Fatalf("Evaluate = %#v, want invalid-input status", result)
+			}
+			after, err := fixture.store.ListPlannedActions(context.Background(), run.RunID)
+			if err != nil {
+				t.Fatalf("ListPlannedActions after: %v", err)
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("actions mutated before desired outcome proved:\nafter=%#v\nbefore=%#v", after, before)
+			}
+			if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+				t.Fatalf("review writes = %d, want none", len(got))
+			}
+		})
+	}
+}
+
+func TestEvaluateBaseRefetchFailureBeforeRepairOrRetryDoesNotMutate(t *testing.T) {
+	t.Run("repair", func(t *testing.T) {
+		fixture := newFixture(t)
+		setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeApproved)
+		fixture.provider.SetError(gitprovider.OperationGetPR, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, errors.New("pr unavailable")))
+
+		if _, err := Evaluate(context.Background(), fixture.opts(), fixture.req); err == nil {
+			t.Fatal("Evaluate repair GetPR error = nil, want error")
+		}
+		if runs := fixture.listRuns(t); len(runs) != 0 {
+			t.Fatalf("runs after failed repair = %d, want no recovery row", len(runs))
+		}
+		if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+			t.Fatalf("review writes = %d, want none", len(got))
+		}
+	})
+
+	t.Run("retry-posts", func(t *testing.T) {
+		fixture := newFixture(t)
+		run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+		insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+		if err := fixture.store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, testNow); err != nil {
+			t.Fatalf("CompleteRun failed: %v", err)
+		}
+		fixture.req.Flags.RetryPosts = true
+		fixture.provider.SetError(gitprovider.OperationGetPR, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, errors.New("pr unavailable")))
+
+		if _, err := Evaluate(context.Background(), fixture.opts(), fixture.req); err == nil {
+			t.Fatal("Evaluate retry-posts GetPR error = nil, want error")
+		}
+		action := actionByID(t, fixture.store, run.RunID, "submit-1")
+		if action.Status != ledger.PlannedActionFailedTerminal || action.Error == nil || action.FailureClass == nil {
+			t.Fatalf("submit after failed retry precheck = %#v, want unchanged failure", action)
+		}
+		if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+			t.Fatalf("review writes = %d, want none", len(got))
+		}
+	})
 }
 
 func TestEvaluateDryRunFreshDoesNotAllocate(t *testing.T) {
@@ -636,11 +899,138 @@ func TestEvaluateRejectsMissingLayoutDataRoot(t *testing.T) {
 	}
 }
 
+func TestEvaluateOutboxLimiterRequiredOnlyForPostExecution(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(*testing.T, *fixture)
+		wantStatus Status
+		wantErr    string
+	}{
+		{
+			name:       "fresh does not require limiter",
+			wantStatus: StatusContinue,
+		},
+		{
+			name: "resume does not require limiter",
+			setup: func(t *testing.T, f *fixture) {
+				f.allocateRun(t, "run-resume", testBaseSHA, ledger.PostModeLive)
+			},
+			wantStatus: StatusContinue,
+		},
+		{
+			name: "early exit does not require limiter",
+			setup: func(t *testing.T, f *fixture) {
+				body := mustRenderAction(t, marker.ActionMarker{RunID: "run-submit", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview, SHA: testHeadSHA, BaseSHA: testBaseSHA})
+				setReviews(t, f, []gitprovider.Review{{ID: "review-1", Author: f.req.PostingIdentity, Body: body, SubmittedAt: testNow}})
+			},
+			wantStatus: StatusEarlyExit,
+		},
+		{
+			name: "dry-run does not require limiter",
+			setup: func(_ *testing.T, f *fixture) {
+				f.req.Flags.DryRun = true
+			},
+			wantStatus: StatusDryRunFresh,
+		},
+		{
+			name: "repair requires limiter",
+			setup: func(t *testing.T, f *fixture) {
+				setPartialRollup(t, f, "run-repair", marker.RollupOutcomeApproved)
+			},
+			wantErr: "outbox limiter is required",
+		},
+		{
+			name: "retry-posts requires limiter",
+			setup: func(t *testing.T, f *fixture) {
+				run := f.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+				insertAction(t, f.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+				f.req.Flags.RetryPosts = true
+			},
+			wantErr: "outbox limiter is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			if tt.setup != nil {
+				tt.setup(t, fixture)
+			}
+			opts := fixture.opts()
+			opts.Limiter = nil
+			result, err := Evaluate(context.Background(), opts, fixture.req)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Evaluate error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			defer releaseResultLock(t, result)
+			if result.Status != tt.wantStatus {
+				t.Fatalf("Evaluate status = %s, want %s", result.Status, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestAbortStaleRunsRequiresLockedTarget(t *testing.T) {
 	fixture := newFixture(t)
 	err := abortStaleRuns(context.Background(), fixture.opts(), gateState{staleLocks: map[string]staleProbe{}}, []string{"missing-run"})
 	if err == nil {
 		t.Fatal("abortStaleRuns missing lock error = nil, want error")
+	}
+}
+
+func TestResetRequiredFailedTerminalActions(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-reset", testBaseSHA, ledger.PostModeLive)
+	attemptedAt := testNow.Add(-time.Hour)
+	postedAt := testNow.Add(-time.Minute)
+	requiredFailed := submitReviewAction(t, run.RunID, "required-failed", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment)
+	requiredFailed.Attempts = 7
+	requiredFailed.AttemptedAt = &attemptedAt
+	requiredFailed.PostedAt = &postedAt
+	requiredFailed.UpstreamID = strPtr("stale-upstream")
+	insertAction(t, fixture.store, requiredFailed)
+	optionalFailed := submitReviewAction(t, run.RunID, "optional-failed", ledger.PlannedActionFailedTerminal, false, review.ReviewEventComment)
+	insertAction(t, fixture.store, optionalFailed)
+	posted := submitReviewAction(t, run.RunID, "posted", ledger.PlannedActionPosted, true, review.ReviewEventComment)
+	posted.PostedAt = &postedAt
+	posted.UpstreamID = strPtr("review-posted")
+	insertAction(t, fixture.store, posted)
+	superseded := submitReviewAction(t, run.RunID, "superseded", ledger.PlannedActionSuperseded, true, review.ReviewEventComment)
+	insertAction(t, fixture.store, superseded)
+	plannedOnly := submitReviewAction(t, run.RunID, "planned-only", ledger.PlannedActionPlannedOnly, true, review.ReviewEventComment)
+	insertAction(t, fixture.store, plannedOnly)
+
+	actions, err := fixture.store.ListPlannedActions(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	if err := resetRequiredFailedTerminalActions(context.Background(), fixture.store, actions); err != nil {
+		t.Fatalf("resetRequiredFailedTerminalActions: %v", err)
+	}
+
+	got := actionByID(t, fixture.store, run.RunID, "required-failed")
+	if got.Status != ledger.PlannedActionPending || got.Error != nil || got.FailureClass != nil || got.PostedAt != nil || got.UpstreamID != nil {
+		t.Fatalf("required failed reset = %#v, want pending with failure/post fields cleared", got)
+	}
+	if got.Attempts != 7 || got.AttemptedAt == nil || !got.AttemptedAt.Equal(attemptedAt) {
+		t.Fatalf("required failed attempts = %d attempted_at = %v, want preserved", got.Attempts, got.AttemptedAt)
+	}
+	for _, actionID := range []string{"optional-failed", "posted", "superseded", "planned-only"} {
+		before := map[string]ledger.PlannedAction{
+			"optional-failed": optionalFailed,
+			"posted":          posted,
+			"superseded":      superseded,
+			"planned-only":    plannedOnly,
+		}[actionID]
+		after := actionByID(t, fixture.store, run.RunID, actionID)
+		if !reflect.DeepEqual(after, before) {
+			t.Fatalf("%s changed after reset: got %#v want %#v", actionID, after, before)
+		}
 	}
 }
 
@@ -702,6 +1092,7 @@ func (f *fixture) opts() Options {
 	return Options{
 		Store:                   f.store,
 		Provider:                f.provider,
+		Limiter:                 noopLimiter{},
 		Layout:                  f.layout,
 		Acquire:                 f.locks.acquire,
 		Now:                     func() time.Time { return testNow },
@@ -753,6 +1144,7 @@ func (f *fixture) lockPathForRun(t *testing.T, run ledger.Run) string {
 }
 
 type memoryLocks struct {
+	mu   sync.Mutex
 	held map[string]bool
 }
 
@@ -773,6 +1165,14 @@ type plannedActionErrorStore struct {
 	err   error
 }
 
+type noopLimiter struct{}
+
+type blockingLimiter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 func (s plannedActionErrorStore) ListPlannedActions(ctx context.Context, runID string) ([]ledger.PlannedAction, error) {
 	if runID == s.runID {
 		return nil, s.err
@@ -790,11 +1190,36 @@ func (p *countingProvider) ListReviews(ctx context.Context, ref gitprovider.PRRe
 	return p.GitProvider.ListReviews(ctx, ref)
 }
 
+func (noopLimiter) Wait(context.Context, string) error {
+	return nil
+}
+
+func newBlockingLimiter() *blockingLimiter {
+	return &blockingLimiter{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (l *blockingLimiter) Wait(ctx context.Context, _ string) error {
+	l.once.Do(func() {
+		close(l.entered)
+	})
+	select {
+	case <-l.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func newMemoryLocks() *memoryLocks {
 	return &memoryLocks{held: map[string]bool{}}
 }
 
 func (m *memoryLocks) acquire(path string) (Lock, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.held[path] {
 		return nil, runlock.ErrHeld
 	}
@@ -814,6 +1239,8 @@ func (m *memoryLocks) hold(t *testing.T, path string) {
 }
 
 func (l memoryLock) Release() error {
+	l.locks.mu.Lock()
+	defer l.locks.mu.Unlock()
 	if !l.locks.held[l.path] {
 		return nil
 	}
@@ -833,6 +1260,19 @@ func setIssueComments(t *testing.T, f *fixture, comments []gitprovider.IssueComm
 	if err := f.provider.SetIssueComments(f.req.PRRef, comments); err != nil {
 		t.Fatalf("SetIssueComments: %v", err)
 	}
+}
+
+func setPartialRollup(t *testing.T, f *fixture, runID string, outcome string) {
+	t.Helper()
+	body := mustRenderAction(t, marker.ActionMarker{
+		RunID:    runID,
+		ActionID: "rollup-1",
+		Kind:     marker.ActionKindRollupComment,
+		SHA:      testHeadSHA,
+		BaseSHA:  testBaseSHA,
+		Outcome:  outcome,
+	})
+	setIssueComments(t, f, []gitprovider.IssueComment{{ID: "issue-rollup", Author: f.req.PostingIdentity, Body: body, CreatedAt: testNow}})
 }
 
 func mustRenderAction(t *testing.T, action marker.ActionMarker) string {
@@ -867,6 +1307,21 @@ func insertAction(t *testing.T, store *ledger.Store, action ledger.PlannedAction
 	}
 }
 
+func actionByID(t *testing.T, store *ledger.Store, runID, actionID string) ledger.PlannedAction {
+	t.Helper()
+	actions, err := store.ListPlannedActions(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	for _, action := range actions {
+		if action.ActionID == actionID {
+			return action
+		}
+	}
+	t.Fatalf("action %s not found for run %s", actionID, runID)
+	return ledger.PlannedAction{}
+}
+
 func plannedAction(runID, actionID string, status ledger.PlannedActionStatus, required bool, failureClass *string) ledger.PlannedAction {
 	return ledger.PlannedAction{
 		ActionID:     actionID,
@@ -878,6 +1333,36 @@ func plannedAction(runID, actionID string, status ledger.PlannedActionStatus, re
 		Required:     required,
 		FailureClass: failureClass,
 	}
+}
+
+func submitReviewAction(t *testing.T, runID, actionID string, status ledger.PlannedActionStatus, required bool, event review.ReviewEvent) ledger.PlannedAction {
+	t.Helper()
+	action := ledger.PlannedAction{
+		ActionID:     actionID,
+		RunID:        runID,
+		Kind:         ledger.PlannedActionSubmitReview,
+		PlannedAt:    testNow,
+		PayloadJSON:  payloadJSON(t, outbox.SubmitReviewPayload{Body: "review body", Event: event}),
+		Status:       status,
+		Required:     required,
+		FailureClass: nil,
+	}
+	if status == ledger.PlannedActionFailedTerminal {
+		action.Error = strPtr("permission denied")
+		action.FailureClass = strPtr(ledger.PlannedActionFailureClassAuth)
+		action.Attempts = 1
+		action.AttemptedAt = timePtr(testNow.Add(-time.Minute))
+	}
+	return action
+}
+
+func payloadJSON(t *testing.T, payload any) string {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal payload: %v", err)
+	}
+	return string(data)
 }
 
 func timePtr(value time.Time) *time.Time {
