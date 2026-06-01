@@ -149,6 +149,18 @@ func TestLoadRejectsUnsafeAndMismatchedNames(t *testing.T) {
 			},
 		},
 		{
+			name: "empty category yaml name",
+			mutate: func(t *testing.T, root string) {
+				writeAgentWithNames(t, root, "cat", "", "agent", "agent")
+			},
+		},
+		{
+			name: "category yaml slash",
+			mutate: func(t *testing.T, root string) {
+				writeAgentWithNames(t, root, "cat", "bad/name", "agent", "agent")
+			},
+		},
+		{
 			name: "agent yaml mismatch",
 			mutate: func(t *testing.T, root string) {
 				writeAgentWithNames(t, root, "cat", "cat", "agent", "wrong")
@@ -158,6 +170,18 @@ func TestLoadRejectsUnsafeAndMismatchedNames(t *testing.T) {
 			name: "empty agent yaml name",
 			mutate: func(t *testing.T, root string) {
 				writeAgentWithNames(t, root, "cat", "cat", "agent", "")
+			},
+		},
+		{
+			name: "agent yaml backslash",
+			mutate: func(t *testing.T, root string) {
+				writeAgentWithNames(t, root, "cat", "cat", "agent", `bad\name`)
+			},
+		},
+		{
+			name: "dotdot category path",
+			mutate: func(t *testing.T, root string) {
+				writeAgent(t, root, "bad..category", "agent", "desc", "sonnet", "low", "prompt")
 			},
 		},
 		{
@@ -175,6 +199,45 @@ func TestLoadRejectsUnsafeAndMismatchedNames(t *testing.T) {
 			root := t.TempDir()
 			tt.mutate(t, root)
 			_, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+}
+
+func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR)
+	}{
+		{
+			name: "unsafe category tree name",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "bad..category", Type: "tree"})
+			},
+		},
+		{
+			name: "unsafe agent yaml name",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				categoryPath := repoAgentsRoot + "/cat"
+				agentPath := categoryPath + "/agent"
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
+				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("bad/name", "desc", "sonnet", "medium")))
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref := testPRRef()
+			pr := testPR("base-sha", "head-sha")
+			reader := newRepoReader()
+			tt.setup(reader, ref, pr)
+			_, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}})
 			if !errors.Is(err, ErrInvalid) {
 				t.Fatalf("Load error = %v, want ErrInvalid", err)
 			}

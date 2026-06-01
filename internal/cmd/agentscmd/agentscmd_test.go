@@ -21,20 +21,25 @@ import (
 func TestAgentsListWithoutPRLoadsProfileAndFlagSources(t *testing.T) {
 	profileDir := t.TempDir()
 	flagDir := t.TempDir()
+	overrideFlagDir := t.TempDir()
 	writeAgent(t, profileDir, "shared", "reviewer", "profile desc", "profile prompt")
-	writeAgent(t, flagDir, "shared", "reviewer", "flag desc", "flag prompt")
+	writeAgent(t, flagDir, "shared", "reviewer", "first flag desc", "first flag prompt")
+	writeAgent(t, overrideFlagDir, "shared", "reviewer", "second flag desc", "second flag prompt")
 	cfg := testConfig(profileDir)
 	cmd, out := newTestCommand(t, cfg, func(*cobra.Command, *root.Options, config.File, config.Profile) (gitprovider.GitProvider, func(), error) {
 		t.Fatal("provider factory called without PR argument")
 		return nil, nil, nil
 	})
 
-	if err := root.Execute(cmd, []string{"agents", "list", "--agents-dir", flagDir}); err != nil {
+	if err := root.Execute(cmd, []string{"agents", "list", "--agents-dir", flagDir, "--agents-dir", overrideFlagDir}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	text := out.String()
-	if !strings.Contains(text, "shared:reviewer") || !strings.Contains(text, "flag desc") || !strings.Contains(text, "Provenance: flag:1") {
-		t.Fatalf("stdout = %q, want flag override with provenance", text)
+	if !strings.Contains(text, "shared:reviewer") || !strings.Contains(text, "second flag desc") || !strings.Contains(text, "Provenance: flag:2") {
+		t.Fatalf("stdout = %q, want second repeatable flag override with provenance", text)
+	}
+	if strings.Contains(text, "first flag desc") {
+		t.Fatalf("stdout = %q, want later --agents-dir to override earlier flag source", text)
 	}
 	if strings.Contains(text, "Note:") {
 		t.Fatalf("stdout = %q, want no PR trust note", text)
@@ -103,6 +108,9 @@ func TestAgentsShowJSONWithPR(t *testing.T) {
 	}
 	if got.Agent.ID != "repo:reviewer" || got.Agent.Provenance != "repo@refs/heads/main:base-sh" {
 		t.Fatalf("agent = %#v, want repo agent", got.Agent)
+	}
+	if !strings.Contains(got.TrustNote, "PR-head .codereview/agents changes do not affect") {
+		t.Fatalf("trust_note = %q, want PR-head note", got.TrustNote)
 	}
 }
 

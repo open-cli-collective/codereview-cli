@@ -65,6 +65,7 @@ func TestRenderAgentsShowTextIncludesPrompt(t *testing.T) {
 		"Applies when:",
 		"Prompt:",
 		"Read the diff carefully.",
+		"Note: Repo-local agents loaded from base branch refs/heads/main at abc1234",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text = %q, want %q", text, want)
