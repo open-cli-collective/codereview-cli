@@ -25,6 +25,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
+	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -138,6 +139,48 @@ func TestReviewLiveSessionPassesNamedSession(t *testing.T) {
 	}
 	if runner.liveRequests[0].SessionName != "daily" {
 		t.Fatalf("SessionName = %q, want daily", runner.liveRequests[0].SessionName)
+	}
+}
+
+func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	}()
+	provider := &gitprovider.Fake{}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	var warnings bytes.Buffer
+
+	runner := buildReviewRunner(
+		store,
+		provider,
+		adapter,
+		noopLimiter{},
+		statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		&warnings,
+		RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2},
+	)
+
+	if runner.pipeline.NamedSessions != store {
+		t.Fatalf("pipeline NamedSessions = %#v, want ledger store", runner.pipeline.NamedSessions)
+	}
+	if runner.pipeline.Warnings != &warnings || runner.live.Warnings != &warnings {
+		t.Fatalf("warnings not wired through pipeline/live")
+	}
+	planner, ok := runner.live.Planner.(livePlanner)
+	if !ok {
+		t.Fatalf("live planner = %T, want livePlanner", runner.live.Planner)
+	}
+	if planner.opts.NamedSessions != store || planner.opts.Warnings != &warnings {
+		t.Fatalf("planner opts did not preserve named-session dependencies: %#v", planner.opts)
+	}
+	if runner.pipeline.MaxAgents != 3 || runner.pipeline.MaxConcurrency != 2 {
+		t.Fatalf("runtime opts = maxAgents:%d maxConcurrency:%d, want 3/2", runner.pipeline.MaxAgents, runner.pipeline.MaxConcurrency)
 	}
 }
 
@@ -332,6 +375,10 @@ type fakeRunner struct {
 	liveRequests []pipeline.Request
 	liveFlags    []reviewrun.Flags
 }
+
+type noopLimiter struct{}
+
+func (noopLimiter) Wait(context.Context, string) error { return nil }
 
 func (r *fakeRunner) DryRun(_ context.Context, req pipeline.Request) (pipeline.Result, error) {
 	r.requests = append(r.requests, req)

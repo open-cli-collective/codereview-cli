@@ -53,6 +53,23 @@ func TestSessionsListJSONEmpty(t *testing.T) {
 	}
 }
 
+func TestSessionsListJSON(t *testing.T) {
+	statedirtest.Hermetic(t)
+	insertNamedSession(t, namedSession("daily", "provider-session-2"))
+	cmd, out := newTestCommand()
+
+	if err := root.Execute(cmd, []string{"sessions", "list", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var decoded view.SessionsList
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if len(decoded.Sessions) != 1 || decoded.Sessions[0].Name != "daily" {
+		t.Fatalf("decoded = %#v, want daily session", decoded)
+	}
+}
+
 func TestSessionsShowJSON(t *testing.T) {
 	statedirtest.Hermetic(t)
 	insertNamedSession(t, namedSession("daily", "provider-session-2"))
@@ -70,6 +87,20 @@ func TestSessionsShowJSON(t *testing.T) {
 	}
 }
 
+func TestSessionsShowText(t *testing.T) {
+	statedirtest.Hermetic(t)
+	insertNamedSession(t, namedSession("daily", "provider-session-2"))
+	cmd, out := newTestCommand()
+
+	if err := root.Execute(cmd, []string{"sessions", "show", "daily"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "Session: daily") || !strings.Contains(text, "Provider session: provider-session-2") {
+		t.Fatalf("stdout = %q, want session details", text)
+	}
+}
+
 func TestSessionsDelete(t *testing.T) {
 	statedirtest.Hermetic(t)
 	insertNamedSession(t, namedSession("daily", "provider-session-2"))
@@ -84,6 +115,23 @@ func TestSessionsDelete(t *testing.T) {
 	store := openTestStore(t)
 	if _, err := store.GetNamedSession(context.Background(), "daily"); !errors.Is(err, ledger.ErrNotFound) {
 		t.Fatalf("GetNamedSession error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSessionsDeleteJSON(t *testing.T) {
+	statedirtest.Hermetic(t)
+	insertNamedSession(t, namedSession("daily", "provider-session-2"))
+	cmd, out := newTestCommand()
+
+	if err := root.Execute(cmd, []string{"sessions", "delete", "daily", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var decoded view.SessionsDelete
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if decoded.Name != "daily" || !decoded.Deleted {
+		t.Fatalf("decoded = %#v, want daily deleted", decoded)
 	}
 }
 

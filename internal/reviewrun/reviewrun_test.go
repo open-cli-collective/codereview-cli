@@ -118,6 +118,28 @@ func TestRunDoesNotCommitNamedSessionCandidateAfterOutboxStaleSHAAbort(t *testin
 	}
 }
 
+func TestRunDoesNotCommitNamedSessionCandidateAfterOutboxError(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	candidate := testNamedSessionCandidate("provider-new")
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, namedCandidate: &candidate}
+	limiterErr := errors.New("limiter failed")
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+	opts.Limiter = failingLimiter{err: limiterErr}
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if !errors.Is(err, limiterErr) {
+		t.Fatalf("Run error = %v, want limiter error", err)
+	}
+	if result.Outbox.Aborted {
+		t.Fatalf("outbox = %#v, want non-aborted error", result.Outbox)
+	}
+	if _, err := fixture.store.GetNamedSession(ctx, candidate.Name); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetNamedSession error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestRunResumeExistingActionsSkipsPlanner(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
@@ -722,6 +744,12 @@ func (p *sequencedPRProvider) GetPR(ctx context.Context, ref gitprovider.PRRef) 
 type noopLimiter struct{}
 
 func (noopLimiter) Wait(context.Context, string) error { return nil }
+
+type failingLimiter struct {
+	err error
+}
+
+func (l failingLimiter) Wait(context.Context, string) error { return l.err }
 
 func sequence(prefix string) func() string {
 	var counter int

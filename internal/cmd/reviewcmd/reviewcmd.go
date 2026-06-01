@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -461,37 +462,42 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		_ = ledgerStore.Close()
 		_ = store.Close()
 	}
+	limiter, err := outbox.NewTokenBucket(livePostLimiterInterval, livePostLimiterBurst)
+	if err != nil {
+		cleanup()
+		return Runtime{}, err
+	}
+	runner := buildReviewRunner(ledgerStore, provider, adapter, limiter, layout, opts.Stderr, runtimeOpts)
+	return Runtime{
+		Runner:          runner,
+		PostingIdentity: postingIdentity,
+		Cleanup:         cleanup,
+	}, nil
+}
+
+func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, runtimeOpts RuntimeOptions) reviewRunner {
 	pipelineOpts := pipeline.Options{
 		Provider:       provider,
 		Adapter:        adapter,
 		Store:          ledgerStore,
 		NamedSessions:  ledgerStore,
 		Layout:         layout,
-		Warnings:       opts.Stderr,
+		Warnings:       warnings,
 		MaxAgents:      runtimeOpts.MaxAgents,
 		MaxConcurrency: runtimeOpts.MaxConcurrency,
 	}
-	limiter, err := outbox.NewTokenBucket(livePostLimiterInterval, livePostLimiterBurst)
-	if err != nil {
-		cleanup()
-		return Runtime{}, err
-	}
-	return Runtime{
-		Runner: reviewRunner{
-			pipeline: pipelineOpts,
-			live: reviewrun.Options{
-				Store:                   ledgerStore,
-				Provider:                provider,
-				Planner:                 livePlanner{opts: pipelineOpts},
-				Limiter:                 limiter,
-				Layout:                  layout,
-				StaleHeartbeatThreshold: 10 * time.Minute,
-				Warnings:                opts.Stderr,
-			},
+	return reviewRunner{
+		pipeline: pipelineOpts,
+		live: reviewrun.Options{
+			Store:                   ledgerStore,
+			Provider:                provider,
+			Planner:                 livePlanner{opts: pipelineOpts},
+			Limiter:                 limiter,
+			Layout:                  layout,
+			StaleHeartbeatThreshold: 10 * time.Minute,
+			Warnings:                warnings,
 		},
-		PostingIdentity: postingIdentity,
-		Cleanup:         cleanup,
-	}, nil
+	}
 }
 
 type reviewRunner struct {
