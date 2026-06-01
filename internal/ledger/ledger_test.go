@@ -291,6 +291,38 @@ func TestListRunsForHeadScopeValidation(t *testing.T) {
 	}
 }
 
+func TestListRunsNewestFirstStable(t *testing.T) {
+	store := openStore(t)
+	base := validAllocateRunParams()
+	oldest := allocateRun(t, store, base)
+
+	dryRunParams := base
+	dryRunParams.RunID = "run-dry"
+	dryRunParams.StartedAt = base.StartedAt.Add(2 * time.Minute)
+	dryRunParams.PostMode = PostModeDryRun
+	dryRunParams.ArtifactPath = "/tmp/run-dry"
+	dryRun := allocateRun(t, store, dryRunParams)
+
+	tieParams := base
+	tieParams.RunID = "run-alpha"
+	tieParams.StartedAt = base.StartedAt.Add(time.Minute)
+	tieParams.ArtifactPath = "/tmp/run-alpha"
+	tieAlpha := allocateRun(t, store, tieParams)
+
+	tieParams.RunID = "run-beta"
+	tieParams.ArtifactPath = "/tmp/run-beta"
+	tieBeta := allocateRun(t, store, tieParams)
+
+	got, err := store.ListRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	wantIDs := []string{dryRun.RunID, tieAlpha.RunID, tieBeta.RunID, oldest.RunID}
+	if gotIDs := runIDs(got); !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("ListRuns IDs = %#v, want %#v", gotIDs, wantIDs)
+	}
+}
+
 func TestUpdateHeartbeat(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, validAllocateRunParams())

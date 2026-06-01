@@ -691,6 +691,36 @@ ORDER BY base_sha, attempt DESC, started_at DESC, run_id`,
 	return runs, nil
 }
 
+// ListRuns lists all runs in newest-first stable order.
+func (s *Store) ListRuns(ctx context.Context) ([]Run, error) {
+	if err := s.checkOpen(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode,
+	started_at, heartbeat_at, completed_at, outcome, artifact_path,
+	blocking_count, major_count, minor_count, nits_count
+FROM runs
+ORDER BY started_at DESC, run_id`)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: list runs: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []Run
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ledger: list runs rows: %w", err)
+	}
+	return runs, nil
+}
+
 // DeleteRun deletes a run and lets SQLite cascade child rows.
 func (s *Store) DeleteRun(ctx context.Context, runID string) error {
 	if strings.TrimSpace(runID) == "" {
