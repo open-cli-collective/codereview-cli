@@ -5,15 +5,16 @@ Collective standards and automation remain canonical in their own repositories.
 
 ## Project Overview
 
-codereview-cli is the Open CLI Collective code-review CLI, intended to ship the
-`cr` binary. The repository currently has the root command scaffold, Go module,
-CI wiring, repo policy, and packaging placeholders before the review pipeline
-lands.
+codereview-cli is the Open CLI Collective code-review CLI and ships the `cr`
+binary. It provides configuration and credential commands, trusted-agent
+inspection, dry-run and live pull-request review orchestration, named LLM
+session management, and local data lifecycle commands.
 
-The current Go code is a Cobra root in `internal/cmd/root`, a thin `cmd/cr`
-entrypoint, shared exit-code mapping in `internal/cmd/exitcode`, and version
-plumbing in `internal/version`. It exists so the tree compiles and the checks
-stay green while the real review commands are added.
+The current Go code is a Cobra command tree in `internal/cmd/*` with a thin
+`cmd/cr` entrypoint, shared exit-code mapping in `internal/cmd/exitcode`, and
+version plumbing in `internal/version`. Review orchestration is split across
+`internal/pipeline`, `internal/reviewrun`, `internal/reviewplan`,
+`internal/outbox`, `internal/gate`, and `internal/gateio`.
 
 ## Quick Commands
 
@@ -38,11 +39,13 @@ make clean   # remove build artifacts
   `.github/workflows/auto-release.yml`, and `.github/workflows/release.yml`
 - Packaging identity: `packaging/identity.yml`
 - Current distribution status: GitHub release archives only; package channels
-  can be added when the review pipeline needs them.
-- Application package layering follows the active codereview implementation
-  plan: command glue in `internal/cmd/*`, presentation in `internal/output` or
-  `internal/view`, state/config adapters in `internal/config` and
-  `internal/statepaths`, provider/LLM adapters in their owning packages.
+  can be added when each channel is actually implemented.
+- Application package layering follows the active codereview implementation:
+  command glue in `internal/cmd/*`, presentation in `internal/view`,
+  state/config adapters in `internal/config`, `internal/ledger`, and
+  `internal/statepaths`, provider/LLM adapters in their owning packages, and
+  review posting/gating in `internal/outbox`, `internal/gate`, and
+  `internal/gateio`.
 
 ## Shared Standards
 
