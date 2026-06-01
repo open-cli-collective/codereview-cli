@@ -74,6 +74,7 @@ type Request struct {
 	Profile            string
 	PostingIdentity    gitprovider.Identity
 	PostingIdentityKey string
+	FreshRunID         string
 	Flags              gate.Flags
 	ArtifactPath       string
 }
@@ -903,6 +904,7 @@ func allocateFresh(ctx context.Context, opts Options, req Request) (ledger.Run, 
 	return opts.Store.AllocateRun(ctx, ledger.AllocateRunParams{
 		PRKey:           req.PRKey,
 		PRURL:           req.PR.URL,
+		RunID:           strings.TrimSpace(req.FreshRunID),
 		SHA:             req.PR.Head.SHA,
 		BaseSHA:         req.PR.Base.SHA,
 		Profile:         req.Profile,

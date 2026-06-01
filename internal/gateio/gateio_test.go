@@ -116,6 +116,20 @@ func TestEvaluateIncompleteCompletedRunIsResumable(t *testing.T) {
 	}
 }
 
+func TestEvaluateFreshUsesSuppliedRunID(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.req.FreshRunID = "fresh-supplied"
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh || result.Run.RunID != "fresh-supplied" {
+		t.Fatalf("Evaluate = %#v, want fresh supplied run ID", result)
+	}
+}
+
 func TestEvaluatePRMarkerDecisions(t *testing.T) {
 	tests := []struct {
 		name       string

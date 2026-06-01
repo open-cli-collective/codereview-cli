@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -20,10 +21,12 @@ import (
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -31,6 +34,7 @@ import (
 // Runner executes the configured review pipeline.
 type Runner interface {
 	DryRun(context.Context, pipeline.Request) (pipeline.Result, error)
+	Live(context.Context, pipeline.Request, reviewrun.Flags) (reviewrun.Result, error)
 }
 
 // Runtime contains per-command dependencies that need cleanup after a run.
@@ -52,6 +56,8 @@ type RuntimeFactory func(cmd *cobra.Command, opts *root.Options, cfg config.File
 type commandFlags struct {
 	dryRun           bool
 	noPost           bool
+	rerun            bool
+	retryPosts       bool
 	agentsDirs       []string
 	failOn           string
 	jsonOutput       bool
@@ -86,6 +92,8 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	}
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Plan review actions without posting")
 	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Alias for --dry-run")
+	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass the gate and run a fresh live review")
+	cmd.Flags().BoolVar(&flags.retryPosts, "retry-posts", false, "Retry missing or failed required posts without rerunning review")
 	cmd.Flags().StringArrayVar(&flags.agentsDirs, "agents-dir", nil, "Additional trusted agents directory")
 	cmd.Flags().StringVar(&flags.failOn, "fail-on", "", "Exit 1 when a finding at or above severity exists")
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
@@ -102,8 +110,8 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if flags.noPost {
 		flags.dryRun = true
 	}
-	if !flags.dryRun {
-		return exitcode.With(exitcode.Failure, fmt.Errorf("live review is not implemented yet; pass --dry-run"))
+	if flags.rerun && flags.retryPosts {
+		return exitcode.Usage(fmt.Errorf("--rerun and --retry-posts are mutually exclusive"))
 	}
 	if flags.maxAgents < 0 {
 		return exitcode.Usage(fmt.Errorf("--max-agents must be non-negative"))
@@ -151,7 +159,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return fmt.Errorf("review: runtime runner is required")
 	}
 	noResolve := flags.noResolveThreads || profile.ReviewPolicy.ResolveThreads == config.ResolveThreadsNever
-	result, err := runtime.Runner.DryRun(ctx, pipeline.Request{
+	pipelineReq := pipeline.Request{
 		PRRef:               ref,
 		PRURL:               prArg,
 		ProfileName:         profileName,
@@ -164,7 +172,12 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		NoResolveThreads:    noResolve,
 		MajorRequestChanges: profile.ReviewPolicy.MajorEvent == config.ReviewMajorEventRequestChanges,
 		IncludeNits:         flags.verbose,
-	})
+	}
+	if !flags.dryRun {
+		return runLive(ctx, opts, flags, runtime.Runner, pipelineReq, failOn)
+	}
+
+	result, err := runtime.Runner.DryRun(ctx, pipelineReq)
 	if err != nil {
 		return mapRunError(err)
 	}
@@ -179,6 +192,29 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	if err != nil {
 		return err
+	}
+	if result.FailOnTriggered && failOn != nil {
+		return exitcode.With(exitcode.Failure, fmt.Errorf("findings at or above --fail-on %s", failOn.String()))
+	}
+	return nil
+}
+
+func runLive(ctx context.Context, opts *root.Options, flags commandFlags, runner Runner, req pipeline.Request, failOn *review.Severity) error {
+	result, err := runner.Live(ctx, req, reviewrun.Flags{Rerun: flags.rerun, RetryPosts: flags.retryPosts})
+	if err != nil {
+		return mapRunError(err)
+	}
+	rendered := newReviewLive(result)
+	if flags.jsonOutput {
+		err = view.RenderReviewLiveJSON(opts.Stdout, rendered)
+	} else {
+		err = view.RenderReviewLiveText(opts.Stdout, rendered)
+	}
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != exitcode.Success {
+		return exitcode.With(result.ExitCode, liveResultError(result))
 	}
 	if result.FailOnTriggered && failOn != nil {
 		return exitcode.With(exitcode.Failure, fmt.Errorf("findings at or above --fail-on %s", failOn.String()))
@@ -233,6 +269,60 @@ func newReviewDryRun(result pipeline.Result) (view.ReviewDryRun, error) {
 		rendered.Actions = append(rendered.Actions, renderedAction)
 	}
 	return rendered, nil
+}
+
+func newReviewLive(result reviewrun.Result) view.ReviewLive {
+	outcome := result.Outbox.Outcome.String()
+	if outcome == "" && result.Run.Outcome != nil {
+		outcome = result.Run.Outcome.String()
+	}
+	outboxExitCode := result.Outbox.ExitCode
+	if outboxExitCode == 0 && result.ExitCode != 0 {
+		outboxExitCode = result.ExitCode
+	}
+	rendered := view.ReviewLive{
+		Run: view.ReviewRun{
+			RunID:        result.Run.RunID,
+			PRURL:        result.PR.URL,
+			PRKey:        result.PRKey,
+			PostMode:     result.Run.PostMode.String(),
+			Outcome:      outcome,
+			ArtifactPath: result.Run.ArtifactPath,
+		},
+		Status:          string(result.Status),
+		Decision:        string(result.Decision.Kind),
+		Message:         result.Message,
+		FailOnTriggered: result.FailOnTriggered,
+		Outbox: view.ReviewOutbox{
+			Outcome:        outcome,
+			ExitCode:       outboxExitCode,
+			Posted:         result.Outbox.Posted,
+			Pending:        result.Outbox.Pending,
+			FailedTerminal: result.Outbox.FailedTerminal,
+			Aborted:        result.Outbox.Aborted,
+		},
+	}
+	if result.Pipeline != nil {
+		rendered.Artifacts = view.ReviewArtifacts{
+			Dir:            result.Pipeline.Artifacts.Dir,
+			DiffPatch:      result.Pipeline.Artifacts.DiffPatch,
+			SlicesDir:      result.Pipeline.Artifacts.SlicesDir,
+			FindingsJSON:   result.Pipeline.Artifacts.FindingsJSON,
+			RollupMarkdown: result.Pipeline.Artifacts.RollupMarkdown,
+			AgentLogsDir:   result.Pipeline.Artifacts.AgentLogsDir,
+		}
+	}
+	return rendered
+}
+
+func liveResultError(result reviewrun.Result) error {
+	if strings.TrimSpace(result.Message) != "" {
+		return errors.New(result.Message)
+	}
+	if result.Outbox.Outcome != "" {
+		return fmt.Errorf("live review completed with outcome %s", result.Outbox.Outcome)
+	}
+	return fmt.Errorf("live review did not complete")
 }
 
 func viewFinding(finding reviewplan.AnchoredFinding) view.ReviewFinding {
@@ -356,26 +446,56 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		_ = ledgerStore.Close()
 		_ = store.Close()
 	}
+	pipelineOpts := pipeline.Options{
+		Provider:       provider,
+		Adapter:        adapter,
+		Store:          ledgerStore,
+		Layout:         layout,
+		MaxAgents:      runtimeOpts.MaxAgents,
+		MaxConcurrency: runtimeOpts.MaxConcurrency,
+	}
+	limiter, err := outbox.NewTokenBucket(time.Second, 1)
+	if err != nil {
+		cleanup()
+		return Runtime{}, err
+	}
 	return Runtime{
-		Runner: dryRunRunner{opts: pipeline.Options{
-			Provider:       provider,
-			Adapter:        adapter,
-			Store:          ledgerStore,
-			Layout:         layout,
-			MaxAgents:      runtimeOpts.MaxAgents,
-			MaxConcurrency: runtimeOpts.MaxConcurrency,
-		}},
+		Runner: reviewRunner{
+			pipeline: pipelineOpts,
+			live: reviewrun.Options{
+				Store:                   ledgerStore,
+				Provider:                provider,
+				Planner:                 livePlanner{opts: pipelineOpts},
+				Limiter:                 limiter,
+				Layout:                  layout,
+				StaleHeartbeatThreshold: 10 * time.Minute,
+				Warnings:                opts.Stderr,
+			},
+		},
 		PostingIdentity: postingIdentity,
 		Cleanup:         cleanup,
 	}, nil
 }
 
-type dryRunRunner struct {
+type reviewRunner struct {
+	pipeline pipeline.Options
+	live     reviewrun.Options
+}
+
+func (r reviewRunner) DryRun(ctx context.Context, req pipeline.Request) (pipeline.Result, error) {
+	return pipeline.DryRun(ctx, r.pipeline, req)
+}
+
+func (r reviewRunner) Live(ctx context.Context, req pipeline.Request, flags reviewrun.Flags) (reviewrun.Result, error) {
+	return reviewrun.Run(ctx, r.live, reviewrun.Request{Pipeline: req, Flags: flags})
+}
+
+type livePlanner struct {
 	opts pipeline.Options
 }
 
-func (r dryRunRunner) DryRun(ctx context.Context, req pipeline.Request) (pipeline.Result, error) {
-	return pipeline.DryRun(ctx, r.opts, req)
+func (p livePlanner) Live(ctx context.Context, req pipeline.Request, run ledger.Run) (pipeline.Result, error) {
+	return pipeline.Live(ctx, p.opts, req, run)
 }
 
 func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, store githubprovider.TokenStore, profile config.Profile) (gitprovider.Identity, error) {
@@ -408,4 +528,4 @@ func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter
 	}
 }
 
-var _ Runner = dryRunRunner{}
+var _ Runner = reviewRunner{}

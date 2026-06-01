@@ -756,6 +756,37 @@ FROM sessions WHERE session_row_id = ?`, sessionRowID)
 	return session, nil
 }
 
+// ListSessionsForRun lists sessions for a run in stable order.
+func (s *Store) ListSessionsForRun(ctx context.Context, runID string) ([]Session, error) {
+	if strings.TrimSpace(runID) == "" {
+		return nil, invalidInput("run_id", runID)
+	}
+	if err := s.checkOpen(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT session_row_id, run_id, provider_session_id, role, agent_id, adapter, model, effort,
+	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create, cost_usd
+FROM sessions WHERE run_id = ? ORDER BY session_row_id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: list sessions for run: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []Session
+	for rows.Next() {
+		session, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ledger: list sessions for run rows: %w", err)
+	}
+	return sessions, nil
+}
+
 // InsertFinding inserts a validated harness finding row.
 func (s *Store) InsertFinding(ctx context.Context, finding Finding) error {
 	if err := validateFinding(finding); err != nil {

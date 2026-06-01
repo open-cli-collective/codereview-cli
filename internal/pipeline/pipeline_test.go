@@ -120,6 +120,128 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	}
 }
 
+func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	run, err := store.AllocateRun(ctx, ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           req.PRURL,
+		RunID:           "run-live",
+		SHA:             provider.pr.Head.SHA,
+		BaseSHA:         provider.pr.Base.SHA,
+		Profile:         req.ProfileName,
+		PostingIdentity: req.PostingIdentity.Login,
+		PostMode:        ledger.PostModeLive,
+		StartedAt:       fixedNow(),
+		ArtifactPath:    filepath.Join(t.TempDir(), "run-live"),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := Live(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if result.Run.RunID != run.RunID || result.Run.PostMode != ledger.PostModeLive {
+		t.Fatalf("run = %#v, want supplied live run", result.Run)
+	}
+	storedRun, err := store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if storedRun.Outcome != nil {
+		t.Fatalf("stored outcome = %#v, want incomplete until outbox", storedRun.Outcome)
+	}
+	if len(result.PlannedActions) != 3 {
+		t.Fatalf("planned actions len = %d, want inline/rollup/submit", len(result.PlannedActions))
+	}
+	for _, action := range result.PlannedActions {
+		if action.Status != ledger.PlannedActionPending {
+			t.Fatalf("action status = %q, want pending for %#v", action.Status, action)
+		}
+		if strings.Contains(action.PayloadJSON, "<!-- codereview:") {
+			t.Fatalf("live payload contains marker before outbox: %s", action.PayloadJSON)
+		}
+	}
+	sessions, err := store.ListSessionsForRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("ListSessionsForRun: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(sessions))
+	}
+	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
+}
+
+func TestLiveMarksRunFailedAfterPlanningError(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	run, err := store.AllocateRun(ctx, ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           req.PRURL,
+		RunID:           "run-live-failed",
+		SHA:             provider.pr.Head.SHA,
+		BaseSHA:         provider.pr.Base.SHA,
+		Profile:         req.ProfileName,
+		PostingIdentity: req.PostingIdentity.Login,
+		PostMode:        ledger.PostModeLive,
+		StartedAt:       fixedNow(),
+		ArtifactPath:    filepath.Join(t.TempDir(), "run-live-failed"),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+
+	_, err = Live(ctx, Options{
+		Provider:        provider,
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err == nil || !strings.Contains(err.Error(), "no queued result") {
+		t.Fatalf("Live error = %v, want fake LLM planning error", err)
+	}
+	storedRun, err := store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if storedRun.Outcome == nil || *storedRun.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("stored outcome = %#v, want failed", storedRun.Outcome)
+	}
+}
+
 func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)

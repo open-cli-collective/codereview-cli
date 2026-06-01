@@ -17,6 +17,17 @@ type ReviewDryRun struct {
 	FailOnTriggered bool            `json:"fail_on_triggered"`
 }
 
+// ReviewLive is the presentation model for live `cr review`.
+type ReviewLive struct {
+	Run             ReviewRun       `json:"run"`
+	Status          string          `json:"status"`
+	Decision        string          `json:"decision,omitempty"`
+	Message         string          `json:"message,omitempty"`
+	Outbox          ReviewOutbox    `json:"outbox"`
+	Artifacts       ReviewArtifacts `json:"artifacts"`
+	FailOnTriggered bool            `json:"fail_on_triggered"`
+}
+
 // ReviewRun describes the durable run envelope.
 type ReviewRun struct {
 	RunID        string `json:"run_id"`
@@ -25,6 +36,16 @@ type ReviewRun struct {
 	PostMode     string `json:"post_mode"`
 	Outcome      string `json:"outcome"`
 	ArtifactPath string `json:"artifact_path"`
+}
+
+// ReviewOutbox summarizes live posting state.
+type ReviewOutbox struct {
+	Outcome        string `json:"outcome,omitempty"`
+	ExitCode       int    `json:"exit_code"`
+	Posted         int    `json:"posted"`
+	Pending        int    `json:"pending"`
+	FailedTerminal int    `json:"failed_terminal"`
+	Aborted        bool   `json:"aborted"`
 }
 
 // ReviewQuota describes adapter quota when the adapter supports it.
@@ -142,6 +163,53 @@ func RenderReviewDryRunText(w io.Writer, result ReviewDryRun) error {
 
 // RenderReviewDryRunJSON writes a dry-run summary as indented JSON.
 func RenderReviewDryRunJSON(w io.Writer, result ReviewDryRun) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
+// RenderReviewLiveText writes a human-readable live review summary.
+func RenderReviewLiveText(w io.Writer, result ReviewLive) error {
+	if err := writeKV(w, "Run", result.Run.RunID); err != nil {
+		return err
+	}
+	if err := writeKV(w, "Status", result.Status); err != nil {
+		return err
+	}
+	if result.Decision != "" {
+		if err := writeKV(w, "Decision", result.Decision); err != nil {
+			return err
+		}
+	}
+	if err := writeOptionalKV(w, "Outcome", result.Outbox.Outcome); err != nil {
+		return err
+	}
+	if result.Outbox.ExitCode != 0 {
+		if err := writeKV(w, "Exit code", fmt.Sprint(result.Outbox.ExitCode)); err != nil {
+			return err
+		}
+	}
+	if result.Message != "" {
+		if err := writeKV(w, "Message", result.Message); err != nil {
+			return err
+		}
+	}
+	if err := writeOptionalKV(w, "PR", result.Run.PRURL); err != nil {
+		return err
+	}
+	if result.Run.ArtifactPath != "" {
+		if err := writeKV(w, "Artifacts", result.Run.ArtifactPath); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w, "Posts: posted=%d pending=%d failed_terminal=%d\n", result.Outbox.Posted, result.Outbox.Pending, result.Outbox.FailedTerminal); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RenderReviewLiveJSON writes a live review summary as indented JSON.
+func RenderReviewLiveJSON(w io.Writer, result ReviewLive) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(result)
