@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,21 @@ func TestReviewLiveCallsRunnerAndRendersText(t *testing.T) {
 	}
 }
 
+func TestReviewLiveRetryPostsCallsRunner(t *testing.T) {
+	runner := &fakeRunner{liveResult: testLiveResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.liveRequests) != 1 {
+		t.Fatalf("live runner calls = %d, want 1", len(runner.liveRequests))
+	}
+	if runner.liveFlags[0].Rerun || !runner.liveFlags[0].RetryPosts {
+		t.Fatalf("live flags = %#v, want retry-posts only", runner.liveFlags[0])
+	}
+}
+
 func TestReviewRejectsInvalidInputs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -227,6 +243,36 @@ func TestReviewLiveOutboxExitReturnsAfterRendering(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Message: review premises moved") {
 		t.Fatalf("stdout = %q, want live render before exit error", out.String())
+	}
+}
+
+func TestReviewLiveNonUpstreamExitCodesReturnAfterRendering(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+	}{
+		{name: "failure", code: exitcode.Failure},
+		{name: "auth", code: exitcode.AuthConfigError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			live := testLiveResult(false)
+			live.ExitCode = tt.code
+			live.Outbox.ExitCode = tt.code
+			runner := &fakeRunner{liveResult: live}
+			cmd, out := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+			err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
+			if err == nil {
+				t.Fatal("Execute error = nil, want live exit failure")
+			}
+			if got := exitcode.FromError(err); got != tt.code {
+				t.Fatalf("exit code = %d, want %d", got, tt.code)
+			}
+			if !strings.Contains(out.String(), "Exit code: "+strconv.Itoa(tt.code)) {
+				t.Fatalf("stdout = %q, want rendered exit code %d", out.String(), tt.code)
+			}
+		})
 	}
 }
 

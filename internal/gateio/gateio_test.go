@@ -118,7 +118,7 @@ func TestEvaluateIncompleteCompletedRunIsResumable(t *testing.T) {
 
 func TestEvaluateFreshUsesSuppliedRunID(t *testing.T) {
 	fixture := newFixture(t)
-	fixture.req.FreshRunID = "fresh-supplied"
+	fixture.req.FreshRunID = " fresh-supplied "
 
 	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
 	if err != nil {

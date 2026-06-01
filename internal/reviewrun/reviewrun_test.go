@@ -116,6 +116,56 @@ func TestRunResumePartialPlanningStateFailsWithoutReplayingLLM(t *testing.T) {
 	}
 }
 
+func TestRunResumeEmptyPlanningStateReplansSameRun(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "empty-plan", testBaseSHA)
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Run.RunID != run.RunID {
+		t.Fatalf("result run = %q, want resume of %q", result.Run.RunID, run.RunID)
+	}
+	if planner.calls != 1 || len(planner.runs) != 1 || planner.runs[0].RunID != run.RunID {
+		t.Fatalf("planner calls/runs = %d %#v, want one replan of existing run", planner.calls, planner.runs)
+	}
+	if result.Outbox.Outcome != ledger.OutcomeComment {
+		t.Fatalf("outbox outcome = %q, want comment", result.Outbox.Outcome)
+	}
+	if _, err := fixture.store.GetRun(ctx, "fresh-1"); err == nil {
+		t.Fatal("GetRun fresh-1 succeeded, want no fresh allocation for empty resume")
+	}
+}
+
+func TestRunResumeFindingOnlyPartialPlanningStateFailsWithoutReplayingLLM(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "finding-only-plan", testBaseSHA)
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	opts := fixture.opts(planner)
+	opts.Store = findingOnlyStore{Store: fixture.store, runID: run.RunID}
+
+	_, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err == nil || !strings.Contains(err.Error(), "partial planning state") {
+		t.Fatalf("Run error = %v, want partial planning guidance", err)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("planner calls = %d, want no LLM replay", planner.calls)
+	}
+	stored, err := fixture.store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("run outcome = %#v, want failed", stored.Outcome)
+	}
+}
+
 func TestRunAbortsWithoutPostingWhenHeadOrBaseMovesBeforePost(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
@@ -175,6 +225,52 @@ func TestRunFreshRunIDCollisionRetriesBeforePlanning(t *testing.T) {
 	}
 	if result.Run.RunID != "fresh-2" || planner.calls != 1 || planner.runs[0].RunID != "fresh-2" {
 		t.Fatalf("result/planner = %#v calls=%d runs=%#v, want fresh-2 after collision", result.Run, planner.calls, planner.runs)
+	}
+	if !strings.Contains(planner.runs[0].ArtifactPath, "fresh-2") || strings.Contains(planner.runs[0].ArtifactPath, "dupe") {
+		t.Fatalf("planner artifact path = %q, want retried fresh run path", planner.runs[0].ArtifactPath)
+	}
+	if comments := fixture.fake.RecordedIssueComments(fixture.ref); len(comments) != 1 {
+		t.Fatalf("issue comments = %d, want writes only after successful retry planning", len(comments))
+	}
+	if reviews := fixture.fake.RecordedReviews(fixture.ref); len(reviews) != 1 {
+		t.Fatalf("reviews = %d, want writes only after successful retry planning", len(reviews))
+	}
+}
+
+func TestRunFreshRunIDCollisionFailsAfterBoundedAttemptsBeforePlanning(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	_, err := fixture.store.AllocateRun(ctx, ledger.AllocateRunParams{
+		PRKey:           "other_pr",
+		PRURL:           "https://example.test/other",
+		RunID:           "dupe",
+		SHA:             strings.Repeat("d", 40),
+		BaseSHA:         strings.Repeat("e", 40),
+		Profile:         "home",
+		PostingIdentity: "review-bot",
+		PostMode:        ledger.PostModeLive,
+		StartedAt:       testNow(),
+		ArtifactPath:    filepath.Join(t.TempDir(), "dupe"),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun collision seed: %v", err)
+	}
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	opts := fixture.opts(planner)
+	opts.NewRunID = func() string { return "dupe" }
+
+	_, err = Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err == nil || !strings.Contains(err.Error(), "after 3 attempts") {
+		t.Fatalf("Run error = %v, want bounded collision failure", err)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("planner calls = %d, want no planning before successful fresh allocation", planner.calls)
+	}
+	if comments := fixture.fake.RecordedIssueComments(fixture.ref); len(comments) != 0 {
+		t.Fatalf("issue comments = %d, want no writes after collision failure", len(comments))
+	}
+	if reviews := fixture.fake.RecordedReviews(fixture.ref); len(reviews) != 0 {
+		t.Fatalf("reviews = %d, want no writes after collision failure", len(reviews))
 	}
 }
 
@@ -399,6 +495,26 @@ func actionByID(t *testing.T, store *ledger.Store, runID, actionID string) ledge
 	}
 	t.Fatalf("action %s/%s not found", runID, actionID)
 	return ledger.PlannedAction{}
+}
+
+type findingOnlyStore struct {
+	*ledger.Store
+	runID string
+}
+
+func (s findingOnlyStore) ListFindings(ctx context.Context, runID string) ([]ledger.Finding, error) {
+	if runID != s.runID {
+		return s.Store.ListFindings(ctx, runID)
+	}
+	return []ledger.Finding{{
+		FindingID:    review.FindingID("finding-only"),
+		RunID:        runID,
+		SessionRowID: "missing-session",
+		Severity:     review.SeverityMajor,
+		FilePath:     "main.go",
+		Anchoring:    review.AnchoringInline,
+		Body:         "finding body",
+	}}, nil
 }
 
 type fakePlanner struct {
