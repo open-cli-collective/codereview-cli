@@ -212,6 +212,63 @@ func TestSubprocessToolUseAndProtocolFailures(t *testing.T) {
 	})
 }
 
+func TestSubprocessRejectsUnsafeSpecs(t *testing.T) {
+	claude := NewClaudeCLIAdapter(SubprocessOptions{})
+	claudeArgs, err := claude.buildArgs(Request{Prompt: "prompt"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildArgs(claude): %v", err)
+	}
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "add dir", args: append([]string{"--add-dir", t.TempDir()}, claudeArgs...)},
+		{name: "search", args: append([]string{"--search"}, claudeArgs...)},
+		{name: "danger sandbox", args: append([]string{"--sandbox", "danger-full-access"}, claudeArgs...)},
+		{name: "missing empty tools flag", args: removeFlagPair(claudeArgs, "--tools")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := claude.validateArgs(tt.args, t.TempDir()); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+				t.Fatalf("validateArgs error = %v, want ErrUnsafeSubprocessConfig", err)
+			}
+		})
+	}
+
+	codex := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
+	scratch := t.TempDir()
+	codexArgs, err := codex.buildArgs(Request{Prompt: "prompt"}, scratch)
+	if err != nil {
+		t.Fatalf("buildArgs(codex): %v", err)
+	}
+	if err := codex.validateArgs(append([]string{"--search"}, codexArgs...), scratch); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+		t.Fatalf("validateArgs codex search error = %v, want ErrUnsafeSubprocessConfig", err)
+	}
+
+	recordPath := filepath.Join(t.TempDir(), "record.json")
+	nonEmptyScratch := filepath.Join(t.TempDir(), "scratch")
+	if err := os.Mkdir(nonEmptyScratch, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nonEmptyScratch, "file"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: helperPrefix(),
+		Env:               helperEnv("success", recordPath),
+		ScratchDirFactory: func() (string, func() error, error) {
+			return nonEmptyScratch, func() error { return nil }, nil
+		},
+	})
+	_, err = adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if !errors.Is(err, ErrUnsafeSubprocessConfig) {
+		t.Fatalf("Start error = %v, want ErrUnsafeSubprocessConfig", err)
+	}
+	if _, statErr := os.Stat(recordPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("helper record exists after refused non-empty scratch launch: %v", statErr)
+	}
+}
+
 func TestSubprocessToolUseKillsProcessGroup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process-tree kill assertion is Unix-specific")
@@ -243,6 +300,35 @@ func TestSubprocessToolUseKillsProcessGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Atoi(child pid): %v", err)
 	}
+	eventually(t, 2*time.Second, func() bool {
+		return !processExists(pid)
+	})
+}
+
+func TestSubprocessTimeoutKillsProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-tree kill assertion is Unix-specific")
+	}
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "record.json")
+	childPIDPath := filepath.Join(tempDir, "child.pid")
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: helperPrefix(),
+		Env: append(helperEnv("spawn-child-sleep", recordPath),
+			"LLM_HELPER_CHILD_PID="+childPIDPath,
+		),
+		Timeout: 200 * time.Millisecond,
+	})
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_, err = stream.Wait(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait error = %v, want deadline exceeded", err)
+	}
+	pid := readPID(t, childPIDPath)
 	eventually(t, 2*time.Second, func() bool {
 		return !processExists(pid)
 	})
@@ -293,6 +379,13 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 			_ = os.WriteFile(os.Getenv("LLM_HELPER_CHILD_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600) // #nosec G703 -- helper writes to t.TempDir path.
 		}
 		fmt.Println(`{"type":"tool_use","name":"Read"}`)
+		time.Sleep(10 * time.Second)
+	case "spawn-child-sleep":
+		child := exec.Command(os.Args[0], "-test.run=TestSubprocessChildProcess", "--") // #nosec G204,G702 -- helper launches the current test binary.
+		child.Env = append(os.Environ(), "LLM_SUBPROCESS_CHILD=1")
+		if err := child.Start(); err == nil {
+			_ = os.WriteFile(os.Getenv("LLM_HELPER_CHILD_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600) // #nosec G703 -- helper writes to t.TempDir path.
+		}
 		time.Sleep(10 * time.Second)
 	case "sleep":
 		time.Sleep(10 * time.Second)
@@ -355,6 +448,19 @@ func readHelperRecord(t *testing.T, path string) helperRecord {
 	return record
 }
 
+func readPID(t *testing.T, path string) int {
+	t.Helper()
+	pidData, err := os.ReadFile(path) // #nosec G304 -- test reads helper pid from t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(child pid): %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		t.Fatalf("Atoi(child pid): %v", err)
+	}
+	return pid
+}
+
 func assertFlagValue(t *testing.T, args []string, flag string, want string) {
 	t.Helper()
 	if got := flagValue(args, flag); got != want {
@@ -385,6 +491,18 @@ func samePath(t *testing.T, left string, right string) bool {
 	left = filepath.Clean(left)
 	right = filepath.Clean(right)
 	return left == right || "/private"+left == right || left == "/private"+right
+}
+
+func removeFlagPair(args []string, flag string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag {
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
 }
 
 func processExists(pid int) bool {
