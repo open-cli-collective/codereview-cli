@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -18,7 +22,7 @@ func TestSubprocessClaudeLaunchSafety(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "events.jsonl")
 	adapter := NewClaudeCLIAdapter(SubprocessOptions{
 		Command:           os.Args[0],
-		CommandArgsPrefix: helperPrefix(),
+		commandArgsPrefix: helperPrefix(),
 		Env:               helperEnv("success", recordPath),
 		Timeout:           5 * time.Second,
 	})
@@ -78,7 +82,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		adapter := NewCodexCLIAdapter(SubprocessOptions{
 			Command:           os.Args[0],
-			CommandArgsPrefix: helperPrefix(),
+			commandArgsPrefix: helperPrefix(),
 			Env:               helperEnv("success", recordPath),
 		})
 		_, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
@@ -94,7 +98,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		adapter := NewCodexCLIAdapter(SubprocessOptions{
 			Command:                os.Args[0],
-			CommandArgsPrefix:      helperPrefix(),
+			commandArgsPrefix:      helperPrefix(),
 			Env:                    helperEnv("success", recordPath),
 			Timeout:                5 * time.Second,
 			AllowBestEffortNoTools: true,
@@ -132,7 +136,7 @@ func TestSubprocessToolUseAndProtocolFailures(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		adapter := NewClaudeCLIAdapter(SubprocessOptions{
 			Command:           os.Args[0],
-			CommandArgsPrefix: helperPrefix(),
+			commandArgsPrefix: helperPrefix(),
 			Env:               helperEnv("tool", recordPath),
 			Timeout:           5 * time.Second,
 		})
@@ -154,7 +158,7 @@ func TestSubprocessToolUseAndProtocolFailures(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		adapter := NewClaudeCLIAdapter(SubprocessOptions{
 			Command:           os.Args[0],
-			CommandArgsPrefix: helperPrefix(),
+			commandArgsPrefix: helperPrefix(),
 			Env:               helperEnv("sleep", recordPath),
 			Timeout:           20 * time.Millisecond,
 		})
@@ -172,7 +176,7 @@ func TestSubprocessToolUseAndProtocolFailures(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		adapter := NewClaudeCLIAdapter(SubprocessOptions{
 			Command:           os.Args[0],
-			CommandArgsPrefix: helperPrefix(),
+			commandArgsPrefix: helperPrefix(),
 			Env:               helperEnv("malformed", recordPath),
 			Timeout:           5 * time.Second,
 		})
@@ -187,6 +191,60 @@ func TestSubprocessToolUseAndProtocolFailures(t *testing.T) {
 		if len(response.StructuredOutput) != 0 {
 			t.Fatalf("StructuredOutput = %s, want none after malformed event", response.StructuredOutput)
 		}
+	})
+
+	t.Run("nested tool use fails stream", func(t *testing.T) {
+		recordPath := filepath.Join(t.TempDir(), "record.json")
+		adapter := NewClaudeCLIAdapter(SubprocessOptions{
+			Command:           os.Args[0],
+			commandArgsPrefix: helperPrefix(),
+			Env:               helperEnv("nested-tool", recordPath),
+			Timeout:           5 * time.Second,
+		})
+		stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		_, err = stream.Wait(context.Background())
+		if !errors.Is(err, ErrToolUse) {
+			t.Fatalf("Wait error = %v, want ErrToolUse", err)
+		}
+	})
+}
+
+func TestSubprocessToolUseKillsProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-tree kill assertion is Unix-specific")
+	}
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "record.json")
+	childPIDPath := filepath.Join(tempDir, "child.pid")
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: helperPrefix(),
+		Env: append(helperEnv("spawn-child-tool", recordPath),
+			"LLM_HELPER_CHILD_PID="+childPIDPath,
+		),
+		Timeout: 5 * time.Second,
+	})
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_, err = stream.Wait(context.Background())
+	if !errors.Is(err, ErrToolUse) {
+		t.Fatalf("Wait error = %v, want ErrToolUse", err)
+	}
+	pidData, err := os.ReadFile(childPIDPath) // #nosec G304 -- test reads helper pid from t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(child pid): %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		t.Fatalf("Atoi(child pid): %v", err)
+	}
+	eventually(t, 2*time.Second, func() bool {
+		return !processExists(pid)
 	})
 }
 
@@ -225,6 +283,17 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		fmt.Println(`{"type":"session.started","session_id":"session-1"}`)
 		fmt.Println(`{"type":"tool_use","name":"Read"}`)
 		time.Sleep(10 * time.Second)
+	case "nested-tool":
+		fmt.Println(`{"type":"message","delta":{"tool_use":{"name":"Read"}}}`)
+		time.Sleep(10 * time.Second)
+	case "spawn-child-tool":
+		child := exec.Command(os.Args[0], "-test.run=TestSubprocessChildProcess", "--") // #nosec G204,G702 -- helper launches the current test binary.
+		child.Env = append(os.Environ(), "LLM_SUBPROCESS_CHILD=1")
+		if err := child.Start(); err == nil {
+			_ = os.WriteFile(os.Getenv("LLM_HELPER_CHILD_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600) // #nosec G703 -- helper writes to t.TempDir path.
+		}
+		fmt.Println(`{"type":"tool_use","name":"Read"}`)
+		time.Sleep(10 * time.Second)
 	case "sleep":
 		time.Sleep(10 * time.Second)
 	case "malformed":
@@ -233,6 +302,14 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 	default:
 		fmt.Println(`{"type":"response","structured_output":{"ok":true}}`)
 	}
+	os.Exit(0)
+}
+
+func TestSubprocessChildProcess(_ *testing.T) {
+	if os.Getenv("LLM_SUBPROCESS_CHILD") != "1" {
+		return
+	}
+	time.Sleep(10 * time.Second)
 	os.Exit(0)
 }
 
@@ -308,4 +385,21 @@ func samePath(t *testing.T, left string, right string) bool {
 	left = filepath.Clean(left)
 	right = filepath.Clean(right)
 	return left == right || "/private"+left == right || left == "/private"+right
+}
+
+func processExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("condition was not met within %s", timeout)
 }

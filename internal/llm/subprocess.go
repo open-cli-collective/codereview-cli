@@ -29,11 +29,11 @@ type ScratchDirFactory func() (string, func() error, error)
 // SubprocessOptions configures subprocess LLM adapters.
 type SubprocessOptions struct {
 	Command                string
-	CommandArgsPrefix      []string
 	Env                    []string
 	Timeout                time.Duration
 	ScratchDirFactory      ScratchDirFactory
 	AllowBestEffortNoTools bool
+	commandArgsPrefix      []string
 }
 
 type subprocessKind string
@@ -76,7 +76,7 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 	return &SubprocessAdapter{
 		kind:                   kind,
 		command:                command,
-		commandArgsPrefix:      append([]string(nil), opts.CommandArgsPrefix...),
+		commandArgsPrefix:      append([]string(nil), opts.commandArgsPrefix...),
 		env:                    append([]string(nil), opts.Env...),
 		timeout:                opts.Timeout,
 		scratchDirFactory:      factory,
@@ -137,6 +137,10 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
 	cmd.Dir = scratch
 	cmd.Stdin = nil
+	configureProcessGroup(cmd)
+	cmd.Cancel = func() error {
+		return killProcessGroup(cmd)
+	}
 	if len(a.env) > 0 {
 		cmd.Env = append(os.Environ(), a.env...)
 	}
@@ -398,6 +402,10 @@ type subprocessEvent struct {
 }
 
 func parseSubprocessEvent(line []byte) (subprocessEvent, error) {
+	var decoded any
+	if err := json.Unmarshal(line, &decoded); err != nil {
+		return subprocessEvent{}, fmt.Errorf("llm subprocess: malformed JSONL event: %w", err)
+	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return subprocessEvent{}, fmt.Errorf("llm subprocess: malformed JSONL event: %w", err)
@@ -405,7 +413,7 @@ func parseSubprocessEvent(line []byte) (subprocessEvent, error) {
 	eventType := rawString(raw, "type")
 	eventName := rawString(raw, "name")
 	event := subprocessEvent{
-		toolUse: eventIndicatesToolUse(eventType) || eventIndicatesToolUse(eventName) || rawObjectIndicatesToolUse(raw),
+		toolUse: eventIndicatesToolUse(eventType) || eventIndicatesToolUse(eventName) || valueIndicatesToolUse(decoded),
 		usage:   parseUsage(raw),
 	}
 	if id := rawString(raw, "session_id"); id != "" {
@@ -472,11 +480,31 @@ func eventIndicatesToolUse(value string) bool {
 		strings.Contains(normalized, "function_call")
 }
 
-func rawObjectIndicatesToolUse(raw map[string]json.RawMessage) bool {
+func valueIndicatesToolUse(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		return mapIndicatesToolUse(typed)
+	case []any:
+		for _, item := range typed {
+			if valueIndicatesToolUse(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func mapIndicatesToolUse(raw map[string]any) bool {
 	for key, value := range raw {
 		normalized := strings.ToLower(key)
 		if normalized == "tool_use" || normalized == "tool_call" || normalized == "function_call" {
-			return string(value) != "false" && string(value) != "null"
+			return value != nil && value != false
+		}
+		if (normalized == "type" || normalized == "name") && eventIndicatesToolUse(fmt.Sprint(value)) {
+			return true
+		}
+		if valueIndicatesToolUse(value) {
+			return true
 		}
 	}
 	return false
