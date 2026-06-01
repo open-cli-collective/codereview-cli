@@ -79,6 +79,9 @@ func TestAnthropicAPIAdapterRequestAndResponse(t *testing.T) {
 	if response.Usage.TokensIn == nil || *response.Usage.TokensIn != 7 {
 		t.Fatalf("TokensIn = %#v, want 7", response.Usage.TokensIn)
 	}
+	if response.Usage.TokensOut == nil || *response.Usage.TokensOut != 11 {
+		t.Fatalf("TokensOut = %#v, want 11", response.Usage.TokensOut)
+	}
 	if response.Usage.CacheRead == nil || *response.Usage.CacheRead != 3 {
 		t.Fatalf("CacheRead = %#v, want 3", response.Usage.CacheRead)
 	}
@@ -138,6 +141,9 @@ func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 	if response.Usage.TokensIn == nil || *response.Usage.TokensIn != 0 {
 		t.Fatalf("TokensIn = %#v, want explicit zero pointer", response.Usage.TokensIn)
 	}
+	if response.Usage.TokensOut == nil || *response.Usage.TokensOut != 12 {
+		t.Fatalf("TokensOut = %#v, want 12", response.Usage.TokensOut)
+	}
 	if response.Usage.CacheRead == nil || *response.Usage.CacheRead != 0 {
 		t.Fatalf("CacheRead = %#v, want explicit zero pointer", response.Usage.CacheRead)
 	}
@@ -164,6 +170,24 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 	}
 	if len(store.calls) != 1 || store.calls[0] != "work-llm/"+credentials.LLMAPIKeyKey {
 		t.Fatalf("store calls = %#v, want work-llm llm key", store.calls)
+	}
+	openAIStore := &apiTestStore{values: map[string]map[string]string{
+		"work-llm": {credentials.LLMAPIKeyKey: "openai-stored-key"},
+	}}
+	openAIAdapter, err := NewAPIAdapterFromConfig(config.LLMConfig{
+		Provider:      config.LLMProviderOpenAI,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterOpenAIAPI,
+		CredentialRef: "codereview/work-llm",
+	}, openAIStore, APIOptions{BaseURL: "https://example.invalid"})
+	if err != nil {
+		t.Fatalf("NewAPIAdapterFromConfig(openai): %v", err)
+	}
+	if openAIAdapter.Name() != "openai_api" || openAIAdapter.apiKey != "openai-stored-key" {
+		t.Fatalf("adapter = %s key=%q, want openai_api stored key", openAIAdapter.Name(), openAIAdapter.apiKey)
+	}
+	if len(openAIStore.calls) != 1 || openAIStore.calls[0] != "work-llm/"+credentials.LLMAPIKeyKey {
+		t.Fatalf("openAI store calls = %#v, want work-llm llm key", openAIStore.calls)
 	}
 
 	for _, tt := range []struct {
