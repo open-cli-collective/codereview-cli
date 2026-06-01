@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,6 +17,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -137,11 +136,11 @@ func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, f
 		FlagDirs:    append([]string(nil), flags.agentsDirs...),
 	}
 	if strings.TrimSpace(prArg) != "" {
-		ref, err := parsePRRef(prArg)
+		ref, err := prref.ParseGitHubPullURL(prArg)
 		if err != nil {
 			return agents.Catalog{}, exitcode.Usage(err)
 		}
-		if !sameHost(ref.Host, profile.Git.Host) {
+		if !prref.SameHost(ref.Host, profile.Git.Host) {
 			return agents.Catalog{}, exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
 		}
 		provider, cleanup, err := factory(cmd, opts, cfg, profile)
@@ -179,43 +178,6 @@ func mapLoadError(err error) error {
 	default:
 		return err
 	}
-}
-
-func sameHost(left, right string) bool {
-	return normalizeHost(left) == normalizeHost(right)
-}
-
-func normalizeHost(raw string) string {
-	host := strings.TrimSpace(raw)
-	if parsed, err := url.Parse(host); err == nil && parsed.Host != "" {
-		host = parsed.Host
-	}
-	return strings.ToLower(strings.TrimSuffix(host, "/"))
-}
-
-func parsePRRef(raw string) (gitprovider.PRRef, error) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return gitprovider.PRRef{}, fmt.Errorf("PR must be a GitHub pull request URL")
-	}
-	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(parts) != 4 || parts[2] != "pull" {
-		return gitprovider.PRRef{}, fmt.Errorf("PR must be a GitHub pull request URL")
-	}
-	number, err := strconv.Atoi(parts[3])
-	if err != nil || number <= 0 {
-		return gitprovider.PRRef{}, fmt.Errorf("PR number must be positive")
-	}
-	ref := gitprovider.PRRef{
-		Host:   parsed.Host,
-		Owner:  parts[0],
-		Repo:   parts[1],
-		Number: number,
-	}
-	if err := ref.Validate(); err != nil {
-		return gitprovider.PRRef{}, err
-	}
-	return ref, nil
 }
 
 func configPath(opts *root.Options) (string, error) {

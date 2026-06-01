@@ -30,6 +30,7 @@ func TestRun(t *testing.T) {
 		{name: "help flag shows usage", args: []string{"--help"}, wantCode: 0, wantStdout: "Usage:", wantStdoutSubstring: true},
 		{name: "me command wired", args: []string{"me", "--help"}, wantCode: 0, wantStdout: "Resolve and cache", wantStdoutSubstring: true},
 		{name: "agents command wired", args: []string{"agents", "--help"}, wantCode: 0, wantStdout: "Inspect trusted review agents", wantStdoutSubstring: true},
+		{name: "review command wired", args: []string{"review", "--help"}, wantCode: 0, wantStdout: "Run an automated pull-request review", wantStdoutSubstring: true},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: 2, wantStderr: "unknown command", wantEmptyStdout: true},
 	}
 

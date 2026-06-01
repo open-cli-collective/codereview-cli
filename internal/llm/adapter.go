@@ -64,40 +64,64 @@ type Quota struct {
 // Decoder validates and maps structured output bytes.
 type Decoder[T any] func([]byte) (T, error)
 
+// StructuredResult contains the validated structured value and adapter metadata.
+type StructuredResult[T any] struct {
+	Value     T
+	Response  Response
+	SessionID string
+}
+
 // RunStructured runs a structured-output request and retries one validation
 // failure with a deterministic correction prompt. On retry success, the
 // returned Response is the final successful attempt's response; this helper does
 // not aggregate usage or duration across attempts.
 func RunStructured[T any](ctx context.Context, adapter Adapter, req Request, decode Decoder[T]) (T, Response, error) {
 	var zero T
-	response, err := runOnce(ctx, adapter, req)
+	result, err := RunStructuredWithSession(ctx, adapter, req, decode)
 	if err != nil {
-		return zero, response, err
+		return zero, result.Response, err
+	}
+	return result.Value, result.Response, nil
+}
+
+// RunStructuredWithSession is RunStructured plus the provider session id from
+// the successful attempt. It preserves the same retry-once validation behavior.
+func RunStructuredWithSession[T any](ctx context.Context, adapter Adapter, req Request, decode Decoder[T]) (StructuredResult[T], error) {
+	var zero T
+	sessionID, response, err := runOnceWithSession(ctx, adapter, req)
+	if err != nil {
+		return StructuredResult[T]{Response: response}, err
 	}
 	value, decodeErr := decode(response.StructuredOutput)
 	if decodeErr == nil {
-		return value, response, nil
+		return StructuredResult[T]{Value: value, Response: response, SessionID: sessionID}, nil
 	}
 
 	retryReq := req
 	retryReq.Prompt = retryPrompt(req.Prompt, decodeErr)
-	retryResponse, err := runOnce(ctx, adapter, retryReq)
+	retrySessionID, retryResponse, err := runOnceWithSession(ctx, adapter, retryReq)
 	if err != nil {
-		return zero, retryResponse, err
+		return StructuredResult[T]{Response: retryResponse}, err
 	}
 	retryValue, retryErr := decode(retryResponse.StructuredOutput)
 	if retryErr != nil {
-		return zero, retryResponse, fmt.Errorf("structured output invalid after retry: first: %w; second: %w", decodeErr, retryErr)
+		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID}, fmt.Errorf("structured output invalid after retry: first: %w; second: %w", decodeErr, retryErr)
 	}
-	return retryValue, retryResponse, nil
+	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID}, nil
 }
 
 func runOnce(ctx context.Context, adapter Adapter, req Request) (Response, error) {
+	_, response, err := runOnceWithSession(ctx, adapter, req)
+	return response, err
+}
+
+func runOnceWithSession(ctx context.Context, adapter Adapter, req Request) (string, Response, error) {
 	stream, err := adapter.Start(ctx, req)
 	if err != nil {
-		return Response{}, err
+		return "", Response{}, err
 	}
-	return stream.Wait(ctx)
+	response, err := stream.Wait(ctx)
+	return stream.SessionID(), response, err
 }
 
 func retryPrompt(prompt string, err error) string {

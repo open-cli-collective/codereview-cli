@@ -79,7 +79,7 @@ func NewCommandWithOptions(opts *Options) (*cobra.Command, *Options) {
 
 const rootLong = `cr is the Open CLI Collective code-review CLI.
 
-The review command surface is not yet implemented.`
+Use cr review --dry-run to plan pull-request review actions without posting.`
 
 func newVersionCommand(opts *Options) *cobra.Command {
 	return &cobra.Command{
