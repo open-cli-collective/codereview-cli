@@ -36,12 +36,14 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	oldDryRun := allocatePipelineRun(t, store, layout, "old-dry-run", ledger.PostModeDryRun, fixedNow().Add(-8*24*time.Hour))
 
 	result, err := DryRun(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Layout:          layout,
 		Now:             fixedNow,
 		NewRunID:        func() string { return "run-1" },
 		NewSessionRowID: sequence("session"),
@@ -86,6 +88,9 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	}
 	if run.Outcome == nil || *run.Outcome != ledger.OutcomeDryRun {
 		t.Fatalf("stored outcome = %#v, want dry_run", run.Outcome)
+	}
+	if _, err := store.GetRun(ctx, oldDryRun.RunID); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("expired dry-run GetRun error = %v, want ErrNotFound", err)
 	}
 	storedFindings, err := store.ListFindings(ctx, "run-1")
 	if err != nil {
@@ -1182,6 +1187,27 @@ func closeStore(t *testing.T, store *ledger.Store) {
 	}
 }
 
+func allocatePipelineRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID string, mode ledger.PostMode, started time.Time) ledger.Run {
+	t.Helper()
+	artifactPath := filepath.Join(layout.DataRoot, "runs", "github_open-cli_codereview-cli_29", strings.Repeat("a", 40), strings.Repeat("b", 40), "home__review-bot", runID)
+	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		PRKey:           "github_open-cli_codereview-cli_29",
+		PRURL:           "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		RunID:           runID,
+		SHA:             strings.Repeat("a", 40),
+		BaseSHA:         strings.Repeat("b", 40),
+		Profile:         "home",
+		PostingIdentity: "review-bot",
+		PostMode:        mode,
+		StartedAt:       started,
+		ArtifactPath:    artifactPath,
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	return run
+}
+
 func fixedNow() time.Time {
 	return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 }
@@ -1402,6 +1428,14 @@ func (p *failingProvider) Capabilities() gitprovider.ProviderCaps {
 }
 
 type noopStore struct{}
+
+func (noopStore) ListRuns(context.Context) ([]ledger.Run, error) {
+	return nil, nil
+}
+
+func (noopStore) DeleteRun(context.Context, string) error {
+	return nil
+}
 
 func (noopStore) AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error) {
 	return ledger.Run{}, nil

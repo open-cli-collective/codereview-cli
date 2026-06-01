@@ -18,6 +18,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
@@ -46,6 +47,8 @@ type ReadProvider interface {
 
 // Store is the ledger behavior required by the dry-run pipeline.
 type Store interface {
+	ListRuns(context.Context) ([]ledger.Run, error)
+	DeleteRun(context.Context, string) error
 	AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error)
 	InsertSession(context.Context, ledger.Session) error
 	InsertFinding(context.Context, ledger.Finding) error
@@ -184,6 +187,12 @@ type namedSessionState struct {
 
 // DryRun executes the dry-run review pipeline.
 func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
+	if err := validate(opts, req); err != nil {
+		return Result{}, err
+	}
+	if err := pruneRetention(ctx, opts.Layout, opts.Store, opts.Now, opts.Warnings); err != nil {
+		return Result{}, err
+	}
 	return execute(ctx, opts, req, executionMode{
 		planPostMode: reviewplan.PostModeDryRun,
 		completeAs:   ledger.OutcomeDryRun,
@@ -736,6 +745,23 @@ func (opts Options) emitWarning(warning string) {
 		return
 	}
 	_, _ = fmt.Fprintln(opts.Warnings, warning)
+}
+
+func pruneRetention(ctx context.Context, layout statepaths.Layout, store datalifecycle.Store, now func() time.Time, warnings io.Writer) error {
+	result, err := datalifecycle.Prune(ctx, datalifecycle.Options{
+		Layout: layout,
+		Store:  store,
+		Now:    now,
+	}, datalifecycle.PruneOptions{})
+	if err != nil {
+		return err
+	}
+	for _, warning := range result.Warnings {
+		if warnings != nil {
+			_, _ = fmt.Fprintf(warnings, "warning: %s\n", warning)
+		}
+	}
+	return nil
 }
 
 func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitprovider.PR, parsed ParsedDiff, selected llm.SelectedAgent, agent agents.Agent) (string, error) {

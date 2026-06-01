@@ -69,6 +69,25 @@ func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 	}
 }
 
+func TestRunPrunesRetentionBeforeFreshAllocation(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	old := fixture.allocateOldRetainedRun(t, "old-live", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+
+	if _, err := Run(ctx, opts, Request{Pipeline: fixture.req}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := fixture.store.GetRun(ctx, old.RunID); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("expired live run GetRun error = %v, want ErrNotFound", err)
+	}
+	if planner.calls != 1 {
+		t.Fatalf("planner calls = %d, want fresh planning after retention", planner.calls)
+	}
+}
+
 func TestRunCommitsNamedSessionCandidateAfterPostSuccess(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
@@ -574,6 +593,31 @@ func (f *fixture) allocateRun(t *testing.T, runID, baseSHA string) ledger.Run {
 		PostMode:        ledger.PostModeLive,
 		StartedAt:       testNow(),
 		ArtifactPath:    filepath.Join(t.TempDir(), runID),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	return run
+}
+
+func (f *fixture) allocateOldRetainedRun(t *testing.T, runID string, mode ledger.PostMode, started time.Time) ledger.Run {
+	t.Helper()
+	prKey, err := statepaths.PRKey(f.ref.Host, f.ref.Owner, f.ref.Repo, f.ref.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	artifactPath := filepath.Join(f.layout.DataRoot, "runs", prKey, f.pr.Head.SHA, f.pr.Base.SHA, "home__review-bot", runID)
+	run, err := f.store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           f.pr.URL,
+		RunID:           runID,
+		SHA:             f.pr.Head.SHA,
+		BaseSHA:         f.pr.Base.SHA,
+		Profile:         f.req.ProfileName,
+		PostingIdentity: f.req.PostingIdentity.Login,
+		PostMode:        mode,
+		StartedAt:       started,
+		ArtifactPath:    artifactPath,
 	})
 	if err != nil {
 		t.Fatalf("AllocateRun: %v", err)

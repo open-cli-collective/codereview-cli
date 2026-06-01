@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gate"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -35,6 +36,7 @@ const (
 // Store is the durable state required by live review orchestration.
 type Store interface {
 	gateio.Store
+	ListRuns(context.Context) ([]ledger.Run, error)
 	ListFindings(context.Context, string) ([]ledger.Finding, error)
 	ListSessionsForRun(context.Context, string) ([]ledger.Session, error)
 	UpsertNamedSession(context.Context, ledger.NamedSession) error
@@ -95,6 +97,9 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 	}
 	if req.Flags.Rerun && req.Flags.RetryPosts {
 		return Result{}, fmt.Errorf("reviewrun: --rerun and --retry-posts are mutually exclusive")
+	}
+	if err := pruneRetention(ctx, opts); err != nil {
+		return Result{}, err
 	}
 
 	pr, err := opts.Provider.GetPR(ctx, req.Pipeline.PRRef)
@@ -423,6 +428,23 @@ func failOnFromStore(ctx context.Context, store Store, runID string, threshold *
 		}
 	}
 	return false, nil
+}
+
+func pruneRetention(ctx context.Context, opts Options) error {
+	result, err := datalifecycle.Prune(ctx, datalifecycle.Options{
+		Layout: opts.Layout,
+		Store:  opts.Store,
+		Now:    opts.Now,
+	}, datalifecycle.PruneOptions{})
+	if err != nil {
+		return err
+	}
+	for _, warning := range result.Warnings {
+		if opts.Warnings != nil {
+			_, _ = fmt.Fprintf(opts.Warnings, "warning: %s\n", warning)
+		}
+	}
+	return nil
 }
 
 func exitForDecision(decision gate.Decision) int {
