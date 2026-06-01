@@ -148,10 +148,10 @@ Supported values:
 | `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are recognized by the config schema but not implemented; validation rejects them in v1. |
 | `llm.provider` | `anthropic`, `openai` |
 | `llm.auth` | `subscription`, `api_key` |
-| `llm.adapter` | `claude_cli`, `anthropic_api`, `codex_cli`, `openai_api` |
+| `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api` are usable for review. `codex_cli` is recognized by the config schema but rejected by `cr review` until no-tools mode is explicit. |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
-| `data.retention.enforcement` | `at_write`, `manual_only` |
+| `data.retention.enforcement` | `at_write`, `manual_only`; currently stored and displayed, but automatic pruning does not yet branch on this setting. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
 logged-in CLI. `api_key` LLM auth requires `llm.credential_ref` and stores the
@@ -268,7 +268,7 @@ Flags:
 | `--major-event <policy>` | `comment` or `request_changes`. Controls review event for major findings. |
 | `--allow-self-approve` | Store profile policy allowing self approval. Live review can still require `--allow-self-approve` depending on invocation. |
 | `--resolve-threads <policy>` | `auto` or `never`. Empty leaves thread resolution unset. |
-| `--resolve-after <duration>` | Duration such as `24h` before thread resolution is planned. |
+| `--resolve-after <duration>` | Store a validated duration such as `24h` for future thread-resolution policy. Current review planning uses `resolve_threads`/`--no-resolve-threads`, not this delay. |
 | `--overwrite` | Replace existing keyring entries written by this command. |
 | `--replace-profile` | Replace an existing profile config. |
 
@@ -327,6 +327,7 @@ Flags:
 | `--json` | Emit a JSON result. |
 
 This removes secret keyring entries only. It does not delete `config.yml`.
+`--all` cannot be combined with `--profile`.
 
 ### `cr me`
 
@@ -336,7 +337,7 @@ cr me [--all] [--json]
 
 Resolves the active git-host identity using configured credentials and caches
 the identity in config. With `--all`, refreshes every configured profile.
-`--json` emits structured output.
+`--json` emits structured output. `--all` cannot be combined with `--profile`.
 
 ### `cr agents list`
 
@@ -472,8 +473,8 @@ Flags:
 
 | Flag | Semantics |
 |------|-----------|
-| `--older-than <duration>` | Prune runs older than the given duration. Mutually exclusive with `--keep-last`. |
-| `--keep-last <n>` | Keep the newest `n` runs per post mode and prune the rest. Mutually exclusive with `--older-than`. |
+| `--older-than <duration>` | Prune runs older than the given positive duration. Mutually exclusive with `--keep-last`. |
+| `--keep-last <n>` | Keep the newest non-negative `n` runs per post mode and prune the rest. Mutually exclusive with `--older-than`. |
 | `--dry-run` | Report selected runs and orphans without deleting. |
 | `--json` | Emit JSON including selected/deleted runs, orphan removals, and warnings. |
 
@@ -538,13 +539,14 @@ and records the new provider session when available.
 
 ### Retention
 
-When retention enforcement is `at_write`, `cr review` applies retention before
-fetching the PR or allocating the next run. `manual_only` disables automatic
-retention, but `cr data prune` and `cr data purge` remain available.
+`cr review` currently applies built-in retention before fetching the PR or
+allocating the next run. The config fields `data.retention.enforcement` and
+`data.retention.max_age_days` are validated and displayed, but automatic
+retention currently uses the built-in lifecycle windows rather than these
+profile settings.
 
-The configured `data.retention.max_age_days` defaults to 90. A value of `0`
-means keep forever for config-driven automatic retention. The explicit
-`cr data prune` command's built-in default is live 90 days and dry-run 7 days.
+The explicit `cr data prune` command's built-in default is live 90 days and
+dry-run 7 days.
 
 ## Development
 
