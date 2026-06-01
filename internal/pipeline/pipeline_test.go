@@ -259,19 +259,111 @@ func TestLiveNamedSessionResumesOrchestratorOnlyAndReturnsCandidate(t *testing.T
 	}
 }
 
-func TestLiveNamedSessionScopeMismatchRefusesBeforeLLM(t *testing.T) {
+func TestLiveNamedSessionMissingRowStartsFreshAndReturnsCandidate(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	req.SessionName = "daily"
-	run := allocateLiveRun(t, store, provider, req, "run-live-named-mismatch")
+	run := allocateLiveRun(t, store, provider, req, "run-live-named-first")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("selection-new", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-new", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := Live(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		NamedSessions:   store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	resumes := adapter.Resumes()
+	if len(resumes) != 1 || resumes[0].SessionID != "selection-new" {
+		t.Fatalf("resumes = %#v, want rollup resume from fresh selection", resumes)
+	}
+	if result.NamedSessionCandidate == nil {
+		t.Fatal("NamedSessionCandidate = nil, want first-run candidate")
+	}
+	wantCandidate := namedSessionForRequest(req, "rollup-new")
+	if !reflect.DeepEqual(*result.NamedSessionCandidate, wantCandidate) {
+		t.Fatalf("candidate = %#v, want %#v", *result.NamedSessionCandidate, wantCandidate)
+	}
+	if _, err := store.GetNamedSession(ctx, req.SessionName); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetNamedSession error = %v, want pipeline not to persist candidate", err)
+	}
+}
+
+func TestLiveNamedSessionScopeMismatchRefusesBeforeLLM(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*ledger.NamedSession)
+		wantErr string
+	}{
+		{name: "profile", mutate: func(s *ledger.NamedSession) { s.Profile = "other" }, wantErr: "profile mismatch"},
+		{name: "provider", mutate: func(s *ledger.NamedSession) { s.Provider = "openai" }, wantErr: "provider mismatch"},
+		{name: "adapter", mutate: func(s *ledger.NamedSession) { s.Adapter = "other-adapter" }, wantErr: "adapter mismatch"},
+		{name: "model", mutate: func(s *ledger.NamedSession) { s.Model = "opus" }, wantErr: "model mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			req.SessionName = "daily"
+			run := allocateLiveRun(t, store, provider, req, "run-live-named-mismatch-"+tt.name)
+			stored := namedSessionForRequest(req, "stored-session")
+			tt.mutate(&stored)
+			if err := store.UpsertNamedSession(ctx, stored); err != nil {
+				t.Fatalf("UpsertNamedSession: %v", err)
+			}
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+
+			_, err := Live(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				NamedSessions:   store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:             fixedNow,
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    findingSequence("finding"),
+				NewActionID:     actionSequence(),
+				MaxConcurrency:  1,
+			}, req, run)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Live error = %v, want %q", err, tt.wantErr)
+			}
+			if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+				t.Fatalf("adapter was invoked: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+			}
+		})
+	}
+}
+
+func TestLiveNamedSessionResumeFailureLeavesStoredSessionUnchanged(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.SessionName = "daily"
+	run := allocateLiveRun(t, store, provider, req, "run-live-named-resume-failure")
 	stored := namedSessionForRequest(req, "stored-session")
-	stored.Profile = "other"
 	if err := store.UpsertNamedSession(ctx, stored); err != nil {
 		t.Fatalf("UpsertNamedSession: %v", err)
 	}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	resumeErr := errors.New("resume failed")
+	adapter.Queue(llm.FakeResult{StartErr: resumeErr})
 
 	_, err := Live(ctx, Options{
 		Provider:        provider,
@@ -285,11 +377,18 @@ func TestLiveNamedSessionScopeMismatchRefusesBeforeLLM(t *testing.T) {
 		NewActionID:     actionSequence(),
 		MaxConcurrency:  1,
 	}, req, run)
-	if err == nil || !strings.Contains(err.Error(), "profile mismatch") {
-		t.Fatalf("Live error = %v, want profile mismatch", err)
+	if !errors.Is(err, resumeErr) {
+		t.Fatalf("Live error = %v, want resume failure", err)
 	}
-	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
-		t.Fatalf("adapter was invoked: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+	if resumes := adapter.Resumes(); len(resumes) != 1 || resumes[0].SessionID != "stored-session" {
+		t.Fatalf("resumes = %#v, want one stored-session resume", resumes)
+	}
+	gotStored, err := store.GetNamedSession(ctx, req.SessionName)
+	if err != nil {
+		t.Fatalf("GetNamedSession: %v", err)
+	}
+	if !reflect.DeepEqual(gotStored, stored) {
+		t.Fatalf("stored named session = %#v, want unchanged %#v", gotStored, stored)
 	}
 }
 
