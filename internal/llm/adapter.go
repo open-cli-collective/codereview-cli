@@ -87,7 +87,7 @@ func RunStructured[T any](ctx context.Context, adapter Adapter, req Request, dec
 	if retryErr != nil {
 		return zero, retryResponse, fmt.Errorf("structured output invalid after retry: first: %w; second: %w", decodeErr, retryErr)
 	}
-	return retryValue, combineRetryResponse(response, retryResponse), nil
+	return retryValue, retryResponse, nil
 }
 
 func runOnce(ctx context.Context, adapter Adapter, req Request) (Response, error) {
@@ -117,53 +117,4 @@ func truncateRunes(value string, maxRunes int) string {
 	}
 	runes := []rune(value)
 	return string(runes[:maxRunes]) + "..."
-}
-
-func combineRetryResponse(first Response, retry Response) Response {
-	combined := retry
-	combined.Usage = combineUsage(first.Usage, retry.Usage)
-	combined.DurationMS = first.DurationMS + retry.DurationMS
-	return combined
-}
-
-func combineUsage(first Usage, retry Usage) Usage {
-	return Usage{
-		TokensIn:    sumIntPtr(first.TokensIn, retry.TokensIn),
-		TokensOut:   sumIntPtr(first.TokensOut, retry.TokensOut),
-		CacheRead:   sumIntPtr(first.CacheRead, retry.CacheRead),
-		CacheCreate: sumIntPtr(first.CacheCreate, retry.CacheCreate),
-		CostUSD:     sumFloatPtr(first.CostUSD, retry.CostUSD),
-	}
-}
-
-func sumIntPtr(first *int, second *int) *int {
-	switch {
-	case first == nil && second == nil:
-		return nil
-	case first == nil:
-		value := *second
-		return &value
-	case second == nil:
-		value := *first
-		return &value
-	default:
-		value := *first + *second
-		return &value
-	}
-}
-
-func sumFloatPtr(first *float64, second *float64) *float64 {
-	switch {
-	case first == nil && second == nil:
-		return nil
-	case first == nil:
-		value := *second
-		return &value
-	case second == nil:
-		value := *first
-		return &value
-	default:
-		value := *first + *second
-		return &value
-	}
 }

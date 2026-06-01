@@ -31,11 +31,11 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 			t.Fatalf("RunStructured: %v", err)
 		}
 		if got != "ok" ||
-			response.Usage.TokensIn == nil || *response.Usage.TokensIn != 5 ||
+			response.Usage.TokensIn == nil || *response.Usage.TokensIn != 3 ||
 			response.Usage.TokensOut == nil || *response.Usage.TokensOut != 5 ||
 			response.Usage.CostUSD == nil || *response.Usage.CostUSD != 1.25 ||
-			response.DurationMS != 30 {
-			t.Fatalf("RunStructured = %q %#v, want ok response with accumulated nullable usage", got, response)
+			response.DurationMS != 20 {
+			t.Fatalf("RunStructured = %q %#v, want ok value with final response usage", got, response)
 		}
 		requests := adapter.Requests()
 		if len(requests) != 2 {
