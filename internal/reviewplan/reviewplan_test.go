@@ -95,6 +95,90 @@ func TestBuildOrdersActionsAndMarkerMetadata(t *testing.T) {
 	}
 }
 
+func TestRollupRenderingFallbackMetadataAndAgentNote(t *testing.T) {
+	req := baseRequest()
+	req.ProviderCaps = ProviderCaps{ThreadResolution: true}
+	req.AgentDefinitionsChanged = true
+	req.ThreadActions = []review.ThreadAction{
+		{ThreadID: "thread-1", Decision: review.ThreadDecisionSummarizeOnly, Summary: "summarized one"},
+		{ThreadID: "thread-2", Decision: review.ThreadDecisionSummarizeAndResolve, Summary: "summarized two"},
+	}
+	req.Findings = []review.Finding{
+		finding("f-1", "main.go", review.Anchor{Kind: review.AnchorKindFile}),
+		finding("f-2", "main.go", review.Anchor{Kind: review.AnchorKindFile}),
+	}
+	req.Findings[1].Severity = review.SeverityNits
+	req.Findings[1].Body = "nits detail"
+	req.Rollup.OrderedFindings = []review.FindingID{"f-1", "f-2"}
+
+	plan, err := Build(req)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	for _, want := range []string{
+		"## Automated PR Review",
+		"**Reviewed commit:** `1234567890ab`",
+		"**Profile:** `work` - **Posting as:** `review-bot`",
+		"| major | 1 |",
+		"*2 PR discussion threads considered. 2 summarized; 1 resolved.*",
+		"Note: This PR modifies reviewer definitions under `.codereview/agents/`.",
+	} {
+		if !strings.Contains(plan.RollupMarkdown, want) {
+			t.Fatalf("rollup markdown missing %q:\n%s", want, plan.RollupMarkdown)
+		}
+	}
+	if strings.Contains(plan.RollupMarkdown, "nits detail") {
+		t.Fatalf("rollup included nits detail while IncludeNits=false:\n%s", plan.RollupMarkdown)
+	}
+
+	inline := actionsOfKind(plan.Actions, ActionKindInlineComment)[0].InlineComment
+	if inline.SubjectType != review.AnchorKindLine || inline.Side != review.DiffSideRight || inline.Line != 10 || inline.DiffPosition != 1 {
+		t.Fatalf("fallback inline payload = %#v", inline)
+	}
+	if !strings.Contains(inline.Body, fileLevelFallbackPrefix+"main.go") || !strings.Contains(inline.Body, inlineFooter) {
+		t.Fatalf("fallback body missing wrapper/footer: %q", inline.Body)
+	}
+}
+
+func TestThreadDecisionResolutionDisabled(t *testing.T) {
+	req := baseRequest()
+	req.ProviderCaps.ThreadResolution = false
+	req.ThreadActions = []review.ThreadAction{
+		{ThreadID: "thread-1", Decision: review.ThreadDecisionSummarizeOnly, Summary: "summarized one"},
+		{ThreadID: "thread-2", Decision: review.ThreadDecisionSummarizeAndResolve, Summary: "summarized two"},
+	}
+
+	plan, err := Build(req)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := actionsOfKind(plan.Actions, ActionKindThreadReply); len(got) != 2 {
+		t.Fatalf("thread replies = %d, want 2", len(got))
+	}
+	if got := actionsOfKind(plan.Actions, ActionKindResolveThread); len(got) != 0 {
+		t.Fatalf("resolve actions = %#v, want none when capability disabled", got)
+	}
+}
+
+func TestMultipleInlineActionsFollowRollupOrder(t *testing.T) {
+	req := baseRequest()
+	req.Findings = []review.Finding{
+		finding("f-1", "main.go", review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 12}),
+		finding("f-2", "main.go", review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 13}),
+	}
+	req.Rollup.OrderedFindings = []review.FindingID{"f-2", "f-1"}
+
+	plan, err := Build(req)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	inline := actionsOfKind(plan.Actions, ActionKindInlineComment)
+	if got := []review.FindingID{inline[0].FindingID, inline[1].FindingID}; !reflect.DeepEqual(got, []review.FindingID{"f-2", "f-1"}) {
+		t.Fatalf("inline finding order = %#v", got)
+	}
+}
+
 func TestAnchoringModes(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -232,6 +316,11 @@ func TestEventMappingAndNothingToReview(t *testing.T) {
 	blocking.Severity = review.SeverityBlocking
 	if got := ReviewEventForFindings([]review.Finding{blocking}, EventOptions{}); got != review.ReviewEventRequestChanges {
 		t.Fatalf("blocking event = %q, want request_changes", got)
+	}
+	if got := ReviewEventForFindings([]review.Finding{
+		finding("f-1", "main.go", review.Anchor{Kind: review.AnchorKindFile}),
+	}, EventOptions{MajorEventRequestsChanges: true}); got != review.ReviewEventRequestChanges {
+		t.Fatalf("major policy event = %q, want request_changes", got)
 	}
 	if got := ReviewEventForFindings(nil, EventOptions{PostingIdentityIsPRAuthor: true}); got != review.ReviewEventComment {
 		t.Fatalf("self-review event = %q, want comment", got)
