@@ -127,6 +127,11 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 	case gateio.StatusRepairExecuted, gateio.StatusRetryPostsExecuted:
 		result.Outbox = gateResult.OutboxResult
 		result.ExitCode = gateResult.OutboxResult.ExitCode
+		run, err := opts.Store.GetRun(ctx, gateResult.Run.RunID)
+		if err != nil {
+			return result, err
+		}
+		result.Run = run
 		failOn, err := failOnFromStore(ctx, opts.Store, gateResult.Run.RunID, req.Pipeline.FailOn)
 		if err != nil {
 			return result, err
@@ -138,15 +143,13 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 		return result, nil
 	case gateio.StatusBaseMovedAbort:
 		result.ExitCode = exitUpstream
-		result.Outbox = outbox.Result{ExitCode: exitUpstream}
+		result.Outbox = outbox.Result{Outcome: ledger.OutcomeAborted, ExitCode: exitUpstream, Aborted: true}
 		if strings.TrimSpace(result.Run.RunID) != "" {
 			run, err := opts.Store.GetRun(ctx, result.Run.RunID)
 			if err != nil {
 				return result, err
 			}
 			result.Run = run
-			result.Outbox.Outcome = ledger.OutcomeAborted
-			result.Outbox.Aborted = true
 		}
 		result.Message = gateResult.Decision.Message
 		return result, nil
@@ -226,6 +229,11 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 	if moved, message, err := abortIfMoved(ctx, opts, req, result.Run); err != nil {
 		return result, err
 	} else if moved {
+		run, err := opts.Store.GetRun(ctx, result.Run.RunID)
+		if err != nil {
+			return result, err
+		}
+		result.Run = run
 		result.Outbox = outbox.Result{Outcome: ledger.OutcomeAborted, ExitCode: exitUpstream, Aborted: true}
 		result.ExitCode = exitUpstream
 		result.Message = message
@@ -248,6 +256,11 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 	if err != nil {
 		return result, err
 	}
+	run, err := opts.Store.GetRun(ctx, result.Run.RunID)
+	if err != nil {
+		return result, err
+	}
+	result.Run = run
 	return result, nil
 }
 
@@ -258,7 +271,13 @@ func planOrResume(ctx context.Context, opts Options, req Request, result Result)
 	}
 	if result.Decision.Kind == gate.DecisionResume && len(actions) > 0 {
 		desired, err := desiredOutcomeFromActions(actions)
-		return desired, nil, err
+		if err != nil {
+			if completeErr := opts.Store.CompleteRun(ctx, result.Run.RunID, ledger.OutcomeFailed, opts.now()); completeErr != nil {
+				return "", nil, completeErr
+			}
+			return "", nil, fmt.Errorf("reviewrun: cannot derive desired outcome from stored actions for run %s; pass --rerun to start a fresh review: %w", result.Run.RunID, err)
+		}
+		return desired, nil, nil
 	}
 	if result.Decision.Kind == gate.DecisionResume {
 		empty, err := planningStateEmpty(ctx, opts.Store, result.Run.RunID)

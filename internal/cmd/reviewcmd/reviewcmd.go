@@ -31,6 +31,11 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
+const (
+	livePostLimiterInterval = 500 * time.Millisecond
+	livePostLimiterBurst    = 2
+)
+
 // Runner executes the configured review pipeline.
 type Runner interface {
 	DryRun(context.Context, pipeline.Request) (pipeline.Result, error)
@@ -454,7 +459,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		MaxAgents:      runtimeOpts.MaxAgents,
 		MaxConcurrency: runtimeOpts.MaxConcurrency,
 	}
-	limiter, err := outbox.NewTokenBucket(time.Second, 1)
+	limiter, err := outbox.NewTokenBucket(livePostLimiterInterval, livePostLimiterBurst)
 	if err != nil {
 		cleanup()
 		return Runtime{}, err

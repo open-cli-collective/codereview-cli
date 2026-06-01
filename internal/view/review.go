@@ -194,6 +194,11 @@ func RenderReviewLiveText(w io.Writer, result ReviewLive) error {
 			return err
 		}
 	}
+	if result.FailOnTriggered {
+		if err := writeKV(w, "Fail-on", "triggered"); err != nil {
+			return err
+		}
+	}
 	if err := writeOptionalKV(w, "PR", result.Run.PRURL); err != nil {
 		return err
 	}

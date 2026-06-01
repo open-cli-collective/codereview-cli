@@ -187,14 +187,14 @@ func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Resul
 	})
 }
 
-func execute(ctx context.Context, opts Options, req Request, mode executionMode) (Result, error) {
+func execute(ctx context.Context, opts Options, req Request, mode executionMode) (out Result, err error) {
 	if err := validate(opts, req); err != nil {
 		return Result{}, err
 	}
 	completed := false
 	if mode.live {
 		defer func() {
-			if !completed && ctx.Err() == nil {
+			if !completed && !isContextError(err) {
 				_ = opts.Store.CompleteRun(context.Background(), mode.run.RunID, ledger.OutcomeFailed, opts.now())
 			}
 		}()
@@ -409,6 +409,10 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	completed = true
 	result.FailOnTriggered = failOnTriggered(result.Findings, req.FailOn)
 	return result, nil
+}
+
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func sessionRowIDForFinding(finding reviewplan.AnchoredFinding, findingSession map[review.FindingID]string) (string, error) {

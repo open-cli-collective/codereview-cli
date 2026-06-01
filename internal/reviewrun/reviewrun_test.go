@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -26,6 +27,12 @@ const (
 	testBaseSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
+func TestReviewRunExitCodesMatchCommandTaxonomy(t *testing.T) {
+	if exitOK != exitcode.Success || exitFailed != exitcode.Failure || exitAuth != exitcode.AuthConfigError || exitUpstream != exitcode.UpstreamError {
+		t.Fatalf("reviewrun exit constants = ok:%d failed:%d auth:%d upstream:%d, want command taxonomy", exitOK, exitFailed, exitAuth, exitUpstream)
+	}
+}
+
 func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
@@ -39,6 +46,9 @@ func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 	}
 	if result.ExitCode != 0 || result.Outbox.Outcome != ledger.OutcomeComment {
 		t.Fatalf("result = %#v, want comment exit 0", result)
+	}
+	if result.Run.Outcome == nil || *result.Run.Outcome != ledger.OutcomeComment {
+		t.Fatalf("result run outcome = %v, want comment", result.Run.Outcome)
 	}
 	if planner.calls != 1 || planner.runs[0].RunID != "fresh-1" {
 		t.Fatalf("planner calls/runs = %d %#v, want fresh-1", planner.calls, planner.runs)
@@ -75,11 +85,53 @@ func TestRunResumeExistingActionsSkipsPlanner(t *testing.T) {
 	if result.Run.RunID != run.RunID || result.Outbox.Outcome != ledger.OutcomeRequestChanges {
 		t.Fatalf("result = %#v, want resumed request_changes", result)
 	}
+	if result.Run.Outcome == nil || *result.Run.Outcome != ledger.OutcomeRequestChanges {
+		t.Fatalf("result run outcome = %v, want request_changes", result.Run.Outcome)
+	}
 	if comments := fixture.fake.RecordedIssueComments(fixture.ref); len(comments) != 1 {
 		t.Fatalf("issue comments = %d, want one rollup", len(comments))
 	}
 	if reviews := fixture.fake.RecordedReviews(fixture.ref); len(reviews) != 1 {
 		t.Fatalf("reviews = %d, want one review", len(reviews))
+	}
+}
+
+func TestRunResumeInvalidStoredActionsFailsRunWithRerunGuidance(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "invalid-actions", testBaseSHA)
+	if err := fixture.store.InsertPlannedAction(ctx, ledger.PlannedAction{
+		ActionID:  "inline-1",
+		RunID:     run.RunID,
+		Kind:      ledger.PlannedActionInlineComment,
+		PlannedAt: testNow(),
+		PayloadJSON: payloadJSON(t, outbox.InlineCommentPayload{
+			Body:        "inline",
+			Path:        "main.go",
+			Side:        review.DiffSideRight,
+			Line:        1,
+			SubjectType: review.AnchorKindLine,
+		}),
+		Status:   ledger.PlannedActionPending,
+		Required: true,
+	}); err != nil {
+		t.Fatalf("InsertPlannedAction: %v", err)
+	}
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+
+	_, err := Run(ctx, fixture.opts(planner), Request{Pipeline: fixture.req})
+	if err == nil || !strings.Contains(err.Error(), "--rerun") {
+		t.Fatalf("Run error = %v, want rerun guidance", err)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("planner calls = %d, want no LLM replay", planner.calls)
+	}
+	stored, err := fixture.store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("run outcome = %#v, want failed", stored.Outcome)
 	}
 }
 
@@ -183,6 +235,9 @@ func TestRunAbortsWithoutPostingWhenHeadOrBaseMovesBeforePost(t *testing.T) {
 	}
 	if result.ExitCode != exitUpstream || !result.Outbox.Aborted {
 		t.Fatalf("result = %#v, want aborted upstream exit", result)
+	}
+	if result.Run.Outcome == nil || *result.Run.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("result run outcome = %v, want aborted", result.Run.Outcome)
 	}
 	if comments := fixture.fake.RecordedIssueComments(fixture.ref); len(comments) != 0 {
 		t.Fatalf("issue comments = %d, want no posts after movement", len(comments))

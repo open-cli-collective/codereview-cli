@@ -224,6 +224,9 @@ func TestReviewLiveFailOnReturnsFailureAfterRendering(t *testing.T) {
 	if !strings.Contains(out.String(), "Status: continue") {
 		t.Fatalf("stdout = %q, want live render before fail-on error", out.String())
 	}
+	if !strings.Contains(out.String(), "Fail-on: triggered") {
+		t.Fatalf("stdout = %q, want live fail-on signal", out.String())
+	}
 }
 
 func TestReviewLiveOutboxExitReturnsAfterRendering(t *testing.T) {
