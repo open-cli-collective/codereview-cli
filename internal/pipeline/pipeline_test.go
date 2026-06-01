@@ -429,6 +429,10 @@ func TestLiveNamedSessionCrossHostWarnsAndContinues(t *testing.T) {
 	if result.NamedSessionCandidate == nil || result.NamedSessionCandidate.Host != req.PRRef.Host {
 		t.Fatalf("candidate = %#v, want active host", result.NamedSessionCandidate)
 	}
+	resumes := adapter.Resumes()
+	if len(resumes) != 2 || resumes[0].SessionID != "stored-session" || resumes[1].SessionID != "selection-new" {
+		t.Fatalf("resumes = %#v, want stored-session then selection-new", resumes)
+	}
 	if !strings.Contains(warnings.String(), "host mismatch") || !strings.Contains(warnings.String(), "continuing") {
 		t.Fatalf("warnings = %q, want host mismatch warning", warnings.String())
 	}

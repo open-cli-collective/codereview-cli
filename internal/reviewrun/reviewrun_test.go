@@ -299,7 +299,8 @@ func TestRunAbortsWithoutPostingWhenHeadOrBaseMovesBeforePost(t *testing.T) {
 		Fake: fixture.fake,
 		prs:  []gitprovider.PR{fixture.pr, fixture.pr, moved},
 	}
-	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	candidate := testNamedSessionCandidate("provider-new")
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, namedCandidate: &candidate}
 
 	result, err := Run(ctx, fixture.opts(planner), Request{Pipeline: fixture.req})
 	if err != nil {
@@ -316,6 +317,9 @@ func TestRunAbortsWithoutPostingWhenHeadOrBaseMovesBeforePost(t *testing.T) {
 	}
 	if reviews := fixture.fake.RecordedReviews(fixture.ref); len(reviews) != 0 {
 		t.Fatalf("reviews = %d, want no reviews after movement", len(reviews))
+	}
+	if _, err := fixture.store.GetNamedSession(ctx, candidate.Name); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetNamedSession error = %v, want ErrNotFound", err)
 	}
 }
 

@@ -122,7 +122,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return exitcode.Usage(fmt.Errorf("--rerun and --retry-posts are mutually exclusive"))
 	}
 	sessionName := strings.TrimSpace(flags.sessionName)
-	if sessionName != "" && flags.dryRun {
+	if sessionName != "" && (flags.dryRun || flags.noPost) {
 		return exitcode.Usage(fmt.Errorf("--session requires live review and cannot be used with --dry-run or --no-post"))
 	}
 	if sessionName != "" && flags.retryPosts {

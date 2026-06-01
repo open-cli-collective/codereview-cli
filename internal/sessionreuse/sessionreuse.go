@@ -39,16 +39,19 @@ func Normalize(scope Scope) Scope {
 // Validate rejects incomplete scope tuples.
 func Validate(scope Scope) error {
 	scope = Normalize(scope)
-	for field, value := range map[string]string{
-		"name":     scope.Name,
-		"profile":  scope.Profile,
-		"provider": scope.Provider,
-		"adapter":  scope.Adapter,
-		"model":    scope.Model,
-		"host":     scope.Host,
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "name", value: scope.Name},
+		{name: "profile", value: scope.Profile},
+		{name: "provider", value: scope.Provider},
+		{name: "adapter", value: scope.Adapter},
+		{name: "model", value: scope.Model},
+		{name: "host", value: scope.Host},
 	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("session %s is required", field)
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("session %s is required", field.name)
 		}
 	}
 	return nil
