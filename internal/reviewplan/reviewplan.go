@@ -423,6 +423,9 @@ func (b *builder) buildReview() (Plan, error) {
 
 func (b *builder) orderedFindings() ([]review.Finding, error) {
 	if len(b.req.Rollup.OrderedFindings) == 0 {
+		if len(b.req.Rollup.DedupeLog) > 0 && len(b.req.Findings) > 0 {
+			return nil, errors.New("reviewplan: ordered findings are required when dedupe log is present")
+		}
 		return append([]review.Finding(nil), b.req.Findings...), nil
 	}
 	dropped, err := b.droppedFindings()
@@ -432,6 +435,9 @@ func (b *builder) orderedFindings() ([]review.Finding, error) {
 	ordered := make([]review.Finding, 0, len(b.req.Rollup.OrderedFindings))
 	seen := map[review.FindingID]bool{}
 	for _, id := range b.req.Rollup.OrderedFindings {
+		if dropped[id] {
+			return nil, fmt.Errorf("reviewplan: dropped finding %q cannot be ordered", id)
+		}
 		finding, ok := b.findingsByID[id]
 		if !ok {
 			return nil, fmt.Errorf("reviewplan: ordered finding %q is unknown", id)

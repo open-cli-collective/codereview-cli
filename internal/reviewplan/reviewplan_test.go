@@ -304,6 +304,18 @@ func TestOrderedFindingsMustCoverNonDroppedFindings(t *testing.T) {
 	if strings.Contains(plan.RollupMarkdown, "dropped finding body") {
 		t.Fatalf("rollup unexpectedly includes dropped finding body: %q", plan.RollupMarkdown)
 	}
+
+	req.Rollup.OrderedFindings = []review.FindingID{"f-1", "f-2"}
+	_, err = Build(req)
+	if err == nil || !strings.Contains(err.Error(), "dropped finding") {
+		t.Fatalf("Build ordered dropped finding error = %v", err)
+	}
+
+	req.Rollup.OrderedFindings = nil
+	_, err = Build(req)
+	if err == nil || !strings.Contains(err.Error(), "ordered findings are required") {
+		t.Fatalf("Build empty ordered findings with dedupe error = %v", err)
+	}
 }
 
 func TestActionIDGeneratorFailures(t *testing.T) {
@@ -353,15 +365,6 @@ func TestProductionImportBoundary(t *testing.T) {
 	allowed := map[string]bool{
 		"github.com/open-cli-collective/codereview-cli/internal/review": true,
 	}
-	denied := map[string]bool{
-		"database/sql": true,
-		"io/fs":        true,
-		"net":          true,
-		"net/http":     true,
-		"os":           true,
-		"os/exec":      true,
-		"syscall":      true,
-	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -373,7 +376,7 @@ func TestProductionImportBoundary(t *testing.T) {
 		}
 		for _, spec := range file.Imports {
 			path := strings.Trim(spec.Path.Value, `"`)
-			if denied[path] {
+			if deniedImport(path) {
 				t.Fatalf("%s imports denied package %q", name, path)
 			}
 			if allowed[path] || isStdlibImport(path) {
@@ -483,4 +486,13 @@ func allBodies(plan Plan) []string {
 
 func isStdlibImport(path string) bool {
 	return !strings.Contains(path, ".")
+}
+
+func deniedImport(path string) bool {
+	for _, root := range []string{"database/sql", "io/fs", "io/ioutil", "net", "os", "os/exec", "syscall"} {
+		if path == root || strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
 }
