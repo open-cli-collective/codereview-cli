@@ -323,12 +323,9 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 		result.Sessions = append(result.Sessions, session)
 	}
 	for _, finding := range result.Plan.AnchoredFindings {
-		rowID := findingSession[finding.FindingID]
-		if strings.TrimSpace(rowID) == "" && len(result.Sessions) > 0 {
-			rowID = result.Sessions[0].SessionRowID
-		}
-		if strings.TrimSpace(rowID) == "" {
-			continue
+		rowID, err := sessionRowIDForFinding(finding, findingSession)
+		if err != nil {
+			return Result{}, err
 		}
 		ledgerFinding := ledgerFinding(run.RunID, rowID, finding)
 		if err := opts.Store.InsertFinding(ctx, ledgerFinding); err != nil {
@@ -354,6 +351,14 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 	completed = true
 	result.FailOnTriggered = failOnTriggered(result.Findings, req.FailOn)
 	return result, nil
+}
+
+func sessionRowIDForFinding(finding reviewplan.AnchoredFinding, findingSession map[review.FindingID]string) (string, error) {
+	rowID := strings.TrimSpace(findingSession[finding.FindingID])
+	if rowID == "" {
+		return "", fmt.Errorf("pipeline: missing reviewer session row for finding %q", finding.FindingID)
+	}
+	return rowID, nil
 }
 
 func runReviewers(ctx context.Context, opts Options, req Request, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, maxConcurrency int) ([]review.Finding, []sessionDraft, map[review.FindingID]string, error) {

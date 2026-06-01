@@ -279,6 +279,19 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 	}
 }
 
+func TestSessionRowIDForFindingRequiresReviewerSession(t *testing.T) {
+	finding := reviewplan.AnchoredFinding{FindingID: "finding-1"}
+	if got, err := sessionRowIDForFinding(finding, map[review.FindingID]string{"finding-1": "session-1"}); err != nil || got != "session-1" {
+		t.Fatalf("sessionRowIDForFinding = %q, %v; want session-1 nil", got, err)
+	}
+	if _, err := sessionRowIDForFinding(finding, map[review.FindingID]string{"other": "session-1"}); err == nil {
+		t.Fatal("sessionRowIDForFinding missing error = nil, want invariant failure")
+	}
+	if _, err := sessionRowIDForFinding(finding, map[review.FindingID]string{"finding-1": "  "}); err == nil {
+		t.Fatal("sessionRowIDForFinding blank error = nil, want invariant failure")
+	}
+}
+
 type readOnlyProvider struct {
 	pr      gitprovider.PR
 	diff    gitprovider.UnifiedDiff

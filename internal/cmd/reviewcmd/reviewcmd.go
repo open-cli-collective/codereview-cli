@@ -163,6 +163,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		AllowSelfApprove:    flags.allowSelfApprove,
 		NoResolveThreads:    noResolve,
 		MajorRequestChanges: profile.ReviewPolicy.MajorEvent == config.ReviewMajorEventRequestChanges,
+		IncludeNits:         flags.verbose,
 	})
 	if err != nil {
 		return mapRunError(err)
@@ -390,7 +391,7 @@ func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter
 	case config.LLMAdapterClaudeCLI:
 		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{}), nil
 	case config.LLMAdapterCodexCLI:
-		return llm.NewCodexCLIAdapter(llm.SubprocessOptions{AllowBestEffortNoTools: true}), nil
+		return nil, fmt.Errorf("%w: codex_cli is not supported for cr review until no-tools mode is explicit", config.ErrUnsupported)
 	case config.LLMAdapterAnthropicAPI, config.LLMAdapterOpenAIAPI:
 		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{})
 	default:

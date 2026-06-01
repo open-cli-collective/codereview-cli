@@ -47,6 +47,7 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 		"--allow-self-review",
 		"--allow-self-approve",
 		"--no-resolve-threads",
+		"--verbose",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -61,7 +62,7 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	if req.FailOn == nil || *req.FailOn != review.SeverityMinor {
 		t.Fatalf("FailOn = %#v, want minor", req.FailOn)
 	}
-	if len(req.AgentDirs) != 1 || req.AgentDirs[0] != "/tmp/agents" || !req.AllowSelfReview || !req.AllowSelfApprove || !req.NoResolveThreads || !req.MajorRequestChanges {
+	if len(req.AgentDirs) != 1 || req.AgentDirs[0] != "/tmp/agents" || !req.AllowSelfReview || !req.AllowSelfApprove || !req.NoResolveThreads || !req.MajorRequestChanges || !req.IncludeNits {
 		t.Fatalf("request flags = %#v", req)
 	}
 	if gotRuntime.MaxAgents != 3 || gotRuntime.MaxConcurrency != 2 {
@@ -323,5 +324,19 @@ func TestFakeFactoryErrorIsReturned(t *testing.T) {
 	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"})
 	if !errors.Is(err, factoryErr) {
 		t.Fatalf("Execute error = %v, want factory error", err)
+	}
+}
+
+func TestNewAdapterRejectsCodexCLIBestEffortByDefault(t *testing.T) {
+	_, err := newAdapter(config.LLMConfig{
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterCodexCLI,
+	}, nil)
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("newAdapter error = %v, want config.ErrUnsupported", err)
+	}
+	if !strings.Contains(err.Error(), "no-tools mode is explicit") {
+		t.Fatalf("newAdapter error = %v, want explicit no-tools explanation", err)
 	}
 }
