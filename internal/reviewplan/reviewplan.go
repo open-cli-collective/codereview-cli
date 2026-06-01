@@ -372,7 +372,6 @@ func (b *builder) buildReview() (Plan, error) {
 	}
 
 	b.populateAnchoredFindings()
-	anchored := b.anchoredForOrdered(ordered)
 
 	var actions []Action
 	threadReplies, resolves, err := b.threadActions()
@@ -388,7 +387,7 @@ func (b *builder) buildReview() (Plan, error) {
 	}
 	actions = append(actions, commentActions...)
 
-	anchored = b.anchoredForOrdered(ordered)
+	anchored := b.anchoredForOrdered(ordered)
 	rollupBody := b.renderRollup(ordered, anchored)
 	rollup, err := b.newAction(ActionKindRollupComment)
 	if err != nil {
