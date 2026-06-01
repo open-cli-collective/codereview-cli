@@ -130,6 +130,29 @@ func TestDataPurgeWorksWithCorruptDB(t *testing.T) {
 	}
 }
 
+func TestDataPurgeDryRunDoesNotRequireConfirmationOrDelete(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := mustLayout(t)
+	if err := os.WriteFile(layout.LedgerDB(), []byte("not sqlite"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	err := runDataCommand(&stdout, &stderr, "data", "purge", "--dry-run")
+	if err != nil {
+		t.Fatalf("runDataCommand: %v; stderr = %q", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Would purge data root:") {
+		t.Fatalf("stdout = %q, want dry-run purge summary", stdout.String())
+	}
+	if _, err := os.Stat(layout.DataRoot); err != nil {
+		t.Fatalf("data root stat: %v", err)
+	}
+	if _, err := os.Stat(layout.LedgerDB()); err != nil {
+		t.Fatalf("ledger stat: %v", err)
+	}
+}
+
 func TestDataPurgeRequiresConfirmation(t *testing.T) {
 	statedirtest.Hermetic(t)
 	var stdout, stderr bytes.Buffer

@@ -38,6 +38,11 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
 	oldDryRun := allocatePipelineRun(t, store, layout, "old-dry-run", ledger.PostModeDryRun, fixedNow().Add(-8*24*time.Hour))
+	provider.onGetPR = func() {
+		if _, err := store.GetRun(ctx, oldDryRun.RunID); !errors.Is(err, ledger.ErrNotFound) {
+			t.Fatalf("expired dry-run before provider GetPR error = %v, want ErrNotFound", err)
+		}
+	}
 
 	result, err := DryRun(ctx, Options{
 		Provider:        provider,
@@ -940,6 +945,7 @@ type readOnlyProvider struct {
 	trees   map[fileKey][]gitprovider.TreeEntry
 	threads []gitprovider.InlineThread
 	caps    gitprovider.ProviderCaps
+	onGetPR func()
 }
 
 type promptAwareAdapter struct {
@@ -1035,6 +1041,9 @@ type fileKey struct {
 }
 
 func (p *readOnlyProvider) GetPR(context.Context, gitprovider.PRRef) (gitprovider.PR, error) {
+	if p.onGetPR != nil {
+		p.onGetPR()
+	}
 	return p.pr, nil
 }
 
