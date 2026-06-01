@@ -116,7 +116,7 @@ func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 		if body["model"] != "gpt-5.1" || body["input"] != "prompt" {
 			t.Fatalf("request body = %#v, want model and input", body)
 		}
-		_, _ = fmt.Fprint(w, `{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":0,"output_tokens":12,"input_tokens_details":{"cached_tokens":0}}}`)
+		_, _ = fmt.Fprint(w, `{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":5,"output_tokens":12,"input_tokens_details":{"cached_tokens":2}}}`)
 	}))
 	defer server.Close()
 
@@ -124,7 +124,8 @@ func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOpenAIAPIAdapter: %v", err)
 	}
-	stream, err := adapter.Start(context.Background(), Request{Model: "gpt-5.1", Effort: "high", Prompt: "prompt"})
+	logPath := filepath.Join(t.TempDir(), "openai.jsonl")
+	stream, err := adapter.Start(context.Background(), Request{Model: "gpt-5.1", Effort: "high", Prompt: "prompt", LogPath: logPath})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -138,56 +139,69 @@ func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 	if string(response.StructuredOutput) != `{"ok":true}` {
 		t.Fatalf("StructuredOutput = %s, want JSON text", response.StructuredOutput)
 	}
-	if response.Usage.TokensIn == nil || *response.Usage.TokensIn != 0 {
-		t.Fatalf("TokensIn = %#v, want explicit zero pointer", response.Usage.TokensIn)
+	if response.Usage.TokensIn == nil || *response.Usage.TokensIn != 5 {
+		t.Fatalf("TokensIn = %#v, want 5", response.Usage.TokensIn)
 	}
 	if response.Usage.TokensOut == nil || *response.Usage.TokensOut != 12 {
 		t.Fatalf("TokensOut = %#v, want 12", response.Usage.TokensOut)
 	}
-	if response.Usage.CacheRead == nil || *response.Usage.CacheRead != 0 {
-		t.Fatalf("CacheRead = %#v, want explicit zero pointer", response.Usage.CacheRead)
+	if response.Usage.CacheRead == nil || *response.Usage.CacheRead != 2 {
+		t.Fatalf("CacheRead = %#v, want 2", response.Usage.CacheRead)
 	}
 	if response.Usage.CacheCreate != nil || response.Usage.CostUSD != nil {
 		t.Fatalf("Usage = %#v, want nil cache create and cost", response.Usage)
 	}
+	assertLogContains(t, logPath, `"resp_1"`)
 }
 
 func TestAPIAdapterFromConfig(t *testing.T) {
-	store := &apiTestStore{values: map[string]map[string]string{
-		"work-llm": {credentials.LLMAPIKeyKey: "stored-key"},
-	}}
-	adapter, err := NewAPIAdapterFromConfig(config.LLMConfig{
-		Provider:      config.LLMProviderAnthropic,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterAnthropicAPI,
-		CredentialRef: "codereview/work-llm",
-	}, store, APIOptions{BaseURL: "https://example.invalid"})
-	if err != nil {
-		t.Fatalf("NewAPIAdapterFromConfig: %v", err)
-	}
-	if adapter.Name() != "anthropic_api" || adapter.apiKey != "stored-key" {
-		t.Fatalf("adapter = %s key=%q, want anthropic_api stored key", adapter.Name(), adapter.apiKey)
-	}
-	if len(store.calls) != 1 || store.calls[0] != "work-llm/"+credentials.LLMAPIKeyKey {
-		t.Fatalf("store calls = %#v, want work-llm llm key", store.calls)
-	}
-	openAIStore := &apiTestStore{values: map[string]map[string]string{
-		"work-llm": {credentials.LLMAPIKeyKey: "openai-stored-key"},
-	}}
-	openAIAdapter, err := NewAPIAdapterFromConfig(config.LLMConfig{
-		Provider:      config.LLMProviderOpenAI,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterOpenAIAPI,
-		CredentialRef: "codereview/work-llm",
-	}, openAIStore, APIOptions{BaseURL: "https://example.invalid"})
-	if err != nil {
-		t.Fatalf("NewAPIAdapterFromConfig(openai): %v", err)
-	}
-	if openAIAdapter.Name() != "openai_api" || openAIAdapter.apiKey != "openai-stored-key" {
-		t.Fatalf("adapter = %s key=%q, want openai_api stored key", openAIAdapter.Name(), openAIAdapter.apiKey)
-	}
-	if len(openAIStore.calls) != 1 || openAIStore.calls[0] != "work-llm/"+credentials.LLMAPIKeyKey {
-		t.Fatalf("openAI store calls = %#v, want work-llm llm key", openAIStore.calls)
+	for _, tt := range []struct {
+		name    string
+		cfg     config.LLMConfig
+		apiKey  string
+		want    string
+		wantKey string
+	}{
+		{
+			name: "anthropic",
+			cfg: config.LLMConfig{
+				Provider:      config.LLMProviderAnthropic,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterAnthropicAPI,
+				CredentialRef: "codereview/work-llm",
+			},
+			apiKey:  "stored-value",
+			want:    "anthropic_api",
+			wantKey: "stored-value",
+		},
+		{
+			name: "openai",
+			cfg: config.LLMConfig{
+				Provider:      config.LLMProviderOpenAI,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterOpenAIAPI,
+				CredentialRef: "codereview/work-llm",
+			},
+			apiKey:  "openai-stored-value",
+			want:    "openai_api",
+			wantKey: "openai-stored-value",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &apiTestStore{values: map[string]map[string]string{
+				"work-llm": {credentials.LLMAPIKeyKey: tt.apiKey},
+			}}
+			adapter, err := NewAPIAdapterFromConfig(tt.cfg, store, APIOptions{BaseURL: "https://example.invalid"})
+			if err != nil {
+				t.Fatalf("NewAPIAdapterFromConfig: %v", err)
+			}
+			if adapter.Name() != tt.want || adapter.apiKey != tt.wantKey {
+				t.Fatalf("adapter = %s key=%q, want %s stored key", adapter.Name(), adapter.apiKey, tt.want)
+			}
+			if len(store.calls) != 1 || store.calls[0] != "work-llm/"+credentials.LLMAPIKeyKey {
+				t.Fatalf("store calls = %#v, want work-llm llm key", store.calls)
+			}
+		})
 	}
 
 	for _, tt := range []struct {
@@ -213,6 +227,9 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			store := &apiTestStore{values: map[string]map[string]string{
+				"work-llm": {credentials.LLMAPIKeyKey: "stored-value"},
+			}}
 			if _, err := NewAPIAdapterFromConfig(tt.cfg, store, APIOptions{}); !errors.Is(err, ErrAPIAdapterConfig) {
 				t.Fatalf("NewAPIAdapterFromConfig error = %v, want ErrAPIAdapterConfig", err)
 			}
@@ -319,6 +336,32 @@ func TestAPIAdapterFailures(t *testing.T) {
 		}
 	})
 
+	t.Run("log failure does not discard successful response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `{"id":"resp_1","output_text":"{\"ok\":true}","usage":{}}`)
+		}))
+		defer server.Close()
+		adapter, err := NewOpenAIAPIAdapter(APIOptions{APIKey: "key", BaseURL: server.URL})
+		if err != nil {
+			t.Fatalf("NewOpenAIAPIAdapter: %v", err)
+		}
+		stream, err := adapter.Start(context.Background(), Request{
+			Model:   "gpt",
+			Prompt:  "prompt",
+			LogPath: filepath.Join(t.TempDir(), "missing", "openai.jsonl"),
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		response, err := stream.Wait(context.Background())
+		if err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		if string(response.StructuredOutput) != `{"ok":true}` {
+			t.Fatalf("StructuredOutput = %s, want JSON text", response.StructuredOutput)
+		}
+	})
+
 	t.Run("wait cancellation cancels request", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			<-r.Context().Done()
@@ -339,6 +382,36 @@ func TestAPIAdapterFailures(t *testing.T) {
 			t.Fatalf("Wait error = %v, want context canceled", err)
 		}
 	})
+}
+
+func TestOpenAIAPIOutputTextFallback(t *testing.T) {
+	sessionID, response, err := parseOpenAIResponse([]byte(`{"id":"resp_2","output_text":"{\"fallback\":true}","output":[],"usage":{}}`))
+	if err != nil {
+		t.Fatalf("parseOpenAIResponse: %v", err)
+	}
+	if sessionID != "resp_2" {
+		t.Fatalf("sessionID = %q, want resp_2", sessionID)
+	}
+	if string(response.StructuredOutput) != `{"fallback":true}` {
+		t.Fatalf("StructuredOutput = %s, want fallback output text", response.StructuredOutput)
+	}
+}
+
+func TestAPIResponseLogAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api.jsonl")
+	if err := writeAPIResponseLog(path, []byte(`{"id":"first"}`)); err != nil {
+		t.Fatalf("writeAPIResponseLog(first): %v", err)
+	}
+	if err := writeAPIResponseLog(path, []byte(`{"id":"second"}`)); err != nil {
+		t.Fatalf("writeAPIResponseLog(second): %v", err)
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- test reads a path created with t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(log): %v", err)
+	}
+	if got := string(data); !strings.Contains(got, `"first"`) || !strings.Contains(got, `"second"`) {
+		t.Fatalf("log = %q, want both appended entries", got)
+	}
 }
 
 type apiTestStore struct {

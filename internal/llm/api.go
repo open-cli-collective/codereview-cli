@@ -26,6 +26,7 @@ const (
 	defaultOpenAIBaseURL    = "https://api.openai.com/"
 	defaultAnthropicVersion = "2023-06-01"
 	defaultAPIMaxTokens     = 4096
+	defaultAPIClientTimeout = 10 * time.Minute
 	apiResponseLogLimit     = 4 * 1024 * 1024
 )
 
@@ -138,7 +139,7 @@ func newAPIAdapter(kind apiKind, opts APIOptions) (*APIAdapter, error) {
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultAPIClientTimeout}
 	}
 	version := strings.TrimSpace(opts.AnthropicVersion)
 	if version == "" {
@@ -206,9 +207,6 @@ func (a *APIAdapter) Resume(context.Context, string, Request) (Stream, error) {
 
 // Start begins one provider HTTP request and returns its stream handle.
 func (a *APIAdapter) Start(ctx context.Context, req Request) (Stream, error) {
-	if a == nil {
-		return nil, fmt.Errorf("%w: nil adapter", ErrAPIAdapterConfig)
-	}
 	if strings.TrimSpace(req.Model) == "" {
 		return nil, fmt.Errorf("%w: model is required", ErrAPIAdapterConfig)
 	}
@@ -289,12 +287,12 @@ func (a *APIAdapter) execute(ctx context.Context, req Request) (string, Response
 	if err != nil {
 		return "", Response{}, err
 	}
-	if err := writeAPIResponseLog(req.LogPath, responseBody); err != nil {
-		return "", Response{}, err
-	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
 		return "", Response{}, fmt.Errorf("llm api %s: provider returned %s", a.kind, httpResp.Status)
 	}
+	// Response logging is best-effort; a provider response should not be
+	// discarded because the caller's local log path is unavailable.
+	_ = writeAPIResponseLog(req.LogPath, responseBody)
 	return a.parseProviderResponse(responseBody)
 }
 
@@ -390,7 +388,7 @@ func parseAnthropicResponse(body []byte) (string, Response, error) {
 	}
 	text := strings.Builder{}
 	for _, block := range payload.Content {
-		if (block.Type == "" || block.Type == "text") && block.Text != "" {
+		if block.Type == "text" && block.Text != "" {
 			text.WriteString(block.Text)
 		}
 	}
@@ -492,7 +490,7 @@ func writeAPIResponseLog(path string, body []byte) error {
 		return nil
 	}
 	// #nosec G304 -- log path is an explicit caller-provided request field.
-	file, err := os.Create(path)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
