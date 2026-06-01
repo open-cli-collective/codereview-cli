@@ -25,9 +25,9 @@ Use `cr` when you want to:
 Download a release archive from the
 [Releases page](https://github.com/open-cli-collective/codereview-cli/releases).
 
-`codereview-cli` currently ships GitHub release archives only. The
-`packaging/chocolatey` and `packaging/winget` directories are documentation
-stubs, not active distribution channels.
+For prebuilt binary distribution, `codereview-cli` currently ships GitHub
+release archives only. The `packaging/chocolatey` and `packaging/winget`
+directories are documentation stubs, not active distribution channels.
 
 ### From Source
 
@@ -145,7 +145,7 @@ Supported values:
 
 | Field | Values |
 |-------|--------|
-| `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are schema-known but not supported in v1. |
+| `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are recognized by the config schema but not implemented; validation rejects them in v1. |
 | `llm.provider` | `anthropic`, `openai` |
 | `llm.auth` | `subscription`, `api_key` |
 | `llm.adapter` | `claude_cli`, `anthropic_api`, `codex_cli`, `openai_api` |
@@ -274,7 +274,8 @@ Flags:
 
 Only one stdin secret ingress flag may be used at a time. LLM API-key ingress
 requires `--llm-auth api_key`. `--overwrite` with API-key auth requires an LLM
-key ingress flag.
+key ingress flag. `--allow-self-review` is intentionally runtime-only on
+`cr review`; `init` only stores the profile-level self-approval policy.
 
 ### `cr set-credential`
 
@@ -390,8 +391,8 @@ Review selection and execution flags:
 | Flag | Semantics |
 |------|-----------|
 | `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
-| `--max-agents <n>` | Limit selected reviewer agents. `0` means the default limit. Negative values are rejected. |
-| `--max-concurrency <n>` | Limit concurrent reviewer agents. `0` means the default limit. Negative values are rejected. |
+| `--max-agents <n>` | Limit selected reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
+| `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--session <name>` | Reuse a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
 | `--verbose` | Include nits in review output and emit additional diagnostics. |
 
@@ -483,13 +484,21 @@ the ledger row is deleted.
 ### `cr data purge`
 
 ```text
-cr data purge --yes
-cr data purge --dry-run
+cr data purge --yes [--json]
+cr data purge --dry-run [--json]
 ```
 
 Purges the whole local data root. `--yes` is required unless `--dry-run` is set.
 Purge does not open the ledger database, so it can remove a corrupt local data
 root. `--json` emits the data root, dry-run status, and removed status.
+
+Flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--yes` | Confirm permanent deletion. Required unless `--dry-run` is set. |
+| `--dry-run` | Report the data root without deleting. |
+| `--json` | Emit JSON. |
 
 ## Operational Semantics
 
