@@ -203,6 +203,14 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 	}, nil, APIOptions{}); !errors.Is(err, ErrAPIAdapterConfig) {
 		t.Fatalf("nil store error = %v, want ErrAPIAdapterConfig", err)
 	}
+	if _, err := NewAPIAdapterFromConfig(config.LLMConfig{
+		Provider:      config.LLMProviderOpenAI,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterAnthropicAPI,
+		CredentialRef: "codereview/missing",
+	}, nil, APIOptions{}); !errors.Is(err, ErrAPIAdapterConfig) || !strings.Contains(err.Error(), "requires provider anthropic") {
+		t.Fatalf("mismatch with nil store error = %v, want provider/adapter validation", err)
+	}
 }
 
 func TestAPIAdapterFailures(t *testing.T) {

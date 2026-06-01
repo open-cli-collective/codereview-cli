@@ -72,6 +72,10 @@ func NewOpenAIAPIAdapter(opts APIOptions) (*APIAdapter, error) {
 
 // NewAPIAdapterFromConfig resolves an API-key LLM adapter from profile config.
 func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store APITokenStore, opts APIOptions) (*APIAdapter, error) {
+	kind, err := apiKindFromConfig(llmConfig)
+	if err != nil {
+		return nil, err
+	}
 	if llmConfig.Auth != config.LLMAuthAPIKey {
 		return nil, fmt.Errorf("%w: API adapters require api_key auth", ErrAPIAdapterConfig)
 	}
@@ -95,22 +99,25 @@ func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store APITokenStore, op
 		return nil, fmt.Errorf("%w: read llm credential: %w", ErrAPIAdapterConfig, err)
 	}
 	opts.APIKey = apiKey
+	return newAPIAdapter(kind, opts)
+}
 
+func apiKindFromConfig(llmConfig config.LLMConfig) (apiKind, error) {
 	switch llmConfig.Adapter {
 	case config.LLMAdapterAnthropicAPI:
 		if llmConfig.Provider != config.LLMProviderAnthropic {
-			return nil, fmt.Errorf("%w: anthropic_api requires provider anthropic", ErrAPIAdapterConfig)
+			return "", fmt.Errorf("%w: anthropic_api requires provider anthropic", ErrAPIAdapterConfig)
 		}
-		return NewAnthropicAPIAdapter(opts)
+		return apiAnthropic, nil
 	case config.LLMAdapterOpenAIAPI:
 		if llmConfig.Provider != config.LLMProviderOpenAI {
-			return nil, fmt.Errorf("%w: openai_api requires provider openai", ErrAPIAdapterConfig)
+			return "", fmt.Errorf("%w: openai_api requires provider openai", ErrAPIAdapterConfig)
 		}
-		return NewOpenAIAPIAdapter(opts)
+		return apiOpenAI, nil
 	case config.LLMAdapterClaudeCLI, config.LLMAdapterCodexCLI:
-		return nil, fmt.Errorf("%w: adapter %q is not an API adapter", ErrAPIAdapterConfig, llmConfig.Adapter)
+		return "", fmt.Errorf("%w: adapter %q is not an API adapter", ErrAPIAdapterConfig, llmConfig.Adapter)
 	default:
-		return nil, fmt.Errorf("%w: unsupported API adapter %q", ErrAPIAdapterConfig, llmConfig.Adapter)
+		return "", fmt.Errorf("%w: unsupported API adapter %q", ErrAPIAdapterConfig, llmConfig.Adapter)
 	}
 }
 
