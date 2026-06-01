@@ -64,8 +64,10 @@ func TestRenderDataPruneTextAndJSON(t *testing.T) {
 	if err := RenderDataPruneText(&text, result); err != nil {
 		t.Fatalf("RenderDataPruneText: %v", err)
 	}
-	if !strings.Contains(text.String(), "Would delete runs: 1") || !strings.Contains(text.String(), "Warnings:") {
-		t.Fatalf("text = %q, want dry-run count and warnings", text.String())
+	for _, want := range []string{"Would delete runs: 1", "Would remove orphans: 0", "Warnings:"} {
+		if !strings.Contains(text.String(), want) {
+			t.Fatalf("text = %q, want %q", text.String(), want)
+		}
 	}
 
 	var jsonBuf bytes.Buffer

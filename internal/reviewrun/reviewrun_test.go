@@ -73,16 +73,17 @@ func TestRunPrunesRetentionBeforeFreshAllocation(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
 	old := fixture.allocateOldRetainedRun(t, "old-live", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
-	planner := &fakePlanner{
-		store:   fixture.store,
-		outcome: reviewplan.OutcomeComment,
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	provider := &retentionProvider{
+		Fake: fixture.fake,
 		beforeLive: func() {
 			if _, err := fixture.store.GetRun(ctx, old.RunID); !errors.Is(err, ledger.ErrNotFound) {
-				t.Fatalf("expired live run before planner error = %v, want ErrNotFound", err)
+				t.Fatalf("expired live run before provider GetPR error = %v, want ErrNotFound", err)
 			}
 		},
 	}
 	opts := fixture.opts(planner)
+	opts.Provider = provider
 	opts.NewRunID = sequence("fresh")
 
 	if _, err := Run(ctx, opts, Request{Pipeline: fixture.req}); err != nil {
@@ -704,15 +705,23 @@ type fakePlanner struct {
 	store          *ledger.Store
 	outcome        reviewplan.Outcome
 	namedCandidate *ledger.NamedSession
-	beforeLive     func()
 	calls          int
 	runs           []ledger.Run
 }
 
-func (p *fakePlanner) Live(_ context.Context, _ pipeline.Request, run ledger.Run) (pipeline.Result, error) {
+type retentionProvider struct {
+	*gitprovider.Fake
+	beforeLive func()
+}
+
+func (p *retentionProvider) GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.PR, error) {
 	if p.beforeLive != nil {
 		p.beforeLive()
 	}
+	return p.Fake.GetPR(ctx, ref)
+}
+
+func (p *fakePlanner) Live(_ context.Context, _ pipeline.Request, run ledger.Run) (pipeline.Result, error) {
 	p.calls++
 	p.runs = append(p.runs, run)
 	event := review.ReviewEventComment

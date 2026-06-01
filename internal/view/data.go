@@ -150,7 +150,11 @@ func RenderDataPruneText(w io.Writer, result DataPrune) error {
 	if err := writeKV(w, action, fmt.Sprint(count)); err != nil {
 		return err
 	}
-	if err := writeKV(w, "Orphans removed", fmt.Sprint(len(result.OrphansRemoved))); err != nil {
+	orphanAction := "Orphans removed"
+	if result.DryRun {
+		orphanAction = "Would remove orphans"
+	}
+	if err := writeKV(w, orphanAction, fmt.Sprint(len(result.OrphansRemoved))); err != nil {
 		return err
 	}
 	if len(result.Warnings) == 0 {

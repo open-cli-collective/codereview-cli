@@ -3,6 +3,7 @@ package datacmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
 func TestDataShowJSONEmptyStore(t *testing.T) {
@@ -25,11 +27,12 @@ func TestDataShowJSONEmptyStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runDataCommand: %v; stderr = %q", err, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"run_count": 0`) {
-		t.Fatalf("stdout = %q, want run_count 0", stdout.String())
+	var decoded view.DataShow
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v; stdout = %q", err, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), `"data_root":`) {
-		t.Fatalf("stdout = %q, want data_root", stdout.String())
+	if decoded.RunCount != 0 || decoded.DataRoot == "" || decoded.LedgerPath == "" || decoded.RunsRoot == "" {
+		t.Fatalf("decoded = %#v, want empty store paths and zero runs", decoded)
 	}
 }
 
@@ -38,12 +41,16 @@ func TestDataPruneDryRunDoesNotDelete(t *testing.T) {
 	layout := seedRun(t, "old-live", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
 	var stdout, stderr bytes.Buffer
 
-	err := runDataCommand(&stdout, &stderr, "data", "prune", "--dry-run")
+	err := runDataCommand(&stdout, &stderr, "data", "prune", "--dry-run", "--json")
 	if err != nil {
 		t.Fatalf("runDataCommand: %v; stderr = %q", err, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Would delete runs: 1") {
-		t.Fatalf("stdout = %q, want dry-run selected count", stdout.String())
+	var decoded view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v; stdout = %q", err, stdout.String())
+	}
+	if !decoded.DryRun || len(decoded.SelectedRuns) != 1 || decoded.SelectedRuns[0].RunID != "old-live" || len(decoded.DeletedRuns) != 0 {
+		t.Fatalf("decoded = %#v, want one selected dry-run deletion", decoded)
 	}
 	store := openLedgerForTest(t, layout)
 	defer store.Close()
@@ -69,8 +76,9 @@ func TestDataPruneKeepLastPerPostMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runDataCommand: %v; stderr = %q", err, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Deleted runs: 2") {
-		t.Fatalf("stdout = %q, want two deleted runs", stdout.String())
+	lines := strings.Split(stdout.String(), "\n")
+	if len(lines) < 2 || lines[0] != "Deleted runs: 2" || lines[1] != "Orphans removed: 0" {
+		t.Fatalf("stdout lines = %#v, want exact prune summary", lines)
 	}
 	store = openLedgerForTest(t, layout)
 	defer store.Close()
@@ -138,12 +146,16 @@ func TestDataPurgeDryRunDoesNotRequireConfirmationOrDelete(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 
-	err := runDataCommand(&stdout, &stderr, "data", "purge", "--dry-run")
+	err := runDataCommand(&stdout, &stderr, "data", "purge", "--dry-run", "--json")
 	if err != nil {
 		t.Fatalf("runDataCommand: %v; stderr = %q", err, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Would purge data root:") {
-		t.Fatalf("stdout = %q, want dry-run purge summary", stdout.String())
+	var decoded view.DataPurge
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v; stdout = %q", err, stdout.String())
+	}
+	if !decoded.DryRun || decoded.Removed || decoded.DataRoot != layout.DataRoot {
+		t.Fatalf("decoded = %#v, want dry-run purge without removal", decoded)
 	}
 	if _, err := os.Stat(layout.DataRoot); err != nil {
 		t.Fatalf("data root stat: %v", err)

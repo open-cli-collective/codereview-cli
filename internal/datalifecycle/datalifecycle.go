@@ -269,9 +269,16 @@ func selectRuns(runs []ledger.Run, opts PruneOptions, now time.Time) []ledger.Ru
 }
 
 func selectKeepLast(runs []ledger.Run, keep int) []ledger.Run {
+	ordered := append([]ledger.Run(nil), runs...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].StartedAt.Equal(ordered[j].StartedAt) {
+			return ordered[i].RunID < ordered[j].RunID
+		}
+		return ordered[i].StartedAt.After(ordered[j].StartedAt)
+	})
 	seen := map[ledger.PostMode]int{}
 	var selected []ledger.Run
-	for _, run := range runs {
+	for _, run := range ordered {
 		seen[run.PostMode]++
 		if seen[run.PostMode] > keep {
 			selected = append(selected, run)
@@ -288,10 +295,10 @@ func retentionFor(mode ledger.PostMode) time.Duration {
 }
 
 func findOrphans(layout statepaths.Layout, runs []ledger.Run) ([]OrphanItem, error) {
-	return orphanItems(layout, runs, false, nil)
+	return orphanItems(layout, runs)
 }
 
-func orphanItems(layout statepaths.Layout, runs []ledger.Run, remove bool, removeAll RemoveAllFunc) ([]OrphanItem, error) {
+func orphanItems(layout statepaths.Layout, runs []ledger.Run) ([]OrphanItem, error) {
 	root := runsRoot(layout)
 	if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -326,21 +333,12 @@ func orphanItems(layout statepaths.Layout, runs []ledger.Run, remove bool, remov
 			return err
 		}
 		items = append(items, OrphanItem{Path: path, Bytes: bytes})
-		if remove {
-			if err := removeAll(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return err
-			}
-			return filepath.SkipDir
-		}
 		return filepath.SkipDir
 	})
 	if err != nil {
 		return nil, err
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
-	if remove {
-		_ = removeEmptyParents(root)
-	}
 	return items, nil
 }
 
