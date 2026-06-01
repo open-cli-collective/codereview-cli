@@ -284,6 +284,13 @@ func ReviewEventForFindings(findings []review.Finding, opts EventOptions) review
 	}
 }
 
+func applySelfApprovalPolicy(event review.ReviewEvent, opts EventOptions) review.ReviewEvent {
+	if event == review.ReviewEventApprove && opts.PostingIdentityIsPRAuthor && !opts.AllowSelfApprove {
+		return review.ReviewEventComment
+	}
+	return event
+}
+
 func newBuilder(req Request) (*builder, error) {
 	if !req.PostMode.Valid() {
 		return nil, fmt.Errorf("reviewplan: invalid post mode %q", req.PostMode)
@@ -358,6 +365,7 @@ func (b *builder) buildReview() (Plan, error) {
 	if !event.Valid() {
 		return Plan{}, fmt.Errorf("reviewplan: invalid rollup review event %q", event)
 	}
+	event = applySelfApprovalPolicy(event, b.req.EventOptions)
 	outcome, err := OutcomeFromReviewEvent(event)
 	if err != nil {
 		return Plan{}, err
@@ -417,6 +425,10 @@ func (b *builder) orderedFindings() ([]review.Finding, error) {
 	if len(b.req.Rollup.OrderedFindings) == 0 {
 		return append([]review.Finding(nil), b.req.Findings...), nil
 	}
+	dropped, err := b.droppedFindings()
+	if err != nil {
+		return nil, err
+	}
 	ordered := make([]review.Finding, 0, len(b.req.Rollup.OrderedFindings))
 	seen := map[review.FindingID]bool{}
 	for _, id := range b.req.Rollup.OrderedFindings {
@@ -430,7 +442,40 @@ func (b *builder) orderedFindings() ([]review.Finding, error) {
 		seen[id] = true
 		ordered = append(ordered, finding)
 	}
+	for _, entry := range b.req.Rollup.DedupeLog {
+		if !seen[entry.Kept] {
+			return nil, fmt.Errorf("reviewplan: dedupe kept finding %q is not ordered", entry.Kept)
+		}
+	}
+	for _, finding := range b.req.Findings {
+		if seen[finding.ID] || dropped[finding.ID] {
+			continue
+		}
+		return nil, fmt.Errorf("reviewplan: finding %q is neither ordered nor dropped", finding.ID)
+	}
 	return ordered, nil
+}
+
+func (b *builder) droppedFindings() (map[review.FindingID]bool, error) {
+	dropped := map[review.FindingID]bool{}
+	for _, entry := range b.req.Rollup.DedupeLog {
+		if _, ok := b.findingsByID[entry.Kept]; !ok {
+			return nil, fmt.Errorf("reviewplan: dedupe kept finding %q is unknown", entry.Kept)
+		}
+		for _, id := range entry.Dropped {
+			if _, ok := b.findingsByID[id]; !ok {
+				return nil, fmt.Errorf("reviewplan: dedupe dropped finding %q is unknown", id)
+			}
+			if id == entry.Kept {
+				return nil, fmt.Errorf("reviewplan: dedupe kept finding %q cannot be dropped", id)
+			}
+			if dropped[id] {
+				return nil, fmt.Errorf("reviewplan: dedupe dropped finding %q appears more than once", id)
+			}
+			dropped[id] = true
+		}
+	}
+	return dropped, nil
 }
 
 func (b *builder) anchorFindings(ordered []review.Finding) ([]AnchoredFinding, error) {

@@ -241,10 +241,26 @@ func TestEventMappingAndNothingToReview(t *testing.T) {
 	}
 
 	req := baseRequest()
+	req.Rollup.ReviewEvent = review.ReviewEventApprove
+	req.Findings[0].Severity = review.SeverityMinor
+	req.EventOptions.PostingIdentityIsPRAuthor = true
+	plan, err := Build(req)
+	if err != nil {
+		t.Fatalf("Build explicit self approve: %v", err)
+	}
+	if plan.Outcome != OutcomeComment {
+		t.Fatalf("self-approve outcome = %q, want comment", plan.Outcome)
+	}
+	submit := actionsOfKind(plan.Actions, ActionKindSubmitReview)[0]
+	if submit.SubmitReview.Event != review.ReviewEventComment {
+		t.Fatalf("self-approve submit event = %q, want comment", submit.SubmitReview.Event)
+	}
+
+	req = baseRequest()
 	req.NoDiff = true
 	req.Findings = nil
 	req.Rollup.OrderedFindings = nil
-	plan, err := Build(req)
+	plan, err = Build(req)
 	if err != nil {
 		t.Fatalf("Build no diff: %v", err)
 	}
@@ -257,6 +273,36 @@ func TestEventMappingAndNothingToReview(t *testing.T) {
 	}
 	if !plan.Actions[0].Required {
 		t.Fatal("no-diff rollup required = false")
+	}
+}
+
+func TestOrderedFindingsMustCoverNonDroppedFindings(t *testing.T) {
+	req := baseRequest()
+	req.Findings = []review.Finding{
+		finding("f-1", "main.go", review.Anchor{Kind: review.AnchorKindFile}),
+		finding("f-2", "main.go", review.Anchor{Kind: review.AnchorKindFile}),
+	}
+	req.Findings[1].Body = "dropped finding body"
+	req.Rollup.OrderedFindings = []review.FindingID{"f-1"}
+
+	_, err := Build(req)
+	if err == nil || !strings.Contains(err.Error(), "neither ordered nor dropped") {
+		t.Fatalf("Build omitted finding error = %v", err)
+	}
+
+	req.Rollup.DedupeLog = []review.DedupeEntry{{Kept: "f-1", Dropped: []review.FindingID{"f-2"}, Reason: "same issue"}}
+	plan, err := Build(req)
+	if err != nil {
+		t.Fatalf("Build with dropped finding: %v", err)
+	}
+	if len(plan.AnchoredFindings) != 2 {
+		t.Fatalf("anchored findings = %d, want 2", len(plan.AnchoredFindings))
+	}
+	if got := actionsOfKind(plan.Actions, ActionKindInlineComment); len(got) != 1 {
+		t.Fatalf("inline actions = %d, want 1", len(got))
+	}
+	if strings.Contains(plan.RollupMarkdown, "dropped finding body") {
+		t.Fatalf("rollup unexpectedly includes dropped finding body: %q", plan.RollupMarkdown)
 	}
 }
 
@@ -307,6 +353,15 @@ func TestProductionImportBoundary(t *testing.T) {
 	allowed := map[string]bool{
 		"github.com/open-cli-collective/codereview-cli/internal/review": true,
 	}
+	denied := map[string]bool{
+		"database/sql": true,
+		"io/fs":        true,
+		"net":          true,
+		"net/http":     true,
+		"os":           true,
+		"os/exec":      true,
+		"syscall":      true,
+	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -318,6 +373,9 @@ func TestProductionImportBoundary(t *testing.T) {
 		}
 		for _, spec := range file.Imports {
 			path := strings.Trim(spec.Path.Value, `"`)
+			if denied[path] {
+				t.Fatalf("%s imports denied package %q", name, path)
+			}
 			if allowed[path] || isStdlibImport(path) {
 				continue
 			}
