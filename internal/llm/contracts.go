@@ -167,6 +167,11 @@ func DecodeSelection(data []byte, opts SelectionOptions) (Selection, error) {
 		if err != nil {
 			return Selection{}, err
 		}
+		if decision == review.ThreadDecisionSummarizeOnly || decision == review.ThreadDecisionSummarizeAndResolve {
+			if strings.TrimSpace(action.Summary) == "" {
+				return Selection{}, fmt.Errorf("llm: summary is required for %s", decision)
+			}
+		}
 		if decision == review.ThreadDecisionSummarizeAndResolve {
 			resolved++
 			if strings.TrimSpace(action.SafeToResolveRationale) == "" {
@@ -336,23 +341,31 @@ func decodeAnchor(wire anchorWire) (review.Anchor, error) {
 
 func decodeDedupeLog(entries []dedupeEntryWire, known map[review.FindingID]review.Severity) (map[review.FindingID]bool, []review.DedupeEntry, error) {
 	dropped := map[review.FindingID]bool{}
+	kept := map[review.FindingID]bool{}
 	var result []review.DedupeEntry
 	for _, entry := range entries {
-		kept := review.FindingID(entry.Kept)
-		if !knownID(known, kept) {
-			return nil, nil, fmt.Errorf("llm: unknown dedupe kept ID %q", kept)
+		keptID := review.FindingID(entry.Kept)
+		if !knownID(known, keptID) {
+			return nil, nil, fmt.Errorf("llm: unknown dedupe kept ID %q", keptID)
 		}
+		if dropped[keptID] {
+			return nil, nil, fmt.Errorf("llm: dedupe kept ID %q cannot be dropped", keptID)
+		}
+		kept[keptID] = true
 		if len(entry.Dropped) == 0 {
 			return nil, nil, fmt.Errorf("llm: dedupe entry must drop at least one finding")
 		}
-		mapped := review.DedupeEntry{Kept: kept, Reason: sanitize(entry.Reason)}
+		mapped := review.DedupeEntry{Kept: keptID, Reason: sanitize(entry.Reason)}
 		for _, rawDropped := range entry.Dropped {
 			id := review.FindingID(rawDropped)
 			if !knownID(known, id) {
 				return nil, nil, fmt.Errorf("llm: unknown dedupe dropped ID %q", id)
 			}
-			if id == kept {
+			if id == keptID {
 				return nil, nil, fmt.Errorf("llm: dedupe kept ID cannot be dropped")
+			}
+			if kept[id] {
+				return nil, nil, fmt.Errorf("llm: dedupe kept ID %q cannot be dropped", id)
 			}
 			if dropped[id] {
 				return nil, nil, fmt.Errorf("llm: finding %q dropped more than once", id)
