@@ -116,6 +116,20 @@ func TestEvaluateIncompleteCompletedRunIsResumable(t *testing.T) {
 	}
 }
 
+func TestEvaluateFreshUsesSuppliedRunID(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.req.FreshRunID = " fresh-supplied "
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh || result.Run.RunID != "fresh-supplied" {
+		t.Fatalf("Evaluate = %#v, want fresh supplied run ID", result)
+	}
+}
+
 func TestEvaluatePRMarkerDecisions(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -717,7 +731,122 @@ func TestEvaluateBaseMovedPrecheckDoesNotRequireLimiter(t *testing.T) {
 		if action.Status != ledger.PlannedActionFailedTerminal || action.Error == nil {
 			t.Fatalf("submit after moved-base retry = %#v, want unchanged failure", action)
 		}
+		gotRun, err := fixture.store.GetRun(context.Background(), run.RunID)
+		if err != nil {
+			t.Fatalf("GetRun retry: %v", err)
+		}
+		if gotRun.Outcome == nil || *gotRun.Outcome != ledger.OutcomeAborted {
+			t.Fatalf("retry run outcome = %v, want aborted", gotRun.Outcome)
+		}
 	})
+}
+
+func TestEvaluateHeadMovedPrecheckDoesNotRequireLimiter(t *testing.T) {
+	t.Run("repair", func(t *testing.T) {
+		fixture := newFixture(t)
+		setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeApproved)
+		moved := fixture.req.PR
+		moved.Head.SHA = strings.Repeat("d", 40)
+		if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+			t.Fatalf("SetPR moved: %v", err)
+		}
+		opts := fixture.opts()
+		opts.Limiter = nil
+
+		result, err := Evaluate(context.Background(), opts, fixture.req)
+		if err != nil {
+			t.Fatalf("Evaluate repair moved head: %v", err)
+		}
+		if result.Status != StatusBaseMovedAbort || result.Decision.Kind != gate.DecisionError || !strings.Contains(result.Decision.Message, "head") {
+			t.Fatalf("Evaluate = %#v, want head moved before limiter validation", result)
+		}
+		if runs := fixture.listRuns(t); len(runs) != 0 {
+			t.Fatalf("runs after moved-head repair = %d, want no recovery row", len(runs))
+		}
+		if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+			t.Fatalf("review writes = %d, want none", len(got))
+		}
+	})
+
+	t.Run("retry-posts", func(t *testing.T) {
+		fixture := newFixture(t)
+		run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+		insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+		fixture.req.Flags.RetryPosts = true
+		moved := fixture.req.PR
+		moved.Head.SHA = strings.Repeat("d", 40)
+		if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+			t.Fatalf("SetPR moved: %v", err)
+		}
+		opts := fixture.opts()
+		opts.Limiter = nil
+
+		result, err := Evaluate(context.Background(), opts, fixture.req)
+		if err != nil {
+			t.Fatalf("Evaluate retry moved head: %v", err)
+		}
+		if result.Status != StatusBaseMovedAbort || result.Decision.Kind != gate.DecisionError || !strings.Contains(result.Decision.Message, "head") {
+			t.Fatalf("Evaluate = %#v, want head moved before limiter validation", result)
+		}
+		action := actionByID(t, fixture.store, run.RunID, "submit-1")
+		if action.Status != ledger.PlannedActionFailedTerminal || action.Error == nil {
+			t.Fatalf("submit after moved-head retry = %#v, want unchanged failure", action)
+		}
+		gotRun, err := fixture.store.GetRun(context.Background(), run.RunID)
+		if err != nil {
+			t.Fatalf("GetRun retry: %v", err)
+		}
+		if gotRun.Outcome == nil || *gotRun.Outcome != ledger.OutcomeAborted {
+			t.Fatalf("retry run outcome = %v, want aborted", gotRun.Outcome)
+		}
+		if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+			t.Fatalf("review writes = %d, want none", len(got))
+		}
+	})
+}
+
+func TestEvaluateRetryPostsIneligibleAfterMovedPremisesAbort(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+	insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+	if err := fixture.store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, testNow); err != nil {
+		t.Fatalf("CompleteRun failed: %v", err)
+	}
+	fixture.req.Flags.RetryPosts = true
+	moved := fixture.req.PR
+	moved.Head.SHA = strings.Repeat("d", 40)
+	if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+		t.Fatalf("SetPR moved: %v", err)
+	}
+
+	first, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate retry moved head: %v", err)
+	}
+	if first.Status != StatusBaseMovedAbort {
+		t.Fatalf("first Evaluate = %#v, want moved-premises abort", first)
+	}
+	abortedRun, err := fixture.store.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun aborted: %v", err)
+	}
+	if abortedRun.Outcome == nil || *abortedRun.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("retry run outcome = %v, want aborted", abortedRun.Outcome)
+	}
+	if err := fixture.provider.SetPR(fixture.req.PRRef, fixture.req.PR); err != nil {
+		t.Fatalf("SetPR restored: %v", err)
+	}
+
+	second, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate retry after abort: %v", err)
+	}
+	if second.Status != StatusError || second.Decision.ErrorReason != gate.ErrorRetryPostsIneligible {
+		t.Fatalf("second Evaluate = %#v, want retry-posts ineligible", second)
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("review writes = %d, want none", len(got))
+	}
 }
 
 func TestEvaluateOutboxErrorsReturnExecutionResultAndDurableState(t *testing.T) {

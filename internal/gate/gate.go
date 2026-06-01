@@ -493,7 +493,17 @@ func resumable(run RunSummary) bool {
 }
 
 func retryEligible(run RunSummary) bool {
-	return run.PostMode == PostModeLive && run.RequiredPending+run.RequiredFailedTerminal > 0
+	if run.PostMode != PostModeLive || run.RequiredPending+run.RequiredFailedTerminal == 0 {
+		return false
+	}
+	switch run.State {
+	case RunStateRunning, RunStateIncomplete, RunStateFailed:
+		return true
+	case RunStateApproved, RunStateRequestChanges, RunStateComment, RunStateNothingToReview, RunStateDryRun, RunStateAborted:
+		return false
+	default:
+		return false
+	}
 }
 
 func invalidInput(message string) Decision {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +16,15 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -104,19 +108,36 @@ func TestReviewProfileResolveThreadsNeverDisablesThreadResolution(t *testing.T) 
 	}
 }
 
-func TestReviewRejectsUnsupportedLiveMode(t *testing.T) {
-	runner := &fakeRunner{result: testPipelineResult(false)}
+func TestReviewLiveCallsRunnerAndRendersText(t *testing.T) {
+	runner := &fakeRunner{liveResult: testLiveResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
 
-	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
-	if err == nil {
-		t.Fatal("Execute error = nil, want unsupported live mode")
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--rerun"}); err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	if exitcode.FromError(err) != exitcode.Failure {
-		t.Fatalf("exit code = %d, want failure", exitcode.FromError(err))
+	if len(runner.liveRequests) != 1 {
+		t.Fatalf("live runner calls = %d, want 1", len(runner.liveRequests))
 	}
 	if len(runner.requests) != 0 {
-		t.Fatalf("runner calls = %d, want 0", len(runner.requests))
+		t.Fatalf("dry runner calls = %d, want 0", len(runner.requests))
+	}
+	if !runner.liveFlags[0].Rerun || runner.liveFlags[0].RetryPosts {
+		t.Fatalf("live flags = %#v, want rerun only", runner.liveFlags[0])
+	}
+}
+
+func TestReviewLiveRetryPostsCallsRunner(t *testing.T) {
+	runner := &fakeRunner{liveResult: testLiveResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.liveRequests) != 1 {
+		t.Fatalf("live runner calls = %d, want 1", len(runner.liveRequests))
+	}
+	if runner.liveFlags[0].Rerun || !runner.liveFlags[0].RetryPosts {
+		t.Fatalf("live flags = %#v, want retry-posts only", runner.liveFlags[0])
 	}
 }
 
@@ -131,6 +152,7 @@ func TestReviewRejectsInvalidInputs(t *testing.T) {
 		{name: "bad fail on", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--fail-on", "urgent"}},
 		{name: "negative agents", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--max-agents", "-1"}},
 		{name: "negative concurrency", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--max-concurrency", "-1"}},
+		{name: "rerun retry conflict", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--rerun", "--retry-posts"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -188,6 +210,75 @@ func TestReviewFailOnReturnsFailureAfterRendering(t *testing.T) {
 	}
 }
 
+func TestReviewLiveFailOnReturnsFailureAfterRendering(t *testing.T) {
+	runner := &fakeRunner{liveResult: testLiveResult(true)}
+	cmd, out := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--fail-on", "major"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want fail-on failure")
+	}
+	if got := exitcode.FromError(err); got != exitcode.Failure {
+		t.Fatalf("exit code = %d, want failure", got)
+	}
+	if !strings.Contains(out.String(), "Status: continue") {
+		t.Fatalf("stdout = %q, want live render before fail-on error", out.String())
+	}
+	if !strings.Contains(out.String(), "Fail-on: triggered") {
+		t.Fatalf("stdout = %q, want live fail-on signal", out.String())
+	}
+}
+
+func TestReviewLiveOutboxExitReturnsAfterRendering(t *testing.T) {
+	live := testLiveResult(false)
+	live.ExitCode = exitcode.UpstreamError
+	live.Outbox.ExitCode = exitcode.UpstreamError
+	live.Message = "review premises moved"
+	runner := &fakeRunner{liveResult: live}
+	cmd, out := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want upstream failure")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UpstreamError {
+		t.Fatalf("exit code = %d, want upstream", got)
+	}
+	if !strings.Contains(out.String(), "Message: review premises moved") {
+		t.Fatalf("stdout = %q, want live render before exit error", out.String())
+	}
+}
+
+func TestReviewLiveNonUpstreamExitCodesReturnAfterRendering(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+	}{
+		{name: "failure", code: exitcode.Failure},
+		{name: "auth", code: exitcode.AuthConfigError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			live := testLiveResult(false)
+			live.ExitCode = tt.code
+			live.Outbox.ExitCode = tt.code
+			runner := &fakeRunner{liveResult: live}
+			cmd, out := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+			err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
+			if err == nil {
+				t.Fatal("Execute error = nil, want live exit failure")
+			}
+			if got := exitcode.FromError(err); got != tt.code {
+				t.Fatalf("exit code = %d, want %d", got, tt.code)
+			}
+			if !strings.Contains(out.String(), "Exit code: "+strconv.Itoa(tt.code)) {
+				t.Fatalf("stdout = %q, want rendered exit code %d", out.String(), tt.code)
+			}
+		})
+	}
+}
+
 func TestNewReviewDryRunRejectsInvalidPlannedPayload(t *testing.T) {
 	result := testPipelineResult(false)
 	result.PlannedActions[0].PayloadJSON = "{bad"
@@ -215,9 +306,13 @@ func TestReviewMapsRunnerError(t *testing.T) {
 }
 
 type fakeRunner struct {
-	result   pipeline.Result
-	err      error
-	requests []pipeline.Request
+	result       pipeline.Result
+	err          error
+	requests     []pipeline.Request
+	liveResult   reviewrun.Result
+	liveErr      error
+	liveRequests []pipeline.Request
+	liveFlags    []reviewrun.Flags
 }
 
 func (r *fakeRunner) DryRun(_ context.Context, req pipeline.Request) (pipeline.Result, error) {
@@ -226,6 +321,15 @@ func (r *fakeRunner) DryRun(_ context.Context, req pipeline.Request) (pipeline.R
 		return pipeline.Result{}, r.err
 	}
 	return r.result, nil
+}
+
+func (r *fakeRunner) Live(_ context.Context, req pipeline.Request, flags reviewrun.Flags) (reviewrun.Result, error) {
+	r.liveRequests = append(r.liveRequests, req)
+	r.liveFlags = append(r.liveFlags, flags)
+	if r.liveErr != nil {
+		return reviewrun.Result{}, r.liveErr
+	}
+	return r.liveResult, nil
 }
 
 func fakeFactory(runner *fakeRunner) RuntimeFactory {
@@ -341,6 +445,28 @@ func testPipelineResult(failOnTriggered bool) pipeline.Result {
 			PayloadJSON: `{"body":"Fix this","path":"main.go"}`,
 			Status:      ledger.PlannedActionPlannedOnly,
 		}},
+	}
+}
+
+func testLiveResult(failOnTriggered bool) reviewrun.Result {
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
+	return reviewrun.Result{
+		Status: gateio.StatusContinue,
+		Run: ledger.Run{
+			RunID:           "run-live",
+			PRKey:           "github.com_open-cli-collective_codereview-cli_29",
+			PostMode:        ledger.PostModeLive,
+			PostingIdentity: "review-bot",
+			ArtifactPath:    "/tmp/run-live",
+		},
+		PR: gitprovider.PR{
+			Ref:   ref,
+			Title: "CR-21",
+			URL:   "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		},
+		PRKey:           "github.com_open-cli-collective_codereview-cli_29",
+		Outbox:          outbox.Result{Outcome: ledger.OutcomeComment, ExitCode: 0, Posted: 2},
+		FailOnTriggered: failOnTriggered,
 	}
 }
 

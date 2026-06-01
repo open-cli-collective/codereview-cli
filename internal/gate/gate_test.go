@@ -257,6 +257,7 @@ func TestDecideCrossProduct(t *testing.T) {
 				req.Flags.RetryPosts = true
 				req.ExactRuns = []RunSummary{
 					liveRun("run-posted", 1, RunStateApproved),
+					runWithPending(liveRun("run-aborted", 2, RunStateAborted), 1, 1),
 					runWithPending(dryRun("run-dry", 2, RunStateDryRun), 1, 0),
 				}
 			}),

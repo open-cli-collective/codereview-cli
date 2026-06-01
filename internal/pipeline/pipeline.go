@@ -154,10 +154,50 @@ type sessionDraft struct {
 	response          llm.Response
 }
 
+type executionMode struct {
+	live         bool
+	run          ledger.Run
+	planPostMode reviewplan.PostMode
+	completeAs   ledger.Outcome
+}
+
 // DryRun executes the dry-run review pipeline.
 func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
+	return execute(ctx, opts, req, executionMode{
+		planPostMode: reviewplan.PostModeDryRun,
+		completeAs:   ledger.OutcomeDryRun,
+	})
+}
+
+// Live executes the review planning phases into a gate-allocated live run.
+func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
+	if strings.TrimSpace(run.RunID) == "" {
+		return Result{}, fmt.Errorf("pipeline: live run ID is required")
+	}
+	if strings.TrimSpace(run.ArtifactPath) == "" {
+		return Result{}, fmt.Errorf("pipeline: live artifact path is required")
+	}
+	if run.PostMode != ledger.PostModeLive {
+		return Result{}, fmt.Errorf("pipeline: live run post mode is required")
+	}
+	return execute(ctx, opts, req, executionMode{
+		live:         true,
+		run:          run,
+		planPostMode: reviewplan.PostModeLive,
+	})
+}
+
+func execute(ctx context.Context, opts Options, req Request, mode executionMode) (out Result, err error) {
 	if err := validate(opts, req); err != nil {
 		return Result{}, err
+	}
+	completed := false
+	if mode.live {
+		defer func() {
+			if !completed && !isContextError(err) {
+				_ = opts.Store.CompleteRun(context.Background(), mode.run.RunID, ledger.OutcomeFailed, opts.now())
+			}
+		}()
 	}
 	now := opts.now()
 	maxAgents := opts.maxAgents()
@@ -175,9 +215,15 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{}, err
 	}
 	runID := opts.newRunID()
-	artifacts, err := artifactPaths(opts.Layout, req.PRRef, pr, req.ProfileName, postingKey(req.PostingIdentity), runID)
-	if err != nil {
-		return Result{}, err
+	var artifacts ArtifactPaths
+	if mode.live {
+		runID = mode.run.RunID
+		artifacts = ArtifactPathsFromDir(mode.run.ArtifactPath)
+	} else {
+		artifacts, err = ArtifactPathsForRun(opts.Layout, req.PRRef, pr, req.ProfileName, postingKey(req.PostingIdentity), runID)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	if err := os.MkdirAll(artifacts.AgentLogsDir, 0o700); err != nil {
 		return Result{}, fmt.Errorf("pipeline: create agent log dir: %w", err)
@@ -225,7 +271,7 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 	model, effort := orchestratorModel(catalog)
 
 	if len(parsed.Patches) == 0 {
-		plan, err := opts.buildPlan(req, pr, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged)
+		plan, err := opts.buildPlan(req, pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged)
 		if err != nil {
 			return Result{}, err
 		}
@@ -291,35 +337,39 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 		result.Rollup = rollup
 		sessionDrafts = append(sessionDrafts, rollupSession)
 
-		plan, err := opts.buildPlan(req, pr, result.EffectiveCaps, parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged)
+		plan, err := opts.buildPlan(req, pr, mode.planPostMode, result.EffectiveCaps, parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged)
 		if err != nil {
 			return Result{}, err
 		}
 		result.Plan = plan
 	}
 
-	run, err := opts.Store.AllocateRun(ctx, ledger.AllocateRunParams{
-		PRKey:           prKey,
-		PRURL:           req.PRURL,
-		RunID:           runID,
-		SHA:             pr.Head.SHA,
-		BaseSHA:         pr.Base.SHA,
-		Profile:         req.ProfileName,
-		PostingIdentity: postingKey(req.PostingIdentity),
-		PostMode:        ledger.PostModeDryRun,
-		StartedAt:       now,
-		ArtifactPath:    artifacts.Dir,
-	})
-	if err != nil {
-		return Result{}, err
+	run := mode.run
+	if !mode.live {
+		run, err = opts.Store.AllocateRun(ctx, ledger.AllocateRunParams{
+			PRKey:           prKey,
+			PRURL:           req.PRURL,
+			RunID:           runID,
+			SHA:             pr.Head.SHA,
+			BaseSHA:         pr.Base.SHA,
+			Profile:         req.ProfileName,
+			PostingIdentity: postingKey(req.PostingIdentity),
+			PostMode:        ledger.PostModeDryRun,
+			StartedAt:       now,
+			ArtifactPath:    artifacts.Dir,
+		})
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	result.Run = run
-	completed := false
-	defer func() {
-		if !completed {
-			_ = opts.Store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, opts.now())
-		}
-	}()
+	if !mode.live {
+		defer func() {
+			if !completed {
+				_ = opts.Store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, opts.now())
+			}
+		}()
+	}
 
 	for _, draft := range sessionDrafts {
 		session := draft.toLedger(run.RunID)
@@ -351,12 +401,18 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 	if err := writeArtifacts(artifacts, diff.Raw, parsed.Patches, result.Selection, result.Findings, result.Plan.RollupMarkdown); err != nil {
 		return Result{}, err
 	}
-	if err := opts.Store.CompleteRun(ctx, run.RunID, ledger.OutcomeDryRun, opts.now()); err != nil {
-		return Result{}, err
+	if !mode.live {
+		if err := opts.Store.CompleteRun(ctx, run.RunID, mode.completeAs, opts.now()); err != nil {
+			return Result{}, err
+		}
 	}
 	completed = true
 	result.FailOnTriggered = failOnTriggered(result.Findings, req.FailOn)
 	return result, nil
+}
+
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func sessionRowIDForFinding(finding reviewplan.AnchoredFinding, findingSession map[review.FindingID]string) (string, error) {
@@ -512,9 +568,9 @@ func (d sessionDraft) toLedger(runID string) ledger.Session {
 	return session
 }
 
-func (opts Options) buildPlan(req Request, pr gitprovider.PR, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool) (reviewplan.Plan, error) {
+func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewplan.PostMode, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool) (reviewplan.Plan, error) {
 	return reviewplan.Build(reviewplan.Request{
-		PostMode:      reviewplan.PostModeDryRun,
+		PostMode:      postMode,
 		ProviderCaps:  caps,
 		Diff:          diff,
 		Findings:      findings,
@@ -684,7 +740,7 @@ func plannedAction(runID string, action reviewplan.Action) (ledger.PlannedAction
 		Kind:        ledgerKind(action.Kind),
 		PlannedAt:   action.PlannedAt,
 		PayloadJSON: string(payload),
-		Status:      ledger.PlannedActionPlannedOnly,
+		Status:      ledgerStatus(action.Status),
 		Required:    action.Required,
 	}
 	if action.FindingID.Assigned() {
@@ -756,6 +812,17 @@ func ledgerKind(kind reviewplan.ActionKind) ledger.PlannedActionKind {
 	}
 }
 
+func ledgerStatus(status reviewplan.ActionStatus) ledger.PlannedActionStatus {
+	switch status {
+	case reviewplan.ActionStatusPending:
+		return ledger.PlannedActionPending
+	case reviewplan.ActionStatusPlannedOnly:
+		return ledger.PlannedActionPlannedOnly
+	default:
+		return ledger.PlannedActionStatus(status)
+	}
+}
+
 func ledgerFinding(runID, sessionRowID string, finding reviewplan.AnchoredFinding) ledger.Finding {
 	out := ledger.Finding{
 		FindingID:    finding.FindingID,
@@ -809,7 +876,8 @@ func validate(opts Options, req Request) error {
 	return nil
 }
 
-func artifactPaths(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovider.PR, profile, postingIdentity, runID string) (ArtifactPaths, error) {
+// ArtifactPathsForRun returns the artifact paths for a generated run ID.
+func ArtifactPathsForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovider.PR, profile, postingIdentity, runID string) (ArtifactPaths, error) {
 	prKey, err := statepaths.PRKey(ref.Host, ref.Owner, ref.Repo, ref.Number)
 	if err != nil {
 		return ArtifactPaths{}, err
@@ -827,6 +895,18 @@ func artifactPaths(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovid
 		RollupMarkdown: filepath.Join(dir, "rollup.md"),
 		AgentLogsDir:   filepath.Join(dir, "agent-logs"),
 	}, nil
+}
+
+// ArtifactPathsFromDir returns the artifact path set rooted at dir.
+func ArtifactPathsFromDir(dir string) ArtifactPaths {
+	return ArtifactPaths{
+		Dir:            dir,
+		DiffPatch:      filepath.Join(dir, "diff.patch"),
+		SlicesDir:      filepath.Join(dir, "slices"),
+		FindingsJSON:   filepath.Join(dir, "findings.json"),
+		RollupMarkdown: filepath.Join(dir, "rollup.md"),
+		AgentLogsDir:   filepath.Join(dir, "agent-logs"),
+	}
 }
 
 func effectiveCaps(caps gitprovider.ProviderCaps, noResolve bool) reviewplan.ProviderCaps {
