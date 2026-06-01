@@ -25,15 +25,13 @@ type Status string
 
 // Result status values.
 const (
-	StatusContinue              Status = "continue"
-	StatusEarlyExit             Status = "early_exit"
-	StatusDryRunFresh           Status = "dry_run_fresh"
-	StatusRepairUnsupported     Status = "repair_unsupported"
-	StatusRetryPostsUnsupported Status = "retry_posts_unsupported"
-	StatusRepairExecuted        Status = "repair_executed"
-	StatusRetryPostsExecuted    Status = "retry_posts_executed"
-	StatusError                 Status = "error"
-	StatusBaseMovedAbort        Status = "base_moved_abort"
+	StatusContinue           Status = "continue"
+	StatusEarlyExit          Status = "early_exit"
+	StatusDryRunFresh        Status = "dry_run_fresh"
+	StatusRepairExecuted     Status = "repair_executed"
+	StatusRetryPostsExecuted Status = "retry_posts_executed"
+	StatusError              Status = "error"
+	StatusBaseMovedAbort     Status = "base_moved_abort"
 )
 
 // Store is the ledger behavior required by gate IO.
@@ -104,10 +102,11 @@ type staleRun struct {
 }
 
 type repairExecution struct {
-	postResult   outbox.Result
-	run          ledger.Run
-	baseDecision gate.Decision
-	baseMoved    bool
+	postResult    outbox.Result
+	run           ledger.Run
+	baseDecision  gate.Decision
+	baseMoved     bool
+	outboxInvoked bool
 }
 
 type retryExecution struct {
@@ -115,6 +114,7 @@ type retryExecution struct {
 	baseDecision   gate.Decision
 	baseMoved      bool
 	statusDecision gate.Decision
+	outboxInvoked  bool
 }
 
 const (
@@ -180,7 +180,7 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 
 		result, retry, err := executeDecision(ctx, opts, req, state, decision, currentLock, &releaseCurrent)
 		if err != nil {
-			return Result{}, err
+			return result, err
 		}
 		if retry {
 			continue
@@ -397,6 +397,12 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 		}
 		execution, err := executeRepair(ctx, opts, req, decision)
 		if err != nil {
+			if execution.outboxInvoked {
+				result.Status = StatusRepairExecuted
+				result.Run = execution.run
+				result.OutboxResult = execution.postResult
+				return result, false, err
+			}
 			return Result{}, false, err
 		}
 		if execution.baseMoved {
@@ -417,6 +423,12 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 		}
 		execution, err := executeRetryPosts(ctx, opts, req, run)
 		if err != nil {
+			if execution.outboxInvoked {
+				result.Status = StatusRetryPostsExecuted
+				result.Run = run
+				result.OutboxResult = execution.postResult
+				return result, false, err
+			}
 			return Result{}, false, err
 		}
 		if execution.baseMoved {
@@ -447,13 +459,13 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 }
 
 func executeRepair(ctx context.Context, opts Options, req Request, decision gate.Decision) (repairExecution, error) {
-	if err := requireOutboxLimiter(opts); err != nil {
-		return repairExecution{}, err
-	}
 	if baseDecision, moved, err := baseMovedDecision(ctx, opts, req, req.PR.Base.SHA); err != nil {
 		return repairExecution{}, err
 	} else if moved {
 		return repairExecution{baseDecision: baseDecision, baseMoved: true}, nil
+	}
+	if err := requireOutboxLimiter(opts); err != nil {
+		return repairExecution{}, err
 	}
 	if _, err := opts.Store.GetRun(ctx, decision.RunID); err == nil {
 		return repairExecution{}, fmt.Errorf("gateio: repair run %q already exists", decision.RunID)
@@ -484,19 +496,19 @@ func executeRepair(ctx context.Context, opts Options, req Request, decision gate
 		DesiredOutcome:  desired,
 	})
 	if err != nil {
-		return repairExecution{}, err
+		return repairExecution{postResult: postResult, run: run, outboxInvoked: true}, err
 	}
-	return repairExecution{postResult: postResult, run: run}, nil
+	return repairExecution{postResult: postResult, run: run, outboxInvoked: true}, nil
 }
 
 func executeRetryPosts(ctx context.Context, opts Options, req Request, run ledger.Run) (retryExecution, error) {
-	if err := requireOutboxLimiter(opts); err != nil {
-		return retryExecution{}, err
-	}
 	if baseDecision, moved, err := baseMovedDecision(ctx, opts, req, run.BaseSHA); err != nil {
 		return retryExecution{}, err
 	} else if moved {
 		return retryExecution{baseDecision: baseDecision, baseMoved: true}, nil
+	}
+	if err := requireOutboxLimiter(opts); err != nil {
+		return retryExecution{}, err
 	}
 
 	actions, err := opts.Store.ListPlannedActions(ctx, run.RunID)
@@ -525,9 +537,9 @@ func executeRetryPosts(ctx context.Context, opts Options, req Request, run ledge
 		DesiredOutcome:  desired,
 	})
 	if err != nil {
-		return retryExecution{}, err
+		return retryExecution{postResult: postResult, outboxInvoked: true}, err
 	}
-	return retryExecution{postResult: postResult}, nil
+	return retryExecution{postResult: postResult, outboxInvoked: true}, nil
 }
 
 func requireOutboxLimiter(opts Options) error {

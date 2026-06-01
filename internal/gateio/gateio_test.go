@@ -649,6 +649,114 @@ func TestEvaluateBaseRefetchFailureBeforeRepairOrRetryDoesNotMutate(t *testing.T
 	})
 }
 
+func TestEvaluateBaseMovedPrecheckDoesNotRequireLimiter(t *testing.T) {
+	t.Run("repair", func(t *testing.T) {
+		fixture := newFixture(t)
+		setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeApproved)
+		moved := fixture.req.PR
+		moved.Base.SHA = testOldBase
+		if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+			t.Fatalf("SetPR moved: %v", err)
+		}
+		opts := fixture.opts()
+		opts.Limiter = nil
+
+		result, err := Evaluate(context.Background(), opts, fixture.req)
+		if err != nil {
+			t.Fatalf("Evaluate repair moved base: %v", err)
+		}
+		if result.Status != StatusBaseMovedAbort || result.Decision.Kind != gate.DecisionError {
+			t.Fatalf("Evaluate = %#v, want base moved before limiter validation", result)
+		}
+		if runs := fixture.listRuns(t); len(runs) != 0 {
+			t.Fatalf("runs after moved-base repair = %d, want no recovery row", len(runs))
+		}
+	})
+
+	t.Run("retry-posts", func(t *testing.T) {
+		fixture := newFixture(t)
+		run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+		insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+		fixture.req.Flags.RetryPosts = true
+		moved := fixture.req.PR
+		moved.Base.SHA = testOldBase
+		if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+			t.Fatalf("SetPR moved: %v", err)
+		}
+		opts := fixture.opts()
+		opts.Limiter = nil
+
+		result, err := Evaluate(context.Background(), opts, fixture.req)
+		if err != nil {
+			t.Fatalf("Evaluate retry moved base: %v", err)
+		}
+		if result.Status != StatusBaseMovedAbort || result.Decision.Kind != gate.DecisionError {
+			t.Fatalf("Evaluate = %#v, want base moved before limiter validation", result)
+		}
+		action := actionByID(t, fixture.store, run.RunID, "submit-1")
+		if action.Status != ledger.PlannedActionFailedTerminal || action.Error == nil {
+			t.Fatalf("submit after moved-base retry = %#v, want unchanged failure", action)
+		}
+	})
+}
+
+func TestEvaluateOutboxErrorsReturnExecutionResultAndDurableState(t *testing.T) {
+	t.Run("repair", func(t *testing.T) {
+		fixture := newFixture(t)
+		setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeComment)
+		fixture.provider.SetError(gitprovider.OperationListInlineThreads, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListInlineThreads, errors.New("threads unavailable")))
+
+		result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+		if err == nil {
+			t.Fatal("Evaluate repair outbox read error = nil, want error")
+		}
+		if result.Status != StatusRepairExecuted || result.Run.RunID != "run-repair" || result.OutboxResult.ExitCode != 5 {
+			t.Fatalf("Evaluate result = %#v, want repair execution result with upstream exit", result)
+		}
+		run, getErr := fixture.store.GetRun(context.Background(), "run-repair")
+		if getErr != nil {
+			t.Fatalf("GetRun repair: %v", getErr)
+		}
+		if run.Outcome != nil {
+			t.Fatalf("repair outcome = %v, want nil after outbox read failure", run.Outcome)
+		}
+		action := actionByID(t, fixture.store, "run-repair", repairSubmitReviewActionID)
+		if action.Status != ledger.PlannedActionPending || action.Error != nil || action.Attempts != 0 {
+			t.Fatalf("repair action after outbox read failure = %#v, want untouched pending", action)
+		}
+	})
+
+	t.Run("retry-posts", func(t *testing.T) {
+		fixture := newFixture(t)
+		run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+		insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+		if err := fixture.store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, testNow); err != nil {
+			t.Fatalf("CompleteRun failed: %v", err)
+		}
+		fixture.req.Flags.RetryPosts = true
+		fixture.provider.SetError(gitprovider.OperationListInlineThreads, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListInlineThreads, errors.New("threads unavailable")))
+
+		result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+		if err == nil {
+			t.Fatal("Evaluate retry-posts outbox read error = nil, want error")
+		}
+		if result.Status != StatusRetryPostsExecuted || result.Run.RunID != run.RunID || result.OutboxResult.ExitCode != 5 {
+			t.Fatalf("Evaluate result = %#v, want retry execution result with upstream exit", result)
+		}
+		action := actionByID(t, fixture.store, run.RunID, "submit-1")
+		if action.Status != ledger.PlannedActionPending || action.Error != nil || action.FailureClass != nil || action.Attempts != 1 {
+			t.Fatalf("submit after retry outbox read failure = %#v, want reset pending without new attempt", action)
+		}
+		gotRun, getErr := fixture.store.GetRun(context.Background(), run.RunID)
+		if getErr != nil {
+			t.Fatalf("GetRun retry: %v", getErr)
+		}
+		if gotRun.Outcome == nil || *gotRun.Outcome != ledger.OutcomeFailed {
+			t.Fatalf("retry run outcome = %v, want previous failed outcome", gotRun.Outcome)
+		}
+	})
+}
+
 func TestEvaluateDryRunFreshDoesNotAllocate(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.req.Flags.DryRun = true
