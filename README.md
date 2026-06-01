@@ -1,27 +1,550 @@
 # codereview-cli
 
-Open CLI Collective code review CLI.
+`cr` is the Open CLI Collective code-review CLI. It runs automated pull-request
+reviews, records review state locally, posts review output back to GitHub, and
+keeps enough durable metadata to resume, repair, inspect, and prune runs.
 
-The review pipeline is still pending. The current binary provides the Cobra
-root, version command, and command wiring seam that future review commands will
-attach to.
+## Not GitHub Code Review
 
-## Current shape
+This project is not affiliated with GitHub and is not a replacement for human
+review. It is a CLI for orchestrating LLM-backed review agents against GitHub
+pull requests.
 
-- Go module: `github.com/open-cli-collective/codereview-cli`
-- Intended CLI name: `cr`
-- Branch protection target: `main`
+Use `cr` when you want to:
 
-## Repo policy
+- preview review actions before posting anything;
+- run a live PR review with idempotent posting and resume behavior;
+- reuse named LLM sessions across related live reviews;
+- inspect trusted reviewer agents available to a repository;
+- manage local review run data and credentials from the terminal.
 
-Use GitHub branch protection on `main` with:
+## Installation
 
-- required pull request reviews
-- at least one approval
-- stale review dismissal
-- required status checks for `build`, `test`, `lint`, `pr-title`, and `identity-check`
-- no direct pushes
-- squash merge only
+### Binary Download
+
+Download a release archive from the
+[Releases page](https://github.com/open-cli-collective/codereview-cli/releases).
+
+For prebuilt binary distribution, `codereview-cli` currently ships GitHub
+release archives only. The `packaging/chocolatey` and `packaging/winget`
+directories are documentation stubs, not active distribution channels.
+
+### From Source
+
+```bash
+go install github.com/open-cli-collective/codereview-cli/cmd/cr@latest
+```
+
+### Manual Build
+
+```bash
+git clone https://github.com/open-cli-collective/codereview-cli.git
+cd codereview-cli
+make build
+```
+
+## Platform Support
+
+`cr` stores secrets in the OS credential store through the shared
+`cli-common/credstore` library.
+
+| Platform | Default credential backend |
+|----------|----------------------------|
+| macOS | Keychain |
+| Windows | Credential Manager |
+| Linux | Secret Service |
+
+Supported backend names are `keychain`, `wincred`, `secret-service`, `file`,
+`pass`, and `memory`. Backend selection precedence is:
+
+1. `--backend <name>`
+2. `CODEREVIEW_KEYRING_BACKEND=<name>`
+3. `keyring.backend` in `config.yml`
+4. OS default
+
+Secrets are never written to `config.yml`. Non-secret config lives in the
+`codereview` config directory resolved by the operating system, and durable
+review data lives under the `cr/codereview` data directory.
+
+## Authentication And Setup
+
+`cr` v1 supports GitHub personal access token authentication for Git-host
+operations. The credential key for GitHub PATs is `git_token`.
+
+Quick setup with adapter-managed LLM credentials:
+
+```bash
+cr init --non-interactive \
+  --git-token-from-env GITHUB_TOKEN
+```
+
+Setup with a direct LLM API key:
+
+```bash
+cr init --non-interactive \
+  --llm-auth api_key \
+  --llm-adapter anthropic_api \
+  --llm-api-key-from-env ANTHROPIC_API_KEY \
+  --git-token-from-env GITHUB_TOKEN
+```
+
+Setup a named profile:
+
+```bash
+cr --profile work init --non-interactive \
+  --git-token-from-env GITHUB_TOKEN \
+  --agent-source ~/.config/codereview/agents
+```
+
+Add or replace one credential later:
+
+```bash
+printf '%s' "$GITHUB_TOKEN" | cr set-credential \
+  --ref codereview/default \
+  --key git_token \
+  --stdin \
+  --overwrite
+```
+
+Credential refs use the `codereview/<profile>` service/profile form. `cr`
+accepts secrets by `--stdin` or `--from-env` during setup and credential writes;
+it does not read runtime tokens directly from arbitrary environment variables.
+
+## Configuration
+
+Run `cr config show` to inspect the active profile and credential status.
+
+```yaml
+default_profile: default
+keyring:
+  backend: keychain
+profiles:
+  default:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/default
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+    agent_sources:
+      - ~/.config/codereview/agents
+    review_policy:
+      major_event: comment
+      allow_self_approve: false
+      resolve_threads: auto
+      resolve_after: 24h
+data:
+  retention:
+    max_age_days: 90
+    enforcement: at_write
+```
+
+Supported values:
+
+| Field | Values |
+|-------|--------|
+| `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are recognized by the config schema but not implemented; validation rejects them in v1. |
+| `llm.provider` | `anthropic`, `openai` |
+| `llm.auth` | `subscription`, `api_key` |
+| `llm.adapter` | `claude_cli`, `anthropic_api`, `codex_cli`, `openai_api` |
+| `review_policy.major_event` | `comment`, `request_changes` |
+| `review_policy.resolve_threads` | `auto`, `never` |
+| `data.retention.enforcement` | `at_write`, `manual_only` |
+
+`subscription` LLM auth means the adapter owns its own credentials, such as a
+logged-in CLI. `api_key` LLM auth requires `llm.credential_ref` and stores the
+`llm_api_key` key in the credential backend.
+
+## Common Workflows
+
+Preview a review without posting:
+
+```bash
+cr review --dry-run https://github.com/OWNER/REPO/pull/123
+```
+
+Run a live review:
+
+```bash
+cr review https://github.com/OWNER/REPO/pull/123
+```
+
+Run a live review and fail the command when a major or blocking finding exists:
+
+```bash
+cr review --fail-on major https://github.com/OWNER/REPO/pull/123
+```
+
+Force a fresh live review instead of resuming or exiting from prior markers:
+
+```bash
+cr review --rerun https://github.com/OWNER/REPO/pull/123
+```
+
+Retry missing or failed required posts without rerunning the LLM review:
+
+```bash
+cr review --retry-posts https://github.com/OWNER/REPO/pull/123
+```
+
+Reuse a named LLM session for a series of related live reviews:
+
+```bash
+cr review --session release-train https://github.com/OWNER/REPO/pull/123
+cr sessions show release-train
+```
+
+Inspect trusted agents for a PR:
+
+```bash
+cr agents list https://github.com/OWNER/REPO/pull/123
+cr agents show harness:reviewer https://github.com/OWNER/REPO/pull/123
+```
+
+Inspect and clean local data:
+
+```bash
+cr data show
+cr data prune --dry-run
+cr data prune --keep-last 10
+cr data purge --dry-run
+```
+
+## Command Reference
+
+All commands accept the global flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--profile <name>` | Select a configured profile. Empty means `default_profile` from config, or `default` during `init` before config exists. |
+| `--backend <name>` | Select the credential backend for this invocation. One of `keychain`, `wincred`, `secret-service`, `file`, `pass`, `memory`. |
+
+### `cr`
+
+```text
+cr [flags]
+cr [command]
+```
+
+With no subcommand, `cr` prints help. `cr --version` prints the same version
+line as `cr version`. Unknown commands and malformed flags return usage errors.
+
+### `cr version`
+
+```text
+cr version
+```
+
+Prints the build version as `cr <version-info>`. It takes no arguments.
+
+### `cr init`
+
+```text
+cr init [flags]
+```
+
+Creates or updates non-secret config. In v1, `--non-interactive` is required.
+If the selected profile already exists, pass `--replace-profile` to replace the
+profile config.
+
+Flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--non-interactive` | Required in v1. Run without prompts. |
+| `--git-host <host>` | Git host, default `github.com`. The PR host must match this value. |
+| `--git-credential-ref <ref>` | Credential ref for Git auth. Defaults to `codereview/<profile>`. |
+| `--git-token-stdin` | Read the Git token from stdin and write key `git_token`. |
+| `--git-token-from-env <env>` | Read the Git token from an environment variable and write key `git_token`. |
+| `--llm-provider <provider>` | LLM provider, default `anthropic`. |
+| `--llm-auth <mode>` | LLM auth mode, default `subscription`. Use `api_key` for keyring-managed direct API keys. |
+| `--llm-adapter <adapter>` | LLM adapter, default `claude_cli`. |
+| `--llm-credential-ref <ref>` | Credential ref for LLM API-key auth. Defaults to `codereview/<profile>-llm` when `--llm-auth api_key`. |
+| `--llm-api-key-stdin` | Read the LLM API key from stdin and write key `llm_api_key`. |
+| `--llm-api-key-from-env <env>` | Read the LLM API key from an environment variable and write key `llm_api_key`. |
+| `--agent-source <path>` | Add a trusted agent source directory. Repeatable. |
+| `--major-event <policy>` | `comment` or `request_changes`. Controls review event for major findings. |
+| `--allow-self-approve` | Store profile policy allowing self approval. Live review can still require `--allow-self-approve` depending on invocation. |
+| `--resolve-threads <policy>` | `auto` or `never`. Empty leaves thread resolution unset. |
+| `--resolve-after <duration>` | Duration such as `24h` before thread resolution is planned. |
+| `--overwrite` | Replace existing keyring entries written by this command. |
+| `--replace-profile` | Replace an existing profile config. |
+
+Only one stdin secret ingress flag may be used at a time. LLM API-key ingress
+requires `--llm-auth api_key`. `--overwrite` with API-key auth requires an LLM
+key ingress flag. `--allow-self-review` is intentionally runtime-only on
+`cr review`; `init` only stores the profile-level self-approval policy.
+
+### `cr set-credential`
+
+```text
+cr set-credential --ref <ref> --key <key> (--stdin | --from-env <env>) [flags]
+```
+
+Writes one secret value to the credential store. Allowed keys are `git_token`
+and `llm_api_key`.
+
+Flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--ref <ref>` | Required credential ref, such as `codereview/default`. |
+| `--key <key>` | Required key name, `git_token` or `llm_api_key`. |
+| `--stdin` | Read the secret from stdin. |
+| `--from-env <env>` | Read the secret from an environment variable. |
+| `--overwrite` | Replace an existing key. Without it, existing keys are not overwritten. |
+| `--json` | Emit a JSON result. |
+
+Exactly one of `--stdin` or `--from-env` is required.
+
+### `cr config show`
+
+```text
+cr config show [--json]
+```
+
+Shows the resolved active profile, selected credential backend and source,
+credential refs, non-secret profile config, review policy, and data retention.
+For each declared credential ref, it reports whether expected keys are present.
+
+`--json` emits the same information as structured JSON.
+
+### `cr config clear`
+
+```text
+cr config clear [--all] [--json]
+```
+
+Deletes stored credentials declared by config.
+
+Flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--all` | Clear every credential ref declared by every profile. Without it, clear only the active profile. |
+| `--json` | Emit a JSON result. |
+
+This removes secret keyring entries only. It does not delete `config.yml`.
+
+### `cr me`
+
+```text
+cr me [--all] [--json]
+```
+
+Resolves the active git-host identity using configured credentials and caches
+the identity in config. With `--all`, refreshes every configured profile.
+`--json` emits structured output.
+
+### `cr agents list`
+
+```text
+cr agents list [PR] [--agents-dir <path> ...] [--json]
+```
+
+Lists trusted review agents. If a PR URL is supplied, repo-local agents are
+loaded from the PR base branch under `.codereview/agents`, not from the PR head.
+This keeps unreviewed agent changes from affecting their own review.
+
+Agent source precedence is profile sources, repo-local base-branch agents, then
+`--agents-dir` sources. Later sources override earlier agents with the same ID.
+
+Flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
+| `--json` | Emit JSON. |
+
+### `cr agents show`
+
+```text
+cr agents show <name> [PR] [--agents-dir <path> ...] [--json]
+```
+
+Shows one agent, including category metadata, model, effort, file globs,
+`applies_when`, `needs_full_file_content`, prompt, provenance, and trust note
+when repo-local agents are considered.
+
+### `cr review`
+
+```text
+cr review <PR> [flags]
+```
+
+Runs the automated review pipeline for a GitHub pull request URL. The PR host
+must match the active profile's `git.host`.
+
+Modes:
+
+| Flag | Semantics |
+|------|-----------|
+| `--dry-run` | Plan review actions, write local artifacts, and print the plan without posting. |
+| `--no-post` | Alias for `--dry-run`. |
+| `--rerun` | Bypass gate resume/early-exit behavior and start a fresh live review. Mutually exclusive with `--retry-posts`. |
+| `--retry-posts` | Retry missing or failed required posts for an existing run without rerunning LLM planning. Mutually exclusive with `--rerun` and incompatible with `--session`. |
+
+Review selection and execution flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
+| `--max-agents <n>` | Limit selected reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
+| `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
+| `--session <name>` | Reuse a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
+| `--verbose` | Include nits in review output and emit additional diagnostics. |
+
+Policy and output flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--fail-on <severity>` | Exit 1 if any finding is at or above `blocking`, `major`, `minor`, or `nits`. |
+| `--allow-self-review` | Allow reviewer credentials that resolve to the PR author. |
+| `--allow-self-approve` | Allow approval when the posting identity is the PR author. |
+| `--no-resolve-threads` | Do not plan thread-resolution actions. Also implied by profile `resolve_threads: never`. |
+| `--json` | Emit JSON. |
+
+Live review uses a gate before planning or posting. If matching complete markers
+already exist for the current head/base/profile/posting identity, `cr review`
+exits early. If a prior compatible partial run exists, it resumes or repairs
+posting from durable local state. If the PR base moved, live review aborts with
+an upstream exit. `--rerun` starts fresh. `--retry-posts` replays required posts
+that are missing or failed without rerunning the LLM review.
+
+Dry-run output contains planned actions and artifact paths. Dry-run action
+markers are reported as omitted because nothing is posted.
+
+Live text output includes run ID, gate status, decision, outcome, PR, artifacts,
+and post counts. JSON output includes `run`, `status`, `decision`, `message`,
+`outbox`, `artifacts`, and `fail_on_triggered`.
+
+### `cr sessions list`
+
+```text
+cr sessions list [--json]
+```
+
+Lists named LLM sessions in name order. Text output shows name, profile,
+provider, adapter, model, host, and last-used time. JSON output includes the
+provider session ID plus created and last-used timestamps.
+
+### `cr sessions show`
+
+```text
+cr sessions show <name> [--json]
+```
+
+Shows one named LLM session. Missing sessions return an error. Text output
+includes the provider session ID.
+
+### `cr sessions delete`
+
+```text
+cr sessions delete <name> [--json]
+```
+
+Deletes one named LLM session row. It does not delete provider-side session
+state. Missing sessions return an error.
+
+### `cr data show`
+
+```text
+cr data show [--json]
+```
+
+Shows local durable data usage: data root, ledger path, runs root, run counts,
+live/dry-run counts, outcome counts in JSON, oldest/newest run timestamps,
+artifact bytes, and orphan artifact counts/bytes.
+
+### `cr data prune`
+
+```text
+cr data prune [--older-than <duration> | --keep-last <n>] [--dry-run] [--json]
+```
+
+Prunes selected ledger runs and their artifacts, then removes orphan artifact
+directories. The default with no selector applies built-in retention: live runs
+older than 90 days and dry-run runs older than 7 days.
+
+Flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--older-than <duration>` | Prune runs older than the given duration. Mutually exclusive with `--keep-last`. |
+| `--keep-last <n>` | Keep the newest `n` runs per post mode and prune the rest. Mutually exclusive with `--older-than`. |
+| `--dry-run` | Report selected runs and orphans without deleting. |
+| `--json` | Emit JSON including selected/deleted runs, orphan removals, and warnings. |
+
+Prune deletes the ledger row first, then removes artifact directories best
+effort. Unsafe artifact paths and remove failures are reported as warnings after
+the ledger row is deleted.
+
+### `cr data purge`
+
+```text
+cr data purge --yes [--json]
+cr data purge --dry-run [--json]
+```
+
+Purges the whole local data root. `--yes` is required unless `--dry-run` is set.
+Purge does not open the ledger database, so it can remove a corrupt local data
+root. `--json` emits the data root, dry-run status, and removed status.
+
+Flags:
+
+| Flag | Semantics |
+|------|-----------|
+| `--yes` | Confirm permanent deletion. Required unless `--dry-run` is set. |
+| `--dry-run` | Report the data root without deleting. |
+| `--json` | Emit JSON. |
+
+## Operational Semantics
+
+### Local State
+
+`cr` keeps non-secret config in the OS config directory for service
+`codereview`. Durable review data lives under the OS data directory for
+`cr/codereview` and includes:
+
+- `ledger.db`: runs, sessions, findings, planned actions, and named sessions;
+- `runs/...`: per-run artifacts such as `diff.patch`, `findings.json`,
+  `rollup.md`, diff slices, and agent JSONL logs;
+- `locks/...`: live-review advisory locks.
+
+The HTTP cache is under the OS cache directory for `cr/codereview`.
+
+### Posting, Markers, And Idempotency
+
+Live posting records hidden `codereview` markers on comments/reviews created by
+the posting identity. Markers let later invocations classify the PR as complete,
+partial, stale-base, or fresh for the current head/base context. The outbox
+reconciles markers only from the posting identity, so unrelated comments from
+other users do not satisfy `cr`'s idempotency checks.
+
+Planned actions can include inline comments, file-level or rollup comments,
+review submission, thread summary replies, and thread resolution. Thread
+summary content uses separate summary markers. Model-generated marker-looking
+text is escaped before posting.
+
+### Session Reuse
+
+`--session <name>` stores and reuses the provider session for live orchestrator
+turns. A named session is scoped by name, profile, provider, adapter, model, and
+host. Profile/provider/adapter/model mismatches are errors. Host mismatches warn
+and continue. If the active adapter does not support resume, `cr` starts fresh
+and records the new provider session when available.
+
+### Retention
+
+When retention enforcement is `at_write`, `cr review` applies retention before
+fetching the PR or allocating the next run. `manual_only` disables automatic
+retention, but `cr data prune` and `cr data purge` remain available.
+
+The configured `data.retention.max_age_days` defaults to 90. A value of `0`
+means keep forever for config-driven automatic retention. The explicit
+`cr data prune` command's built-in default is live 90 days and dry-run 7 days.
 
 ## Development
 
@@ -30,9 +553,13 @@ make tidy
 make lint
 make test
 make build
-make snapshot   # local goreleaser build (no publish)
+make snapshot
+make check
 ```
 
-The tree currently holds a scaffold `cr` binary (`cmd/cr`) with a Cobra root and
-version command, plus the CI and release machinery, ahead of the review command
-surface.
+The main binary lives in `cmd/cr`. Command wiring is in `internal/cmd`, provider
+boundaries are under `internal/gitprovider`, and review orchestration is split
+between `internal/pipeline`, `internal/reviewrun`, `internal/reviewplan`, and
+`internal/outbox`.
+
+See [docs/development.md](docs/development.md) for local development notes.
