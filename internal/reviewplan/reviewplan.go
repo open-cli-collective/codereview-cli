@@ -268,6 +268,7 @@ func ReviewEventForFindings(findings []review.Finding, opts EventOptions) review
 			blocking = true
 		case review.SeverityMajor:
 			major = true
+		case review.SeverityMinor, review.SeverityNits:
 		}
 	}
 	switch {
@@ -624,6 +625,7 @@ func inlinePayload(anchored AnchoredFinding) *InlineCommentPayload {
 		if anchored.DiffPosition != nil {
 			payload.DiffPosition = *anchored.DiffPosition
 		}
+	case review.AnchoringFileLevelNative, review.AnchoringRollupOnly:
 	}
 	return payload
 }
@@ -709,7 +711,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		out.WriteString("| ")
 		out.WriteString(severity.String())
 		out.WriteString(" | ")
-		out.WriteString(fmt.Sprint(counts[severity]))
+		fmt.Fprint(&out, counts[severity])
 		out.WriteString(" |\n")
 	}
 	out.WriteString("\n")
@@ -723,7 +725,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		out.WriteString(finding.FilePath)
 		if finding.Line != nil {
 			out.WriteString(":")
-			out.WriteString(fmt.Sprint(*finding.Line))
+			fmt.Fprint(&out, *finding.Line)
 		}
 		out.WriteString("`\n\n")
 		out.WriteString("> ")
@@ -731,7 +733,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		out.WriteString("\n\n")
 	}
 	threadSummary := threadSummaryCounts(b.req.ThreadActions, b.req.ProviderCaps)
-	out.WriteString(fmt.Sprintf("*%d PR discussion threads considered. %d summarized; %d resolved.*\n", threadSummary.considered, threadSummary.summarized, threadSummary.resolved))
+	fmt.Fprintf(&out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", threadSummary.considered, threadSummary.summarized, threadSummary.resolved)
 	if b.req.AgentDefinitionsChanged {
 		out.WriteString("\n---\n\n")
 		out.WriteString("> Note: This PR modifies reviewer definitions under `.codereview/agents/`. The review was conducted using base-branch versions; changes will affect future reviews after merge.\n")
@@ -835,8 +837,8 @@ func sanitize(text string) string {
 }
 
 func sidePtr(side review.DiffSide) *review.DiffSide {
-	copy := side
-	return &copy
+	value := side
+	return &value
 }
 
 func intPtr(value int) *int {

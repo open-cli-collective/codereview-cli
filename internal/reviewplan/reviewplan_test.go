@@ -551,7 +551,7 @@ func newIDGenerator() ActionIDGenerator {
 	next := 0
 	return func(kind ActionKind) (string, error) {
 		next++
-		return string(kind) + "-" + string(rune('a'+next-1)), nil
+		return fmt.Sprintf("%s-%03d", kind, next), nil
 	}
 }
 
