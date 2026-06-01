@@ -124,6 +124,52 @@ func TestPruneSkipsUnsafeArtifactPathsAfterDeletingRows(t *testing.T) {
 	}
 }
 
+func TestPruneSkipsArtifactPathWithSymlinkedAncestor(t *testing.T) {
+	layout := testLayout(t)
+	now := testNow()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("MkdirAll outside: %v", err)
+	}
+	link := filepath.Join(layout.DataRoot, "runs", "link-pr")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	run := ledger.Run{
+		RunID:        "symlinked",
+		PostMode:     ledger.PostModeLive,
+		StartedAt:    now.Add(-91 * 24 * time.Hour),
+		ArtifactPath: filepath.Join(link, strings.Repeat("a", 40), strings.Repeat("b", 40), "default__reviewer", "001"),
+	}
+	store := &fakeStore{runs: []ledger.Run{run}}
+	var removed []string
+
+	result, err := Prune(context.Background(), Options{
+		Layout: layout,
+		Store:  store,
+		Now:    func() time.Time { return now },
+		RemoveAll: func(path string) error {
+			removed = append(removed, path)
+			return nil
+		},
+	}, PruneOptions{})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if _, err := store.Get(run.RunID); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("Get after prune error = %v, want ErrNotFound", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed paths = %#v, want none for symlinked ancestor", removed)
+	}
+	if len(result.Warnings) == 0 || !strings.Contains(strings.Join(result.Warnings, "\n"), "symlink") {
+		t.Fatalf("warnings = %#v, want symlink warning", result.Warnings)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside stat: %v", err)
+	}
+}
+
 func TestPruneSweepsOrphansAndPreservesReferencedArtifacts(t *testing.T) {
 	layout := testLayout(t)
 	ref := testRun(layout, "referenced", ledger.PostModeLive, testNow())
