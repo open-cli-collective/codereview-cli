@@ -110,11 +110,6 @@ func RunStructuredWithSession[T any](ctx context.Context, adapter Adapter, req R
 	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID}, nil
 }
 
-func runOnce(ctx context.Context, adapter Adapter, req Request) (Response, error) {
-	_, response, err := runOnceWithSession(ctx, adapter, req)
-	return response, err
-}
-
 func runOnceWithSession(ctx context.Context, adapter Adapter, req Request) (string, Response, error) {
 	stream, err := adapter.Start(ctx, req)
 	if err != nil {

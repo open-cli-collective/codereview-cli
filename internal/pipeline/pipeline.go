@@ -837,11 +837,11 @@ func effectiveCaps(caps gitprovider.ProviderCaps, noResolve bool) reviewplan.Pro
 }
 
 func (opts Options) checkPromptBudget(phase, agentID, model, filePath, prompt string) error {
-	max := opts.Budget.MaxPromptBytes
-	if max == 0 {
-		max = defaultMaxPromptBytes
+	limit := opts.Budget.MaxPromptBytes
+	if limit == 0 {
+		limit = defaultMaxPromptBytes
 	}
-	if max < 0 || len(prompt) <= max {
+	if limit < 0 || len(prompt) <= limit {
 		return nil
 	}
 	target := phase
@@ -854,7 +854,7 @@ func (opts Options) checkPromptBudget(phase, agentID, model, filePath, prompt st
 	if model != "" {
 		target += " model " + model
 	}
-	return fmt.Errorf("pipeline: context budget exceeded for %s: %d bytes > %d", target, len(prompt), max)
+	return fmt.Errorf("pipeline: context budget exceeded for %s: %d bytes > %d", target, len(prompt), limit)
 }
 
 func (opts Options) now() time.Time {

@@ -110,7 +110,7 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	}
 	assertFileContains(t, slicePath, "+var changed = true")
 	for _, path := range []string{result.Artifacts.FindingsJSON, result.Artifacts.RollupMarkdown} {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 -- test reads artifact paths returned by the pipeline under t.TempDir.
 		if err != nil {
 			t.Fatalf("ReadFile(%s): %v", path, err)
 		}
@@ -175,6 +175,7 @@ func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 			sawReply = true
 		case reviewplan.ActionKindResolveThread:
 			sawResolve = true
+		case reviewplan.ActionKindInlineComment, reviewplan.ActionKindRollupComment, reviewplan.ActionKindSubmitReview:
 		}
 	}
 	if !sawReply || sawResolve {
@@ -777,7 +778,7 @@ func writeFile(t *testing.T, path, body string) {
 
 func assertFileContains(t *testing.T, path, want string) {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- test helper reads caller-provided paths under t.TempDir.
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", path, err)
 	}
