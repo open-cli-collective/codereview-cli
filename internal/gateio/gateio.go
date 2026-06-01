@@ -3,6 +3,7 @@ package gateio
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
+	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -22,13 +25,13 @@ type Status string
 
 // Result status values.
 const (
-	StatusContinue              Status = "continue"
-	StatusEarlyExit             Status = "early_exit"
-	StatusDryRunFresh           Status = "dry_run_fresh"
-	StatusRepairUnsupported     Status = "repair_unsupported"
-	StatusRetryPostsUnsupported Status = "retry_posts_unsupported"
-	StatusError                 Status = "error"
-	StatusBaseMovedAbort        Status = "base_moved_abort"
+	StatusContinue           Status = "continue"
+	StatusEarlyExit          Status = "early_exit"
+	StatusDryRunFresh        Status = "dry_run_fresh"
+	StatusRepairExecuted     Status = "repair_executed"
+	StatusRetryPostsExecuted Status = "retry_posts_executed"
+	StatusError              Status = "error"
+	StatusBaseMovedAbort     Status = "base_moved_abort"
 )
 
 // Store is the ledger behavior required by gate IO.
@@ -37,6 +40,9 @@ type Store interface {
 	GetRun(context.Context, string) (ledger.Run, error)
 	ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error)
 	AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error)
+	InsertPlannedAction(context.Context, ledger.PlannedAction) error
+	UpdatePlannedAction(context.Context, ledger.PlannedAction) error
+	DeleteRun(context.Context, string) error
 	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
 }
 
@@ -52,6 +58,7 @@ type AcquireFunc func(string) (Lock, error)
 type Options struct {
 	Store                   Store
 	Provider                gitprovider.GitProvider
+	Limiter                 outbox.Limiter
 	Layout                  statepaths.Layout
 	Acquire                 AcquireFunc
 	Now                     func() time.Time
@@ -73,11 +80,12 @@ type Request struct {
 
 // Result is the outcome of one gate IO evaluation.
 type Result struct {
-	Status   Status
-	Decision gate.Decision
-	Run      ledger.Run
-	Lock     Lock
-	Warnings []string
+	Status       Status
+	Decision     gate.Decision
+	Run          ledger.Run
+	Lock         Lock
+	OutboxResult outbox.Result
+	Warnings     []string
 }
 
 type staleProbe struct {
@@ -93,6 +101,27 @@ type markerRecord struct {
 type staleRun struct {
 	run ledger.Run
 }
+
+type repairExecution struct {
+	postResult    outbox.Result
+	run           ledger.Run
+	baseDecision  gate.Decision
+	baseMoved     bool
+	outboxInvoked bool
+}
+
+type retryExecution struct {
+	postResult     outbox.Result
+	baseDecision   gate.Decision
+	baseMoved      bool
+	statusDecision gate.Decision
+	outboxInvoked  bool
+}
+
+const (
+	repairSubmitReviewActionID = "repair-submit-review"
+	repairSubmitReviewBody     = "Completing previously posted codereview rollup."
+)
 
 // Evaluate acquires live gate state, calls the pure kernel, and executes
 // non-repair decisions.
@@ -152,7 +181,7 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 
 		result, retry, err := executeDecision(ctx, opts, req, state, decision, currentLock, &releaseCurrent)
 		if err != nil {
-			return Result{}, err
+			return result, err
 		}
 		if retry {
 			continue
@@ -202,10 +231,11 @@ func baseMovedDecision(ctx context.Context, opts Options, req Request, baseSHA s
 }
 
 type gateState struct {
-	kernel     gate.Request
-	runByID    map[string]ledger.Run
-	staleRuns  []staleRun
-	staleLocks map[string]staleProbe
+	kernel             gate.Request
+	runByID            map[string]ledger.Run
+	partialRunMismatch bool
+	staleRuns          []staleRun
+	staleLocks         map[string]staleProbe
 }
 
 func (s gateState) releaseStaleLocks() {
@@ -272,11 +302,12 @@ func attachExternalState(ctx context.Context, opts Options, req Request, state g
 	}
 	state.kernel.PR = prSummary
 	if prSummary.State == gate.PRStatePartial {
-		partialRun, err := lookupScopedPartialRun(ctx, opts, req, prSummary.RunID)
+		partialRun, mismatched, err := lookupScopedPartialRun(ctx, opts, req, prSummary.RunID)
 		if err != nil {
 			state.releaseStaleLocks()
 			return gateState{}, err
 		}
+		state.partialRunMismatch = mismatched
 		if partialRun != nil {
 			state.kernel.PartialRun = partialRun
 		}
@@ -354,12 +385,67 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 		return Result{}, true, nil
 	case gate.DecisionRepair:
 		state.releaseStaleLocks()
-		result.Status = StatusRepairUnsupported
+		if state.partialRunMismatch {
+			result.Status = StatusError
+			result.Decision = gate.Decision{
+				Kind:        gate.DecisionError,
+				RunID:       decision.RunID,
+				ErrorReason: gate.ErrorInvalidInput,
+				Message:     fmt.Sprintf("partial marker run %q exists outside the current resume scope; not repairing", decision.RunID),
+			}
+			emitWarnings(opts.Warnings, result.Warnings)
+			return result, false, nil
+		}
+		execution, err := executeRepair(ctx, opts, req, decision)
+		if err != nil {
+			if execution.outboxInvoked {
+				result.Status = StatusRepairExecuted
+				result.Run = execution.run
+				result.OutboxResult = execution.postResult
+				return result, false, err
+			}
+			return Result{}, false, err
+		}
+		if execution.baseMoved {
+			result.Status = StatusBaseMovedAbort
+			result.Decision = execution.baseDecision
+			return result, false, nil
+		}
+		result.Status = StatusRepairExecuted
+		result.Run = execution.run
+		result.OutboxResult = execution.postResult
 		emitWarnings(opts.Warnings, result.Warnings)
 		return result, false, nil
 	case gate.DecisionRetryPosts:
 		state.releaseStaleLocks()
-		result.Status = StatusRetryPostsUnsupported
+		run, ok := state.runByID[decision.RunID]
+		if !ok {
+			return Result{}, false, fmt.Errorf("gateio: retry-posts run %q was not loaded", decision.RunID)
+		}
+		execution, err := executeRetryPosts(ctx, opts, req, run)
+		if err != nil {
+			if execution.outboxInvoked {
+				result.Status = StatusRetryPostsExecuted
+				result.Run = run
+				result.OutboxResult = execution.postResult
+				return result, false, err
+			}
+			return Result{}, false, err
+		}
+		if execution.baseMoved {
+			result.Status = StatusBaseMovedAbort
+			result.Decision = execution.baseDecision
+			return result, false, nil
+		}
+		if execution.statusDecision.Kind == gate.DecisionError {
+			result.Status = StatusError
+			result.Decision = execution.statusDecision
+			emitWarnings(opts.Warnings, result.Warnings)
+			return result, false, nil
+		}
+		result.Status = StatusRetryPostsExecuted
+		result.Run = run
+		result.OutboxResult = execution.postResult
 		emitWarnings(opts.Warnings, result.Warnings)
 		return result, false, nil
 	case gate.DecisionError:
@@ -370,6 +456,260 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 	default:
 		state.releaseStaleLocks()
 		return Result{}, false, fmt.Errorf("gateio: unsupported gate decision %q", decision.Kind)
+	}
+}
+
+func executeRepair(ctx context.Context, opts Options, req Request, decision gate.Decision) (repairExecution, error) {
+	if baseDecision, moved, err := baseMovedDecision(ctx, opts, req, req.PR.Base.SHA); err != nil {
+		return repairExecution{}, err
+	} else if moved {
+		return repairExecution{baseDecision: baseDecision, baseMoved: true}, nil
+	}
+	if err := requireOutboxLimiter(opts); err != nil {
+		return repairExecution{}, err
+	}
+	if _, err := opts.Store.GetRun(ctx, decision.RunID); err == nil {
+		return repairExecution{}, fmt.Errorf("gateio: repair run %q already exists", decision.RunID)
+	} else if !errors.Is(err, ledger.ErrNotFound) {
+		return repairExecution{}, err
+	}
+
+	desired, event, err := repairOutcomeEvent(decision.Outcome)
+	if err != nil {
+		return repairExecution{}, err
+	}
+	run, err := allocateRepair(ctx, opts, req, decision.RunID)
+	if err != nil {
+		return repairExecution{}, err
+	}
+	if err := insertRepairSubmitReview(ctx, opts, run.RunID, event); err != nil {
+		if deleteErr := opts.Store.DeleteRun(ctx, run.RunID); deleteErr != nil && !errors.Is(deleteErr, ledger.ErrNotFound) {
+			return repairExecution{}, fmt.Errorf("gateio: insert repair submit_review: %w; cleanup recovery run: %w", err, deleteErr)
+		}
+		return repairExecution{}, err
+	}
+	postResult, err := outbox.Post(ctx, outbox.Options{
+		Store:    opts.Store,
+		Provider: opts.Provider,
+		Limiter:  opts.Limiter,
+		Now:      opts.Now,
+	}, outbox.Request{
+		Run:             run,
+		PRRef:           req.PRRef,
+		PostingIdentity: req.PostingIdentity,
+		DesiredOutcome:  desired,
+	})
+	if err != nil {
+		return repairExecution{postResult: postResult, run: run, outboxInvoked: true}, err
+	}
+	return repairExecution{postResult: postResult, run: run, outboxInvoked: true}, nil
+}
+
+func executeRetryPosts(ctx context.Context, opts Options, req Request, run ledger.Run) (retryExecution, error) {
+	if baseDecision, moved, err := baseMovedDecision(ctx, opts, req, run.BaseSHA); err != nil {
+		return retryExecution{}, err
+	} else if moved {
+		return retryExecution{baseDecision: baseDecision, baseMoved: true}, nil
+	}
+	if err := requireOutboxLimiter(opts); err != nil {
+		return retryExecution{}, err
+	}
+
+	actions, err := opts.Store.ListPlannedActions(ctx, run.RunID)
+	if err != nil {
+		return retryExecution{}, err
+	}
+	if !hasRequiredRetryEligibleAction(actions) {
+		return retryExecution{statusDecision: retryPostsIneligible()}, nil
+	}
+	desired, statusDecision := retryDesiredOutcome(actions)
+	if statusDecision.Kind == gate.DecisionError {
+		return retryExecution{statusDecision: statusDecision}, nil
+	}
+	if err := resetRequiredFailedTerminalActionsForRetry(ctx, opts.Store, actions); err != nil {
+		return retryExecution{}, err
+	}
+	postResult, err := outbox.Post(ctx, outbox.Options{
+		Store:    opts.Store,
+		Provider: opts.Provider,
+		Limiter:  opts.Limiter,
+		Now:      opts.Now,
+	}, outbox.Request{
+		Run:             run,
+		PRRef:           req.PRRef,
+		PostingIdentity: req.PostingIdentity,
+		DesiredOutcome:  desired,
+	})
+	if err != nil {
+		return retryExecution{postResult: postResult, outboxInvoked: true}, err
+	}
+	return retryExecution{postResult: postResult, outboxInvoked: true}, nil
+}
+
+func requireOutboxLimiter(opts Options) error {
+	if opts.Limiter == nil {
+		return fmt.Errorf("gateio: outbox limiter is required")
+	}
+	return nil
+}
+
+func allocateRepair(ctx context.Context, opts Options, req Request, runID string) (ledger.Run, error) {
+	return opts.Store.AllocateRun(ctx, ledger.AllocateRunParams{
+		PRKey:           req.PRKey,
+		PRURL:           req.PR.URL,
+		RunID:           runID,
+		SHA:             req.PR.Head.SHA,
+		BaseSHA:         req.PR.Base.SHA,
+		Profile:         req.Profile,
+		PostingIdentity: req.postingKey(),
+		PostMode:        ledger.PostModeLive,
+		StartedAt:       opts.now(),
+		ArtifactPath:    req.ArtifactPath,
+	})
+}
+
+func insertRepairSubmitReview(ctx context.Context, opts Options, runID string, event review.ReviewEvent) error {
+	payload, err := json.Marshal(outbox.SubmitReviewPayload{
+		Body:  repairSubmitReviewBody,
+		Event: event,
+	})
+	if err != nil {
+		return err
+	}
+	return opts.Store.InsertPlannedAction(ctx, ledger.PlannedAction{
+		ActionID:    repairSubmitReviewActionID,
+		RunID:       runID,
+		Kind:        ledger.PlannedActionSubmitReview,
+		PlannedAt:   opts.now(),
+		PayloadJSON: string(payload),
+		Status:      ledger.PlannedActionPending,
+		Required:    true,
+	})
+}
+
+func resetRequiredFailedTerminalActionsForRetry(ctx context.Context, store Store, actions []ledger.PlannedAction) error {
+	for _, action := range actions {
+		if !action.Required || action.Status != ledger.PlannedActionFailedTerminal {
+			continue
+		}
+		action.Status = ledger.PlannedActionPending
+		action.PostedAt = nil
+		action.UpstreamID = nil
+		action.Error = nil
+		action.FailureClass = nil
+		if err := store.UpdatePlannedAction(ctx, action); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hasRequiredRetryEligibleAction(actions []ledger.PlannedAction) bool {
+	for _, action := range actions {
+		if !action.Required {
+			continue
+		}
+		switch action.Status {
+		case ledger.PlannedActionPending, ledger.PlannedActionFailedTerminal:
+			return true
+		case ledger.PlannedActionPosted, ledger.PlannedActionSuperseded, ledger.PlannedActionPlannedOnly:
+		}
+	}
+	return false
+}
+
+func retryDesiredOutcome(actions []ledger.PlannedAction) (ledger.Outcome, gate.Decision) {
+	var (
+		submitOutcome      ledger.Outcome
+		haveSubmitOutcome  bool
+		haveRequiredRollup bool
+		haveOtherRequired  bool
+	)
+	for _, action := range actions {
+		if !action.Required || action.Status == ledger.PlannedActionSuperseded || action.Status == ledger.PlannedActionPlannedOnly {
+			continue
+		}
+		switch action.Kind {
+		case ledger.PlannedActionSubmitReview:
+			payload, err := decodeSubmitReviewPayload(action)
+			if err != nil {
+				return "", invalidInputDecision(err.Error())
+			}
+			outcome, err := outcomeFromReviewEvent(payload.Event)
+			if err != nil {
+				return "", invalidInputDecision(err.Error())
+			}
+			if haveSubmitOutcome && submitOutcome != outcome {
+				return "", invalidInputDecision("conflicting required submit_review outcomes")
+			}
+			submitOutcome = outcome
+			haveSubmitOutcome = true
+		case ledger.PlannedActionRollupComment:
+			haveRequiredRollup = true
+		case ledger.PlannedActionInlineComment, ledger.PlannedActionThreadReply, ledger.PlannedActionResolveThread:
+			haveOtherRequired = true
+		default:
+			haveOtherRequired = true
+		}
+	}
+	if haveSubmitOutcome {
+		return submitOutcome, gate.Decision{}
+	}
+	if haveRequiredRollup && !haveOtherRequired {
+		return ledger.OutcomeNothingToReview, gate.Decision{}
+	}
+	return "", invalidInputDecision("retry-posts desired outcome cannot be derived from planned actions")
+}
+
+func decodeSubmitReviewPayload(action ledger.PlannedAction) (outbox.SubmitReviewPayload, error) {
+	var payload outbox.SubmitReviewPayload
+	if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
+		return payload, fmt.Errorf("gateio: decode submit_review payload %q: %w", action.ActionID, err)
+	}
+	return payload, nil
+}
+
+func repairOutcomeEvent(outcome gate.PROutcome) (ledger.Outcome, review.ReviewEvent, error) {
+	switch outcome {
+	case gate.PROutcomeApproved:
+		return ledger.OutcomeApproved, review.ReviewEventApprove, nil
+	case gate.PROutcomeRequestChanges:
+		return ledger.OutcomeRequestChanges, review.ReviewEventRequestChanges, nil
+	case gate.PROutcomeComment:
+		return ledger.OutcomeComment, review.ReviewEventComment, nil
+	case gate.PROutcomeNothingToReview:
+		return "", "", fmt.Errorf("gateio: unsupported repair outcome %q", outcome)
+	default:
+		return "", "", fmt.Errorf("gateio: unsupported repair outcome %q", outcome)
+	}
+}
+
+func outcomeFromReviewEvent(event review.ReviewEvent) (ledger.Outcome, error) {
+	switch event {
+	case review.ReviewEventApprove:
+		return ledger.OutcomeApproved, nil
+	case review.ReviewEventRequestChanges:
+		return ledger.OutcomeRequestChanges, nil
+	case review.ReviewEventComment:
+		return ledger.OutcomeComment, nil
+	default:
+		return "", fmt.Errorf("gateio: unsupported submit_review event %q", event)
+	}
+}
+
+func retryPostsIneligible() gate.Decision {
+	return gate.Decision{
+		Kind:        gate.DecisionError,
+		ErrorReason: gate.ErrorRetryPostsIneligible,
+		Message:     "no live run has required pending or failed_terminal actions",
+	}
+}
+
+func invalidInputDecision(message string) gate.Decision {
+	return gate.Decision{
+		Kind:        gate.DecisionError,
+		ErrorReason: gate.ErrorInvalidInput,
+		Message:     message,
 	}
 }
 
@@ -518,23 +858,23 @@ func classifyMarkers(records []markerRecord, headSHA, baseSHA string) gate.PRSum
 	return gate.PRSummary{State: gate.PRStateFresh}
 }
 
-func lookupScopedPartialRun(ctx context.Context, opts Options, req Request, runID string) (*gate.RunSummary, error) {
+func lookupScopedPartialRun(ctx context.Context, opts Options, req Request, runID string) (*gate.RunSummary, bool, error) {
 	run, err := opts.Store.GetRun(ctx, runID)
 	if errors.Is(err, ledger.ErrNotFound) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if run.PRKey != req.PRKey || run.SHA != req.PR.Head.SHA || run.BaseSHA != req.PR.Base.SHA ||
 		run.Profile != req.Profile || run.PostingIdentity != req.postingKey() {
-		return nil, nil
+		return nil, true, nil
 	}
 	summary, err := summarizeRun(ctx, opts.Store, run)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &summary, nil
+	return &summary, false, nil
 }
 
 func abortStaleRuns(ctx context.Context, opts Options, state gateState, runIDs []string) error {
