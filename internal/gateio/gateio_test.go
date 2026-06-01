@@ -731,6 +731,13 @@ func TestEvaluateBaseMovedPrecheckDoesNotRequireLimiter(t *testing.T) {
 		if action.Status != ledger.PlannedActionFailedTerminal || action.Error == nil {
 			t.Fatalf("submit after moved-base retry = %#v, want unchanged failure", action)
 		}
+		gotRun, err := fixture.store.GetRun(context.Background(), run.RunID)
+		if err != nil {
+			t.Fatalf("GetRun retry: %v", err)
+		}
+		if gotRun.Outcome == nil || *gotRun.Outcome != ledger.OutcomeAborted {
+			t.Fatalf("retry run outcome = %v, want aborted", gotRun.Outcome)
+		}
 	})
 }
 
@@ -784,6 +791,13 @@ func TestEvaluateHeadMovedPrecheckDoesNotRequireLimiter(t *testing.T) {
 		action := actionByID(t, fixture.store, run.RunID, "submit-1")
 		if action.Status != ledger.PlannedActionFailedTerminal || action.Error == nil {
 			t.Fatalf("submit after moved-head retry = %#v, want unchanged failure", action)
+		}
+		gotRun, err := fixture.store.GetRun(context.Background(), run.RunID)
+		if err != nil {
+			t.Fatalf("GetRun retry: %v", err)
+		}
+		if gotRun.Outcome == nil || *gotRun.Outcome != ledger.OutcomeAborted {
+			t.Fatalf("retry run outcome = %v, want aborted", gotRun.Outcome)
 		}
 		if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
 			t.Fatalf("review writes = %d, want none", len(got))

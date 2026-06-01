@@ -251,6 +251,13 @@ func TestRunRetryPostsAbortsWithExitUpstreamWhenHeadMoves(t *testing.T) {
 	if storedAction.Status != ledger.PlannedActionFailedTerminal || storedAction.Error == nil || storedAction.FailureClass == nil {
 		t.Fatalf("retry action after moved head = %#v, want unchanged failure", storedAction)
 	}
+	storedRun, err := fixture.store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun retry: %v", err)
+	}
+	if storedRun.Outcome == nil || *storedRun.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("retry run outcome = %v, want aborted", storedRun.Outcome)
+	}
 }
 
 type fixture struct {

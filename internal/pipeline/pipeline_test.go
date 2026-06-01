@@ -242,6 +242,55 @@ func TestLiveMarksRunFailedAfterPlanningError(t *testing.T) {
 	}
 }
 
+func TestLiveLeavesRunIncompleteAfterContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           req.PRURL,
+		RunID:           "run-live-canceled",
+		SHA:             provider.pr.Head.SHA,
+		BaseSHA:         provider.pr.Base.SHA,
+		Profile:         req.ProfileName,
+		PostingIdentity: req.PostingIdentity.Login,
+		PostMode:        ledger.PostModeLive,
+		StartedAt:       fixedNow(),
+		ArtifactPath:    filepath.Join(t.TempDir(), "run-live-canceled"),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+
+	_, err = Live(ctx, Options{
+		Provider:        provider,
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Live error = %v, want context.Canceled", err)
+	}
+	storedRun, err := store.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if storedRun.Outcome != nil {
+		t.Fatalf("stored outcome = %#v, want incomplete after cancellation", storedRun.Outcome)
+	}
+}
+
 func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)

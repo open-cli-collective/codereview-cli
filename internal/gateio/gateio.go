@@ -448,8 +448,12 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 			return Result{}, false, err
 		}
 		if execution.baseMoved {
+			if err := opts.Store.CompleteRun(ctx, run.RunID, ledger.OutcomeAborted, opts.now()); err != nil {
+				return Result{}, false, err
+			}
 			result.Status = StatusBaseMovedAbort
 			result.Decision = execution.baseDecision
+			result.Run = run
 			return result, false, nil
 		}
 		if execution.statusDecision.Kind == gate.DecisionError {
