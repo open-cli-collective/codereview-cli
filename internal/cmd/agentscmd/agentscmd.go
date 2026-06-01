@@ -178,7 +178,7 @@ func mapLoadError(err error) error {
 
 func parsePRRef(raw string) (gitprovider.PRRef, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return gitprovider.PRRef{}, fmt.Errorf("PR must be a GitHub pull request URL")
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")

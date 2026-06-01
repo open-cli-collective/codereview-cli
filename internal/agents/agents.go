@@ -487,9 +487,9 @@ func validateName(kind, value string) error {
 }
 
 func repoProvenance(pr gitprovider.PR) (Provenance, error) {
-	ref := strings.TrimSpace(pr.Base.Name)
+	ref := strings.TrimSpace(pr.Base.Ref)
 	if ref == "" {
-		ref = strings.TrimSpace(pr.Base.Ref)
+		ref = strings.TrimSpace(pr.Base.Name)
 	}
 	if ref == "" {
 		return Provenance{}, fmt.Errorf("%w: PR base ref is required", ErrInvalid)

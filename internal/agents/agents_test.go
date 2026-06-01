@@ -81,10 +81,10 @@ func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {
 	if !ok {
 		t.Fatal("repo:only missing")
 	}
-	if repoOnly.Provenance.String() != "repo@main:base-sh" {
-		t.Fatalf("repo provenance = %q, want repo@main:base-sh", repoOnly.Provenance.String())
+	if repoOnly.Provenance.String() != "repo@refs/heads/main:base-sh" {
+		t.Fatalf("repo provenance = %q, want repo@refs/heads/main:base-sh", repoOnly.Provenance.String())
 	}
-	if catalog.Repo == nil || catalog.Repo.Provenance != "repo@main:base-sh" || !strings.Contains(catalog.Repo.TrustNote(), "PR-head .codereview/agents changes do not affect") {
+	if catalog.Repo == nil || catalog.Repo.Provenance != "repo@refs/heads/main:base-sh" || !strings.Contains(catalog.Repo.TrustNote(), "PR-head .codereview/agents changes do not affect") {
 		t.Fatalf("repo info = %#v, want provenance and trust note", catalog.Repo)
 	}
 }

@@ -58,7 +58,7 @@ func TestAgentsListWithPRLoadsRepoBaseAndTrustNote(t *testing.T) {
 	if len(got.Agents) != 2 {
 		t.Fatalf("agents len = %d, want profile and repo agents: %#v", len(got.Agents), got.Agents)
 	}
-	if got.Repo == nil || got.Repo.Provenance != "repo@main:base-sh" {
+	if got.Repo == nil || got.Repo.Provenance != "repo@refs/heads/main:base-sh" {
 		t.Fatalf("repo = %#v, want base provenance", got.Repo)
 	}
 	if !strings.Contains(got.TrustNote, "PR-head .codereview/agents changes do not affect") {
@@ -101,7 +101,7 @@ func TestAgentsShowJSONWithPR(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
 	}
-	if got.Agent.ID != "repo:reviewer" || got.Agent.Provenance != "repo@main:base-sh" {
+	if got.Agent.ID != "repo:reviewer" || got.Agent.Provenance != "repo@refs/heads/main:base-sh" {
 		t.Fatalf("agent = %#v, want repo agent", got.Agent)
 	}
 }
@@ -116,6 +116,15 @@ func TestAgentsListRejectsInvalidPRArg(t *testing.T) {
 	}
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want usage", got)
+	}
+
+	cmd, _ = newTestCommand(t, cfg, providerFactory(&gitprovider.Fake{}))
+	err = root.Execute(cmd, []string{"agents", "list", "http://github.com/open-cli-collective/codereview-cli/pull/28"})
+	if err == nil {
+		t.Fatal("Execute http URL error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("http URL exit code = %d, want usage", got)
 	}
 }
 
