@@ -153,17 +153,17 @@ type Result struct {
 }
 
 type sessionDraft struct {
-	rowID                string
-	rawProviderSessionID string
-	providerSessionID    string
-	role                 ledger.SessionRole
-	agentID              *string
-	adapter              string
-	model                string
-	effort               string
-	startedAt            time.Time
-	completedAt          time.Time
-	response             llm.Response
+	rowID                     string
+	providerReportedSessionID string
+	providerSessionID         string
+	role                      ledger.SessionRole
+	agentID                   *string
+	adapter                   string
+	model                     string
+	effort                    string
+	startedAt                 time.Time
+	completedAt               time.Time
+	response                  llm.Response
 }
 
 type executionMode struct {
@@ -331,7 +331,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.Selection = selection
 		sessionDrafts = append(sessionDrafts, selectionSession)
-		namedSession.observeForResume(selectionSession)
+		namedSession.recordSessionID(selectionSession)
 
 		findings, reviewerSessions, reviewerFindingSessions, err := runReviewers(ctx, opts, req, pr, catalog, parsed, artifacts, selection, maxConcurrency)
 		if err != nil {
@@ -365,7 +365,10 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.Rollup = rollup
 		sessionDrafts = append(sessionDrafts, rollupSession)
-		result.NamedSessionCandidate = namedSession.candidate(rollupSession, opts.now(), opts)
+		result.NamedSessionCandidate = namedSession.buildCandidate(rollupSession, opts.now())
+		if namedSession.enabled && result.NamedSessionCandidate == nil {
+			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
+		}
 
 		plan, err := opts.buildPlan(req, pr, mode.planPostMode, result.EffectiveCaps, parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged)
 		if err != nil {
@@ -556,17 +559,17 @@ func runStructuredResume[T any](ctx context.Context, opts Options, role ledger.S
 	}, decode)
 	completed := opts.now()
 	draft := sessionDraft{
-		rowID:                opts.newSessionRowID(),
-		rawProviderSessionID: result.SessionID,
-		providerSessionID:    result.SessionID,
-		role:                 role,
-		agentID:              agentID,
-		adapter:              opts.Adapter.Name(),
-		model:                model,
-		effort:               effort,
-		startedAt:            started,
-		completedAt:          completed,
-		response:             result.Response,
+		rowID:                     opts.newSessionRowID(),
+		providerReportedSessionID: result.SessionID,
+		providerSessionID:         result.SessionID,
+		role:                      role,
+		agentID:                   agentID,
+		adapter:                   opts.Adapter.Name(),
+		model:                     model,
+		effort:                    effort,
+		startedAt:                 started,
+		completedAt:               completed,
+		response:                  result.Response,
 	}
 	if strings.TrimSpace(draft.providerSessionID) == "" {
 		draft.providerSessionID = draft.rowID
@@ -621,12 +624,12 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 			Model:    stored.Model,
 			Host:     stored.Host,
 		})
-		warning, err := sessionreuse.Check(storedScope, active)
+		check, err := sessionreuse.Check(storedScope, active)
 		if err != nil {
 			return namedSessionState{}, err
 		}
-		if warning != "" {
-			opts.emitWarning(warning)
+		if check.Warning != "" {
+			opts.emitWarning(check.Warning)
 		}
 		state.stored = &stored
 		state.createdAt = stored.CreatedAt
@@ -648,22 +651,21 @@ func (s *namedSessionState) resumeID() string {
 	return s.currentProviderSessionID
 }
 
-func (s *namedSessionState) observeForResume(draft sessionDraft) {
+func (s *namedSessionState) recordSessionID(draft sessionDraft) {
 	if s == nil || !s.enabled || !s.supportsResume {
 		return
 	}
-	if strings.TrimSpace(draft.rawProviderSessionID) != "" {
-		s.currentProviderSessionID = draft.rawProviderSessionID
+	if strings.TrimSpace(draft.providerReportedSessionID) != "" {
+		s.currentProviderSessionID = draft.providerReportedSessionID
 	}
 }
 
-func (s *namedSessionState) candidate(draft sessionDraft, lastUsedAt time.Time, opts Options) *ledger.NamedSession {
+func (s *namedSessionState) buildCandidate(draft sessionDraft, lastUsedAt time.Time) *ledger.NamedSession {
 	if s == nil || !s.enabled {
 		return nil
 	}
-	providerSessionID := strings.TrimSpace(draft.rawProviderSessionID)
+	providerSessionID := strings.TrimSpace(draft.providerReportedSessionID)
 	if providerSessionID == "" {
-		opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", s.active.Name))
 		return nil
 	}
 	return &ledger.NamedSession{

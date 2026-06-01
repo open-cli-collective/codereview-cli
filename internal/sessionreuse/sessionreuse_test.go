@@ -9,8 +9,8 @@ func TestCheckCompatibility(t *testing.T) {
 	active := Scope{Name: "epic", Profile: "work", Provider: "anthropic", Adapter: "claude_cli", Model: "", Host: "github.com"}
 	stored := Normalize(active)
 
-	if warning, err := Check(stored, active); err != nil || warning != "" {
-		t.Fatalf("Check matching = warning %q err %v, want clean", warning, err)
+	if result, err := Check(stored, active); err != nil || result.Warning != "" {
+		t.Fatalf("Check matching = result %#v err %v, want clean", result, err)
 	}
 
 	tests := []struct {
@@ -35,12 +35,12 @@ func TestCheckCompatibility(t *testing.T) {
 
 	crossHost := active
 	crossHost.Host = "github.enterprise"
-	warning, err := Check(stored, crossHost)
+	result, err := Check(stored, crossHost)
 	if err != nil {
 		t.Fatalf("Check cross host: %v", err)
 	}
-	if !strings.Contains(warning, "host mismatch") || !strings.Contains(warning, "continuing") {
-		t.Fatalf("warning = %q, want host warning", warning)
+	if !strings.Contains(result.Warning, "host mismatch") || !strings.Contains(result.Warning, "continuing") {
+		t.Fatalf("warning = %q, want host warning", result.Warning)
 	}
 }
 

@@ -16,6 +16,11 @@ type Scope struct {
 	Host     string
 }
 
+// CheckResult describes compatible scope drift that callers may surface.
+type CheckResult struct {
+	Warning string
+}
+
 // NormalizeModel returns the canonical stored model value.
 func NormalizeModel(model string) string {
 	model = strings.TrimSpace(model)
@@ -57,19 +62,18 @@ func Validate(scope Scope) error {
 	return nil
 }
 
-// Check compares stored and active scopes. The returned warning is non-empty
-// only for allowed host drift.
-func Check(stored Scope, active Scope) (string, error) {
+// Check compares stored and active scopes.
+func Check(stored Scope, active Scope) (CheckResult, error) {
 	stored = Normalize(stored)
 	active = Normalize(active)
 	if err := Validate(active); err != nil {
-		return "", err
+		return CheckResult{}, err
 	}
 	if err := Validate(stored); err != nil {
-		return "", err
+		return CheckResult{}, err
 	}
 	if stored.Name != active.Name {
-		return "", fmt.Errorf("session %q name mismatch: stored %q, active %q", active.Name, stored.Name, active.Name)
+		return CheckResult{}, fmt.Errorf("session %q name mismatch: stored %q, active %q", active.Name, stored.Name, active.Name)
 	}
 	for _, field := range []struct {
 		name   string
@@ -82,11 +86,11 @@ func Check(stored Scope, active Scope) (string, error) {
 		{name: "model", stored: stored.Model, active: active.Model},
 	} {
 		if field.stored != field.active {
-			return "", fmt.Errorf("session %q %s mismatch: stored %q, active %q; use a different --session name or align the profile", active.Name, field.name, field.stored, field.active)
+			return CheckResult{}, fmt.Errorf("session %q %s mismatch: stored %q, active %q; use a different --session name or align the profile", active.Name, field.name, field.stored, field.active)
 		}
 	}
 	if stored.Host != active.Host {
-		return fmt.Sprintf("session %q host mismatch: stored %q, active %q; continuing", active.Name, stored.Host, active.Host), nil
+		return CheckResult{Warning: fmt.Sprintf("session %q host mismatch: stored %q, active %q; continuing", active.Name, stored.Host, active.Host)}, nil
 	}
-	return "", nil
+	return CheckResult{}, nil
 }
