@@ -1,0 +1,562 @@
+// Package agents loads trusted review agent definitions.
+package agents
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+)
+
+const repoAgentsRoot = ".codereview/agents"
+
+var (
+	// ErrInvalid identifies malformed agent definitions or unsafe agent names.
+	ErrInvalid = errors.New("agents: invalid")
+	// ErrNotFound identifies a requested agent absent from a loaded catalog.
+	ErrNotFound = errors.New("agents: not found")
+)
+
+// SourceKind identifies where an agent definition came from.
+type SourceKind string
+
+// Supported source kinds.
+const (
+	SourceProfile SourceKind = "profile"
+	SourceRepo    SourceKind = "repo"
+	SourceFlag    SourceKind = "flag"
+)
+
+// Provenance identifies the winning source for one loaded agent.
+type Provenance struct {
+	Kind  SourceKind `json:"kind"`
+	Label string     `json:"label,omitempty"`
+	Ref   string     `json:"ref,omitempty"`
+	SHA   string     `json:"sha,omitempty"`
+	Index int        `json:"index,omitempty"`
+}
+
+// String returns the user-facing provenance label.
+func (p Provenance) String() string {
+	switch p.Kind {
+	case SourceProfile:
+		return "profile:" + p.Label
+	case SourceRepo:
+		if p.SHA != "" {
+			return "repo@" + p.Ref + ":" + shortSHA(p.SHA)
+		}
+		return "repo@" + p.Ref
+	case SourceFlag:
+		return fmt.Sprintf("flag:%d", p.Index)
+	default:
+		return string(p.Kind)
+	}
+}
+
+// Category is one agent category definition.
+type Category struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Owner       string `json:"owner,omitempty"`
+}
+
+// Agent is one loaded review agent.
+type Agent struct {
+	ID                   string     `json:"id"`
+	Name                 string     `json:"name"`
+	Category             Category   `json:"category"`
+	Description          string     `json:"description,omitempty"`
+	Model                string     `json:"model,omitempty"`
+	Effort               string     `json:"effort,omitempty"`
+	FileGlobs            []string   `json:"file_globs,omitempty"`
+	AppliesWhen          []string   `json:"applies_when,omitempty"`
+	NeedsFullFileContent bool       `json:"needs_full_file_content"`
+	Prompt               string     `json:"prompt,omitempty"`
+	Provenance           Provenance `json:"provenance"`
+	Overridden           []string   `json:"overridden,omitempty"`
+}
+
+// RepoReader is the narrow read seam needed to load repo-local agent files.
+type RepoReader interface {
+	ListTreeAtRef(ctx context.Context, ref gitprovider.PRRef, gitRef string, treePath string) ([]gitprovider.TreeEntry, error)
+	GetFileAtRef(ctx context.Context, ref gitprovider.PRRef, gitRef string, filePath string) ([]byte, error)
+}
+
+// RepoSource pins repo-local agents to a resolved pull request base SHA.
+type RepoSource struct {
+	Reader RepoReader
+	Ref    gitprovider.PRRef
+	PR     gitprovider.PR
+}
+
+// LoadOptions configures catalog loading.
+type LoadOptions struct {
+	ProfileDirs []string
+	Repo        *RepoSource
+	FlagDirs    []string
+}
+
+// RepoInfo describes the trusted repo-local source, when one was considered.
+type RepoInfo struct {
+	Ref        string `json:"ref"`
+	SHA        string `json:"sha"`
+	Provenance string `json:"provenance"`
+}
+
+// TrustNote returns the human-readable base-branch trust-boundary note.
+func (r RepoInfo) TrustNote() string {
+	if r.Ref == "" && r.SHA == "" {
+		return ""
+	}
+	return fmt.Sprintf("Repo-local agents loaded from base branch %s at %s; PR-head .codereview/agents changes do not affect this listing.", r.Ref, shortSHA(r.SHA))
+}
+
+// Catalog is the merged, precedence-resolved agent catalog.
+type Catalog struct {
+	Agents []Agent   `json:"agents"`
+	Repo   *RepoInfo `json:"repo,omitempty"`
+}
+
+// Find returns one agent by full ID.
+func (c Catalog) Find(id string) (Agent, bool) {
+	for _, agent := range c.Agents {
+		if agent.ID == id {
+			return agent, true
+		}
+	}
+	return Agent{}, false
+}
+
+// Load builds a merged catalog from all configured sources.
+func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
+	var merged catalogBuilder
+	for _, dir := range opts.ProfileDirs {
+		provenance := Provenance{Kind: SourceProfile, Label: sourceLabel(dir)}
+		agents, err := loadFileSource(dir, provenance)
+		if err != nil {
+			return Catalog{}, err
+		}
+		merged.add(agents)
+	}
+
+	var repoInfo *RepoInfo
+	if opts.Repo != nil {
+		provenance, err := repoProvenance(opts.Repo.PR)
+		if err != nil {
+			return Catalog{}, err
+		}
+		repoInfo = &RepoInfo{
+			Ref:        provenance.Ref,
+			SHA:        provenance.SHA,
+			Provenance: provenance.String(),
+		}
+		agents, err := loadRepoSource(ctx, *opts.Repo, provenance)
+		if err != nil {
+			return Catalog{}, err
+		}
+		merged.add(agents)
+	}
+
+	for i, dir := range opts.FlagDirs {
+		provenance := Provenance{Kind: SourceFlag, Index: i + 1}
+		agents, err := loadFileSource(dir, provenance)
+		if err != nil {
+			return Catalog{}, err
+		}
+		merged.add(agents)
+	}
+
+	return Catalog{Agents: merged.sorted(), Repo: repoInfo}, nil
+}
+
+type catalogBuilder struct {
+	agents map[string]Agent
+}
+
+func (b *catalogBuilder) add(agents []Agent) {
+	if b.agents == nil {
+		b.agents = make(map[string]Agent)
+	}
+	for _, agent := range agents {
+		if previous, ok := b.agents[agent.ID]; ok {
+			agent.Overridden = append(previous.Overridden, previous.Provenance.String())
+		}
+		b.agents[agent.ID] = agent
+	}
+}
+
+func (b *catalogBuilder) sorted() []Agent {
+	if len(b.agents) == 0 {
+		return nil
+	}
+	out := make([]Agent, 0, len(b.agents))
+	for _, agent := range b.agents {
+		out = append(out, agent)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+type categoryYAML struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Owner       string `yaml:"owner"`
+}
+
+type agentYAML struct {
+	Name                 string   `yaml:"name"`
+	Description          string   `yaml:"description"`
+	Model                string   `yaml:"model"`
+	Effort               string   `yaml:"effort"`
+	FileGlobs            []string `yaml:"file_globs"`
+	AppliesWhen          []string `yaml:"applies_when"`
+	NeedsFullFileContent bool     `yaml:"needs_full_file_content"`
+}
+
+func loadFileSource(rawDir string, provenance Provenance) ([]Agent, error) {
+	dir, err := expandPath(rawDir)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(dir) == "" {
+		return nil, fmt.Errorf("%w: agent source path is required", ErrInvalid)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("agents: read source %s: %w", rawDir, err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+
+	var agents []Agent
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		categoryName := entry.Name()
+		if err := validateName("category", categoryName); err != nil {
+			return nil, err
+		}
+		categoryPath := filepath.Join(dir, categoryName)
+		category, err := readFileCategory(filepath.Join(categoryPath, "index.yaml"), categoryName)
+		if err != nil {
+			return nil, err
+		}
+		categoryAgents, err := readFileAgents(categoryPath, category, provenance)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, categoryAgents...)
+	}
+	return agents, nil
+}
+
+func readFileCategory(filePath, pathName string) (Category, error) {
+	var index categoryYAML
+	if err := decodeYAMLFile(filePath, &index); err != nil {
+		return Category{}, err
+	}
+	if err := validateMatchingName("category", pathName, index.Name); err != nil {
+		return Category{}, err
+	}
+	return Category{Name: pathName, Description: index.Description, Owner: index.Owner}, nil
+}
+
+func readFileAgents(categoryPath string, category Category, provenance Provenance) ([]Agent, error) {
+	entries, err := os.ReadDir(categoryPath)
+	if err != nil {
+		return nil, fmt.Errorf("agents: read category %s: %w", category.Name, err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+
+	var agents []Agent
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		agentName := entry.Name()
+		if err := validateName("agent", agentName); err != nil {
+			return nil, err
+		}
+		agentPath := filepath.Join(categoryPath, agentName)
+		agent, err := readFileAgent(agentPath, category, agentName, provenance)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, nil
+}
+
+func readFileAgent(agentPath string, category Category, pathName string, provenance Provenance) (Agent, error) {
+	var index agentYAML
+	if err := decodeYAMLFile(filepath.Join(agentPath, "index.yaml"), &index); err != nil {
+		return Agent{}, err
+	}
+	if err := validateMatchingName("agent", pathName, index.Name); err != nil {
+		return Agent{}, err
+	}
+	prompt, err := os.ReadFile(filepath.Join(agentPath, "prompt.md")) // #nosec G304 -- path is from an agent source directory.
+	if err != nil {
+		return Agent{}, fmt.Errorf("agents: read prompt for %s:%s: %w", category.Name, pathName, err)
+	}
+	return newAgent(category, pathName, index, string(prompt), provenance), nil
+}
+
+func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance) ([]Agent, error) {
+	if source.Reader == nil {
+		return nil, fmt.Errorf("%w: repo reader is required", ErrInvalid)
+	}
+	if err := source.Ref.Validate(); err != nil {
+		return nil, err
+	}
+	if source.PR.Ref != (gitprovider.PRRef{}) && source.PR.Ref != source.Ref {
+		return nil, fmt.Errorf("%w: PR ref %v does not match source ref %v", ErrInvalid, source.PR.Ref, source.Ref)
+	}
+	baseSHA := strings.TrimSpace(source.PR.Base.SHA)
+	if baseSHA == "" {
+		return nil, fmt.Errorf("%w: PR base SHA is required", ErrInvalid)
+	}
+
+	rootEntries, err := source.Reader.ListTreeAtRef(ctx, source.Ref, baseSHA, repoAgentsRoot)
+	if errors.Is(err, gitprovider.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sortTreeEntries(rootEntries)
+
+	var agents []Agent
+	for _, entry := range rootEntries {
+		if entry.Type != "tree" {
+			continue
+		}
+		categoryName, ok := directEntryName(repoAgentsRoot, entry.Path)
+		if !ok {
+			continue
+		}
+		if err := validateName("category", categoryName); err != nil {
+			return nil, err
+		}
+		categoryPath := path.Join(repoAgentsRoot, categoryName)
+		category, err := readRepoCategory(ctx, source.Reader, source.Ref, baseSHA, categoryPath, categoryName)
+		if err != nil {
+			return nil, err
+		}
+		categoryAgents, err := readRepoAgents(ctx, source.Reader, source.Ref, baseSHA, categoryPath, category, provenance)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, categoryAgents...)
+	}
+	return agents, nil
+}
+
+func readRepoCategory(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath, pathName string) (Category, error) {
+	var index categoryYAML
+	if err := decodeRepoYAML(ctx, reader, ref, gitRef, path.Join(categoryPath, "index.yaml"), &index); err != nil {
+		return Category{}, err
+	}
+	if err := validateMatchingName("category", pathName, index.Name); err != nil {
+		return Category{}, err
+	}
+	return Category{Name: pathName, Description: index.Description, Owner: index.Owner}, nil
+}
+
+func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath string, category Category, provenance Provenance) ([]Agent, error) {
+	entries, err := reader.ListTreeAtRef(ctx, ref, gitRef, categoryPath)
+	if err != nil {
+		return nil, err
+	}
+	sortTreeEntries(entries)
+
+	var agents []Agent
+	for _, entry := range entries {
+		if entry.Type != "tree" {
+			continue
+		}
+		agentName, ok := directEntryName(categoryPath, entry.Path)
+		if !ok {
+			continue
+		}
+		if err := validateName("agent", agentName); err != nil {
+			return nil, err
+		}
+		agentPath := path.Join(categoryPath, agentName)
+		agent, err := readRepoAgent(ctx, reader, ref, gitRef, agentPath, category, agentName, provenance)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, nil
+}
+
+func readRepoAgent(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, agentPath string, category Category, pathName string, provenance Provenance) (Agent, error) {
+	var index agentYAML
+	if err := decodeRepoYAML(ctx, reader, ref, gitRef, path.Join(agentPath, "index.yaml"), &index); err != nil {
+		return Agent{}, err
+	}
+	if err := validateMatchingName("agent", pathName, index.Name); err != nil {
+		return Agent{}, err
+	}
+	prompt, err := reader.GetFileAtRef(ctx, ref, gitRef, path.Join(agentPath, "prompt.md"))
+	if err != nil {
+		return Agent{}, err
+	}
+	return newAgent(category, pathName, index, string(prompt), provenance), nil
+}
+
+func newAgent(category Category, name string, index agentYAML, prompt string, provenance Provenance) Agent {
+	return Agent{
+		ID:                   category.Name + ":" + name,
+		Name:                 name,
+		Category:             category,
+		Description:          index.Description,
+		Model:                index.Model,
+		Effort:               index.Effort,
+		FileGlobs:            append([]string(nil), index.FileGlobs...),
+		AppliesWhen:          append([]string(nil), index.AppliesWhen...),
+		NeedsFullFileContent: index.NeedsFullFileContent,
+		Prompt:               prompt,
+		Provenance:           provenance,
+	}
+}
+
+func decodeYAMLFile(filePath string, out any) error {
+	data, err := os.ReadFile(filePath) // #nosec G304 -- path is from an agent source directory.
+	if err != nil {
+		return fmt.Errorf("agents: read %s: %w", filePath, err)
+	}
+	return decodeYAML(filePath, data, out)
+}
+
+func decodeRepoYAML(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, filePath string, out any) error {
+	data, err := reader.GetFileAtRef(ctx, ref, gitRef, filePath)
+	if err != nil {
+		return err
+	}
+	return decodeYAML(filePath, data, out)
+}
+
+func decodeYAML(name string, data []byte, out any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(out); err != nil {
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("%w: %s is empty", ErrInvalid, name)
+		}
+		return fmt.Errorf("%w: parse %s: %w", ErrInvalid, name, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: parse %s: %w", ErrInvalid, name, err)
+	} else if err == nil {
+		return fmt.Errorf("%w: parse %s: multiple YAML documents are not supported", ErrInvalid, name)
+	}
+	return nil
+}
+
+func validateMatchingName(kind, pathName, yamlName string) error {
+	if err := validateName(kind, yamlName); err != nil {
+		return err
+	}
+	if yamlName != pathName {
+		return fmt.Errorf("%w: %s name %q does not match path %q", ErrInvalid, kind, yamlName, pathName)
+	}
+	return nil
+}
+
+func validateName(kind, value string) error {
+	if value == "" {
+		return fmt.Errorf("%w: %s name is required", ErrInvalid, kind)
+	}
+	if value == "." {
+		return fmt.Errorf("%w: unsafe %s name %q", ErrInvalid, kind, value)
+	}
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%w: %s name %q has surrounding whitespace", ErrInvalid, kind, value)
+	}
+	if strings.Contains(value, "/") || strings.Contains(value, "\\") || strings.Contains(value, "..") || strings.Contains(value, ":") {
+		return fmt.Errorf("%w: unsafe %s name %q", ErrInvalid, kind, value)
+	}
+	return nil
+}
+
+func repoProvenance(pr gitprovider.PR) (Provenance, error) {
+	ref := strings.TrimSpace(pr.Base.Ref)
+	if ref == "" {
+		ref = strings.TrimSpace(pr.Base.Name)
+	}
+	if ref == "" {
+		return Provenance{}, fmt.Errorf("%w: PR base ref is required", ErrInvalid)
+	}
+	sha := strings.TrimSpace(pr.Base.SHA)
+	if sha == "" {
+		return Provenance{}, fmt.Errorf("%w: PR base SHA is required", ErrInvalid)
+	}
+	return Provenance{Kind: SourceRepo, Ref: ref, SHA: sha}, nil
+}
+
+func sourceLabel(rawDir string) string {
+	dir, err := expandPath(rawDir)
+	if err != nil {
+		return rawDir
+	}
+	base := filepath.Base(filepath.Clean(dir))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return dir
+	}
+	return base
+}
+
+func expandPath(raw string) (string, error) {
+	if raw == "~" || strings.HasPrefix(raw, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("agents: resolve home directory: %w", err)
+		}
+		if raw == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, strings.TrimPrefix(raw, "~/")), nil
+	}
+	return raw, nil
+}
+
+func directEntryName(parent, entryPath string) (string, bool) {
+	name := strings.Trim(entryPath, "/")
+	parent = strings.Trim(parent, "/")
+	if parent != "" {
+		prefix := parent + "/"
+		name = strings.TrimPrefix(name, prefix)
+	}
+	if name == "" || strings.Contains(name, "/") {
+		return "", false
+	}
+	return name, true
+}
+
+func sortTreeEntries(entries []gitprovider.TreeEntry) {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+}
+
+func shortSHA(sha string) string {
+	sha = strings.TrimSpace(sha)
+	if len(sha) <= 7 {
+		return sha
+	}
+	return sha[:7]
+}
