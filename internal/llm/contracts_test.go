@@ -71,6 +71,7 @@ func TestDecodeFindings(t *testing.T) {
 	}
 
 	baseOpts := FindingsOptions{KnownAgents: map[string]bool{"agent-1": true}, ChangedFiles: map[string]bool{"main.go": true}, NewFindingID: newIDQueue("f-1", "f-2").next}
+	assertFindingsError(t, baseOpts, `{"schema_version":2,"agent_id":"agent-1","findings":[]}`, "schema_version")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[],"extra":true}`, "unknown field")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"missing","findings":[]}`, "unknown findings agent")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"finding_id":"model-id","severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "finding_id")
@@ -80,7 +81,8 @@ func TestDecodeFindings(t *testing.T) {
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"line","side":"RIGHT"},"body":"body"}]}`, "line anchor requires a positive line")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"  "}]}`, "finding body length out of bounds")
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: newIDQueue("f-1").next, MaxBodyLength: 3}, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"toolong"}]}`, "finding body length out of bounds")
-	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: newIDQueue("f-1").next, SeverityCaps: map[review.Severity]int{review.SeverityMajor: 0}}, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "cap")
+	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: newIDQueue("f-1", "f-2").next, MaxFindingsPerAgent: 1}, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"},{"severity":"minor","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "findings cap exceeded")
+	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: newIDQueue("f-1").next, SeverityCaps: map[review.Severity]int{review.SeverityMajor: 0}}, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "major severity cap exceeded")
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: nil}, `{"schema_version":1,"agent_id":"agent-1","findings":[]}`, "generator")
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: func() (review.FindingID, error) { return "", errors.New("id failed") }}, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "id failed")
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: newIDQueue("").next}, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "blank")
@@ -110,12 +112,14 @@ func TestDecodeRollup(t *testing.T) {
 		t.Fatalf("rollup strings were not sanitized: %#v", got)
 	}
 
+	assertRollupError(t, known, `{"schema_version":2,"review_event":"comment","review_event_rationale":"x","ordered_findings":["f-1","f-2","f-3"]}`, "schema_version")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","ordered_findings":["f-1","f-2","f-3"],"extra":true}`, "unknown field")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"bad","review_event_rationale":"x","ordered_findings":["f-1","f-2","f-3"]}`, "review event")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"  ","ordered_findings":["f-1","f-2","f-3"]}`, "rationale")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","dedupe_log":[{"kept":"missing","dropped":["f-2"],"reason":"x"}],"ordered_findings":["f-1","f-3"]}`, "unknown dedupe kept")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","dedupe_log":[{"kept":"f-1","dropped":["missing"],"reason":"x"}],"ordered_findings":["f-1","f-2","f-3"]}`, "unknown dedupe dropped")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","dedupe_log":[{"kept":"f-1","dropped":[],"reason":"x"}],"ordered_findings":["f-1","f-2","f-3"]}`, "drop at least one finding")
+	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","dedupe_log":[{"kept":"f-1","dropped":["f-2"],"reason":"  "}],"ordered_findings":["f-1","f-3"]}`, "dedupe reason")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","dedupe_log":[{"kept":"f-1","dropped":["f-1"],"reason":"x"}],"ordered_findings":["f-2","f-3"]}`, "cannot be dropped")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","dedupe_log":[{"kept":"f-2","dropped":["f-3"],"reason":"x"},{"kept":"f-1","dropped":["f-2"],"reason":"x"}],"ordered_findings":["f-1"]}`, "kept ID")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","dedupe_log":[{"kept":"f-1","dropped":["f-2"],"reason":"x"},{"kept":"f-3","dropped":["f-2"],"reason":"x"}],"ordered_findings":["f-1","f-3"]}`, "dropped more than once")

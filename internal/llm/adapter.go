@@ -5,7 +5,14 @@ package llm
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
+	"unicode/utf8"
 )
+
+const maxValidationErrorSummaryLen = 500
+
+var validationQuotedValueRE = regexp.MustCompile(`"([^"\\]|\\.)*"`)
 
 // Adapter is the provider-neutral LLM boundary.
 type Adapter interface {
@@ -29,7 +36,7 @@ type Request struct {
 // Stream is a started LLM request.
 type Stream interface {
 	SessionID() string
-	Wait() (Response, error)
+	Wait(context.Context) (Response, error)
 }
 
 // Response is the completed LLM result.
@@ -80,7 +87,7 @@ func RunStructured[T any](ctx context.Context, adapter Adapter, req Request, dec
 	if retryErr != nil {
 		return zero, retryResponse, fmt.Errorf("structured output invalid after retry: first: %w; second: %w", decodeErr, retryErr)
 	}
-	return retryValue, retryResponse, nil
+	return retryValue, combineRetryResponse(response, retryResponse), nil
 }
 
 func runOnce(ctx context.Context, adapter Adapter, req Request) (Response, error) {
@@ -88,9 +95,75 @@ func runOnce(ctx context.Context, adapter Adapter, req Request) (Response, error
 	if err != nil {
 		return Response{}, err
 	}
-	return stream.Wait()
+	return stream.Wait(ctx)
 }
 
 func retryPrompt(prompt string, err error) string {
-	return prompt + "\n\nThe previous structured output failed validation: " + err.Error() + "\nReturn corrected JSON only."
+	return prompt + "\n\nThe previous structured output failed validation: " + validationErrorSummary(err) + "\nReturn corrected JSON only."
+}
+
+func validationErrorSummary(err error) string {
+	summary := strings.Join(strings.Fields(strings.TrimSpace(err.Error())), " ")
+	summary = validationQuotedValueRE.ReplaceAllString(summary, `"<value>"`)
+	return truncateRunes(summary, maxValidationErrorSummaryLen)
+}
+
+func truncateRunes(value string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(value) <= maxRunes {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:maxRunes]) + "..."
+}
+
+func combineRetryResponse(first Response, retry Response) Response {
+	combined := retry
+	combined.Usage = combineUsage(first.Usage, retry.Usage)
+	combined.DurationMS = first.DurationMS + retry.DurationMS
+	return combined
+}
+
+func combineUsage(first Usage, retry Usage) Usage {
+	return Usage{
+		TokensIn:    sumIntPtr(first.TokensIn, retry.TokensIn),
+		TokensOut:   sumIntPtr(first.TokensOut, retry.TokensOut),
+		CacheRead:   sumIntPtr(first.CacheRead, retry.CacheRead),
+		CacheCreate: sumIntPtr(first.CacheCreate, retry.CacheCreate),
+		CostUSD:     sumFloatPtr(first.CostUSD, retry.CostUSD),
+	}
+}
+
+func sumIntPtr(first *int, second *int) *int {
+	switch {
+	case first == nil && second == nil:
+		return nil
+	case first == nil:
+		value := *second
+		return &value
+	case second == nil:
+		value := *first
+		return &value
+	default:
+		value := *first + *second
+		return &value
+	}
+}
+
+func sumFloatPtr(first *float64, second *float64) *float64 {
+	switch {
+	case first == nil && second == nil:
+		return nil
+	case first == nil:
+		value := *second
+		return &value
+	case second == nil:
+		value := *first
+		return &value
+	default:
+		value := *first + *second
+		return &value
+	}
 }

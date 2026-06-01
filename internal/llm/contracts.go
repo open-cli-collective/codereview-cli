@@ -42,9 +42,10 @@ type SelectedAgent struct {
 
 // SelectionOptions contains context needed to validate selection output.
 type SelectionOptions struct {
-	KnownAgents        map[string]bool
-	ChangedFiles       map[string]bool
-	KnownThreads       map[string]bool
+	KnownAgents  map[string]bool
+	ChangedFiles map[string]bool
+	KnownThreads map[string]bool
+	// MaxResolvedThreads uses DefaultMaxResolvedThreads when zero.
 	MaxResolvedThreads int
 }
 
@@ -59,12 +60,14 @@ type FindingIDGenerator func() (review.FindingID, error)
 
 // FindingsOptions contains context needed to validate finding output.
 type FindingsOptions struct {
-	KnownAgents         map[string]bool
-	ChangedFiles        map[string]bool
-	NewFindingID        FindingIDGenerator
+	KnownAgents  map[string]bool
+	ChangedFiles map[string]bool
+	NewFindingID FindingIDGenerator
+	// MaxFindingsPerAgent uses DefaultMaxFindingsPerAgent when zero.
 	MaxFindingsPerAgent int
-	MaxBodyLength       int
-	SeverityCaps        map[review.Severity]int
+	// MaxBodyLength uses DefaultMaxFindingBodyLen when zero.
+	MaxBodyLength int
+	SeverityCaps  map[review.Severity]int
 }
 
 // RollupOptions contains context needed to validate rollup output.
@@ -354,6 +357,9 @@ func decodeDedupeLog(entries []dedupeEntryWire, known map[review.FindingID]revie
 		kept[keptID] = true
 		if len(entry.Dropped) == 0 {
 			return nil, nil, fmt.Errorf("llm: dedupe entry must drop at least one finding")
+		}
+		if strings.TrimSpace(entry.Reason) == "" {
+			return nil, nil, fmt.Errorf("llm: dedupe reason is required")
 		}
 		mapped := review.DedupeEntry{Kept: keptID, Reason: sanitize(entry.Reason)}
 		for _, rawDropped := range entry.Dropped {
