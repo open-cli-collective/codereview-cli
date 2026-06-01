@@ -231,6 +231,20 @@ func baseMovedDecision(ctx context.Context, opts Options, req Request, baseSHA s
 	}, true, nil
 }
 
+func reviewPremisesMovedDecision(ctx context.Context, opts Options, req Request, headSHA, baseSHA string) (gate.Decision, bool, error) {
+	pr, err := opts.Provider.GetPR(ctx, req.PRRef)
+	if err != nil {
+		return gate.Decision{}, false, err
+	}
+	if pr.Head.SHA == headSHA && pr.Base.SHA == baseSHA {
+		return gate.Decision{}, false, nil
+	}
+	return gate.Decision{
+		Kind:    gate.DecisionError,
+		Message: fmt.Sprintf("review premises moved: head %s -> %s, base %s -> %s", headSHA, pr.Head.SHA, baseSHA, pr.Base.SHA),
+	}, true, nil
+}
+
 type gateState struct {
 	kernel             gate.Request
 	runByID            map[string]ledger.Run
@@ -461,7 +475,7 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 }
 
 func executeRepair(ctx context.Context, opts Options, req Request, decision gate.Decision) (repairExecution, error) {
-	if baseDecision, moved, err := baseMovedDecision(ctx, opts, req, req.PR.Base.SHA); err != nil {
+	if baseDecision, moved, err := reviewPremisesMovedDecision(ctx, opts, req, req.PR.Head.SHA, req.PR.Base.SHA); err != nil {
 		return repairExecution{}, err
 	} else if moved {
 		return repairExecution{baseDecision: baseDecision, baseMoved: true}, nil
@@ -507,7 +521,7 @@ func executeRepair(ctx context.Context, opts Options, req Request, decision gate
 }
 
 func executeRetryPosts(ctx context.Context, opts Options, req Request, run ledger.Run) (retryExecution, error) {
-	if baseDecision, moved, err := baseMovedDecision(ctx, opts, req, run.BaseSHA); err != nil {
+	if baseDecision, moved, err := reviewPremisesMovedDecision(ctx, opts, req, run.SHA, run.BaseSHA); err != nil {
 		return retryExecution{}, err
 	} else if moved {
 		return retryExecution{baseDecision: baseDecision, baseMoved: true}, nil

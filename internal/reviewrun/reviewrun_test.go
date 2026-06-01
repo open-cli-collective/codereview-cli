@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
+	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
@@ -176,6 +178,81 @@ func TestRunFreshRunIDCollisionRetriesBeforePlanning(t *testing.T) {
 	}
 }
 
+func TestRunRepairAbortsWithExitUpstreamWhenHeadMoves(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeRequestChanges)
+	moved := fixture.pr
+	moved.Head.SHA = strings.Repeat("c", 40)
+	fixture.provider = &sequencedPRProvider{
+		Fake: fixture.fake,
+		prs:  []gitprovider.PR{fixture.pr, moved},
+	}
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+
+	result, err := Run(ctx, fixture.opts(planner), Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run repair moved head: %v", err)
+	}
+	if result.ExitCode != exitUpstream || result.Status != gateio.StatusBaseMovedAbort || !strings.Contains(result.Message, "head") {
+		t.Fatalf("result = %#v, want moved-head upstream exit", result)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("planner calls = %d, want repair path to skip planning", planner.calls)
+	}
+	if comments := fixture.fake.RecordedIssueComments(fixture.ref); len(comments) != 0 {
+		t.Fatalf("issue comments = %d, want no writes after movement", len(comments))
+	}
+	if reviews := fixture.fake.RecordedReviews(fixture.ref); len(reviews) != 0 {
+		t.Fatalf("reviews = %d, want no writes after movement", len(reviews))
+	}
+}
+
+func TestRunRetryPostsAbortsWithExitUpstreamWhenHeadMoves(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-retry", testBaseSHA)
+	action := reviewActions(t, run.RunID, review.ReviewEventComment)[1]
+	action.Status = ledger.PlannedActionFailedTerminal
+	action.Error = strPtr("previous failure")
+	failureClass := ledger.PlannedActionFailureClassTerminal
+	action.FailureClass = &failureClass
+	if err := fixture.store.InsertPlannedAction(ctx, action); err != nil {
+		t.Fatalf("InsertPlannedAction: %v", err)
+	}
+	if err := fixture.store.CompleteRun(ctx, run.RunID, ledger.OutcomeFailed, testNow()); err != nil {
+		t.Fatalf("CompleteRun failed: %v", err)
+	}
+	moved := fixture.pr
+	moved.Head.SHA = strings.Repeat("c", 40)
+	fixture.provider = &sequencedPRProvider{
+		Fake: fixture.fake,
+		prs:  []gitprovider.PR{fixture.pr, moved},
+	}
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+
+	result, err := Run(ctx, fixture.opts(planner), Request{Pipeline: fixture.req, Flags: Flags{RetryPosts: true}})
+	if err != nil {
+		t.Fatalf("Run retry-posts moved head: %v", err)
+	}
+	if result.ExitCode != exitUpstream || result.Status != gateio.StatusBaseMovedAbort || !strings.Contains(result.Message, "head") {
+		t.Fatalf("result = %#v, want moved-head upstream exit", result)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("planner calls = %d, want retry-posts path to skip planning", planner.calls)
+	}
+	if comments := fixture.fake.RecordedIssueComments(fixture.ref); len(comments) != 0 {
+		t.Fatalf("issue comments = %d, want no writes after movement", len(comments))
+	}
+	if reviews := fixture.fake.RecordedReviews(fixture.ref); len(reviews) != 0 {
+		t.Fatalf("reviews = %d, want no writes after movement", len(reviews))
+	}
+	storedAction := actionByID(t, fixture.store, run.RunID, action.ActionID)
+	if storedAction.Status != ledger.PlannedActionFailedTerminal || storedAction.Error == nil || storedAction.FailureClass == nil {
+		t.Fatalf("retry action after moved head = %#v, want unchanged failure", storedAction)
+	}
+}
+
 type fixture struct {
 	store    *ledger.Store
 	provider gitprovider.GitProvider
@@ -273,6 +350,44 @@ func (f *fixture) insertReviewActions(t *testing.T, runID string, event review.R
 	}
 }
 
+func setPartialRollup(t *testing.T, f *fixture, runID string, outcome string) {
+	t.Helper()
+	body, err := marker.RenderAction(marker.ActionMarker{
+		RunID:    runID,
+		ActionID: "rollup-1",
+		Kind:     marker.ActionKindRollupComment,
+		SHA:      f.pr.Head.SHA,
+		BaseSHA:  f.pr.Base.SHA,
+		Outcome:  outcome,
+	})
+	if err != nil {
+		t.Fatalf("RenderAction: %v", err)
+	}
+	if err := f.fake.SetIssueComments(f.ref, []gitprovider.IssueComment{{
+		ID:        "issue-rollup",
+		Author:    f.req.PostingIdentity,
+		Body:      body,
+		CreatedAt: testNow(),
+	}}); err != nil {
+		t.Fatalf("SetIssueComments: %v", err)
+	}
+}
+
+func actionByID(t *testing.T, store *ledger.Store, runID, actionID string) ledger.PlannedAction {
+	t.Helper()
+	actions, err := store.ListPlannedActions(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	for _, action := range actions {
+		if action.ActionID == actionID {
+			return action
+		}
+	}
+	t.Fatalf("action %s/%s not found", runID, actionID)
+	return ledger.PlannedAction{}
+}
+
 type fakePlanner struct {
 	store   *ledger.Store
 	outcome reviewplan.Outcome
@@ -333,6 +448,10 @@ func payloadJSON(t *testing.T, payload any) string {
 		panic(err)
 	}
 	return string(data)
+}
+
+func strPtr(value string) *string {
+	return &value
 }
 
 type sequencedPRProvider struct {

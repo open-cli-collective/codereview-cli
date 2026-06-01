@@ -734,6 +734,63 @@ func TestEvaluateBaseMovedPrecheckDoesNotRequireLimiter(t *testing.T) {
 	})
 }
 
+func TestEvaluateHeadMovedPrecheckDoesNotRequireLimiter(t *testing.T) {
+	t.Run("repair", func(t *testing.T) {
+		fixture := newFixture(t)
+		setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeApproved)
+		moved := fixture.req.PR
+		moved.Head.SHA = strings.Repeat("d", 40)
+		if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+			t.Fatalf("SetPR moved: %v", err)
+		}
+		opts := fixture.opts()
+		opts.Limiter = nil
+
+		result, err := Evaluate(context.Background(), opts, fixture.req)
+		if err != nil {
+			t.Fatalf("Evaluate repair moved head: %v", err)
+		}
+		if result.Status != StatusBaseMovedAbort || result.Decision.Kind != gate.DecisionError || !strings.Contains(result.Decision.Message, "head") {
+			t.Fatalf("Evaluate = %#v, want head moved before limiter validation", result)
+		}
+		if runs := fixture.listRuns(t); len(runs) != 0 {
+			t.Fatalf("runs after moved-head repair = %d, want no recovery row", len(runs))
+		}
+		if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+			t.Fatalf("review writes = %d, want none", len(got))
+		}
+	})
+
+	t.Run("retry-posts", func(t *testing.T) {
+		fixture := newFixture(t)
+		run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+		insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+		fixture.req.Flags.RetryPosts = true
+		moved := fixture.req.PR
+		moved.Head.SHA = strings.Repeat("d", 40)
+		if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+			t.Fatalf("SetPR moved: %v", err)
+		}
+		opts := fixture.opts()
+		opts.Limiter = nil
+
+		result, err := Evaluate(context.Background(), opts, fixture.req)
+		if err != nil {
+			t.Fatalf("Evaluate retry moved head: %v", err)
+		}
+		if result.Status != StatusBaseMovedAbort || result.Decision.Kind != gate.DecisionError || !strings.Contains(result.Decision.Message, "head") {
+			t.Fatalf("Evaluate = %#v, want head moved before limiter validation", result)
+		}
+		action := actionByID(t, fixture.store, run.RunID, "submit-1")
+		if action.Status != ledger.PlannedActionFailedTerminal || action.Error == nil {
+			t.Fatalf("submit after moved-head retry = %#v, want unchanged failure", action)
+		}
+		if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+			t.Fatalf("review writes = %d, want none", len(got))
+		}
+	})
+}
+
 func TestEvaluateOutboxErrorsReturnExecutionResultAndDurableState(t *testing.T) {
 	t.Run("repair", func(t *testing.T) {
 		fixture := newFixture(t)

@@ -194,7 +194,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	completed := false
 	if mode.live {
 		defer func() {
-			if !completed {
+			if !completed && ctx.Err() == nil {
 				_ = opts.Store.CompleteRun(context.Background(), mode.run.RunID, ledger.OutcomeFailed, opts.now())
 			}
 		}()
