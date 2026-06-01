@@ -2,9 +2,10 @@ package reviewplan
 
 import (
 	"errors"
+	"fmt"
 	"go/parser"
 	"go/token"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -32,6 +33,9 @@ func TestBuildUsesSameStructureForLiveAndDryRun(t *testing.T) {
 
 	if live.Outcome != dry.Outcome || live.RollupMarkdown != dry.RollupMarkdown {
 		t.Fatalf("live/dry plan diverged: live=%#v dry=%#v", live, dry)
+	}
+	if !strings.Contains(live.RollupMarkdown, "| Severity | Findings |") {
+		t.Fatalf("rollup markdown missing summary table:\n%s", live.RollupMarkdown)
 	}
 	if !reflect.DeepEqual(live.AnchoredFindings, dry.AnchoredFindings) {
 		t.Fatalf("anchored findings differ:\nlive=%#v\ndry=%#v", live.AnchoredFindings, dry.AnchoredFindings)
@@ -158,6 +162,18 @@ func TestThreadDecisionResolutionDisabled(t *testing.T) {
 	}
 	if got := actionsOfKind(plan.Actions, ActionKindResolveThread); len(got) != 0 {
 		t.Fatalf("resolve actions = %#v, want none when capability disabled", got)
+	}
+}
+
+func TestThreadDecisionRejectsInvalidValue(t *testing.T) {
+	req := baseRequest()
+	req.ThreadActions = []review.ThreadAction{
+		{ThreadID: "thread-1", Decision: review.ThreadDecision("bogus"), Summary: "summary"},
+	}
+
+	_, err := Build(req)
+	if err == nil || !strings.Contains(err.Error(), "invalid thread decision") {
+		t.Fatalf("Build error = %v, want invalid thread decision", err)
 	}
 }
 
@@ -344,6 +360,15 @@ func TestEventMappingAndNothingToReview(t *testing.T) {
 	if submit.SubmitReview.Event != review.ReviewEventComment {
 		t.Fatalf("self-approve submit event = %q, want comment", submit.SubmitReview.Event)
 	}
+	req.EventOptions.AllowSelfApprove = true
+	plan, err = Build(req)
+	if err != nil {
+		t.Fatalf("Build explicit self approve allowed: %v", err)
+	}
+	submit = actionsOfKind(plan.Actions, ActionKindSubmitReview)[0]
+	if plan.Outcome != OutcomeApproved || submit.SubmitReview.Event != review.ReviewEventApprove {
+		t.Fatalf("allowed self-approve = outcome %q event %q, want approve", plan.Outcome, submit.SubmitReview.Event)
+	}
 
 	req = baseRequest()
 	req.NoDiff = true
@@ -446,33 +471,64 @@ func TestActionIDGeneratorFailures(t *testing.T) {
 	}
 }
 
-func TestProductionImportBoundary(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
+func TestSortActionsOrdersByKindThenActionID(t *testing.T) {
+	actions := []Action{
+		{ActionID: "rollup-b", Kind: ActionKindRollupComment},
+		{ActionID: "inline-b", Kind: ActionKindInlineComment},
+		{ActionID: "reply-b", Kind: ActionKindThreadReply},
+		{ActionID: "inline-a", Kind: ActionKindInlineComment},
+		{ActionID: "submit-b", Kind: ActionKindSubmitReview},
+		{ActionID: "resolve-b", Kind: ActionKindResolveThread},
 	}
+
+	got := SortActions(actions)
+	gotPairs := make([]string, 0, len(got))
+	for _, action := range got {
+		gotPairs = append(gotPairs, string(action.Kind)+":"+action.ActionID)
+	}
+	want := []string{
+		"thread_reply:reply-b",
+		"resolve_thread:resolve-b",
+		"inline_comment:inline-a",
+		"inline_comment:inline-b",
+		"rollup_comment:rollup-b",
+		"submit_review:submit-b",
+	}
+	if !reflect.DeepEqual(gotPairs, want) {
+		t.Fatalf("SortActions = %#v, want %#v", gotPairs, want)
+	}
+}
+
+func TestProductionImportBoundary(t *testing.T) {
 	allowed := map[string]bool{
 		"github.com/open-cli-collective/codereview-cli/internal/review": true,
 	}
-	for _, entry := range entries {
+	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
+			return nil
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(".", name), nil, parser.ImportsOnly)
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
 		if err != nil {
-			t.Fatalf("ParseFile(%s): %v", name, err)
+			return fmt.Errorf("ParseFile(%s): %w", path, err)
 		}
 		for _, spec := range file.Imports {
 			path := strings.Trim(spec.Path.Value, `"`)
 			if deniedImport(path) {
-				t.Fatalf("%s imports denied package %q", name, path)
+				return fmt.Errorf("%s imports denied package %q", name, path)
 			}
 			if allowed[path] || isStdlibImport(path) {
 				continue
 			}
-			t.Fatalf("%s imports %q; reviewplan production code may only import stdlib plus internal/review", name, path)
+			return fmt.Errorf("%s imports %q; reviewplan production code may only import stdlib plus internal/review", name, path)
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

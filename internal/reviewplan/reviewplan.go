@@ -371,10 +371,8 @@ func (b *builder) buildReview() (Plan, error) {
 		return Plan{}, err
 	}
 
-	anchored, err := b.anchorFindings(ordered)
-	if err != nil {
-		return Plan{}, err
-	}
+	b.populateAnchoredFindings()
+	anchored := b.anchoredForOrdered(ordered)
 
 	var actions []Action
 	threadReplies, resolves, err := b.threadActions()
@@ -484,16 +482,11 @@ func (b *builder) droppedFindings() (map[review.FindingID]bool, error) {
 	return dropped, nil
 }
 
-func (b *builder) anchorFindings(ordered []review.Finding) ([]AnchoredFinding, error) {
+func (b *builder) populateAnchoredFindings() {
 	for _, finding := range b.req.Findings {
 		anchored := b.anchorFinding(finding)
 		b.anchoredByID[finding.ID] = anchored
 	}
-	anchored := make([]AnchoredFinding, 0, len(ordered))
-	for _, finding := range ordered {
-		anchored = append(anchored, b.anchoredByID[finding.ID])
-	}
-	return anchored, nil
 }
 
 func (b *builder) anchorFinding(finding review.Finding) AnchoredFinding {
