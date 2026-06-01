@@ -188,6 +188,19 @@ func TestReviewFailOnReturnsFailureAfterRendering(t *testing.T) {
 	}
 }
 
+func TestNewReviewDryRunRejectsInvalidPlannedPayload(t *testing.T) {
+	result := testPipelineResult(false)
+	result.PlannedActions[0].PayloadJSON = "{bad"
+
+	_, err := newReviewDryRun(result)
+	if err == nil {
+		t.Fatal("newReviewDryRun error = nil, want invalid payload failure")
+	}
+	if !strings.Contains(err.Error(), "payload is invalid JSON") {
+		t.Fatalf("newReviewDryRun error = %v, want payload JSON failure", err)
+	}
+}
+
 func TestReviewMapsRunnerError(t *testing.T) {
 	runner := &fakeRunner{err: gitprovider.ErrRetryable}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))

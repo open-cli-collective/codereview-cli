@@ -74,6 +74,9 @@ func TestParseUnifiedDiffFileShapes(t *testing.T) {
 	if added.Path != "new.go" || added.Deleted || added.Binary {
 		t.Fatalf("added patch = %#v", added)
 	}
+	if added.Hunks[0].OldEnd < 0 {
+		t.Fatalf("added old hunk end = %d, want non-negative empty range", added.Hunks[0].OldEnd)
+	}
 	if added.Hunks[0].FallbackSide != review.DiffSideRight || added.Hunks[0].FallbackLine != 1 {
 		t.Fatalf("added hunk = %#v", added.Hunks[0])
 	}
@@ -123,6 +126,27 @@ func TestParseUnifiedDiffMultiHunkPositionsIncrease(t *testing.T) {
 	second := got.Patches[0].Hunks[1].DiffPosition
 	if first <= 0 || second <= first {
 		t.Fatalf("diff positions = %d, %d; want increasing positive positions", first, second)
+	}
+}
+
+func TestParseUnifiedDiffQuotedPathsWithSpaces(t *testing.T) {
+	raw := strings.Join([]string{
+		`diff --git "a/path with space.go" "b/path with space.go"`,
+		"index 1111111..2222222 100644",
+		`--- "a/path with space.go"`,
+		`+++ "b/path with space.go"`,
+		"@@ -1,1 +1,1 @@",
+		"-old",
+		"+new",
+		"",
+	}, "\n")
+
+	got, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	if len(got.Patches) != 1 || got.Patches[0].OldPath != "path with space.go" || got.Patches[0].Path != "path with space.go" {
+		t.Fatalf("patches = %#v, want quoted path with spaces", got.Patches)
 	}
 }
 

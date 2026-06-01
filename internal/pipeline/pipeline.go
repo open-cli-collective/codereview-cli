@@ -231,7 +231,10 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 		result.Plan = plan
 	} else {
-		selectionPrompt := buildSelectionPrompt(pr, catalog, parsed.Patches, threads)
+		selectionPrompt, err := buildSelectionPrompt(pr, catalog, parsed.Patches, threads)
+		if err != nil {
+			return Result{}, err
+		}
 		if err := opts.checkPromptBudget("selection", "", model, "", selectionPrompt); err != nil {
 			return Result{}, err
 		}
@@ -265,7 +268,10 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 			findingSession[id] = rowID
 		}
 
-		rollupPrompt := buildRollupPrompt(pr, findings)
+		rollupPrompt, err := buildRollupPrompt(pr, findings)
+		if err != nil {
+			return Result{}, err
+		}
 		if err := opts.checkPromptBudget("rollup", "", model, "", rollupPrompt); err != nil {
 			return Result{}, err
 		}
@@ -379,6 +385,8 @@ func runReviewers(ctx context.Context, opts Options, req Request, pr gitprovider
 	}
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].agent.ID < jobs[j].agent.ID })
 
+	reviewCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	sem := make(chan struct{}, maxConcurrency)
 	var mu sync.Mutex
 	var allFindings []review.Finding
@@ -391,13 +399,20 @@ func runReviewers(ctx context.Context, opts Options, req Request, pr gitprovider
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-reviewCtx.Done():
+				return
+			}
 			defer func() { <-sem }()
-			findings, session, err := runReviewer(ctx, opts, req, pr, parsed, artifacts, current.selected, current.agent)
+			findings, session, err := runReviewer(reviewCtx, opts, req, pr, parsed, artifacts, current.selected, current.agent)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil && firstErr == nil {
-				firstErr = err
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+					cancel()
+				}
 				return
 			}
 			sessions = append(sessions, session)
@@ -587,7 +602,7 @@ func fetchFileOptional(ctx context.Context, provider ReadProvider, ref gitprovid
 	return data, err
 }
 
-func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []FilePatch, threads []gitprovider.InlineThread) string {
+func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []FilePatch, threads []gitprovider.InlineThread) (string, error) {
 	payload := map[string]any{
 		"task":          "select reviewer agents and thread actions; return selection JSON only",
 		"schema":        "selection",
@@ -596,19 +611,25 @@ func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []F
 		"changed_files": patchPaths(patches),
 		"threads":       threads,
 	}
-	body, _ := json.MarshalIndent(payload, "", "  ")
-	return string(body)
+	body, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("pipeline: build selection prompt: %w", err)
+	}
+	return string(body), nil
 }
 
-func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding) string {
+func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding) (string, error) {
 	payload := map[string]any{
 		"task":     "dedupe findings and return rollup JSON only",
 		"schema":   "rollup",
 		"pr":       pr,
 		"findings": findings,
 	}
-	body, _ := json.MarshalIndent(payload, "", "  ")
-	return string(body)
+	body, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("pipeline: build rollup prompt: %w", err)
+	}
+	return string(body), nil
 }
 
 func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, selection llm.Selection, findings []review.Finding, rollup string) error {

@@ -168,7 +168,10 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if err != nil {
 		return mapRunError(err)
 	}
-	rendered := newReviewDryRun(result)
+	rendered, err := newReviewDryRun(result)
+	if err != nil {
+		return err
+	}
 	if flags.jsonOutput {
 		err = view.RenderReviewDryRunJSON(opts.Stdout, rendered)
 	} else {
@@ -183,7 +186,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	return nil
 }
 
-func newReviewDryRun(result pipeline.Result) view.ReviewDryRun {
+func newReviewDryRun(result pipeline.Result) (view.ReviewDryRun, error) {
 	outcome := ledger.OutcomeDryRun.String()
 	if result.Run.Outcome != nil {
 		outcome = result.Run.Outcome.String()
@@ -223,9 +226,13 @@ func newReviewDryRun(result pipeline.Result) view.ReviewDryRun {
 		planned[action.ActionID] = action
 	}
 	for _, action := range result.Plan.Actions {
-		rendered.Actions = append(rendered.Actions, viewAction(action, planned[action.ActionID]))
+		renderedAction, err := viewAction(action, planned[action.ActionID])
+		if err != nil {
+			return view.ReviewDryRun{}, err
+		}
+		rendered.Actions = append(rendered.Actions, renderedAction)
 	}
-	return rendered
+	return rendered, nil
 }
 
 func viewFinding(finding reviewplan.AnchoredFinding) view.ReviewFinding {
@@ -246,12 +253,14 @@ func viewFinding(finding reviewplan.AnchoredFinding) view.ReviewFinding {
 	return out
 }
 
-func viewAction(action reviewplan.Action, planned ledger.PlannedAction) view.ReviewAction {
+func viewAction(action reviewplan.Action, planned ledger.PlannedAction) (view.ReviewAction, error) {
 	status := action.Status
 	payload := json.RawMessage(`{}`)
 	if planned.ActionID != "" {
 		if parsed := json.RawMessage(planned.PayloadJSON); json.Valid(parsed) {
 			payload = parsed
+		} else {
+			return view.ReviewAction{}, fmt.Errorf("review: planned action %q payload is invalid JSON", planned.ActionID)
 		}
 		if planned.Status != "" {
 			status = reviewplan.ActionStatus(planned.Status.String())
@@ -271,7 +280,7 @@ func viewAction(action reviewplan.Action, planned ledger.PlannedAction) view.Rev
 	if strings.TrimSpace(action.ThreadID) != "" {
 		out.ThreadID = action.ThreadID
 	}
-	return out
+	return out, nil
 }
 
 func configPath(opts *root.Options) (string, error) {

@@ -114,11 +114,16 @@ func splitLines(raw string) []string {
 }
 
 func parseDiffGitPaths(line string) (string, string) {
-	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) < 4 {
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "diff --git "))
+	oldPath, rest, ok := consumeDiffPath(rest)
+	if !ok {
 		return "", ""
 	}
-	return trimDiffPrefix(fields[2]), trimDiffPrefix(fields[3])
+	newPath, _, ok := consumeDiffPath(strings.TrimSpace(rest))
+	if !ok {
+		return "", ""
+	}
+	return trimDiffPrefix(oldPath), trimDiffPrefix(newPath)
 }
 
 func parseHeaderPath(raw string) string {
@@ -126,7 +131,11 @@ func parseHeaderPath(raw string) string {
 	if value == "/dev/null" {
 		return ""
 	}
-	value = strings.Trim(value, `"`)
+	if strings.HasPrefix(value, `"`) {
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			value = unquoted
+		}
+	}
 	return trimDiffPrefix(value)
 }
 
@@ -136,6 +145,35 @@ func trimDiffPrefix(path string) string {
 		return path[2:]
 	}
 	return path
+}
+
+func consumeDiffPath(raw string) (string, string, bool) {
+	if raw == "" {
+		return "", "", false
+	}
+	if raw[0] != '"' {
+		fields := strings.Fields(raw)
+		if len(fields) == 0 {
+			return "", "", false
+		}
+		return fields[0], strings.TrimPrefix(raw, fields[0]), true
+	}
+	for i := 1; i < len(raw); i++ {
+		if raw[i] == '\\' {
+			i++
+			continue
+		}
+		if raw[i] != '"' {
+			continue
+		}
+		token := raw[:i+1]
+		unquoted, err := strconv.Unquote(token)
+		if err != nil {
+			return "", "", false
+		}
+		return unquoted, raw[i+1:], true
+	}
+	return "", "", false
 }
 
 func parseHunkHeader(line string, diffPosition int) (reviewplan.DiffHunk, error) {
@@ -153,9 +191,9 @@ func parseHunkHeader(line string, diffPosition int) (reviewplan.DiffHunk, error)
 	}
 	hunk := reviewplan.DiffHunk{
 		OldStart:     oldStart,
-		OldEnd:       oldStart + oldCount - 1,
+		OldEnd:       hunkRangeEnd(oldStart, oldCount),
 		NewStart:     newStart,
-		NewEnd:       newStart + newCount - 1,
+		NewEnd:       hunkRangeEnd(newStart, newCount),
 		DiffPosition: diffPosition,
 	}
 	switch {
@@ -167,6 +205,13 @@ func parseHunkHeader(line string, diffPosition int) (reviewplan.DiffHunk, error)
 		hunk.FallbackLine = oldStart
 	}
 	return hunk, nil
+}
+
+func hunkRangeEnd(start, count int) int {
+	if count <= 0 {
+		return start
+	}
+	return start + count - 1
 }
 
 func hunkRange(startRaw, countRaw string) (int, int, error) {
