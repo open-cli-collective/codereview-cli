@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -180,6 +182,128 @@ func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	}
 }
 
+func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	dir := t.TempDir()
+	writeAgent(t, dir, "harness", "alpha", "alpha desc", "Review alpha files.")
+	writeAgent(t, dir, "harness", "beta", "beta desc", "Review beta files.")
+	req.Profile.AgentSources = []string{dir}
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+	adapter := &promptAwareAdapter{}
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-multi-agent" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  2,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("adapter requests = %d, want selection, two reviewers, rollup", len(requests))
+	}
+	var reviewerPrompts int
+	for _, request := range requests {
+		if strings.Contains(request.Prompt, `"schema": "findings"`) {
+			reviewerPrompts++
+			if !strings.Contains(request.Prompt, `"agent"`) || !strings.Contains(request.Prompt, `"files"`) {
+				t.Fatalf("reviewer prompt missing agent/files context: %s", request.Prompt)
+			}
+		}
+	}
+	if reviewerPrompts != 2 {
+		t.Fatalf("reviewer prompts = %d, want 2", reviewerPrompts)
+	}
+
+	storedFindings, err := store.ListFindings(ctx, "run-multi-agent")
+	if err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	sessionAgents := map[string]string{}
+	for _, session := range result.Sessions {
+		if session.AgentID != nil {
+			sessionAgents[session.SessionRowID] = *session.AgentID
+		}
+	}
+	got := map[string]string{}
+	for _, finding := range storedFindings {
+		got[finding.FilePath] = sessionAgents[finding.SessionRowID]
+	}
+	want := map[string]string{
+		"main.go":  "harness:alpha",
+		"other.go": "harness:beta",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("finding session agents = %#v, want %#v", got, want)
+	}
+}
+
+func TestDryRunMarksRunFailedAfterPostAllocationError(t *testing.T) {
+	ctx := context.Background()
+	inner := openPipelineStore(t)
+	defer closeStore(t, inner)
+	storeErr := errors.New("insert planned action failed")
+	store := &failingStore{Store: inner, insertPlannedActionErr: storeErr}
+	provider, req := dryRunHarness(t)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 1, 1))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 1, 1))
+
+	_, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-failed-after-allocation" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if !errors.Is(err, storeErr) {
+		t.Fatalf("DryRun error = %v, want planned-action failure", err)
+	}
+	run, err := inner.GetRun(ctx, "run-failed-after-allocation")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if run.Outcome == nil || *run.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("run outcome = %#v, want failed", run.Outcome)
+	}
+}
+
+func TestDryRunRejectsSelfReviewWhenReviewerCredentialsMatchAuthor(t *testing.T) {
+	provider, req := dryRunHarness(t)
+	req.Profile.ReviewerCredentials = &config.ReviewerCredentials{AuthMode: config.GitAuthModePAT, CredentialRef: "codereview/reviewer"}
+	req.PostingIdentity = provider.pr.Author
+
+	_, err := DryRun(context.Background(), Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{},
+		Store:    &noopStore{},
+		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
+	}, req)
+	if err == nil {
+		t.Fatal("DryRun error = nil, want self-review guard")
+	}
+	if !strings.Contains(err.Error(), "--allow-self-review") {
+		t.Fatalf("DryRun error = %v, want allow-self-review guidance", err)
+	}
+}
+
 func TestDryRunContextBudgetFailures(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -299,6 +423,93 @@ type readOnlyProvider struct {
 	trees   map[fileKey][]gitprovider.TreeEntry
 	threads []gitprovider.InlineThread
 	caps    gitprovider.ProviderCaps
+}
+
+type promptAwareAdapter struct {
+	mu       sync.Mutex
+	requests []llm.Request
+}
+
+func (a *promptAwareAdapter) Name() string {
+	return "prompt-aware"
+}
+
+func (a *promptAwareAdapter) SupportsResume() bool {
+	return false
+}
+
+func (a *promptAwareAdapter) SupportsCacheAccounting() bool {
+	return false
+}
+
+func (a *promptAwareAdapter) SupportsCostReporting() bool {
+	return false
+}
+
+func (a *promptAwareAdapter) Quota(context.Context) (llm.Quota, bool, error) {
+	return llm.Quota{}, false, nil
+}
+
+func (a *promptAwareAdapter) Resume(context.Context, string, llm.Request) (llm.Stream, error) {
+	return nil, errors.New("resume unsupported")
+}
+
+func (a *promptAwareAdapter) Start(_ context.Context, req llm.Request) (llm.Stream, error) {
+	a.mu.Lock()
+	a.requests = append(a.requests, req)
+	a.mu.Unlock()
+
+	switch {
+	case strings.Contains(req.Prompt, `"schema": "selection"`):
+		return staticStream{sessionID: "selection-session", output: `{
+			"schema_version": 1,
+			"selected_agents": [
+				{"agent_id":"harness:alpha","rationale":"main","files":["main.go"]},
+				{"agent_id":"harness:beta","rationale":"other","files":["other.go"]}
+			],
+			"thread_actions": [],
+			"reasoning": "two agents"
+		}`}, nil
+	case strings.Contains(req.Prompt, "harness:alpha"):
+		return staticStream{sessionID: "alpha-session", output: findingsJSON("harness:alpha", "main.go", "major", 2, "Alpha finding")}, nil
+	case strings.Contains(req.Prompt, "harness:beta"):
+		return staticStream{sessionID: "beta-session", output: findingsJSON("harness:beta", "other.go", "major", 2, "Beta finding")}, nil
+	case strings.Contains(req.Prompt, `"schema": "rollup"`):
+		return staticStream{sessionID: "rollup-session", output: rollupJSON("comment", []string{"finding-1", "finding-2"})}, nil
+	default:
+		return nil, fmt.Errorf("unexpected prompt: %s", req.Prompt)
+	}
+}
+
+func (a *promptAwareAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request(nil), a.requests...)
+}
+
+type staticStream struct {
+	sessionID string
+	output    string
+}
+
+func (s staticStream) SessionID() string {
+	return s.sessionID
+}
+
+func (s staticStream) Wait(context.Context) (llm.Response, error) {
+	return llm.Response{StructuredOutput: []byte(s.output), DurationMS: 1}, nil
+}
+
+type failingStore struct {
+	*ledger.Store
+	insertPlannedActionErr error
+}
+
+func (s *failingStore) InsertPlannedAction(ctx context.Context, action ledger.PlannedAction) error {
+	if s.insertPlannedActionErr != nil {
+		return s.insertPlannedActionErr
+	}
+	return s.Store.InsertPlannedAction(ctx, action)
 }
 
 type fileKey struct {

@@ -88,6 +88,22 @@ func TestReviewNoPostIsDryRunAlias(t *testing.T) {
 	}
 }
 
+func TestReviewProfileResolveThreadsNeverDisablesThreadResolution(t *testing.T) {
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.ReviewPolicy.ResolveThreads = config.ResolveThreadsNever
+	cfg.Profiles["home"] = profile
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, cfg, fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 || !runner.requests[0].NoResolveThreads {
+		t.Fatalf("request NoResolveThreads = %#v, want true from profile", runner.requests)
+	}
+}
+
 func TestReviewRejectsUnsupportedLiveMode(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -150,6 +166,9 @@ func TestReviewDryRunJSONHasNoTextQuotaPrefix(t *testing.T) {
 	}
 	if decoded.Run.RunID != "run-1" || decoded.Quota == nil || len(decoded.Actions) != 1 {
 		t.Fatalf("decoded = %#v", decoded)
+	}
+	if decoded.FailOnTriggered || decoded.Artifacts.FindingsJSON != "/tmp/run-1/findings.json" || decoded.Artifacts.RollupMarkdown != "/tmp/run-1/rollup.md" {
+		t.Fatalf("decoded artifacts/fail-on = %#v", decoded)
 	}
 }
 
