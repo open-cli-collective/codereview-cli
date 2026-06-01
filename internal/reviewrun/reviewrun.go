@@ -138,6 +138,16 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 		return result, nil
 	case gateio.StatusBaseMovedAbort:
 		result.ExitCode = exitUpstream
+		result.Outbox = outbox.Result{ExitCode: exitUpstream}
+		if strings.TrimSpace(result.Run.RunID) != "" {
+			run, err := opts.Store.GetRun(ctx, result.Run.RunID)
+			if err != nil {
+				return result, err
+			}
+			result.Run = run
+			result.Outbox.Outcome = ledger.OutcomeAborted
+			result.Outbox.Aborted = true
+		}
 		result.Message = gateResult.Decision.Message
 		return result, nil
 	case gateio.StatusError:

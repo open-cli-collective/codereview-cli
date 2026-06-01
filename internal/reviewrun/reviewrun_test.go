@@ -238,6 +238,9 @@ func TestRunRetryPostsAbortsWithExitUpstreamWhenHeadMoves(t *testing.T) {
 	if result.ExitCode != exitUpstream || result.Status != gateio.StatusBaseMovedAbort || !strings.Contains(result.Message, "head") {
 		t.Fatalf("result = %#v, want moved-head upstream exit", result)
 	}
+	if !result.Outbox.Aborted || result.Outbox.Outcome != ledger.OutcomeAborted || result.Outbox.ExitCode != exitUpstream {
+		t.Fatalf("outbox result = %#v, want aborted outcome metadata", result.Outbox)
+	}
 	if planner.calls != 0 {
 		t.Fatalf("planner calls = %d, want retry-posts path to skip planning", planner.calls)
 	}
@@ -257,6 +260,9 @@ func TestRunRetryPostsAbortsWithExitUpstreamWhenHeadMoves(t *testing.T) {
 	}
 	if storedRun.Outcome == nil || *storedRun.Outcome != ledger.OutcomeAborted {
 		t.Fatalf("retry run outcome = %v, want aborted", storedRun.Outcome)
+	}
+	if result.Run.Outcome == nil || *result.Run.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("result run outcome = %v, want aborted", result.Run.Outcome)
 	}
 }
 

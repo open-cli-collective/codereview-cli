@@ -805,6 +805,50 @@ func TestEvaluateHeadMovedPrecheckDoesNotRequireLimiter(t *testing.T) {
 	})
 }
 
+func TestEvaluateRetryPostsIneligibleAfterMovedPremisesAbort(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+	insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+	if err := fixture.store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, testNow); err != nil {
+		t.Fatalf("CompleteRun failed: %v", err)
+	}
+	fixture.req.Flags.RetryPosts = true
+	moved := fixture.req.PR
+	moved.Head.SHA = strings.Repeat("d", 40)
+	if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+		t.Fatalf("SetPR moved: %v", err)
+	}
+
+	first, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate retry moved head: %v", err)
+	}
+	if first.Status != StatusBaseMovedAbort {
+		t.Fatalf("first Evaluate = %#v, want moved-premises abort", first)
+	}
+	abortedRun, err := fixture.store.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun aborted: %v", err)
+	}
+	if abortedRun.Outcome == nil || *abortedRun.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("retry run outcome = %v, want aborted", abortedRun.Outcome)
+	}
+	if err := fixture.provider.SetPR(fixture.req.PRRef, fixture.req.PR); err != nil {
+		t.Fatalf("SetPR restored: %v", err)
+	}
+
+	second, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate retry after abort: %v", err)
+	}
+	if second.Status != StatusError || second.Decision.ErrorReason != gate.ErrorRetryPostsIneligible {
+		t.Fatalf("second Evaluate = %#v, want retry-posts ineligible", second)
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("review writes = %d, want none", len(got))
+	}
+}
+
 func TestEvaluateOutboxErrorsReturnExecutionResultAndDurableState(t *testing.T) {
 	t.Run("repair", func(t *testing.T) {
 		fixture := newFixture(t)
