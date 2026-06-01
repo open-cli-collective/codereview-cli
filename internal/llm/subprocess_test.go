@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -240,8 +239,18 @@ func TestSubprocessRejectsUnsafeSpecs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildArgs(codex): %v", err)
 	}
-	if err := codex.validateArgs(append([]string{"--search"}, codexArgs...), scratch); !errors.Is(err, ErrUnsafeSubprocessConfig) {
-		t.Fatalf("validateArgs codex search error = %v, want ErrUnsafeSubprocessConfig", err)
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "search", args: append([]string{"--search"}, codexArgs...)},
+		{name: "add dir", args: append([]string{"--add-dir", t.TempDir()}, codexArgs...)},
+	} {
+		t.Run("codex "+tt.name, func(t *testing.T) {
+			if err := codex.validateArgs(tt.args, scratch); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+				t.Fatalf("validateArgs error = %v, want ErrUnsafeSubprocessConfig", err)
+			}
+		})
 	}
 
 	recordPath := filepath.Join(t.TempDir(), "record.json")
@@ -338,6 +347,29 @@ func TestSubprocessResumeUnsupported(t *testing.T) {
 	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
 	if _, err := adapter.Resume(context.Background(), "session", Request{}); err == nil {
 		t.Fatal("Resume error = nil, want unsupported")
+	}
+}
+
+func TestSubprocessToolUseDetectionIsPreciseAndBounded(t *testing.T) {
+	event, err := parseSubprocessEvent([]byte(`{"type":"message","delta":{"tool_use":0,"tool_call":false,"function_call":""},"structured_output":{"ok":true}}`))
+	if err != nil {
+		t.Fatalf("parseSubprocessEvent(false values): %v", err)
+	}
+	if event.toolUse {
+		t.Fatal("toolUse = true for falsey tool-use fields")
+	}
+
+	deepPayload := `{"type":"message","payload":` +
+		strings.Repeat(`{"payload":`, maxToolUseScanDepth+8) +
+		`{"type":"tool_use"}` +
+		strings.Repeat(`}`, maxToolUseScanDepth+8) +
+		`}`
+	event, err = parseSubprocessEvent([]byte(deepPayload))
+	if err != nil {
+		t.Fatalf("parseSubprocessEvent(deep payload): %v", err)
+	}
+	if event.toolUse {
+		t.Fatal("toolUse = true beyond max scan depth")
 	}
 }
 
@@ -503,11 +535,6 @@ func removeFlagPair(args []string, flag string) []string {
 		out = append(out, args[i])
 	}
 	return out
-}
-
-func processExists(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func eventually(t *testing.T, timeout time.Duration, condition func() bool) {

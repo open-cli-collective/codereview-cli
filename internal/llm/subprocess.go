@@ -137,9 +137,14 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
 	cmd.Dir = scratch
 	cmd.Stdin = nil
-	configureProcessGroup(cmd)
+	procGroup, err := newProcessGroup(cmd)
+	if err != nil {
+		cancel()
+		_ = cleanup()
+		return nil, err
+	}
 	cmd.Cancel = func() error {
-		return killProcessGroup(cmd)
+		return procGroup.kill(cmd)
 	}
 	if len(a.env) > 0 {
 		cmd.Env = append(os.Environ(), a.env...)
@@ -147,33 +152,49 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
+		_ = procGroup.close()
 		_ = cleanup()
 		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
+		_ = procGroup.close()
 		_ = cleanup()
 		return nil, err
 	}
 	logFile, err := openSubprocessLog(req.LogPath)
 	if err != nil {
 		cancel()
+		_ = procGroup.close()
 		_ = cleanup()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
 		closeSubprocessLog(logFile)
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+	if err := procGroup.afterStart(cmd); err != nil {
+		cancel()
+		_ = procGroup.kill(cmd)
+		go func() { _, _ = io.Copy(io.Discard, stdout) }()
+		go func() { _, _ = io.Copy(io.Discard, stderr) }()
+		_ = cmd.Wait()
+		closeSubprocessLog(logFile)
+		_ = procGroup.close()
 		_ = cleanup()
 		return nil, err
 	}
 
 	stream := &subprocessStream{
-		cancel:  cancel,
-		done:    make(chan struct{}),
-		logFile: logFile,
-		cleanup: cleanup,
+		cancel:       cancel,
+		done:         make(chan struct{}),
+		logFile:      logFile,
+		cleanup:      cleanup,
+		processGroup: procGroup,
 	}
 	go stream.run(procCtx, cmd, stdout, stderr)
 	return stream, nil
@@ -277,10 +298,12 @@ type subprocessStream struct {
 	sessionID string
 	result    subprocessResult
 
-	cancel  context.CancelFunc
-	done    chan struct{}
-	logFile *os.File
-	cleanup func() error
+	cancel       context.CancelFunc
+	done         chan struct{}
+	logMu        sync.Mutex
+	logFile      *os.File
+	cleanup      func() error
+	processGroup *processGroup
 }
 
 type subprocessResult struct {
@@ -316,7 +339,7 @@ func (s *subprocessStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Rea
 	go func() {
 		defer close(stderrDone)
 		if s.logFile != nil {
-			_, _ = io.Copy(s.logFile, stderr)
+			_, _ = io.Copy(subprocessLogWriter{stream: s}, stderr)
 			return
 		}
 		_, _ = io.Copy(io.Discard, stderr)
@@ -337,7 +360,11 @@ func (s *subprocessStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Rea
 	case len(scanResult.response.StructuredOutput) == 0:
 		result.err = errors.New("llm subprocess: no structured output")
 	}
-	closeSubprocessLog(s.logFile)
+	s.cancel()
+	if s.processGroup != nil {
+		_ = s.processGroup.close()
+	}
+	s.closeLog()
 	if s.cleanup != nil {
 		_ = s.cleanup()
 	}
@@ -358,9 +385,7 @@ func (s *subprocessStream) scanStdout(stdout io.Reader) scanResult {
 	var result scanResult
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
-		if s.logFile != nil {
-			_, _ = s.logFile.Write(append(line, '\n'))
-		}
+		s.writeLog(append(line, '\n'))
 		event, err := parseSubprocessEvent(line)
 		if err != nil {
 			s.cancel()
@@ -386,6 +411,35 @@ func (s *subprocessStream) scanStdout(stdout io.Reader) scanResult {
 	return result
 }
 
+type subprocessLogWriter struct {
+	stream *subprocessStream
+}
+
+func (w subprocessLogWriter) Write(p []byte) (int, error) {
+	w.stream.logMu.Lock()
+	defer w.stream.logMu.Unlock()
+	if w.stream.logFile == nil {
+		return len(p), nil
+	}
+	return w.stream.logFile.Write(p)
+}
+
+func (s *subprocessStream) writeLog(p []byte) {
+	if s.logFile == nil {
+		return
+	}
+	_, _ = subprocessLogWriter{stream: s}.Write(p)
+}
+
+func (s *subprocessStream) closeLog() {
+	if s.logFile == nil {
+		return
+	}
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	closeSubprocessLog(s.logFile)
+}
+
 func (s *subprocessStream) setSessionID(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -400,6 +454,8 @@ type subprocessEvent struct {
 	usage            Usage
 	toolUse          bool
 }
+
+const maxToolUseScanDepth = 64
 
 func parseSubprocessEvent(line []byte) (subprocessEvent, error) {
 	var decoded any
@@ -481,12 +537,19 @@ func eventIndicatesToolUse(value string) bool {
 }
 
 func valueIndicatesToolUse(value any) bool {
+	return valueIndicatesToolUseAtDepth(value, 0)
+}
+
+func valueIndicatesToolUseAtDepth(value any, depth int) bool {
+	if depth > maxToolUseScanDepth {
+		return false
+	}
 	switch typed := value.(type) {
 	case map[string]any:
-		return mapIndicatesToolUse(typed)
+		return mapIndicatesToolUse(typed, depth)
 	case []any:
 		for _, item := range typed {
-			if valueIndicatesToolUse(item) {
+			if valueIndicatesToolUseAtDepth(item, depth+1) {
 				return true
 			}
 		}
@@ -494,20 +557,37 @@ func valueIndicatesToolUse(value any) bool {
 	return false
 }
 
-func mapIndicatesToolUse(raw map[string]any) bool {
+func mapIndicatesToolUse(raw map[string]any, depth int) bool {
 	for key, value := range raw {
 		normalized := strings.ToLower(key)
 		if normalized == "tool_use" || normalized == "tool_call" || normalized == "function_call" {
-			return value != nil && value != false
+			return toolUseFieldIndicatesUse(value)
 		}
 		if (normalized == "type" || normalized == "name") && eventIndicatesToolUse(fmt.Sprint(value)) {
 			return true
 		}
-		if valueIndicatesToolUse(value) {
+		if valueIndicatesToolUseAtDepth(value, depth+1) {
 			return true
 		}
 	}
 	return false
+}
+
+func toolUseFieldIndicatesUse(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case bool:
+		return typed
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case map[string]any:
+		return len(typed) > 0
+	case []any:
+		return len(typed) > 0
+	default:
+		return false
+	}
 }
 
 func parseUsage(raw map[string]json.RawMessage) Usage {
