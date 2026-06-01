@@ -3,6 +3,7 @@ package reviewrun
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -65,6 +66,55 @@ func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 	}
 	if run.Outcome == nil || *run.Outcome != ledger.OutcomeComment {
 		t.Fatalf("run outcome = %#v, want comment", run.Outcome)
+	}
+}
+
+func TestRunCommitsNamedSessionCandidateAfterPostSuccess(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	candidate := testNamedSessionCandidate("provider-new")
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, namedCandidate: &candidate}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != 0 || result.Outbox.Aborted {
+		t.Fatalf("result = %#v, want successful post", result)
+	}
+	stored, err := fixture.store.GetNamedSession(ctx, candidate.Name)
+	if err != nil {
+		t.Fatalf("GetNamedSession: %v", err)
+	}
+	if stored.ProviderSessionID != candidate.ProviderSessionID ||
+		stored.CreatedAt != candidate.CreatedAt ||
+		stored.LastUsedAt != candidate.LastUsedAt ||
+		stored.Profile != candidate.Profile ||
+		stored.Host != candidate.Host {
+		t.Fatalf("stored named session = %#v, want %#v", stored, candidate)
+	}
+}
+
+func TestRunDoesNotCommitNamedSessionCandidateAfterOutboxStaleSHAAbort(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.fake.SetError(gitprovider.OperationPostIssueComment, gitprovider.WrapError(gitprovider.ErrStaleSHA, gitprovider.OperationPostIssueComment, nil))
+	candidate := testNamedSessionCandidate("provider-new")
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, namedCandidate: &candidate}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != exitUpstream || !result.Outbox.Aborted || result.Outbox.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("result = %#v, want stale-SHA abort", result)
+	}
+	if _, err := fixture.store.GetNamedSession(ctx, candidate.Name); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetNamedSession error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -573,10 +623,11 @@ func (s findingOnlyStore) ListFindings(ctx context.Context, runID string) ([]led
 }
 
 type fakePlanner struct {
-	store   *ledger.Store
-	outcome reviewplan.Outcome
-	calls   int
-	runs    []ledger.Run
+	store          *ledger.Store
+	outcome        reviewplan.Outcome
+	namedCandidate *ledger.NamedSession
+	calls          int
+	runs           []ledger.Run
 }
 
 func (p *fakePlanner) Live(_ context.Context, _ pipeline.Request, run ledger.Run) (pipeline.Result, error) {
@@ -592,10 +643,11 @@ func (p *fakePlanner) Live(_ context.Context, _ pipeline.Request, run ledger.Run
 		}
 	}
 	return pipeline.Result{
-		Run:       run,
-		PRKey:     run.PRKey,
-		Artifacts: pipeline.ArtifactPathsFromDir(run.ArtifactPath),
-		Plan:      reviewplan.Plan{Outcome: p.outcome},
+		Run:                   run,
+		PRKey:                 run.PRKey,
+		Artifacts:             pipeline.ArtifactPathsFromDir(run.ArtifactPath),
+		Plan:                  reviewplan.Plan{Outcome: p.outcome},
+		NamedSessionCandidate: p.namedCandidate,
 	}, nil
 }
 
@@ -636,6 +688,20 @@ func payloadJSON(t *testing.T, payload any) string {
 
 func strPtr(value string) *string {
 	return &value
+}
+
+func testNamedSessionCandidate(providerSessionID string) ledger.NamedSession {
+	return ledger.NamedSession{
+		Name:              "daily",
+		Profile:           "home",
+		Provider:          "anthropic",
+		Adapter:           "fake-llm",
+		Model:             "sonnet",
+		Host:              "github.com",
+		ProviderSessionID: providerSessionID,
+		CreatedAt:         testNow().Add(-time.Hour),
+		LastUsedAt:        testNow(),
+	}
 }
 
 type sequencedPRProvider struct {

@@ -126,6 +126,21 @@ func TestReviewLiveCallsRunnerAndRendersText(t *testing.T) {
 	}
 }
 
+func TestReviewLiveSessionPassesNamedSession(t *testing.T) {
+	runner := &fakeRunner{liveResult: testLiveResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--session", " daily "}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.liveRequests) != 1 {
+		t.Fatalf("live runner calls = %d, want 1", len(runner.liveRequests))
+	}
+	if runner.liveRequests[0].SessionName != "daily" {
+		t.Fatalf("SessionName = %q, want daily", runner.liveRequests[0].SessionName)
+	}
+}
+
 func TestReviewLiveRetryPostsCallsRunner(t *testing.T) {
 	runner := &fakeRunner{liveResult: testLiveResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -153,6 +168,9 @@ func TestReviewRejectsInvalidInputs(t *testing.T) {
 		{name: "negative agents", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--max-agents", "-1"}},
 		{name: "negative concurrency", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--max-concurrency", "-1"}},
 		{name: "rerun retry conflict", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--rerun", "--retry-posts"}},
+		{name: "session dry run", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--session", "daily"}},
+		{name: "session no post", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--no-post", "--session", "daily"}},
+		{name: "session retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--session", "daily"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -87,8 +87,14 @@ func RunStructured[T any](ctx context.Context, adapter Adapter, req Request, dec
 // RunStructuredWithSession is RunStructured plus the provider session id from
 // the successful attempt. It preserves the same retry-once validation behavior.
 func RunStructuredWithSession[T any](ctx context.Context, adapter Adapter, req Request, decode Decoder[T]) (StructuredResult[T], error) {
+	return RunStructuredWithSessionResume(ctx, adapter, "", req, decode)
+}
+
+// RunStructuredWithSessionResume is RunStructuredWithSession starting from an
+// existing provider session id when provided.
+func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter, resumeSessionID string, req Request, decode Decoder[T]) (StructuredResult[T], error) {
 	var zero T
-	sessionID, response, err := runOnceWithSession(ctx, adapter, req)
+	sessionID, response, err := runOnceWithSession(ctx, adapter, resumeSessionID, req)
 	if err != nil {
 		return StructuredResult[T]{Response: response}, err
 	}
@@ -99,7 +105,11 @@ func RunStructuredWithSession[T any](ctx context.Context, adapter Adapter, req R
 
 	retryReq := req
 	retryReq.Prompt = retryPrompt(req.Prompt, decodeErr)
-	retrySessionID, retryResponse, err := runOnceWithSession(ctx, adapter, retryReq)
+	retryResumeSessionID := sessionID
+	if strings.TrimSpace(retryResumeSessionID) == "" {
+		retryResumeSessionID = resumeSessionID
+	}
+	retrySessionID, retryResponse, err := runOnceWithSession(ctx, adapter, retryResumeSessionID, retryReq)
 	if err != nil {
 		return StructuredResult[T]{Response: retryResponse}, err
 	}
@@ -110,8 +120,16 @@ func RunStructuredWithSession[T any](ctx context.Context, adapter Adapter, req R
 	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID}, nil
 }
 
-func runOnceWithSession(ctx context.Context, adapter Adapter, req Request) (string, Response, error) {
-	stream, err := adapter.Start(ctx, req)
+func runOnceWithSession(ctx context.Context, adapter Adapter, resumeSessionID string, req Request) (string, Response, error) {
+	var (
+		stream Stream
+		err    error
+	)
+	if strings.TrimSpace(resumeSessionID) != "" && adapter.SupportsResume() {
+		stream, err = adapter.Resume(ctx, resumeSessionID, req)
+	} else {
+		stream, err = adapter.Start(ctx, req)
+	}
 	if err != nil {
 		return "", Response{}, err
 	}

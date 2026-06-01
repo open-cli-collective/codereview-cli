@@ -65,6 +65,7 @@ type commandFlags struct {
 	retryPosts       bool
 	agentsDirs       []string
 	failOn           string
+	sessionName      string
 	jsonOutput       bool
 	verbose          bool
 	maxAgents        int
@@ -101,6 +102,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.retryPosts, "retry-posts", false, "Retry missing or failed required posts without rerunning review")
 	cmd.Flags().StringArrayVar(&flags.agentsDirs, "agents-dir", nil, "Additional trusted agents directory")
 	cmd.Flags().StringVar(&flags.failOn, "fail-on", "", "Exit 1 when a finding at or above severity exists")
+	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Named LLM session to reuse for live reviews")
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 	cmd.Flags().BoolVar(&flags.verbose, "verbose", false, "Emit additional diagnostic details")
 	cmd.Flags().IntVar(&flags.maxAgents, "max-agents", 0, "Maximum selected reviewer agents")
@@ -117,6 +119,13 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	if flags.rerun && flags.retryPosts {
 		return exitcode.Usage(fmt.Errorf("--rerun and --retry-posts are mutually exclusive"))
+	}
+	sessionName := strings.TrimSpace(flags.sessionName)
+	if sessionName != "" && flags.dryRun {
+		return exitcode.Usage(fmt.Errorf("--session requires live review and cannot be used with --dry-run or --no-post"))
+	}
+	if sessionName != "" && flags.retryPosts {
+		return exitcode.Usage(fmt.Errorf("--session cannot be used with --retry-posts"))
 	}
 	if flags.maxAgents < 0 {
 		return exitcode.Usage(fmt.Errorf("--max-agents must be non-negative"))
@@ -168,6 +177,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		PRRef:               ref,
 		PRURL:               prArg,
 		ProfileName:         profileName,
+		SessionName:         sessionName,
 		Profile:             profile,
 		PostingIdentity:     runtime.PostingIdentity,
 		AgentDirs:           append([]string(nil), flags.agentsDirs...),
@@ -455,7 +465,9 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		Provider:       provider,
 		Adapter:        adapter,
 		Store:          ledgerStore,
+		NamedSessions:  ledgerStore,
 		Layout:         layout,
+		Warnings:       opts.Stderr,
 		MaxAgents:      runtimeOpts.MaxAgents,
 		MaxConcurrency: runtimeOpts.MaxConcurrency,
 	}
