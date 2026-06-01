@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -279,9 +278,6 @@ func TestSubprocessRejectsUnsafeSpecs(t *testing.T) {
 }
 
 func TestSubprocessToolUseKillsProcessGroup(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("process-tree kill assertion is Unix-specific")
-	}
 	tempDir := t.TempDir()
 	recordPath := filepath.Join(tempDir, "record.json")
 	childPIDPath := filepath.Join(tempDir, "child.pid")
@@ -315,9 +311,6 @@ func TestSubprocessToolUseKillsProcessGroup(t *testing.T) {
 }
 
 func TestSubprocessTimeoutKillsProcessGroup(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("process-tree kill assertion is Unix-specific")
-	}
 	tempDir := t.TempDir()
 	recordPath := filepath.Join(tempDir, "record.json")
 	childPIDPath := filepath.Join(tempDir, "child.pid")
