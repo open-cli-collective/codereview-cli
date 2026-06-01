@@ -74,8 +74,9 @@ func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {
 	if shared.Description != "flag desc" || shared.Provenance.String() != "flag:1" {
 		t.Fatalf("shared winner = (%q,%q), want flag override", shared.Description, shared.Provenance.String())
 	}
-	if got := shared.Overridden; len(got) != 2 || got[0] == got[1] {
-		t.Fatalf("overridden provenance = %#v, want profile and repo provenance", got)
+	wantOverridden := []string{"profile:" + filepath.Base(filepath.Clean(profileDir)), "repo@refs/heads/main:base-sh"}
+	if got := shared.Overridden; strings.Join(got, ",") != strings.Join(wantOverridden, ",") {
+		t.Fatalf("overridden provenance = %#v, want %#v", got, wantOverridden)
 	}
 	repoOnly, ok := catalog.Find("repo:only")
 	if !ok {
@@ -128,6 +129,13 @@ func TestMissingRepoAgentsTreeIsEmptySource(t *testing.T) {
 	}
 	if catalog.Repo == nil {
 		t.Fatal("repo info nil, want base trust metadata even when tree is absent")
+	}
+}
+
+func TestLoadRejectsEmptyFilesystemSource(t *testing.T) {
+	_, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{""}})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Load error = %v, want ErrInvalid", err)
 	}
 }
 
@@ -212,9 +220,46 @@ func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
 		setup func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR)
 	}{
 		{
+			name: "dot category tree name",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: ".", Type: "tree"})
+			},
+		},
+		{
 			name: "unsafe category tree name",
 			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
 				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "bad..category", Type: "tree"})
+			},
+		},
+		{
+			name: "colon category tree name",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "bad:category", Type: "tree"})
+			},
+		},
+		{
+			name: "empty category yaml name",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				categoryPath := repoAgentsRoot + "/cat"
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: \"\"\ndescription: cat category\nowner: owner\n"))
+			},
+		},
+		{
+			name: "category yaml mismatch",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				categoryPath := repoAgentsRoot + "/cat"
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: other\ndescription: cat category\nowner: owner\n"))
+			},
+		},
+		{
+			name: "unsafe agent tree name",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				categoryPath := repoAgentsRoot + "/cat"
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
+				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: categoryPath + `/bad\agent`, Type: "tree"})
 			},
 		},
 		{
@@ -226,6 +271,42 @@ func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
 				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
 				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
 				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("bad/name", "desc", "sonnet", "medium")))
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
+			},
+		},
+		{
+			name: "empty agent yaml name",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				categoryPath := repoAgentsRoot + "/cat"
+				agentPath := categoryPath + "/agent"
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
+				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("", "desc", "sonnet", "medium")))
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
+			},
+		},
+		{
+			name: "agent yaml backslash",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				categoryPath := repoAgentsRoot + "/cat"
+				agentPath := categoryPath + "/agent"
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
+				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML(`bad\name`, "desc", "sonnet", "medium")))
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
+			},
+		},
+		{
+			name: "unknown yaml field",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				categoryPath := repoAgentsRoot + "/cat"
+				agentPath := categoryPath + "/agent"
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
+				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("agent", "desc", "sonnet", "medium")+"unexpected: true\n"))
 				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
 			},
 		},
@@ -242,6 +323,20 @@ func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
 				t.Fatalf("Load error = %v, want ErrInvalid", err)
 			}
 		})
+	}
+}
+
+func TestRepoLoadRejectsMismatchedSourceRef(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	otherRef := ref
+	otherRef.Number = 99
+	reader := newRepoReader()
+	reader.addAgent(t, ref, pr.Base.SHA, "cat", "agent", "desc", "prompt")
+
+	_, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: otherRef, PR: pr}})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Load error = %v, want ErrInvalid", err)
 	}
 }
 

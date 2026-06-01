@@ -61,7 +61,7 @@ func newListCommand(opts *root.Options, factory ProviderFactory) *cobra.Command 
 			if len(args) == 1 {
 				prArg = args[0]
 			}
-			catalog, err := loadCatalog(cmd.Context(), cmd, opts, factory, flags, prArg)
+			catalog, err := buildCatalog(cmd.Context(), cmd, opts, factory, flags, prArg)
 			if err != nil {
 				return err
 			}
@@ -92,7 +92,7 @@ func newShowCommand(opts *root.Options, factory ProviderFactory) *cobra.Command 
 			if len(args) == 2 {
 				prArg = args[1]
 			}
-			catalog, err := loadCatalog(cmd.Context(), cmd, opts, factory, flags, prArg)
+			catalog, err := buildCatalog(cmd.Context(), cmd, opts, factory, flags, prArg)
 			if err != nil {
 				return err
 			}
@@ -116,7 +116,9 @@ func addCommonFlags(cmd *cobra.Command, flags *commandFlags) {
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 }
 
-func loadCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory ProviderFactory, flags commandFlags, prArg string) (agents.Catalog, error) {
+// buildCatalog loads config, resolves the active profile, optionally resolves a PR,
+// manages provider lifetime, and loads the trusted agent catalog.
+func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory ProviderFactory, flags commandFlags, prArg string) (agents.Catalog, error) {
 	path, err := configPath(opts)
 	if err != nil {
 		return agents.Catalog{}, exitcode.AuthConfig(err)
@@ -138,6 +140,9 @@ func loadCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, fa
 		ref, err := parsePRRef(prArg)
 		if err != nil {
 			return agents.Catalog{}, exitcode.Usage(err)
+		}
+		if !sameHost(ref.Host, profile.Git.Host) {
+			return agents.Catalog{}, exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
 		}
 		provider, cleanup, err := factory(cmd, opts, cfg, profile)
 		if err != nil {
@@ -174,6 +179,18 @@ func mapLoadError(err error) error {
 	default:
 		return err
 	}
+}
+
+func sameHost(left, right string) bool {
+	return normalizeHost(left) == normalizeHost(right)
+}
+
+func normalizeHost(raw string) string {
+	host := strings.TrimSpace(raw)
+	if parsed, err := url.Parse(host); err == nil && parsed.Host != "" {
+		host = parsed.Host
+	}
+	return strings.ToLower(strings.TrimSuffix(host, "/"))
 }
 
 func parsePRRef(raw string) (gitprovider.PRRef, error) {

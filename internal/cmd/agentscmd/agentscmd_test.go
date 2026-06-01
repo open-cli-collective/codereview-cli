@@ -134,6 +134,15 @@ func TestAgentsListRejectsInvalidPRArg(t *testing.T) {
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("http URL exit code = %d, want usage", got)
 	}
+
+	cmd, _ = newTestCommand(t, cfg, providerFactory(&gitprovider.Fake{}))
+	err = root.Execute(cmd, []string{"agents", "list", "https://gitlab.com/open-cli-collective/codereview-cli/pull/28"})
+	if err == nil {
+		t.Fatal("Execute wrong host error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("wrong host exit code = %d, want usage", got)
+	}
 }
 
 func newTestCommand(t *testing.T, cfg config.File, factory ProviderFactory) (*cobra.Command, *bytes.Buffer) {

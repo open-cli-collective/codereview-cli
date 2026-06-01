@@ -209,13 +209,13 @@ func (b *catalogBuilder) sorted() []Agent {
 	return out
 }
 
-type categoryIndex struct {
+type categoryYAML struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 	Owner       string `yaml:"owner"`
 }
 
-type agentIndex struct {
+type agentYAML struct {
 	Name                 string   `yaml:"name"`
 	Description          string   `yaml:"description"`
 	Model                string   `yaml:"model"`
@@ -229,6 +229,9 @@ func loadFileSource(rawDir string, provenance Provenance) ([]Agent, error) {
 	dir, err := expandPath(rawDir)
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(dir) == "" {
+		return nil, fmt.Errorf("%w: agent source path is required", ErrInvalid)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -260,7 +263,7 @@ func loadFileSource(rawDir string, provenance Provenance) ([]Agent, error) {
 }
 
 func readFileCategory(filePath, pathName string) (Category, error) {
-	var index categoryIndex
+	var index categoryYAML
 	if err := decodeYAMLFile(filePath, &index); err != nil {
 		return Category{}, err
 	}
@@ -297,7 +300,7 @@ func readFileAgents(categoryPath string, category Category, provenance Provenanc
 }
 
 func readFileAgent(agentPath string, category Category, pathName string, provenance Provenance) (Agent, error) {
-	var index agentIndex
+	var index agentYAML
 	if err := decodeYAMLFile(filepath.Join(agentPath, "index.yaml"), &index); err != nil {
 		return Agent{}, err
 	}
@@ -317,6 +320,9 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 	}
 	if err := source.Ref.Validate(); err != nil {
 		return nil, err
+	}
+	if source.PR.Ref != (gitprovider.PRRef{}) && source.PR.Ref != source.Ref {
+		return nil, fmt.Errorf("%w: PR ref %v does not match source ref %v", ErrInvalid, source.PR.Ref, source.Ref)
 	}
 	baseSHA := strings.TrimSpace(source.PR.Base.SHA)
 	if baseSHA == "" {
@@ -359,7 +365,7 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 }
 
 func readRepoCategory(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath, pathName string) (Category, error) {
-	var index categoryIndex
+	var index categoryYAML
 	if err := decodeRepoYAML(ctx, reader, ref, gitRef, path.Join(categoryPath, "index.yaml"), &index); err != nil {
 		return Category{}, err
 	}
@@ -399,7 +405,7 @@ func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRe
 }
 
 func readRepoAgent(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, agentPath string, category Category, pathName string, provenance Provenance) (Agent, error) {
-	var index agentIndex
+	var index agentYAML
 	if err := decodeRepoYAML(ctx, reader, ref, gitRef, path.Join(agentPath, "index.yaml"), &index); err != nil {
 		return Agent{}, err
 	}
@@ -413,7 +419,7 @@ func readRepoAgent(ctx context.Context, reader RepoReader, ref gitprovider.PRRef
 	return newAgent(category, pathName, index, string(prompt), provenance), nil
 }
 
-func newAgent(category Category, name string, index agentIndex, prompt string, provenance Provenance) Agent {
+func newAgent(category Category, name string, index agentYAML, prompt string, provenance Provenance) Agent {
 	return Agent{
 		ID:                   category.Name + ":" + name,
 		Name:                 name,
@@ -476,6 +482,9 @@ func validateMatchingName(kind, pathName, yamlName string) error {
 func validateName(kind, value string) error {
 	if value == "" {
 		return fmt.Errorf("%w: %s name is required", ErrInvalid, kind)
+	}
+	if value == "." {
+		return fmt.Errorf("%w: unsafe %s name %q", ErrInvalid, kind, value)
 	}
 	if strings.TrimSpace(value) != value {
 		return fmt.Errorf("%w: %s name %q has surrounding whitespace", ErrInvalid, kind, value)
