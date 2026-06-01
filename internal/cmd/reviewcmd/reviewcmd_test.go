@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,6 +27,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
+	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -126,6 +129,149 @@ func TestReviewLiveCallsRunnerAndRendersText(t *testing.T) {
 	}
 }
 
+func TestReviewLiveSessionPassesNamedSession(t *testing.T) {
+	runner := &fakeRunner{liveResult: testLiveResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--session", " daily "}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.liveRequests) != 1 {
+		t.Fatalf("live runner calls = %d, want 1", len(runner.liveRequests))
+	}
+	if runner.liveRequests[0].SessionName != "daily" {
+		t.Fatalf("SessionName = %q, want daily", runner.liveRequests[0].SessionName)
+	}
+}
+
+func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	}()
+	provider := &gitprovider.Fake{}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	var warnings bytes.Buffer
+
+	runner := buildReviewRunner(
+		store,
+		provider,
+		adapter,
+		noopLimiter{},
+		statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		&warnings,
+		RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2},
+	)
+
+	if runner.pipeline.NamedSessions != store {
+		t.Fatalf("pipeline NamedSessions = %#v, want ledger store", runner.pipeline.NamedSessions)
+	}
+	if runner.pipeline.Warnings != &warnings || runner.live.Warnings != &warnings {
+		t.Fatalf("warnings not wired through pipeline/live")
+	}
+	planner, ok := runner.live.Planner.(livePlanner)
+	if !ok {
+		t.Fatalf("live planner = %T, want livePlanner", runner.live.Planner)
+	}
+	if planner.opts.NamedSessions != store || planner.opts.Warnings != &warnings {
+		t.Fatalf("planner opts did not preserve named-session dependencies: %#v", planner.opts)
+	}
+	if runner.pipeline.MaxAgents != 3 || runner.pipeline.MaxConcurrency != 2 {
+		t.Fatalf("runtime opts = maxAgents:%d maxConcurrency:%d, want 3/2", runner.pipeline.MaxAgents, runner.pipeline.MaxConcurrency)
+	}
+}
+
+func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
+	cfg := testConfig()
+	agentDir := t.TempDir()
+	writeReviewAgent(t, agentDir)
+	profile := cfg.Profiles["home"]
+	profile.AgentSources = []string{agentDir}
+	cfg.Profiles["home"] = profile
+
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
+	baseSHA := strings.Repeat("b", 40)
+	headSHA := strings.Repeat("a", 40)
+	pr := gitprovider.PR{
+		Ref:    ref,
+		URL:    "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		State:  gitprovider.PRStateOpen,
+		Author: gitprovider.Identity{Login: "author", ID: "author-id"},
+		Base: gitprovider.PRBranchRef{
+			Host:  ref.Host,
+			Owner: ref.Owner,
+			Repo:  ref.Repo,
+			Name:  "main",
+			Ref:   "refs/heads/main",
+			SHA:   baseSHA,
+		},
+		Head: gitprovider.PRBranchRef{
+			Host:  ref.Host,
+			Owner: ref.Owner,
+			Repo:  ref.Repo,
+			Name:  "feature",
+			Ref:   "refs/heads/feature",
+			SHA:   headSHA,
+		},
+	}
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("approve", nil)))
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		runner := buildReviewRunner(
+			store,
+			provider,
+			adapter,
+			noopLimiter{},
+			statepaths.NewLayout(t.TempDir(), t.TempDir()),
+			opts.Stderr,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", pr.URL, "--session", "daily"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	session, err := store.GetNamedSession(context.Background(), "daily")
+	if err != nil {
+		t.Fatalf("GetNamedSession: %v", err)
+	}
+	if session.ProviderSessionID != "rollup-session" || session.Profile != "home" || session.Model != "sonnet" {
+		t.Fatalf("named session = %#v, want live runner persisted rollup scoped to profile/model", session)
+	}
+	resumes := adapter.Resumes()
+	if len(resumes) != 1 || resumes[0].SessionID != "selection-session" {
+		t.Fatalf("resumes = %#v, want rollup resumed from selection", resumes)
+	}
+}
+
 func TestReviewLiveRetryPostsCallsRunner(t *testing.T) {
 	runner := &fakeRunner{liveResult: testLiveResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -153,6 +299,9 @@ func TestReviewRejectsInvalidInputs(t *testing.T) {
 		{name: "negative agents", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--max-agents", "-1"}},
 		{name: "negative concurrency", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--max-concurrency", "-1"}},
 		{name: "rerun retry conflict", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--rerun", "--retry-posts"}},
+		{name: "session dry run", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--session", "daily"}},
+		{name: "session no post", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--no-post", "--session", "daily"}},
+		{name: "session retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--session", "daily"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -315,6 +464,10 @@ type fakeRunner struct {
 	liveFlags    []reviewrun.Flags
 }
 
+type noopLimiter struct{}
+
+func (noopLimiter) Wait(context.Context, string) error { return nil }
+
 func (r *fakeRunner) DryRun(_ context.Context, req pipeline.Request) (pipeline.Result, error) {
 	r.requests = append(r.requests, req)
 	if r.err != nil {
@@ -472,6 +625,59 @@ func testLiveResult(failOnTriggered bool) reviewrun.Result {
 
 func stringPtr(value string) *string {
 	return &value
+}
+
+func writeReviewAgent(t *testing.T, rootDir string) {
+	t.Helper()
+	writeReviewFile(t, filepath.Join(rootDir, "harness", "index.yaml"), "name: harness\ndescription: harness category\nowner: owner\n")
+	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "index.yaml"), "name: reviewer\ndescription: reviewer\nmodel: sonnet\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
+	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "prompt.md"), "Review carefully.")
+}
+
+func writeReviewFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func reviewSmallDiff(path string) string {
+	return strings.Join([]string{
+		"diff --git a/" + path + " b/" + path,
+		"index 1111111..2222222 100644",
+		"--- a/" + path,
+		"+++ b/" + path,
+		"@@ -1,2 +1,2 @@",
+		" package main",
+		"-var changed = false",
+		"+var changed = true",
+		"",
+	}, "\n")
+}
+
+func fakeReviewLLMResult(sessionID, structured string) llm.FakeResult {
+	return llm.FakeResult{
+		SessionID: sessionID,
+		Response:  llm.Response{StructuredOutput: []byte(structured), DurationMS: 1},
+	}
+}
+
+func reviewRollupJSON(event string, ordered []string) string {
+	payload := map[string]any{
+		"schema_version":         1,
+		"review_event":           event,
+		"review_event_rationale": "policy",
+		"dedupe_log":             []any{},
+		"ordered_findings":       ordered,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		panic(fmt.Sprintf("marshal rollup: %v", err))
+	}
+	return string(data)
 }
 
 func TestFakeFactoryErrorIsReturned(t *testing.T) {

@@ -37,6 +37,7 @@ type Store interface {
 	gateio.Store
 	ListFindings(context.Context, string) ([]ledger.Finding, error)
 	ListSessionsForRun(context.Context, string) ([]ledger.Session, error)
+	UpsertNamedSession(context.Context, ledger.NamedSession) error
 }
 
 // Planner runs the CR-20 planning phases into a live run.
@@ -255,6 +256,11 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 	result.ExitCode = postResult.ExitCode
 	if err != nil {
 		return result, err
+	}
+	if !postResult.Aborted && planResult != nil && planResult.NamedSessionCandidate != nil {
+		if err := opts.Store.UpsertNamedSession(ctx, *planResult.NamedSessionCandidate); err != nil {
+			return result, err
+		}
 	}
 	run, err := opts.Store.GetRun(ctx, result.Run.RunID)
 	if err != nil {

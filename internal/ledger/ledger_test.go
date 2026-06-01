@@ -640,6 +640,42 @@ func TestTypedPersistenceRoundTrips(t *testing.T) {
 	}
 }
 
+func TestNamedSessionListAndDelete(t *testing.T) {
+	store := openStore(t)
+
+	daily := validNamedSession()
+	alpha := validNamedSession()
+	alpha.Name = "alpha"
+	alpha.ProviderSessionID = "provider-session-alpha"
+	alpha.CreatedAt = daily.CreatedAt.Add(time.Minute)
+	alpha.LastUsedAt = daily.LastUsedAt.Add(time.Minute)
+
+	if err := store.UpsertNamedSession(context.Background(), daily); err != nil {
+		t.Fatalf("UpsertNamedSession daily: %v", err)
+	}
+	if err := store.UpsertNamedSession(context.Background(), alpha); err != nil {
+		t.Fatalf("UpsertNamedSession alpha: %v", err)
+	}
+
+	sessions, err := store.ListNamedSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListNamedSessions: %v", err)
+	}
+	if want := []NamedSession{alpha, daily}; !reflect.DeepEqual(sessions, want) {
+		t.Fatalf("ListNamedSessions = %#v, want %#v", sessions, want)
+	}
+
+	if err := store.DeleteNamedSession(context.Background(), "alpha"); err != nil {
+		t.Fatalf("DeleteNamedSession: %v", err)
+	}
+	if _, err := store.GetNamedSession(context.Background(), "alpha"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetNamedSession deleted error = %v, want ErrNotFound", err)
+	}
+	if err := store.DeleteNamedSession(context.Background(), "alpha"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteNamedSession missing error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestUpdatePlannedActionPersistsMutableFields(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, validAllocateRunParams())
@@ -1079,6 +1115,9 @@ func TestCloseStopsWriterAndRejectsMutation(t *testing.T) {
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("AllocateRun after Close error = %v, want ErrClosed", err)
 	}
+	if err := store.DeleteNamedSession(context.Background(), "daily"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("DeleteNamedSession after Close error = %v, want ErrClosed", err)
+	}
 
 	readChecks := []struct {
 		name string
@@ -1102,6 +1141,10 @@ func TestCloseStopsWriterAndRejectsMutation(t *testing.T) {
 		}},
 		{name: "ListPlannedActions", run: func() error {
 			_, err := store.ListPlannedActions(context.Background(), "run-1")
+			return err
+		}},
+		{name: "ListNamedSessions", run: func() error {
+			_, err := store.ListNamedSessions(context.Background())
 			return err
 		}},
 		{name: "GetNamedSession", run: func() error {

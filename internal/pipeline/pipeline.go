@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +24,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/sessionreuse"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
 
@@ -51,6 +53,11 @@ type Store interface {
 	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
 }
 
+// NamedSessionStore reads cross-run named LLM sessions.
+type NamedSessionStore interface {
+	GetNamedSession(context.Context, string) (ledger.NamedSession, error)
+}
+
 // ContextBudget limits prompt size. A negative MaxPromptBytes disables checks.
 type ContextBudget struct {
 	MaxPromptBytes int
@@ -58,10 +65,12 @@ type ContextBudget struct {
 
 // Options contains dry-run pipeline dependencies.
 type Options struct {
-	Provider ReadProvider
-	Adapter  llm.Adapter
-	Store    Store
-	Layout   statepaths.Layout
+	Provider      ReadProvider
+	Adapter       llm.Adapter
+	Store         Store
+	NamedSessions NamedSessionStore
+	Layout        statepaths.Layout
+	Warnings      io.Writer
 
 	Now             func() time.Time
 	NewRunID        func() string
@@ -79,6 +88,7 @@ type Request struct {
 	PRRef           gitprovider.PRRef
 	PRURL           string
 	ProfileName     string
+	SessionName     string
 	Profile         config.Profile
 	PostingIdentity gitprovider.Identity
 	AgentDirs       []string
@@ -122,36 +132,38 @@ func (p ArtifactPaths) AgentLog(agentID string) (string, error) {
 
 // Result is the completed dry-run pipeline output.
 type Result struct {
-	Run              ledger.Run
-	PR               gitprovider.PR
-	PRKey            string
-	Artifacts        ArtifactPaths
-	Quota            llm.Quota
-	QuotaSupported   bool
-	QuotaLow         bool
-	Catalog          agents.Catalog
-	Selection        llm.Selection
-	Findings         []review.Finding
-	Rollup           review.Rollup
-	Plan             reviewplan.Plan
-	Sessions         []ledger.Session
-	PlannedActions   []ledger.PlannedAction
-	FailOnTriggered  bool
-	EffectiveCaps    reviewplan.ProviderCaps
-	AgentDefsChanged bool
+	Run                   ledger.Run
+	PR                    gitprovider.PR
+	PRKey                 string
+	Artifacts             ArtifactPaths
+	Quota                 llm.Quota
+	QuotaSupported        bool
+	QuotaLow              bool
+	Catalog               agents.Catalog
+	Selection             llm.Selection
+	Findings              []review.Finding
+	Rollup                review.Rollup
+	Plan                  reviewplan.Plan
+	Sessions              []ledger.Session
+	PlannedActions        []ledger.PlannedAction
+	NamedSessionCandidate *ledger.NamedSession
+	FailOnTriggered       bool
+	EffectiveCaps         reviewplan.ProviderCaps
+	AgentDefsChanged      bool
 }
 
 type sessionDraft struct {
-	rowID             string
-	providerSessionID string
-	role              ledger.SessionRole
-	agentID           *string
-	adapter           string
-	model             string
-	effort            string
-	startedAt         time.Time
-	completedAt       time.Time
-	response          llm.Response
+	rowID                     string
+	providerReportedSessionID string
+	providerSessionID         string
+	role                      ledger.SessionRole
+	agentID                   *string
+	adapter                   string
+	model                     string
+	effort                    string
+	startedAt                 time.Time
+	completedAt               time.Time
+	response                  llm.Response
 }
 
 type executionMode struct {
@@ -159,6 +171,15 @@ type executionMode struct {
 	run          ledger.Run
 	planPostMode reviewplan.PostMode
 	completeAs   ledger.Outcome
+}
+
+type namedSessionState struct {
+	enabled                  bool
+	active                   sessionreuse.Scope
+	stored                   *ledger.NamedSession
+	supportsResume           bool
+	currentProviderSessionID string
+	createdAt                time.Time
 }
 
 // DryRun executes the dry-run review pipeline.
@@ -269,8 +290,15 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	var sessionDrafts []sessionDraft
 	findingSession := map[review.FindingID]string{}
 	model, effort := orchestratorModel(catalog)
+	namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, model, now)
+	if err != nil {
+		return Result{}, err
+	}
 
 	if len(parsed.Patches) == 0 {
+		if namedSession.enabled {
+			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
+		}
 		plan, err := opts.buildPlan(req, pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged)
 		if err != nil {
 			return Result{}, err
@@ -288,7 +316,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		if err != nil {
 			return Result{}, err
 		}
-		selection, selectionSession, err := runStructured(ctx, opts, ledger.SessionRoleOrchestrator, nil, model, effort, selectionLog, selectionPrompt, func(data []byte) (llm.Selection, error) {
+		selection, selectionSession, err := runStructuredResume(ctx, opts, ledger.SessionRoleOrchestrator, nil, model, effort, selectionLog, selectionPrompt, namedSession.resumeID(), func(data []byte) (llm.Selection, error) {
 			return llm.DecodeSelection(data, llm.SelectionOptions{
 				KnownAgents:  knownAgents(catalog),
 				ChangedFiles: changedFiles(parsed.Patches),
@@ -303,6 +331,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.Selection = selection
 		sessionDrafts = append(sessionDrafts, selectionSession)
+		namedSession.recordSessionID(selectionSession)
 
 		findings, reviewerSessions, reviewerFindingSessions, err := runReviewers(ctx, opts, req, pr, catalog, parsed, artifacts, selection, maxConcurrency)
 		if err != nil {
@@ -325,7 +354,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		if err != nil {
 			return Result{}, err
 		}
-		rollup, rollupSession, err := runStructured(ctx, opts, ledger.SessionRoleOrchestrator, nil, model, effort, rollupLog, rollupPrompt, func(data []byte) (review.Rollup, error) {
+		rollup, rollupSession, err := runStructuredResume(ctx, opts, ledger.SessionRoleOrchestrator, nil, model, effort, rollupLog, rollupPrompt, namedSession.resumeID(), func(data []byte) (review.Rollup, error) {
 			return llm.DecodeRollup(data, llm.RollupOptions{
 				FindingSeverities:         findingSeverities(findings),
 				MajorEventRequestsChanges: req.MajorRequestChanges,
@@ -336,6 +365,10 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.Rollup = rollup
 		sessionDrafts = append(sessionDrafts, rollupSession)
+		result.NamedSessionCandidate = namedSession.buildCandidate(rollupSession, opts.now())
+		if namedSession.enabled && result.NamedSessionCandidate == nil {
+			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
+		}
 
 		plan, err := opts.buildPlan(req, pr, mode.planPostMode, result.EffectiveCaps, parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged)
 		if err != nil {
@@ -513,8 +546,12 @@ func runReviewer(ctx context.Context, opts Options, req Request, pr gitprovider.
 }
 
 func runStructured[T any](ctx context.Context, opts Options, role ledger.SessionRole, agentID *string, model, effort, logPath, prompt string, decode llm.Decoder[T]) (T, sessionDraft, error) {
+	return runStructuredResume(ctx, opts, role, agentID, model, effort, logPath, prompt, "", decode)
+}
+
+func runStructuredResume[T any](ctx context.Context, opts Options, role ledger.SessionRole, agentID *string, model, effort, logPath, prompt, resumeSessionID string, decode llm.Decoder[T]) (T, sessionDraft, error) {
 	started := opts.now()
-	result, err := llm.RunStructuredWithSession(ctx, opts.Adapter, llm.Request{
+	result, err := llm.RunStructuredWithSessionResume(ctx, opts.Adapter, resumeSessionID, llm.Request{
 		Model:   model,
 		Effort:  effort,
 		Prompt:  prompt,
@@ -522,16 +559,17 @@ func runStructured[T any](ctx context.Context, opts Options, role ledger.Session
 	}, decode)
 	completed := opts.now()
 	draft := sessionDraft{
-		rowID:             opts.newSessionRowID(),
-		providerSessionID: result.SessionID,
-		role:              role,
-		agentID:           agentID,
-		adapter:           opts.Adapter.Name(),
-		model:             model,
-		effort:            effort,
-		startedAt:         started,
-		completedAt:       completed,
-		response:          result.Response,
+		rowID:                     opts.newSessionRowID(),
+		providerReportedSessionID: result.SessionID,
+		providerSessionID:         result.SessionID,
+		role:                      role,
+		agentID:                   agentID,
+		adapter:                   opts.Adapter.Name(),
+		model:                     model,
+		effort:                    effort,
+		startedAt:                 started,
+		completedAt:               completed,
+		response:                  result.Response,
 	}
 	if strings.TrimSpace(draft.providerSessionID) == "" {
 		draft.providerSessionID = draft.rowID
@@ -540,6 +578,107 @@ func runStructured[T any](ctx context.Context, opts Options, role ledger.Session
 		draft.model = "default"
 	}
 	return result.Value, draft, err
+}
+
+func prepareNamedSession(ctx context.Context, opts Options, req Request, live bool, model string, now time.Time) (namedSessionState, error) {
+	name := strings.TrimSpace(req.SessionName)
+	if name == "" {
+		return namedSessionState{}, nil
+	}
+	if !live {
+		return namedSessionState{}, fmt.Errorf("pipeline: named session %q requires live review", name)
+	}
+	if opts.NamedSessions == nil {
+		return namedSessionState{}, fmt.Errorf("pipeline: named session store is required")
+	}
+
+	active := sessionreuse.Normalize(sessionreuse.Scope{
+		Name:     name,
+		Profile:  req.ProfileName,
+		Provider: string(req.Profile.LLM.Provider),
+		Adapter:  opts.Adapter.Name(),
+		Model:    model,
+		Host:     req.PRRef.Host,
+	})
+	if err := sessionreuse.Validate(active); err != nil {
+		return namedSessionState{}, err
+	}
+
+	state := namedSessionState{
+		enabled:        true,
+		active:         active,
+		supportsResume: opts.Adapter.SupportsResume(),
+		createdAt:      now,
+	}
+	stored, err := opts.NamedSessions.GetNamedSession(ctx, active.Name)
+	if errors.Is(err, ledger.ErrNotFound) {
+		stored = ledger.NamedSession{}
+	} else if err != nil {
+		return namedSessionState{}, fmt.Errorf("pipeline: get named session %q: %w", active.Name, err)
+	} else {
+		storedScope := sessionreuse.Normalize(sessionreuse.Scope{
+			Name:     stored.Name,
+			Profile:  stored.Profile,
+			Provider: stored.Provider,
+			Adapter:  stored.Adapter,
+			Model:    stored.Model,
+			Host:     stored.Host,
+		})
+		check, err := sessionreuse.Check(storedScope, active)
+		if err != nil {
+			return namedSessionState{}, err
+		}
+		if check.Warning != "" {
+			opts.emitWarning(check.Warning)
+		}
+		state.stored = &stored
+		state.createdAt = stored.CreatedAt
+		if state.supportsResume {
+			state.currentProviderSessionID = stored.ProviderSessionID
+		}
+	}
+
+	if !state.supportsResume {
+		opts.emitWarning(fmt.Sprintf("session %q adapter %q does not support resume; starting fresh", active.Name, opts.Adapter.Name()))
+	}
+	return state, nil
+}
+
+func (s *namedSessionState) resumeID() string {
+	if s == nil || !s.enabled || !s.supportsResume {
+		return ""
+	}
+	return s.currentProviderSessionID
+}
+
+func (s *namedSessionState) recordSessionID(draft sessionDraft) {
+	if s == nil || !s.enabled || !s.supportsResume {
+		return
+	}
+	if strings.TrimSpace(draft.providerReportedSessionID) != "" {
+		s.currentProviderSessionID = draft.providerReportedSessionID
+	}
+}
+
+func (s *namedSessionState) buildCandidate(draft sessionDraft, lastUsedAt time.Time) *ledger.NamedSession {
+	if s == nil || !s.enabled {
+		return nil
+	}
+	providerSessionID := strings.TrimSpace(draft.providerReportedSessionID)
+	if providerSessionID == "" {
+		return nil
+	}
+	return &ledger.NamedSession{
+		Name:              s.active.Name,
+		Profile:           s.active.Profile,
+		Provider:          s.active.Provider,
+		Adapter:           s.active.Adapter,
+		Model:             s.active.Model,
+		Host:              s.active.Host,
+		ProviderSessionID: providerSessionID,
+		CreatedAt:         s.createdAt,
+		LastUsedAt:        lastUsedAt,
+	}
 }
 
 func (d sessionDraft) toLedger(runID string) ledger.Session {
@@ -590,6 +729,13 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 		Now:                     opts.now,
 		NewActionID:             opts.newActionID,
 	})
+}
+
+func (opts Options) emitWarning(warning string) {
+	if opts.Warnings == nil || strings.TrimSpace(warning) == "" {
+		return
+	}
+	_, _ = fmt.Fprintln(opts.Warnings, warning)
 }
 
 func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitprovider.PR, parsed ParsedDiff, selected llm.SelectedAgent, agent agents.Agent) (string, error) {

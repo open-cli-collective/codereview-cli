@@ -1031,6 +1031,54 @@ FROM named_sessions WHERE name = ?`, name)
 	return session, nil
 }
 
+// ListNamedSessions returns named provider sessions in stable name order.
+func (s *Store) ListNamedSessions(ctx context.Context) ([]NamedSession, error) {
+	if err := s.checkOpen(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT name, profile, provider, adapter, model, host, provider_session_id, created_at, last_used_at
+FROM named_sessions ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: list named sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []NamedSession
+	for rows.Next() {
+		session, err := scanNamedSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ledger: list named sessions rows: %w", err)
+	}
+	return sessions, nil
+}
+
+// DeleteNamedSession deletes a named provider session row.
+func (s *Store) DeleteNamedSession(ctx context.Context, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return invalidInput("name", name)
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		result, err := db.ExecContext(ctx, "DELETE FROM named_sessions WHERE name = ?", name)
+		if err != nil {
+			return fmt.Errorf("ledger: delete named session: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("ledger: delete named session rows affected: %w", err)
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 func validateListRunsForHeadScopeParams(params ListRunsForHeadScopeParams) error {
 	required := map[string]string{
 		"pr_key":           params.PRKey,
