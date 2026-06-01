@@ -65,7 +65,9 @@ type Quota struct {
 type Decoder[T any] func([]byte) (T, error)
 
 // RunStructured runs a structured-output request and retries one validation
-// failure with a deterministic correction prompt.
+// failure with a deterministic correction prompt. On retry success, the
+// returned Response is the final successful attempt's response; this helper does
+// not aggregate usage or duration across attempts.
 func RunStructured[T any](ctx context.Context, adapter Adapter, req Request, decode Decoder[T]) (T, Response, error) {
 	var zero T
 	response, err := runOnce(ctx, adapter, req)
