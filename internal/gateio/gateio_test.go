@@ -280,6 +280,26 @@ func TestEvaluatePartialRepairPostsSingleReview(t *testing.T) {
 	}
 }
 
+func TestEvaluatePartialRepairCleansUpRecoveryRunWhenActionInsertFails(t *testing.T) {
+	fixture := newFixture(t)
+	setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeApproved)
+	opts := fixture.opts()
+	opts.Store = insertActionErrorStore{Store: fixture.store, err: errors.New("insert failed")}
+
+	if _, err := Evaluate(context.Background(), opts, fixture.req); err == nil {
+		t.Fatal("Evaluate repair insert error = nil, want error")
+	}
+	if runs := fixture.listRuns(t); len(runs) != 0 {
+		t.Fatalf("runs after failed repair action insert = %d, want cleanup", len(runs))
+	}
+	if _, err := fixture.store.GetRun(context.Background(), "run-repair"); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetRun repair after cleanup = %v, want ErrNotFound", err)
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("review writes = %d, want none", len(got))
+	}
+}
+
 func TestEvaluatePartialRepairConcurrentAttemptsPostOneReview(t *testing.T) {
 	fixture := newFixture(t)
 	setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeComment)
@@ -1117,8 +1137,8 @@ func TestResetRequiredFailedTerminalActions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPlannedActions: %v", err)
 	}
-	if err := resetRequiredFailedTerminalActions(context.Background(), fixture.store, actions); err != nil {
-		t.Fatalf("resetRequiredFailedTerminalActions: %v", err)
+	if err := resetRequiredFailedTerminalActionsForRetry(context.Background(), fixture.store, actions); err != nil {
+		t.Fatalf("resetRequiredFailedTerminalActionsForRetry: %v", err)
 	}
 
 	got := actionByID(t, fixture.store, run.RunID, "required-failed")
@@ -1273,6 +1293,11 @@ type plannedActionErrorStore struct {
 	err   error
 }
 
+type insertActionErrorStore struct {
+	Store
+	err error
+}
+
 type noopLimiter struct{}
 
 type blockingLimiter struct {
@@ -1286,6 +1311,10 @@ func (s plannedActionErrorStore) ListPlannedActions(ctx context.Context, runID s
 		return nil, s.err
 	}
 	return s.Store.ListPlannedActions(ctx, runID)
+}
+
+func (s insertActionErrorStore) InsertPlannedAction(context.Context, ledger.PlannedAction) error {
+	return s.err
 }
 
 func (p *countingProvider) ListIssueComments(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.IssueComment, error) {

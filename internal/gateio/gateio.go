@@ -42,6 +42,7 @@ type Store interface {
 	AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error)
 	InsertPlannedAction(context.Context, ledger.PlannedAction) error
 	UpdatePlannedAction(context.Context, ledger.PlannedAction) error
+	DeleteRun(context.Context, string) error
 	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
 }
 
@@ -482,6 +483,9 @@ func executeRepair(ctx context.Context, opts Options, req Request, decision gate
 		return repairExecution{}, err
 	}
 	if err := insertRepairSubmitReview(ctx, opts, run.RunID, event); err != nil {
+		if deleteErr := opts.Store.DeleteRun(ctx, run.RunID); deleteErr != nil && !errors.Is(deleteErr, ledger.ErrNotFound) {
+			return repairExecution{}, fmt.Errorf("gateio: insert repair submit_review: %w; cleanup recovery run: %w", err, deleteErr)
+		}
 		return repairExecution{}, err
 	}
 	postResult, err := outbox.Post(ctx, outbox.Options{
@@ -522,7 +526,7 @@ func executeRetryPosts(ctx context.Context, opts Options, req Request, run ledge
 	if statusDecision.Kind == gate.DecisionError {
 		return retryExecution{statusDecision: statusDecision}, nil
 	}
-	if err := resetRequiredFailedTerminalActions(ctx, opts.Store, actions); err != nil {
+	if err := resetRequiredFailedTerminalActionsForRetry(ctx, opts.Store, actions); err != nil {
 		return retryExecution{}, err
 	}
 	postResult, err := outbox.Post(ctx, outbox.Options{
@@ -583,7 +587,7 @@ func insertRepairSubmitReview(ctx context.Context, opts Options, runID string, e
 	})
 }
 
-func resetRequiredFailedTerminalActions(ctx context.Context, store Store, actions []ledger.PlannedAction) error {
+func resetRequiredFailedTerminalActionsForRetry(ctx context.Context, store Store, actions []ledger.PlannedAction) error {
 	for _, action := range actions {
 		if !action.Required || action.Status != ledger.PlannedActionFailedTerminal {
 			continue
