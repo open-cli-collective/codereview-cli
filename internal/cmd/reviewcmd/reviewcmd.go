@@ -62,6 +62,14 @@ type RuntimeOptions struct {
 // RuntimeFactory builds the concrete runtime used by `cr review`.
 type RuntimeFactory func(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error)
 
+var (
+	newGitProvider = func(git config.GitConfig, store githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+		return githubprovider.NewFromGitConfig(git, store, opts)
+	}
+	resolvePostingIdentityForRuntime = resolvePostingIdentity
+	newAdapterForRuntime             = newAdapter
+)
+
 type commandFlags struct {
 	dryRun           bool
 	noPost           bool
@@ -442,17 +450,17 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		return Runtime{}, cmderr.Credential(err)
 	}
 	cleanup := func() { _ = store.Close() }
-	provider, credential, err := githubprovider.NewFromGitConfig(profile.Git, store, githubprovider.Options{})
+	provider, credential, err := newGitProvider(profile.Git, store, githubprovider.Options{})
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	postingIdentity, err := resolvePostingIdentity(cmd.Context(), provider, credential, store, profile)
+	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), provider, credential, store, profile)
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	adapter, err := newAdapter(profile.LLM, store)
+	adapter, err := newAdapterForRuntime(profile.LLM, store)
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)

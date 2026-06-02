@@ -110,6 +110,15 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if flags.dryRun {
+				legacyExists, err := statepaths.LegacyDataRootExists(layout)
+				if err != nil {
+					return err
+				}
+				if legacyExists {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("legacy data exists at %s; dry-run does not migrate it, so this preview excludes legacy runs until a write command migrates them", statepaths.LegacyDataRoot(layout)))
+				}
+			}
 			rendered := view.NewDataPrune(result)
 			if flags.jsonOutput {
 				return view.RenderDataPruneJSON(opts.Stdout, rendered)

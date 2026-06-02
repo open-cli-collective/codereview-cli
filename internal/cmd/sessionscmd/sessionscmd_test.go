@@ -211,6 +211,26 @@ func TestSessionsMissingRowsFail(t *testing.T) {
 	}
 }
 
+func TestSessionsDeleteMissingDoesNotCreateLedger(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	cmd, _ := newTestCommand()
+
+	err = root.Execute(cmd, []string{"sessions", "delete", "missing"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want not found")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error = %v, want not found", err)
+	}
+	if _, err := os.Stat(layout.LedgerDB()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ledger stat err = %v, want missing after failed delete", err)
+	}
+}
+
 func newTestCommand() (*cobra.Command, *bytes.Buffer) {
 	var out bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{

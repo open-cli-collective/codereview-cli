@@ -213,35 +213,81 @@ func CacheRootEnsured() (string, error) {
 	return (statedir.Cache{Tool: Tool}).CacheDirEnsured()
 }
 
+// LegacyDataRoot returns the historical nested data root for layout.
+func LegacyDataRoot(layout Layout) string {
+	return filepath.Join(layout.DataRoot, AppDir)
+}
+
+// LegacyCacheRoot returns the historical nested cache root for layout.
+func LegacyCacheRoot(layout Layout) string {
+	return filepath.Join(layout.CacheRoot, AppDir)
+}
+
+// LegacyDataRootExists reports whether layout still has unmigrated legacy data.
+func LegacyDataRootExists(layout Layout) (bool, error) {
+	return legacyRootExists(LegacyDataRoot(layout), "data")
+}
+
 // MigrateLegacyDataRoot moves data written by releases that nested state under
 // the per-binary root's historical AppDir child.
 func MigrateLegacyDataRoot(layout Layout) error {
-	return migrateLegacyRoot(layout.DataRoot, filepath.Join(layout.DataRoot, AppDir), "data")
+	return migrateLegacyRoot(layout.DataRoot, LegacyDataRoot(layout), "data")
 }
 
 // MigrateLegacyCacheRoot moves cache written by releases that nested state
 // under the per-binary root's historical AppDir child.
 func MigrateLegacyCacheRoot(layout Layout) error {
-	return migrateLegacyRoot(layout.CacheRoot, filepath.Join(layout.CacheRoot, AppDir), "cache")
+	return migrateLegacyRoot(layout.CacheRoot, LegacyCacheRoot(layout), "cache")
+}
+
+func legacyRootExists(path, kind string) (bool, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("statepaths: inspecting legacy %s root: %w", kind, err)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("statepaths: legacy %s root %s is not a directory", kind, path)
+	}
+	return true, nil
 }
 
 func migrateLegacyRoot(root, legacyRoot, kind string) error {
-	info, err := os.Stat(legacyRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	tempRoot := legacyRoot + ".migrating"
+	var sourceRoot string
+	if tempExists, err := legacyRootExists(tempRoot, kind); err != nil {
+		return err
+	} else if tempExists {
+		legacyExists, err := legacyRootExists(legacyRoot, kind)
+		if err != nil {
+			return err
+		}
+		if legacyExists {
+			return fmt.Errorf("statepaths: cannot migrate legacy %s root %s: migration temp %s already exists", kind, legacyRoot, tempRoot)
+		}
+		sourceRoot = tempRoot
+	} else {
+		legacyExists, err := legacyRootExists(legacyRoot, kind)
+		if err != nil {
+			return err
+		}
+		if !legacyExists {
+			return nil
+		}
+		if err := os.Rename(legacyRoot, tempRoot); err != nil {
+			return fmt.Errorf("statepaths: staging legacy %s root %s: %w", kind, legacyRoot, err)
+		}
+		sourceRoot = tempRoot
 	}
-	if err != nil {
-		return fmt.Errorf("statepaths: inspecting legacy %s root: %w", kind, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("statepaths: legacy %s root %s is not a directory", kind, legacyRoot)
-	}
-	entries, err := os.ReadDir(legacyRoot)
+
+	entries, err := os.ReadDir(sourceRoot)
 	if err != nil {
 		return fmt.Errorf("statepaths: reading legacy %s root: %w", kind, err)
 	}
 	if len(entries) == 0 {
-		if err := os.Remove(legacyRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(sourceRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("statepaths: removing empty legacy %s root: %w", kind, err)
 		}
 		return nil
@@ -255,13 +301,13 @@ func migrateLegacyRoot(root, legacyRoot, kind string) error {
 		}
 	}
 	for _, entry := range entries {
-		source := filepath.Join(legacyRoot, entry.Name())
+		source := filepath.Join(sourceRoot, entry.Name())
 		target := filepath.Join(root, entry.Name())
 		if err := os.Rename(source, target); err != nil {
 			return fmt.Errorf("statepaths: migrating legacy %s entry %s: %w", kind, source, err)
 		}
 	}
-	if err := os.Remove(legacyRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(sourceRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("statepaths: removing legacy %s root: %w", kind, err)
 	}
 	return nil

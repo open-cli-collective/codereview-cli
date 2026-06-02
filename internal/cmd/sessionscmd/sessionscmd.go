@@ -47,6 +47,7 @@ func newListCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer cleanup()
 			if store == nil {
 				result := view.NewSessionsList(nil)
 				if flags.jsonOutput {
@@ -54,7 +55,6 @@ func newListCommand(opts *root.Options) *cobra.Command {
 				}
 				return view.RenderSessionsListText(opts.Stdout, result)
 			}
-			defer cleanup()
 			sessions, err := store.ListNamedSessions(cmd.Context())
 			if err != nil {
 				return err
@@ -87,10 +87,10 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer cleanup()
 			if store == nil {
 				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
 			}
-			defer cleanup()
 			session, err := store.GetNamedSession(cmd.Context(), name)
 			if errors.Is(err, ledger.ErrNotFound) {
 				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
@@ -122,11 +122,14 @@ func newDeleteCommand(opts *root.Options) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
-			store, cleanup, err := openStore(cmd.Context(), true, true)
+			store, cleanup, err := openStore(cmd.Context(), true, false)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
+			if store == nil {
+				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
+			}
 			if err := store.DeleteNamedSession(cmd.Context(), name); errors.Is(err, ledger.ErrNotFound) {
 				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
 			} else if err != nil {

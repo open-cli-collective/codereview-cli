@@ -489,8 +489,9 @@ func TestMigrateLegacyCacheRootRefusesConflictsWithoutPartialMove(t *testing.T) 
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("MigrateLegacyCacheRoot error = %v, want conflict context", err)
 	}
-	assertFileContents(t, legacyHTTP, "legacy-http")
-	assertFileContents(t, legacyOther, "legacy-other")
+	stagedRoot := filepath.Join(layout.CacheRoot, AppDir+".migrating")
+	assertFileContents(t, filepath.Join(stagedRoot, "http", "legacy.txt"), "legacy-http")
+	assertFileContents(t, filepath.Join(stagedRoot, "other", "legacy.txt"), "legacy-other")
 	assertFileContents(t, filepath.Join(layout.CacheRoot, "http", "new.txt"), "new-http")
 	if _, err := os.Stat(filepath.Join(layout.CacheRoot, "other")); !os.IsNotExist(err) {
 		t.Fatalf("new other stat err = %v, want missing because migration must be all-or-nothing on conflict", err)
@@ -515,6 +516,26 @@ func TestMigrateLegacyCacheRootIsIdempotent(t *testing.T) {
 	assertFileContents(t, filepath.Join(layout.CacheRoot, "http", "sentinel.txt"), "cache")
 }
 
+func TestMigrateLegacyRootResumesStagedMigration(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	stagedRoot := filepath.Join(layout.DataRoot, AppDir+".migrating")
+	writeStatepathsFile(t, filepath.Join(layout.DataRoot, "ledger.db"), "already-moved")
+	writeStatepathsFile(t, filepath.Join(stagedRoot, "runs", "sentinel.txt"), "remaining")
+
+	if err := MigrateLegacyDataRoot(layout); err != nil {
+		t.Fatalf("MigrateLegacyDataRoot: %v", err)
+	}
+	assertFileContents(t, filepath.Join(layout.DataRoot, "ledger.db"), "already-moved")
+	assertFileContents(t, filepath.Join(layout.DataRoot, "runs", "sentinel.txt"), "remaining")
+	if _, err := os.Stat(stagedRoot); !os.IsNotExist(err) {
+		t.Fatalf("staged root stat err = %v, want removed", err)
+	}
+}
+
 func TestMigrateLegacyRootRefusesConflictsWithoutPartialMove(t *testing.T) {
 	statedirtest.Hermetic(t)
 	layout, err := DefaultLayoutEnsured()
@@ -534,8 +555,9 @@ func TestMigrateLegacyRootRefusesConflictsWithoutPartialMove(t *testing.T) {
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("MigrateLegacyDataRoot error = %v, want conflict context", err)
 	}
-	assertFileContents(t, legacyLedger, "legacy-ledger")
-	assertFileContents(t, legacyRuns, "legacy-run")
+	stagedRoot := filepath.Join(layout.DataRoot, AppDir+".migrating")
+	assertFileContents(t, filepath.Join(stagedRoot, "ledger.db"), "legacy-ledger")
+	assertFileContents(t, filepath.Join(stagedRoot, "runs", "sentinel.txt"), "legacy-run")
 	assertFileContents(t, filepath.Join(layout.DataRoot, "ledger.db"), "new-ledger")
 	if _, err := os.Stat(filepath.Join(layout.DataRoot, "runs")); !os.IsNotExist(err) {
 		t.Fatalf("new runs stat err = %v, want missing because migration must be all-or-nothing on conflict", err)

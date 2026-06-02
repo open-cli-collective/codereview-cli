@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedirtest"
 	"github.com/spf13/cobra"
 
@@ -22,6 +24,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
@@ -91,7 +94,15 @@ func TestRuntimeLayoutMigratesLegacyDataAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultLayoutEnsured: %v", err)
 	}
-	writeReviewFile(t, filepath.Join(layout.DataRoot, statepaths.AppDir, "ledger.db"), "ledger")
+	legacyLayout := statepaths.NewLayout(filepath.Join(layout.DataRoot, statepaths.AppDir), layout.CacheRoot)
+	legacyStore, err := ledger.Open(context.Background(), legacyLayout.LedgerDB())
+	if err != nil {
+		t.Fatalf("legacy ledger.Open: %v", err)
+	}
+	if err := legacyStore.Close(); err != nil {
+		t.Fatalf("legacy store Close: %v", err)
+	}
+	writeReviewFile(t, filepath.Join(layout.DataRoot, statepaths.AppDir, "runs", "sentinel.txt"), "run")
 	writeReviewFile(t, filepath.Join(layout.CacheRoot, statepaths.AppDir, "http", "sentinel.txt"), "cache")
 
 	got, err := runtimeLayout()
@@ -101,7 +112,66 @@ func TestRuntimeLayoutMigratesLegacyDataAndCache(t *testing.T) {
 	if got != layout {
 		t.Fatalf("runtime layout = %#v, want %#v", got, layout)
 	}
-	assertReviewTestFile(t, filepath.Join(layout.DataRoot, "ledger.db"), "ledger")
+	if _, err := os.Stat(layout.LedgerDB()); err != nil {
+		t.Fatalf("new ledger stat: %v", err)
+	}
+	assertReviewTestFile(t, filepath.Join(layout.DataRoot, "runs", "sentinel.txt"), "run")
+	assertReviewTestFile(t, filepath.Join(layout.CacheRoot, "http", "sentinel.txt"), "cache")
+	if _, err := os.Stat(filepath.Join(layout.DataRoot, statepaths.AppDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy data root stat err = %v, want removed", err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.CacheRoot, statepaths.AppDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy cache root stat err = %v, want removed", err)
+	}
+}
+
+func TestNewRuntimeMigratesLegacyDataAndCache(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyLayout := statepaths.NewLayout(filepath.Join(layout.DataRoot, statepaths.AppDir), layout.CacheRoot)
+	legacyStore, err := ledger.Open(context.Background(), legacyLayout.LedgerDB())
+	if err != nil {
+		t.Fatalf("legacy ledger.Open: %v", err)
+	}
+	if err := legacyStore.Close(); err != nil {
+		t.Fatalf("legacy store Close: %v", err)
+	}
+	writeReviewFile(t, filepath.Join(layout.DataRoot, statepaths.AppDir, "runs", "sentinel.txt"), "run")
+	writeReviewFile(t, filepath.Join(layout.CacheRoot, statepaths.AppDir, "http", "sentinel.txt"), "cache")
+
+	provider := &gitprovider.Fake{}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	opts := &root.Options{Stderr: io.Discard}
+	runtime, err := newRuntime(cmd, opts, testConfig(), testConfig().Profiles["home"], RuntimeOptions{})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+	if runtime.Runner == nil || runtime.PostingIdentity != identity {
+		t.Fatalf("runtime = %#v, want runner and posting identity", runtime)
+	}
+	if _, err := os.Stat(layout.LedgerDB()); err != nil {
+		t.Fatalf("new ledger stat: %v", err)
+	}
+	assertReviewTestFile(t, filepath.Join(layout.DataRoot, "runs", "sentinel.txt"), "run")
 	assertReviewTestFile(t, filepath.Join(layout.CacheRoot, "http", "sentinel.txt"), "cache")
 	if _, err := os.Stat(filepath.Join(layout.DataRoot, statepaths.AppDir)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("legacy data root stat err = %v, want removed", err)
@@ -816,6 +886,26 @@ func fakeFactory(runner *fakeRunner) RuntimeFactory {
 	return func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}
+}
+
+func withReviewRuntimeSeams(
+	t *testing.T,
+	providerFactory func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error),
+	identityResolver func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error),
+	adapterFactory func(config.LLMConfig, *credstore.Store) (llm.Adapter, error),
+) {
+	t.Helper()
+	originalProviderFactory := newGitProvider
+	originalIdentityResolver := resolvePostingIdentityForRuntime
+	originalAdapterFactory := newAdapterForRuntime
+	newGitProvider = providerFactory
+	resolvePostingIdentityForRuntime = identityResolver
+	newAdapterForRuntime = adapterFactory
+	t.Cleanup(func() {
+		newGitProvider = originalProviderFactory
+		resolvePostingIdentityForRuntime = originalIdentityResolver
+		newAdapterForRuntime = originalAdapterFactory
+	})
 }
 
 func newTestCommand(t *testing.T, cfg config.File, factory RuntimeFactory) (*cobra.Command, *bytes.Buffer) {
