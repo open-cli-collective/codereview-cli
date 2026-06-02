@@ -41,6 +41,8 @@ func TestSessionsListText(t *testing.T) {
 
 func TestSessionsListJSONEmpty(t *testing.T) {
 	statedirtest.Hermetic(t)
+	layout := mustDefaultLayoutNoCreate(t)
+	assertSessionStateAbsent(t, layout)
 	cmd, out := newTestCommand()
 
 	if err := root.Execute(cmd, []string{"sessions", "list", "--json"}); err != nil {
@@ -53,6 +55,22 @@ func TestSessionsListJSONEmpty(t *testing.T) {
 	if len(decoded.Sessions) != 0 {
 		t.Fatalf("sessions = %#v, want empty", decoded.Sessions)
 	}
+	assertSessionStateAbsent(t, layout)
+}
+
+func TestSessionsListTextEmptyDoesNotCreateState(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := mustDefaultLayoutNoCreate(t)
+	assertSessionStateAbsent(t, layout)
+	cmd, out := newTestCommand()
+
+	if err := root.Execute(cmd, []string{"sessions", "list"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if text := out.String(); text != "Sessions: none\n" {
+		t.Fatalf("stdout = %q, want empty sessions text", text)
+	}
+	assertSessionStateAbsent(t, layout)
 }
 
 func TestSessionsListJSON(t *testing.T) {
@@ -195,6 +213,8 @@ func TestSessionsMissingRowsFail(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			statedirtest.Hermetic(t)
+			layout := mustDefaultLayoutNoCreate(t)
+			assertSessionStateAbsent(t, layout)
 			cmd, _ := newTestCommand()
 
 			err := root.Execute(cmd, tt.args)
@@ -207,28 +227,25 @@ func TestSessionsMissingRowsFail(t *testing.T) {
 			if !strings.Contains(err.Error(), "not found") {
 				t.Fatalf("error = %v, want not found", err)
 			}
+			assertSessionStateAbsent(t, layout)
 		})
 	}
 }
 
 func TestSessionsDeleteMissingDoesNotCreateLedger(t *testing.T) {
 	statedirtest.Hermetic(t)
-	layout, err := statepaths.DefaultLayoutEnsured()
-	if err != nil {
-		t.Fatalf("DefaultLayoutEnsured: %v", err)
-	}
+	layout := mustDefaultLayoutNoCreate(t)
+	assertSessionStateAbsent(t, layout)
 	cmd, _ := newTestCommand()
 
-	err = root.Execute(cmd, []string{"sessions", "delete", "missing"})
+	err := root.Execute(cmd, []string{"sessions", "delete", "missing"})
 	if err == nil {
 		t.Fatal("Execute error = nil, want not found")
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("error = %v, want not found", err)
 	}
-	if _, err := os.Stat(layout.LedgerDB()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("ledger stat err = %v, want missing after failed delete", err)
-	}
+	assertSessionStateAbsent(t, layout)
 }
 
 func newTestCommand() (*cobra.Command, *bytes.Buffer) {
@@ -281,6 +298,24 @@ func openTestStore(t *testing.T) *ledger.Store {
 		}
 	})
 	return store
+}
+
+func mustDefaultLayoutNoCreate(t *testing.T) statepaths.Layout {
+	t.Helper()
+	layout, err := statepaths.DefaultLayout()
+	if err != nil {
+		t.Fatalf("DefaultLayout: %v", err)
+	}
+	return layout
+}
+
+func assertSessionStateAbsent(t *testing.T, layout statepaths.Layout) {
+	t.Helper()
+	for _, path := range []string{layout.DataRoot, layout.CacheRoot, layout.LedgerDB()} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("state path %s stat err = %v, want missing", path, err)
+		}
+	}
 }
 
 func namedSession(name, providerSessionID string) ledger.NamedSession {
