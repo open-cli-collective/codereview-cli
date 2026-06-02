@@ -252,6 +252,90 @@ func TestKeyringBackendRoundTripAndValidation(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsReservedGitAuthModes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*File)
+	}{
+		{name: "git oauth_device", mutate: func(cfg *File) {
+			profile := cfg.Profiles["home"]
+			profile.Git.AuthMode = GitAuthModeOAuthDevice
+			cfg.Profiles["home"] = profile
+		}},
+		{name: "git github_app", mutate: func(cfg *File) {
+			profile := cfg.Profiles["home"]
+			profile.Git.AuthMode = GitAuthModeGitHubApp
+			cfg.Profiles["home"] = profile
+		}},
+		{name: "reviewer oauth_device", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.ReviewerCredentials.AuthMode = GitAuthModeOAuthDevice
+			cfg.Profiles["work"] = profile
+		}},
+		{name: "reviewer github_app", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
+			cfg.Profiles["work"] = profile
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			tt.mutate(&cfg)
+			if err := Validate(cfg); !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("Validate error = %v, want ErrUnsupported", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsReservedGitAuthModes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "git oauth_device", body: `default_profile: home
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: oauth_device
+      credential_ref: codereview/home
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`},
+		{name: "reviewer github_app", body: `default_profile: work
+profiles:
+  work:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/work
+    reviewer_credentials:
+      auth_mode: github_app
+      credential_ref: codereview/work-reviewer
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			writeFile(t, path, tt.body)
+			_, err := Load(path)
+			if !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("Load error = %v, want ErrUnsupported", err)
+			}
+		})
+	}
+}
+
 func TestCredentialRefsRejectReservedGitAuthModes(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -432,6 +432,9 @@ func validateProfile(name string, profile Profile) error {
 	if !profile.Git.AuthMode.Valid() {
 		return invalid("profiles.%s.git.auth_mode %q is invalid", name, profile.Git.AuthMode)
 	}
+	if !profile.Git.AuthMode.Supported() {
+		return fmt.Errorf("%w: profiles.%s.git.auth_mode %q", ErrUnsupported, name, profile.Git.AuthMode)
+	}
 	if strings.TrimSpace(profile.Git.CredentialRef) == "" {
 		return invalid("profiles.%s.git.credential_ref is required", name)
 	}
@@ -441,6 +444,9 @@ func validateProfile(name string, profile Profile) error {
 	if profile.ReviewerCredentials != nil {
 		if !profile.ReviewerCredentials.AuthMode.Valid() {
 			return invalid("profiles.%s.reviewer_credentials.auth_mode %q is invalid", name, profile.ReviewerCredentials.AuthMode)
+		}
+		if !profile.ReviewerCredentials.AuthMode.Supported() {
+			return fmt.Errorf("%w: profiles.%s.reviewer_credentials.auth_mode %q", ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
 		}
 		if strings.TrimSpace(profile.ReviewerCredentials.CredentialRef) == "" {
 			return invalid("profiles.%s.reviewer_credentials.credential_ref is required", name)

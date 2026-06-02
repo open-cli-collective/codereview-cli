@@ -332,11 +332,20 @@ func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
 }
 
 func TestMeReservedAuthModeExitCode(t *testing.T) {
-	cfg := testConfig()
-	home := cfg.Profiles["home"]
-	home.Git.AuthMode = config.GitAuthModeOAuthDevice
-	cfg.Profiles["home"] = home
-	path := saveTestConfig(t, cfg)
+	path := writeRawTestConfig(t, `default_profile: home
+keyring:
+  backend: memory
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: oauth_device
+      credential_ref: codereview/home
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
 		factoryOpened = true
@@ -356,11 +365,23 @@ func TestMeReservedAuthModeExitCode(t *testing.T) {
 }
 
 func TestMeReviewerReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
-	cfg := testConfig()
-	work := cfg.Profiles["work"]
-	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
-	cfg.Profiles["work"] = work
-	path := saveTestConfig(t, cfg)
+	path := writeRawTestConfig(t, `default_profile: work
+keyring:
+  backend: memory
+profiles:
+  work:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/work
+    reviewer_credentials:
+      auth_mode: github_app
+      credential_ref: codereview/work-reviewer
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
 		factoryOpened = true
@@ -371,36 +392,41 @@ func TestMeReviewerReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
 	if !errors.Is(err, config.ErrUnsupported) {
 		t.Fatalf("Execute error = %v, want ErrUnsupported", err)
 	}
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
+	}
 	if factoryOpened {
 		t.Fatal("resolver factory opened for unsupported reviewer auth mode")
 	}
 }
 
-func TestMeReviewerProfileReservedGitAuthModeUsesReviewerIdentity(t *testing.T) {
-	cfg := testConfig()
-	work := cfg.Profiles["work"]
-	work.Git.AuthMode = config.GitAuthModeOAuthDevice
-	cfg.Profiles["work"] = work
-	path := saveTestConfig(t, cfg)
-	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
-		"codereview/work-reviewer": {Login: "bot"},
-	}}
-	cmd, _ := newTestCommand(path, resolver)
-
-	if err := root.Execute(cmd, []string{"--profile", "work", "me"}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if len(resolver.calls) != 1 || resolver.calls[0].CredentialRef != "codereview/work-reviewer" {
-		t.Fatalf("resolver calls = %#v, want reviewer ref", resolver.calls)
-	}
-}
-
 func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
-	cfg := testConfig()
-	work := cfg.Profiles["work"]
-	work.ReviewerCredentials.AuthMode = config.GitAuthModeOAuthDevice
-	cfg.Profiles["work"] = work
-	path := saveTestConfig(t, cfg)
+	path := writeRawTestConfig(t, `default_profile: home
+keyring:
+  backend: memory
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/home
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+  work:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/work
+    reviewer_credentials:
+      auth_mode: oauth_device
+      credential_ref: codereview/work-reviewer
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
 		factoryOpened = true
@@ -417,11 +443,32 @@ func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
 }
 
 func TestMeAllReservedGitAuthModeWithReviewerDoesNotOpenResolverFactory(t *testing.T) {
-	cfg := testConfig()
-	work := cfg.Profiles["work"]
-	work.Git.AuthMode = config.GitAuthModeOAuthDevice
-	cfg.Profiles["work"] = work
-	path := saveTestConfig(t, cfg)
+	path := writeRawTestConfig(t, `default_profile: home
+keyring:
+  backend: memory
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/home
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+  work:
+    git:
+      host: github.com
+      auth_mode: oauth_device
+      credential_ref: codereview/work
+    reviewer_credentials:
+      auth_mode: pat
+      credential_ref: codereview/work-reviewer
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
 		factoryOpened = true
@@ -731,6 +778,15 @@ func saveTestConfig(t *testing.T, cfg config.File) string {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	if err := config.Save(path, cfg); err != nil {
 		t.Fatalf("Save: %v", err)
+	}
+	return path
+}
+
+func writeRawTestConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
 	return path
 }
