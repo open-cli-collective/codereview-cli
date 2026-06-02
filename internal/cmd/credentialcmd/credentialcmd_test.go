@@ -235,6 +235,42 @@ func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
 	assertStored(t, "default-reviewer", credentials.GitTokenKey, "reviewer-token")
 }
 
+func TestInitNonInteractiveWritesCustomReviewerCredentialFromStdin(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	t.Setenv("CR_GIT_TOKEN", "git-token")
+	cmd, out, errOut := newTestCommand(path, strings.NewReader("reviewer-token\n"))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+		"--git-token-from-env", "CR_GIT_TOKEN",
+		"--reviewer-credential-ref", "codereview/review-bot",
+		"--reviewer-token-stdin",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String()+errOut.String(), "git-token") || strings.Contains(out.String()+errOut.String(), "reviewer-token") {
+		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile != "work" {
+		t.Fatalf("default_profile = %q, want work", cfg.DefaultProfile)
+	}
+	reviewer := cfg.Profiles["work"].ReviewerCredentials
+	if reviewer == nil || reviewer.CredentialRef != "codereview/review-bot" {
+		t.Fatalf("reviewer credentials = %#v, want custom codereview/review-bot", reviewer)
+	}
+	assertStored(t, "work", credentials.GitTokenKey, "git-token")
+	assertStored(t, "review-bot", credentials.GitTokenKey, "reviewer-token")
+}
+
 func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))

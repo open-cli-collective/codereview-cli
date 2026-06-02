@@ -299,6 +299,38 @@ func TestMeProductionMissingGitCredentialExitCode(t *testing.T) {
 	}
 }
 
+func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
+	store := openFileStore(t)
+	if _, err := store.SetBundle("work", map[string]string{credentials.GitTokenKey: "git-token"}, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle work: %v", err)
+	}
+	cfg := testConfig()
+	cfg.Keyring.Backend = "file"
+	work := cfg.Profiles["work"]
+	work.Git.Host = "localhost:1"
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	var out bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: path,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &out,
+		Stderr:     &out,
+	})
+	Register(cmd, opts)
+
+	err := root.Execute(cmd, []string{"--profile", "work", "me"})
+	if !errors.Is(err, gitprovider.ErrAuth) {
+		t.Fatalf("Execute error = %v, want ErrAuth", err)
+	}
+	if !errors.Is(err, credstore.ErrNotFound) {
+		t.Fatalf("Execute error = %v, want missing credential cause", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
+	}
+}
+
 func TestMeReservedAuthModeExitCode(t *testing.T) {
 	cfg := testConfig()
 	home := cfg.Profiles["home"]
