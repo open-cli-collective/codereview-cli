@@ -60,7 +60,7 @@ func TestRenderAgentsListIncludesFilesystemSourceDetails(t *testing.T) {
 	for _, want := range []string{
 		"Provenance: profile:org-reviewers",
 		"Source canonical path: /Library/Application Support/codereview/agents",
-		"Source fingerprint: sha256:abc123def456",
+		"Source fingerprint: sha256:abc123def4567890abc123def4567890",
 		"Source warning: canonical path is inside Git worktree",
 	} {
 		if !strings.Contains(text, want) {
@@ -76,7 +76,7 @@ func TestRenderAgentsListIncludesFilesystemSourceDetails(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
 		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
 	}
-	if len(decoded.Sources) != 1 || decoded.Sources[0].Fingerprint != "sha256:abc123def456" {
+	if len(decoded.Sources) != 1 || decoded.Sources[0].Fingerprint != "sha256:abc123def4567890abc123def4567890" {
 		t.Fatalf("sources = %#v, want fingerprinted source", decoded.Sources)
 	}
 	if len(decoded.Agents) != 1 || decoded.Agents[0].Source.CanonicalPath == "" {
@@ -148,15 +148,15 @@ func testAgentsCatalog() agents.Catalog {
 
 func filesystemAgentsCatalog() agents.Catalog {
 	source := agents.SourceInfo{
-		Kind:           agents.SourceProfile,
-		Label:          "org-reviewers",
-		Provenance:     "profile:org-reviewers",
-		ConfiguredPath: "/Library/Application Support/codereview/agents",
-		CanonicalPath:  "/Library/Application Support/codereview/agents",
-		Present:        true,
-		Status:         agents.SourceStatusAvailable,
-		Fingerprint:    "sha256:abc123def456",
-		Warnings:       []string{"canonical path is inside Git worktree /Library/Application Support/codereview; PR authors may be able to mutate it"},
+		Kind:            agents.SourceProfile,
+		Label:           "org-reviewers",
+		ProvenanceLabel: "profile:org-reviewers",
+		ConfiguredPath:  "/Library/Application Support/codereview/agents",
+		CanonicalPath:   "/Library/Application Support/codereview/agents",
+		Present:         true,
+		Status:          agents.SourceStatusAvailable,
+		Fingerprint:     "sha256:abc123def4567890abc123def4567890",
+		Warnings:        []string{"canonical path is inside Git worktree /Library/Application Support/codereview; PR authors may be able to mutate it"},
 	}
 	return agents.Catalog{
 		Sources: []agents.SourceInfo{source},

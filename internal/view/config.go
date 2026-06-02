@@ -156,15 +156,6 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 				return err
 			}
 		}
-	} else if len(show.Profile.AgentSources) > 0 {
-		if _, err := fmt.Fprintln(w, "Agent sources:"); err != nil {
-			return err
-		}
-		for _, source := range show.Profile.AgentSources {
-			if _, err := fmt.Fprintf(w, "  - %s\n", source); err != nil {
-				return err
-			}
-		}
 	}
 
 	if len(show.CredentialRefs) > 0 {

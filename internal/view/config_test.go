@@ -86,23 +86,23 @@ func TestRenderConfigTextAgentSourceStatus(t *testing.T) {
 	show := NewConfigShow("home", homeProfile(), dataConfig(), nil)
 	show.AgentSources = []agents.SourceInfo{
 		{
-			Kind:           agents.SourceProfile,
-			Label:          "org-reviewers",
-			Provenance:     "profile:org-reviewers",
-			ConfiguredPath: "/Library/Application Support/codereview/agents",
-			CanonicalPath:  "/Library/Application Support/codereview/agents",
-			Present:        true,
-			Status:         agents.SourceStatusAvailable,
-			Fingerprint:    "sha256:abc123def456",
-			Warnings:       []string{"canonical path is inside Git worktree /repo"},
+			Kind:            agents.SourceProfile,
+			Label:           "org-reviewers",
+			ProvenanceLabel: "profile:org-reviewers",
+			ConfiguredPath:  "/Library/Application Support/codereview/agents",
+			CanonicalPath:   "/Library/Application Support/codereview/agents",
+			Present:         true,
+			Status:          agents.SourceStatusAvailable,
+			Fingerprint:     "sha256:abc123def456",
+			Warnings:        []string{"canonical path is inside Git worktree /repo"},
 		},
 		{
-			Kind:           agents.SourceProfile,
-			Label:          "missing",
-			Provenance:     "profile:missing",
-			ConfiguredPath: "/missing",
-			Status:         agents.SourceStatusMissing,
-			Error:          "agents: read source /missing: no such file or directory",
+			Kind:            agents.SourceProfile,
+			Label:           "missing",
+			ProvenanceLabel: "profile:missing",
+			ConfiguredPath:  "/missing",
+			Status:          agents.SourceStatusMissing,
+			Error:           "agents: read source /missing: no such file or directory",
 		},
 	}
 

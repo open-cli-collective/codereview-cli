@@ -75,6 +75,28 @@ func TestUnreadableFilesystemSourceFailsLoadAndInspectsUnreadable(t *testing.T) 
 	if len(sources) != 1 || sources[0].Status != SourceStatusUnreadable || !sources[0].Present || sources[0].Error == "" {
 		t.Fatalf("sources = %#v, want non-fatal unreadable status", sources)
 	}
+
+	blockedDir := filepath.Join(t.TempDir(), "blocked-agents")
+	if err := os.Mkdir(blockedDir, 0o700); err != nil {
+		t.Fatalf("Mkdir blockedDir: %v", err)
+	}
+	if err := os.Chmod(blockedDir, 0); err != nil {
+		t.Skipf("Chmod unreadable unsupported: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(blockedDir, 0o700)
+	})
+	if _, err := os.ReadDir(blockedDir); err == nil {
+		t.Skip("directory permissions are not enforced in this environment")
+	}
+	_, err = Load(context.Background(), LoadOptions{ProfileDirs: []string{blockedDir}})
+	if err == nil || !strings.Contains(err.Error(), "agents: read source") {
+		t.Fatalf("Load chmod error = %v, want read source failure", err)
+	}
+	sources = InspectProfileSources([]string{blockedDir})
+	if len(sources) != 1 || sources[0].Status != SourceStatusUnreadable || !sources[0].Present || sources[0].Error == "" {
+		t.Fatalf("chmod sources = %#v, want non-fatal unreadable status", sources)
+	}
 }
 
 func TestFilesystemSourceSymlinkRecordsCanonicalPathAndFingerprint(t *testing.T) {

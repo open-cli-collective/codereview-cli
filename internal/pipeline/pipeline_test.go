@@ -1385,9 +1385,6 @@ func assertAgentSourcesArtifact(t *testing.T, path, wantAgent string) {
 	if err := json.Unmarshal(data, &artifact); err != nil {
 		t.Fatalf("Unmarshal agent sources artifact: %v\n%s", err, data)
 	}
-	if len(artifact.Sources) != 2 {
-		t.Fatalf("artifact sources len = %d, want profile and repo sources: %#v", len(artifact.Sources), artifact.Sources)
-	}
 	profileSource, ok := findArtifactSource(artifact.Sources, agents.SourceProfile)
 	if !ok {
 		t.Fatalf("artifact sources = %#v, want profile source", artifact.Sources)

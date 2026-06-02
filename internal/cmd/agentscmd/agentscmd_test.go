@@ -46,6 +46,23 @@ func TestAgentsListWithoutPRLoadsProfileAndFlagSources(t *testing.T) {
 	}
 }
 
+func TestAgentsListFailsFastForUnreadableProfileSource(t *testing.T) {
+	notDir := filepath.Join(t.TempDir(), "agent-source-file")
+	if err := os.WriteFile(notDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile notDir: %v", err)
+	}
+	cfg := testConfig(notDir)
+	cmd, _ := newTestCommand(t, cfg, func(*cobra.Command, *root.Options, config.File, config.Profile) (gitprovider.GitProvider, func(), error) {
+		t.Fatal("provider factory called without PR argument")
+		return nil, nil, nil
+	})
+
+	err := root.Execute(cmd, []string{"agents", "list"})
+	if err == nil || !strings.Contains(err.Error(), "agents: read source") {
+		t.Fatalf("Execute error = %v, want read source failure", err)
+	}
+}
+
 func TestAgentsListWithPRLoadsRepoBaseAndTrustNote(t *testing.T) {
 	profileDir := t.TempDir()
 	writeAgent(t, profileDir, "profile", "only", "profile desc", "profile prompt")

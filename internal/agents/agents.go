@@ -52,19 +52,19 @@ const (
 
 // SourceInfo describes one configured agent source for operator audit.
 type SourceInfo struct {
-	Kind           SourceKind   `json:"kind"`
-	Label          string       `json:"label,omitempty"`
-	Ref            string       `json:"ref,omitempty"`
-	SHA            string       `json:"sha,omitempty"`
-	Index          int          `json:"index,omitempty"`
-	Provenance     string       `json:"provenance"`
-	ConfiguredPath string       `json:"configured_path,omitempty"`
-	CanonicalPath  string       `json:"canonical_path,omitempty"`
-	Present        bool         `json:"present"`
-	Status         SourceStatus `json:"status"`
-	Fingerprint    string       `json:"fingerprint,omitempty"`
-	Warnings       []string     `json:"warnings,omitempty"`
-	Error          string       `json:"error,omitempty"`
+	Kind            SourceKind   `json:"kind"`
+	Label           string       `json:"label,omitempty"`
+	Ref             string       `json:"ref,omitempty"`
+	SHA             string       `json:"sha,omitempty"`
+	Index           int          `json:"index,omitempty"`
+	ProvenanceLabel string       `json:"provenance"`
+	ConfiguredPath  string       `json:"configured_path,omitempty"`
+	CanonicalPath   string       `json:"canonical_path,omitempty"`
+	Present         bool         `json:"present"`
+	Status          SourceStatus `json:"status"`
+	Fingerprint     string       `json:"fingerprint,omitempty"`
+	Warnings        []string     `json:"warnings,omitempty"`
+	Error           string       `json:"error,omitempty"`
 }
 
 // Provenance identifies the winning source for one loaded agent.
@@ -100,18 +100,18 @@ func (p Provenance) String() string {
 // SourceInfo returns the structured source details for this provenance.
 func (p Provenance) SourceInfo() SourceInfo {
 	info := SourceInfo{
-		Kind:           p.Kind,
-		Label:          p.Label,
-		Ref:            p.Ref,
-		SHA:            p.SHA,
-		Index:          p.Index,
-		Provenance:     p.String(),
-		ConfiguredPath: p.ConfiguredPath,
-		CanonicalPath:  p.CanonicalPath,
-		Present:        true,
-		Status:         SourceStatusAvailable,
-		Fingerprint:    p.Fingerprint,
-		Warnings:       append([]string(nil), p.Warnings...),
+		Kind:            p.Kind,
+		Label:           p.Label,
+		Ref:             p.Ref,
+		SHA:             p.SHA,
+		Index:           p.Index,
+		ProvenanceLabel: p.String(),
+		ConfiguredPath:  p.ConfiguredPath,
+		CanonicalPath:   p.CanonicalPath,
+		Present:         true,
+		Status:          SourceStatusAvailable,
+		Fingerprint:     p.Fingerprint,
+		Warnings:        append([]string(nil), p.Warnings...),
 	}
 	return info
 }
@@ -592,7 +592,7 @@ func inspectFileSource(rawDir string, provenance Provenance) (SourceInfo, error)
 		Status:         SourceStatusInvalid,
 		Label:          sourceLabel(rawDir),
 	}
-	source.Provenance = provenanceFromSource(source).String()
+	source.ProvenanceLabel = provenanceFromSource(source).String()
 	if rawDir == "" {
 		err := fmt.Errorf("%w: agent source path is required", ErrInvalid)
 		source.Error = err.Error()
@@ -648,7 +648,7 @@ func inspectFileSource(rawDir string, provenance Provenance) (SourceInfo, error)
 	source.CanonicalPath = canonical
 	source.Fingerprint = fingerprint
 	source.Warnings = sourceWarnings(expanded, canonical)
-	source.Provenance = provenanceFromSource(source).String()
+	source.ProvenanceLabel = provenanceFromSource(source).String()
 	return source, nil
 }
 
@@ -672,7 +672,6 @@ func fingerprintFileSource(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sort.Slice(categories, func(i, j int) bool { return categories[i].Name() < categories[j].Name() })
 	for _, category := range categories {
 		if !category.IsDir() {
 			continue
@@ -685,7 +684,6 @@ func fingerprintFileSource(root string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		sort.Slice(agentEntries, func(i, j int) bool { return agentEntries[i].Name() < agentEntries[j].Name() })
 		for _, agent := range agentEntries {
 			if !agent.IsDir() {
 				continue
@@ -697,6 +695,8 @@ func fingerprintFileSource(root string) (string, error) {
 			)
 		}
 	}
+	// The final relative-path sort is the canonical ordering guarantee for
+	// stable cross-platform fingerprints.
 	sort.Strings(files)
 	hash := sha256.New()
 	for _, rel := range files {
@@ -714,7 +714,7 @@ func fingerprintFileSource(root string) (string, error) {
 			return "", err
 		}
 	}
-	return "sha256:" + hex.EncodeToString(hash.Sum(nil))[:12], nil
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))[:32], nil
 }
 
 func sourceWarnings(expanded, canonical string) []string {
