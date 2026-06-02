@@ -115,9 +115,13 @@ func TestConfigShowJSONReportsAgentSourceDeploymentStatus(t *testing.T) {
 	available := t.TempDir()
 	writeConfigTestAgentSource(t, available, "Do not inline this prompt.\n")
 	missing := filepath.Join(t.TempDir(), "missing-agents")
+	notDir := filepath.Join(t.TempDir(), "agent-source-file")
+	if err := os.WriteFile(notDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile notDir: %v", err)
+	}
 	cfg := testConfig()
 	home := cfg.Profiles["home"]
-	home.AgentSources = []string{available, missing}
+	home.AgentSources = []string{available, missing, notDir}
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
 	cmd, out := newTestCommand(path)
@@ -132,8 +136,8 @@ func TestConfigShowJSONReportsAgentSourceDeploymentStatus(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if len(got.AgentSources) != 2 {
-		t.Fatalf("agent_sources len = %d, want 2: %#v", len(got.AgentSources), got.AgentSources)
+	if len(got.AgentSources) != 3 {
+		t.Fatalf("agent_sources len = %d, want 3: %#v", len(got.AgentSources), got.AgentSources)
 	}
 	first := got.AgentSources[0]
 	if first.Status != agents.SourceStatusAvailable || !first.Present || first.Fingerprint == "" || first.CanonicalPath == "" {
@@ -142,6 +146,10 @@ func TestConfigShowJSONReportsAgentSourceDeploymentStatus(t *testing.T) {
 	second := got.AgentSources[1]
 	if second.Status != agents.SourceStatusMissing || second.Present || second.Error == "" {
 		t.Fatalf("second source = %#v, want missing non-fatal source", second)
+	}
+	third := got.AgentSources[2]
+	if third.Status != agents.SourceStatusUnreadable || !third.Present || third.Error == "" {
+		t.Fatalf("third source = %#v, want unreadable non-fatal source", third)
 	}
 }
 

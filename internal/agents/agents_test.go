@@ -113,6 +113,30 @@ func TestFilesystemSourceFingerprintChangesWithPromptContent(t *testing.T) {
 	}
 }
 
+func TestFilesystemSourceFingerprintIgnoresNonLoadedNestedFiles(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+
+	first, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
+	if err != nil {
+		t.Fatalf("Load first: %v", err)
+	}
+	exampleDir := filepath.Join(root, "harness", "architecture", "examples")
+	if err := os.MkdirAll(exampleDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll examples: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(exampleDir, "prompt.md"), []byte("Example prompt.\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile example prompt: %v", err)
+	}
+	second, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
+	if err != nil {
+		t.Fatalf("Load second: %v", err)
+	}
+	if first.Sources[0].Fingerprint != second.Sources[0].Fingerprint {
+		t.Fatalf("fingerprints = %q then %q, want unchanged for non-loaded nested files", first.Sources[0].Fingerprint, second.Sources[0].Fingerprint)
+	}
+}
+
 func TestFilesystemSourceWarningsForRelativeTempAndGitWorktreePaths(t *testing.T) {
 	cwd := t.TempDir()
 	relativeRoot := filepath.Join(cwd, "agents")

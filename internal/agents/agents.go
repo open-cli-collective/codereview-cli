@@ -668,25 +668,34 @@ func provenanceFromSource(source SourceInfo) Provenance {
 
 func fingerprintFileSource(root string) (string, error) {
 	var files []string
-	if err := filepath.WalkDir(root, func(filePath string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		name := entry.Name()
-		if name != "index.yaml" && name != "prompt.md" {
-			return nil
-		}
-		rel, err := filepath.Rel(root, filePath)
-		if err != nil {
-			return err
-		}
-		files = append(files, filepath.ToSlash(rel))
-		return nil
-	}); err != nil {
+	categories, err := os.ReadDir(root)
+	if err != nil {
 		return "", err
+	}
+	sort.Slice(categories, func(i, j int) bool { return categories[i].Name() < categories[j].Name() })
+	for _, category := range categories {
+		if !category.IsDir() {
+			continue
+		}
+		categoryName := category.Name()
+		categoryPath := filepath.Join(root, categoryName)
+		files = append(files, filepath.ToSlash(filepath.Join(categoryName, "index.yaml")))
+
+		agentEntries, err := os.ReadDir(categoryPath)
+		if err != nil {
+			return "", err
+		}
+		sort.Slice(agentEntries, func(i, j int) bool { return agentEntries[i].Name() < agentEntries[j].Name() })
+		for _, agent := range agentEntries {
+			if !agent.IsDir() {
+				continue
+			}
+			agentName := agent.Name()
+			files = append(files,
+				filepath.ToSlash(filepath.Join(categoryName, agentName, "index.yaml")),
+				filepath.ToSlash(filepath.Join(categoryName, agentName, "prompt.md")),
+			)
+		}
 	}
 	sort.Strings(files)
 	hash := sha256.New()

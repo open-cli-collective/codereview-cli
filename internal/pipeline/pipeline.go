@@ -812,7 +812,7 @@ func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitp
 	}
 	payload := map[string]any{
 		"task":   "review files and return findings JSON only",
-		"agent":  agent,
+		"agent":  agentPromptFromAgent(agent),
 		"files":  files,
 		"schema": "findings",
 	}
@@ -821,6 +821,46 @@ func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitp
 		return "", err
 	}
 	return string(body), nil
+}
+
+type agentPrompt struct {
+	ID                   string          `json:"id"`
+	Name                 string          `json:"name"`
+	Category             agents.Category `json:"category"`
+	Description          string          `json:"description,omitempty"`
+	Model                string          `json:"model,omitempty"`
+	Effort               string          `json:"effort,omitempty"`
+	FileGlobs            []string        `json:"file_globs,omitempty"`
+	AppliesWhen          []string        `json:"applies_when,omitempty"`
+	NeedsFullFileContent bool            `json:"needs_full_file_content"`
+	Prompt               string          `json:"prompt,omitempty"`
+	Provenance           string          `json:"provenance"`
+	Overridden           []string        `json:"overridden,omitempty"`
+}
+
+func agentPromptFromAgent(agent agents.Agent) agentPrompt {
+	return agentPrompt{
+		ID:                   agent.ID,
+		Name:                 agent.Name,
+		Category:             agent.Category,
+		Description:          agent.Description,
+		Model:                agent.Model,
+		Effort:               agent.Effort,
+		FileGlobs:            append([]string(nil), agent.FileGlobs...),
+		AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
+		NeedsFullFileContent: agent.NeedsFullFileContent,
+		Prompt:               agent.Prompt,
+		Provenance:           agent.Provenance.String(),
+		Overridden:           append([]string(nil), agent.Overridden...),
+	}
+}
+
+func agentPromptsFromCatalog(catalog agents.Catalog) []agentPrompt {
+	out := make([]agentPrompt, 0, len(catalog.Agents))
+	for _, agent := range catalog.Agents {
+		out = append(out, agentPromptFromAgent(agent))
+	}
+	return out
 }
 
 func fetchFileOptional(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, gitRef string, path string) ([]byte, error) {
@@ -836,7 +876,7 @@ func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []F
 		"task":          "select reviewer agents and thread actions; return selection JSON only",
 		"schema":        "selection",
 		"pr":            pr,
-		"agents":        catalog.Agents,
+		"agents":        agentPromptsFromCatalog(catalog),
 		"changed_files": patchPaths(patches),
 		"threads":       threads,
 	}

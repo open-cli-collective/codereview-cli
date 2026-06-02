@@ -739,6 +739,7 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 	}
 	var reviewerPrompts int
 	for _, request := range requests {
+		assertPromptOmitsLocalAgentSourceProvenance(t, request.Prompt)
 		if strings.Contains(request.Prompt, `"schema": "findings"`) {
 			reviewerPrompts++
 			if !strings.Contains(request.Prompt, `"agent"`) || !strings.Contains(request.Prompt, `"files"`) {
@@ -1392,6 +1393,22 @@ func assertAgentSourcesArtifact(t *testing.T, path, wantAgent string) {
 		}
 	}
 	t.Fatalf("artifact agents = %#v, want %s with fingerprint", artifact.Agents, wantAgent)
+}
+
+func assertPromptOmitsLocalAgentSourceProvenance(t *testing.T, prompt string) {
+	t.Helper()
+	for _, forbidden := range []string{
+		"configured_path",
+		"canonical_path",
+		"fingerprint",
+		"Source warning",
+		"OS temp directory",
+		"Git worktree",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt contains local source provenance %q:\n%s", forbidden, prompt)
+		}
+	}
 }
 
 func prURL(ref gitprovider.PRRef) string {
