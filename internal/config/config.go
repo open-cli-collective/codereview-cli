@@ -474,6 +474,11 @@ func validateProfile(name string, profile Profile) error {
 			return invalid("profiles.%s.llm provider pi requires auth subscription and adapter pi_rpc", name)
 		}
 	}
+	if profile.LLM.Adapter == LLMAdapterPiRPC {
+		if profile.LLM.Provider != LLMProviderPi || profile.LLM.Auth != LLMAuthSubscription {
+			return invalid("profiles.%s.llm adapter pi_rpc requires provider pi and auth subscription", name)
+		}
+	}
 	if profile.LLM.Auth == LLMAuthAPIKey && strings.TrimSpace(profile.LLM.CredentialRef) == "" {
 		return invalid("profiles.%s.llm.credential_ref is required for api_key auth", name)
 	}

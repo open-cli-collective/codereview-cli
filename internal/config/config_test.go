@@ -217,6 +217,9 @@ func TestValidateRejectsInvalidPiCombinations(t *testing.T) {
 		{name: "anthropic api adapter", mutate: func(profile *Profile) {
 			profile.LLM.Adapter = LLMAdapterAnthropicAPI
 		}},
+		{name: "pi rpc adapter with anthropic provider", mutate: func(profile *Profile) {
+			profile.LLM.Provider = LLMProviderAnthropic
+		}},
 	}
 
 	for _, tt := range tests {
@@ -233,7 +236,7 @@ func TestValidateRejectsInvalidPiCombinations(t *testing.T) {
 			if !errors.Is(err, ErrInvalid) {
 				t.Fatalf("Validate error = %v, want ErrInvalid", err)
 			}
-			if !strings.Contains(err.Error(), "provider pi requires auth subscription and adapter pi_rpc") {
+			if !strings.Contains(err.Error(), "requires") {
 				t.Fatalf("Validate error = %v, want Pi compatibility guidance", err)
 			}
 		})
