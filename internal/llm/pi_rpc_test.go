@@ -154,6 +154,26 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 		}
 	})
 
+	t.Run("caller cancellation propagates before agent_end", func(t *testing.T) {
+		recordPath := filepath.Join(t.TempDir(), "record.json")
+		ctx, cancel := context.WithCancel(context.Background())
+		adapter := NewPiRPCAdapter(PiRPCOptions{
+			Command:           os.Args[0],
+			commandArgsPrefix: piRPCHelperPrefix(),
+			Env:               piRPCHelperEnv("sleep", recordPath),
+			Timeout:           5 * time.Second,
+		})
+		stream, err := adapter.Start(ctx, Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		cancel()
+		_, err = stream.Wait(context.Background())
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Wait error = %v, want context canceled", err)
+		}
+	})
+
 	t.Run("malformed stdout JSONL fails immediately", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		adapter := NewPiRPCAdapter(PiRPCOptions{
@@ -207,6 +227,24 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 		}
 		_, err = stream.Wait(context.Background())
 		if err == nil || !strings.Contains(err.Error(), "exit status 42") {
+			t.Fatalf("Wait error = %v, want non-zero exit status", err)
+		}
+	})
+
+	t.Run("non-zero exit before agent_end fails stream", func(t *testing.T) {
+		recordPath := filepath.Join(t.TempDir(), "record.json")
+		adapter := NewPiRPCAdapter(PiRPCOptions{
+			Command:           os.Args[0],
+			commandArgsPrefix: piRPCHelperPrefix(),
+			Env:               piRPCHelperEnv("exit-before-agent-end", recordPath),
+			Timeout:           5 * time.Second,
+		})
+		stream, err := adapter.Start(context.Background(), Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		_, err = stream.Wait(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "exit status 43") {
 			t.Fatalf("Wait error = %v, want non-zero exit status", err)
 		}
 	})
@@ -295,6 +333,10 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
 		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
 		os.Exit(42)
+	case "exit-before-agent-end":
+		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+		os.Exit(43)
 	case "spawn-child-tool":
 		child := exec.Command(os.Args[0], "-test.run=TestPiRPCProcessGroupCleanup", "--") // #nosec G204,G702 -- helper launches the current test binary.
 		child.Env = append(os.Environ(), "LLM_PI_RPC_CHILD=1")

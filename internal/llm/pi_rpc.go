@@ -310,10 +310,12 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 		result.err = errors.New("llm pi rpc: no structured output")
 	case scanResult.agentEnd:
 		result.err = nil
-	case !scanResult.agentEnd:
-		result.err = errors.New("llm pi rpc: missing agent_end")
 	case ctx.Err() != nil:
 		result.err = ctx.Err()
+	case waitErr != nil:
+		result.err = waitErr
+	case !scanResult.agentEnd:
+		result.err = errors.New("llm pi rpc: missing agent_end")
 	}
 	if s.processGroup != nil {
 		_ = s.processGroup.close()
