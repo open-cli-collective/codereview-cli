@@ -116,7 +116,7 @@ func apiKindFromConfig(llmConfig config.LLMConfig) (apiKind, error) {
 			return "", fmt.Errorf("%w: openai_api requires provider openai", ErrAPIAdapterConfig)
 		}
 		return apiOpenAI, nil
-	case config.LLMAdapterClaudeCLI, config.LLMAdapterCodexCLI:
+	case config.LLMAdapterClaudeCLI, config.LLMAdapterCodexCLI, config.LLMAdapterPiRPC:
 		return "", fmt.Errorf("%w: adapter %q is not an API adapter", ErrAPIAdapterConfig, llmConfig.Adapter)
 	default:
 		return "", fmt.Errorf("%w: unsupported API adapter %q", ErrAPIAdapterConfig, llmConfig.Adapter)
