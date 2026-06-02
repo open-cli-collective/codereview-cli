@@ -18,6 +18,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -52,8 +53,10 @@ type Runtime struct {
 
 // RuntimeOptions carries command flags that affect runtime construction.
 type RuntimeOptions struct {
-	MaxAgents      int
-	MaxConcurrency int
+	MaxAgents           int
+	MaxConcurrency      int
+	Retention           datalifecycle.RetentionPolicy
+	RetentionManualOnly bool
 }
 
 // RuntimeFactory builds the concrete runtime used by `cr review`.
@@ -163,7 +166,13 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
 	}
 
-	runtime, err := factory(cmd, opts, cfg, profile, RuntimeOptions{MaxAgents: flags.maxAgents, MaxConcurrency: flags.maxConcurrency})
+	runtimeOpts := RuntimeOptions{
+		MaxAgents:           flags.maxAgents,
+		MaxConcurrency:      flags.maxConcurrency,
+		Retention:           retentionPolicyFromConfig(cfg.Data.Retention),
+		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
+	}
+	runtime, err := factory(cmd, opts, cfg, profile, runtimeOpts)
 	if err != nil {
 		return err
 	}
@@ -477,14 +486,16 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 
 func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, runtimeOpts RuntimeOptions) reviewRunner {
 	pipelineOpts := pipeline.Options{
-		Provider:       provider,
-		Adapter:        adapter,
-		Store:          ledgerStore,
-		NamedSessions:  ledgerStore,
-		Layout:         layout,
-		Warnings:       warnings,
-		MaxAgents:      runtimeOpts.MaxAgents,
-		MaxConcurrency: runtimeOpts.MaxConcurrency,
+		Provider:            provider,
+		Adapter:             adapter,
+		Store:               ledgerStore,
+		NamedSessions:       ledgerStore,
+		Layout:              layout,
+		Warnings:            warnings,
+		MaxAgents:           runtimeOpts.MaxAgents,
+		MaxConcurrency:      runtimeOpts.MaxConcurrency,
+		Retention:           runtimeOpts.Retention,
+		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
 	}
 	return reviewRunner{
 		pipeline: pipelineOpts,
@@ -496,8 +507,21 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 			Layout:                  layout,
 			StaleHeartbeatThreshold: 10 * time.Minute,
 			Warnings:                warnings,
+			Retention:               runtimeOpts.Retention,
+			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
 		},
 	}
+}
+
+func retentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.RetentionPolicy {
+	if retention.MaxAgeDays == nil {
+		return datalifecycle.RetentionPolicy{}
+	}
+	maxAgeDays := *retention.MaxAgeDays
+	if maxAgeDays == 0 {
+		return datalifecycle.RetentionPolicy{LiveForever: true}
+	}
+	return datalifecycle.RetentionPolicy{LiveMaxAge: time.Duration(maxAgeDays) * 24 * time.Hour}
 }
 
 type reviewRunner struct {

@@ -36,6 +36,71 @@ func TestPruneDefaultRetentionSelectsLiveAndDryRunWindows(t *testing.T) {
 	}
 }
 
+func TestPruneConfiguredRetentionSelectsLiveWindowAndDefaultDryRunWindow(t *testing.T) {
+	layout := testLayout(t)
+	now := testNow()
+	store := &fakeStore{runs: []ledger.Run{
+		testRun(layout, "live-old", ledger.PostModeLive, now.Add(-31*24*time.Hour)),
+		testRun(layout, "live-new", ledger.PostModeLive, now.Add(-29*24*time.Hour)),
+		testRun(layout, "dry-old", ledger.PostModeDryRun, now.Add(-8*24*time.Hour)),
+		testRun(layout, "dry-new", ledger.PostModeDryRun, now.Add(-6*24*time.Hour)),
+	}}
+
+	result, err := Prune(context.Background(), Options{Layout: layout, Store: store, Now: func() time.Time { return now }}, PruneOptions{
+		DryRun:    true,
+		Retention: RetentionPolicy{LiveMaxAge: 30 * 24 * time.Hour},
+	})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if got, want := runItemIDs(result.SelectedRuns), []string{"live-old", "dry-old"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("selected runs = %#v, want %#v", got, want)
+	}
+}
+
+func TestPruneConfiguredRetentionCanKeepLiveForever(t *testing.T) {
+	layout := testLayout(t)
+	now := testNow()
+	store := &fakeStore{runs: []ledger.Run{
+		testRun(layout, "live-old", ledger.PostModeLive, now.Add(-365*24*time.Hour)),
+		testRun(layout, "dry-old", ledger.PostModeDryRun, now.Add(-8*24*time.Hour)),
+		testRun(layout, "dry-new", ledger.PostModeDryRun, now.Add(-6*24*time.Hour)),
+	}}
+
+	result, err := Prune(context.Background(), Options{Layout: layout, Store: store, Now: func() time.Time { return now }}, PruneOptions{
+		DryRun:    true,
+		Retention: RetentionPolicy{LiveForever: true},
+	})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if got, want := runItemIDs(result.SelectedRuns), []string{"dry-old"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("selected runs = %#v, want %#v", got, want)
+	}
+}
+
+func TestPruneExplicitOlderThanOverridesConfiguredRetentionPolicy(t *testing.T) {
+	layout := testLayout(t)
+	now := testNow()
+	store := &fakeStore{runs: []ledger.Run{
+		testRun(layout, "live-old", ledger.PostModeLive, now.Add(-31*24*time.Hour)),
+		testRun(layout, "live-new", ledger.PostModeLive, now.Add(-29*24*time.Hour)),
+		testRun(layout, "dry-old", ledger.PostModeDryRun, now.Add(-31*24*time.Hour)),
+	}}
+
+	result, err := Prune(context.Background(), Options{Layout: layout, Store: store, Now: func() time.Time { return now }}, PruneOptions{
+		OlderThan: 30 * 24 * time.Hour,
+		DryRun:    true,
+		Retention: RetentionPolicy{LiveForever: true},
+	})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if got, want := runItemIDs(result.SelectedRuns), []string{"live-old", "dry-old"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("selected runs = %#v, want %#v", got, want)
+	}
+}
+
 func TestPruneKeepLastPreservesNewestPerPostMode(t *testing.T) {
 	layout := testLayout(t)
 	now := testNow()

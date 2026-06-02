@@ -18,6 +18,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -111,6 +112,35 @@ func TestReviewProfileResolveThreadsNeverDisablesThreadResolution(t *testing.T) 
 	}
 }
 
+func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
+	cfg := testConfig()
+	maxAgeDays := 0
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  &maxAgeDays,
+		Enforcement: config.RetentionManualOnly,
+	}
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	var got RuntimeOptions
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, opts RuntimeOptions) (Runtime, error) {
+		got = opts
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !got.Retention.LiveForever || !got.RetentionManualOnly {
+		t.Fatalf("runtime retention = %#v manual %v, want keep-forever manual-only policy", got.Retention, got.RetentionManualOnly)
+	}
+}
+
+func TestRetentionPolicyFromConfigDefaultsWhenMaxAgeOmitted(t *testing.T) {
+	got := retentionPolicyFromConfig(config.RetentionConfig{})
+	if got.LiveForever || got.LiveMaxAge != 0 || got.DryRunMaxAge != 0 {
+		t.Fatalf("retention policy = %#v, want zero-value default policy", got)
+	}
+}
+
 func TestReviewLiveCallsRunnerAndRendersText(t *testing.T) {
 	runner := &fakeRunner{liveResult: testLiveResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -157,6 +187,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 	provider := &gitprovider.Fake{}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	var warnings bytes.Buffer
+	retention := datalifecycle.RetentionPolicy{LiveMaxAge: 30 * 24 * time.Hour}
 
 	runner := buildReviewRunner(
 		store,
@@ -165,7 +196,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 		noopLimiter{},
 		statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		&warnings,
-		RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2},
+		RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2, Retention: retention, RetentionManualOnly: true},
 	)
 
 	if runner.pipeline.NamedSessions != store {
@@ -183,6 +214,80 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 	}
 	if runner.pipeline.MaxAgents != 3 || runner.pipeline.MaxConcurrency != 2 {
 		t.Fatalf("runtime opts = maxAgents:%d maxConcurrency:%d, want 3/2", runner.pipeline.MaxAgents, runner.pipeline.MaxConcurrency)
+	}
+	if runner.pipeline.Retention != retention || !runner.pipeline.RetentionManualOnly {
+		t.Fatalf("pipeline retention = %#v manual %v, want configured manual policy", runner.pipeline.Retention, runner.pipeline.RetentionManualOnly)
+	}
+	if runner.live.Retention != retention || !runner.live.RetentionManualOnly {
+		t.Fatalf("live retention = %#v manual %v, want configured manual policy", runner.live.Retention, runner.live.RetentionManualOnly)
+	}
+	if planner.opts.Retention != retention || !planner.opts.RetentionManualOnly {
+		t.Fatalf("planner retention = %#v manual %v, want configured manual policy", planner.opts.Retention, planner.opts.RetentionManualOnly)
+	}
+}
+
+func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
+	cfg := testConfig()
+	agentDir := t.TempDir()
+	writeReviewAgent(t, agentDir)
+	profile := cfg.Profiles["home"]
+	profile.AgentSources = []string{agentDir}
+	cfg.Profiles["home"] = profile
+	maxAgeDays := 30
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  &maxAgeDays,
+		Enforcement: config.RetentionAtWrite,
+	}
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	now := time.Now()
+	oldLive := allocateReviewCommandRunForPRKey(t, store, layout, "old-live", "github_other_repo_1", ledger.PostModeLive, now.Add(-31*24*time.Hour))
+	oldDryRun := allocateReviewCommandRunForPRKey(t, store, layout, "old-dry", "github_other_repo_1", ledger.PostModeDryRun, now.Add(-8*24*time.Hour))
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		runner := buildReviewRunner(
+			store,
+			provider,
+			adapter,
+			noopLimiter{},
+			layout,
+			opts.Stderr,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", pr.URL}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldLive.RunID); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("old live GetRun error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldDryRun.RunID); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("old dry-run GetRun error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -269,6 +374,201 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 	resumes := adapter.Resumes()
 	if len(resumes) != 1 || resumes[0].SessionID != "selection-session" {
 		t.Fatalf("resumes = %#v, want rollup resumed from selection", resumes)
+	}
+}
+
+func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
+	cfg := testConfig()
+	agentDir := t.TempDir()
+	writeReviewAgent(t, agentDir)
+	profile := cfg.Profiles["home"]
+	profile.AgentSources = []string{agentDir}
+	cfg.Profiles["home"] = profile
+	maxAgeDays := 30
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  &maxAgeDays,
+		Enforcement: config.RetentionAtWrite,
+	}
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	now := time.Now()
+	oldLive := allocateReviewCommandRun(t, store, layout, "old-live", ledger.PostModeLive, now.Add(-31*24*time.Hour))
+	newLive := allocateReviewCommandRun(t, store, layout, "new-live", ledger.PostModeLive, now.Add(-29*24*time.Hour))
+	oldDryRun := allocateReviewCommandRun(t, store, layout, "old-dry", ledger.PostModeDryRun, now.Add(-8*24*time.Hour))
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		runner := buildReviewRunner(
+			store,
+			provider,
+			adapter,
+			noopLimiter{},
+			layout,
+			opts.Stderr,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", pr.URL, "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldLive.RunID); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("old live GetRun error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldDryRun.RunID); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("old dry-run GetRun error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetRun(context.Background(), newLive.RunID); err != nil {
+		t.Fatalf("new live GetRun error = %v, want nil", err)
+	}
+}
+
+func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
+	cfg := testConfig()
+	agentDir := t.TempDir()
+	writeReviewAgent(t, agentDir)
+	profile := cfg.Profiles["home"]
+	profile.AgentSources = []string{agentDir}
+	cfg.Profiles["home"] = profile
+	maxAgeDays := 0
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  &maxAgeDays,
+		Enforcement: config.RetentionAtWrite,
+	}
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	now := time.Now()
+	oldLive := allocateReviewCommandRun(t, store, layout, "old-live", ledger.PostModeLive, now.Add(-365*24*time.Hour))
+	oldDryRun := allocateReviewCommandRun(t, store, layout, "old-dry", ledger.PostModeDryRun, now.Add(-8*24*time.Hour))
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		runner := buildReviewRunner(
+			store,
+			provider,
+			adapter,
+			noopLimiter{},
+			layout,
+			opts.Stderr,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", pr.URL, "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldLive.RunID); err != nil {
+		t.Fatalf("old live GetRun error = %v, want nil", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldDryRun.RunID); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("old dry-run GetRun error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
+	cfg := testConfig()
+	agentDir := t.TempDir()
+	writeReviewAgent(t, agentDir)
+	profile := cfg.Profiles["home"]
+	profile.AgentSources = []string{agentDir}
+	cfg.Profiles["home"] = profile
+	cfg.Data.Retention = config.RetentionConfig{Enforcement: config.RetentionManualOnly}
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	now := time.Now()
+	oldLive := allocateReviewCommandRun(t, store, layout, "old-live", ledger.PostModeLive, now.Add(-365*24*time.Hour))
+	oldDryRun := allocateReviewCommandRun(t, store, layout, "old-dry", ledger.PostModeDryRun, now.Add(-8*24*time.Hour))
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		runner := buildReviewRunner(
+			store,
+			provider,
+			adapter,
+			noopLimiter{},
+			layout,
+			opts.Stderr,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", pr.URL, "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldLive.RunID); err != nil {
+		t.Fatalf("old live GetRun error = %v, want nil", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldDryRun.RunID); err != nil {
+		t.Fatalf("old dry-run GetRun error = %v, want nil", err)
 	}
 }
 
@@ -642,6 +942,60 @@ func writeReviewFile(t *testing.T, path, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+}
+
+func reviewCommandPR() (gitprovider.PRRef, gitprovider.PR) {
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
+	baseSHA := strings.Repeat("b", 40)
+	headSHA := strings.Repeat("a", 40)
+	return ref, gitprovider.PR{
+		Ref:    ref,
+		URL:    "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		State:  gitprovider.PRStateOpen,
+		Author: gitprovider.Identity{Login: "author", ID: "author-id"},
+		Base: gitprovider.PRBranchRef{
+			Host:  ref.Host,
+			Owner: ref.Owner,
+			Repo:  ref.Repo,
+			Name:  "main",
+			Ref:   "refs/heads/main",
+			SHA:   baseSHA,
+		},
+		Head: gitprovider.PRBranchRef{
+			Host:  ref.Host,
+			Owner: ref.Owner,
+			Repo:  ref.Repo,
+			Name:  "feature",
+			Ref:   "refs/heads/feature",
+			SHA:   headSHA,
+		},
+	}
+}
+
+func allocateReviewCommandRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID string, mode ledger.PostMode, started time.Time) ledger.Run {
+	t.Helper()
+	prKey := "github_open-cli-collective_codereview-cli_29"
+	return allocateReviewCommandRunForPRKey(t, store, layout, runID, prKey, mode, started)
+}
+
+func allocateReviewCommandRunForPRKey(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID, prKey string, mode ledger.PostMode, started time.Time) ledger.Run {
+	t.Helper()
+	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		RunID:           runID,
+		SHA:             strings.Repeat("a", 40),
+		BaseSHA:         strings.Repeat("b", 40),
+		Profile:         "home",
+		PostingIdentity: "review-bot",
+		PostMode:        mode,
+		StartedAt:       started,
+		ArtifactPath:    filepath.Join(layout.DataRoot, "runs", prKey, strings.Repeat("a", 40), strings.Repeat("b", 40), "home__review-bot", runID),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	return run
 }
 
 func reviewSmallDiff(path string) string {

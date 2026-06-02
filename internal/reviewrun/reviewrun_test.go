@@ -12,6 +12,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -94,6 +95,66 @@ func TestRunPrunesRetentionBeforeFreshAllocation(t *testing.T) {
 	}
 	if planner.calls != 1 {
 		t.Fatalf("planner calls = %d, want fresh planning after retention", planner.calls)
+	}
+}
+
+func TestRunPrunesConfiguredRetentionBeforeFreshAllocation(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	old := fixture.allocateRetainedRunForPRKey(t, "old-live", "github_other_repo_1", ledger.PostModeLive, testNow().Add(-31*24*time.Hour))
+	fresh := fixture.allocateRetainedRunForPRKey(t, "fresh-live", "github_other_repo_1", ledger.PostModeLive, testNow().Add(-29*24*time.Hour))
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	provider := &retentionProvider{
+		Fake: fixture.fake,
+		beforeLive: func() {
+			if _, err := fixture.store.GetRun(ctx, old.RunID); !errors.Is(err, ledger.ErrNotFound) {
+				t.Fatalf("expired live run before provider GetPR error = %v, want ErrNotFound", err)
+			}
+			if _, err := fixture.store.GetRun(ctx, fresh.RunID); err != nil {
+				t.Fatalf("fresh live run before provider GetPR error = %v, want nil", err)
+			}
+		},
+	}
+	opts := fixture.opts(planner)
+	opts.Provider = provider
+	opts.NewRunID = sequence("fresh")
+	opts.Retention = datalifecycle.RetentionPolicy{LiveMaxAge: 30 * 24 * time.Hour}
+
+	if _, err := Run(ctx, opts, Request{Pipeline: fixture.req}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestRunManualOnlySkipsRetentionBeforeFreshAllocation(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	oldLive := fixture.allocateRetainedRunForPRKey(t, "old-live", "github_other_repo_1", ledger.PostModeLive, testNow().Add(-365*24*time.Hour))
+	oldDryRun := fixture.allocateRetainedRunForPRKey(t, "old-dry", "github_other_repo_1", ledger.PostModeDryRun, testNow().Add(-8*24*time.Hour))
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	provider := &retentionProvider{
+		Fake: fixture.fake,
+		beforeLive: func() {
+			if _, err := fixture.store.GetRun(ctx, oldLive.RunID); err != nil {
+				t.Fatalf("live run before provider GetPR error = %v, want nil", err)
+			}
+			if _, err := fixture.store.GetRun(ctx, oldDryRun.RunID); err != nil {
+				t.Fatalf("dry-run before provider GetPR error = %v, want nil", err)
+			}
+		},
+	}
+	opts := fixture.opts(planner)
+	opts.Provider = provider
+	opts.NewRunID = sequence("fresh")
+	opts.RetentionManualOnly = true
+
+	if _, err := Run(ctx, opts, Request{Pipeline: fixture.req}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := fixture.store.GetRun(ctx, oldLive.RunID); err != nil {
+		t.Fatalf("live run after Run error = %v, want nil", err)
+	}
+	if _, err := fixture.store.GetRun(ctx, oldDryRun.RunID); err != nil {
+		t.Fatalf("dry-run after Run error = %v, want nil", err)
 	}
 }
 
@@ -615,6 +676,11 @@ func (f *fixture) allocateOldRetainedRun(t *testing.T, runID string, mode ledger
 	if err != nil {
 		t.Fatalf("PRKey: %v", err)
 	}
+	return f.allocateRetainedRunForPRKey(t, runID, prKey, mode, started)
+}
+
+func (f *fixture) allocateRetainedRunForPRKey(t *testing.T, runID, prKey string, mode ledger.PostMode, started time.Time) ledger.Run {
+	t.Helper()
 	artifactPath := filepath.Join(f.layout.DataRoot, "runs", prKey, f.pr.Head.SHA, f.pr.Base.SHA, "home__review-bot", runID)
 	run, err := f.store.AllocateRun(context.Background(), ledger.AllocateRunParams{
 		PRKey:           prKey,

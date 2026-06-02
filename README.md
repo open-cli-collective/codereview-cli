@@ -258,7 +258,7 @@ Supported values:
 | `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api` are usable for review. `codex_cli` is recognized by the config schema but rejected by `cr review` until no-tools mode is explicit. |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
-| `data.retention.enforcement` | `at_write`, `manual_only`; currently stored and displayed, but automatic pruning does not yet branch on this setting. |
+| `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
 logged-in CLI. `api_key` LLM auth requires `llm.credential_ref` and stores a
@@ -615,8 +615,9 @@ cr data prune [--older-than <duration> | --keep-last <n>] [--dry-run] [--json]
 ```
 
 Prunes selected ledger runs and their artifacts, then removes orphan artifact
-directories. The default with no selector applies built-in retention: live runs
-older than 90 days and dry-run runs older than 7 days.
+directories. The default with no selector applies built-in manual retention:
+live runs older than 90 days and dry-run runs older than 7 days. This manual
+default is independent from `data.retention.*` review-time pruning config.
 
 Flags:
 
@@ -688,14 +689,17 @@ and records the new provider session when available.
 
 ### Retention
 
-`cr review` currently applies built-in retention before fetching the PR or
-allocating the next run. The config fields `data.retention.enforcement` and
-`data.retention.max_age_days` are validated and displayed, but automatic
-retention currently uses the built-in lifecycle windows rather than these
-profile settings.
+`cr review` applies retention before fetching the PR or allocating the next run
+when `data.retention.enforcement` is `at_write`. `data.retention.max_age_days`
+controls live-run retention and defaults to 90 days. A value of `0` keeps live
+runs forever. Dry-run runs remain throwaway data and use a fixed 7-day
+review-time retention cap.
 
-The explicit `cr data prune` command's built-in default is live 90 days and
-dry-run 7 days.
+Set `data.retention.enforcement: manual_only` to disable review-time pruning for
+both live and dry-run invocations. The explicit `cr data prune --dry-run`
+command remains the safe preview path for manual maintenance, and no-selector
+`cr data prune` uses its built-in live 90-day and dry-run 7-day windows
+independent from profile config.
 
 ## Development
 

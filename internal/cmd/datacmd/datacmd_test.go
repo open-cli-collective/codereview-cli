@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/open-cli-collective/cli-common/statedirtest"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
@@ -56,6 +58,62 @@ func TestDataPruneDryRunDoesNotDelete(t *testing.T) {
 	defer store.Close()
 	if _, err := store.GetRun(context.Background(), "old-live"); err != nil {
 		t.Fatalf("GetRun after dry-run: %v", err)
+	}
+}
+
+func TestDataPruneDefaultIgnoresConfiguredRetention(t *testing.T) {
+	statedirtest.Hermetic(t)
+	maxAgeDays := 30
+	configPath, err := config.Path()
+	if err != nil {
+		t.Fatalf("config.Path: %v", err)
+	}
+	if err := config.Save(configPath, config.File{
+		DefaultProfile: "home",
+		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Profiles: map[string]config.Profile{
+			"home": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/home",
+				},
+				LLM: config.LLMConfig{
+					Provider: config.LLMProviderAnthropic,
+					Auth:     config.LLMAuthSubscription,
+					Adapter:  config.LLMAdapterClaudeCLI,
+				},
+			},
+		},
+		Data: config.DataConfig{
+			Retention: config.RetentionConfig{
+				MaxAgeDays:  &maxAgeDays,
+				Enforcement: config.RetentionManualOnly,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+	layout := mustLayout(t)
+	store := openLedgerForTest(t, layout)
+	allocateRun(t, store, layout, "live-31d", ledger.PostModeLive, testNow().Add(-31*24*time.Hour))
+	allocateRun(t, store, layout, "live-91d", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
+	allocateRun(t, store, layout, "dry-8d", ledger.PostModeDryRun, testNow().Add(-8*24*time.Hour))
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	err = runDataCommand(&stdout, &stderr, "data", "prune", "--dry-run", "--json")
+	if err != nil {
+		t.Fatalf("runDataCommand: %v; stderr = %q", err, stderr.String())
+	}
+	var decoded view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v; stdout = %q", err, stdout.String())
+	}
+	if got, want := dataPruneRunIDs(decoded.SelectedRuns), []string{"dry-8d", "live-91d"}; !equalStrings(got, want) {
+		t.Fatalf("selected run IDs = %#v, want %#v", got, want)
 	}
 }
 
@@ -230,6 +288,27 @@ func allocateRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, ru
 		t.Fatalf("AllocateRun: %v", err)
 	}
 	return run
+}
+
+func dataPruneRunIDs(runs []view.DataRunItem) []string {
+	ids := make([]string, 0, len(runs))
+	for _, run := range runs {
+		ids = append(ids, run.RunID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func testNow() time.Time {

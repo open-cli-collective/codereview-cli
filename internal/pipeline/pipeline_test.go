@@ -16,6 +16,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
@@ -130,6 +131,92 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 		if strings.Contains(string(data), "<!-- codereview:") {
 			t.Fatalf("artifact %s contains real marker: %s", path, data)
 		}
+	}
+}
+
+func TestDryRunPrunesConfiguredRetentionBeforeFetch(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 1, 1))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 1, 1))
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	oldLive := allocatePipelineRun(t, store, layout, "old-live", ledger.PostModeLive, fixedNow().Add(-31*24*time.Hour))
+	newLive := allocatePipelineRun(t, store, layout, "new-live", ledger.PostModeLive, fixedNow().Add(-29*24*time.Hour))
+	oldDryRun := allocatePipelineRun(t, store, layout, "old-dry", ledger.PostModeDryRun, fixedNow().Add(-8*24*time.Hour))
+	provider.onGetPR = func() {
+		if _, err := store.GetRun(ctx, oldLive.RunID); !errors.Is(err, ledger.ErrNotFound) {
+			t.Fatalf("expired live run before provider GetPR error = %v, want ErrNotFound", err)
+		}
+		if _, err := store.GetRun(ctx, oldDryRun.RunID); !errors.Is(err, ledger.ErrNotFound) {
+			t.Fatalf("expired dry-run before provider GetPR error = %v, want ErrNotFound", err)
+		}
+		if _, err := store.GetRun(ctx, newLive.RunID); err != nil {
+			t.Fatalf("fresh live run before provider GetPR error = %v, want nil", err)
+		}
+	}
+
+	if _, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-1" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+		Retention:       datalifecycle.RetentionPolicy{LiveMaxAge: 30 * 24 * time.Hour},
+	}, req); err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+}
+
+func TestDryRunManualOnlySkipsRetentionBeforeFetch(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 1, 1))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 1, 1))
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	oldLive := allocatePipelineRun(t, store, layout, "old-live", ledger.PostModeLive, fixedNow().Add(-365*24*time.Hour))
+	oldDryRun := allocatePipelineRun(t, store, layout, "old-dry", ledger.PostModeDryRun, fixedNow().Add(-8*24*time.Hour))
+	provider.onGetPR = func() {
+		if _, err := store.GetRun(ctx, oldLive.RunID); err != nil {
+			t.Fatalf("live run before provider GetPR error = %v, want nil", err)
+		}
+		if _, err := store.GetRun(ctx, oldDryRun.RunID); err != nil {
+			t.Fatalf("dry-run before provider GetPR error = %v, want nil", err)
+		}
+	}
+
+	if _, err := DryRun(ctx, Options{
+		Provider:            provider,
+		Adapter:             adapter,
+		Store:               store,
+		Layout:              layout,
+		Now:                 fixedNow,
+		NewRunID:            func() string { return "run-1" },
+		NewSessionRowID:     sequence("session"),
+		NewFindingID:        findingSequence("finding"),
+		NewActionID:         actionSequence(),
+		MaxConcurrency:      1,
+		RetentionManualOnly: true,
+	}, req); err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if _, err := store.GetRun(ctx, oldLive.RunID); err != nil {
+		t.Fatalf("live run after DryRun error = %v, want nil", err)
+	}
+	if _, err := store.GetRun(ctx, oldDryRun.RunID); err != nil {
+		t.Fatalf("dry-run after DryRun error = %v, want nil", err)
 	}
 }
 
