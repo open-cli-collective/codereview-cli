@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 )
 
@@ -77,6 +78,49 @@ func TestRenderConfigTextOpenAIAPIKeyStatus(t *testing.T) {
 	}
 	if strings.Contains(got, "anthropic_api_key") {
 		t.Fatalf("text output used Anthropic key for OpenAI profile:\n%s", got)
+	}
+}
+
+func TestRenderConfigTextAgentSourceStatus(t *testing.T) {
+	var out bytes.Buffer
+	show := NewConfigShow("home", homeProfile(), dataConfig(), nil)
+	show.AgentSources = []agents.SourceInfo{
+		{
+			Kind:           agents.SourceProfile,
+			Label:          "org-reviewers",
+			Provenance:     "profile:org-reviewers",
+			ConfiguredPath: "/Library/Application Support/codereview/agents",
+			CanonicalPath:  "/Library/Application Support/codereview/agents",
+			Present:        true,
+			Status:         agents.SourceStatusAvailable,
+			Fingerprint:    "sha256:abc123def456",
+			Warnings:       []string{"canonical path is inside Git worktree /repo"},
+		},
+		{
+			Kind:           agents.SourceProfile,
+			Label:          "missing",
+			Provenance:     "profile:missing",
+			ConfiguredPath: "/missing",
+			Status:         agents.SourceStatusMissing,
+			Error:          "agents: read source /missing: no such file or directory",
+		},
+	}
+
+	if err := RenderConfigText(&out, show); err != nil {
+		t.Fatalf("RenderConfigText: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Agent sources:",
+		"/Library/Application Support/codereview/agents (available)",
+		"Fingerprint: sha256:abc123def456",
+		"Warning: canonical path is inside Git worktree /repo",
+		"/missing (missing)",
+		"Error: agents: read source /missing",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text output missing %q:\n%s", want, got)
+		}
 	}
 }
 

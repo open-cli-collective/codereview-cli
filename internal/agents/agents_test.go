@@ -41,6 +41,106 @@ func TestLoadFilesystemSourceParsesAgent(t *testing.T) {
 	if got := agent.Provenance.String(); !strings.HasPrefix(got, "profile:") {
 		t.Fatalf("provenance = %q, want profile source", got)
 	}
+	if len(catalog.Sources) != 1 || catalog.Sources[0].Fingerprint == "" || catalog.Sources[0].CanonicalPath == "" {
+		t.Fatalf("sources = %#v, want source provenance with fingerprint and canonical path", catalog.Sources)
+	}
+}
+
+func TestMissingFilesystemSourceFailsLoadAndInspectsMissing(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-agents")
+
+	_, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{missing}})
+	if err == nil || !strings.Contains(err.Error(), "agents: read source") {
+		t.Fatalf("Load error = %v, want read source failure", err)
+	}
+
+	sources := InspectProfileSources([]string{missing})
+	if len(sources) != 1 || sources[0].Status != SourceStatusMissing || sources[0].Present || sources[0].Error == "" {
+		t.Fatalf("sources = %#v, want non-fatal missing status", sources)
+	}
+}
+
+func TestFilesystemSourceSymlinkRecordsCanonicalPathAndFingerprint(t *testing.T) {
+	realRoot := t.TempDir()
+	writeAgent(t, realRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	linkRoot := filepath.Join(t.TempDir(), "agents-link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("Symlink unsupported: %v", err)
+	}
+	wantCanonical, err := filepath.EvalSymlinks(realRoot)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(realRoot): %v", err)
+	}
+	wantCanonical, err = filepath.Abs(wantCanonical)
+	if err != nil {
+		t.Fatalf("Abs(realRoot): %v", err)
+	}
+
+	catalog, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{linkRoot}})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Sources) != 1 {
+		t.Fatalf("sources len = %d, want 1", len(catalog.Sources))
+	}
+	source := catalog.Sources[0]
+	if source.ConfiguredPath != linkRoot || source.CanonicalPath != wantCanonical || source.Fingerprint == "" {
+		t.Fatalf("source = %#v, want configured symlink, canonical real path, fingerprint", source)
+	}
+	if len(catalog.Agents) != 1 || catalog.Agents[0].Provenance.CanonicalPath != wantCanonical || catalog.Agents[0].Provenance.Fingerprint != source.Fingerprint {
+		t.Fatalf("agent provenance = %#v, source %#v; want canonical/fingerprint copied", catalog.Agents, source)
+	}
+}
+
+func TestFilesystemSourceFingerprintChangesWithPromptContent(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+
+	first, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
+	if err != nil {
+		t.Fatalf("Load first: %v", err)
+	}
+	promptPath := filepath.Join(root, "harness", "architecture", "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("Changed prompt.\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile prompt: %v", err)
+	}
+	second, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
+	if err != nil {
+		t.Fatalf("Load second: %v", err)
+	}
+	if first.Sources[0].Fingerprint == "" || first.Sources[0].Fingerprint == second.Sources[0].Fingerprint {
+		t.Fatalf("fingerprints = %q then %q, want non-empty change", first.Sources[0].Fingerprint, second.Sources[0].Fingerprint)
+	}
+}
+
+func TestFilesystemSourceWarningsForRelativeTempAndGitWorktreePaths(t *testing.T) {
+	cwd := t.TempDir()
+	relativeRoot := filepath.Join(cwd, "agents")
+	writeAgent(t, relativeRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	t.Chdir(cwd)
+
+	relativeCatalog, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{"agents"}})
+	if err != nil {
+		t.Fatalf("Load relative: %v", err)
+	}
+	relativeWarnings := relativeCatalog.Sources[0].Warnings
+	if !hasWarning(relativeWarnings, "relative") || !hasWarning(relativeWarnings, "OS temp") {
+		t.Fatalf("relative warnings = %#v, want relative and temp warnings", relativeWarnings)
+	}
+
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir .git: %v", err)
+	}
+	gitSource := filepath.Join(repoRoot, "agents")
+	writeAgent(t, gitSource, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	gitCatalog, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{gitSource}})
+	if err != nil {
+		t.Fatalf("Load git source: %v", err)
+	}
+	if !hasWarning(gitCatalog.Sources[0].Warnings, "Git worktree") {
+		t.Fatalf("git warnings = %#v, want Git worktree warning", gitCatalog.Sources[0].Warnings)
+	}
 }
 
 func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {
@@ -88,6 +188,15 @@ func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {
 	if catalog.Repo == nil || catalog.Repo.Provenance != "repo@refs/heads/main:base-sh" || !strings.Contains(catalog.Repo.TrustNote(), "PR-head .codereview/agents changes do not affect") {
 		t.Fatalf("repo info = %#v, want provenance and trust note", catalog.Repo)
 	}
+}
+
+func hasWarning(warnings []string, needle string) bool {
+	for _, warning := range warnings {
+		if strings.Contains(warning, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRepoLoaderUsesBaseSHAAndNeverHeadDefinitions(t *testing.T) {

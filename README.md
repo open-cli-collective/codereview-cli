@@ -149,6 +149,38 @@ profiles:
 For adapter-managed LLM credentials, use `auth: subscription`, set an adapter
 such as `claude_cli`, and omit `llm.credential_ref`.
 
+Agent definitions are non-secret deployment material, not credentials. Ship
+them separately from keyring pre-staging and point `agent_sources` at the
+managed directory. Recommended managed paths:
+
+| Platform | Example managed agent source |
+|----------|------------------------------|
+| macOS | `/Library/Application Support/codereview/agents` |
+| Windows | `C:\ProgramData\codereview\agents` |
+| Linux | `/etc/codereview/agents` |
+
+Use the standard agent layout under that directory:
+
+```text
+agents/
+  security/
+    index.yaml
+    secrets/
+      index.yaml
+      prompt.md
+```
+
+`cr config show --json` reports each configured source by path, presence,
+status, canonical path, warnings, and SHA-256 fingerprint prefix without
+inlining `index.yaml` or `prompt.md`. Missing or unreadable sources are shown as
+deployment status in `config show`; commands that actually load agents, such as
+`cr agents` and `cr review`, fail fast until the source is fixed.
+
+Avoid profile sources under temp directories, relative paths, or Git worktrees.
+Those locations are warned because they are easy for local scripts or PR authors
+to mutate. Symlinked sources are accepted, but `cr` records the canonical path
+and fingerprints the resolved files.
+
 Pre-stage each secret with `set-credential`:
 
 ```bash
@@ -410,6 +442,9 @@ cr config show [--json]
 Shows the resolved active profile, selected credential backend and source,
 credential refs, non-secret profile config, review policy, and data retention.
 For each declared credential ref, it reports whether expected keys are present.
+For each configured agent source, it reports deployment-material status,
+canonical path, warnings, and SHA-256 fingerprint prefix without inlining agent
+definition contents.
 
 `--json` emits the same information as structured JSON.
 
@@ -459,6 +494,9 @@ cr agents list [PR] [--agents-dir <path> ...] [--json]
 Lists trusted review agents. If a PR URL is supplied, repo-local agents are
 loaded from the PR base branch under `.codereview/agents`, not from the PR head.
 This keeps unreviewed agent changes from affecting their own review.
+Filesystem profile and flag sources include structured provenance with
+configured path, canonical path, warnings, and SHA-256 fingerprint prefix so an
+operator can verify which org-shipped agent version was used.
 
 Agent source precedence is profile sources, repo-local base-branch agents, then
 `--agents-dir` sources. Later sources override earlier agents with the same ID.

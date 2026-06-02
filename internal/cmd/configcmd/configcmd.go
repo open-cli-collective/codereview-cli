@@ -12,6 +12,7 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
@@ -88,6 +89,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			show := view.NewConfigShow(profileName, profile, cfg.Data, statuses)
 			show.Backend = string(backend)
 			show.BackendSource = string(source)
+			show.AgentSources = agents.InspectProfileSources(profile.AgentSources)
 			if jsonOutput {
 				return view.RenderConfigJSON(opts.Stdout, show)
 			}

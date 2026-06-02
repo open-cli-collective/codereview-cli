@@ -14,6 +14,7 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -107,6 +108,40 @@ func TestConfigShowJSON(t *testing.T) {
 	}
 	if len(wantKeys) != 0 {
 		t.Fatalf("missing credential purposes: %#v", wantKeys)
+	}
+}
+
+func TestConfigShowJSONReportsAgentSourceDeploymentStatus(t *testing.T) {
+	available := t.TempDir()
+	writeConfigTestAgentSource(t, available, "Do not inline this prompt.\n")
+	missing := filepath.Join(t.TempDir(), "missing-agents")
+	cfg := testConfig()
+	home := cfg.Profiles["home"]
+	home.AgentSources = []string{available, missing}
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "show", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String(), "Do not inline this prompt") {
+		t.Fatalf("config show inlined prompt contents: %s", out.String())
+	}
+	var got view.ConfigShow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if len(got.AgentSources) != 2 {
+		t.Fatalf("agent_sources len = %d, want 2: %#v", len(got.AgentSources), got.AgentSources)
+	}
+	first := got.AgentSources[0]
+	if first.Status != agents.SourceStatusAvailable || !first.Present || first.Fingerprint == "" || first.CanonicalPath == "" {
+		t.Fatalf("first source = %#v, want available fingerprinted source", first)
+	}
+	second := got.AgentSources[1]
+	if second.Status != agents.SourceStatusMissing || second.Present || second.Error == "" {
+		t.Fatalf("second source = %#v, want missing non-fatal source", second)
 	}
 }
 
@@ -772,6 +807,24 @@ func writeRawConfig(t *testing.T, path, body string) {
 	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func writeConfigTestAgentSource(t *testing.T, root, prompt string) {
+	t.Helper()
+	category := filepath.Join(root, "harness")
+	agent := filepath.Join(category, "reviewer")
+	if err := os.MkdirAll(agent, 0o700); err != nil {
+		t.Fatalf("MkdirAll agent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(category, "index.yaml"), []byte("name: harness\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile category index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agent, "index.yaml"), []byte("name: reviewer\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile agent index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agent, "prompt.md"), []byte(prompt), 0o600); err != nil {
+		t.Fatalf("WriteFile prompt: %v", err)
 	}
 }
 

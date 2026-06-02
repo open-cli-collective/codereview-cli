@@ -115,6 +115,7 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	assertFileContains(t, result.Artifacts.DiffPatch, "diff --git a/main.go b/main.go")
 	assertFileContains(t, result.Artifacts.FindingsJSON, `"severity": "major"`)
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
+	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
 	slicePath, err := result.Artifacts.SlicePatch("harness:reviewer", "main.go")
 	if err != nil {
 		t.Fatalf("SlicePatch: %v", err)
@@ -203,6 +204,7 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 		t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(sessions))
 	}
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
+	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
 }
 
 func TestLiveNamedSessionResumesOrchestratorOnlyAndReturnsCandidate(t *testing.T) {
@@ -1369,6 +1371,27 @@ func assertFileContains(t *testing.T, path, want string) {
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("file %s = %q, want substring %q", path, data, want)
 	}
+}
+
+func assertAgentSourcesArtifact(t *testing.T, path, wantAgent string) {
+	t.Helper()
+	data, err := os.ReadFile(path) // #nosec G304 -- test helper reads caller-provided artifact paths under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	var artifact agentSourcesArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatalf("Unmarshal agent sources artifact: %v\n%s", err, data)
+	}
+	if len(artifact.Sources) == 0 || artifact.Sources[0].Fingerprint == "" || artifact.Sources[0].CanonicalPath == "" {
+		t.Fatalf("artifact sources = %#v, want fingerprinted canonical source", artifact.Sources)
+	}
+	for _, agent := range artifact.Agents {
+		if agent.ID == wantAgent && agent.Source.Fingerprint != "" {
+			return
+		}
+	}
+	t.Fatalf("artifact agents = %#v, want %s with fingerprint", artifact.Agents, wantAgent)
 }
 
 func prURL(ref gitprovider.PRRef) string {
