@@ -158,6 +158,30 @@ func TestGraphQLErrorTaxonomy(t *testing.T) {
 	}
 }
 
+func TestGraphQLErrorDoesNotLeakSecretBearingMessage(t *testing.T) {
+	secret := "ghp_graphql_no_leak_canary_0001" // #nosec G101 -- distinctive test canary, not a real token.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+secret {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		_ = readGraphQLRequestAtEndpoint(t, r)
+		writeJSON(t, w, map[string]any{"errors": []graphQLError{{
+			Type:    "UNAUTHENTICATED",
+			Message: "bad credentials for " + secret,
+		}}})
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: secret, BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	_, err := client.ListTreeAtRef(context.Background(), testPRRef(), "base", ".codereview")
+	if !errors.Is(err, gitprovider.ErrAuth) {
+		t.Fatalf("ListTreeAtRef error = %v, want ErrAuth", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("ListTreeAtRef error leaked secret material: %v", err)
+	}
+}
+
 func TestListInlineThreadsRejectsUnknownDiffSide(t *testing.T) {
 	ref := testPRRef()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

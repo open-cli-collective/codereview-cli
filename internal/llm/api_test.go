@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/open-cli-collective/cli-common/credstore"
+
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
@@ -301,15 +303,21 @@ func TestAPIAdapterFailures(t *testing.T) {
 	})
 
 	t.Run("non 2xx status", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "secret body", http.StatusUnauthorized)
+		apiKey := "sk-llm-no-leak-canary-0001"            // #nosec G101 -- distinctive test canary, not a real API key.
+		responseSecret := "llm-upstream-body-secret-0002" // #nosec G101 -- distinctive test canary, not a real secret.
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("Authorization"); got != "Bearer "+apiKey {
+				t.Fatalf("Authorization = %q, want bearer API key", got)
+			}
+			http.Error(w, "secret body "+responseSecret+" "+apiKey, http.StatusUnauthorized)
 		}))
 		defer server.Close()
-		adapter, err := NewOpenAIAPIAdapter(APIOptions{APIKey: "key", BaseURL: server.URL})
+		adapter, err := NewOpenAIAPIAdapter(APIOptions{APIKey: apiKey, BaseURL: server.URL})
 		if err != nil {
 			t.Fatalf("NewOpenAIAPIAdapter: %v", err)
 		}
-		stream, err := adapter.Start(context.Background(), Request{Model: "gpt", Prompt: "prompt"})
+		logPath := filepath.Join(t.TempDir(), "error.jsonl")
+		stream, err := adapter.Start(context.Background(), Request{Model: "gpt", Prompt: "prompt", LogPath: logPath})
 		if err != nil {
 			t.Fatalf("Start: %v", err)
 		}
@@ -317,8 +325,15 @@ func TestAPIAdapterFailures(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "openai_api") || !strings.Contains(err.Error(), "401") {
 			t.Fatalf("Wait error = %v, want provider and status", err)
 		}
-		if strings.Contains(err.Error(), "secret body") {
-			t.Fatalf("error leaked response body: %v", err)
+		if leakErr := credstore.NoLeakAssertion([]byte(err.Error()), apiKey, responseSecret); leakErr != nil {
+			t.Fatalf("error leaked response body or API key: %v", leakErr)
+		}
+		if data, readErr := os.ReadFile(logPath); readErr == nil { // #nosec G304 -- logPath is under t.TempDir.
+			if leakErr := credstore.NoLeakAssertion(data, apiKey, responseSecret); leakErr != nil {
+				t.Fatalf("response log leaked response body or API key: %v", leakErr)
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatalf("ReadFile(%s): %v", logPath, readErr)
 		}
 	})
 

@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,7 +30,7 @@ func mapGraphQLErrors(op gitprovider.Operation, gqlErrors []graphQLError) error 
 		return nil
 	}
 	first := gqlErrors[0]
-	err := fmt.Errorf("github graphql: %s", first.Message)
+	err := errors.New("github graphql: provider returned an error")
 	classification := strings.ToUpper(first.Type)
 	if classification == "" && first.Extensions != nil {
 		if value, ok := first.Extensions["type"].(string); ok {

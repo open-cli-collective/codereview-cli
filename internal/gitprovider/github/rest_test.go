@@ -170,6 +170,27 @@ func TestGetFileAtRefRejectsUnsafePathBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestRESTHTTPErrorDoesNotLeakSecretBearingBody(t *testing.T) {
+	secret := "ghp_rest_no_leak_canary_0001" // #nosec G101 -- distinctive test canary, not a real token.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+secret {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"bad credentials ` + secret + `"}`))
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: secret, BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	_, err := client.GetPR(context.Background(), testPRRef())
+	if !errors.Is(err, gitprovider.ErrAuth) {
+		t.Fatalf("GetPR error = %v, want ErrAuth", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("GetPR error leaked secret material: %v", err)
+	}
+}
+
 func TestRESTPagination(t *testing.T) {
 	ref := testPRRef()
 	requests := map[string]int{}

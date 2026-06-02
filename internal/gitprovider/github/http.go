@@ -167,8 +167,8 @@ func mapTransportError(op gitprovider.Operation, err error) error {
 	return gitprovider.WrapError(gitprovider.ErrRetryable, op, err)
 }
 
-func mapHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
-	err := fmt.Errorf("github: status %d: %s", status, sanitizedBody(body))
+func mapHTTPStatus(op gitprovider.Operation, status int, _ []byte) error {
+	err := fmt.Errorf("github: status %d", status)
 	switch status {
 	case http.StatusUnauthorized:
 		return gitprovider.WrapError(gitprovider.ErrAuth, op, err)
@@ -191,7 +191,7 @@ func mapHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
 }
 
 func mapWriteHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
-	err := fmt.Errorf("github: status %d: %s", status, sanitizedBody(body))
+	err := fmt.Errorf("github: status %d", status)
 	if status == http.StatusUnprocessableEntity {
 		if isCommitBoundWriteOperation(op) && isStaleSHABody(body) {
 			return gitprovider.WrapError(gitprovider.ErrStaleSHA, op, err)
