@@ -42,7 +42,7 @@ func newListCommand(opts *root.Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			store, cleanup, err := openStore(cmd.Context())
+			store, cleanup, err := openStore(cmd.Context(), false)
 			if err != nil {
 				return err
 			}
@@ -75,7 +75,7 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
-			store, cleanup, err := openStore(cmd.Context())
+			store, cleanup, err := openStore(cmd.Context(), false)
 			if err != nil {
 				return err
 			}
@@ -111,7 +111,7 @@ func newDeleteCommand(opts *root.Options) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
-			store, cleanup, err := openStore(cmd.Context())
+			store, cleanup, err := openStore(cmd.Context(), true)
 			if err != nil {
 				return err
 			}
@@ -136,10 +136,15 @@ func addCommonFlags(cmd *cobra.Command, flags *commandFlags) {
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 }
 
-func openStore(ctx context.Context) (*ledger.Store, func(), error) {
+func openStore(ctx context.Context, migrateLegacyData bool) (*ledger.Store, func(), error) {
 	layout, err := statepaths.DefaultLayoutEnsured()
 	if err != nil {
 		return nil, nil, err
+	}
+	if migrateLegacyData {
+		if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
+			return nil, nil, err
+		}
 	}
 	store, err := ledger.Open(ctx, layout.LedgerDB())
 	if err != nil {

@@ -4,6 +4,7 @@ package statepaths
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,11 +18,10 @@ import (
 const (
 	// Tool is the binary/tool name used with cli-common statedir resolvers.
 	Tool = "cr"
-	// AppDir is cr's app-specific subdirectory under data/cache roots.
+	// AppDir is the config/credential service directory name. It is retained
+	// for config-scope callers; data/cache roots use Tool directly.
 	AppDir = "codereview"
 )
-
-const dirPerm = 0o700
 
 // Layout composes paths under resolved cr data/cache roots.
 type Layout struct {
@@ -193,48 +193,78 @@ func (p RunPaths) AgentLog(agentID string) (string, error) {
 	return filepath.Join(p.AgentLogsDir, Encode(agentID)+".jsonl"), nil
 }
 
-// DataRoot resolves cr's app data root without creating it.
+// DataRoot resolves cr's per-binary data root without creating it.
 func DataRoot() (string, error) {
-	dir, err := (statedir.Data{Tool: Tool}).DataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, AppDir), nil
+	return (statedir.Data{Tool: Tool}).DataDir()
 }
 
-// DataRootEnsured resolves and creates cr's app data root.
+// DataRootEnsured resolves and creates cr's per-binary data root.
 func DataRootEnsured() (string, error) {
-	dir, err := (statedir.Data{Tool: Tool}).DataDirEnsured()
-	if err != nil {
-		return "", err
-	}
-	root := filepath.Join(dir, AppDir)
-	if err := os.MkdirAll(root, dirPerm); err != nil {
-		return "", fmt.Errorf("statepaths: creating data root: %w", err)
-	}
-	return root, nil
+	return (statedir.Data{Tool: Tool}).DataDirEnsured()
 }
 
-// CacheRoot resolves cr's app cache root without creating it.
+// CacheRoot resolves cr's per-binary cache root without creating it.
 func CacheRoot() (string, error) {
-	dir, err := (statedir.Cache{Tool: Tool}).CacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, AppDir), nil
+	return (statedir.Cache{Tool: Tool}).CacheDir()
 }
 
-// CacheRootEnsured resolves and creates cr's app cache root.
+// CacheRootEnsured resolves and creates cr's per-binary cache root.
 func CacheRootEnsured() (string, error) {
-	dir, err := (statedir.Cache{Tool: Tool}).CacheDirEnsured()
+	return (statedir.Cache{Tool: Tool}).CacheDirEnsured()
+}
+
+// MigrateLegacyDataRoot moves data written by releases that nested state under
+// the per-binary root's historical AppDir child.
+func MigrateLegacyDataRoot(layout Layout) error {
+	return migrateLegacyRoot(layout.DataRoot, filepath.Join(layout.DataRoot, AppDir), "data")
+}
+
+// MigrateLegacyCacheRoot moves cache written by releases that nested state
+// under the per-binary root's historical AppDir child.
+func MigrateLegacyCacheRoot(layout Layout) error {
+	return migrateLegacyRoot(layout.CacheRoot, filepath.Join(layout.CacheRoot, AppDir), "cache")
+}
+
+func migrateLegacyRoot(root, legacyRoot, kind string) error {
+	info, err := os.Stat(legacyRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		return "", err
+		return fmt.Errorf("statepaths: inspecting legacy %s root: %w", kind, err)
 	}
-	root := filepath.Join(dir, AppDir)
-	if err := os.MkdirAll(root, dirPerm); err != nil {
-		return "", fmt.Errorf("statepaths: creating cache root: %w", err)
+	if !info.IsDir() {
+		return fmt.Errorf("statepaths: legacy %s root %s is not a directory", kind, legacyRoot)
 	}
-	return root, nil
+	entries, err := os.ReadDir(legacyRoot)
+	if err != nil {
+		return fmt.Errorf("statepaths: reading legacy %s root: %w", kind, err)
+	}
+	if len(entries) == 0 {
+		if err := os.Remove(legacyRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("statepaths: removing empty legacy %s root: %w", kind, err)
+		}
+		return nil
+	}
+	for _, entry := range entries {
+		target := filepath.Join(root, entry.Name())
+		if _, err := os.Lstat(target); err == nil {
+			return fmt.Errorf("statepaths: cannot migrate legacy %s root %s: target %s already exists", kind, legacyRoot, target)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("statepaths: inspecting %s migration target: %w", kind, err)
+		}
+	}
+	for _, entry := range entries {
+		source := filepath.Join(legacyRoot, entry.Name())
+		target := filepath.Join(root, entry.Name())
+		if err := os.Rename(source, target); err != nil {
+			return fmt.Errorf("statepaths: migrating legacy %s entry %s: %w", kind, source, err)
+		}
+	}
+	if err := os.Remove(legacyRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("statepaths: removing legacy %s root: %w", kind, err)
+	}
+	return nil
 }
 
 // Encode percent-encodes every rune outside [A-Za-z0-9._-].

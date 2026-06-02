@@ -46,7 +46,7 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			layout, store, cleanup, err := openStore(cmd.Context())
+			layout, store, cleanup, err := openStore(cmd.Context(), false)
 			if err != nil {
 				return err
 			}
@@ -95,7 +95,7 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 				keepLast = &flags.keepLast
 			}
 
-			layout, store, cleanup, err := openStore(cmd.Context())
+			layout, store, cleanup, err := openStore(cmd.Context(), !flags.dryRun)
 			if err != nil {
 				return err
 			}
@@ -162,10 +162,15 @@ func addJSONFlag(cmd *cobra.Command, flags *commandFlags) {
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 }
 
-func openStore(ctx context.Context) (statepaths.Layout, *ledger.Store, func(), error) {
+func openStore(ctx context.Context, migrateLegacyData bool) (statepaths.Layout, *ledger.Store, func(), error) {
 	layout, err := statepaths.DefaultLayoutEnsured()
 	if err != nil {
 		return statepaths.Layout{}, nil, nil, err
+	}
+	if migrateLegacyData {
+		if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
+			return statepaths.Layout{}, nil, nil, err
+		}
 	}
 	store, err := ledger.Open(ctx, layout.LedgerDB())
 	if err != nil {

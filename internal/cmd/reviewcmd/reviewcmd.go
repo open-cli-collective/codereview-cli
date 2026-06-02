@@ -462,6 +462,14 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, err
 	}
+	if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
+		cleanup()
+		return Runtime{}, err
+	}
+	if err := statepaths.MigrateLegacyCacheRoot(layout); err != nil {
+		cleanup()
+		return Runtime{}, err
+	}
 	ledgerStore, err := ledger.Open(cmd.Context(), layout.LedgerDB())
 	if err != nil {
 		cleanup()
