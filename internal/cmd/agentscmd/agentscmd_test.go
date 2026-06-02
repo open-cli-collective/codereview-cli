@@ -35,7 +35,7 @@ func TestAgentsListWithoutPRLoadsProfileAndFlagSources(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	text := out.String()
-	if !strings.Contains(text, "shared:reviewer") || !strings.Contains(text, "second flag desc") || !strings.Contains(text, "Provenance: flag:2") {
+	if !strings.Contains(text, "shared:reviewer") || !strings.Contains(text, "second flag desc") || !strings.Contains(text, "Provenance: flag:2") || !strings.Contains(text, "Source fingerprint: sha256:") {
 		t.Fatalf("stdout = %q, want second repeatable flag override with provenance", text)
 	}
 	if strings.Contains(text, "first flag desc") {
@@ -43,6 +43,23 @@ func TestAgentsListWithoutPRLoadsProfileAndFlagSources(t *testing.T) {
 	}
 	if strings.Contains(text, "Note:") {
 		t.Fatalf("stdout = %q, want no PR trust note", text)
+	}
+}
+
+func TestAgentsListFailsFastForUnreadableProfileSource(t *testing.T) {
+	notDir := filepath.Join(t.TempDir(), "agent-source-file")
+	if err := os.WriteFile(notDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile notDir: %v", err)
+	}
+	cfg := testConfig(notDir)
+	cmd, _ := newTestCommand(t, cfg, func(*cobra.Command, *root.Options, config.File, config.Profile) (gitprovider.GitProvider, func(), error) {
+		t.Fatal("provider factory called without PR argument")
+		return nil, nil, nil
+	})
+
+	err := root.Execute(cmd, []string{"agents", "list"})
+	if err == nil || !strings.Contains(err.Error(), "agents: read source") {
+		t.Fatalf("Execute error = %v, want read source failure", err)
 	}
 }
 
@@ -66,6 +83,12 @@ func TestAgentsListWithPRLoadsRepoBaseAndTrustNote(t *testing.T) {
 	if got.Repo == nil || got.Repo.Provenance != "repo@refs/heads/main:base-sh" {
 		t.Fatalf("repo = %#v, want base provenance", got.Repo)
 	}
+	if len(got.Sources) != 2 {
+		t.Fatalf("sources len = %d, want profile and repo sources: %#v", len(got.Sources), got.Sources)
+	}
+	if got.Sources[0].Fingerprint == "" || got.Sources[0].Status != "available" {
+		t.Fatalf("profile source = %#v, want available fingerprinted source", got.Sources[0])
+	}
 	if !strings.Contains(got.TrustNote, "PR-head .codereview/agents changes do not affect") {
 		t.Fatalf("trust_note = %q, want PR-head note", got.TrustNote)
 	}
@@ -80,7 +103,7 @@ func TestAgentsShowRendersAgentAndMissingFailure(t *testing.T) {
 	if err := root.Execute(cmd, []string{"agents", "show", "harness:architecture"}); err != nil {
 		t.Fatalf("Execute show: %v", err)
 	}
-	if text := out.String(); !strings.Contains(text, "Agent: harness:architecture") || !strings.Contains(text, "Read carefully.") {
+	if text := out.String(); !strings.Contains(text, "Agent: harness:architecture") || !strings.Contains(text, "Read carefully.") || !strings.Contains(text, "Source canonical path:") {
 		t.Fatalf("stdout = %q, want agent detail and prompt", text)
 	}
 
@@ -108,6 +131,9 @@ func TestAgentsShowJSONWithPR(t *testing.T) {
 	}
 	if got.Agent.ID != "repo:reviewer" || got.Agent.Provenance != "repo@refs/heads/main:base-sh" {
 		t.Fatalf("agent = %#v, want repo agent", got.Agent)
+	}
+	if got.Agent.Source.Kind != "repo" || got.Agent.Source.SHA == "" {
+		t.Fatalf("agent source = %#v, want structured repo source", got.Agent.Source)
 	}
 	if !strings.Contains(got.TrustNote, "PR-head .codereview/agents changes do not affect") {
 		t.Fatalf("trust_note = %q, want PR-head note", got.TrustNote)

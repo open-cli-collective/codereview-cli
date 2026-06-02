@@ -106,12 +106,13 @@ type Request struct {
 
 // ArtifactPaths contains per-run artifact paths.
 type ArtifactPaths struct {
-	Dir            string `json:"dir"`
-	DiffPatch      string `json:"diff_patch"`
-	SlicesDir      string `json:"slices_dir"`
-	FindingsJSON   string `json:"findings_json"`
-	RollupMarkdown string `json:"rollup_markdown"`
-	AgentLogsDir   string `json:"agent_logs_dir"`
+	Dir              string `json:"dir"`
+	DiffPatch        string `json:"diff_patch"`
+	SlicesDir        string `json:"slices_dir"`
+	FindingsJSON     string `json:"findings_json"`
+	RollupMarkdown   string `json:"rollup_markdown"`
+	AgentSourcesJSON string `json:"agent_sources_json"`
+	AgentLogsDir     string `json:"agent_logs_dir"`
 }
 
 // SlicePatch returns the artifact path for an agent/file diff slice.
@@ -440,7 +441,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.PlannedActions = append(result.PlannedActions, planned)
 	}
-	if err := writeArtifacts(artifacts, diff.Raw, parsed.Patches, result.Selection, result.Findings, result.Plan.RollupMarkdown); err != nil {
+	if err := writeArtifacts(artifacts, diff.Raw, parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown); err != nil {
 		return Result{}, err
 	}
 	if !mode.live {
@@ -811,7 +812,7 @@ func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitp
 	}
 	payload := map[string]any{
 		"task":   "review files and return findings JSON only",
-		"agent":  agent,
+		"agent":  agentPromptFromAgent(agent),
 		"files":  files,
 		"schema": "findings",
 	}
@@ -820,6 +821,46 @@ func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitp
 		return "", err
 	}
 	return string(body), nil
+}
+
+type agentPrompt struct {
+	ID                   string          `json:"id"`
+	Name                 string          `json:"name"`
+	Category             agents.Category `json:"category"`
+	Description          string          `json:"description,omitempty"`
+	Model                string          `json:"model,omitempty"`
+	Effort               string          `json:"effort,omitempty"`
+	FileGlobs            []string        `json:"file_globs,omitempty"`
+	AppliesWhen          []string        `json:"applies_when,omitempty"`
+	NeedsFullFileContent bool            `json:"needs_full_file_content"`
+	Prompt               string          `json:"prompt,omitempty"`
+	Provenance           string          `json:"provenance"`
+	Overridden           []string        `json:"overridden,omitempty"`
+}
+
+func agentPromptFromAgent(agent agents.Agent) agentPrompt {
+	return agentPrompt{
+		ID:                   agent.ID,
+		Name:                 agent.Name,
+		Category:             agent.Category,
+		Description:          agent.Description,
+		Model:                agent.Model,
+		Effort:               agent.Effort,
+		FileGlobs:            append([]string(nil), agent.FileGlobs...),
+		AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
+		NeedsFullFileContent: agent.NeedsFullFileContent,
+		Prompt:               agent.Prompt,
+		Provenance:           agent.Provenance.String(),
+		Overridden:           append([]string(nil), agent.Overridden...),
+	}
+}
+
+func agentPromptsFromCatalog(catalog agents.Catalog) []agentPrompt {
+	out := make([]agentPrompt, 0, len(catalog.Agents))
+	for _, agent := range catalog.Agents {
+		out = append(out, agentPromptFromAgent(agent))
+	}
+	return out
 }
 
 func fetchFileOptional(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, gitRef string, path string) ([]byte, error) {
@@ -835,7 +876,7 @@ func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []F
 		"task":          "select reviewer agents and thread actions; return selection JSON only",
 		"schema":        "selection",
 		"pr":            pr,
-		"agents":        catalog.Agents,
+		"agents":        agentPromptsFromCatalog(catalog),
 		"changed_files": patchPaths(patches),
 		"threads":       threads,
 	}
@@ -860,7 +901,18 @@ func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding) (string, er
 	return string(body), nil
 }
 
-func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, selection llm.Selection, findings []review.Finding, rollup string) error {
+type agentSourcesArtifact struct {
+	Sources []agents.SourceInfo       `json:"sources"`
+	Agents  []agentProvenanceArtifact `json:"agents"`
+}
+
+type agentProvenanceArtifact struct {
+	ID         string            `json:"id"`
+	Provenance string            `json:"provenance"`
+	Source     agents.SourceInfo `json:"source"`
+}
+
+func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string) error {
 	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
 		return fmt.Errorf("pipeline: create artifact dir: %w", err)
 	}
@@ -869,6 +921,13 @@ func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, se
 	}
 	if err := os.WriteFile(paths.DiffPatch, []byte(rawDiff), 0o600); err != nil {
 		return fmt.Errorf("pipeline: write diff: %w", err)
+	}
+	sourceJSON, err := json.MarshalIndent(agentSourcesArtifactFromCatalog(catalog), "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(paths.AgentSourcesJSON, append(sourceJSON, '\n'), 0o600); err != nil {
+		return fmt.Errorf("pipeline: write agent source provenance: %w", err)
 	}
 	for _, selected := range selection.SelectedAgents {
 		for _, file := range selected.Files {
@@ -899,6 +958,24 @@ func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, se
 		return fmt.Errorf("pipeline: write rollup: %w", err)
 	}
 	return nil
+}
+
+func agentSourcesArtifactFromCatalog(catalog agents.Catalog) agentSourcesArtifact {
+	artifact := agentSourcesArtifact{
+		Sources: append([]agents.SourceInfo(nil), catalog.Sources...),
+		Agents:  make([]agentProvenanceArtifact, 0, len(catalog.Agents)),
+	}
+	for i := range artifact.Sources {
+		artifact.Sources[i].Warnings = append([]string(nil), catalog.Sources[i].Warnings...)
+	}
+	for _, agent := range catalog.Agents {
+		artifact.Agents = append(artifact.Agents, agentProvenanceArtifact{
+			ID:         agent.ID,
+			Provenance: agent.Provenance.String(),
+			Source:     agent.Provenance.SourceInfo(),
+		})
+	}
+	return artifact
 }
 
 func plannedAction(runID string, action reviewplan.Action) (ledger.PlannedAction, error) {
@@ -1060,24 +1137,26 @@ func ArtifactPathsForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr git
 	}
 	dir := filepath.Join(layout.DataRoot, "runs", prKey, pr.Head.SHA, pr.Base.SHA, scope, "run-"+statepaths.Encode(runID))
 	return ArtifactPaths{
-		Dir:            dir,
-		DiffPatch:      filepath.Join(dir, "diff.patch"),
-		SlicesDir:      filepath.Join(dir, "slices"),
-		FindingsJSON:   filepath.Join(dir, "findings.json"),
-		RollupMarkdown: filepath.Join(dir, "rollup.md"),
-		AgentLogsDir:   filepath.Join(dir, "agent-logs"),
+		Dir:              dir,
+		DiffPatch:        filepath.Join(dir, "diff.patch"),
+		SlicesDir:        filepath.Join(dir, "slices"),
+		FindingsJSON:     filepath.Join(dir, "findings.json"),
+		RollupMarkdown:   filepath.Join(dir, "rollup.md"),
+		AgentSourcesJSON: filepath.Join(dir, "agent-sources.json"),
+		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
 	}, nil
 }
 
 // ArtifactPathsFromDir returns the artifact path set rooted at dir.
 func ArtifactPathsFromDir(dir string) ArtifactPaths {
 	return ArtifactPaths{
-		Dir:            dir,
-		DiffPatch:      filepath.Join(dir, "diff.patch"),
-		SlicesDir:      filepath.Join(dir, "slices"),
-		FindingsJSON:   filepath.Join(dir, "findings.json"),
-		RollupMarkdown: filepath.Join(dir, "rollup.md"),
-		AgentLogsDir:   filepath.Join(dir, "agent-logs"),
+		Dir:              dir,
+		DiffPatch:        filepath.Join(dir, "diff.patch"),
+		SlicesDir:        filepath.Join(dir, "slices"),
+		FindingsJSON:     filepath.Join(dir, "findings.json"),
+		RollupMarkdown:   filepath.Join(dir, "rollup.md"),
+		AgentSourcesJSON: filepath.Join(dir, "agent-sources.json"),
+		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
 	}
 }
 

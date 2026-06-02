@@ -7,19 +7,21 @@ import (
 	"io"
 	"strings"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 )
 
 // ConfigShow is the presentation model for `cr config show`.
 type ConfigShow struct {
-	ActiveProfile  string             `json:"active_profile"`
-	Profile        config.Profile     `json:"profile"`
-	Data           config.DataConfig  `json:"data"`
-	Backend        string             `json:"backend,omitempty"`
-	BackendSource  string             `json:"backend_source,omitempty"`
-	CredentialRef  string             `json:"credential_ref,omitempty"`
-	CredentialRefs []CredentialStatus `json:"credential_refs"`
-	LLMCredential  LLMCredential      `json:"llm_credential"`
+	ActiveProfile  string              `json:"active_profile"`
+	Profile        config.Profile      `json:"profile"`
+	Data           config.DataConfig   `json:"data"`
+	Backend        string              `json:"backend,omitempty"`
+	BackendSource  string              `json:"backend_source,omitempty"`
+	CredentialRef  string              `json:"credential_ref,omitempty"`
+	CredentialRefs []CredentialStatus  `json:"credential_refs"`
+	LLMCredential  LLMCredential       `json:"llm_credential"`
+	AgentSources   []agents.SourceInfo `json:"agent_sources,omitempty"`
 }
 
 // CredentialStatus reports key presence for one declared credential ref.
@@ -131,12 +133,26 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 		return err
 	}
 
-	if len(show.Profile.AgentSources) > 0 {
+	if len(show.AgentSources) > 0 {
 		if _, err := fmt.Fprintln(w, "Agent sources:"); err != nil {
 			return err
 		}
-		for _, source := range show.Profile.AgentSources {
-			if _, err := fmt.Fprintf(w, "  - %s\n", source); err != nil {
+		for _, source := range show.AgentSources {
+			if _, err := fmt.Fprintf(w, "  - %s (%s)\n", source.ConfiguredPath, source.Status); err != nil {
+				return err
+			}
+			if err := writeOptionalKV(w, "    Canonical path", source.CanonicalPath); err != nil {
+				return err
+			}
+			if err := writeOptionalKV(w, "    Fingerprint", source.Fingerprint); err != nil {
+				return err
+			}
+			for _, warning := range source.Warnings {
+				if _, err := fmt.Fprintf(w, "    Warning: %s\n", warning); err != nil {
+					return err
+				}
+			}
+			if err := writeOptionalKV(w, "    Error", source.Error); err != nil {
 				return err
 			}
 		}

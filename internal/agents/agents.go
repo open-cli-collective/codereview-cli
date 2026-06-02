@@ -4,6 +4,8 @@ package agents
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +20,10 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
-const repoAgentsRoot = ".codereview/agents"
+const (
+	repoAgentsRoot            = ".codereview/agents"
+	maxGitWorktreeSearchDepth = 40
+)
 
 var (
 	// ErrInvalid identifies malformed agent definitions or unsafe agent names.
@@ -37,13 +42,45 @@ const (
 	SourceFlag    SourceKind = "flag"
 )
 
+// SourceStatus reports whether a configured source is usable.
+type SourceStatus string
+
+// Supported source statuses.
+const (
+	SourceStatusAvailable  SourceStatus = "available"
+	SourceStatusMissing    SourceStatus = "missing"
+	SourceStatusUnreadable SourceStatus = "unreadable"
+	SourceStatusInvalid    SourceStatus = "invalid"
+)
+
+// SourceInfo describes one configured agent source for operator audit.
+type SourceInfo struct {
+	Kind            SourceKind   `json:"kind"`
+	Label           string       `json:"label,omitempty"`
+	Ref             string       `json:"ref,omitempty"`
+	SHA             string       `json:"sha,omitempty"`
+	Index           int          `json:"index,omitempty"`
+	ProvenanceLabel string       `json:"provenance"`
+	ConfiguredPath  string       `json:"configured_path,omitempty"`
+	CanonicalPath   string       `json:"canonical_path,omitempty"`
+	Present         bool         `json:"present"`
+	Status          SourceStatus `json:"status"`
+	Fingerprint     string       `json:"fingerprint,omitempty"`
+	Warnings        []string     `json:"warnings,omitempty"`
+	Error           string       `json:"error,omitempty"`
+}
+
 // Provenance identifies the winning source for one loaded agent.
 type Provenance struct {
-	Kind  SourceKind `json:"kind"`
-	Label string     `json:"label,omitempty"`
-	Ref   string     `json:"ref,omitempty"`
-	SHA   string     `json:"sha,omitempty"`
-	Index int        `json:"index,omitempty"`
+	Kind           SourceKind `json:"kind"`
+	Label          string     `json:"label,omitempty"`
+	Ref            string     `json:"ref,omitempty"`
+	SHA            string     `json:"sha,omitempty"`
+	Index          int        `json:"index,omitempty"`
+	ConfiguredPath string     `json:"configured_path,omitempty"`
+	CanonicalPath  string     `json:"canonical_path,omitempty"`
+	Fingerprint    string     `json:"fingerprint,omitempty"`
+	Warnings       []string   `json:"warnings,omitempty"`
 }
 
 // String returns the user-facing provenance label.
@@ -61,6 +98,25 @@ func (p Provenance) String() string {
 	default:
 		return string(p.Kind)
 	}
+}
+
+// SourceInfo returns the structured source details for this provenance.
+func (p Provenance) SourceInfo() SourceInfo {
+	info := SourceInfo{
+		Kind:            p.Kind,
+		Label:           p.Label,
+		Ref:             p.Ref,
+		SHA:             p.SHA,
+		Index:           p.Index,
+		ProvenanceLabel: p.String(),
+		ConfiguredPath:  p.ConfiguredPath,
+		CanonicalPath:   p.CanonicalPath,
+		Present:         true,
+		Status:          SourceStatusAvailable,
+		Fingerprint:     p.Fingerprint,
+		Warnings:        append([]string(nil), p.Warnings...),
+	}
+	return info
 }
 
 // Category is one agent category definition.
@@ -123,8 +179,9 @@ func (r RepoInfo) TrustNote() string {
 
 // Catalog is the merged, precedence-resolved agent catalog.
 type Catalog struct {
-	Agents []Agent   `json:"agents"`
-	Repo   *RepoInfo `json:"repo,omitempty"`
+	Agents  []Agent      `json:"agents"`
+	Repo    *RepoInfo    `json:"repo,omitempty"`
+	Sources []SourceInfo `json:"sources,omitempty"`
 }
 
 // Find returns one agent by full ID.
@@ -140,12 +197,14 @@ func (c Catalog) Find(id string) (Agent, bool) {
 // Load builds a merged catalog from all configured sources.
 func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
 	var merged catalogBuilder
+	var sources []SourceInfo
 	for _, dir := range opts.ProfileDirs {
-		provenance := Provenance{Kind: SourceProfile, Label: sourceLabel(dir)}
-		agents, err := loadFileSource(dir, provenance)
+		provenance := Provenance{Kind: SourceProfile}
+		agents, source, err := loadFileSource(dir, provenance)
 		if err != nil {
 			return Catalog{}, err
 		}
+		sources = append(sources, source)
 		merged.add(agents)
 	}
 
@@ -160,23 +219,41 @@ func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
 			SHA:        provenance.SHA,
 			Provenance: provenance.String(),
 		}
-		agents, err := loadRepoSource(ctx, *opts.Repo, provenance)
+		repoSource := provenance.SourceInfo()
+		agents, found, err := loadRepoSource(ctx, *opts.Repo, provenance)
 		if err != nil {
 			return Catalog{}, err
 		}
+		if !found {
+			repoSource.Present = false
+			repoSource.Status = SourceStatusMissing
+		}
+		sources = append(sources, repoSource)
 		merged.add(agents)
 	}
 
 	for i, dir := range opts.FlagDirs {
 		provenance := Provenance{Kind: SourceFlag, Index: i + 1}
-		agents, err := loadFileSource(dir, provenance)
+		agents, source, err := loadFileSource(dir, provenance)
 		if err != nil {
 			return Catalog{}, err
 		}
+		sources = append(sources, source)
 		merged.add(agents)
 	}
 
-	return Catalog{Agents: merged.sorted(), Repo: repoInfo}, nil
+	return Catalog{Agents: merged.sorted(), Repo: repoInfo, Sources: sources}, nil
+}
+
+// InspectProfileSources reports active-profile source status without failing on
+// missing or unreadable deployment material.
+func InspectProfileSources(dirs []string) []SourceInfo {
+	out := make([]SourceInfo, 0, len(dirs))
+	for _, dir := range dirs {
+		source, _ := inspectFileSource(dir, Provenance{Kind: SourceProfile})
+		out = append(out, source)
+	}
+	return out
 }
 
 type catalogBuilder struct {
@@ -225,17 +302,16 @@ type agentYAML struct {
 	NeedsFullFileContent bool     `yaml:"needs_full_file_content"`
 }
 
-func loadFileSource(rawDir string, provenance Provenance) ([]Agent, error) {
-	dir, err := expandPath(rawDir)
+func loadFileSource(rawDir string, provenance Provenance) ([]Agent, SourceInfo, error) {
+	source, err := inspectFileSource(rawDir, provenance)
 	if err != nil {
-		return nil, err
+		return nil, source, err
 	}
-	if strings.TrimSpace(dir) == "" {
-		return nil, fmt.Errorf("%w: agent source path is required", ErrInvalid)
-	}
+	provenance = provenanceFromSource(source)
+	dir := source.CanonicalPath
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("agents: read source %s: %w", rawDir, err)
+		return nil, source, fmt.Errorf("agents: read source %s: %w", rawDir, err)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
@@ -246,20 +322,20 @@ func loadFileSource(rawDir string, provenance Provenance) ([]Agent, error) {
 		}
 		categoryName := entry.Name()
 		if err := validateName("category", categoryName); err != nil {
-			return nil, err
+			return nil, source, err
 		}
 		categoryPath := filepath.Join(dir, categoryName)
 		category, err := readFileCategory(filepath.Join(categoryPath, "index.yaml"), categoryName)
 		if err != nil {
-			return nil, err
+			return nil, source, err
 		}
 		categoryAgents, err := readFileAgents(categoryPath, category, provenance)
 		if err != nil {
-			return nil, err
+			return nil, source, err
 		}
 		agents = append(agents, categoryAgents...)
 	}
-	return agents, nil
+	return agents, source, nil
 }
 
 func readFileCategory(filePath, pathName string) (Category, error) {
@@ -314,27 +390,27 @@ func readFileAgent(agentPath string, category Category, pathName string, provena
 	return newAgent(category, pathName, index, string(prompt), provenance), nil
 }
 
-func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance) ([]Agent, error) {
+func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance) ([]Agent, bool, error) {
 	if source.Reader == nil {
-		return nil, fmt.Errorf("%w: repo reader is required", ErrInvalid)
+		return nil, false, fmt.Errorf("%w: repo reader is required", ErrInvalid)
 	}
 	if err := source.Ref.Validate(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if source.PR.Ref != (gitprovider.PRRef{}) && source.PR.Ref != source.Ref {
-		return nil, fmt.Errorf("%w: PR ref %v does not match source ref %v", ErrInvalid, source.PR.Ref, source.Ref)
+		return nil, false, fmt.Errorf("%w: PR ref %v does not match source ref %v", ErrInvalid, source.PR.Ref, source.Ref)
 	}
 	baseSHA := strings.TrimSpace(source.PR.Base.SHA)
 	if baseSHA == "" {
-		return nil, fmt.Errorf("%w: PR base SHA is required", ErrInvalid)
+		return nil, false, fmt.Errorf("%w: PR base SHA is required", ErrInvalid)
 	}
 
 	rootEntries, err := source.Reader.ListTreeAtRef(ctx, source.Ref, baseSHA, repoAgentsRoot)
 	if errors.Is(err, gitprovider.ErrNotFound) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	sortTreeEntries(rootEntries)
 
@@ -348,20 +424,20 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 			continue
 		}
 		if err := validateName("category", categoryName); err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		categoryPath := path.Join(repoAgentsRoot, categoryName)
 		category, err := readRepoCategory(ctx, source.Reader, source.Ref, baseSHA, categoryPath, categoryName)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		categoryAgents, err := readRepoAgents(ctx, source.Reader, source.Ref, baseSHA, categoryPath, category, provenance)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		agents = append(agents, categoryAgents...)
 	}
-	return agents, nil
+	return agents, true, nil
 }
 
 func readRepoCategory(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath, pathName string) (Category, error) {
@@ -510,7 +586,200 @@ func repoProvenance(pr gitprovider.PR) (Provenance, error) {
 	return Provenance{Kind: SourceRepo, Ref: ref, SHA: sha}, nil
 }
 
+func inspectFileSource(rawDir string, provenance Provenance) (SourceInfo, error) {
+	rawDir = strings.TrimSpace(rawDir)
+	source := SourceInfo{
+		Kind:           provenance.Kind,
+		Index:          provenance.Index,
+		ConfiguredPath: rawDir,
+		Status:         SourceStatusInvalid,
+		Label:          sourceLabel(rawDir),
+	}
+	source.ProvenanceLabel = provenanceFromSource(source).String()
+	if rawDir == "" {
+		err := fmt.Errorf("%w: agent source path is required", ErrInvalid)
+		source.Error = err.Error()
+		return source, err
+	}
+	expanded, err := expandPath(rawDir)
+	if err != nil {
+		source.Error = err.Error()
+		return source, err
+	}
+	if strings.TrimSpace(expanded) == "" {
+		err := fmt.Errorf("%w: agent source path is required", ErrInvalid)
+		source.Error = err.Error()
+		return source, err
+	}
+	if _, err := os.ReadDir(expanded); err != nil {
+		source.Status = SourceStatusUnreadable
+		source.Present = true
+		if errors.Is(err, os.ErrNotExist) {
+			source.Status = SourceStatusMissing
+			source.Present = false
+		}
+		loadErr := fmt.Errorf("agents: read source %s: %w", rawDir, err)
+		source.Error = loadErr.Error()
+		return source, loadErr
+	}
+	canonical, err := filepath.EvalSymlinks(expanded)
+	if err != nil {
+		source.Status = SourceStatusUnreadable
+		source.Present = true
+		loadErr := fmt.Errorf("agents: canonicalize source %s: %w", rawDir, err)
+		source.Error = loadErr.Error()
+		return source, loadErr
+	}
+	canonical, err = filepath.Abs(canonical)
+	if err != nil {
+		source.Status = SourceStatusUnreadable
+		source.Present = true
+		loadErr := fmt.Errorf("agents: canonicalize source %s: %w", rawDir, err)
+		source.Error = loadErr.Error()
+		return source, loadErr
+	}
+	fingerprint, err := fingerprintFileSource(canonical)
+	if err != nil {
+		source.Status = SourceStatusUnreadable
+		source.Present = true
+		loadErr := fmt.Errorf("agents: fingerprint source %s: %w", rawDir, err)
+		source.Error = loadErr.Error()
+		return source, loadErr
+	}
+	source.Present = true
+	source.Status = SourceStatusAvailable
+	source.CanonicalPath = canonical
+	source.Fingerprint = fingerprint
+	source.Warnings = sourceWarnings(expanded, canonical)
+	source.ProvenanceLabel = provenanceFromSource(source).String()
+	return source, nil
+}
+
+func provenanceFromSource(source SourceInfo) Provenance {
+	return Provenance{
+		Kind:           source.Kind,
+		Label:          source.Label,
+		Ref:            source.Ref,
+		SHA:            source.SHA,
+		Index:          source.Index,
+		ConfiguredPath: source.ConfiguredPath,
+		CanonicalPath:  source.CanonicalPath,
+		Fingerprint:    source.Fingerprint,
+		Warnings:       append([]string(nil), source.Warnings...),
+	}
+}
+
+func fingerprintFileSource(root string) (string, error) {
+	// This is a best-effort snapshot for operator audit. Managed source
+	// directories should not be mutated while a command is loading agents.
+	var files []string
+	categories, err := os.ReadDir(root)
+	if err != nil {
+		return "", err
+	}
+	for _, category := range categories {
+		if !category.IsDir() {
+			continue
+		}
+		categoryName := category.Name()
+		categoryPath := filepath.Join(root, categoryName)
+		files = append(files, filepath.ToSlash(filepath.Join(categoryName, "index.yaml")))
+
+		agentEntries, err := os.ReadDir(categoryPath)
+		if err != nil {
+			return "", err
+		}
+		for _, agent := range agentEntries {
+			if !agent.IsDir() {
+				continue
+			}
+			agentName := agent.Name()
+			files = append(files,
+				filepath.ToSlash(filepath.Join(categoryName, agentName, "index.yaml")),
+				filepath.ToSlash(filepath.Join(categoryName, agentName, "prompt.md")),
+			)
+		}
+	}
+	// The final relative-path sort is the canonical ordering guarantee for
+	// stable cross-platform fingerprints.
+	sort.Strings(files)
+	hash := sha256.New()
+	for _, rel := range files {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel))) // #nosec G304 -- path is from an inspected agent source.
+		if err != nil {
+			return "", err
+		}
+		if _, err := fmt.Fprintf(hash, "%s\x00%d\x00", rel, len(data)); err != nil {
+			return "", err
+		}
+		if _, err := hash.Write(data); err != nil {
+			return "", err
+		}
+		if _, err := hash.Write([]byte{0}); err != nil {
+			return "", err
+		}
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))[:32], nil
+}
+
+func sourceWarnings(expanded, canonical string) []string {
+	var warnings []string
+	if !filepath.IsAbs(expanded) {
+		warnings = append(warnings, "configured path is relative; use an absolute org-managed path for rollout")
+	}
+	if pathWithin(canonical, os.TempDir()) {
+		warnings = append(warnings, "canonical path is under the OS temp directory; temp locations are mutable")
+	}
+	if root, ok := gitWorktreeRoot(canonical); ok {
+		warnings = append(warnings, fmt.Sprintf("canonical path is inside Git worktree %s; PR authors may be able to mutate it", root))
+	}
+	return warnings
+}
+
+func pathWithin(child, parent string) bool {
+	if strings.TrimSpace(child) == "" || strings.TrimSpace(parent) == "" {
+		return false
+	}
+	childAbs, err := filepath.Abs(child)
+	if err != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(childAbs); err == nil {
+		childAbs = resolved
+	}
+	parentAbs, err := filepath.Abs(parent)
+	if err != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(parentAbs); err == nil {
+		parentAbs = resolved
+	}
+	rel, err := filepath.Rel(parentAbs, childAbs)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func gitWorktreeRoot(canonical string) (string, bool) {
+	dir := canonical
+	for depth := 0; depth < maxGitWorktreeSearchDepth; depth++ {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+	return "", false
+}
+
 func sourceLabel(rawDir string) string {
+	if strings.TrimSpace(rawDir) == "" {
+		return ""
+	}
 	dir, err := expandPath(rawDir)
 	if err != nil {
 		return rawDir

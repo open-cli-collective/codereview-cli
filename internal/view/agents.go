@@ -10,44 +10,48 @@ import (
 
 // AgentsList is the presentation model for `cr agents list`.
 type AgentsList struct {
-	Agents    []AgentSummary   `json:"agents"`
-	Repo      *agents.RepoInfo `json:"repo,omitempty"`
-	TrustNote string           `json:"trust_note,omitempty"`
+	Agents    []AgentSummary      `json:"agents"`
+	Sources   []agents.SourceInfo `json:"sources,omitempty"`
+	Repo      *agents.RepoInfo    `json:"repo,omitempty"`
+	TrustNote string              `json:"trust_note,omitempty"`
 }
 
 // AgentSummary is one row in `cr agents list`.
 type AgentSummary struct {
-	ID          string `json:"id"`
-	Category    string `json:"category"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Effort      string `json:"effort,omitempty"`
-	Provenance  string `json:"provenance"`
+	ID          string            `json:"id"`
+	Category    string            `json:"category"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	Effort      string            `json:"effort,omitempty"`
+	Provenance  string            `json:"provenance"`
+	Source      agents.SourceInfo `json:"source"`
 }
 
 // AgentsShow is the presentation model for `cr agents show`.
 type AgentsShow struct {
-	Agent     AgentDetail      `json:"agent"`
-	Repo      *agents.RepoInfo `json:"repo,omitempty"`
-	TrustNote string           `json:"trust_note,omitempty"`
+	Agent     AgentDetail         `json:"agent"`
+	Sources   []agents.SourceInfo `json:"sources,omitempty"`
+	Repo      *agents.RepoInfo    `json:"repo,omitempty"`
+	TrustNote string              `json:"trust_note,omitempty"`
 }
 
 // AgentDetail describes one loaded agent.
 type AgentDetail struct {
-	ID                   string   `json:"id"`
-	Category             string   `json:"category"`
-	CategoryDescription  string   `json:"category_description,omitempty"`
-	CategoryOwner        string   `json:"category_owner,omitempty"`
-	Name                 string   `json:"name"`
-	Description          string   `json:"description,omitempty"`
-	Model                string   `json:"model,omitempty"`
-	Effort               string   `json:"effort,omitempty"`
-	FileGlobs            []string `json:"file_globs,omitempty"`
-	AppliesWhen          []string `json:"applies_when,omitempty"`
-	NeedsFullFileContent bool     `json:"needs_full_file_content"`
-	Prompt               string   `json:"prompt"`
-	Provenance           string   `json:"provenance"`
+	ID                   string            `json:"id"`
+	Category             string            `json:"category"`
+	CategoryDescription  string            `json:"category_description,omitempty"`
+	CategoryOwner        string            `json:"category_owner,omitempty"`
+	Name                 string            `json:"name"`
+	Description          string            `json:"description,omitempty"`
+	Model                string            `json:"model,omitempty"`
+	Effort               string            `json:"effort,omitempty"`
+	FileGlobs            []string          `json:"file_globs,omitempty"`
+	AppliesWhen          []string          `json:"applies_when,omitempty"`
+	NeedsFullFileContent bool              `json:"needs_full_file_content"`
+	Prompt               string            `json:"prompt"`
+	Provenance           string            `json:"provenance"`
+	Source               agents.SourceInfo `json:"source"`
 }
 
 // NewAgentsList builds the list presentation model.
@@ -62,9 +66,10 @@ func NewAgentsList(catalog agents.Catalog) AgentsList {
 			Model:       agent.Model,
 			Effort:      agent.Effort,
 			Provenance:  agent.Provenance.String(),
+			Source:      agent.Provenance.SourceInfo(),
 		})
 	}
-	return AgentsList{Agents: summaries, Repo: catalog.Repo, TrustNote: trustNote(catalog)}
+	return AgentsList{Agents: summaries, Sources: cloneSources(catalog.Sources), Repo: catalog.Repo, TrustNote: trustNote(catalog)}
 }
 
 // NewAgentsShow builds the detail presentation model.
@@ -84,7 +89,9 @@ func NewAgentsShow(agent agents.Agent, catalog agents.Catalog) AgentsShow {
 			NeedsFullFileContent: agent.NeedsFullFileContent,
 			Prompt:               agent.Prompt,
 			Provenance:           agent.Provenance.String(),
+			Source:               agent.Provenance.SourceInfo(),
 		},
+		Sources:   cloneSources(catalog.Sources),
 		Repo:      catalog.Repo,
 		TrustNote: trustNote(catalog),
 	}
@@ -114,6 +121,9 @@ func RenderAgentsListText(w io.Writer, result AgentsList) error {
 				return err
 			}
 			if err := writeKV(w, "    Provenance", agent.Provenance); err != nil {
+				return err
+			}
+			if err := renderSourceDetails(w, "    ", agent.Source); err != nil {
 				return err
 			}
 		}
@@ -170,6 +180,9 @@ func RenderAgentsShowText(w io.Writer, result AgentsShow) error {
 	if err := writeKV(w, "Provenance", agent.Provenance); err != nil {
 		return err
 	}
+	if err := renderSourceDetails(w, "", agent.Source); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintln(w, "Prompt:"); err != nil {
 		return err
 	}
@@ -203,6 +216,37 @@ func renderTrustNote(w io.Writer, note string) error {
 		return nil
 	}
 	return writeKV(w, "Note", note)
+}
+
+func renderSourceDetails(w io.Writer, prefix string, source agents.SourceInfo) error {
+	if source.CanonicalPath != "" {
+		if err := writeKV(w, prefix+"Source canonical path", source.CanonicalPath); err != nil {
+			return err
+		}
+	}
+	if source.Fingerprint != "" {
+		if err := writeKV(w, prefix+"Source fingerprint", source.Fingerprint); err != nil {
+			return err
+		}
+	}
+	for _, warning := range source.Warnings {
+		if _, err := fmt.Fprintf(w, "%sSource warning: %s\n", prefix, warning); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cloneSources(sources []agents.SourceInfo) []agents.SourceInfo {
+	if len(sources) == 0 {
+		return nil
+	}
+	out := make([]agents.SourceInfo, len(sources))
+	copy(out, sources)
+	for i := range out {
+		out[i].Warnings = append([]string(nil), sources[i].Warnings...)
+	}
+	return out
 }
 
 func renderList(w io.Writer, title string, values []string) error {
