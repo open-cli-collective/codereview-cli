@@ -457,16 +457,8 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	layout, err := statepaths.DefaultLayoutEnsured()
+	layout, err := runtimeLayout()
 	if err != nil {
-		cleanup()
-		return Runtime{}, err
-	}
-	if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
-		cleanup()
-		return Runtime{}, err
-	}
-	if err := statepaths.MigrateLegacyCacheRoot(layout); err != nil {
 		cleanup()
 		return Runtime{}, err
 	}
@@ -490,6 +482,20 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		PostingIdentity: postingIdentity,
 		Cleanup:         cleanup,
 	}, nil
+}
+
+func runtimeLayout() (statepaths.Layout, error) {
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		return statepaths.Layout{}, err
+	}
+	if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
+		return statepaths.Layout{}, err
+	}
+	if err := statepaths.MigrateLegacyCacheRoot(layout); err != nil {
+		return statepaths.Layout{}, err
+	}
+	return layout, nil
 }
 
 func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, runtimeOpts RuntimeOptions) reviewRunner {

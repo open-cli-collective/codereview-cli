@@ -61,6 +61,52 @@ func TestDataPruneDryRunDoesNotDelete(t *testing.T) {
 	}
 }
 
+func TestDataReadOnlyDoesNotBlockLegacyMigration(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := mustLayout(t)
+	legacyRoot := filepath.Join(layout.DataRoot, statepaths.AppDir)
+	legacyLayout := statepaths.NewLayout(legacyRoot, layout.CacheRoot)
+	store := openLedgerForTest(t, legacyLayout)
+	allocateRun(t, store, legacyLayout, "old-live", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close legacy store: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runDataCommand(&stdout, &stderr, "data", "show", "--json"); err != nil {
+		t.Fatalf("data show: %v; stderr = %q", err, stderr.String())
+	}
+	var shown view.DataShow
+	if err := json.Unmarshal(stdout.Bytes(), &shown); err != nil {
+		t.Fatalf("Unmarshal show: %v; stdout = %q", err, stdout.String())
+	}
+	if shown.RunCount != 0 {
+		t.Fatalf("show run count = %d, want empty before mutating migration", shown.RunCount)
+	}
+	if _, err := os.Stat(layout.LedgerDB()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new ledger stat err = %v, want missing after read-only show", err)
+	}
+	if _, err := os.Stat(filepath.Join(legacyRoot, "ledger.db")); err != nil {
+		t.Fatalf("legacy ledger stat err = %v, want still present after read-only show", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := runDataCommand(&stdout, &stderr, "data", "prune", "--older-than", "1h", "--json"); err != nil {
+		t.Fatalf("data prune: %v; stderr = %q", err, stderr.String())
+	}
+	var pruned view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &pruned); err != nil {
+		t.Fatalf("Unmarshal prune: %v; stdout = %q", err, stdout.String())
+	}
+	if len(pruned.DeletedRuns) != 1 || pruned.DeletedRuns[0].RunID != "old-live" {
+		t.Fatalf("deleted runs = %#v, want migrated old-live deletion", pruned.DeletedRuns)
+	}
+	if _, err := os.Stat(filepath.Join(legacyRoot, "ledger.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy ledger stat err = %v, want migrated away", err)
+	}
+}
+
 func TestDataPruneDefaultIgnoresConfiguredRetention(t *testing.T) {
 	statedirtest.Hermetic(t)
 	maxAgeDays := 30

@@ -470,6 +470,51 @@ func TestMigrateLegacyCacheRootMovesEntries(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyCacheRootRefusesConflictsWithoutPartialMove(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyHTTP := filepath.Join(layout.CacheRoot, AppDir, "http", "legacy.txt")
+	legacyOther := filepath.Join(layout.CacheRoot, AppDir, "other", "legacy.txt")
+	writeStatepathsFile(t, legacyHTTP, "legacy-http")
+	writeStatepathsFile(t, legacyOther, "legacy-other")
+	writeStatepathsFile(t, filepath.Join(layout.CacheRoot, "http", "new.txt"), "new-http")
+
+	err = MigrateLegacyCacheRoot(layout)
+	if err == nil {
+		t.Fatal("MigrateLegacyCacheRoot error = nil, want conflict")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("MigrateLegacyCacheRoot error = %v, want conflict context", err)
+	}
+	assertFileContents(t, legacyHTTP, "legacy-http")
+	assertFileContents(t, legacyOther, "legacy-other")
+	assertFileContents(t, filepath.Join(layout.CacheRoot, "http", "new.txt"), "new-http")
+	if _, err := os.Stat(filepath.Join(layout.CacheRoot, "other")); !os.IsNotExist(err) {
+		t.Fatalf("new other stat err = %v, want missing because migration must be all-or-nothing on conflict", err)
+	}
+}
+
+func TestMigrateLegacyCacheRootIsIdempotent(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyHTTP := filepath.Join(layout.CacheRoot, AppDir, "http", "sentinel.txt")
+	writeStatepathsFile(t, legacyHTTP, "cache")
+
+	if err := MigrateLegacyCacheRoot(layout); err != nil {
+		t.Fatalf("first MigrateLegacyCacheRoot: %v", err)
+	}
+	if err := MigrateLegacyCacheRoot(layout); err != nil {
+		t.Fatalf("second MigrateLegacyCacheRoot: %v", err)
+	}
+	assertFileContents(t, filepath.Join(layout.CacheRoot, "http", "sentinel.txt"), "cache")
+}
+
 func TestMigrateLegacyRootRefusesConflictsWithoutPartialMove(t *testing.T) {
 	statedirtest.Hermetic(t)
 	layout, err := DefaultLayoutEnsured()

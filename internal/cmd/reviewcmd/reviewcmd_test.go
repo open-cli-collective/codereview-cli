@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/cli-common/statedirtest"
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
@@ -81,6 +82,32 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	}
 	if text := out.String(); !strings.Contains(text, "Post mode: dry_run") || !strings.Contains(text, "Planned actions:") {
 		t.Fatalf("stdout = %q, want dry-run render", text)
+	}
+}
+
+func TestRuntimeLayoutMigratesLegacyDataAndCache(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	writeReviewFile(t, filepath.Join(layout.DataRoot, statepaths.AppDir, "ledger.db"), "ledger")
+	writeReviewFile(t, filepath.Join(layout.CacheRoot, statepaths.AppDir, "http", "sentinel.txt"), "cache")
+
+	got, err := runtimeLayout()
+	if err != nil {
+		t.Fatalf("runtimeLayout: %v", err)
+	}
+	if got != layout {
+		t.Fatalf("runtime layout = %#v, want %#v", got, layout)
+	}
+	assertReviewTestFile(t, filepath.Join(layout.DataRoot, "ledger.db"), "ledger")
+	assertReviewTestFile(t, filepath.Join(layout.CacheRoot, "http", "sentinel.txt"), "cache")
+	if _, err := os.Stat(filepath.Join(layout.DataRoot, statepaths.AppDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy data root stat err = %v, want removed", err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.CacheRoot, statepaths.AppDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy cache root stat err = %v, want removed", err)
 	}
 }
 
@@ -941,6 +968,18 @@ func writeReviewFile(t *testing.T, path, body string) {
 	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func assertReviewTestFile(t *testing.T, path, want string) {
+	t.Helper()
+	// #nosec G304 -- test paths are controlled by statedirtest.Hermetic/t.TempDir.
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", path, err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
 	}
 }
 
