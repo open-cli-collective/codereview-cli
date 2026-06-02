@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/cli-common/credstore"
+
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
@@ -271,6 +273,7 @@ func TestNextPageURLRejectsEnterpriseBasePathEscape(t *testing.T) {
 }
 
 func TestHTTPErrorTaxonomy(t *testing.T) {
+	secret := "ghp_rest_taxonomy_no_leak_canary_0002" // #nosec G101 -- distinctive test canary, not a real token.
 	tests := []struct {
 		status int
 		want   error
@@ -288,16 +291,19 @@ func TestHTTPErrorTaxonomy(t *testing.T) {
 		t.Run(http.StatusText(tt.status), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tt.status)
-				_, _ = w.Write([]byte(`{"message":"failed"}`))
+				_, _ = w.Write([]byte(`{"message":"failed ` + secret + `"}`))
 			}))
 			defer server.Close()
-			client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
-			_, err := client.WhoAmI(context.Background(), gitprovider.Credential{Type: credentialTypePAT, Token: "token"})
+			client := mustClient(t, Options{Token: secret, BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+			_, err := client.WhoAmI(context.Background(), gitprovider.Credential{Type: credentialTypePAT, Token: secret})
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("error = %v, want %v", err, tt.want)
 			}
 			if tt.not != nil && errors.Is(err, tt.not) {
 				t.Fatalf("error = %v, did not want %v", err, tt.not)
+			}
+			if leakErr := credstore.NoLeakAssertion([]byte(err.Error()), secret); leakErr != nil {
+				t.Fatalf("error leaked REST canary: %v", leakErr)
 			}
 		})
 	}

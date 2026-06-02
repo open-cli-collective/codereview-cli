@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/cli-common/credstore"
+
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
@@ -122,22 +124,23 @@ func TestListInlineThreadsPaginatesThreadsAndNestedComments(t *testing.T) {
 }
 
 func TestGraphQLErrorTaxonomy(t *testing.T) {
+	secret := "ghp_graphql_taxonomy_no_leak_canary_0002" // #nosec G101 -- distinctive test canary, not a real token.
 	tests := []struct {
 		name string
 		err  graphQLError
 		want error
 		not  error
 	}{
-		{name: "unauthenticated type", err: graphQLError{Type: "UNAUTHENTICATED", Message: "bad credentials"}, want: gitprovider.ErrAuth},
-		{name: "authentication message", err: graphQLError{Message: "authentication required"}, want: gitprovider.ErrAuth},
-		{name: "forbidden", err: graphQLError{Type: "FORBIDDEN", Message: "forbidden"}, want: gitprovider.ErrPermission},
-		{name: "not found", err: graphQLError{Type: "NOT_FOUND", Message: "not found"}, want: gitprovider.ErrNotFound},
-		{name: "rate limited", err: graphQLError{Type: "RATE_LIMITED", Message: "rate limit"}, want: gitprovider.ErrRetryable},
-		{name: "extensions type", err: graphQLError{Message: "missing", Extensions: map[string]any{"type": "NOT_FOUND"}}, want: gitprovider.ErrNotFound},
-		{name: "extensions code", err: graphQLError{Message: "limited", Extensions: map[string]any{"code": "RATE_LIMITED"}}, want: gitprovider.ErrRetryable},
-		{name: "internal", err: graphQLError{Type: "INTERNAL", Message: "server failed"}, want: gitprovider.ErrRetryable},
-		{name: "timeout", err: graphQLError{Type: "TIMEOUT", Message: "timed out"}, want: gitprovider.ErrRetryable},
-		{name: "fallback", err: graphQLError{Type: "SOMETHING_ELSE", Message: "bad query"}, want: ErrUnhandledGraphQL, not: gitprovider.ErrRetryable},
+		{name: "unauthenticated type", err: graphQLError{Type: "UNAUTHENTICATED", Message: "bad credentials " + secret}, want: gitprovider.ErrAuth},
+		{name: "authentication message", err: graphQLError{Message: "authentication required " + secret}, want: gitprovider.ErrAuth},
+		{name: "forbidden", err: graphQLError{Type: "FORBIDDEN", Message: "forbidden " + secret}, want: gitprovider.ErrPermission},
+		{name: "not found", err: graphQLError{Type: "NOT_FOUND", Message: "not found " + secret}, want: gitprovider.ErrNotFound},
+		{name: "rate limited", err: graphQLError{Type: "RATE_LIMITED", Message: "rate limit " + secret}, want: gitprovider.ErrRetryable},
+		{name: "extensions type", err: graphQLError{Message: "missing " + secret, Extensions: map[string]any{"type": "NOT_FOUND"}}, want: gitprovider.ErrNotFound},
+		{name: "extensions code", err: graphQLError{Message: "limited " + secret, Extensions: map[string]any{"code": "RATE_LIMITED"}}, want: gitprovider.ErrRetryable},
+		{name: "internal", err: graphQLError{Type: "INTERNAL", Message: "server failed " + secret}, want: gitprovider.ErrRetryable},
+		{name: "timeout", err: graphQLError{Type: "TIMEOUT", Message: "timed out " + secret}, want: gitprovider.ErrRetryable},
+		{name: "fallback", err: graphQLError{Type: "SOMETHING_ELSE", Message: "bad query " + secret}, want: ErrUnhandledGraphQL, not: gitprovider.ErrRetryable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -153,6 +156,9 @@ func TestGraphQLErrorTaxonomy(t *testing.T) {
 			}
 			if tt.not != nil && errors.Is(err, tt.not) {
 				t.Fatalf("error = %v, did not want %v", err, tt.not)
+			}
+			if leakErr := credstore.NoLeakAssertion([]byte(err.Error()), secret); leakErr != nil {
+				t.Fatalf("error leaked GraphQL canary: %v", leakErr)
 			}
 		})
 	}

@@ -3,11 +3,15 @@ package noleak
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,15 +29,12 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/sessionscmd"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
-	"github.com/open-cli-collective/codereview-cli/internal/gate"
-	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/identity"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
-	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
-	"github.com/open-cli-collective/codereview-cli/internal/review"
-	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -118,6 +119,13 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			name:    "agents list json",
 			prepare: seedConfiguredCredentials,
 			args:    staticArgs("agents", "list", "--json"),
+		},
+		{
+			name:    "agents list pr json",
+			prepare: seedConfiguredCredentials,
+			args: func(h *auditHarness) []string {
+				return []string{"agents", "list", "--json", h.prURL}
+			},
 		},
 		{
 			name:    "agents show text",
@@ -232,12 +240,16 @@ type auditHarness struct {
 	configRoot string
 	layout     statepaths.Layout
 	agentDir   string
+	githubURL  string
+	graphQLURL string
+	llmURL     string
 	prRef      gitprovider.PRRef
 	prURL      string
 	prKey      string
 	headSHA    string
 	baseSHA    string
 	now        time.Time
+	llmCalls   atomic.Int32
 
 	gitSecret      string
 	reviewerSecret string
@@ -260,20 +272,12 @@ func newAuditHarness(t *testing.T) *auditHarness {
 	if err != nil {
 		t.Fatalf("DefaultLayoutEnsured: %v", err)
 	}
-	prRef := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 68}
-	prKey, err := statepaths.PRKey(prRef.Host, prRef.Owner, prRef.Repo, prRef.Number)
-	if err != nil {
-		t.Fatalf("PRKey: %v", err)
-	}
 	h := &auditHarness{ // #nosec G101 -- these are distinctive test canaries, not real credentials.
 		t:              t,
 		configPath:     configPath,
 		configRoot:     filepath.Dir(configPath),
 		layout:         layout,
 		agentDir:       filepath.Join(rootDir, "agents"),
-		prRef:          prRef,
-		prURL:          fmt.Sprintf("https://%s/%s/%s/pull/%d", prRef.Host, prRef.Owner, prRef.Repo, prRef.Number),
-		prKey:          prKey,
 		headSHA:        strings.Repeat("a", 40),
 		baseSHA:        strings.Repeat("b", 40),
 		now:            time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
@@ -282,6 +286,22 @@ func newAuditHarness(t *testing.T) *auditHarness {
 		llmSecret:      "cr-noleak-llm-key-0003",
 		keyringSecret:  keyringSecret,
 	}
+	githubServer := httptest.NewServer(http.HandlerFunc(h.handleGitHub))
+	t.Cleanup(githubServer.Close)
+	llmServer := httptest.NewServer(http.HandlerFunc(h.handleLLM))
+	t.Cleanup(llmServer.Close)
+
+	h.githubURL = githubServer.URL
+	h.graphQLURL = githubServer.URL + "/graphql"
+	h.llmURL = llmServer.URL
+	host := strings.TrimPrefix(githubServer.URL, "http://")
+	h.prRef = gitprovider.PRRef{Host: host, Owner: "open-cli-collective", Repo: "codereview-cli", Number: 68}
+	h.prURL = fmt.Sprintf("https://%s/%s/%s/pull/%d", h.prRef.Host, h.prRef.Owner, h.prRef.Repo, h.prRef.Number)
+	prKey, err := statepaths.PRKey(h.prRef.Host, h.prRef.Owner, h.prRef.Repo, h.prRef.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	h.prKey = prKey
 	h.secrets = []string{h.gitSecret, h.reviewerSecret, h.llmSecret, h.keyringSecret}
 	writeAgent(t, h.agentDir, "harness", "reviewer", "No-leak harness reviewer.", "Review changed Go files without mentioning credentials.\n")
 	return h
@@ -316,7 +336,7 @@ func (h *auditHarness) config() config.File {
 		Profiles: map[string]config.Profile{
 			"default": {
 				Git: config.GitConfig{
-					Host:          "github.com",
+					Host:          h.prRef.Host,
 					AuthMode:      config.GitAuthModePAT,
 					CredentialRef: "codereview/default",
 				},
@@ -379,90 +399,114 @@ func (h *auditHarness) seedCredentials(t *testing.T) {
 	}
 }
 
-func (h *auditHarness) identityFactory(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
-	return fixedIdentityResolver{identity: gitprovider.Identity{Login: "reviewer-user", ID: "1002", DisplayName: "Reviewer User"}}, nil, nil
+func (h *auditHarness) identityFactory(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
+	store, err := credentials.OpenStore(string(credstore.BackendFile), true, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return realIdentityResolver{h: h, store: store}, func() { _ = store.Close() }, nil
 }
 
-func (h *auditHarness) providerFactory(*cobra.Command, *root.Options, config.File, config.Profile) (gitprovider.GitProvider, func(), error) {
-	fake := &gitprovider.Fake{}
-	_ = fake.SetPR(h.prRef, h.pr())
-	return fake, nil, nil
+func (h *auditHarness) providerFactory(_ *cobra.Command, _ *root.Options, cfg config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
+	store, err := credentials.OpenStore(string(credstore.BackendFile), true, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	provider, _, err := h.newGitHubProvider(profile.Git, store)
+	if err != nil {
+		_ = store.Close()
+		return nil, nil, err
+	}
+	return provider, func() { _ = store.Close() }, nil
 }
 
-func (h *auditHarness) reviewRuntimeFactory(*cobra.Command, *root.Options, config.File, config.Profile, reviewcmd.RuntimeOptions) (reviewcmd.Runtime, error) {
+func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts reviewcmd.RuntimeOptions) (reviewcmd.Runtime, error) {
+	store, err := credentials.OpenStore(string(credstore.BackendFile), true, cfg)
+	if err != nil {
+		return reviewcmd.Runtime{}, err
+	}
+	cleanup := func() { _ = store.Close() }
+	provider, credential, err := h.newGitHubProvider(profile.Git, store)
+	if err != nil {
+		cleanup()
+		return reviewcmd.Runtime{}, err
+	}
+	postingIdentity, err := h.resolvePostingIdentity(cmd.Context(), provider, credential, store, profile)
+	if err != nil {
+		cleanup()
+		return reviewcmd.Runtime{}, err
+	}
+	adapter, err := llm.NewAPIAdapterFromConfig(profile.LLM, store, llm.APIOptions{BaseURL: h.llmURL})
+	if err != nil {
+		cleanup()
+		return reviewcmd.Runtime{}, err
+	}
+	ledgerStore, err := ledger.Open(cmd.Context(), h.layout.LedgerDB())
+	if err != nil {
+		cleanup()
+		return reviewcmd.Runtime{}, err
+	}
+	cleanup = func() {
+		_ = ledgerStore.Close()
+		_ = store.Close()
+	}
+	pipelineOpts := pipeline.Options{
+		Provider:            provider,
+		Adapter:             adapter,
+		Store:               ledgerStore,
+		NamedSessions:       ledgerStore,
+		Layout:              h.layout,
+		Warnings:            opts.Stderr,
+		Now:                 func() time.Time { return h.now },
+		Retention:           runtimeOpts.Retention,
+		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
+		MaxAgents:           runtimeOpts.MaxAgents,
+		MaxConcurrency:      runtimeOpts.MaxConcurrency,
+	}
+	runner := realReviewRunner{
+		pipeline: pipelineOpts,
+		live: reviewrun.Options{
+			Store:                   ledgerStore,
+			Provider:                provider,
+			Planner:                 livePlanner{opts: pipelineOpts},
+			Limiter:                 noLeakLimiter{},
+			Layout:                  h.layout,
+			Now:                     func() time.Time { return h.now },
+			StaleHeartbeatThreshold: 10 * time.Minute,
+			Warnings:                opts.Stderr,
+			Retention:               runtimeOpts.Retention,
+			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
+		},
+	}
 	return reviewcmd.Runtime{
-		Runner:          fakeReviewRunner{h: h},
-		PostingIdentity: gitprovider.Identity{Login: "reviewer-user", ID: "1002", DisplayName: "Reviewer User"},
+		Runner:          runner,
+		PostingIdentity: postingIdentity,
+		Cleanup:         cleanup,
 	}, nil
 }
 
-func (h *auditHarness) pr() gitprovider.PR {
-	return gitprovider.PR{
-		Ref:   h.prRef,
-		Title: "Add no-leak harness",
-		URL:   h.prURL,
-		State: gitprovider.PRStateOpen,
-		Author: gitprovider.Identity{
-			Login:       "author-user",
-			ID:          "1001",
-			DisplayName: "Author User",
-		},
-		Head: gitprovider.PRBranchRef{
-			Host:  h.prRef.Host,
-			Owner: h.prRef.Owner,
-			Repo:  h.prRef.Repo,
-			Name:  "secret-audit",
-			Ref:   "refs/heads/secret-audit",
-			SHA:   h.headSHA,
-		},
-		Base: gitprovider.PRBranchRef{
-			Host:  h.prRef.Host,
-			Owner: h.prRef.Owner,
-			Repo:  h.prRef.Repo,
-			Name:  "main",
-			Ref:   "refs/heads/main",
-			SHA:   h.baseSHA,
-		},
-	}
+func (h *auditHarness) newGitHubProvider(git config.GitConfig, store githubprovider.TokenStore) (*githubprovider.Client, gitprovider.Credential, error) {
+	return githubprovider.NewFromGitConfig(git, store, githubprovider.Options{
+		BaseURL:    h.githubURL,
+		GraphQLURL: h.graphQLURL,
+	})
 }
 
-func (h *auditHarness) reviewResult(t *testing.T, runID string, mode ledger.PostMode, outcome ledger.Outcome) (ledger.Run, pipeline.ArtifactPaths) {
-	t.Helper()
-	artifacts := h.reviewArtifacts(t, runID)
-	return ledger.Run{
-		RunID:           runID,
-		PRKey:           h.prKey,
-		SHA:             h.headSHA,
-		BaseSHA:         h.baseSHA,
-		Attempt:         1,
-		Profile:         "default",
-		PostingIdentity: "reviewer-user",
-		PostMode:        mode,
-		StartedAt:       h.now,
-		Outcome:         &outcome,
-		ArtifactPath:    artifacts.Dir,
-	}, artifacts
-}
-
-func (h *auditHarness) reviewArtifacts(t *testing.T, runID string) pipeline.ArtifactPaths {
-	t.Helper()
-	dir := filepath.Join(h.layout.DataRoot, "runs", h.prKey, h.headSHA, h.baseSHA, "default__reviewer-user", runID)
-	paths := pipeline.ArtifactPaths{
-		Dir:            dir,
-		DiffPatch:      filepath.Join(dir, "diff.patch"),
-		SlicesDir:      filepath.Join(dir, "slices"),
-		FindingsJSON:   filepath.Join(dir, "findings.json"),
-		RollupMarkdown: filepath.Join(dir, "rollup.md"),
-		AgentLogsDir:   filepath.Join(dir, "agent-logs"),
+func (h *auditHarness) resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, store githubprovider.TokenStore, profile config.Profile) (gitprovider.Identity, error) {
+	if profile.ReviewerCredentials == nil {
+		return provider.WhoAmI(ctx, credential)
 	}
-	writeFile(t, paths.DiffPatch, "diff --git a/main.go b/main.go\n")
-	writeFile(t, paths.FindingsJSON, "[]\n")
-	writeFile(t, paths.RollupMarkdown, "No findings from no-leak harness.\n")
-	writeFile(t, filepath.Join(paths.AgentLogsDir, "harness-reviewer.jsonl"), `{"event":"completed","agent":"harness:reviewer"}`+"\n")
-	if err := os.MkdirAll(paths.SlicesDir, 0o700); err != nil {
-		t.Fatalf("MkdirAll slices: %v", err)
+	reviewerGit := config.GitConfig{
+		Host:          profile.Git.Host,
+		AuthMode:      profile.ReviewerCredentials.AuthMode,
+		CredentialRef: profile.ReviewerCredentials.CredentialRef,
+		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}
-	return paths
+	reviewerProvider, reviewerCredential, err := h.newGitHubProvider(reviewerGit, store)
+	if err != nil {
+		return gitprovider.Identity{}, err
+	}
+	return reviewerProvider.WhoAmI(ctx, reviewerCredential)
 }
 
 func (h *auditHarness) seedNamedSession(t *testing.T) {
@@ -523,6 +567,175 @@ func (h *auditHarness) openLedger(t *testing.T) *ledger.Store {
 	return store
 }
 
+func (h *auditHarness) handleGitHub(w http.ResponseWriter, r *http.Request) {
+	if r.URL.EscapedPath() == "/graphql" {
+		h.handleGitHubGraphQL(w, r)
+		return
+	}
+	pullPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", h.prRef.Owner, h.prRef.Repo, h.prRef.Number)
+	switch {
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == "/user":
+		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret) {
+			return
+		}
+		login := "git-user"
+		id := 1001
+		if r.Header.Get("Authorization") == "Bearer "+h.reviewerSecret {
+			login = "reviewer-user"
+			id = 1002
+		}
+		writeHTTPJSON(h.t, w, map[string]any{"login": login, "id": id, "name": login})
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == pullPath && r.Header.Get("Accept") == "application/vnd.github.v3.diff":
+		if !h.requireBearer(w, r, h.gitSecret) {
+			return
+		}
+		_, _ = w.Write([]byte(h.diff()))
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == pullPath:
+		if !h.requireBearer(w, r, h.gitSecret) {
+			return
+		}
+		writeHTTPJSON(h.t, w, map[string]any{
+			"title":    "Add no-leak harness",
+			"html_url": h.prURL,
+			"state":    "open",
+			"merged":   false,
+			"user":     map[string]any{"login": "author-user", "id": 1003, "name": "Author User"},
+			"head": map[string]any{
+				"ref": "secret-audit",
+				"sha": h.headSHA,
+				"repo": map[string]any{
+					"name":  h.prRef.Repo,
+					"owner": map[string]any{"login": h.prRef.Owner, "id": 1004, "name": h.prRef.Owner},
+				},
+			},
+			"base": map[string]any{
+				"ref": "main",
+				"sha": h.baseSHA,
+				"repo": map[string]any{
+					"name":  h.prRef.Repo,
+					"owner": map[string]any{"login": h.prRef.Owner, "id": 1004, "name": h.prRef.Owner},
+				},
+			},
+		})
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == pullPath+"/reviews":
+		if !h.requireBearer(w, r, h.gitSecret) {
+			return
+		}
+		writeHTTPJSON(h.t, w, []map[string]any{})
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == fmt.Sprintf("/repos/%s/%s/issues/%d/comments", h.prRef.Owner, h.prRef.Repo, h.prRef.Number):
+		if !h.requireBearer(w, r, h.gitSecret) {
+			return
+		}
+		writeHTTPJSON(h.t, w, []map[string]any{})
+	case r.Method == http.MethodPost && r.URL.EscapedPath() == fmt.Sprintf("/repos/%s/%s/issues/%d/comments", h.prRef.Owner, h.prRef.Repo, h.prRef.Number):
+		if !h.requireBearer(w, r, h.gitSecret) {
+			return
+		}
+		writeHTTPJSON(h.t, w, map[string]any{"id": 201})
+	case r.Method == http.MethodPost && r.URL.EscapedPath() == pullPath+"/reviews":
+		if !h.requireBearer(w, r, h.gitSecret) {
+			return
+		}
+		writeHTTPJSON(h.t, w, map[string]any{"id": 301})
+	default:
+		h.t.Errorf("unexpected GitHub request: %s %s", r.Method, r.URL.String())
+		http.Error(w, "unexpected GitHub request", http.StatusNotFound)
+	}
+}
+
+func (h *auditHarness) handleGitHubGraphQL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.requireBearer(w, r, h.gitSecret) {
+		return
+	}
+	var req struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.t.Errorf("decode GraphQL request: %v", err)
+		http.Error(w, "bad GraphQL request", http.StatusBadRequest)
+		return
+	}
+	switch {
+	case strings.Contains(req.Query, "reviewThreads"):
+		writeHTTPJSON(h.t, w, map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewThreads": map[string]any{
+			"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+			"nodes":    []map[string]any{},
+		}}}}})
+	case strings.Contains(req.Query, "object(expression"):
+		writeHTTPJSON(h.t, w, map[string]any{"data": map[string]any{"repository": map[string]any{"object": nil}}})
+	default:
+		h.t.Errorf("unexpected GraphQL query: %s", req.Query)
+		http.Error(w, "unexpected GraphQL query", http.StatusNotFound)
+	}
+}
+
+func (h *auditHarness) handleLLM(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || r.URL.EscapedPath() != "/v1/messages" {
+		h.t.Errorf("unexpected LLM request: %s %s", r.Method, r.URL.String())
+		http.Error(w, "unexpected LLM request", http.StatusNotFound)
+		return
+	}
+	if got := r.Header.Get("x-api-key"); got != h.llmSecret {
+		h.t.Errorf("LLM x-api-key header did not use seeded credential")
+		http.Error(w, "bad LLM credential", http.StatusUnauthorized)
+		return
+	}
+	call := h.llmCalls.Add(1)
+	var structured string
+	switch call {
+	case 1:
+		structured = `{"schema_version":1,"selected_agents":[{"agent_id":"harness:reviewer","rationale":"review changed Go file","files":["main.go"]}],"thread_actions":[],"reasoning":"exercise real LLM selection"}`
+	case 2:
+		structured = `{"schema_version":1,"agent_id":"harness:reviewer","findings":[]}`
+	default:
+		structured = `{"schema_version":1,"review_event":"comment","review_event_rationale":"no findings","dedupe_log":[],"ordered_findings":[]}`
+	}
+	writeHTTPJSON(h.t, w, map[string]any{
+		"id":      fmt.Sprintf("msg_%d", call),
+		"content": []map[string]any{{"type": "text", "text": structured}},
+		"usage":   map[string]any{"input_tokens": 7, "output_tokens": 11},
+	})
+}
+
+func (h *auditHarness) requireBearer(w http.ResponseWriter, r *http.Request, allowed ...string) bool {
+	got := r.Header.Get("Authorization")
+	for _, secret := range allowed {
+		if got == "Bearer "+secret {
+			return true
+		}
+	}
+	h.t.Errorf("request %s %s did not use an expected bearer credential", r.Method, r.URL.String())
+	http.Error(w, "bad bearer credential", http.StatusUnauthorized)
+	return false
+}
+
+func (h *auditHarness) diff() string {
+	return strings.Join([]string{
+		"diff --git a/main.go b/main.go",
+		"index 1111111..2222222 100644",
+		"--- a/main.go",
+		"+++ b/main.go",
+		"@@ -1,2 +1,2 @@",
+		" package main",
+		"-var changed = false",
+		"+var changed = true",
+		"",
+	}, "\n")
+}
+
+func writeHTTPJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatalf("Encode HTTP JSON: %v", err)
+	}
+}
+
 func (h *auditHarness) assertNoLeaks(t *testing.T, label string, data []byte) {
 	t.Helper()
 	if err := credstore.NoLeakAssertion(data, h.secrets...); err != nil {
@@ -549,9 +762,6 @@ func (h *auditHarness) assertOwnedFilesDoNotLeak(t *testing.T) {
 				return nil
 			}
 			if entry.IsDir() {
-				return nil
-			}
-			if !isScannedTextArtifact(path) && !isScannedRawArtifact(path) {
 				return nil
 			}
 			data, err := os.ReadFile(path) // #nosec G304,G122 -- paths are under hermetic test-owned roots and symlink entries are skipped.
@@ -584,87 +794,47 @@ func shouldSkipOwnedPath(path string, entry os.DirEntry) bool {
 	return false
 }
 
-func isScannedTextArtifact(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".json", ".jsonl", ".log", ".md", ".patch", ".toml", ".txt", ".yaml", ".yml":
-		return true
-	default:
-		return false
+type realIdentityResolver struct {
+	h     *auditHarness
+	store *credstore.Store
+}
+
+func (r realIdentityResolver) ResolveIdentity(ctx context.Context, git config.GitConfig) (gitprovider.Identity, error) {
+	provider, credential, err := r.h.newGitHubProvider(git, r.store)
+	if err != nil {
+		return gitprovider.Identity{}, err
 	}
+	return provider.WhoAmI(ctx, credential)
 }
 
-func isScannedRawArtifact(path string) bool {
-	base := filepath.Base(path)
-	return base == "ledger.db" ||
-		strings.HasPrefix(base, "ledger.db-") ||
-		strings.HasSuffix(base, ".db") ||
-		strings.Contains(base, ".db-")
+var _ identity.Resolver = realIdentityResolver{}
+
+type realReviewRunner struct {
+	pipeline pipeline.Options
+	live     reviewrun.Options
 }
 
-type fixedIdentityResolver struct {
-	identity gitprovider.Identity
+func (r realReviewRunner) DryRun(ctx context.Context, req pipeline.Request) (pipeline.Result, error) {
+	return pipeline.DryRun(ctx, r.pipeline, req)
 }
 
-func (r fixedIdentityResolver) ResolveIdentity(context.Context, config.GitConfig) (gitprovider.Identity, error) {
-	return r.identity, nil
+func (r realReviewRunner) Live(ctx context.Context, req pipeline.Request, flags reviewrun.Flags) (reviewrun.Result, error) {
+	return reviewrun.Run(ctx, r.live, reviewrun.Request{Pipeline: req, Flags: flags})
 }
 
-var _ identity.Resolver = fixedIdentityResolver{}
-
-type fakeReviewRunner struct {
-	h *auditHarness
+type livePlanner struct {
+	opts pipeline.Options
 }
 
-func (r fakeReviewRunner) DryRun(_ context.Context, _ pipeline.Request) (pipeline.Result, error) {
-	outcome := ledger.OutcomeDryRun
-	run, artifacts := r.h.reviewResult(r.h.t, "dry-run-001", ledger.PostModeDryRun, outcome)
-	return pipeline.Result{
-		Run:       run,
-		PR:        r.h.pr(),
-		PRKey:     r.h.prKey,
-		Artifacts: artifacts,
-		Rollup: review.Rollup{
-			ReviewEvent:          review.ReviewEventComment,
-			ReviewEventRationale: "No issues found.",
-		},
-		Plan: reviewplan.Plan{
-			Outcome:        reviewplan.OutcomeComment,
-			RollupMarkdown: "No findings from no-leak harness.",
-		},
-	}, nil
+func (p livePlanner) Live(ctx context.Context, req pipeline.Request, run ledger.Run) (pipeline.Result, error) {
+	return pipeline.Live(ctx, p.opts, req, run)
 }
 
-func (r fakeReviewRunner) Live(_ context.Context, _ pipeline.Request, _ reviewrun.Flags) (reviewrun.Result, error) {
-	outcome := ledger.OutcomeComment
-	run, artifacts := r.h.reviewResult(r.h.t, "live-run-001", ledger.PostModeLive, outcome)
-	pipelineResult := pipeline.Result{
-		Run:       run,
-		PR:        r.h.pr(),
-		PRKey:     r.h.prKey,
-		Artifacts: artifacts,
-		Plan: reviewplan.Plan{
-			Outcome:        reviewplan.OutcomeComment,
-			RollupMarkdown: "Posted no-leak harness review.",
-		},
-	}
-	return reviewrun.Result{
-		Status:   gateio.StatusContinue,
-		Decision: gate.Decision{Kind: gate.DecisionFresh, Message: "fresh review"},
-		Run:      run,
-		PR:       r.h.pr(),
-		PRKey:    r.h.prKey,
-		Pipeline: &pipelineResult,
-		Outbox: outbox.Result{
-			Outcome:  ledger.OutcomeComment,
-			ExitCode: 0,
-			Posted:   1,
-		},
-		ExitCode: 0,
-		Message:  "review posted",
-	}, nil
-}
+type noLeakLimiter struct{}
 
-var _ reviewcmd.Runner = fakeReviewRunner{}
+func (noLeakLimiter) Wait(context.Context, string) error { return nil }
+
+var _ reviewcmd.Runner = realReviewRunner{}
 
 func saveConfigOnly(t *testing.T, h *auditHarness) {
 	t.Helper()
