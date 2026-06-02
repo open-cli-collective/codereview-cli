@@ -23,6 +23,8 @@ import (
 
 func TestDataShowJSONEmptyStore(t *testing.T) {
 	statedirtest.Hermetic(t)
+	layout := mustDefaultLayoutNoCreate(t)
+	assertDataStateAbsent(t, layout)
 	var stdout, stderr bytes.Buffer
 
 	err := runDataCommand(&stdout, &stderr, "data", "show", "--json")
@@ -35,6 +37,70 @@ func TestDataShowJSONEmptyStore(t *testing.T) {
 	}
 	if decoded.RunCount != 0 || decoded.DataRoot == "" || decoded.LedgerPath == "" || decoded.RunsRoot == "" {
 		t.Fatalf("decoded = %#v, want empty store paths and zero runs", decoded)
+	}
+	assertDataStateAbsent(t, layout)
+}
+
+func TestDataShowTextEmptyStoreDoesNotCreateState(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := mustDefaultLayoutNoCreate(t)
+	assertDataStateAbsent(t, layout)
+	var stdout, stderr bytes.Buffer
+
+	err := runDataCommand(&stdout, &stderr, "data", "show")
+	if err != nil {
+		t.Fatalf("runDataCommand: %v; stderr = %q", err, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	text := stdout.String()
+	if !strings.Contains(text, "Run count: 0") || !strings.Contains(text, "Orphans: 0") {
+		t.Fatalf("stdout = %q, want empty data summary", text)
+	}
+	assertDataStateAbsent(t, layout)
+}
+
+func TestDataPruneEmptyDoesNotCreateState(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantText   string
+		wantDryRun bool
+	}{
+		{name: "dry-run json", args: []string{"data", "prune", "--dry-run", "--json"}, wantDryRun: true},
+		{name: "real json", args: []string{"data", "prune", "--json"}},
+		{name: "dry-run text", args: []string{"data", "prune", "--dry-run"}, wantText: "Would delete runs: 0", wantDryRun: true},
+		{name: "real text", args: []string{"data", "prune"}, wantText: "Deleted runs: 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statedirtest.Hermetic(t)
+			layout := mustDefaultLayoutNoCreate(t)
+			assertDataStateAbsent(t, layout)
+			var stdout, stderr bytes.Buffer
+
+			if err := runDataCommand(&stdout, &stderr, tt.args...); err != nil {
+				t.Fatalf("runDataCommand: %v; stderr = %q", err, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+			if tt.wantText != "" {
+				if text := stdout.String(); !strings.Contains(text, tt.wantText) {
+					t.Fatalf("stdout = %q, want %q", text, tt.wantText)
+				}
+			} else {
+				var decoded view.DataPrune
+				if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+					t.Fatalf("Unmarshal: %v; stdout = %q", err, stdout.String())
+				}
+				if decoded.DryRun != tt.wantDryRun || len(decoded.SelectedRuns) != 0 || len(decoded.DeletedRuns) != 0 || len(decoded.OrphansRemoved) != 0 || len(decoded.Warnings) != 0 {
+					t.Fatalf("decoded = %#v, want empty prune result without warnings", decoded)
+				}
+			}
+			assertDataStateAbsent(t, layout)
+		})
 	}
 }
 
@@ -338,6 +404,24 @@ func mustLayout(t *testing.T) statepaths.Layout {
 		t.Fatalf("DefaultLayoutEnsured: %v", err)
 	}
 	return layout
+}
+
+func mustDefaultLayoutNoCreate(t *testing.T) statepaths.Layout {
+	t.Helper()
+	layout, err := statepaths.DefaultLayout()
+	if err != nil {
+		t.Fatalf("DefaultLayout: %v", err)
+	}
+	return layout
+}
+
+func assertDataStateAbsent(t *testing.T, layout statepaths.Layout) {
+	t.Helper()
+	for _, path := range []string{layout.DataRoot, layout.CacheRoot, layout.LedgerDB()} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("state path %s stat err = %v, want missing", path, err)
+		}
+	}
 }
 
 func openLedgerForTest(t *testing.T, layout statepaths.Layout) *ledger.Store {
