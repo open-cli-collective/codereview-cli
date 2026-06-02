@@ -176,21 +176,11 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 		_ = cleanup()
 		return nil, err
 	}
-	if err := stdin.Close(); err != nil {
-		cancel()
-		_ = procGroup.kill(cmd)
-		go func() { _, _ = io.Copy(io.Discard, stdout) }()
-		go func() { _, _ = io.Copy(io.Discard, stderr) }()
-		_ = cmd.Wait()
-		closeSubprocessLog(logFile)
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
 
 	stream := &piRPCStream{
 		cancel:       cancel,
 		done:         make(chan struct{}),
+		stdin:        stdin,
 		logFile:      logFile,
 		cleanup:      cleanup,
 		processGroup: procGroup,
@@ -260,6 +250,7 @@ type piRPCStream struct {
 
 	cancel       context.CancelFunc
 	done         chan struct{}
+	stdin        io.Closer
 	logMu        sync.Mutex
 	logFile      *os.File
 	cleanup      func() error
@@ -301,6 +292,9 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	}()
 
 	scanResult := s.scanStdout(stdout)
+	if s.stdin != nil {
+		_ = s.stdin.Close()
+	}
 	waitErr := cmd.Wait()
 	<-stderrDone
 
