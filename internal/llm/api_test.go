@@ -156,11 +156,12 @@ func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 
 func TestAPIAdapterFromConfig(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		cfg     config.LLMConfig
-		apiKey  string
-		want    string
-		wantKey string
+		name     string
+		cfg      config.LLMConfig
+		apiKey   string
+		want     string
+		wantKey  string
+		storeKey string
 	}{
 		{
 			name: "anthropic",
@@ -170,9 +171,10 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 				Adapter:       config.LLMAdapterAnthropicAPI,
 				CredentialRef: "codereview/work-llm",
 			},
-			apiKey:  "stored-value",
-			want:    "anthropic_api",
-			wantKey: "stored-value",
+			apiKey:   "stored-value",
+			want:     "anthropic_api",
+			wantKey:  "stored-value",
+			storeKey: credentials.AnthropicAPIKeyKey,
 		},
 		{
 			name: "openai",
@@ -182,14 +184,15 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 				Adapter:       config.LLMAdapterOpenAIAPI,
 				CredentialRef: "codereview/work-llm",
 			},
-			apiKey:  "openai-stored-value",
-			want:    "openai_api",
-			wantKey: "openai-stored-value",
+			apiKey:   "openai-stored-value",
+			want:     "openai_api",
+			wantKey:  "openai-stored-value",
+			storeKey: credentials.OpenAIAPIKeyKey,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &apiTestStore{values: map[string]map[string]string{
-				"work-llm": {credentials.LLMAPIKeyKey: tt.apiKey},
+				"work-llm": {tt.storeKey: tt.apiKey},
 			}}
 			adapter, err := NewAPIAdapterFromConfig(tt.cfg, store, APIOptions{BaseURL: "https://example.invalid"})
 			if err != nil {
@@ -198,11 +201,32 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 			if adapter.Name() != tt.want || adapter.apiKey != tt.wantKey {
 				t.Fatalf("adapter = %s key=%q, want %s stored key", adapter.Name(), adapter.apiKey, tt.want)
 			}
-			if len(store.calls) != 1 || store.calls[0] != "work-llm/"+credentials.LLMAPIKeyKey {
-				t.Fatalf("store calls = %#v, want work-llm llm key", store.calls)
+			if len(store.calls) != 1 || store.calls[0] != "work-llm/"+tt.storeKey {
+				t.Fatalf("store calls = %#v, want work-llm %s", store.calls, tt.storeKey)
 			}
 		})
 	}
+
+	t.Run("legacy key is not a fallback", func(t *testing.T) {
+		store := &apiTestStore{values: map[string]map[string]string{
+			"work-llm": {credentials.LegacyLLMAPIKeyKey: "stored-value"},
+		}}
+		_, err := NewAPIAdapterFromConfig(config.LLMConfig{
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/work-llm",
+		}, store, APIOptions{})
+		if !errors.Is(err, ErrAPIAdapterConfig) {
+			t.Fatalf("NewAPIAdapterFromConfig error = %v, want ErrAPIAdapterConfig", err)
+		}
+		if !strings.Contains(err.Error(), credentials.AnthropicAPIKeyKey) {
+			t.Fatalf("NewAPIAdapterFromConfig error = %v, want expected key", err)
+		}
+		if len(store.calls) != 1 || store.calls[0] != "work-llm/"+credentials.AnthropicAPIKeyKey {
+			t.Fatalf("store calls = %#v, want provider-specific key", store.calls)
+		}
+	})
 
 	for _, tt := range []struct {
 		name string
@@ -228,7 +252,7 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &apiTestStore{values: map[string]map[string]string{
-				"work-llm": {credentials.LLMAPIKeyKey: "stored-value"},
+				"work-llm": {credentials.AnthropicAPIKeyKey: "stored-value"},
 			}}
 			if _, err := NewAPIAdapterFromConfig(tt.cfg, store, APIOptions{}); !errors.Is(err, ErrAPIAdapterConfig) {
 				t.Fatalf("NewAPIAdapterFromConfig error = %v, want ErrAPIAdapterConfig", err)

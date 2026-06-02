@@ -573,7 +573,7 @@ func TestOrgDeploymentPrestagedMultiRefCredentialsHealthChecks(t *testing.T) {
 	runOrgDeploymentCommand(t, path, strings.NewReader("llm-token"), nil, []string{
 		"set-credential",
 		"--ref", "codereview/work-llm",
-		"--key", credentials.LLMAPIKeyKey,
+		"--key", credentials.AnthropicAPIKeyKey,
 		"--stdin",
 		"--overwrite",
 	})
@@ -594,7 +594,7 @@ func TestOrgDeploymentPrestagedMultiRefCredentialsHealthChecks(t *testing.T) {
 	wantPresent := map[string]string{
 		"git":                  credentials.GitTokenKey,
 		"reviewer_credentials": credentials.GitTokenKey,
-		"llm":                  credentials.LLMAPIKeyKey,
+		"llm":                  credentials.AnthropicAPIKeyKey,
 	}
 	for _, ref := range show.CredentialRefs {
 		wantKey, ok := wantPresent[ref.Purpose]

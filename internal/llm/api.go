@@ -88,16 +88,17 @@ func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store APITokenStore, op
 		return nil, err
 	}
 	key, err := credentials.KeyForPurpose(config.CredentialRef{
-		Purpose: "llm",
-		Ref:     llmConfig.CredentialRef,
-		Mode:    string(llmConfig.Auth),
+		Purpose:  "llm",
+		Ref:      llmConfig.CredentialRef,
+		Mode:     string(llmConfig.Auth),
+		Provider: string(llmConfig.Provider),
 	})
 	if err != nil {
 		return nil, err
 	}
 	apiKey, err := store.Get(parsed.Profile, key)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read llm credential: %w", ErrAPIAdapterConfig, err)
+		return nil, fmt.Errorf("%w: read llm credential %s/%s: %w", ErrAPIAdapterConfig, llmConfig.CredentialRef, key, err)
 	}
 	opts.APIKey = apiKey
 	return newAPIAdapter(kind, opts)

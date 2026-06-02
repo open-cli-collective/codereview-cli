@@ -166,7 +166,7 @@ printf '%s' "$REVIEW_BOT_GITHUB_TOKEN" | cr set-credential \
 
 printf '%s' "$ANTHROPIC_API_KEY" | cr set-credential \
   --ref codereview/work-llm \
-  --key llm_api_key \
+  --key anthropic_api_key \
   --stdin \
   --overwrite
 ```
@@ -229,8 +229,24 @@ Supported values:
 | `data.retention.enforcement` | `at_write`, `manual_only`; currently stored and displayed, but automatic pruning does not yet branch on this setting. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
-logged-in CLI. `api_key` LLM auth requires `llm.credential_ref` and stores the
-`llm_api_key` key in the credential backend.
+logged-in CLI. `api_key` LLM auth requires `llm.credential_ref` and stores a
+provider-specific API key in the credential backend.
+
+Credential key matrix:
+
+| Profile field | Purpose | Auth/provider | Required keys | Optional keys | v1 behavior |
+|---------------|---------|---------------|---------------|---------------|-------------|
+| `git.credential_ref` | User Git host auth | `pat` | `git_token` | None | Supported |
+| `reviewer_credentials.credential_ref` | Reviewer Git host auth | `pat` | `git_token` | None | Supported; must use a distinct ref from `git.credential_ref` in the same profile |
+| `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `github_app` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_app_private_key` |
+| `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
+| `llm.credential_ref` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
+| `llm.credential_ref` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
+| Omitted `llm.credential_ref` | Adapter-managed LLM auth | `subscription` | None | None | Supported; credentials are owned by the selected adapter |
+
+Upgrade note: pre-matrix versions used the generic `llm_api_key` key for direct
+LLM API credentials. Re-provision API-key LLM refs with `anthropic_api_key` or
+`openai_api_key`; `llm_api_key` is not accepted by v1 `set-credential`.
 
 ## Common Workflows
 
@@ -337,12 +353,12 @@ Flags:
 | `--reviewer-auth-mode <mode>` | Reviewer Git auth mode, default `pat`. Reserved modes are recognized by config but not implemented in v1. |
 | `--reviewer-token-stdin` | Read the reviewer Git token from stdin and write key `git_token`. |
 | `--reviewer-token-from-env <env>` | Read the reviewer Git token from an environment variable and write key `git_token`. |
-| `--llm-provider <provider>` | LLM provider, default `anthropic`. |
+| `--llm-provider <provider>` | LLM provider, default `anthropic`; also selects whether API-key ingress writes `anthropic_api_key` or `openai_api_key`. |
 | `--llm-auth <mode>` | LLM auth mode, default `subscription`. Use `api_key` for keyring-managed direct API keys. |
 | `--llm-adapter <adapter>` | LLM adapter, default `claude_cli`. |
 | `--llm-credential-ref <ref>` | Credential ref for LLM API-key auth. Defaults to `codereview/<profile>-llm` when `--llm-auth api_key`. |
-| `--llm-api-key-stdin` | Read the LLM API key from stdin and write key `llm_api_key`. |
-| `--llm-api-key-from-env <env>` | Read the LLM API key from an environment variable and write key `llm_api_key`. |
+| `--llm-api-key-stdin` | Read the LLM API key from stdin and write `anthropic_api_key` or `openai_api_key` according to `--llm-provider`. |
+| `--llm-api-key-from-env <env>` | Read the LLM API key from an environment variable and write `anthropic_api_key` or `openai_api_key` according to `--llm-provider`. |
 | `--agent-source <path>` | Add a trusted agent source directory. Repeatable. |
 | `--major-event <policy>` | `comment` or `request_changes`. Controls review event for major findings. |
 | `--allow-self-approve` | Store profile policy allowing self approval. Live review can still require `--allow-self-approve` depending on invocation. |
@@ -365,16 +381,19 @@ policy.
 cr set-credential --ref <ref> --key <key> (--stdin | --from-env <env>) [flags]
 ```
 
-Writes one secret value to the credential store. Allowed keys are `git_token`
-and `llm_api_key`. User Git refs and reviewer refs both use `git_token`; LLM
-API-key refs use `llm_api_key`.
+Writes one secret value to the credential store. Globally allowed keys are
+`git_token`, `anthropic_api_key`, and `openai_api_key`. When `config.yml`
+declares the target ref, `set-credential` narrows that global allowlist to the
+exact key set expected for that ref. User Git refs and reviewer refs both use
+`git_token`; Anthropic LLM API-key refs use `anthropic_api_key`; OpenAI LLM
+API-key refs use `openai_api_key`.
 
 Flags:
 
 | Flag | Semantics |
 |------|-----------|
 | `--ref <ref>` | Required credential ref, such as `codereview/default`. |
-| `--key <key>` | Required key name, `git_token` or `llm_api_key`. |
+| `--key <key>` | Required key name: `git_token`, `anthropic_api_key`, or `openai_api_key`. |
 | `--stdin` | Read the secret from stdin. |
 | `--from-env <env>` | Read the secret from an environment variable. |
 | `--overwrite` | Replace an existing key. Without it, existing keys are not overwritten. |

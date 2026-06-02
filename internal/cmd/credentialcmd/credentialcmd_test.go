@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -67,6 +69,107 @@ func TestSetCredentialRejectsLiteralIngress(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "distinctive-token") {
 		t.Fatalf("error leaked secret: %v", err)
+	}
+}
+
+func TestSetCredentialRejectsDisallowedKeysBeforeIngress(t *testing.T) {
+	for _, key := range []string{
+		credentials.LegacyLLMAPIKeyKey,
+		"git_app_private_key",
+		"git_oauth_access_token",
+		"git_oauth_refresh_token",
+	} {
+		t.Run(key, func(t *testing.T) {
+			cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), failReader{})
+
+			err := root.Execute(cmd, []string{
+				"--backend", "memory",
+				"set-credential",
+				"--ref", "codereview/work",
+				"--key", key,
+				"--stdin",
+			})
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+			}
+			if strings.Contains(err.Error(), "secret ingress was read") {
+				t.Fatalf("set-credential read secret ingress before rejecting key: %v", err)
+			}
+		})
+	}
+}
+
+func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Keyring:        config.KeyringConfig{Backend: "file"},
+		Profiles: map[string]config.Profile{
+			"work":   apiKeyProfile("work", config.LLMProviderAnthropic),
+			"future": futureGitAuthProfile("future"),
+		},
+	})
+
+	cmd, _, _ := newTestCommand(path, failReader{})
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"set-credential",
+		"--ref", "codereview/work-llm",
+		"--key", credentials.OpenAIAPIKeyKey,
+		"--stdin",
+	})
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("wrong provider exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if strings.Contains(err.Error(), "secret ingress was read") {
+		t.Fatalf("set-credential read secret ingress before rejecting wrong provider key: %v", err)
+	}
+	assertFileBundleEmpty(t, "work-llm")
+
+	cmd, _, _ = newTestCommand(path, strings.NewReader("openai-token"))
+	err = root.Execute(cmd, []string{
+		"--backend", "file",
+		"set-credential",
+		"--ref", "codereview/ad-hoc-openai",
+		"--key", credentials.OpenAIAPIKeyKey,
+		"--stdin",
+	})
+	if err != nil {
+		t.Fatalf("unknown ref global key Execute: %v", err)
+	}
+	assertFileBundleKeys(t, "ad-hoc-openai", []string{credentials.OpenAIAPIKeyKey})
+
+	cmd, _, _ = newTestCommand(path, strings.NewReader("anthropic-token"))
+	err = root.Execute(cmd, []string{
+		"--backend", "file",
+		"set-credential",
+		"--ref", "codereview/work-llm",
+		"--key", credentials.AnthropicAPIKeyKey,
+		"--stdin",
+	})
+	if err != nil {
+		t.Fatalf("provider key Execute: %v", err)
+	}
+	assertFileBundleKeys(t, "work-llm", []string{credentials.AnthropicAPIKeyKey})
+	assertStored(t, "work-llm", credentials.AnthropicAPIKeyKey, "anthropic-token")
+
+	cmd, _, _ = newTestCommand(path, failReader{})
+	err = root.Execute(cmd, []string{
+		"--backend", "file",
+		"set-credential",
+		"--ref", "codereview/future",
+		"--key", credentials.GitTokenKey,
+		"--stdin",
+	})
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("future auth error = %v, want ErrUnsupported", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("future auth exit code = %d, want %d; err=%v", got, exitcode.AuthConfigError, err)
+	}
+	if strings.Contains(err.Error(), "secret ingress was read") {
+		t.Fatalf("set-credential read secret ingress before rejecting future auth ref: %v", err)
 	}
 }
 
@@ -303,6 +406,66 @@ func TestInitNonInteractiveDerivesReviewerRefFromStdinForProfile(t *testing.T) {
 	assertStored(t, "work-reviewer", credentials.GitTokenKey, "reviewer-token")
 }
 
+func TestInitNonInteractiveWritesProviderSpecificAPIKeySecret(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider config.LLMProvider
+		adapter  config.LLMAdapter
+		key      string
+	}{
+		{
+			name:     "anthropic",
+			provider: config.LLMProviderAnthropic,
+			adapter:  config.LLMAdapterAnthropicAPI,
+			key:      credentials.AnthropicAPIKeyKey,
+		},
+		{
+			name:     "openai",
+			provider: config.LLMProviderOpenAI,
+			adapter:  config.LLMAdapterOpenAIAPI,
+			key:      credentials.OpenAIAPIKeyKey,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hermeticFileBackend(t)
+			path := filepath.Join(t.TempDir(), "config.yml")
+			t.Setenv("CR_GIT_TOKEN", "git-token")
+			t.Setenv("CR_LLM_KEY", "llm-token")
+			cmd, out, errOut := newTestCommand(path, strings.NewReader(""))
+
+			err := root.Execute(cmd, []string{
+				"--backend", "file",
+				"init",
+				"--non-interactive",
+				"--git-token-from-env", "CR_GIT_TOKEN",
+				"--llm-provider", string(tt.provider),
+				"--llm-auth", string(config.LLMAuthAPIKey),
+				"--llm-adapter", string(tt.adapter),
+				"--llm-api-key-from-env", "CR_LLM_KEY",
+			})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if strings.Contains(out.String()+errOut.String(), "git-token") || strings.Contains(out.String()+errOut.String(), "llm-token") {
+				t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load config: %v", err)
+			}
+			profile := cfg.Profiles["default"]
+			if profile.LLM.Provider != tt.provider || profile.LLM.CredentialRef != "codereview/default-llm" {
+				t.Fatalf("LLM config = %#v, want provider %s default LLM ref", profile.LLM, tt.provider)
+			}
+			assertFileBundleKeys(t, "default", []string{credentials.GitTokenKey})
+			assertFileBundleKeys(t, "default-llm", []string{tt.key})
+			assertStored(t, "default-llm", tt.key, "llm-token")
+		})
+	}
+}
+
 func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
@@ -365,7 +528,7 @@ func TestInitReviewerConfigOnlyCarriesBackendIntoCredentialHint(t *testing.T) {
 
 func TestInitPersistsExplicitBackendWhenExistingAPIKeySatisfiesConfig(t *testing.T) {
 	hermeticFileBackend(t)
-	seedFileBackend(t, "default-llm", credentials.LLMAPIKeyKey, "llm-token")
+	seedFileBackend(t, "default-llm", credentials.AnthropicAPIKeyKey, "llm-token")
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cmd, out, errOut := newTestCommand(path, strings.NewReader(""))
 
@@ -518,7 +681,7 @@ func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
 	}
 }
 
-func newTestCommand(path string, stdin *strings.Reader) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+func newTestCommand(path string, stdin io.Reader) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	var stdout, stderr bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		ConfigPath: path,
@@ -528,6 +691,12 @@ func newTestCommand(path string, stdin *strings.Reader) (*cobra.Command, *bytes.
 	})
 	Register(cmd, opts)
 	return cmd, &stdout, &stderr
+}
+
+type failReader struct{}
+
+func (failReader) Read([]byte) (int, error) {
+	return 0, errors.New("secret ingress was read")
 }
 
 func hermeticFileBackend(t *testing.T) {
@@ -555,6 +724,32 @@ func assertStored(t *testing.T, profile, key, want string) {
 	}
 	if got != want {
 		t.Fatalf("Get(%s,%s) = %q, want %q", profile, key, got, want)
+	}
+}
+
+func assertFileBundleKeys(t *testing.T, profile string, want []string) {
+	t.Helper()
+	store := openFileStore(t)
+	defer store.Close()
+	got, err := store.ListBundle(profile)
+	if err != nil {
+		t.Fatalf("ListBundle(%s): %v", profile, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListBundle(%s) = %#v, want %#v", profile, got, want)
+	}
+}
+
+func assertFileBundleEmpty(t *testing.T, profile string) {
+	t.Helper()
+	store := openFileStore(t)
+	defer store.Close()
+	got, err := store.ListBundle(profile)
+	if err != nil {
+		t.Fatalf("ListBundle(%s): %v", profile, err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListBundle(%s) = %#v, want empty", profile, got)
 	}
 }
 
@@ -586,5 +781,32 @@ func basicProfile(profile string) config.Profile {
 			Auth:     config.LLMAuthSubscription,
 			Adapter:  config.LLMAdapterClaudeCLI,
 		},
+	}
+}
+
+func apiKeyProfile(profile string, provider config.LLMProvider) config.Profile {
+	p := basicProfile(profile)
+	p.LLM = config.LLMConfig{
+		Provider:      provider,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterAnthropicAPI,
+		CredentialRef: "codereview/" + profile + "-llm",
+	}
+	if provider == config.LLMProviderOpenAI {
+		p.LLM.Adapter = config.LLMAdapterOpenAIAPI
+	}
+	return p
+}
+
+func futureGitAuthProfile(profile string) config.Profile {
+	p := basicProfile(profile)
+	p.Git.AuthMode = config.GitAuthModeOAuthDevice
+	return p
+}
+
+func saveCredentialTestConfig(t *testing.T, path string, cfg config.File) {
+	t.Helper()
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
 	}
 }

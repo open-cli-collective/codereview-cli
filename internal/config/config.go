@@ -241,9 +241,10 @@ func (e RetentionEnforcement) Valid() bool {
 
 // CredentialRef is one declared non-secret pointer into the credential store.
 type CredentialRef struct {
-	Purpose string `json:"purpose"`
-	Ref     string `json:"ref"`
-	Mode    string `json:"mode"`
+	Purpose  string `json:"purpose"`
+	Ref      string `json:"ref"`
+	Mode     string `json:"mode"`
+	Provider string `json:"provider,omitempty"`
 }
 
 // Path resolves the default cr config.yml path without creating it.
@@ -408,9 +409,10 @@ func CredentialRefs(profile Profile) ([]CredentialRef, error) {
 
 	if profile.LLM.Auth == LLMAuthAPIKey {
 		refs = append(refs, CredentialRef{
-			Purpose: "llm",
-			Ref:     profile.LLM.CredentialRef,
-			Mode:    string(LLMAuthAPIKey),
+			Purpose:  "llm",
+			Ref:      profile.LLM.CredentialRef,
+			Mode:     string(LLMAuthAPIKey),
+			Provider: string(profile.LLM.Provider),
 		})
 	}
 	return refs, nil
@@ -468,6 +470,12 @@ func validateProfile(name string, profile Profile) error {
 	if profile.LLM.Auth == LLMAuthAPIKey {
 		if err := validateCredentialRef(fmt.Sprintf("profiles.%s.llm.credential_ref", name), profile.LLM.CredentialRef); err != nil {
 			return err
+		}
+		if profile.LLM.CredentialRef == profile.Git.CredentialRef {
+			return invalid("profiles.%s.llm.credential_ref must differ from git.credential_ref", name)
+		}
+		if profile.ReviewerCredentials != nil && profile.LLM.CredentialRef == profile.ReviewerCredentials.CredentialRef {
+			return invalid("profiles.%s.llm.credential_ref must differ from reviewer_credentials.credential_ref", name)
 		}
 	}
 	for index, source := range profile.AgentSources {

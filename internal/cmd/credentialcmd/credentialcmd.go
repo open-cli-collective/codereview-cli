@@ -79,16 +79,19 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 	if flags.key == "" {
 		return result, exitcode.Usage(fmt.Errorf("--key is required"))
 	}
-	if err := credentials.ValidateAllowedKey(flags.key); err != nil {
+	cfg, err := loadOptionalConfig(opts)
+	if err != nil {
+		return result, cmderr.Config(err)
+	}
+	if err := credentials.ValidateAllowedKeyForConfig(cfg, flags.ref, flags.key); err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrUnsupported) {
+			return result, cmderr.Config(err)
+		}
 		return result, exitcode.Usage(err)
 	}
 	secret, err := readSecretIngress(opts.Stdin, flags.stdin, flags.fromEnv, "--stdin", "--from-env")
 	if err != nil {
 		return result, exitcode.Usage(err)
-	}
-	cfg, err := loadOptionalConfig(opts)
-	if err != nil {
-		return result, cmderr.Config(err)
 	}
 	store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
 	if err != nil {
@@ -319,7 +322,11 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 		addWrite(writes, reviewerRef, credentials.GitTokenKey, reviewerSecret)
 	}
 	if hasLLMSecret {
-		addWrite(writes, llmRef, credentials.LLMAPIKeyKey, llmSecret)
+		llmKey, err := credentials.LLMAPIKeyForProvider(profile.LLM.Provider)
+		if err != nil {
+			return cmderr.Config(err)
+		}
+		addWrite(writes, llmRef, llmKey, llmSecret)
 	}
 
 	backendFlagSet := cmderr.BackendFlagChanged(cmd)
@@ -356,7 +363,11 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 		if err != nil {
 			return exitcode.Usage(err)
 		}
-		present, err := store.Exists(parsed.Profile, credentials.LLMAPIKeyKey)
+		llmKey, err := credentials.LLMAPIKeyForProvider(profile.LLM.Provider)
+		if err != nil {
+			return cmderr.Config(err)
+		}
+		present, err := store.Exists(parsed.Profile, llmKey)
 		if err != nil {
 			return cmderr.Credential(err)
 		}
