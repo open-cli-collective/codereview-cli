@@ -20,7 +20,10 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
-const repoAgentsRoot = ".codereview/agents"
+const (
+	repoAgentsRoot            = ".codereview/agents"
+	maxGitWorktreeSearchDepth = 40
+)
 
 var (
 	// ErrInvalid identifies malformed agent definitions or unsafe agent names.
@@ -758,7 +761,7 @@ func pathWithin(child, parent string) bool {
 
 func gitWorktreeRoot(canonical string) (string, bool) {
 	dir := canonical
-	for {
+	for depth := 0; depth < maxGitWorktreeSearchDepth; depth++ {
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 			return dir, true
 		}
@@ -768,6 +771,7 @@ func gitWorktreeRoot(canonical string) (string, bool) {
 		}
 		dir = parent
 	}
+	return "", false
 }
 
 func sourceLabel(rawDir string) string {
