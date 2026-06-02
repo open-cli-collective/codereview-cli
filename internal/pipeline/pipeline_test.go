@@ -937,6 +937,21 @@ func TestDryRunRejectsSelfReviewWhenReviewerCredentialsMatchAuthor(t *testing.T)
 	}
 }
 
+func TestSelectionOutputContractExampleHasNoAgentsWhenCatalogEmpty(t *testing.T) {
+	contract := selectionOutputContract(nil, []FilePatch{{Path: "main.go"}}, nil)
+	example, ok := contract.Example.(map[string]any)
+	if !ok {
+		t.Fatalf("Example = %#v, want map", contract.Example)
+	}
+	selected, ok := example["selected_agents"].([]map[string]any)
+	if !ok {
+		t.Fatalf("selected_agents = %#v, want []map[string]any", example["selected_agents"])
+	}
+	if len(selected) != 0 {
+		t.Fatalf("selected_agents = %#v, want empty when no agents are allowed", selected)
+	}
+}
+
 func TestDryRunContextBudgetFailures(t *testing.T) {
 	tests := []struct {
 		name   string

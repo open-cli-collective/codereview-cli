@@ -176,6 +176,17 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 		_ = cleanup()
 		return nil, err
 	}
+	if err := stdin.Close(); err != nil {
+		cancel()
+		_ = procGroup.kill(cmd)
+		go func() { _, _ = io.Copy(io.Discard, stdout) }()
+		go func() { _, _ = io.Copy(io.Discard, stderr) }()
+		_ = cmd.Wait()
+		closeSubprocessLog(logFile)
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
 
 	stream := &piRPCStream{
 		cancel:       cancel,
@@ -290,7 +301,6 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	}()
 
 	scanResult := s.scanStdout(stdout)
-	s.cancel()
 	waitErr := cmd.Wait()
 	<-stderrDone
 
@@ -298,18 +308,18 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	switch {
 	case scanResult.err != nil:
 		result.err = scanResult.err
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		result.err = ctx.Err()
+	case scanResult.agentEnd && waitErr != nil:
+		result.err = waitErr
 	case scanResult.agentEnd && len(scanResult.response.StructuredOutput) == 0:
 		result.err = errors.New("llm pi rpc: no structured output")
 	case scanResult.agentEnd:
 		result.err = nil
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		result.err = ctx.Err()
 	case !scanResult.agentEnd:
 		result.err = errors.New("llm pi rpc: missing agent_end")
 	case ctx.Err() != nil:
 		result.err = ctx.Err()
-	case waitErr != nil:
-		result.err = waitErr
 	}
 	if s.processGroup != nil {
 		_ = s.processGroup.close()
@@ -531,7 +541,7 @@ func parsePiRPCUsage(raw map[string]json.RawMessage) Usage {
 		TokensIn:    firstRawIntPtr(usageRaw, "tokens_in", "tokensIn", "input", "inputTokens", "promptTokens"),
 		TokensOut:   firstRawIntPtr(usageRaw, "tokens_out", "tokensOut", "output", "outputTokens", "completionTokens"),
 		CacheRead:   firstRawIntPtr(usageRaw, "cache_read", "cacheRead"),
-		CacheCreate: firstRawIntPtr(usageRaw, "cache_create", "cacheCreate"),
+		CacheCreate: firstRawIntPtr(usageRaw, "cache_create", "cacheCreate", "cache_write", "cacheWrite"),
 		CostUSD:     firstRawFloatPtr(usageRaw, "cost_usd", "costUSD", "totalCost", "totalCostUSD"),
 	}
 	if usage.CostUSD == nil {

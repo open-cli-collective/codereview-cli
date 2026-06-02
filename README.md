@@ -78,7 +78,8 @@ cr init --non-interactive \
   --git-token-from-env GITHUB_TOKEN
 ```
 
-Setup with Pi's local RPC runtime:
+Setup with Pi's local RPC runtime. Install Pi first and make sure the `pi`
+binary is available on `PATH` before running `cr review`.
 
 ```bash
 cr init --non-interactive \
@@ -165,8 +166,16 @@ profiles:
       major_event: comment
 ```
 
-For adapter-managed LLM credentials, use `auth: subscription`, set an adapter
-such as `claude_cli` or `pi_rpc`, and omit `llm.credential_ref`.
+For adapter-managed LLM credentials, use `auth: subscription` and omit
+`llm.credential_ref`. Pi-backed profiles must set `provider: pi`,
+`auth: subscription`, and `adapter: pi_rpc` together:
+
+```yaml
+llm:
+  provider: pi
+  auth: subscription
+  adapter: pi_rpc
+```
 
 Agent definitions are non-secret deployment material, not credentials. Ship
 them separately from keyring pre-staging and point `agent_sources` at the

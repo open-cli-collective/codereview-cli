@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/open-cli-collective/cli-common/statedirtest"
@@ -198,6 +199,44 @@ profiles:
 	}
 	if len(refs) != 1 {
 		t.Fatalf("CredentialRefs = %#v, want only git credential for subscription auth", refs)
+	}
+}
+
+func TestValidateRejectsInvalidPiCombinations(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Profile)
+	}{
+		{name: "api key auth", mutate: func(profile *Profile) {
+			profile.LLM.Auth = LLMAuthAPIKey
+			profile.LLM.CredentialRef = "codereview/pi-llm"
+		}},
+		{name: "claude cli adapter", mutate: func(profile *Profile) {
+			profile.LLM.Adapter = LLMAdapterClaudeCLI
+		}},
+		{name: "anthropic api adapter", mutate: func(profile *Profile) {
+			profile.LLM.Adapter = LLMAdapterAnthropicAPI
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			profile := cfg.Profiles["home"]
+			profile.LLM.Provider = LLMProviderPi
+			profile.LLM.Auth = LLMAuthSubscription
+			profile.LLM.Adapter = LLMAdapterPiRPC
+			profile.LLM.CredentialRef = ""
+			tt.mutate(&profile)
+			cfg.Profiles["home"] = profile
+			err := Validate(cfg)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Validate error = %v, want ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), "provider pi requires auth subscription and adapter pi_rpc") {
+				t.Fatalf("Validate error = %v, want Pi compatibility guidance", err)
+			}
+		})
 	}
 }
 

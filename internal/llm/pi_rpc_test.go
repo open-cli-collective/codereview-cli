@@ -53,6 +53,9 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	if response.Usage.CacheRead == nil || *response.Usage.CacheRead != 5 {
 		t.Fatalf("Usage = %#v, want cache_read", response.Usage)
 	}
+	if response.Usage.CacheCreate == nil || *response.Usage.CacheCreate != 7 {
+		t.Fatalf("Usage = %#v, want cache_create from cacheWrite", response.Usage)
+	}
 	if response.Usage.CostUSD == nil || *response.Usage.CostUSD != 0.00392005 {
 		t.Fatalf("Usage = %#v, want cost_usd", response.Usage)
 	}
@@ -189,6 +192,24 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 			t.Fatalf("Wait error = %v, want missing agent_end", err)
 		}
 	})
+
+	t.Run("non-zero exit after agent_end fails stream", func(t *testing.T) {
+		recordPath := filepath.Join(t.TempDir(), "record.json")
+		adapter := NewPiRPCAdapter(PiRPCOptions{
+			Command:           os.Args[0],
+			commandArgsPrefix: piRPCHelperPrefix(),
+			Env:               piRPCHelperEnv("agent-end-exit-failure", recordPath),
+			Timeout:           5 * time.Second,
+		})
+		stream, err := adapter.Start(context.Background(), Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		_, err = stream.Wait(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "exit status 42") {
+			t.Fatalf("Wait error = %v, want non-zero exit status", err)
+		}
+	})
 }
 
 func TestPiRPCRejectsUnsafeSpecs(t *testing.T) {
@@ -254,7 +275,7 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		fmt.Println(`{"type":"agent_start","sessionId":"session-1"}`)
 		fmt.Println(`{"type":"message_end","message":{"role":"user","content":"review this diff"}}`)
-		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","text":"ignored"},{"type":"text","text":"{\"ok\":true}"}],"usage":{"tokensIn":3915,"tokensOut":50,"cacheRead":5,"cost":{"total":0.00392005}}}}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","text":"ignored"},{"type":"text","text":"{\"ok\":true}"}],"usage":{"tokensIn":3915,"tokensOut":50,"cacheRead":5,"cacheWrite":7,"cost":{"total":0.00392005}}}}`)
 		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
 	case "prompt-failure":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":false,"error":"No API key found for opencode-go"}`)
@@ -269,6 +290,11 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 	case "no-agent-end":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+	case "agent-end-exit-failure":
+		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+		os.Exit(42)
 	case "spawn-child-tool":
 		child := exec.Command(os.Args[0], "-test.run=TestPiRPCProcessGroupCleanup", "--") // #nosec G204,G702 -- helper launches the current test binary.
 		child.Env = append(os.Environ(), "LLM_PI_RPC_CHILD=1")

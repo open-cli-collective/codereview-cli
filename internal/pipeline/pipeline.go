@@ -939,6 +939,15 @@ func selectionOutputContract(agents []agents.Agent, patches []FilePatch, threads
 	for _, thread := range threads {
 		threadIDs = append(threadIDs, string(thread.ID))
 	}
+	example := map[string]any{
+		"schema_version":  1,
+		"selected_agents": selectionExampleAgents(agentIDs, changedFiles),
+		"thread_actions":  []map[string]any{},
+		"reasoning":       "Selected the relevant reviewers for the changed files.",
+	}
+	if len(agentIDs) == 0 {
+		example["reasoning"] = "No reviewer agents are available."
+	}
 	return outputContract{
 		Instructions: []string{
 			"Return exactly one raw JSON object. Do not wrap it in Markdown fences.",
@@ -961,17 +970,19 @@ func selectionOutputContract(agents []agents.Agent, patches []FilePatch, threads
 			"known_thread_ids":  threadIDs,
 			"thread_decisions":  []string{"skip", "summarize_only", "summarize_and_resolve"},
 		},
-		Example: map[string]any{
-			"schema_version": 1,
-			"selected_agents": []map[string]any{{
-				"agent_id":  firstOrPlaceholder(agentIDs, "category:agent-name"),
-				"rationale": "This agent applies to the changed files.",
-				"files":     firstNOrPlaceholder(changedFiles, "path/to/changed-file.ext", 1),
-			}},
-			"thread_actions": []map[string]any{},
-			"reasoning":      "Selected the relevant reviewers for the changed files.",
-		},
+		Example: example,
 	}
+}
+
+func selectionExampleAgents(agentIDs []string, changedFiles []string) []map[string]any {
+	if len(agentIDs) == 0 {
+		return []map[string]any{}
+	}
+	return []map[string]any{{
+		"agent_id":  agentIDs[0],
+		"rationale": "This agent applies to the changed files.",
+		"files":     firstNOrPlaceholder(changedFiles, "path/to/changed-file.ext", 1),
+	}}
 }
 
 func findingsOutputContract(agentID string, changedFiles []string) outputContract {
