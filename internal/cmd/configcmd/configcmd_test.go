@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -89,6 +90,24 @@ func TestConfigShowJSON(t *testing.T) {
 	if len(got.CredentialRefs) != 3 {
 		t.Fatalf("credential_refs len = %d, want 3", len(got.CredentialRefs))
 	}
+	wantKeys := map[string]string{
+		"git":                  credentials.GitTokenKey,
+		"reviewer_credentials": credentials.GitTokenKey,
+		"llm":                  credentials.AnthropicAPIKeyKey,
+	}
+	for _, ref := range got.CredentialRefs {
+		wantKey, ok := wantKeys[ref.Purpose]
+		if !ok {
+			t.Fatalf("unexpected credential purpose %q in %#v", ref.Purpose, got.CredentialRefs)
+		}
+		if len(ref.Keys) != 1 || ref.Keys[0].Key != wantKey {
+			t.Fatalf("credential keys for %s = %#v, want %s", ref.Purpose, ref.Keys, wantKey)
+		}
+		delete(wantKeys, ref.Purpose)
+	}
+	if len(wantKeys) != 0 {
+		t.Fatalf("missing credential purposes: %#v", wantKeys)
+	}
 }
 
 func TestConfigShowReportsUnknownPresenceWhenKeyringCannotBeQueried(t *testing.T) {
@@ -116,6 +135,38 @@ func TestConfigShowReportsUnknownPresenceWhenKeyringCannotBeQueried(t *testing.T
 	if key.Status != "unknown" || key.Present != nil || key.Error == "" {
 		t.Fatalf("key status = %#v, want unknown with error and no present bool", key)
 	}
+}
+
+func TestConfigShowOpenAIAPIKeyStatus(t *testing.T) {
+	cfg := fileBackendConfig(t)
+	work := cfg.Profiles["work"]
+	work.LLM.Provider = config.LLMProviderOpenAI
+	work.LLM.Adapter = config.LLMAdapterOpenAIAPI
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	seedFileBackend(t, "work-llm", map[string]string{credentials.OpenAIAPIKeyKey: "openai-token"})
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "show", "--profile", "work", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigShow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "openai-token") {
+		t.Fatalf("config show leaked API key: %q", out.String())
+	}
+	for _, ref := range got.CredentialRefs {
+		if ref.Purpose != "llm" {
+			continue
+		}
+		if len(ref.Keys) != 1 || ref.Keys[0].Key != credentials.OpenAIAPIKeyKey || ref.Keys[0].Present == nil || !*ref.Keys[0].Present {
+			t.Fatalf("OpenAI LLM key status = %#v, want present %s", ref.Keys, credentials.OpenAIAPIKeyKey)
+		}
+		return
+	}
+	t.Fatalf("credential refs = %#v, want llm ref", got.CredentialRefs)
 }
 
 func TestRootJSONFlagStillDeferred(t *testing.T) {
@@ -203,7 +254,7 @@ func TestConfigClearDefaultClearsActiveProfileOnlyAndPreservesData(t *testing.T)
 	dataFile := writeDataSentinel(t)
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
-	seedFileBackend(t, "work-llm", map[string]string{credentials.LLMAPIKeyKey: "llm-token"})
+	seedFileBackend(t, "work-llm", map[string]string{credentials.AnthropicAPIKeyKey: "llm-token"})
 	cmd, out := newTestCommand(path)
 
 	if err := root.Execute(cmd, []string{"config", "clear", "--json"}); err != nil {
@@ -218,7 +269,7 @@ func TestConfigClearDefaultClearsActiveProfileOnlyAndPreservesData(t *testing.T)
 	}
 	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
 	assertFileBackendPresent(t, "work", credentials.GitTokenKey)
-	assertFileBackendPresent(t, "work-llm", credentials.LLMAPIKeyKey)
+	assertFileBackendKeys(t, "work-llm", []string{credentials.AnthropicAPIKeyKey})
 	// #nosec G304,G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
 	if got, err := os.ReadFile(dataFile); err != nil || string(got) != "keep" {
 		t.Fatalf("data sentinel = (%q,%v), want kept", got, err)
@@ -242,7 +293,7 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
 	seedFileBackend(t, "work-reviewer", map[string]string{credentials.GitTokenKey: "reviewer-token"})
-	seedFileBackend(t, "work-llm", map[string]string{credentials.LLMAPIKeyKey: "llm-token"})
+	seedFileBackend(t, "work-llm", map[string]string{credentials.AnthropicAPIKeyKey: "llm-token"})
 	cmd, out := newTestCommand(path)
 
 	if err := root.Execute(cmd, []string{"config", "clear", "--all", "--json"}); err != nil {
@@ -272,7 +323,7 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 	assertFileBackendPresent(t, "beta", credentials.GitTokenKey)
 	assertFileBackendPresent(t, "work", credentials.GitTokenKey)
 	assertFileBackendPresent(t, "work-reviewer", credentials.GitTokenKey)
-	assertFileBackendPresent(t, "work-llm", credentials.LLMAPIKeyKey)
+	assertFileBackendKeys(t, "work-llm", []string{credentials.AnthropicAPIKeyKey})
 	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
 		t.Fatalf("cache sentinel stat err = %v, want removed", err)
 	}
@@ -316,7 +367,7 @@ func TestConfigClearProfileAllClearsOnlySelectedProfile(t *testing.T) {
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
 	seedFileBackend(t, "work-reviewer", map[string]string{credentials.GitTokenKey: "reviewer-token"})
-	seedFileBackend(t, "work-llm", map[string]string{credentials.LLMAPIKeyKey: "llm-token"})
+	seedFileBackend(t, "work-llm", map[string]string{credentials.AnthropicAPIKeyKey: "llm-token"})
 	cmd, out := newTestCommand(path)
 
 	if err := root.Execute(cmd, []string{"--profile", "work", "config", "clear", "--all", "--json"}); err != nil {
@@ -338,7 +389,7 @@ func TestConfigClearProfileAllClearsOnlySelectedProfile(t *testing.T) {
 	assertFileBackendPresent(t, "home", credentials.GitTokenKey)
 	assertFileBackendMissing(t, "work", credentials.GitTokenKey)
 	assertFileBackendMissing(t, "work-reviewer", credentials.GitTokenKey)
-	assertFileBackendMissing(t, "work-llm", credentials.LLMAPIKeyKey)
+	assertFileBackendMissing(t, "work-llm", credentials.AnthropicAPIKeyKey)
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load remaining config: %v", err)
@@ -659,6 +710,25 @@ func assertFileBackendMissing(t *testing.T, profile, key string) {
 	t.Helper()
 	if fileBackendExists(t, profile, key) {
 		t.Fatalf("file backend %s/%s present, want missing", profile, key)
+	}
+}
+
+func assertFileBackendKeys(t *testing.T, profile string, want []string) {
+	t.Helper()
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendFile,
+	})
+	if err != nil {
+		t.Fatalf("Open file backend: %v", err)
+	}
+	defer store.Close()
+	got, err := store.ListBundle(profile)
+	if err != nil {
+		t.Fatalf("ListBundle(%s): %v", profile, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListBundle(%s) = %#v, want %#v", profile, got, want)
 	}
 }
 

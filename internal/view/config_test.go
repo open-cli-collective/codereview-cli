@@ -14,7 +14,7 @@ func TestRenderConfigTextStoredCredentialRefs(t *testing.T) {
 	show := NewConfigShow("work", workProfile(), dataConfig(), []CredentialStatus{
 		credentialStatus("git", "codereview/work", "pat", "git_token", true),
 		credentialStatus("reviewer_credentials", "codereview/work-reviewer", "pat", "git_token", false),
-		credentialStatus("llm", "codereview/work-llm", "api_key", "llm_api_key", true),
+		credentialStatus("llm", "codereview/work-llm", "api_key", "anthropic_api_key", true),
 	})
 
 	if err := RenderConfigText(&out, show); err != nil {
@@ -27,7 +27,7 @@ func TestRenderConfigTextStoredCredentialRefs(t *testing.T) {
 		"Credential ref: codereview/work-reviewer",
 		"Credential ref: codereview/work-llm",
 		"git_token: present",
-		"llm_api_key: present",
+		"anthropic_api_key: present",
 		"Allow self approve: true",
 		"Resolve threads: never",
 		"Max age days: 90",
@@ -56,6 +56,27 @@ func TestRenderConfigTextSubscriptionCredentialIsAdapterManaged(t *testing.T) {
 	}
 	if !strings.Contains(got, "Credential ref: adapter-managed; not stored by cr") {
 		t.Fatalf("text output missing adapter-managed credential note:\n%s", got)
+	}
+}
+
+func TestRenderConfigTextOpenAIAPIKeyStatus(t *testing.T) {
+	var out bytes.Buffer
+	profile := workProfile()
+	profile.LLM.Provider = config.LLMProviderOpenAI
+	profile.LLM.Adapter = config.LLMAdapterOpenAIAPI
+	show := NewConfigShow("work", profile, dataConfig(), []CredentialStatus{
+		credentialStatus("llm", "codereview/work-llm", "api_key", "openai_api_key", true),
+	})
+
+	if err := RenderConfigText(&out, show); err != nil {
+		t.Fatalf("RenderConfigText: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "openai_api_key: present") {
+		t.Fatalf("text output missing OpenAI key status:\n%s", got)
+	}
+	if strings.Contains(got, "anthropic_api_key") {
+		t.Fatalf("text output used Anthropic key for OpenAI profile:\n%s", got)
 	}
 }
 

@@ -215,7 +215,7 @@ func TestCredentialRefs(t *testing.T) {
 	want := []CredentialRef{
 		{Purpose: "git", Ref: "codereview/work", Mode: "pat"},
 		{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "pat"},
-		{Purpose: "llm", Ref: "codereview/work-llm", Mode: "api_key"},
+		{Purpose: "llm", Ref: "codereview/work-llm", Mode: "api_key", Provider: "anthropic"},
 	}
 	if !reflect.DeepEqual(refs, want) {
 		t.Fatalf("CredentialRefs = %#v, want %#v", refs, want)
@@ -338,6 +338,16 @@ func TestValidateRejectsInvalidCredentialRefs(t *testing.T) {
 		{name: "reviewer credential ref matches git credential ref", mutate: func(cfg *File) {
 			profile := cfg.Profiles["work"]
 			profile.ReviewerCredentials.CredentialRef = profile.Git.CredentialRef
+			cfg.Profiles["work"] = profile
+		}},
+		{name: "llm credential ref matches git credential ref", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.LLM.CredentialRef = profile.Git.CredentialRef
+			cfg.Profiles["work"] = profile
+		}},
+		{name: "llm credential ref matches reviewer credential ref", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.LLM.CredentialRef = profile.ReviewerCredentials.CredentialRef
 			cfg.Profiles["work"] = profile
 		}},
 		{name: "git ref invalid chars", mutate: func(cfg *File) {
