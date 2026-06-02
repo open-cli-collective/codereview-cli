@@ -317,17 +317,24 @@ For each declared credential ref, it reports whether expected keys are present.
 cr config clear [--all] [--json]
 ```
 
-Deletes stored credentials declared by config.
+Deletes stored credentials declared by the active profile.
 
 Flags:
 
 | Flag | Semantics |
 |------|-----------|
-| `--all` | Clear every credential ref declared by every profile. Without it, clear only the active profile. |
+| `--all` | Also remove the active profile from `config.yml` and clear the disposable cache root. Inactive profiles and durable data are not touched. |
 | `--json` | Emit a JSON result. |
 
-This removes secret keyring entries only. It does not delete `config.yml`.
-`--all` cannot be combined with `--profile`.
+Without `--all`, this removes secret keyring entries only and leaves
+`config.yml` intact. With `--all`, `--profile <name>` selects the profile to
+reset; otherwise the default profile is reset. If other profiles remain after a
+profile reset, the default profile is updated deterministically to the first
+remaining profile name when needed. If the last profile is reset, `config.yml`
+is removed.
+
+`config clear` never touches durable review data. Use `cr data purge` for the
+data pillar.
 
 ### `cr me`
 

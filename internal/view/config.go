@@ -192,15 +192,26 @@ func RenderConfigJSON(w io.Writer, show ConfigShow) error {
 
 // ConfigClear is the presentation model for `cr config clear`.
 type ConfigClear struct {
-	Backend       string                 `json:"backend"`
-	BackendSource string                 `json:"backend_source"`
-	Cleared       []ClearedCredentialRef `json:"cleared"`
+	Backend              string                 `json:"backend"`
+	BackendSource        string                 `json:"backend_source"`
+	Cleared              []ClearedCredentialRef `json:"cleared"`
+	ConfigProfileRemoved string                 `json:"config_profile_removed,omitempty"`
+	DefaultProfile       string                 `json:"default_profile,omitempty"`
+	ConfigPathRemoved    string                 `json:"config_path_removed,omitempty"`
+	Cache                *CacheClear            `json:"cache,omitempty"`
 }
 
 // ClearedCredentialRef describes the keys removed from one credential ref.
 type ClearedCredentialRef struct {
 	Ref  string   `json:"ref"`
 	Keys []string `json:"keys"`
+}
+
+// CacheClear describes cache cleanup performed by `config clear --all`.
+type CacheClear struct {
+	Path   string `json:"path,omitempty"`
+	Status string `json:"status,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // RenderConfigClearText writes a stable human-readable clear summary.
@@ -217,6 +228,36 @@ func RenderConfigClearText(w io.Writer, result ConfigClear) error {
 	for _, cleared := range result.Cleared {
 		if _, err := fmt.Fprintf(w, "  - %s: %d key(s)\n", cleared.Ref, len(cleared.Keys)); err != nil {
 			return err
+		}
+	}
+	if result.ConfigProfileRemoved != "" {
+		if err := writeKV(w, "Config profile removed", result.ConfigProfileRemoved); err != nil {
+			return err
+		}
+	}
+	if result.DefaultProfile != "" {
+		if err := writeKV(w, "Default profile", result.DefaultProfile); err != nil {
+			return err
+		}
+	}
+	if result.ConfigPathRemoved != "" {
+		if err := writeKV(w, "Config path removed", result.ConfigPathRemoved); err != nil {
+			return err
+		}
+	}
+	if result.Cache != nil {
+		if result.Cache.Path != "" {
+			if err := writeKV(w, "Cache path", result.Cache.Path); err != nil {
+				return err
+			}
+		}
+		if result.Cache.Status != "" {
+			if err := writeKV(w, "Cache status", result.Cache.Status); err != nil {
+				return err
+			}
+		}
+		if result.Cache.Error != "" {
+			return writeKV(w, "Cache error", result.Cache.Error)
 		}
 	}
 	return nil

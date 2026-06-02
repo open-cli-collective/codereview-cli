@@ -2,8 +2,12 @@
 package configcmd
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -13,7 +17,18 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
+)
+
+var (
+	// Test seams. Tests that override these package-level functions must not run
+	// in parallel with other configcmd tests.
+	saveConfigFile   = config.Save
+	removeConfigFile = os.Remove
+	removeEmptyDir   = os.Remove
+	removeCacheRoot  = os.RemoveAll
+	resolveCacheRoot = statepaths.CacheRoot
 )
 
 // Register attaches config commands to rootCmd.
@@ -85,7 +100,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	var clearJSON bool
 	clearCmd := &cobra.Command{
 		Use:   "clear",
-		Short: "Clear stored credentials declared by cr configuration",
+		Short: "Clear stored credentials declared by the active profile",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				return exitcode.Usage(fmt.Errorf("config clear takes no arguments"))
@@ -93,9 +108,6 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if clearAll && opts.Profile != "" {
-				return exitcode.Usage(fmt.Errorf("config clear --all cannot be combined with --profile"))
-			}
 			path, err := configPath(opts)
 			if err != nil {
 				return exitcode.AuthConfig(err)
@@ -104,7 +116,11 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return cmderr.Config(err)
 			}
-			refs, err := refsToClear(cfg, opts.Profile, clearAll)
+			profileName, profile, err := config.ResolveProfile(cfg, opts.Profile)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			refs, err := config.CredentialRefs(profile)
 			if err != nil {
 				return cmderr.Config(err)
 			}
@@ -132,17 +148,50 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 					Keys: deleted,
 				})
 			}
+			if clearAll {
+				change, err := removeProfileFromConfig(path, cfg, profileName)
+				if err != nil {
+					return fmt.Errorf("config clear --all credentials already cleared for profile %q (%s), but config reset failed: %w", profileName, credentialRefList(profiles), err)
+				}
+				result.ConfigProfileRemoved = change.profileRemoved
+				result.DefaultProfile = change.defaultProfile
+				result.ConfigPathRemoved = change.configPathRemoved
+
+				cache, err := clearCacheRoot()
+				result.Cache = &cache
+				if err != nil {
+					cachePath := cache.Path
+					if cachePath == "" {
+						cachePath = "cache root"
+					}
+					cacheErr := fmt.Errorf("config clear --all cleared profile %q but cache cleanup failed for %s: %w", profileName, cachePath, err)
+					if clearJSON {
+						if renderErr := view.RenderConfigClearJSON(opts.Stdout, result); renderErr != nil {
+							return renderErr
+						}
+					} else if renderErr := view.RenderConfigClearText(opts.Stdout, result); renderErr != nil {
+						return renderErr
+					}
+					return cacheErr
+				}
+			}
 			if clearJSON {
 				return view.RenderConfigClearJSON(opts.Stdout, result)
 			}
 			return view.RenderConfigClearText(opts.Stdout, result)
 		},
 	}
-	clearCmd.Flags().BoolVar(&clearAll, "all", false, "Clear every credential ref declared by every profile")
+	clearCmd.Flags().BoolVar(&clearAll, "all", false, "Also remove the active profile from config and clear disposable cache")
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
 
 	configCmd.AddCommand(showCmd, clearCmd)
 	rootCmd.AddCommand(configCmd)
+}
+
+type configClearChange struct {
+	profileRemoved    string
+	defaultProfile    string
+	configPathRemoved string
 }
 
 func configPath(opts *root.Options) (string, error) {
@@ -197,29 +246,72 @@ func keyStatus(key string, present bool, err error) view.KeyStatus {
 	return view.KeyStatus{Key: key, Present: &present, Status: status}
 }
 
-func refsToClear(cfg config.File, profileName string, all bool) ([]config.CredentialRef, error) {
-	if !all {
-		_, profile, err := config.ResolveProfile(cfg, profileName)
-		if err != nil {
-			return nil, err
-		}
-		return config.CredentialRefs(profile)
+func removeProfileFromConfig(path string, cfg config.File, profileName string) (configClearChange, error) {
+	if _, ok := cfg.Profiles[profileName]; !ok {
+		return configClearChange{}, fmt.Errorf("%w: %s", config.ErrProfileNotFound, profileName)
 	}
-	names := make([]string, 0, len(cfg.Profiles))
-	for name := range cfg.Profiles {
+	change := configClearChange{profileRemoved: profileName}
+	delete(cfg.Profiles, profileName)
+	if len(cfg.Profiles) == 0 {
+		if err := removeConfigFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return configClearChange{}, err
+		}
+		removeEmptyConfigDir(filepath.Dir(path))
+		change.configPathRemoved = path
+		return change, nil
+	}
+	if cfg.DefaultProfile == profileName {
+		cfg.DefaultProfile = firstProfileName(cfg.Profiles)
+		change.defaultProfile = cfg.DefaultProfile
+	}
+	if err := saveConfigFile(path, cfg); err != nil {
+		return configClearChange{}, err
+	}
+	return change, nil
+}
+
+func firstProfileName(profiles map[string]config.Profile) string {
+	if len(profiles) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	var refs []config.CredentialRef
-	for _, name := range names {
-		profile := cfg.Profiles[name]
-		profileRefs, err := config.CredentialRefs(profile)
-		if err != nil {
-			return nil, err
-		}
-		refs = append(refs, profileRefs...)
+	return names[0]
+}
+
+func removeEmptyConfigDir(dir string) {
+	if filepath.Base(dir) != statepaths.AppDir {
+		return
 	}
-	return refs, nil
+	if err := removeEmptyDir(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+}
+
+func clearCacheRoot() (view.CacheClear, error) {
+	path, err := resolveCacheRoot()
+	if err != nil {
+		return view.CacheClear{Status: "error", Error: err.Error()}, err
+	}
+	cache := view.CacheClear{Path: path}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		cache.Status = "missing"
+		return cache, nil
+	} else if err != nil {
+		cache.Status = "error"
+		cache.Error = err.Error()
+		return cache, err
+	}
+	if err := removeCacheRoot(path); err != nil {
+		cache.Status = "error"
+		cache.Error = err.Error()
+		return cache, err
+	}
+	cache.Status = "removed"
+	return cache, nil
 }
 
 func distinctCredentialProfiles(refs []config.CredentialRef) ([]credentials.Ref, error) {
@@ -241,4 +333,12 @@ func distinctCredentialProfiles(refs []config.CredentialRef) ([]credentials.Ref,
 		out = append(out, seen[ref])
 	}
 	return out, nil
+}
+
+func credentialRefList(refs []credentials.Ref) string {
+	names := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		names = append(names, ref.Full)
+	}
+	return strings.Join(names, ", ")
 }
