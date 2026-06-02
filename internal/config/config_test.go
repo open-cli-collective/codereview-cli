@@ -300,6 +300,16 @@ func TestSaveRejectsReservedGitAuthModes(t *testing.T) {
 			profile.Git.AuthMode = GitAuthModeOAuthDevice
 			cfg.Profiles["home"] = profile
 		}},
+		{name: "git github_app", mutate: func(cfg *File) {
+			profile := cfg.Profiles["home"]
+			profile.Git.AuthMode = GitAuthModeGitHubApp
+			cfg.Profiles["home"] = profile
+		}},
+		{name: "reviewer oauth_device", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.ReviewerCredentials.AuthMode = GitAuthModeOAuthDevice
+			cfg.Profiles["work"] = profile
+		}},
 		{name: "reviewer github_app", mutate: func(cfg *File) {
 			profile := cfg.Profiles["work"]
 			profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
@@ -328,6 +338,7 @@ func TestLoadRejectsReservedGitAuthModes(t *testing.T) {
 		body string
 	}{
 		{name: "git oauth_device", body: `default_profile: home
+keyring: {}
 profiles:
   home:
     git:
@@ -340,6 +351,7 @@ profiles:
       adapter: claude_cli
 `},
 		{name: "reviewer github_app", body: `default_profile: work
+keyring: {}
 profiles:
   work:
     git:

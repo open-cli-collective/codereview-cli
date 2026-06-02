@@ -202,7 +202,7 @@ profiles:
 				"--from-env", "CR_FUTURE_TOKEN",
 			},
 			stdin:     strings.NewReader(""),
-			mustAvoid: "CR_FUTURE_TOKEN",
+			mustAvoid: "empty secret",
 		},
 	}
 	for _, tt := range tests {
