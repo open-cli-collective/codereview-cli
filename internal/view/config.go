@@ -244,11 +244,11 @@ func RenderConfigClearText(w io.Writer, result ConfigClear) error {
 			return err
 		}
 	}
-	credentialHeading := "Cleared credentials:"
+	heading := "Cleared credentials:"
 	if result.DryRun {
-		credentialHeading = "Credential targets:"
+		heading = "Credential targets:"
 	}
-	if _, err := fmt.Fprintln(w, credentialHeading); err != nil {
+	if _, err := fmt.Fprintln(w, heading); err != nil {
 		return err
 	}
 	for _, cleared := range result.Cleared {

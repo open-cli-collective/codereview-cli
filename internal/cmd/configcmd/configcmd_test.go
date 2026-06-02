@@ -329,6 +329,7 @@ func TestConfigClearDefaultClearsActiveProfileOnlyAndPreservesData(t *testing.T)
 
 func TestConfigClearDryRunReportsActiveProfileAndPreservesState(t *testing.T) {
 	path := saveTestConfig(t, fileBackendConfig(t))
+	// #nosec G304 -- test path is controlled by t.TempDir via saveTestConfig.
 	beforeConfig, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile config before dry-run: %v", err)
@@ -356,6 +357,7 @@ func TestConfigClearDryRunReportsActiveProfileAndPreservesState(t *testing.T) {
 	}
 	assertFileBackendPresent(t, "home", credentials.GitTokenKey)
 	assertFileBackendPresent(t, "work", credentials.GitTokenKey)
+	// #nosec G304 -- test path is controlled by t.TempDir via saveTestConfig.
 	afterConfig, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile config after dry-run: %v", err)
@@ -510,6 +512,7 @@ func TestConfigClearAllDryRunReportsProfileCacheAndPreservesState(t *testing.T) 
 	cfg := fileBackendConfig(t)
 	cfg.DefaultProfile = "work"
 	path := saveTestConfig(t, cfg)
+	// #nosec G304 -- test path is controlled by t.TempDir via saveTestConfig.
 	beforeConfig, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile config before dry-run: %v", err)
@@ -564,6 +567,7 @@ func TestConfigClearAllDryRunReportsProfileCacheAndPreservesState(t *testing.T) 
 	assertFileBackendPresent(t, "work", credentials.GitTokenKey)
 	assertFileBackendPresent(t, "work-reviewer", credentials.GitTokenKey)
 	assertFileBackendKeys(t, "work-llm", []string{credentials.AnthropicAPIKeyKey})
+	// #nosec G304 -- test path is controlled by t.TempDir via saveTestConfig.
 	afterConfig, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile config after dry-run: %v", err)
