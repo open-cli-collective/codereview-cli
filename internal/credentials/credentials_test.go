@@ -208,9 +208,6 @@ func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.
 			},
 		},
 	}
-	if err := config.Validate(cfg); err != nil {
-		t.Fatalf("Validate config: %v", err)
-	}
 
 	if err := ValidateAllowedKeyForConfig(cfg, "codereview/work-llm", AnthropicAPIKeyKey); err != nil {
 		t.Fatalf("ValidateAllowedKeyForConfig matching supported ref: %v", err)

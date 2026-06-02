@@ -276,11 +276,19 @@ profiles:
 }
 
 func TestConfigShowReservedAuthModeExitCode(t *testing.T) {
-	cfg := testConfig()
-	profile := cfg.Profiles["home"]
-	profile.Git.AuthMode = config.GitAuthModeOAuthDevice
-	cfg.Profiles["home"] = profile
-	path := saveTestConfig(t, cfg)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawConfig(t, path, `default_profile: home
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: oauth_device
+      credential_ref: codereview/home
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`)
 	cmd, _ := newTestCommand(path)
 
 	err := root.Execute(cmd, []string{"config", "show"})

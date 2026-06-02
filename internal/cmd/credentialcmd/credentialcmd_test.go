@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -106,8 +107,7 @@ func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
 		DefaultProfile: "work",
 		Keyring:        config.KeyringConfig{Backend: "file"},
 		Profiles: map[string]config.Profile{
-			"work":   apiKeyProfile("work", config.LLMProviderAnthropic),
-			"future": futureGitAuthProfile("future"),
+			"work": apiKeyProfile("work", config.LLMProviderAnthropic),
 		},
 	})
 
@@ -153,23 +153,72 @@ func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
 	}
 	assertFileBundleKeys(t, "work-llm", []string{credentials.AnthropicAPIKeyKey})
 	assertStored(t, "work-llm", credentials.AnthropicAPIKeyKey, "anthropic-token")
+}
 
-	cmd, _, _ = newTestCommand(path, failReader{})
-	err = root.Execute(cmd, []string{
-		"--backend", "file",
-		"set-credential",
-		"--ref", "codereview/future",
-		"--key", credentials.GitTokenKey,
-		"--stdin",
-	})
-	if !errors.Is(err, config.ErrUnsupported) {
-		t.Fatalf("future auth error = %v, want ErrUnsupported", err)
+func TestSetCredentialRejectsUnsupportedConfigBeforeIngress(t *testing.T) {
+	hermeticFileBackend(t)
+	t.Setenv("CR_FUTURE_TOKEN", "")
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, `default_profile: future
+keyring:
+  backend: file
+profiles:
+  future:
+    git:
+      host: github.com
+      auth_mode: oauth_device
+      credential_ref: codereview/future
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`)
+
+	tests := []struct {
+		name      string
+		args      []string
+		stdin     io.Reader
+		mustAvoid string
+	}{
+		{
+			name: "stdin",
+			args: []string{
+				"--backend", "file",
+				"set-credential",
+				"--ref", "codereview/future",
+				"--key", credentials.GitTokenKey,
+				"--stdin",
+			},
+			stdin:     failReader{},
+			mustAvoid: "secret ingress was read",
+		},
+		{
+			name: "from-env",
+			args: []string{
+				"--backend", "file",
+				"set-credential",
+				"--ref", "codereview/future",
+				"--key", credentials.GitTokenKey,
+				"--from-env", "CR_FUTURE_TOKEN",
+			},
+			stdin:     strings.NewReader(""),
+			mustAvoid: "empty secret",
+		},
 	}
-	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
-		t.Fatalf("future auth exit code = %d, want %d; err=%v", got, exitcode.AuthConfigError, err)
-	}
-	if strings.Contains(err.Error(), "secret ingress was read") {
-		t.Fatalf("set-credential read secret ingress before rejecting future auth ref: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, _, _ := newTestCommand(path, tt.stdin)
+			err := root.Execute(cmd, tt.args)
+			if !errors.Is(err, config.ErrUnsupported) {
+				t.Fatalf("future auth error = %v, want ErrUnsupported", err)
+			}
+			if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+				t.Fatalf("future auth exit code = %d, want %d; err=%v", got, exitcode.AuthConfigError, err)
+			}
+			if strings.Contains(err.Error(), tt.mustAvoid) {
+				t.Fatalf("set-credential read secret ingress before rejecting future auth ref: %v", err)
+			}
+		})
 	}
 }
 
@@ -798,15 +847,19 @@ func apiKeyProfile(profile string, provider config.LLMProvider) config.Profile {
 	return p
 }
 
-func futureGitAuthProfile(profile string) config.Profile {
-	p := basicProfile(profile)
-	p.Git.AuthMode = config.GitAuthModeOAuthDevice
-	return p
-}
-
 func saveCredentialTestConfig(t *testing.T, path string, cfg config.File) {
 	t.Helper()
 	if err := config.Save(path, cfg); err != nil {
 		t.Fatalf("Save config: %v", err)
+	}
+}
+
+func writeRawCredentialTestConfig(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll config dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
 	}
 }

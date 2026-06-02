@@ -119,6 +119,15 @@ target user's credential store. The staging commands must run as the target OS
 user who will run `cr`, not as root, SYSTEM, or an administrator account whose
 keyring is different from the target user's keyring.
 
+`reviewer_credentials` is PAT-only in v1. It posts through the GitHub account
+that owns the staged reviewer PAT, so a shared reviewer or bot PAT is an access
+secret even when it is distributed org-wide. Pre-stage it into each target
+user's credential store, rotate or revoke it with the same
+`set-credential --overwrite` flow, and do not store it in config files, agent
+sources, installers, logs, or shell profiles. GitHub App reviewer credentials
+are tracked in [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76)
+for org-controlled reviewer identity and installation-scoped auth.
+
 Either omit `keyring.backend` to use the platform default, or set it
 per-platform and run `set-credential` with the same backend selection.
 
@@ -252,7 +261,7 @@ Supported values:
 
 | Field | Values |
 |-------|--------|
-| `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are recognized by the config schema but not implemented; validation rejects them in v1. |
+| `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are recognized by the config schema but not implemented; validation rejects them in v1. GitHub App support is tracked in [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76). |
 | `llm.provider` | `anthropic`, `openai` |
 | `llm.auth` | `subscription`, `api_key` |
 | `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api` are usable for review. `codex_cli` is recognized by the config schema but rejected by `cr review` until no-tools mode is explicit. |
@@ -270,7 +279,7 @@ Credential key matrix:
 |---------------|---------|---------------|---------------|---------------|-------------|
 | `git.credential_ref` | User Git host auth | `pat` | `git_token` | None | Supported |
 | `reviewer_credentials.credential_ref` | Reviewer Git host auth | `pat` | `git_token` | None | Supported; must use a distinct ref from `git.credential_ref` in the same profile |
-| `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `github_app` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_app_private_key` |
+| `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `github_app` | None | None | Reserved for [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76); config recognizes the mode but v1 rejects it and does not accept future keys such as `git_app_private_key` |
 | `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
 | `llm.credential_ref` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
 | `llm.credential_ref` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
