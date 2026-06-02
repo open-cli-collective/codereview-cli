@@ -242,13 +242,15 @@ type auditHarness struct {
 	gitSecret      string
 	reviewerSecret string
 	llmSecret      string
+	keyringSecret  string
 	secrets        []string
 }
 
 func newAuditHarness(t *testing.T) *auditHarness {
 	t.Helper()
 	rootDir := statedirtest.Hermetic(t)
-	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "noleak-file-keyring-passphrase")
+	keyringSecret := "noleak-file-keyring-passphrase" // #nosec G101 -- distinctive test canary, not a real passphrase.
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", keyringSecret)
 
 	configPath, err := config.Path()
 	if err != nil {
@@ -278,8 +280,9 @@ func newAuditHarness(t *testing.T) *auditHarness {
 		gitSecret:      "cr-noleak-git-token-0001",
 		reviewerSecret: "cr-noleak-reviewer-token-0002",
 		llmSecret:      "cr-noleak-llm-key-0003",
+		keyringSecret:  keyringSecret,
 	}
-	h.secrets = []string{h.gitSecret, h.reviewerSecret, h.llmSecret}
+	h.secrets = []string{h.gitSecret, h.reviewerSecret, h.llmSecret, h.keyringSecret}
 	writeAgent(t, h.agentDir, "harness", "reviewer", "No-leak harness reviewer.", "Review changed Go files without mentioning credentials.\n")
 	return h
 }
@@ -529,7 +532,7 @@ func (h *auditHarness) assertNoLeaks(t *testing.T, label string, data []byte) {
 
 func (h *auditHarness) assertOwnedFilesDoNotLeak(t *testing.T) {
 	t.Helper()
-	for _, rootDir := range []string{h.configRoot, h.layout.DataRoot} {
+	for _, rootDir := range []string{h.configRoot, h.layout.DataRoot, h.layout.CacheRoot} {
 		if _, err := os.Stat(rootDir); errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
@@ -545,7 +548,10 @@ func (h *auditHarness) assertOwnedFilesDoNotLeak(t *testing.T) {
 				}
 				return nil
 			}
-			if entry.IsDir() || !isScannedTextArtifact(path) {
+			if entry.IsDir() {
+				return nil
+			}
+			if !isScannedTextArtifact(path) && !isScannedRawArtifact(path) {
 				return nil
 			}
 			data, err := os.ReadFile(path) // #nosec G304,G122 -- paths are under hermetic test-owned roots and symlink entries are skipped.
@@ -572,16 +578,10 @@ func shouldSkipOwnedPath(path string, entry os.DirEntry) bool {
 	if entry.Type()&os.ModeSymlink != 0 {
 		return true
 	}
-	switch {
-	case base == "ledger.db",
-		strings.HasPrefix(base, "ledger.db-"),
-		strings.HasSuffix(base, ".db"),
-		strings.Contains(base, ".db-"),
-		strings.HasSuffix(base, ".lock"):
+	if strings.HasSuffix(base, ".lock") {
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 func isScannedTextArtifact(path string) bool {
@@ -591,6 +591,14 @@ func isScannedTextArtifact(path string) bool {
 	default:
 		return false
 	}
+}
+
+func isScannedRawArtifact(path string) bool {
+	base := filepath.Base(path)
+	return base == "ledger.db" ||
+		strings.HasPrefix(base, "ledger.db-") ||
+		strings.HasSuffix(base, ".db") ||
+		strings.Contains(base, ".db-")
 }
 
 type fixedIdentityResolver struct {
