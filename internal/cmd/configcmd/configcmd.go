@@ -158,7 +158,13 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 				cache, err := clearCacheRoot()
 				result.Cache = &cache
 				if err != nil {
-					return fmt.Errorf("config clear --all cleared profile %q but cache cleanup failed for %s: %w", profileName, cache.Path, err)
+					cacheErr := fmt.Errorf("config clear --all cleared profile %q but cache cleanup failed for %s: %w", profileName, cache.Path, err)
+					if clearJSON {
+						if renderErr := view.RenderConfigClearJSON(opts.Stdout, result); renderErr != nil {
+							return renderErr
+						}
+					}
+					return cacheErr
 				}
 			}
 			if clearJSON {
@@ -266,12 +272,11 @@ func firstProfileName(profiles map[string]config.Profile) string {
 }
 
 func removeEmptyConfigDir(dir string) {
-	if err := removeEmptyDir(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if filepath.Base(dir) != statepaths.AppDir {
 		return
 	}
-	parent := filepath.Dir(dir)
-	if parent != dir {
-		_ = removeEmptyDir(parent)
+	if err := removeEmptyDir(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return
 	}
 }
 

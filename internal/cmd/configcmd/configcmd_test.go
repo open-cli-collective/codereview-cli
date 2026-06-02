@@ -321,7 +321,8 @@ func TestConfigClearAllSingleProfileRemovesConfigFileAndEmptyParent(t *testing.T
 	cfg := fileBackendConfig(t)
 	cfg.Profiles = map[string]config.Profile{"home": cfg.Profiles["home"]}
 	cfg.DefaultProfile = "home"
-	path := saveTestConfig(t, cfg)
+	configHome := t.TempDir()
+	path := saveTestConfigAt(t, filepath.Join(configHome, statepaths.AppDir, "config.yml"), cfg)
 	configDir := filepath.Dir(path)
 	cacheFile := writeCacheSentinel(t)
 	dataFile := writeDataSentinel(t)
@@ -343,7 +344,10 @@ func TestConfigClearAllSingleProfileRemovesConfigFileAndEmptyParent(t *testing.T
 		t.Fatalf("config path stat err = %v, want removed", err)
 	}
 	if _, err := os.Stat(configDir); !os.IsNotExist(err) {
-		t.Fatalf("config dir stat err = %v, want empty parent removed", err)
+		t.Fatalf("config dir stat err = %v, want owned config dir removed", err)
+	}
+	if _, err := os.Stat(configHome); err != nil {
+		t.Fatalf("config home stat err = %v, want parent directory preserved", err)
 	}
 	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
 		t.Fatalf("cache sentinel stat err = %v, want removed", err)
@@ -352,6 +356,40 @@ func TestConfigClearAllSingleProfileRemovesConfigFileAndEmptyParent(t *testing.T
 	if got, err := os.ReadFile(dataFile); err != nil || string(got) != "keep" {
 		t.Fatalf("data sentinel = (%q,%v), want kept", got, err)
 	}
+}
+
+func TestConfigClearAllJSONIncludesCacheCleanupFailure(t *testing.T) {
+	path := saveTestConfig(t, fileBackendConfig(t))
+	cacheFile := writeCacheSentinel(t)
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	cmd, out := newTestCommand(path)
+	oldRemove := removeCacheRoot
+	removeCacheRoot = func(string) error {
+		return fmt.Errorf("permission denied")
+	}
+	t.Cleanup(func() { removeCacheRoot = oldRemove })
+
+	err := root.Execute(cmd, []string{"config", "clear", "--all", "--json"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want cache cleanup failure")
+	}
+	if !strings.Contains(err.Error(), "cache cleanup failed") {
+		t.Fatalf("error = %v, want cache cleanup context", err)
+	}
+	var got view.ConfigClear
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.ConfigProfileRemoved != "home" || got.Cache == nil {
+		t.Fatalf("config clear JSON = %#v, want removed profile and cache status", got)
+	}
+	if got.Cache.Status != "error" || !strings.Contains(got.Cache.Error, "permission denied") {
+		t.Fatalf("cache = %#v, want structured error status", got.Cache)
+	}
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache sentinel stat err = %v, want cache to remain after failed removal", err)
+	}
+	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
 }
 
 func TestConfigClearAllReportsConfigMutationFailureAfterCredentialDelete(t *testing.T) {
@@ -476,7 +514,11 @@ func fileBackendExists(t *testing.T, profile, key string) bool {
 
 func saveTestConfig(t *testing.T, cfg config.File) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.yml")
+	return saveTestConfigAt(t, filepath.Join(t.TempDir(), "config.yml"), cfg)
+}
+
+func saveTestConfigAt(t *testing.T, path string, cfg config.File) string {
+	t.Helper()
 	if err := config.Save(path, cfg); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

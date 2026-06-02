@@ -118,6 +118,35 @@ func TestRenderConfigJSON(t *testing.T) {
 	}
 }
 
+func TestRenderConfigClearTextIncludesResetFields(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigClear{
+		Backend:              "file",
+		BackendSource:        "config",
+		Cleared:              []ClearedCredentialRef{{Ref: "codereview/work", Keys: []string{"git_token"}}},
+		ConfigProfileRemoved: "work",
+		DefaultProfile:       "home",
+		ConfigPathRemoved:    "/tmp/codereview/config.yml",
+		Cache:                &CacheClear{Path: "/tmp/codereview-cache", Status: "removed"},
+	}
+
+	if err := RenderConfigClearText(&out, result); err != nil {
+		t.Fatalf("RenderConfigClearText: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Config profile removed: work",
+		"Default profile: home",
+		"Config path removed: /tmp/codereview/config.yml",
+		"Cache path: /tmp/codereview-cache",
+		"Cache status: removed",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func homeProfile() config.Profile {
 	return config.Profile{
 		Git: config.GitConfig{
