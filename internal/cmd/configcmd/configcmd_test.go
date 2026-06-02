@@ -392,6 +392,33 @@ func TestConfigClearAllJSONIncludesCacheCleanupFailure(t *testing.T) {
 	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
 }
 
+func TestConfigClearAllJSONIncludesCacheResolutionFailure(t *testing.T) {
+	path := saveTestConfig(t, fileBackendConfig(t))
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	cmd, out := newTestCommand(path)
+	oldResolve := resolveCacheRoot
+	resolveCacheRoot = func() (string, error) {
+		return "", fmt.Errorf("xdg cache unavailable")
+	}
+	t.Cleanup(func() { resolveCacheRoot = oldResolve })
+
+	err := root.Execute(cmd, []string{"config", "clear", "--all", "--json"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want cache resolution failure")
+	}
+	if !strings.Contains(err.Error(), "cache cleanup failed for cache root") {
+		t.Fatalf("error = %v, want generic cache root context", err)
+	}
+	var got view.ConfigClear
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Cache == nil || got.Cache.Status != "error" || !strings.Contains(got.Cache.Error, "xdg cache unavailable") {
+		t.Fatalf("cache = %#v, want structured resolution error", got.Cache)
+	}
+	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
+}
+
 func TestConfigClearAllReportsConfigMutationFailureAfterCredentialDelete(t *testing.T) {
 	path := saveTestConfig(t, fileBackendConfig(t))
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
