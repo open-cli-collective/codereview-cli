@@ -45,6 +45,14 @@ type PruneOptions struct {
 	OlderThan time.Duration
 	KeepLast  *int
 	DryRun    bool
+	Retention RetentionPolicy
+}
+
+// RetentionPolicy controls the built-in no-selector retention windows.
+type RetentionPolicy struct {
+	LiveMaxAge   time.Duration
+	LiveForever  bool
+	DryRunMaxAge time.Duration
 }
 
 // Stats summarizes local durable data.
@@ -236,11 +244,11 @@ func validatePruneOptions(opts PruneOptions) error {
 	if opts.OlderThan < 0 {
 		return fmt.Errorf("datalifecycle: --older-than must be positive")
 	}
-	if opts.OlderThan == 0 && opts.KeepLast == nil {
-		return nil
+	if opts.Retention.LiveMaxAge < 0 {
+		return fmt.Errorf("datalifecycle: live retention must be non-negative")
 	}
-	if opts.OlderThan == 0 && opts.KeepLast == nil {
-		return nil
+	if opts.Retention.DryRunMaxAge < 0 {
+		return fmt.Errorf("datalifecycle: dry-run retention must be non-negative")
 	}
 	if opts.OlderThan == 0 && opts.KeepLast != nil && *opts.KeepLast < 0 {
 		return fmt.Errorf("datalifecycle: --keep-last must be non-negative")
@@ -255,11 +263,18 @@ func selectRuns(runs []ledger.Run, opts PruneOptions, now time.Time) []ledger.Ru
 	if opts.KeepLast != nil {
 		return selectKeepLast(runs, *opts.KeepLast)
 	}
+	policy := opts.Retention.normalized()
 	var selected []ledger.Run
 	for _, run := range runs {
-		cutoff := now.Add(-retentionFor(run.PostMode))
+		var cutoff time.Time
 		if opts.OlderThan > 0 {
 			cutoff = now.Add(-opts.OlderThan)
+		} else {
+			retention, keepForever := policy.retentionFor(run.PostMode)
+			if keepForever {
+				continue
+			}
+			cutoff = now.Add(-retention)
 		}
 		if run.StartedAt.Before(cutoff) {
 			selected = append(selected, run)
@@ -287,11 +302,24 @@ func selectKeepLast(runs []ledger.Run, keep int) []ledger.Run {
 	return selected
 }
 
-func retentionFor(mode ledger.PostMode) time.Duration {
-	if mode == ledger.PostModeDryRun {
-		return DryRunRetention
+func (p RetentionPolicy) normalized() RetentionPolicy {
+	if !p.LiveForever && p.LiveMaxAge == 0 {
+		p.LiveMaxAge = LiveRetention
 	}
-	return LiveRetention
+	if p.DryRunMaxAge == 0 {
+		p.DryRunMaxAge = DryRunRetention
+	}
+	return p
+}
+
+func (p RetentionPolicy) retentionFor(mode ledger.PostMode) (time.Duration, bool) {
+	if mode == ledger.PostModeDryRun {
+		return p.DryRunMaxAge, false
+	}
+	if p.LiveForever {
+		return 0, true
+	}
+	return p.LiveMaxAge, false
 }
 
 func findOrphans(layout statepaths.Layout, runs []ledger.Run) ([]OrphanItem, error) {

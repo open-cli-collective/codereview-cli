@@ -59,6 +59,8 @@ type Options struct {
 	NewRunID                func() string
 	StaleHeartbeatThreshold time.Duration
 	Warnings                io.Writer
+	Retention               datalifecycle.RetentionPolicy
+	RetentionManualOnly     bool
 }
 
 // Flags contains live gate-affecting CLI flags.
@@ -431,11 +433,14 @@ func failOnFromStore(ctx context.Context, store Store, runID string, threshold *
 }
 
 func pruneRetention(ctx context.Context, opts Options) error {
+	if opts.RetentionManualOnly {
+		return nil
+	}
 	result, err := datalifecycle.Prune(ctx, datalifecycle.Options{
 		Layout: opts.Layout,
 		Store:  opts.Store,
 		Now:    opts.Now,
-	}, datalifecycle.PruneOptions{})
+	}, datalifecycle.PruneOptions{Retention: opts.Retention})
 	if err != nil {
 		return err
 	}

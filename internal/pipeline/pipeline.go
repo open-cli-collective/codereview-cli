@@ -84,6 +84,9 @@ type Options struct {
 	Budget         ContextBudget
 	MaxAgents      int
 	MaxConcurrency int
+
+	Retention           datalifecycle.RetentionPolicy
+	RetentionManualOnly bool
 }
 
 // Request identifies one dry-run review.
@@ -191,7 +194,7 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 	if err := validate(opts, req); err != nil {
 		return Result{}, err
 	}
-	if err := pruneRetention(ctx, opts.Layout, opts.Store, opts.Now, opts.Warnings); err != nil {
+	if err := pruneRetention(ctx, opts.Layout, opts.Store, opts.Now, opts.Warnings, opts.Retention, opts.RetentionManualOnly); err != nil {
 		return Result{}, err
 	}
 	return execute(ctx, opts, req, executionMode{
@@ -748,12 +751,15 @@ func (opts Options) emitWarning(warning string) {
 	_, _ = fmt.Fprintln(opts.Warnings, warning)
 }
 
-func pruneRetention(ctx context.Context, layout statepaths.Layout, store datalifecycle.Store, now func() time.Time, warnings io.Writer) error {
+func pruneRetention(ctx context.Context, layout statepaths.Layout, store datalifecycle.Store, now func() time.Time, warnings io.Writer, retention datalifecycle.RetentionPolicy, manualOnly bool) error {
+	if manualOnly {
+		return nil
+	}
 	result, err := datalifecycle.Prune(ctx, datalifecycle.Options{
 		Layout: layout,
 		Store:  store,
 		Now:    now,
-	}, datalifecycle.PruneOptions{})
+	}, datalifecycle.PruneOptions{Retention: retention})
 	if err != nil {
 		return err
 	}
