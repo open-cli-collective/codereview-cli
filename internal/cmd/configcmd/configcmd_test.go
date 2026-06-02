@@ -473,6 +473,7 @@ func TestConfigClearAllJSONIncludesCacheCleanupFailure(t *testing.T) {
 
 func TestConfigClearAllTextIncludesPartialResultOnCacheFailure(t *testing.T) {
 	path := saveTestConfig(t, fileBackendConfig(t))
+	cacheFile := writeCacheSentinel(t)
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	cmd, out := newTestCommand(path)
 	oldRemove := removeCacheRoot
@@ -496,6 +497,9 @@ func TestConfigClearAllTextIncludesPartialResultOnCacheFailure(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("text output missing %q:\n%s", want, got)
 		}
+	}
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache sentinel stat err = %v, want cache to remain after failed removal", err)
 	}
 	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
 }
