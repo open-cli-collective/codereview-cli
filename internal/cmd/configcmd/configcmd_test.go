@@ -226,9 +226,15 @@ func TestConfigClearDefaultClearsActiveProfileOnlyAndPreservesData(t *testing.T)
 }
 
 func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
-	path := saveTestConfig(t, fileBackendConfig(t))
+	cfg := fileBackendConfig(t)
+	alpha := cfg.Profiles["home"]
+	alpha.Git.CredentialRef = "codereview/alpha"
+	cfg.Profiles["alpha"] = alpha
+	path := saveTestConfig(t, cfg)
 	cacheFile := writeCacheSentinel(t)
 	dataFile := writeDataSentinel(t)
+	ledgerFile := writeLedgerSentinel(t)
+	seedFileBackend(t, "alpha", map[string]string{credentials.GitTokenKey: "alpha-token"})
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
 	seedFileBackend(t, "work-reviewer", map[string]string{credentials.GitTokenKey: "reviewer-token"})
@@ -248,8 +254,8 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 	if len(got.Cleared) != 1 || got.Cleared[0].Ref != "codereview/home" {
 		t.Fatalf("cleared = %#v, want default home ref only", got.Cleared)
 	}
-	if got.ConfigProfileRemoved != "home" || got.DefaultProfile != "work" {
-		t.Fatalf("config clear fields = profile:%q default:%q, want home/work", got.ConfigProfileRemoved, got.DefaultProfile)
+	if got.ConfigProfileRemoved != "home" || got.DefaultProfile != "alpha" {
+		t.Fatalf("config clear fields = profile:%q default:%q, want home/alpha", got.ConfigProfileRemoved, got.DefaultProfile)
 	}
 	if got.ConfigPathRemoved != "" {
 		t.Fatalf("config_path_removed = %q, want empty because work remains", got.ConfigPathRemoved)
@@ -258,6 +264,7 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 		t.Fatalf("cache = %#v, want removed cache path", got.Cache)
 	}
 	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
+	assertFileBackendPresent(t, "alpha", credentials.GitTokenKey)
 	assertFileBackendPresent(t, "work", credentials.GitTokenKey)
 	assertFileBackendPresent(t, "work-reviewer", credentials.GitTokenKey)
 	assertFileBackendPresent(t, "work-llm", credentials.LLMAPIKeyKey)
@@ -268,15 +275,22 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 	if got, err := os.ReadFile(dataFile); err != nil || string(got) != "keep" {
 		t.Fatalf("data sentinel = (%q,%v), want kept", got, err)
 	}
+	// #nosec G304 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if got, err := os.ReadFile(ledgerFile); err != nil || string(got) != "ledger" {
+		t.Fatalf("ledger sentinel = (%q,%v), want kept", got, err)
+	}
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load remaining config: %v", err)
 	}
-	if cfg.DefaultProfile != "work" {
-		t.Fatalf("default_profile = %q, want work", cfg.DefaultProfile)
+	if cfg.DefaultProfile != "alpha" {
+		t.Fatalf("default_profile = %q, want alpha", cfg.DefaultProfile)
 	}
 	if _, ok := cfg.Profiles["home"]; ok {
 		t.Fatalf("home profile still present after --all: %#v", cfg.Profiles)
+	}
+	if _, ok := cfg.Profiles["alpha"]; !ok {
+		t.Fatalf("alpha profile missing after clearing home: %#v", cfg.Profiles)
 	}
 	if _, ok := cfg.Profiles["work"]; !ok {
 		t.Fatalf("work profile missing after clearing home: %#v", cfg.Profiles)
@@ -285,6 +299,9 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 
 func TestConfigClearProfileAllClearsOnlySelectedProfile(t *testing.T) {
 	path := saveTestConfig(t, fileBackendConfig(t))
+	cacheFile := writeCacheSentinel(t)
+	dataFile := writeDataSentinel(t)
+	ledgerFile := writeLedgerSentinel(t)
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
 	seedFileBackend(t, "work-reviewer", map[string]string{credentials.GitTokenKey: "reviewer-token"})
@@ -301,6 +318,9 @@ func TestConfigClearProfileAllClearsOnlySelectedProfile(t *testing.T) {
 	if got.ConfigProfileRemoved != "work" || got.DefaultProfile != "home" {
 		t.Fatalf("config clear fields = profile:%q default:%q, want work/home", got.ConfigProfileRemoved, got.DefaultProfile)
 	}
+	if got.Cache == nil || got.Cache.Status != "removed" {
+		t.Fatalf("cache = %#v, want removed", got.Cache)
+	}
 	if len(got.Cleared) != 3 {
 		t.Fatalf("cleared = %#v, want work git/reviewer/llm refs only", got.Cleared)
 	}
@@ -314,6 +334,17 @@ func TestConfigClearProfileAllClearsOnlySelectedProfile(t *testing.T) {
 	}
 	if cfg.DefaultProfile != "home" || len(cfg.Profiles) != 1 {
 		t.Fatalf("remaining config = %#v, want home only", cfg)
+	}
+	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
+		t.Fatalf("cache sentinel stat err = %v, want removed", err)
+	}
+	// #nosec G304 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if got, err := os.ReadFile(dataFile); err != nil || string(got) != "keep" {
+		t.Fatalf("data sentinel = (%q,%v), want kept", got, err)
+	}
+	// #nosec G304 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if got, err := os.ReadFile(ledgerFile); err != nil || string(got) != "ledger" {
+		t.Fatalf("ledger sentinel = (%q,%v), want kept", got, err)
 	}
 }
 
@@ -437,6 +468,16 @@ func TestConfigClearAllReportsConfigMutationFailureAfterCredentialDelete(t *test
 		t.Fatalf("error = %v, want partial-clear context", err)
 	}
 	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
+	cfg, loadErr := config.Load(path)
+	if loadErr != nil {
+		t.Fatalf("Load config after failed save: %v", loadErr)
+	}
+	if cfg.DefaultProfile != "home" {
+		t.Fatalf("default_profile after failed save = %q, want home", cfg.DefaultProfile)
+	}
+	if _, ok := cfg.Profiles["home"]; !ok {
+		t.Fatalf("home profile missing from on-disk config after failed save: %#v", cfg.Profiles)
+	}
 }
 
 func newTestCommand(path string) (*cobra.Command, *bytes.Buffer) {
@@ -473,6 +514,24 @@ func writeDataSentinel(t *testing.T) string {
 		t.Fatalf("WriteFile data sentinel: %v", err)
 	}
 	return dataFile
+}
+
+func writeLedgerSentinel(t *testing.T) string {
+	t.Helper()
+	dataRoot, err := statepaths.DataRoot()
+	if err != nil {
+		t.Fatalf("DataRoot: %v", err)
+	}
+	ledgerFile := filepath.Join(dataRoot, "ledger.db")
+	// #nosec G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if err := os.MkdirAll(filepath.Dir(ledgerFile), 0o700); err != nil {
+		t.Fatalf("MkdirAll ledger sentinel: %v", err)
+	}
+	// #nosec G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if err := os.WriteFile(ledgerFile, []byte("ledger"), 0o600); err != nil {
+		t.Fatalf("WriteFile ledger sentinel: %v", err)
+	}
+	return ledgerFile
 }
 
 func writeCacheSentinel(t *testing.T) string {
