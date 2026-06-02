@@ -210,6 +210,7 @@ func RenderConfigJSON(w io.Writer, show ConfigShow) error {
 type ConfigClear struct {
 	Backend              string                 `json:"backend"`
 	BackendSource        string                 `json:"backend_source"`
+	DryRun               bool                   `json:"dry_run"`
 	Cleared              []ClearedCredentialRef `json:"cleared"`
 	ConfigProfileRemoved string                 `json:"config_profile_removed,omitempty"`
 	DefaultProfile       string                 `json:"default_profile,omitempty"`
@@ -238,7 +239,16 @@ func RenderConfigClearText(w io.Writer, result ConfigClear) error {
 	if err := writeKV(w, "Keyring backend source", result.BackendSource); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(w, "Cleared credentials:"); err != nil {
+	if result.DryRun {
+		if err := writeKV(w, "Dry run", "true"); err != nil {
+			return err
+		}
+	}
+	credentialHeading := "Cleared credentials:"
+	if result.DryRun {
+		credentialHeading = "Credential targets:"
+	}
+	if _, err := fmt.Fprintln(w, credentialHeading); err != nil {
 		return err
 	}
 	for _, cleared := range result.Cleared {

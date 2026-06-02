@@ -327,6 +327,69 @@ func TestConfigClearDefaultClearsActiveProfileOnlyAndPreservesData(t *testing.T)
 	}
 }
 
+func TestConfigClearDryRunReportsActiveProfileAndPreservesState(t *testing.T) {
+	path := saveTestConfig(t, fileBackendConfig(t))
+	beforeConfig, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile config before dry-run: %v", err)
+	}
+	dataFile := writeDataSentinel(t)
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "clear", "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigClear
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !got.DryRun {
+		t.Fatalf("dry_run = false, want true")
+	}
+	if len(got.Cleared) != 1 || got.Cleared[0].Ref != "codereview/home" {
+		t.Fatalf("cleared = %#v, want active home only", got.Cleared)
+	}
+	if !reflect.DeepEqual(got.Cleared[0].Keys, []string{credentials.GitTokenKey}) {
+		t.Fatalf("dry-run keys = %#v, want git token key", got.Cleared[0].Keys)
+	}
+	assertFileBackendPresent(t, "home", credentials.GitTokenKey)
+	assertFileBackendPresent(t, "work", credentials.GitTokenKey)
+	afterConfig, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile config after dry-run: %v", err)
+	}
+	if !bytes.Equal(afterConfig, beforeConfig) {
+		t.Fatalf("config changed during dry-run\nbefore:\n%s\nafter:\n%s", beforeConfig, afterConfig)
+	}
+	// #nosec G304,G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if got, err := os.ReadFile(dataFile); err != nil || string(got) != "keep" {
+		t.Fatalf("data sentinel = (%q,%v), want kept", got, err)
+	}
+}
+
+func TestConfigClearDryRunTextReportsDryRun(t *testing.T) {
+	path := saveTestConfig(t, fileBackendConfig(t))
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "clear", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Dry run: true",
+		"Credential targets:",
+		"codereview/home: 1 key(s)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text output missing %q:\n%s", want, got)
+		}
+	}
+	assertFileBackendPresent(t, "home", credentials.GitTokenKey)
+}
+
 func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	alpha := cfg.Profiles["home"]
@@ -407,6 +470,70 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 	}
 	if _, ok := cfg.Profiles["work"]; !ok {
 		t.Fatalf("work profile missing after clearing home: %#v", cfg.Profiles)
+	}
+}
+
+func TestConfigClearAllDryRunReportsProfileCacheAndPreservesState(t *testing.T) {
+	path := saveTestConfig(t, fileBackendConfig(t))
+	beforeConfig, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile config before dry-run: %v", err)
+	}
+	cacheFile := writeCacheSentinel(t)
+	dataFile := writeDataSentinel(t)
+	ledgerFile := writeLedgerSentinel(t)
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
+	seedFileBackend(t, "work-reviewer", map[string]string{credentials.GitTokenKey: "reviewer-token"})
+	seedFileBackend(t, "work-llm", map[string]string{credentials.AnthropicAPIKeyKey: "llm-token"})
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "clear", "--all", "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigClear
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !got.DryRun {
+		t.Fatalf("dry_run = false, want true")
+	}
+	if got.ConfigProfileRemoved != "work" || got.DefaultProfile != "" || got.ConfigPathRemoved != "" {
+		t.Fatalf("config dry-run fields = profile:%q default:%q path:%q, want work with unchanged default and retained path", got.ConfigProfileRemoved, got.DefaultProfile, got.ConfigPathRemoved)
+	}
+	if got.Cache == nil || got.Cache.Status != "would_remove" {
+		t.Fatalf("cache = %#v, want would_remove", got.Cache)
+	}
+	wantRefs := []string{"codereview/work", "codereview/work-llm", "codereview/work-reviewer"}
+	if len(got.Cleared) != len(wantRefs) {
+		t.Fatalf("cleared = %#v, want %d refs", got.Cleared, len(wantRefs))
+	}
+	for i, want := range wantRefs {
+		if got.Cleared[i].Ref != want || len(got.Cleared[i].Keys) != 1 {
+			t.Fatalf("cleared[%d] = %#v, want ref %s with one key", i, got.Cleared[i], want)
+		}
+	}
+	assertFileBackendPresent(t, "home", credentials.GitTokenKey)
+	assertFileBackendPresent(t, "work", credentials.GitTokenKey)
+	assertFileBackendPresent(t, "work-reviewer", credentials.GitTokenKey)
+	assertFileBackendKeys(t, "work-llm", []string{credentials.AnthropicAPIKeyKey})
+	afterConfig, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile config after dry-run: %v", err)
+	}
+	if !bytes.Equal(afterConfig, beforeConfig) {
+		t.Fatalf("config changed during dry-run\nbefore:\n%s\nafter:\n%s", beforeConfig, afterConfig)
+	}
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache sentinel stat err = %v, want kept", err)
+	}
+	// #nosec G304 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if got, err := os.ReadFile(dataFile); err != nil || string(got) != "keep" {
+		t.Fatalf("data sentinel = (%q,%v), want kept", got, err)
+	}
+	// #nosec G304 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
+	if got, err := os.ReadFile(ledgerFile); err != nil || string(got) != "ledger" {
+		t.Fatalf("ledger sentinel = (%q,%v), want kept", got, err)
 	}
 }
 

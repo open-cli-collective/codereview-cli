@@ -212,6 +212,33 @@ func TestRenderConfigClearTextIncludesResetFields(t *testing.T) {
 	}
 }
 
+func TestRenderConfigClearTextIncludesDryRun(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigClear{
+		Backend:       "file",
+		BackendSource: "config",
+		DryRun:        true,
+		Cleared:       []ClearedCredentialRef{{Ref: "codereview/work", Keys: []string{"git_token"}}},
+	}
+
+	if err := RenderConfigClearText(&out, result); err != nil {
+		t.Fatalf("RenderConfigClearText: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Dry run: true",
+		"Credential targets:",
+		"codereview/work: 1 key(s)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Cleared credentials:") {
+		t.Fatalf("dry-run text included mutating heading:\n%s", got)
+	}
+}
+
 func TestRenderConfigClearTextIncludesCacheErrorWithoutPath(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigClear{
