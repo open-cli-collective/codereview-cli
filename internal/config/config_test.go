@@ -335,6 +335,11 @@ func TestValidateRejectsInvalidCredentialRefs(t *testing.T) {
 			profile.ReviewerCredentials.CredentialRef = ""
 			cfg.Profiles["work"] = profile
 		}},
+		{name: "reviewer credential ref matches git credential ref", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.ReviewerCredentials.CredentialRef = profile.Git.CredentialRef
+			cfg.Profiles["work"] = profile
+		}},
 		{name: "git ref invalid chars", mutate: func(cfg *File) {
 			profile := cfg.Profiles["home"]
 			profile.Git.CredentialRef = "codereview/bad.profile"

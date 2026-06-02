@@ -113,33 +113,38 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 }
 
 type initOptions struct {
-	nonInteractive bool
-	gitHost        string
-	gitRef         string
-	llmProvider    string
-	llmAuth        string
-	llmAdapter     string
-	llmRef         string
-	agentSources   []string
-	majorEvent     string
-	selfApprove    bool
-	resolveThreads string
-	resolveAfter   string
-	gitTokenStdin  bool
-	gitTokenEnv    string
-	llmKeyStdin    bool
-	llmKeyEnv      string
-	overwrite      bool
-	replaceProfile bool
+	nonInteractive     bool
+	gitHost            string
+	gitRef             string
+	reviewerRef        string
+	reviewerAuth       string
+	llmProvider        string
+	llmAuth            string
+	llmAdapter         string
+	llmRef             string
+	agentSources       []string
+	majorEvent         string
+	selfApprove        bool
+	resolveThreads     string
+	resolveAfter       string
+	gitTokenStdin      bool
+	gitTokenEnv        string
+	reviewerTokenStdin bool
+	reviewerTokenEnv   string
+	llmKeyStdin        bool
+	llmKeyEnv          string
+	overwrite          bool
+	replaceProfile     bool
 }
 
 func newInitCommand(opts *root.Options) *cobra.Command {
 	flags := initOptions{
-		gitHost:     "github.com",
-		llmProvider: string(config.LLMProviderAnthropic),
-		llmAuth:     string(config.LLMAuthSubscription),
-		llmAdapter:  string(config.LLMAdapterClaudeCLI),
-		majorEvent:  string(config.ReviewMajorEventComment),
+		gitHost:      "github.com",
+		reviewerAuth: string(config.GitAuthModePAT),
+		llmProvider:  string(config.LLMProviderAnthropic),
+		llmAuth:      string(config.LLMAuthSubscription),
+		llmAdapter:   string(config.LLMAdapterClaudeCLI),
+		majorEvent:   string(config.ReviewMajorEventComment),
 	}
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -157,6 +162,8 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 	cmd.Flags().BoolVar(&flags.nonInteractive, "non-interactive", false, "Run without prompts")
 	cmd.Flags().StringVar(&flags.gitHost, "git-host", flags.gitHost, "Git host")
 	cmd.Flags().StringVar(&flags.gitRef, "git-credential-ref", "", "Git credential ref")
+	cmd.Flags().StringVar(&flags.reviewerRef, "reviewer-credential-ref", "", "Reviewer credential ref")
+	cmd.Flags().StringVar(&flags.reviewerAuth, "reviewer-auth-mode", flags.reviewerAuth, "Reviewer credential auth mode")
 	cmd.Flags().StringVar(&flags.llmProvider, "llm-provider", flags.llmProvider, "LLM provider")
 	cmd.Flags().StringVar(&flags.llmAuth, "llm-auth", flags.llmAuth, "LLM auth mode")
 	cmd.Flags().StringVar(&flags.llmAdapter, "llm-adapter", flags.llmAdapter, "LLM adapter")
@@ -168,6 +175,8 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 	cmd.Flags().StringVar(&flags.resolveAfter, "resolve-after", "", "Duration before thread resolution")
 	cmd.Flags().BoolVar(&flags.gitTokenStdin, "git-token-stdin", false, "Read the Git token from stdin")
 	cmd.Flags().StringVar(&flags.gitTokenEnv, "git-token-from-env", "", "Read the Git token from this environment variable")
+	cmd.Flags().BoolVar(&flags.reviewerTokenStdin, "reviewer-token-stdin", false, "Read the reviewer Git token from stdin")
+	cmd.Flags().StringVar(&flags.reviewerTokenEnv, "reviewer-token-from-env", "", "Read the reviewer Git token from this environment variable")
 	cmd.Flags().BoolVar(&flags.llmKeyStdin, "llm-api-key-stdin", false, "Read the LLM API key from stdin")
 	cmd.Flags().StringVar(&flags.llmKeyEnv, "llm-api-key-from-env", "", "Read the LLM API key from this environment variable")
 	cmd.Flags().BoolVar(&flags.overwrite, "overwrite", false, "Replace existing keyring entries")
@@ -179,7 +188,13 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 	if !flags.nonInteractive {
 		return exitcode.Usage(fmt.Errorf("init requires --non-interactive in v1"))
 	}
-	if flags.gitTokenStdin && flags.llmKeyStdin {
+	stdinSecrets := 0
+	for _, stdin := range []bool{flags.gitTokenStdin, flags.reviewerTokenStdin, flags.llmKeyStdin} {
+		if stdin {
+			stdinSecrets++
+		}
+	}
+	if stdinSecrets > 1 {
 		return exitcode.Usage(fmt.Errorf("only one stdin secret ingress flag may be set"))
 	}
 	profileName := opts.Profile
@@ -197,6 +212,32 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 	if _, err := credentials.ParseRef(gitRef); err != nil {
 		return exitcode.Usage(err)
 	}
+	reviewerRequested := flags.reviewerRef != "" ||
+		flags.reviewerTokenStdin ||
+		flags.reviewerTokenEnv != "" ||
+		cmd.Flags().Changed("reviewer-auth-mode")
+	reviewerRef := flags.reviewerRef
+	reviewerMode := config.GitAuthMode(flags.reviewerAuth)
+	if reviewerRequested {
+		if !reviewerMode.Valid() {
+			return exitcode.Usage(fmt.Errorf("--reviewer-auth-mode %q is invalid", flags.reviewerAuth))
+		}
+		if !reviewerMode.Supported() {
+			return exitcode.Usage(fmt.Errorf("--reviewer-auth-mode %s is not supported in v1", flags.reviewerAuth))
+		}
+		if reviewerRef == "" {
+			reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
+			if err != nil {
+				return exitcode.Usage(err)
+			}
+		}
+		if _, err := credentials.ParseRef(reviewerRef); err != nil {
+			return exitcode.Usage(err)
+		}
+		if reviewerRef == gitRef {
+			return exitcode.Usage(fmt.Errorf("--reviewer-credential-ref %q must differ from --git-credential-ref because both store %s", reviewerRef, credentials.GitTokenKey))
+		}
+	}
 	llmRef := flags.llmRef
 	if flags.llmAuth == string(config.LLMAuthAPIKey) && llmRef == "" {
 		llmRef, err = credentials.FormatRef(profileName + "-llm")
@@ -210,6 +251,10 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 		}
 	}
 	gitSecret, hasGitSecret, err := readOptionalSecretIngress(opts.Stdin, flags.gitTokenStdin, flags.gitTokenEnv, "--git-token-stdin", "--git-token-from-env")
+	if err != nil {
+		return exitcode.Usage(err)
+	}
+	reviewerSecret, hasReviewerSecret, err := readOptionalSecretIngress(opts.Stdin, flags.reviewerTokenStdin, flags.reviewerTokenEnv, "--reviewer-token-stdin", "--reviewer-token-from-env")
 	if err != nil {
 		return exitcode.Usage(err)
 	}
@@ -255,6 +300,12 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 			ResolveAfter:     flags.resolveAfter,
 		},
 	}
+	if reviewerRequested {
+		profile.ReviewerCredentials = &config.ReviewerCredentials{
+			AuthMode:      reviewerMode,
+			CredentialRef: reviewerRef,
+		}
+	}
 	cfg.Profiles[profileName] = profile
 	if !exists {
 		cfg.DefaultProfile = profileName
@@ -263,6 +314,9 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 	writes := map[string]map[string]string{}
 	if hasGitSecret {
 		addWrite(writes, gitRef, credentials.GitTokenKey, gitSecret)
+	}
+	if hasReviewerSecret {
+		addWrite(writes, reviewerRef, credentials.GitTokenKey, reviewerSecret)
 	}
 	if hasLLMSecret {
 		addWrite(writes, llmRef, credentials.LLMAPIKeyKey, llmSecret)
@@ -336,12 +390,18 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 	if _, err := fmt.Fprintf(opts.Stdout, "Initialized profile %s\n", profileName); err != nil {
 		return err
 	}
+	backendArg := ""
+	if backendFlagSet && !persistExplicitBackend {
+		backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
+	}
 	if !hasGitSecret {
-		backendArg := ""
-		if backendFlagSet && !persistExplicitBackend {
-			backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
-		}
 		_, err = fmt.Fprintf(opts.Stderr, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, gitRef, credentials.GitTokenKey)
+	}
+	if reviewerRequested && !hasReviewerSecret {
+		_, reviewerHintErr := fmt.Fprintf(opts.Stderr, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, reviewerRef, credentials.GitTokenKey)
+		if err == nil {
+			err = reviewerHintErr
+		}
 	}
 	return err
 }

@@ -66,6 +66,7 @@ func TestRefreshAllSortedAndAtomicOnFailure(t *testing.T) {
 	resolver := &fakeResolver{
 		identities: map[string]gitprovider.Identity{
 			"codereview/home": {Login: "new-home"},
+			"codereview/work": {Login: "new-work-user"},
 		},
 		errs: map[string]error{
 			"codereview/work-reviewer": errors.New("lookup failed"),
@@ -82,8 +83,11 @@ func TestRefreshAllSortedAndAtomicOnFailure(t *testing.T) {
 	if got := updated.Profiles["home"].Git.IdentityCache; got != "old-home" {
 		t.Fatalf("returned home cache = %q, want original", got)
 	}
-	if len(resolver.calls) != 2 || resolver.calls[0].CredentialRef != "codereview/home" || resolver.calls[1].CredentialRef != "codereview/work-reviewer" {
-		t.Fatalf("resolver calls = %#v, want sorted home then work-reviewer", resolver.calls)
+	if len(resolver.calls) != 3 ||
+		resolver.calls[0].CredentialRef != "codereview/home" ||
+		resolver.calls[1].CredentialRef != "codereview/work" ||
+		resolver.calls[2].CredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("resolver calls = %#v, want sorted home then work git/reviewer", resolver.calls)
 	}
 }
 
@@ -116,7 +120,8 @@ func TestRefreshAllReviewerCredentialsRollbackOnFailure(t *testing.T) {
 	}
 	resolver := &fakeResolver{
 		identities: map[string]gitprovider.Identity{
-			"codereview/reviewer": {Login: "new-bot"},
+			"codereview/reviewer-git": {Login: "new-git-user"},
+			"codereview/reviewer":     {Login: "new-bot"},
 		},
 		errs: map[string]error{
 			"codereview/failing": errors.New("lookup failed"),
@@ -133,11 +138,48 @@ func TestRefreshAllReviewerCredentialsRollbackOnFailure(t *testing.T) {
 	if got := updated.Profiles["reviewer"].ReviewerCredentials.IdentityCache; got != "old-bot" {
 		t.Fatalf("returned reviewer cache = %q, want original", got)
 	}
+	if got := updated.Profiles["reviewer"].Git.IdentityCache; got != "git-cache" {
+		t.Fatalf("returned git cache = %q, want original", got)
+	}
 	if got := cfg.Profiles["reviewer"].ReviewerCredentials.IdentityCache; got != "old-bot" {
 		t.Fatalf("input reviewer cache = %q, want original", got)
 	}
-	if len(resolver.calls) != 2 || resolver.calls[0].CredentialRef != "codereview/reviewer" || resolver.calls[1].CredentialRef != "codereview/failing" {
-		t.Fatalf("resolver calls = %#v, want reviewer then failing", resolver.calls)
+	if len(resolver.calls) != 3 ||
+		resolver.calls[0].CredentialRef != "codereview/reviewer-git" ||
+		resolver.calls[1].CredentialRef != "codereview/reviewer" ||
+		resolver.calls[2].CredentialRef != "codereview/failing" {
+		t.Fatalf("resolver calls = %#v, want reviewer git/reviewer then failing", resolver.calls)
+	}
+}
+
+func TestRefreshAllRollsBackSameProfileReviewerFailure(t *testing.T) {
+	cfg := testConfig()
+	resolver := &fakeResolver{
+		identities: map[string]gitprovider.Identity{
+			"codereview/home": {Login: "old-home"},
+			"codereview/work": {Login: "new-work-user"},
+		},
+		errs: map[string]error{
+			"codereview/work-reviewer": errors.New("lookup failed"),
+		},
+	}
+
+	updated, results, changed, err := RefreshAll(context.Background(), cfg, resolver)
+	if err == nil {
+		t.Fatal("RefreshAll error = nil, want reviewer lookup failure")
+	}
+	if changed || results != nil {
+		t.Fatalf("changed=%v results=%#v, want no partial success", changed, results)
+	}
+	work := updated.Profiles["work"]
+	if got := work.Git.IdentityCache; got != "work-user-cache" {
+		t.Fatalf("returned work git cache = %q, want original", got)
+	}
+	if got := work.ReviewerCredentials.IdentityCache; got != "old-bot" {
+		t.Fatalf("returned reviewer cache = %q, want original", got)
+	}
+	if got := cfg.Profiles["work"].Git.IdentityCache; got != "work-user-cache" {
+		t.Fatalf("input work git cache = %q, want original", got)
 	}
 }
 

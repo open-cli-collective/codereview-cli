@@ -446,6 +446,9 @@ func validateProfile(name string, profile Profile) error {
 		if err := validateCredentialRef(fmt.Sprintf("profiles.%s.reviewer_credentials.credential_ref", name), profile.ReviewerCredentials.CredentialRef); err != nil {
 			return err
 		}
+		if profile.ReviewerCredentials.CredentialRef == profile.Git.CredentialRef {
+			return invalid("profiles.%s.reviewer_credentials.credential_ref must differ from git.credential_ref", name)
+		}
 	}
 	if !profile.LLM.Provider.Valid() {
 		return invalid("profiles.%s.llm.provider %q is invalid", name, profile.LLM.Provider)

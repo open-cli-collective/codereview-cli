@@ -15,6 +15,8 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/configcmd"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/credentialcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -112,6 +114,7 @@ func TestMeAllProcessesProfilesSortedAndSavesOnce(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
 		"codereview/home":          {Login: "new-home"},
+		"codereview/work":          {Login: "new-work-user"},
 		"codereview/work-reviewer": {Login: "new-bot"},
 	}}
 	cmd, out := newTestCommand(path, resolver)
@@ -123,11 +126,19 @@ func TestMeAllProcessesProfilesSortedAndSavesOnce(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
 	}
-	if len(got.Profiles) != 2 || got.Profiles[0].Profile != "home" || got.Profiles[1].Profile != "work" {
-		t.Fatalf("profiles = %#v, want sorted home/work", got.Profiles)
+	if len(got.Profiles) != 3 ||
+		got.Profiles[0].Profile != "home" ||
+		got.Profiles[0].CredentialSource != "git" ||
+		got.Profiles[1].Profile != "work" ||
+		got.Profiles[1].CredentialSource != "git" ||
+		got.Profiles[2].Profile != "work" ||
+		got.Profiles[2].CredentialSource != "reviewer_credentials" {
+		t.Fatalf("profiles = %#v, want sorted home git/work git/work reviewer", got.Profiles)
 	}
 	cfg := loadTestConfig(t, path)
-	if cfg.Profiles["home"].Git.IdentityCache != "new-home" || cfg.Profiles["work"].ReviewerCredentials.IdentityCache != "new-bot" {
+	if cfg.Profiles["home"].Git.IdentityCache != "new-home" ||
+		cfg.Profiles["work"].Git.IdentityCache != "new-work-user" ||
+		cfg.Profiles["work"].ReviewerCredentials.IdentityCache != "new-bot" {
 		t.Fatalf("updated caches = %#v", cfg.Profiles)
 	}
 }
@@ -148,8 +159,11 @@ func TestMeAllProfileRejected(t *testing.T) {
 func TestMeAllFailureDoesNotSavePartialCache(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	resolver := &fakeResolver{
-		identities: map[string]gitprovider.Identity{"codereview/home": {Login: "new-home"}},
-		errs:       map[string]error{"codereview/work-reviewer": errors.New("lookup failed")},
+		identities: map[string]gitprovider.Identity{
+			"codereview/home": {Login: "new-home"},
+			"codereview/work": {Login: "new-work-user"},
+		},
+		errs: map[string]error{"codereview/work-reviewer": errors.New("lookup failed")},
 	}
 	cmd, _ := newTestCommand(path, resolver)
 
@@ -160,6 +174,9 @@ func TestMeAllFailureDoesNotSavePartialCache(t *testing.T) {
 	cfg := loadTestConfig(t, path)
 	if got := cfg.Profiles["home"].Git.IdentityCache; got != "old-home" {
 		t.Fatalf("home cache = %q, want unchanged", got)
+	}
+	if got := cfg.Profiles["work"].Git.IdentityCache; got != "work-user-cache" {
+		t.Fatalf("work git cache = %q, want unchanged", got)
 	}
 }
 
@@ -282,6 +299,38 @@ func TestMeProductionMissingGitCredentialExitCode(t *testing.T) {
 	}
 }
 
+func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
+	store := openFileStore(t)
+	if _, err := store.SetBundle("work", map[string]string{credentials.GitTokenKey: "git-token"}, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle work: %v", err)
+	}
+	cfg := testConfig()
+	cfg.Keyring.Backend = "file"
+	work := cfg.Profiles["work"]
+	work.Git.Host = "localhost:1"
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	var out bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: path,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &out,
+		Stderr:     &out,
+	})
+	Register(cmd, opts)
+
+	err := root.Execute(cmd, []string{"--profile", "work", "me"})
+	if !errors.Is(err, gitprovider.ErrAuth) {
+		t.Fatalf("Execute error = %v, want ErrAuth", err)
+	}
+	if !errors.Is(err, credstore.ErrNotFound) {
+		t.Fatalf("Execute error = %v, want missing credential cause", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
+	}
+}
+
 func TestMeReservedAuthModeExitCode(t *testing.T) {
 	cfg := testConfig()
 	home := cfg.Profiles["home"]
@@ -327,6 +376,25 @@ func TestMeReviewerReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
 	}
 }
 
+func TestMeReviewerProfileReservedGitAuthModeUsesReviewerIdentity(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["work"]
+	work.Git.AuthMode = config.GitAuthModeOAuthDevice
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
+		"codereview/work-reviewer": {Login: "bot"},
+	}}
+	cmd, _ := newTestCommand(path, resolver)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "me"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(resolver.calls) != 1 || resolver.calls[0].CredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("resolver calls = %#v, want reviewer ref", resolver.calls)
+	}
+}
+
 func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["work"]
@@ -345,6 +413,41 @@ func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
 	}
 	if factoryOpened {
 		t.Fatal("resolver factory opened for unsupported auth mode in --all")
+	}
+}
+
+func TestMeAllReservedGitAuthModeWithReviewerDoesNotOpenResolverFactory(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["work"]
+	work.Git.AuthMode = config.GitAuthModeOAuthDevice
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	factoryOpened := false
+	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		factoryOpened = true
+		return &fakeResolver{}, nil, nil
+	})
+
+	err := root.Execute(cmd, []string{"me", "--all"})
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("Execute error = %v, want ErrUnsupported", err)
+	}
+	if factoryOpened {
+		t.Fatal("resolver factory opened for unsupported git auth mode in --all")
+	}
+}
+
+func TestPrevalidateAllIdentityProfileRejectsInvalidAuthModes(t *testing.T) {
+	home := testConfig().Profiles["home"]
+	home.Git.AuthMode = config.GitAuthMode("bogus")
+	if err := prevalidateAllIdentityProfile("home", home); !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("git invalid auth error = %v, want ErrInvalid", err)
+	}
+
+	work := testConfig().Profiles["work"]
+	work.ReviewerCredentials.AuthMode = config.GitAuthMode("bogus")
+	if err := prevalidateAllIdentityProfile("work", work); !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("reviewer invalid auth error = %v, want ErrInvalid", err)
 	}
 }
 
@@ -422,6 +525,136 @@ func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 	}
 }
 
+func TestOrgDeploymentPrestagedMultiRefCredentialsHealthChecks(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
+	path := saveTestConfig(t, config.File{
+		DefaultProfile: "work",
+		Keyring:        config.KeyringConfig{Backend: "file"},
+		Profiles: map[string]config.Profile{
+			"work": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/work",
+				},
+				ReviewerCredentials: &config.ReviewerCredentials{
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/work-reviewer",
+				},
+				LLM: config.LLMConfig{
+					Provider:      config.LLMProviderAnthropic,
+					Auth:          config.LLMAuthAPIKey,
+					Adapter:       config.LLMAdapterAnthropicAPI,
+					CredentialRef: "codereview/work-llm",
+				},
+				AgentSources: []string{"~/.config/codereview/agents"},
+				ReviewPolicy: config.ReviewPolicy{
+					MajorEvent: config.ReviewMajorEventComment,
+				},
+			},
+		},
+	})
+
+	runOrgDeploymentCommand(t, path, strings.NewReader("user-token"), nil, []string{
+		"set-credential",
+		"--ref", "codereview/work",
+		"--key", credentials.GitTokenKey,
+		"--stdin",
+		"--overwrite",
+	})
+	runOrgDeploymentCommand(t, path, strings.NewReader("reviewer-token"), nil, []string{
+		"set-credential",
+		"--ref", "codereview/work-reviewer",
+		"--key", credentials.GitTokenKey,
+		"--stdin",
+		"--overwrite",
+	})
+	runOrgDeploymentCommand(t, path, strings.NewReader("llm-token"), nil, []string{
+		"set-credential",
+		"--ref", "codereview/work-llm",
+		"--key", credentials.LLMAPIKeyKey,
+		"--stdin",
+		"--overwrite",
+	})
+
+	configOut := runOrgDeploymentCommand(t, path, strings.NewReader(""), nil, []string{"config", "show", "--json"})
+	for _, secret := range []string{"user-token", "reviewer-token", "llm-token"} {
+		if strings.Contains(configOut.String(), secret) {
+			t.Fatalf("config show leaked %s: %q", secret, configOut.String())
+		}
+	}
+	var show view.ConfigShow
+	if err := json.Unmarshal(configOut.Bytes(), &show); err != nil {
+		t.Fatalf("Unmarshal config show: %v\n%s", err, configOut.String())
+	}
+	if len(show.CredentialRefs) != 3 {
+		t.Fatalf("credential refs = %#v, want git/reviewer/llm", show.CredentialRefs)
+	}
+	wantPresent := map[string]string{
+		"git":                  credentials.GitTokenKey,
+		"reviewer_credentials": credentials.GitTokenKey,
+		"llm":                  credentials.LLMAPIKeyKey,
+	}
+	for _, ref := range show.CredentialRefs {
+		wantKey, ok := wantPresent[ref.Purpose]
+		if !ok {
+			t.Fatalf("unexpected credential purpose %q in %#v", ref.Purpose, show.CredentialRefs)
+		}
+		if len(ref.Keys) != 1 || ref.Keys[0].Key != wantKey || ref.Keys[0].Present == nil || !*ref.Keys[0].Present {
+			t.Fatalf("credential status for %s = %#v, want present %s", ref.Purpose, ref.Keys, wantKey)
+		}
+		delete(wantPresent, ref.Purpose)
+	}
+	if len(wantPresent) != 0 {
+		t.Fatalf("missing credential purposes: %#v", wantPresent)
+	}
+
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user" {
+			t.Errorf("path = %q, want /user", r.URL.Path)
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		auths = append(auths, auth)
+		switch auth {
+		case "Bearer user-token":
+			writeJSON(t, w, map[string]any{"login": "work-user", "id": 1, "name": "Work User"})
+		case "Bearer reviewer-token":
+			writeJSON(t, w, map[string]any{"login": "review-bot", "id": 2, "name": "Review Bot"})
+		default:
+			t.Errorf("Authorization = %q", auth)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+
+	meOut := runOrgDeploymentCommand(t, path, strings.NewReader(""), orgDeploymentFactory(server.URL), []string{"me", "--all", "--json"})
+	for _, secret := range []string{"user-token", "reviewer-token", "llm-token"} {
+		if strings.Contains(meOut.String(), secret) {
+			t.Fatalf("me leaked %s: %q", secret, meOut.String())
+		}
+	}
+	var meResult view.MeResult
+	if err := json.Unmarshal(meOut.Bytes(), &meResult); err != nil {
+		t.Fatalf("Unmarshal me: %v\n%s", err, meOut.String())
+	}
+	if len(meResult.Profiles) != 2 ||
+		meResult.Profiles[0].Profile != "work" ||
+		meResult.Profiles[0].CredentialSource != "git" ||
+		meResult.Profiles[0].Login != "work-user" ||
+		meResult.Profiles[1].Profile != "work" ||
+		meResult.Profiles[1].CredentialSource != "reviewer_credentials" ||
+		meResult.Profiles[1].Login != "review-bot" {
+		t.Fatalf("me profiles = %#v, want work git and reviewer identities", meResult.Profiles)
+	}
+	if len(auths) != 2 || auths[0] != "Bearer user-token" || auths[1] != "Bearer reviewer-token" {
+		t.Fatalf("auths = %#v, want user then reviewer tokens", auths)
+	}
+}
+
 type fakeResolver struct {
 	identities map[string]gitprovider.Identity
 	errs       map[string]error
@@ -452,6 +685,45 @@ func newTestCommandWithFactory(path string, factory IdentityResolverFactory) (*c
 	})
 	RegisterWithFactory(cmd, opts, factory)
 	return cmd, &out
+}
+
+func runOrgDeploymentCommand(t *testing.T, path string, stdin *strings.Reader, factory IdentityResolverFactory, args []string) *bytes.Buffer {
+	t.Helper()
+	if factory == nil {
+		factory = func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+			return &fakeResolver{}, nil, nil
+		}
+	}
+	var out bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: path,
+		Stdin:      stdin,
+		Stdout:     &out,
+		Stderr:     &out,
+	})
+	credentialcmd.Register(cmd, opts)
+	configcmd.Register(cmd, opts)
+	RegisterWithFactory(cmd, opts, factory)
+	if err := root.Execute(cmd, args); err != nil {
+		t.Fatalf("Execute %v: %v\noutput:\n%s", args, err, out.String())
+	}
+	return &out
+}
+
+func orgDeploymentFactory(serverURL string) IdentityResolverFactory {
+	return func(_ *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
+		store, err := credentials.OpenStore(opts.Backend, false, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &githubResolver{
+			store: store,
+			options: githubprovider.Options{
+				BaseURL:    serverURL,
+				GraphQLURL: serverURL + "/graphql",
+			},
+		}, func() { _ = store.Close() }, nil
+	}
 }
 
 func saveTestConfig(t *testing.T, cfg config.File) string {

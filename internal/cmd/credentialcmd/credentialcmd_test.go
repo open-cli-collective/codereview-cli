@@ -200,6 +200,109 @@ func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
 	assertStored(t, "default", credentials.GitTokenKey, "init-token")
 }
 
+func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	t.Setenv("CR_GIT_TOKEN", "git-token")
+	t.Setenv("CR_REVIEWER_TOKEN", "reviewer-token")
+	cmd, out, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"init",
+		"--non-interactive",
+		"--git-token-from-env", "CR_GIT_TOKEN",
+		"--reviewer-token-from-env", "CR_REVIEWER_TOKEN",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String()+errOut.String(), "git-token") || strings.Contains(out.String()+errOut.String(), "reviewer-token") {
+		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	reviewer := cfg.Profiles["default"].ReviewerCredentials
+	if reviewer == nil {
+		t.Fatal("reviewer credentials missing")
+	}
+	if reviewer.AuthMode != config.GitAuthModePAT || reviewer.CredentialRef != "codereview/default-reviewer" {
+		t.Fatalf("reviewer credentials = %#v, want pat codereview/default-reviewer", reviewer)
+	}
+	assertStored(t, "default", credentials.GitTokenKey, "git-token")
+	assertStored(t, "default-reviewer", credentials.GitTokenKey, "reviewer-token")
+}
+
+func TestInitNonInteractiveWritesCustomReviewerCredentialFromStdin(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	t.Setenv("CR_GIT_TOKEN", "git-token")
+	cmd, out, errOut := newTestCommand(path, strings.NewReader("reviewer-token\n"))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+		"--git-token-from-env", "CR_GIT_TOKEN",
+		"--reviewer-credential-ref", "codereview/review-bot",
+		"--reviewer-token-stdin",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String()+errOut.String(), "git-token") || strings.Contains(out.String()+errOut.String(), "reviewer-token") {
+		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile != "work" {
+		t.Fatalf("default_profile = %q, want work", cfg.DefaultProfile)
+	}
+	reviewer := cfg.Profiles["work"].ReviewerCredentials
+	if reviewer == nil || reviewer.CredentialRef != "codereview/review-bot" {
+		t.Fatalf("reviewer credentials = %#v, want custom codereview/review-bot", reviewer)
+	}
+	assertStored(t, "work", credentials.GitTokenKey, "git-token")
+	assertStored(t, "review-bot", credentials.GitTokenKey, "reviewer-token")
+}
+
+func TestInitNonInteractiveDerivesReviewerRefFromStdinForProfile(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	t.Setenv("CR_GIT_TOKEN", "git-token")
+	cmd, out, errOut := newTestCommand(path, strings.NewReader("reviewer-token\n"))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+		"--git-token-from-env", "CR_GIT_TOKEN",
+		"--reviewer-token-stdin",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String()+errOut.String(), "git-token") || strings.Contains(out.String()+errOut.String(), "reviewer-token") {
+		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	reviewer := cfg.Profiles["work"].ReviewerCredentials
+	if reviewer == nil || reviewer.CredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("reviewer credentials = %#v, want derived codereview/work-reviewer", reviewer)
+	}
+	assertStored(t, "work", credentials.GitTokenKey, "git-token")
+	assertStored(t, "work-reviewer", credentials.GitTokenKey, "reviewer-token")
+}
+
 func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
@@ -221,6 +324,42 @@ func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "cr --backend memory set-credential") {
 		t.Fatalf("stderr = %q, want backend-preserving set-credential hint", errOut.String())
+	}
+}
+
+func TestInitReviewerConfigOnlyCarriesBackendIntoCredentialHint(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"init",
+		"--non-interactive",
+		"--reviewer-credential-ref", "codereview/default-reviewer",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	reviewer := cfg.Profiles["default"].ReviewerCredentials
+	if reviewer == nil || reviewer.CredentialRef != "codereview/default-reviewer" {
+		t.Fatalf("reviewer credentials = %#v, want codereview/default-reviewer", reviewer)
+	}
+	if got := errOut.String(); !strings.Contains(got, "cr --backend file set-credential --ref codereview/default-reviewer --key git_token --stdin") {
+		t.Fatalf("stderr = %q, want backend-preserving reviewer set-credential hint", got)
+	}
+	store := openFileStore(t)
+	defer store.Close()
+	present, err := store.Exists("default-reviewer", credentials.GitTokenKey)
+	if err != nil {
+		t.Fatalf("Exists(default-reviewer, git_token): %v", err)
+	}
+	if present {
+		t.Fatal("reviewer token present, want config-only init to avoid writing credentials")
 	}
 }
 
@@ -331,10 +470,15 @@ func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 	}{
 		{name: "missing non-interactive", args: []string{"init"}},
 		{name: "two stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--llm-api-key-stdin"}},
+		{name: "git and reviewer stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--reviewer-token-stdin"}},
 		{name: "invalid profile segment", args: []string{"--profile", "bad.profile", "init", "--non-interactive"}},
+		{name: "reviewer ref matches git ref", args: []string{"init", "--non-interactive", "--reviewer-credential-ref", "codereview/default"}},
+		{name: "unsupported reviewer auth", args: []string{"init", "--non-interactive", "--reviewer-auth-mode", string(config.GitAuthModeOAuthDevice)}},
+		{name: "empty reviewer env secret", args: []string{"init", "--non-interactive", "--reviewer-token-from-env", "CR_EMPTY_REVIEWER_TOKEN"}},
 		{name: "llm ingress under subscription auth", args: []string{"init", "--non-interactive", "--llm-api-key-from-env", "CR_LLM_KEY"}},
 	}
 	t.Setenv("CR_LLM_KEY", "llm-key")
+	t.Setenv("CR_EMPTY_REVIEWER_TOKEN", "")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("secret"))
