@@ -670,6 +670,8 @@ func provenanceFromSource(source SourceInfo) Provenance {
 }
 
 func fingerprintFileSource(root string) (string, error) {
+	// This is a best-effort snapshot for operator audit. Managed source
+	// directories should not be mutated while a command is loading agents.
 	var files []string
 	categories, err := os.ReadDir(root)
 	if err != nil {
