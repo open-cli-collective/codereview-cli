@@ -376,6 +376,27 @@ func TestMeReviewerReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
 	}
 }
 
+func TestMeReviewerProfileReservedGitAuthModeDoesNotOpenResolverFactory(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["work"]
+	work.Git.AuthMode = config.GitAuthModeOAuthDevice
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	factoryOpened := false
+	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		factoryOpened = true
+		return &fakeResolver{}, nil, nil
+	})
+
+	err := root.Execute(cmd, []string{"--profile", "work", "me"})
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("Execute error = %v, want ErrUnsupported", err)
+	}
+	if factoryOpened {
+		t.Fatal("resolver factory opened for unsupported git auth mode")
+	}
+}
+
 func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["work"]
@@ -415,6 +436,20 @@ func TestMeAllReservedGitAuthModeWithReviewerDoesNotOpenResolverFactory(t *testi
 	}
 	if factoryOpened {
 		t.Fatal("resolver factory opened for unsupported git auth mode in --all")
+	}
+}
+
+func TestPrevalidateAllIdentityProfileRejectsInvalidAuthModes(t *testing.T) {
+	home := testConfig().Profiles["home"]
+	home.Git.AuthMode = config.GitAuthMode("bogus")
+	if err := prevalidateAllIdentityProfile("home", home); !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("git invalid auth error = %v, want ErrInvalid", err)
+	}
+
+	work := testConfig().Profiles["work"]
+	work.ReviewerCredentials.AuthMode = config.GitAuthMode("bogus")
+	if err := prevalidateAllIdentityProfile("work", work); !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("reviewer invalid auth error = %v, want ErrInvalid", err)
 	}
 }
 

@@ -119,6 +119,9 @@ target user's credential store. The staging commands must run as the target OS
 user who will run `cr`, not as root, SYSTEM, or an administrator account whose
 keyring is different from the target user's keyring.
 
+Either omit `keyring.backend` to use the platform default, or set it
+per-platform and run `set-credential` with the same backend selection.
+
 Example non-secret config template:
 
 ```yaml
@@ -174,6 +177,9 @@ Then verify the deployed profile without running `init`:
 cr config show --json
 cr me --all --json
 ```
+
+Do not run `cr init` after pre-staging; the profile and credentials are already
+deployed.
 
 Environment variables in the examples above are setup ingress only. Runtime
 commands resolve service credentials from `config.yml` and the configured
@@ -421,8 +427,9 @@ cr me [--all] [--json]
 
 Resolves the active git-host identity using configured posting credentials and
 caches the identity in config. With `--all`, refreshes every configured profile
-and checks both user Git and reviewer credentials when a profile declares both.
-`--json` emits structured output. `--all` cannot be combined with `--profile`.
+and verifies both user Git and reviewer identity credentials when a profile
+declares both. `--json` emits structured output. `--all` cannot be combined
+with `--profile`.
 
 ### `cr agents list`
 

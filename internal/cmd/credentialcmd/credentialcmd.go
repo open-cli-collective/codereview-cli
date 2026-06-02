@@ -235,7 +235,7 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 			return exitcode.Usage(err)
 		}
 		if reviewerRef == gitRef {
-			return exitcode.Usage(fmt.Errorf("--reviewer-credential-ref must differ from --git-credential-ref because both store %s", credentials.GitTokenKey))
+			return exitcode.Usage(fmt.Errorf("--reviewer-credential-ref %q must differ from --git-credential-ref because both store %s", reviewerRef, credentials.GitTokenKey))
 		}
 	}
 	llmRef := flags.llmRef
@@ -397,8 +397,11 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 	if !hasGitSecret {
 		_, err = fmt.Fprintf(opts.Stderr, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, gitRef, credentials.GitTokenKey)
 	}
-	if err == nil && reviewerRequested && !hasReviewerSecret {
-		_, err = fmt.Fprintf(opts.Stderr, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, reviewerRef, credentials.GitTokenKey)
+	if reviewerRequested && !hasReviewerSecret {
+		_, reviewerHintErr := fmt.Fprintf(opts.Stderr, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, reviewerRef, credentials.GitTokenKey)
+		if err == nil {
+			err = reviewerHintErr
+		}
 	}
 	return err
 }
