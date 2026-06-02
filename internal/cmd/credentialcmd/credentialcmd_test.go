@@ -259,6 +259,42 @@ func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	}
 }
 
+func TestInitReviewerConfigOnlyCarriesBackendIntoCredentialHint(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"init",
+		"--non-interactive",
+		"--reviewer-credential-ref", "codereview/default-reviewer",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	reviewer := cfg.Profiles["default"].ReviewerCredentials
+	if reviewer == nil || reviewer.CredentialRef != "codereview/default-reviewer" {
+		t.Fatalf("reviewer credentials = %#v, want codereview/default-reviewer", reviewer)
+	}
+	if got := errOut.String(); !strings.Contains(got, "cr --backend file set-credential --ref codereview/default-reviewer --key git_token --stdin") {
+		t.Fatalf("stderr = %q, want backend-preserving reviewer set-credential hint", got)
+	}
+	store := openFileStore(t)
+	defer store.Close()
+	present, err := store.Exists("default-reviewer", credentials.GitTokenKey)
+	if err != nil {
+		t.Fatalf("Exists(default-reviewer, git_token): %v", err)
+	}
+	if present {
+		t.Fatal("reviewer token present, want config-only init to avoid writing credentials")
+	}
+}
+
 func TestInitPersistsExplicitBackendWhenExistingAPIKeySatisfiesConfig(t *testing.T) {
 	hermeticFileBackend(t)
 	seedFileBackend(t, "default-llm", credentials.LLMAPIKeyKey, "llm-token")

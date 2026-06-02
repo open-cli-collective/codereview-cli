@@ -123,8 +123,6 @@ Example non-secret config template:
 
 ```yaml
 default_profile: work
-keyring:
-  backend: keychain
 profiles:
   work:
     git:
