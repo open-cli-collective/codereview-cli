@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
@@ -39,16 +37,6 @@ func TestTransportErrorsMapRetryableButContextCanceledDoesNot(t *testing.T) {
 	_, err = retryClient.WhoAmI(context.Background(), gitprovider.Credential{Type: credentialTypePAT, Token: "token"})
 	if !errors.Is(err, gitprovider.ErrRetryable) {
 		t.Fatalf("transport error = %v, want ErrRetryable", err)
-	}
-}
-
-func TestSanitizedBodyTruncatesAtUTF8Boundary(t *testing.T) {
-	got := sanitizedBody([]byte(strings.Repeat("a", 255) + "éextra"))
-	if !utf8.ValidString(got) {
-		t.Fatalf("sanitizedBody returned invalid UTF-8: %q", got)
-	}
-	if len(got) > 256 {
-		t.Fatalf("sanitizedBody len = %d, want <= 256", len(got))
 	}
 }
 

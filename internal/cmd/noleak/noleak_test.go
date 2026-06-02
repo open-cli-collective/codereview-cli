@@ -548,13 +548,6 @@ func (h *auditHarness) assertOwnedFilesDoNotLeak(t *testing.T) {
 			if entry.IsDir() || !isScannedTextArtifact(path) {
 				return nil
 			}
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			if info.Size() > 1<<20 {
-				return nil
-			}
 			data, err := os.ReadFile(path) // #nosec G304,G122 -- paths are under hermetic test-owned roots and symlink entries are skipped.
 			if err != nil {
 				return err
@@ -593,7 +586,7 @@ func shouldSkipOwnedPath(path string, entry os.DirEntry) bool {
 
 func isScannedTextArtifact(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".json", ".jsonl", ".md", ".patch", ".txt", ".yaml", ".yml":
+	case ".json", ".jsonl", ".log", ".md", ".patch", ".toml", ".txt", ".yaml", ".yml":
 		return true
 	default:
 		return false
