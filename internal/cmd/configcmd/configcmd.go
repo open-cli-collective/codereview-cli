@@ -100,6 +100,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 
 	var clearAll bool
 	var clearJSON bool
+	var clearDryRun bool
 	clearCmd := &cobra.Command{
 		Use:   "clear",
 		Short: "Clear stored credentials declared by the active profile",
@@ -139,19 +140,20 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			result := view.ConfigClear{
 				Backend:       string(backend),
 				BackendSource: string(source),
+				DryRun:        clearDryRun,
 			}
 			for _, profile := range profiles {
-				deleted, err := store.DeleteBundle(profile.Profile)
+				keys, err := clearCredentialBundle(store, profile.Profile, clearDryRun)
 				if err != nil {
 					return cmderr.Credential(err)
 				}
 				result.Cleared = append(result.Cleared, view.ClearedCredentialRef{
 					Ref:  profile.Full,
-					Keys: deleted,
+					Keys: keys,
 				})
 			}
 			if clearAll {
-				change, err := removeProfileFromConfig(path, cfg, profileName)
+				change, err := clearProfileFromConfig(path, cfg, profileName, clearDryRun)
 				if err != nil {
 					return fmt.Errorf("config clear --all credentials already cleared for profile %q (%s), but config reset failed: %w", profileName, credentialRefList(profiles), err)
 				}
@@ -159,7 +161,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 				result.DefaultProfile = change.defaultProfile
 				result.ConfigPathRemoved = change.configPathRemoved
 
-				cache, err := clearCacheRoot()
+				cache, err := clearCacheRoot(clearDryRun)
 				result.Cache = &cache
 				if err != nil {
 					cachePath := cache.Path
@@ -167,6 +169,9 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 						cachePath = "cache root"
 					}
 					cacheErr := fmt.Errorf("config clear --all cleared profile %q but cache cleanup failed for %s: %w", profileName, cachePath, err)
+					if clearDryRun {
+						cacheErr = fmt.Errorf("config clear --all --dry-run inspected profile %q but cache preview failed for %s: %w", profileName, cachePath, err)
+					}
 					if clearJSON {
 						if renderErr := view.RenderConfigClearJSON(opts.Stdout, result); renderErr != nil {
 							return renderErr
@@ -185,6 +190,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	}
 	clearCmd.Flags().BoolVar(&clearAll, "all", false, "Also remove the active profile from config and clear disposable cache")
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
+	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
 	configCmd.AddCommand(showCmd, clearCmd)
 	rootCmd.AddCommand(configCmd)
@@ -293,7 +299,44 @@ func removeEmptyConfigDir(dir string) {
 	}
 }
 
-func clearCacheRoot() (view.CacheClear, error) {
+func clearCredentialBundle(store *credstore.Store, profile string, dryRun bool) ([]string, error) {
+	if dryRun {
+		return store.ListBundle(profile)
+	}
+	return store.DeleteBundle(profile)
+}
+
+func clearProfileFromConfig(path string, cfg config.File, profileName string, dryRun bool) (configClearChange, error) {
+	if dryRun {
+		return previewProfileFromConfig(path, cfg, profileName)
+	}
+	return removeProfileFromConfig(path, cfg, profileName)
+}
+
+func previewProfileFromConfig(path string, cfg config.File, profileName string) (configClearChange, error) {
+	if _, ok := cfg.Profiles[profileName]; !ok {
+		return configClearChange{}, fmt.Errorf("%w: %s", config.ErrProfileNotFound, profileName)
+	}
+	// Keep this preview in lockstep with removeProfileFromConfig so dry-run
+	// reports exactly what the mutating path would change.
+	change := configClearChange{profileRemoved: profileName}
+	if len(cfg.Profiles) == 1 {
+		change.configPathRemoved = path
+		return change, nil
+	}
+	if cfg.DefaultProfile == profileName {
+		remaining := make(map[string]config.Profile, len(cfg.Profiles)-1)
+		for name, profile := range cfg.Profiles {
+			if name != profileName {
+				remaining[name] = profile
+			}
+		}
+		change.defaultProfile = firstProfileName(remaining)
+	}
+	return change, nil
+}
+
+func clearCacheRoot(dryRun bool) (view.CacheClear, error) {
 	path, err := resolveCacheRoot()
 	if err != nil {
 		return view.CacheClear{Status: "error", Error: err.Error()}, err
@@ -306,6 +349,10 @@ func clearCacheRoot() (view.CacheClear, error) {
 		cache.Status = "error"
 		cache.Error = err.Error()
 		return cache, err
+	}
+	if dryRun {
+		cache.Status = "would_remove"
+		return cache, nil
 	}
 	if err := removeCacheRoot(path); err != nil {
 		cache.Status = "error"

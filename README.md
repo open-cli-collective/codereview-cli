@@ -460,7 +460,7 @@ definition contents.
 ### `cr config clear`
 
 ```text
-cr config clear [--all] [--json]
+cr config clear [--all] [--dry-run] [--json]
 ```
 
 Deletes stored credentials declared by the active profile.
@@ -470,6 +470,7 @@ Flags:
 | Flag | Semantics |
 |------|-----------|
 | `--all` | Also remove the active profile from `config.yml` and clear the disposable cache root. Inactive profiles and durable data are not touched. |
+| `--dry-run` | Report the credential refs, config profile reset, and cache cleanup that would happen without deleting credentials, config, cache, or data. |
 | `--json` | Emit a JSON result. |
 
 Without `--all`, this removes secret keyring entries only and leaves
