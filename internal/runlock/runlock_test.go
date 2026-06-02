@@ -81,7 +81,7 @@ func TestAcquireRejectsEmptyPath(t *testing.T) {
 
 func TestAcquireStatepathsLockFile(t *testing.T) {
 	base := t.TempDir()
-	layout := statepaths.NewLayout(filepath.Join(base, "data", statepaths.AppDir), filepath.Join(base, "cache", statepaths.AppDir))
+	layout := statepaths.NewLayout(filepath.Join(base, "data"), filepath.Join(base, "cache"))
 	paths, err := layout.Run(statepaths.RunSpec{
 		Host:            "github",
 		Owner:           "open-cli",

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +137,53 @@ func TestSessionsDeleteJSON(t *testing.T) {
 	}
 }
 
+func TestSessionsReadOnlyDoesNotBlockLegacyMigration(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyRoot := filepath.Join(layout.DataRoot, statepaths.AppDir)
+	insertNamedSessionAt(t, filepath.Join(legacyRoot, "ledger.db"), namedSession("daily", "provider-session-2"))
+
+	cmd, out := newTestCommand()
+	if err := root.Execute(cmd, []string{"sessions", "list", "--json"}); err != nil {
+		t.Fatalf("sessions list: %v", err)
+	}
+	var listed view.SessionsList
+	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
+		t.Fatalf("Unmarshal list: %v\n%s", err, out.String())
+	}
+	if len(listed.Sessions) != 0 {
+		t.Fatalf("listed sessions = %#v, want empty before mutating migration", listed.Sessions)
+	}
+	if _, err := os.Stat(layout.LedgerDB()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new ledger stat err = %v, want missing after read-only list", err)
+	}
+	if _, err := os.Stat(filepath.Join(legacyRoot, "ledger.db")); err != nil {
+		t.Fatalf("legacy ledger stat err = %v, want still present after read-only list", err)
+	}
+
+	cmd, out = newTestCommand()
+	if err := root.Execute(cmd, []string{"sessions", "delete", "daily", "--json"}); err != nil {
+		t.Fatalf("sessions delete: %v", err)
+	}
+	var deleted view.SessionsDelete
+	if err := json.Unmarshal(out.Bytes(), &deleted); err != nil {
+		t.Fatalf("Unmarshal delete: %v\n%s", err, out.String())
+	}
+	if deleted.Name != "daily" || !deleted.Deleted {
+		t.Fatalf("deleted = %#v, want migrated daily deletion", deleted)
+	}
+	if _, err := os.Stat(filepath.Join(legacyRoot, "ledger.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy ledger stat err = %v, want migrated away", err)
+	}
+	store := openTestStore(t)
+	if _, err := store.GetNamedSession(context.Background(), "daily"); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetNamedSession after delete = %v, want ErrNotFound", err)
+	}
+}
+
 func TestSessionsMissingRowsFail(t *testing.T) {
 	tests := []struct {
 		name string
@@ -178,6 +227,21 @@ func insertNamedSession(t *testing.T, session ledger.NamedSession) {
 	store := openTestStore(t)
 	if err := store.UpsertNamedSession(context.Background(), session); err != nil {
 		t.Fatalf("UpsertNamedSession: %v", err)
+	}
+}
+
+func insertNamedSessionAt(t *testing.T, path string, session ledger.NamedSession) {
+	t.Helper()
+	store, err := ledger.Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ledger.Open(%s): %v", path, err)
+	}
+	if err := store.UpsertNamedSession(context.Background(), session); err != nil {
+		_ = store.Close()
+		t.Fatalf("UpsertNamedSession: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("store.Close: %v", err)
 	}
 }
 

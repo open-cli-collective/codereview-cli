@@ -916,7 +916,7 @@ func fileBackendConfig(t *testing.T) config.File {
 
 func writeDataSentinel(t *testing.T) string {
 	t.Helper()
-	dataFile := filepath.Join(os.Getenv("XDG_DATA_HOME"), "codereview", "runs", "sentinel.txt")
+	dataFile := filepath.Join(os.Getenv("XDG_DATA_HOME"), statepaths.Tool, "runs", "sentinel.txt")
 	// #nosec G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
 	if err := os.MkdirAll(filepath.Dir(dataFile), 0o700); err != nil {
 		t.Fatalf("MkdirAll data sentinel: %v", err)
