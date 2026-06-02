@@ -317,6 +317,8 @@ func previewProfileFromConfig(path string, cfg config.File, profileName string) 
 	if _, ok := cfg.Profiles[profileName]; !ok {
 		return configClearChange{}, fmt.Errorf("%w: %s", config.ErrProfileNotFound, profileName)
 	}
+	// Keep this preview in lockstep with removeProfileFromConfig so dry-run
+	// reports exactly what the mutating path would change.
 	change := configClearChange{profileRemoved: profileName}
 	if len(cfg.Profiles) == 1 {
 		change.configPathRemoved = path
