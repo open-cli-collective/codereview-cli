@@ -200,6 +200,41 @@ func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
 	assertStored(t, "default", credentials.GitTokenKey, "init-token")
 }
 
+func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	t.Setenv("CR_GIT_TOKEN", "git-token")
+	t.Setenv("CR_REVIEWER_TOKEN", "reviewer-token")
+	cmd, out, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"init",
+		"--non-interactive",
+		"--git-token-from-env", "CR_GIT_TOKEN",
+		"--reviewer-token-from-env", "CR_REVIEWER_TOKEN",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String()+errOut.String(), "git-token") || strings.Contains(out.String()+errOut.String(), "reviewer-token") {
+		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	reviewer := cfg.Profiles["default"].ReviewerCredentials
+	if reviewer == nil {
+		t.Fatal("reviewer credentials missing")
+	}
+	if reviewer.AuthMode != config.GitAuthModePAT || reviewer.CredentialRef != "codereview/default-reviewer" {
+		t.Fatalf("reviewer credentials = %#v, want pat codereview/default-reviewer", reviewer)
+	}
+	assertStored(t, "default", credentials.GitTokenKey, "git-token")
+	assertStored(t, "default-reviewer", credentials.GitTokenKey, "reviewer-token")
+}
+
 func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
@@ -331,7 +366,10 @@ func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 	}{
 		{name: "missing non-interactive", args: []string{"init"}},
 		{name: "two stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--llm-api-key-stdin"}},
+		{name: "git and reviewer stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--reviewer-token-stdin"}},
 		{name: "invalid profile segment", args: []string{"--profile", "bad.profile", "init", "--non-interactive"}},
+		{name: "reviewer ref matches git ref", args: []string{"init", "--non-interactive", "--reviewer-credential-ref", "codereview/default"}},
+		{name: "unsupported reviewer auth", args: []string{"init", "--non-interactive", "--reviewer-auth-mode", string(config.GitAuthModeOAuthDevice)}},
 		{name: "llm ingress under subscription auth", args: []string{"init", "--non-interactive", "--llm-api-key-from-env", "CR_LLM_KEY"}},
 	}
 	t.Setenv("CR_LLM_KEY", "llm-key")

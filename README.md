@@ -109,6 +109,77 @@ printf '%s' "$GITHUB_TOKEN" | cr set-credential \
 Credential refs use the `codereview/<profile>` service/profile form. `cr`
 accepts secrets by `--stdin` or `--from-env` during setup and credential writes;
 it does not read runtime tokens directly from arbitrary environment variables.
+Reviewer credentials use a separate credential ref that also stores key
+`git_token`; keep it distinct from the user Git ref.
+
+### Org Deployment / MDM
+
+For managed rollouts, ship non-secret config and pre-stage secrets in the
+target user's credential store. The staging commands must run as the target OS
+user who will run `cr`, not as root, SYSTEM, or an administrator account whose
+keyring is different from the target user's keyring.
+
+Example non-secret config template:
+
+```yaml
+default_profile: work
+keyring:
+  backend: keychain
+profiles:
+  work:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/work
+    reviewer_credentials:
+      auth_mode: pat
+      credential_ref: codereview/work-reviewer
+    llm:
+      provider: anthropic
+      auth: api_key
+      adapter: anthropic_api
+      credential_ref: codereview/work-llm
+    agent_sources:
+      - ~/.config/codereview/agents
+    review_policy:
+      major_event: comment
+```
+
+For adapter-managed LLM credentials, use `auth: subscription`, set an adapter
+such as `claude_cli`, and omit `llm.credential_ref`.
+
+Pre-stage each secret with `set-credential`:
+
+```bash
+printf '%s' "$USER_GITHUB_TOKEN" | cr set-credential \
+  --ref codereview/work \
+  --key git_token \
+  --stdin \
+  --overwrite
+
+printf '%s' "$REVIEW_BOT_GITHUB_TOKEN" | cr set-credential \
+  --ref codereview/work-reviewer \
+  --key git_token \
+  --stdin \
+  --overwrite
+
+printf '%s' "$ANTHROPIC_API_KEY" | cr set-credential \
+  --ref codereview/work-llm \
+  --key llm_api_key \
+  --stdin \
+  --overwrite
+```
+
+Then verify the deployed profile without running `init`:
+
+```bash
+cr config show --json
+cr me --all --json
+```
+
+Environment variables in the examples above are setup ingress only. Runtime
+commands resolve service credentials from `config.yml` and the configured
+credential backend.
 
 ## Configuration
 
@@ -258,6 +329,10 @@ Flags:
 | `--git-credential-ref <ref>` | Credential ref for Git auth. Defaults to `codereview/<profile>`. |
 | `--git-token-stdin` | Read the Git token from stdin and write key `git_token`. |
 | `--git-token-from-env <env>` | Read the Git token from an environment variable and write key `git_token`. |
+| `--reviewer-credential-ref <ref>` | Credential ref for reviewer Git auth. Defaults to `codereview/<profile>-reviewer` when reviewer credentials are requested. |
+| `--reviewer-auth-mode <mode>` | Reviewer Git auth mode, default `pat`. Reserved modes are recognized by config but not implemented in v1. |
+| `--reviewer-token-stdin` | Read the reviewer Git token from stdin and write key `git_token`. |
+| `--reviewer-token-from-env <env>` | Read the reviewer Git token from an environment variable and write key `git_token`. |
 | `--llm-provider <provider>` | LLM provider, default `anthropic`. |
 | `--llm-auth <mode>` | LLM auth mode, default `subscription`. Use `api_key` for keyring-managed direct API keys. |
 | `--llm-adapter <adapter>` | LLM adapter, default `claude_cli`. |
@@ -272,10 +347,13 @@ Flags:
 | `--overwrite` | Replace existing keyring entries written by this command. |
 | `--replace-profile` | Replace an existing profile config. |
 
-Only one stdin secret ingress flag may be used at a time. LLM API-key ingress
-requires `--llm-auth api_key`. `--overwrite` with API-key auth requires an LLM
-key ingress flag. `--allow-self-review` is intentionally runtime-only on
-`cr review`; `init` only stores the profile-level self-approval policy.
+Only one stdin secret ingress flag may be used at a time. Reviewer credentials
+use key `git_token` under their own credential ref, so
+`--reviewer-credential-ref` must differ from `--git-credential-ref`. LLM
+API-key ingress requires `--llm-auth api_key`. `--overwrite` with API-key auth
+requires an LLM key ingress flag. `--allow-self-review` is intentionally
+runtime-only on `cr review`; `init` only stores the profile-level self-approval
+policy.
 
 ### `cr set-credential`
 
@@ -284,7 +362,8 @@ cr set-credential --ref <ref> --key <key> (--stdin | --from-env <env>) [flags]
 ```
 
 Writes one secret value to the credential store. Allowed keys are `git_token`
-and `llm_api_key`.
+and `llm_api_key`. User Git refs and reviewer refs both use `git_token`; LLM
+API-key refs use `llm_api_key`.
 
 Flags:
 
@@ -342,8 +421,9 @@ data pillar.
 cr me [--all] [--json]
 ```
 
-Resolves the active git-host identity using configured credentials and caches
-the identity in config. With `--all`, refreshes every configured profile.
+Resolves the active git-host identity using configured posting credentials and
+caches the identity in config. With `--all`, refreshes every configured profile
+and checks both user Git and reviewer credentials when a profile declares both.
 `--json` emits structured output. `--all` cannot be combined with `--profile`.
 
 ### `cr agents list`

@@ -67,22 +67,45 @@ func RefreshAll(ctx context.Context, cfg config.File, resolver Resolver) (config
 	changed := false
 	for _, name := range names {
 		profile := updated.Profiles[name]
-		updatedProfile, result, profileChanged, err := refreshProfile(ctx, name, profile, resolver)
+		updatedProfile, profileResults, profileChanged, err := refreshAllProfile(ctx, name, profile, resolver)
 		if err != nil {
 			return original, nil, false, err
 		}
 		updated.Profiles[name] = updatedProfile
-		results = append(results, result)
+		results = append(results, profileResults...)
 		changed = changed || profileChanged
 	}
 	return updated, results, changed, nil
 }
 
 func refreshProfile(ctx context.Context, name string, profile config.Profile, resolver Resolver) (config.Profile, ProfileResult, bool, error) {
+	source, gitConfig, previous := identitySource(profile)
+	return refreshProfileSource(ctx, name, profile, source, gitConfig, previous, resolver)
+}
+
+func refreshAllProfile(ctx context.Context, name string, profile config.Profile, resolver Resolver) (config.Profile, []ProfileResult, bool, error) {
+	updated, gitResult, changed, err := refreshProfileSource(ctx, name, profile, SourceGit, profile.Git, profile.Git.IdentityCache, resolver)
+	if err != nil {
+		return config.Profile{}, nil, false, err
+	}
+	results := []ProfileResult{gitResult}
+	if updated.ReviewerCredentials == nil {
+		return updated, results, changed, nil
+	}
+
+	reviewerGit, previous := reviewerIdentitySource(updated)
+	updated, reviewerResult, reviewerChanged, err := refreshProfileSource(ctx, name, updated, SourceReviewer, reviewerGit, previous, resolver)
+	if err != nil {
+		return config.Profile{}, nil, false, err
+	}
+	results = append(results, reviewerResult)
+	return updated, results, changed || reviewerChanged, nil
+}
+
+func refreshProfileSource(ctx context.Context, name string, profile config.Profile, source CredentialSource, gitConfig config.GitConfig, previous string, resolver Resolver) (config.Profile, ProfileResult, bool, error) {
 	if resolver == nil {
 		return config.Profile{}, ProfileResult{}, false, fmt.Errorf("identity: resolver is required")
 	}
-	source, gitConfig, previous := identitySource(profile)
 	live, err := resolver.ResolveIdentity(ctx, gitConfig)
 	if err != nil {
 		return config.Profile{}, ProfileResult{}, false, err
@@ -115,14 +138,19 @@ func refreshProfile(ctx context.Context, name string, profile config.Profile, re
 
 func identitySource(profile config.Profile) (CredentialSource, config.GitConfig, string) {
 	if profile.ReviewerCredentials != nil {
-		return SourceReviewer, config.GitConfig{
-			Host:          profile.Git.Host,
-			AuthMode:      profile.ReviewerCredentials.AuthMode,
-			CredentialRef: profile.ReviewerCredentials.CredentialRef,
-			IdentityCache: profile.ReviewerCredentials.IdentityCache,
-		}, profile.ReviewerCredentials.IdentityCache
+		gitConfig, previous := reviewerIdentitySource(profile)
+		return SourceReviewer, gitConfig, previous
 	}
 	return SourceGit, profile.Git, profile.Git.IdentityCache
+}
+
+func reviewerIdentitySource(profile config.Profile) (config.GitConfig, string) {
+	return config.GitConfig{
+		Host:          profile.Git.Host,
+		AuthMode:      profile.ReviewerCredentials.AuthMode,
+		CredentialRef: profile.ReviewerCredentials.CredentialRef,
+		IdentityCache: profile.ReviewerCredentials.IdentityCache,
+	}, profile.ReviewerCredentials.IdentityCache
 }
 
 func normalizeForUpdate(cfg config.File) config.File {
