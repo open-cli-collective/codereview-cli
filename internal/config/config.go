@@ -130,12 +130,13 @@ type LLMProvider string
 const (
 	LLMProviderAnthropic LLMProvider = "anthropic"
 	LLMProviderOpenAI    LLMProvider = "openai"
+	LLMProviderPi        LLMProvider = "pi"
 )
 
 // Valid reports whether p is a known LLM provider.
 func (p LLMProvider) Valid() bool {
 	switch p {
-	case LLMProviderAnthropic, LLMProviderOpenAI:
+	case LLMProviderAnthropic, LLMProviderOpenAI, LLMProviderPi:
 		return true
 	default:
 		return false
@@ -170,12 +171,13 @@ const (
 	LLMAdapterAnthropicAPI LLMAdapter = "anthropic_api"
 	LLMAdapterCodexCLI     LLMAdapter = "codex_cli"
 	LLMAdapterOpenAIAPI    LLMAdapter = "openai_api"
+	LLMAdapterPiRPC        LLMAdapter = "pi_rpc"
 )
 
 // Valid reports whether a is a known LLM adapter.
 func (a LLMAdapter) Valid() bool {
 	switch a {
-	case LLMAdapterClaudeCLI, LLMAdapterAnthropicAPI, LLMAdapterCodexCLI, LLMAdapterOpenAIAPI:
+	case LLMAdapterClaudeCLI, LLMAdapterAnthropicAPI, LLMAdapterCodexCLI, LLMAdapterOpenAIAPI, LLMAdapterPiRPC:
 		return true
 	default:
 		return false

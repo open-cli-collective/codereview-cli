@@ -568,6 +568,11 @@ func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter
 		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{}), nil
 	case config.LLMAdapterCodexCLI:
 		return nil, fmt.Errorf("%w: codex_cli is not supported for cr review until no-tools mode is explicit", config.ErrUnsupported)
+	case config.LLMAdapterPiRPC:
+		if llmConfig.Provider != config.LLMProviderPi || llmConfig.Auth != config.LLMAuthSubscription {
+			return nil, fmt.Errorf("%w: pi_rpc requires provider pi with subscription auth", config.ErrUnsupported)
+		}
+		return llm.NewPiRPCAdapter(llm.PiRPCOptions{}), nil
 	case config.LLMAdapterAnthropicAPI, config.LLMAdapterOpenAIAPI:
 		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{})
 	default:

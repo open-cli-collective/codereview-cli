@@ -1058,3 +1058,29 @@ func TestNewAdapterRejectsCodexCLIBestEffortByDefault(t *testing.T) {
 		t.Fatalf("newAdapter error = %v, want explicit no-tools explanation", err)
 	}
 }
+
+func TestNewAdapterCreatesPiRPC(t *testing.T) {
+	adapter, err := newAdapter(config.LLMConfig{
+		Provider: config.LLMProviderPi,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterPiRPC,
+	}, nil)
+	if err != nil {
+		t.Fatalf("newAdapter: %v", err)
+	}
+	if adapter.Name() != "pi_rpc" {
+		t.Fatalf("adapter.Name = %q, want pi_rpc", adapter.Name())
+	}
+}
+
+func TestNewAdapterRejectsPiRPCNonSubscription(t *testing.T) {
+	_, err := newAdapter(config.LLMConfig{
+		Provider:      config.LLMProviderPi,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterPiRPC,
+		CredentialRef: "codereview/pi",
+	}, nil)
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("newAdapter error = %v, want config.ErrUnsupported", err)
+	}
+}

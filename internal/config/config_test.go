@@ -170,6 +170,37 @@ profiles:
 	}
 }
 
+func TestLoadAcceptsPiRPCSubscriptionProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeFile(t, path, `default_profile: pi
+profiles:
+  pi:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/pi
+    llm:
+      provider: pi
+      auth: subscription
+      adapter: pi_rpc
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	profile := cfg.Profiles["pi"]
+	if profile.LLM.Provider != LLMProviderPi || profile.LLM.Adapter != LLMAdapterPiRPC {
+		t.Fatalf("LLM = %#v, want pi/pi_rpc", profile.LLM)
+	}
+	refs, err := CredentialRefs(profile)
+	if err != nil {
+		t.Fatalf("CredentialRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("CredentialRefs = %#v, want only git credential for subscription auth", refs)
+	}
+}
+
 func TestResolveProfile(t *testing.T) {
 	cfg := validFile().normalized()
 
