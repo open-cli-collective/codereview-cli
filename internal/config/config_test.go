@@ -290,6 +290,38 @@ func TestValidateRejectsReservedGitAuthModes(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsReservedGitAuthModes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*File)
+	}{
+		{name: "git oauth_device", mutate: func(cfg *File) {
+			profile := cfg.Profiles["home"]
+			profile.Git.AuthMode = GitAuthModeOAuthDevice
+			cfg.Profiles["home"] = profile
+		}},
+		{name: "reviewer github_app", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
+			cfg.Profiles["work"] = profile
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			tt.mutate(&cfg)
+			path := filepath.Join(t.TempDir(), "config.yml")
+			if err := Save(path, cfg); !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("Save error = %v, want ErrUnsupported", err)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("saved unsupported config, stat err = %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsReservedGitAuthModes(t *testing.T) {
 	tests := []struct {
 		name string

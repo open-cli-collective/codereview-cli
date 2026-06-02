@@ -157,6 +157,7 @@ func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
 
 func TestSetCredentialRejectsUnsupportedConfigBeforeIngress(t *testing.T) {
 	hermeticFileBackend(t)
+	t.Setenv("CR_FUTURE_TOKEN", "")
 	path := filepath.Join(t.TempDir(), "config.yml")
 	writeRawCredentialTestConfig(t, path, `default_profile: future
 keyring:
@@ -173,22 +174,51 @@ profiles:
       adapter: claude_cli
 `)
 
-	cmd, _, _ := newTestCommand(path, failReader{})
-	err := root.Execute(cmd, []string{
-		"--backend", "file",
-		"set-credential",
-		"--ref", "codereview/future",
-		"--key", credentials.GitTokenKey,
-		"--stdin",
-	})
-	if !errors.Is(err, config.ErrUnsupported) {
-		t.Fatalf("future auth error = %v, want ErrUnsupported", err)
+	tests := []struct {
+		name      string
+		args      []string
+		stdin     io.Reader
+		mustAvoid string
+	}{
+		{
+			name: "stdin",
+			args: []string{
+				"--backend", "file",
+				"set-credential",
+				"--ref", "codereview/future",
+				"--key", credentials.GitTokenKey,
+				"--stdin",
+			},
+			stdin:     failReader{},
+			mustAvoid: "secret ingress was read",
+		},
+		{
+			name: "from-env",
+			args: []string{
+				"--backend", "file",
+				"set-credential",
+				"--ref", "codereview/future",
+				"--key", credentials.GitTokenKey,
+				"--from-env", "CR_FUTURE_TOKEN",
+			},
+			stdin:     strings.NewReader(""),
+			mustAvoid: "CR_FUTURE_TOKEN",
+		},
 	}
-	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
-		t.Fatalf("future auth exit code = %d, want %d; err=%v", got, exitcode.AuthConfigError, err)
-	}
-	if strings.Contains(err.Error(), "secret ingress was read") {
-		t.Fatalf("set-credential read secret ingress before rejecting future auth ref: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, _, _ := newTestCommand(path, tt.stdin)
+			err := root.Execute(cmd, tt.args)
+			if !errors.Is(err, config.ErrUnsupported) {
+				t.Fatalf("future auth error = %v, want ErrUnsupported", err)
+			}
+			if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+				t.Fatalf("future auth exit code = %d, want %d; err=%v", got, exitcode.AuthConfigError, err)
+			}
+			if strings.Contains(err.Error(), tt.mustAvoid) {
+				t.Fatalf("set-credential read secret ingress before rejecting future auth ref: %v", err)
+			}
+		})
 	}
 }
 
