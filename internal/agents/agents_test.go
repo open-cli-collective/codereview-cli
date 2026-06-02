@@ -84,7 +84,7 @@ func TestUnreadableFilesystemSourceFailsLoadAndInspectsUnreadable(t *testing.T) 
 		t.Skipf("Chmod unreadable unsupported: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = os.Chmod(blockedDir, 0o700)
+		_ = os.Chmod(blockedDir, 0o700) // #nosec G302 -- test cleanup restores directory access.
 	})
 	if _, err := os.ReadDir(blockedDir); err == nil {
 		t.Skip("directory permissions are not enforced in this environment")
