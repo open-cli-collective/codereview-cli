@@ -514,7 +514,10 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 }
 
 func retentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.RetentionPolicy {
-	maxAgeDays := retention.MaxAgeDaysValue()
+	if retention.MaxAgeDays == nil {
+		return datalifecycle.RetentionPolicy{}
+	}
+	maxAgeDays := *retention.MaxAgeDays
 	if maxAgeDays == 0 {
 		return datalifecycle.RetentionPolicy{LiveForever: true}
 	}

@@ -50,8 +50,10 @@ type PruneOptions struct {
 
 // RetentionPolicy controls the built-in no-selector retention windows.
 type RetentionPolicy struct {
-	LiveMaxAge   time.Duration
-	LiveForever  bool
+	LiveMaxAge  time.Duration
+	LiveForever bool
+	// DryRunMaxAge is an internal policy override for callers that own dry-run
+	// lifecycle separately from profile config. The zero value uses DryRunRetention.
 	DryRunMaxAge time.Duration
 }
 
@@ -244,17 +246,19 @@ func validatePruneOptions(opts PruneOptions) error {
 	if opts.OlderThan < 0 {
 		return fmt.Errorf("datalifecycle: --older-than must be positive")
 	}
-	if opts.Retention.LiveMaxAge < 0 {
-		return fmt.Errorf("datalifecycle: live retention must be non-negative")
-	}
-	if opts.Retention.DryRunMaxAge < 0 {
-		return fmt.Errorf("datalifecycle: dry-run retention must be non-negative")
-	}
 	if opts.OlderThan == 0 && opts.KeepLast != nil && *opts.KeepLast < 0 {
 		return fmt.Errorf("datalifecycle: --keep-last must be non-negative")
 	}
 	if opts.OlderThan > 0 && opts.KeepLast != nil {
 		return fmt.Errorf("datalifecycle: --older-than and --keep-last are mutually exclusive")
+	}
+	if opts.OlderThan == 0 && opts.KeepLast == nil {
+		if opts.Retention.LiveMaxAge < 0 {
+			return fmt.Errorf("datalifecycle: live retention must be non-negative")
+		}
+		if opts.Retention.DryRunMaxAge < 0 {
+			return fmt.Errorf("datalifecycle: dry-run retention must be non-negative")
+		}
 	}
 	return nil
 }
