@@ -61,6 +61,89 @@ func TestDataPruneDryRunDoesNotDelete(t *testing.T) {
 	}
 }
 
+func TestDataReadOnlyDoesNotBlockLegacyMigration(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := mustLayout(t)
+	legacyRoot := filepath.Join(layout.DataRoot, statepaths.AppDir)
+	legacyLayout := statepaths.NewLayout(legacyRoot, layout.CacheRoot)
+	store := openLedgerForTest(t, legacyLayout)
+	allocateRun(t, store, legacyLayout, "old-live", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close legacy store: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runDataCommand(&stdout, &stderr, "data", "show", "--json"); err != nil {
+		t.Fatalf("data show: %v; stderr = %q", err, stderr.String())
+	}
+	var shown view.DataShow
+	if err := json.Unmarshal(stdout.Bytes(), &shown); err != nil {
+		t.Fatalf("Unmarshal show: %v; stdout = %q", err, stdout.String())
+	}
+	if shown.RunCount != 0 {
+		t.Fatalf("show run count = %d, want empty before mutating migration", shown.RunCount)
+	}
+	if _, err := os.Stat(layout.LedgerDB()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new ledger stat err = %v, want missing after read-only show", err)
+	}
+	if _, err := os.Stat(filepath.Join(legacyRoot, "ledger.db")); err != nil {
+		t.Fatalf("legacy ledger stat err = %v, want still present after read-only show", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := runDataCommand(&stdout, &stderr, "data", "prune", "--dry-run", "--json"); err != nil {
+		t.Fatalf("data prune dry-run: %v; stderr = %q", err, stderr.String())
+	}
+	var dryRun view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &dryRun); err != nil {
+		t.Fatalf("Unmarshal prune dry-run: %v; stdout = %q", err, stdout.String())
+	}
+	if len(dryRun.SelectedRuns) != 0 || len(dryRun.Warnings) != 1 || !strings.Contains(dryRun.Warnings[0], "dry-run does not migrate") {
+		t.Fatalf("dry-run prune = %#v, want empty preview with legacy migration warning", dryRun)
+	}
+	if _, err := os.Stat(layout.LedgerDB()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new ledger stat err = %v, want still missing after dry-run prune", err)
+	}
+	if _, err := os.Stat(filepath.Join(legacyRoot, "ledger.db")); err != nil {
+		t.Fatalf("legacy ledger stat err = %v, want still present after dry-run prune", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := runDataCommand(&stdout, &stderr, "data", "prune", "--older-than", "1h", "--json"); err != nil {
+		t.Fatalf("data prune: %v; stderr = %q", err, stderr.String())
+	}
+	var pruned view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &pruned); err != nil {
+		t.Fatalf("Unmarshal prune: %v; stdout = %q", err, stdout.String())
+	}
+	if len(pruned.DeletedRuns) != 1 || pruned.DeletedRuns[0].RunID != "old-live" {
+		t.Fatalf("deleted runs = %#v, want migrated old-live deletion", pruned.DeletedRuns)
+	}
+	if _, err := os.Stat(filepath.Join(legacyRoot, "ledger.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy ledger stat err = %v, want migrated away", err)
+	}
+}
+
+func TestDataPruneDryRunWarnsForStagedLegacyMigration(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := mustLayout(t)
+	writeDataCommandFile(t, filepath.Join(statepaths.LegacyDataRoot(layout)+".migrating", "ledger.db"), "staged")
+	var stdout, stderr bytes.Buffer
+
+	if err := runDataCommand(&stdout, &stderr, "data", "prune", "--dry-run", "--json"); err != nil {
+		t.Fatalf("data prune dry-run: %v; stderr = %q", err, stderr.String())
+	}
+	var dryRun view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &dryRun); err != nil {
+		t.Fatalf("Unmarshal prune dry-run: %v; stdout = %q", err, stdout.String())
+	}
+	if len(dryRun.Warnings) != 1 || !strings.Contains(dryRun.Warnings[0], "dry-run does not migrate") {
+		t.Fatalf("warnings = %#v, want staged legacy migration warning", dryRun.Warnings)
+	}
+}
+
 func TestDataPruneDefaultIgnoresConfiguredRetention(t *testing.T) {
 	statedirtest.Hermetic(t)
 	maxAgeDays := 30
@@ -288,6 +371,16 @@ func allocateRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, ru
 		t.Fatalf("AllocateRun: %v", err)
 	}
 	return run
+}
+
+func writeDataCommandFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile %s: %v", path, err)
+	}
 }
 
 func dataPruneRunIDs(runs []view.DataRunItem) []string {

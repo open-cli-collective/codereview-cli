@@ -64,7 +64,7 @@ Supported backend names are `keychain`, `wincred`, `secret-service`, `file`,
 
 Secrets are never written to `config.yml`. Non-secret config lives in the
 `codereview` config directory resolved by the operating system, and durable
-review data lives under the `cr/codereview` data directory.
+review data lives under the OS data directory for the `cr` binary.
 
 ## Authentication And Setup
 
@@ -667,14 +667,19 @@ Flags:
 
 `cr` keeps non-secret config in the OS config directory for service
 `codereview`. Durable review data lives under the OS data directory for
-`cr/codereview` and includes:
+the `cr` binary and includes:
 
 - `ledger.db`: runs, sessions, findings, planned actions, and named sessions;
 - `runs/...`: per-run artifacts such as `diff.patch`, `findings.json`,
   `rollup.md`, diff slices, and agent JSONL logs;
 - `locks/...`: live-review advisory locks.
 
-The HTTP cache is under the OS cache directory for `cr/codereview`.
+The HTTP cache is under the OS cache directory for the `cr` binary.
+
+Releases before this state-layout alignment wrote data/cache below a nested
+`codereview` child inside the `cr` root. Commands that write review state
+migrate those legacy entries into the `cr` root without changing config or
+credential refs.
 
 ### Posting, Markers, And Idempotency
 

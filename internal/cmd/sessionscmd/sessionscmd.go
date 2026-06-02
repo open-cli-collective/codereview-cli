@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -42,11 +43,18 @@ func newListCommand(opts *root.Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			store, cleanup, err := openStore(cmd.Context())
+			store, cleanup, err := openStore(cmd.Context(), false, false)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
+			if store == nil {
+				result := view.NewSessionsList(nil)
+				if flags.jsonOutput {
+					return view.RenderSessionsListJSON(opts.Stdout, result)
+				}
+				return view.RenderSessionsListText(opts.Stdout, result)
+			}
 			sessions, err := store.ListNamedSessions(cmd.Context())
 			if err != nil {
 				return err
@@ -75,11 +83,14 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
-			store, cleanup, err := openStore(cmd.Context())
+			store, cleanup, err := openStore(cmd.Context(), false, false)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
+			if store == nil {
+				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
+			}
 			session, err := store.GetNamedSession(cmd.Context(), name)
 			if errors.Is(err, ledger.ErrNotFound) {
 				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
@@ -111,11 +122,14 @@ func newDeleteCommand(opts *root.Options) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
-			store, cleanup, err := openStore(cmd.Context())
+			store, cleanup, err := openStore(cmd.Context(), true, false)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
+			if store == nil {
+				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
+			}
 			if err := store.DeleteNamedSession(cmd.Context(), name); errors.Is(err, ledger.ErrNotFound) {
 				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
 			} else if err != nil {
@@ -136,10 +150,22 @@ func addCommonFlags(cmd *cobra.Command, flags *commandFlags) {
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 }
 
-func openStore(ctx context.Context) (*ledger.Store, func(), error) {
+func openStore(ctx context.Context, migrateLegacyData bool, create bool) (*ledger.Store, func(), error) {
 	layout, err := statepaths.DefaultLayoutEnsured()
 	if err != nil {
 		return nil, nil, err
+	}
+	if migrateLegacyData {
+		if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
+			return nil, nil, err
+		}
+	}
+	if !create {
+		if _, err := os.Stat(layout.LedgerDB()); errors.Is(err, os.ErrNotExist) {
+			return nil, func() {}, nil
+		} else if err != nil {
+			return nil, nil, err
+		}
 	}
 	store, err := ledger.Open(ctx, layout.LedgerDB())
 	if err != nil {

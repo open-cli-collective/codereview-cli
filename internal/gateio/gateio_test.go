@@ -1310,7 +1310,7 @@ func newFixture(t *testing.T) *fixture {
 			t.Fatalf("Close ledger: %v", err)
 		}
 	})
-	layout := statepaths.NewLayout(filepath.Join(t.TempDir(), "data", statepaths.AppDir), filepath.Join(t.TempDir(), "cache", statepaths.AppDir))
+	layout := statepaths.NewLayout(filepath.Join(t.TempDir(), "data"), filepath.Join(t.TempDir(), "cache"))
 	ref := gitprovider.PRRef{Host: "github", Owner: "open-cli", Repo: "codereview-cli", Number: 22}
 	prKey, err := statepaths.PRKey(ref.Host, ref.Owner, ref.Repo, ref.Number)
 	if err != nil {

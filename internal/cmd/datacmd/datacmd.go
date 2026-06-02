@@ -3,7 +3,9 @@ package datacmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -46,7 +48,7 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			layout, store, cleanup, err := openStore(cmd.Context())
+			layout, store, cleanup, err := openStore(cmd.Context(), false, false)
 			if err != nil {
 				return err
 			}
@@ -95,7 +97,7 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 				keepLast = &flags.keepLast
 			}
 
-			layout, store, cleanup, err := openStore(cmd.Context())
+			layout, store, cleanup, err := openStore(cmd.Context(), !flags.dryRun, !flags.dryRun)
 			if err != nil {
 				return err
 			}
@@ -107,6 +109,16 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+			if flags.dryRun {
+				legacyExists, err := statepaths.LegacyDataRootExists(layout)
+				if err != nil {
+					return err
+				}
+				if legacyExists {
+					legacyRoot := statepaths.LegacyDataRoot(layout)
+					result.Warnings = append(result.Warnings, fmt.Sprintf("legacy data exists at %s or %s.migrating; dry-run does not migrate it, so this preview excludes legacy runs until a write command migrates them", legacyRoot, legacyRoot))
+				}
 			}
 			rendered := view.NewDataPrune(result)
 			if flags.jsonOutput {
@@ -162,14 +174,36 @@ func addJSONFlag(cmd *cobra.Command, flags *commandFlags) {
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 }
 
-func openStore(ctx context.Context) (statepaths.Layout, *ledger.Store, func(), error) {
+func openStore(ctx context.Context, migrateLegacyData bool, create bool) (statepaths.Layout, datalifecycle.Store, func(), error) {
 	layout, err := statepaths.DefaultLayoutEnsured()
 	if err != nil {
 		return statepaths.Layout{}, nil, nil, err
+	}
+	if migrateLegacyData {
+		if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
+			return statepaths.Layout{}, nil, nil, err
+		}
+	}
+	if !create {
+		if _, err := os.Stat(layout.LedgerDB()); errors.Is(err, os.ErrNotExist) {
+			return layout, emptyLifecycleStore{}, func() {}, nil
+		} else if err != nil {
+			return statepaths.Layout{}, nil, nil, err
+		}
 	}
 	store, err := ledger.Open(ctx, layout.LedgerDB())
 	if err != nil {
 		return statepaths.Layout{}, nil, nil, err
 	}
 	return layout, store, func() { _ = store.Close() }, nil
+}
+
+type emptyLifecycleStore struct{}
+
+func (emptyLifecycleStore) ListRuns(context.Context) ([]ledger.Run, error) {
+	return nil, nil
+}
+
+func (emptyLifecycleStore) DeleteRun(context.Context, string) error {
+	return ledger.ErrNotFound
 }

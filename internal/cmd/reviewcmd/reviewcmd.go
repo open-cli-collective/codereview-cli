@@ -62,6 +62,14 @@ type RuntimeOptions struct {
 // RuntimeFactory builds the concrete runtime used by `cr review`.
 type RuntimeFactory func(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error)
 
+var (
+	newGitProvider = func(git config.GitConfig, store githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+		return githubprovider.NewFromGitConfig(git, store, opts)
+	}
+	resolvePostingIdentityForRuntime = resolvePostingIdentity
+	newAdapterForRuntime             = newAdapter
+)
+
 type commandFlags struct {
 	dryRun           bool
 	noPost           bool
@@ -442,22 +450,22 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		return Runtime{}, cmderr.Credential(err)
 	}
 	cleanup := func() { _ = store.Close() }
-	provider, credential, err := githubprovider.NewFromGitConfig(profile.Git, store, githubprovider.Options{})
+	provider, credential, err := newGitProvider(profile.Git, store, githubprovider.Options{})
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	postingIdentity, err := resolvePostingIdentity(cmd.Context(), provider, credential, store, profile)
+	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), provider, credential, store, profile)
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	adapter, err := newAdapter(profile.LLM, store)
+	adapter, err := newAdapterForRuntime(profile.LLM, store)
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	layout, err := statepaths.DefaultLayoutEnsured()
+	layout, err := runtimeLayout()
 	if err != nil {
 		cleanup()
 		return Runtime{}, err
@@ -482,6 +490,20 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		PostingIdentity: postingIdentity,
 		Cleanup:         cleanup,
 	}, nil
+}
+
+func runtimeLayout() (statepaths.Layout, error) {
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		return statepaths.Layout{}, err
+	}
+	if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
+		return statepaths.Layout{}, err
+	}
+	if err := statepaths.MigrateLegacyCacheRoot(layout); err != nil {
+		return statepaths.Layout{}, err
+	}
+	return layout, nil
 }
 
 func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, runtimeOpts RuntimeOptions) reviewRunner {

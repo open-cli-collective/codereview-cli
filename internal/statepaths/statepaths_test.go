@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/open-cli-collective/cli-common/statedir"
 	"github.com/open-cli-collective/cli-common/statedirtest"
 )
 
@@ -160,7 +161,7 @@ func TestFormatAttempt(t *testing.T) {
 }
 
 func TestRunPaths(t *testing.T) {
-	layout := NewLayout(filepath.Join("data", AppDir), filepath.Join("cache", AppDir))
+	layout := NewLayout("data", "cache")
 	spec := RunSpec{
 		Host:            "github",
 		Owner:           "open-cli",
@@ -180,9 +181,9 @@ func TestRunPaths(t *testing.T) {
 
 	prKey := "github_open-cli_codereview-cli_34"
 	scope := "work__monit%2Freviewer"
-	runDir := filepath.Join("data", AppDir, "runs", prKey, headSHA, baseSHA, scope, "001")
+	runDir := filepath.Join("data", "runs", prKey, headSHA, baseSHA, scope, "001")
 
-	if got := layout.LedgerDB(); got != filepath.Join("data", AppDir, "ledger.db") {
+	if got := layout.LedgerDB(); got != filepath.Join("data", "ledger.db") {
 		t.Fatalf("LedgerDB = %q, want data ledger path", got)
 	}
 	if paths.Dir != runDir {
@@ -217,7 +218,7 @@ func TestRunPaths(t *testing.T) {
 	if agentLog != filepath.Join(runDir, "agent-logs", "harness%3Aarch.jsonl") {
 		t.Fatalf("AgentLog = %q", agentLog)
 	}
-	if paths.LockFile != filepath.Join("data", AppDir, "locks", prKey+"__aaaaaaa__62574572babb.lock") {
+	if paths.LockFile != filepath.Join("data", "locks", prKey+"__aaaaaaa__62574572babb.lock") {
 		t.Fatalf("LockFile = %q", paths.LockFile)
 	}
 	lockFile, err := layout.LockFile(LockSpec{
@@ -236,7 +237,7 @@ func TestRunPaths(t *testing.T) {
 	if lockFile != paths.LockFile {
 		t.Fatalf("LockFile() = %q, want Run().LockFile %q", lockFile, paths.LockFile)
 	}
-	if got := layout.HTTPCacheDir(); got != filepath.Join("cache", AppDir, "http") {
+	if got := layout.HTTPCacheDir(); got != filepath.Join("cache", "http") {
 		t.Fatalf("HTTPCacheDir = %q", got)
 	}
 }
@@ -366,11 +367,22 @@ func TestRootsAreHermeticAndEnsured(t *testing.T) {
 	if dataRoot == cacheRoot {
 		t.Fatalf("DataRoot and CacheRoot collide at %q", dataRoot)
 	}
-	if filepath.Base(dataRoot) != AppDir {
-		t.Fatalf("DataRoot base = %q, want %q", filepath.Base(dataRoot), AppDir)
+	expectedData, err := (statedir.Data{Tool: Tool}).DataDir()
+	if err != nil {
+		t.Fatalf("expected DataDir: %v", err)
 	}
-	if filepath.Base(cacheRoot) != AppDir {
-		t.Fatalf("CacheRoot base = %q, want %q", filepath.Base(cacheRoot), AppDir)
+	expectedCache, err := (statedir.Cache{Tool: Tool}).CacheDir()
+	if err != nil {
+		t.Fatalf("expected CacheDir: %v", err)
+	}
+	if dataRoot != expectedData {
+		t.Fatalf("DataRoot = %q, want shared resolver root %q", dataRoot, expectedData)
+	}
+	if cacheRoot != expectedCache {
+		t.Fatalf("CacheRoot = %q, want shared resolver root %q", cacheRoot, expectedCache)
+	}
+	if filepath.Base(dataRoot) == AppDir || filepath.Base(cacheRoot) == AppDir {
+		t.Fatalf("roots must not use legacy app dir suffix: data=%q cache=%q", dataRoot, cacheRoot)
 	}
 	if _, err := os.Stat(dataRoot); !os.IsNotExist(err) {
 		t.Fatalf("DataRoot must not create app root; stat err = %v", err)
@@ -395,6 +407,235 @@ func TestRootsAreHermeticAndEnsured(t *testing.T) {
 	}
 	assertDir0700(t, ensuredData)
 	assertDir0700(t, ensuredCache)
+}
+
+func TestDefaultLayoutEnsuredDoesNotMigrateLegacyRoot(t *testing.T) {
+	statedirtest.Hermetic(t)
+	dataRoot, err := DataRoot()
+	if err != nil {
+		t.Fatalf("DataRoot: %v", err)
+	}
+	legacyFile := filepath.Join(dataRoot, AppDir, "ledger.db")
+	writeStatepathsFile(t, legacyFile, "legacy")
+
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	if layout.DataRoot != dataRoot {
+		t.Fatalf("layout data root = %q, want %q", layout.DataRoot, dataRoot)
+	}
+	assertFileContents(t, legacyFile, "legacy")
+	if _, err := os.Stat(filepath.Join(dataRoot, "ledger.db")); !os.IsNotExist(err) {
+		t.Fatalf("new ledger stat err = %v, want missing because generic ensure must not migrate", err)
+	}
+}
+
+func TestLegacyDataRootExistsIncludesStagedRoot(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	exists, err := LegacyDataRootExists(layout)
+	if err != nil {
+		t.Fatalf("initial LegacyDataRootExists: %v", err)
+	}
+	if exists {
+		t.Fatal("initial LegacyDataRootExists = true, want false")
+	}
+
+	stagedRoot := LegacyDataRoot(layout) + ".migrating"
+	writeStatepathsFile(t, filepath.Join(stagedRoot, "runs", "sentinel.txt"), "staged")
+	exists, err = LegacyDataRootExists(layout)
+	if err != nil {
+		t.Fatalf("staged LegacyDataRootExists: %v", err)
+	}
+	if !exists {
+		t.Fatal("staged LegacyDataRootExists = false, want true")
+	}
+
+	writeStatepathsFile(t, filepath.Join(LegacyDataRoot(layout), "ledger.db"), "legacy")
+	exists, err = LegacyDataRootExists(layout)
+	if err != nil {
+		t.Fatalf("both-root LegacyDataRootExists: %v", err)
+	}
+	if !exists {
+		t.Fatal("both-root LegacyDataRootExists = false, want true")
+	}
+}
+
+func TestMigrateLegacyDataRootMovesEntries(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyLedger := filepath.Join(layout.DataRoot, AppDir, "ledger.db")
+	legacyRun := filepath.Join(layout.DataRoot, AppDir, "runs", "sentinel.txt")
+	writeStatepathsFile(t, legacyLedger, "ledger")
+	writeStatepathsFile(t, legacyRun, "run")
+
+	if err := MigrateLegacyDataRoot(layout); err != nil {
+		t.Fatalf("MigrateLegacyDataRoot: %v", err)
+	}
+	assertFileContents(t, filepath.Join(layout.DataRoot, "ledger.db"), "ledger")
+	assertFileContents(t, filepath.Join(layout.DataRoot, "runs", "sentinel.txt"), "run")
+	if _, err := os.Stat(filepath.Join(layout.DataRoot, AppDir)); !os.IsNotExist(err) {
+		t.Fatalf("legacy data root stat err = %v, want removed", err)
+	}
+}
+
+func TestMigrateLegacyCacheRootMovesEntries(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyHTTP := filepath.Join(layout.CacheRoot, AppDir, "http", "sentinel.txt")
+	writeStatepathsFile(t, legacyHTTP, "cache")
+
+	if err := MigrateLegacyCacheRoot(layout); err != nil {
+		t.Fatalf("MigrateLegacyCacheRoot: %v", err)
+	}
+	assertFileContents(t, filepath.Join(layout.CacheRoot, "http", "sentinel.txt"), "cache")
+	if _, err := os.Stat(filepath.Join(layout.CacheRoot, AppDir)); !os.IsNotExist(err) {
+		t.Fatalf("legacy cache root stat err = %v, want removed", err)
+	}
+}
+
+func TestMigrateLegacyCacheRootRefusesConflictsWithoutPartialMove(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyHTTP := filepath.Join(layout.CacheRoot, AppDir, "http", "legacy.txt")
+	legacyOther := filepath.Join(layout.CacheRoot, AppDir, "other", "legacy.txt")
+	writeStatepathsFile(t, legacyHTTP, "legacy-http")
+	writeStatepathsFile(t, legacyOther, "legacy-other")
+	writeStatepathsFile(t, filepath.Join(layout.CacheRoot, "http", "new.txt"), "new-http")
+
+	err = MigrateLegacyCacheRoot(layout)
+	if err == nil {
+		t.Fatal("MigrateLegacyCacheRoot error = nil, want conflict")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("MigrateLegacyCacheRoot error = %v, want conflict context", err)
+	}
+	stagedRoot := filepath.Join(layout.CacheRoot, AppDir+".migrating")
+	assertFileContents(t, filepath.Join(stagedRoot, "http", "legacy.txt"), "legacy-http")
+	assertFileContents(t, filepath.Join(stagedRoot, "other", "legacy.txt"), "legacy-other")
+	assertFileContents(t, filepath.Join(layout.CacheRoot, "http", "new.txt"), "new-http")
+	if _, err := os.Stat(filepath.Join(layout.CacheRoot, "other")); !os.IsNotExist(err) {
+		t.Fatalf("new other stat err = %v, want missing because migration must be all-or-nothing on conflict", err)
+	}
+}
+
+func TestMigrateLegacyCacheRootIsIdempotent(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyHTTP := filepath.Join(layout.CacheRoot, AppDir, "http", "sentinel.txt")
+	writeStatepathsFile(t, legacyHTTP, "cache")
+
+	if err := MigrateLegacyCacheRoot(layout); err != nil {
+		t.Fatalf("first MigrateLegacyCacheRoot: %v", err)
+	}
+	if err := MigrateLegacyCacheRoot(layout); err != nil {
+		t.Fatalf("second MigrateLegacyCacheRoot: %v", err)
+	}
+	assertFileContents(t, filepath.Join(layout.CacheRoot, "http", "sentinel.txt"), "cache")
+}
+
+func TestMigrateLegacyRootResumesStagedMigration(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	stagedRoot := filepath.Join(layout.DataRoot, AppDir+".migrating")
+	writeStatepathsFile(t, filepath.Join(layout.DataRoot, "ledger.db"), "already-moved")
+	writeStatepathsFile(t, filepath.Join(stagedRoot, "runs", "sentinel.txt"), "remaining")
+
+	if err := MigrateLegacyDataRoot(layout); err != nil {
+		t.Fatalf("MigrateLegacyDataRoot: %v", err)
+	}
+	assertFileContents(t, filepath.Join(layout.DataRoot, "ledger.db"), "already-moved")
+	assertFileContents(t, filepath.Join(layout.DataRoot, "runs", "sentinel.txt"), "remaining")
+	if _, err := os.Stat(stagedRoot); !os.IsNotExist(err) {
+		t.Fatalf("staged root stat err = %v, want removed", err)
+	}
+}
+
+func TestMigrateLegacyRootRefusesConflictsWithoutPartialMove(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyLedger := filepath.Join(layout.DataRoot, AppDir, "ledger.db")
+	legacyRuns := filepath.Join(layout.DataRoot, AppDir, "runs", "sentinel.txt")
+	writeStatepathsFile(t, legacyLedger, "legacy-ledger")
+	writeStatepathsFile(t, legacyRuns, "legacy-run")
+	writeStatepathsFile(t, filepath.Join(layout.DataRoot, "ledger.db"), "new-ledger")
+
+	err = MigrateLegacyDataRoot(layout)
+	if err == nil {
+		t.Fatal("MigrateLegacyDataRoot error = nil, want conflict")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("MigrateLegacyDataRoot error = %v, want conflict context", err)
+	}
+	stagedRoot := filepath.Join(layout.DataRoot, AppDir+".migrating")
+	assertFileContents(t, filepath.Join(stagedRoot, "ledger.db"), "legacy-ledger")
+	assertFileContents(t, filepath.Join(stagedRoot, "runs", "sentinel.txt"), "legacy-run")
+	assertFileContents(t, filepath.Join(layout.DataRoot, "ledger.db"), "new-ledger")
+	if _, err := os.Stat(filepath.Join(layout.DataRoot, "runs")); !os.IsNotExist(err) {
+		t.Fatalf("new runs stat err = %v, want missing because migration must be all-or-nothing on conflict", err)
+	}
+}
+
+func TestMigrateLegacyRootIsIdempotent(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	legacyLedger := filepath.Join(layout.DataRoot, AppDir, "ledger.db")
+	writeStatepathsFile(t, legacyLedger, "ledger")
+
+	if err := MigrateLegacyDataRoot(layout); err != nil {
+		t.Fatalf("first MigrateLegacyDataRoot: %v", err)
+	}
+	if err := MigrateLegacyDataRoot(layout); err != nil {
+		t.Fatalf("second MigrateLegacyDataRoot: %v", err)
+	}
+	assertFileContents(t, filepath.Join(layout.DataRoot, "ledger.db"), "ledger")
+}
+
+func writeStatepathsFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile %s: %v", path, err)
+	}
+}
+
+func assertFileContents(t *testing.T, path, want string) {
+	t.Helper()
+	// #nosec G304 -- test paths are controlled by statedirtest.Hermetic/t.TempDir.
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", path, err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
 }
 
 func assertDir0700(t *testing.T, dir string) {
