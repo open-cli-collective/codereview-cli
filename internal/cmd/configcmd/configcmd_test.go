@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/cli-common/credstore"
+	"github.com/open-cli-collective/cli-common/statedirtest"
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
@@ -906,8 +907,7 @@ func newTestCommand(path string) (*cobra.Command, *bytes.Buffer) {
 
 func fileBackendConfig(t *testing.T) config.File {
 	t.Helper()
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	statedirtest.Hermetic(t)
 	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
 	cfg := testConfig()
 	cfg.Keyring.Backend = "file"
@@ -916,7 +916,11 @@ func fileBackendConfig(t *testing.T) config.File {
 
 func writeDataSentinel(t *testing.T) string {
 	t.Helper()
-	dataFile := filepath.Join(os.Getenv("XDG_DATA_HOME"), statepaths.Tool, "runs", "sentinel.txt")
+	dataRoot, err := statepaths.DataRoot()
+	if err != nil {
+		t.Fatalf("DataRoot: %v", err)
+	}
+	dataFile := filepath.Join(dataRoot, "runs", "sentinel.txt")
 	// #nosec G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
 	if err := os.MkdirAll(filepath.Dir(dataFile), 0o700); err != nil {
 		t.Fatalf("MkdirAll data sentinel: %v", err)
