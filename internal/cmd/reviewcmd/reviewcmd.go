@@ -53,8 +53,10 @@ type Runtime struct {
 
 // RuntimeOptions carries command flags that affect runtime construction.
 type RuntimeOptions struct {
-	MaxAgents      int
-	MaxConcurrency int
+	MaxAgents           int
+	MaxConcurrency      int
+	Retention           datalifecycle.RetentionPolicy
+	RetentionManualOnly bool
 }
 
 // RuntimeFactory builds the concrete runtime used by `cr review`.
@@ -164,7 +166,13 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
 	}
 
-	runtime, err := factory(cmd, opts, cfg, profile, RuntimeOptions{MaxAgents: flags.maxAgents, MaxConcurrency: flags.maxConcurrency})
+	runtimeOpts := RuntimeOptions{
+		MaxAgents:           flags.maxAgents,
+		MaxConcurrency:      flags.maxConcurrency,
+		Retention:           retentionPolicyFromConfig(cfg.Data.Retention),
+		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
+	}
+	runtime, err := factory(cmd, opts, cfg, profile, runtimeOpts)
 	if err != nil {
 		return err
 	}
@@ -468,7 +476,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, err
 	}
-	runner := buildReviewRunner(ledgerStore, provider, adapter, limiter, layout, opts.Stderr, cfg.Data.Retention, runtimeOpts)
+	runner := buildReviewRunner(ledgerStore, provider, adapter, limiter, layout, opts.Stderr, runtimeOpts)
 	return Runtime{
 		Runner:          runner,
 		PostingIdentity: postingIdentity,
@@ -476,9 +484,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 	}, nil
 }
 
-func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, retention config.RetentionConfig, runtimeOpts RuntimeOptions) reviewRunner {
-	retentionPolicy := retentionPolicyFromConfig(retention)
-	retentionManualOnly := retention.Enforcement == config.RetentionManualOnly
+func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, runtimeOpts RuntimeOptions) reviewRunner {
 	pipelineOpts := pipeline.Options{
 		Provider:            provider,
 		Adapter:             adapter,
@@ -488,8 +494,8 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 		Warnings:            warnings,
 		MaxAgents:           runtimeOpts.MaxAgents,
 		MaxConcurrency:      runtimeOpts.MaxConcurrency,
-		Retention:           retentionPolicy,
-		RetentionManualOnly: retentionManualOnly,
+		Retention:           runtimeOpts.Retention,
+		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
 	}
 	return reviewRunner{
 		pipeline: pipelineOpts,
@@ -501,8 +507,8 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 			Layout:                  layout,
 			StaleHeartbeatThreshold: 10 * time.Minute,
 			Warnings:                warnings,
-			Retention:               retentionPolicy,
-			RetentionManualOnly:     retentionManualOnly,
+			Retention:               runtimeOpts.Retention,
+			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
 		},
 	}
 }

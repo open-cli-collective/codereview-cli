@@ -18,6 +18,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -111,6 +112,28 @@ func TestReviewProfileResolveThreadsNeverDisablesThreadResolution(t *testing.T) 
 	}
 }
 
+func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
+	cfg := testConfig()
+	maxAgeDays := 0
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  &maxAgeDays,
+		Enforcement: config.RetentionManualOnly,
+	}
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	var got RuntimeOptions
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, opts RuntimeOptions) (Runtime, error) {
+		got = opts
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !got.Retention.LiveForever || !got.RetentionManualOnly {
+		t.Fatalf("runtime retention = %#v manual %v, want keep-forever manual-only policy", got.Retention, got.RetentionManualOnly)
+	}
+}
+
 func TestReviewLiveCallsRunnerAndRendersText(t *testing.T) {
 	runner := &fakeRunner{liveResult: testLiveResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -157,6 +180,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 	provider := &gitprovider.Fake{}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	var warnings bytes.Buffer
+	retention := datalifecycle.RetentionPolicy{LiveMaxAge: 30 * 24 * time.Hour}
 
 	runner := buildReviewRunner(
 		store,
@@ -165,8 +189,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 		noopLimiter{},
 		statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		&warnings,
-		testConfig().Data.Retention,
-		RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2},
+		RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2, Retention: retention, RetentionManualOnly: true},
 	)
 
 	if runner.pipeline.NamedSessions != store {
@@ -184,6 +207,15 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 	}
 	if runner.pipeline.MaxAgents != 3 || runner.pipeline.MaxConcurrency != 2 {
 		t.Fatalf("runtime opts = maxAgents:%d maxConcurrency:%d, want 3/2", runner.pipeline.MaxAgents, runner.pipeline.MaxConcurrency)
+	}
+	if runner.pipeline.Retention != retention || !runner.pipeline.RetentionManualOnly {
+		t.Fatalf("pipeline retention = %#v manual %v, want configured manual policy", runner.pipeline.Retention, runner.pipeline.RetentionManualOnly)
+	}
+	if runner.live.Retention != retention || !runner.live.RetentionManualOnly {
+		t.Fatalf("live retention = %#v manual %v, want configured manual policy", runner.live.Retention, runner.live.RetentionManualOnly)
+	}
+	if planner.opts.Retention != retention || !planner.opts.RetentionManualOnly {
+		t.Fatalf("planner retention = %#v manual %v, want configured manual policy", planner.opts.Retention, planner.opts.RetentionManualOnly)
 	}
 }
 
@@ -252,7 +284,6 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 			noopLimiter{},
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
-			cfg.Data.Retention,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -316,7 +347,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, loaded config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
@@ -324,7 +355,6 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
-			loaded.Data.Retention,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -385,7 +415,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, loaded config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
@@ -393,7 +423,6 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
-			loaded.Data.Retention,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -447,7 +476,7 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, loaded config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
@@ -455,7 +484,6 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
-			loaded.Data.Retention,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
