@@ -344,6 +344,72 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 	}
 }
 
+func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
+	cfg := testConfig()
+	agentDir := t.TempDir()
+	writeReviewAgent(t, agentDir)
+	profile := cfg.Profiles["home"]
+	profile.AgentSources = []string{agentDir}
+	cfg.Profiles["home"] = profile
+	maxAgeDays := 0
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  &maxAgeDays,
+		Enforcement: config.RetentionAtWrite,
+	}
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	now := time.Now()
+	oldLive := allocateReviewCommandRun(t, store, layout, "old-live", ledger.PostModeLive, now.Add(-365*24*time.Hour))
+	oldDryRun := allocateReviewCommandRun(t, store, layout, "old-dry", ledger.PostModeDryRun, now.Add(-8*24*time.Hour))
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, loaded config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		runner := buildReviewRunner(
+			store,
+			provider,
+			adapter,
+			noopLimiter{},
+			layout,
+			opts.Stderr,
+			loaded.Data.Retention,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", pr.URL, "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldLive.RunID); err != nil {
+		t.Fatalf("old live GetRun error = %v, want nil", err)
+	}
+	if _, err := store.GetRun(context.Background(), oldDryRun.RunID); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("old dry-run GetRun error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 	cfg := testConfig()
 	agentDir := t.TempDir()
