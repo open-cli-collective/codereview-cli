@@ -376,24 +376,22 @@ func TestMeReviewerReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
 	}
 }
 
-func TestMeReviewerProfileReservedGitAuthModeDoesNotOpenResolverFactory(t *testing.T) {
+func TestMeReviewerProfileReservedGitAuthModeUsesReviewerIdentity(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["work"]
 	work.Git.AuthMode = config.GitAuthModeOAuthDevice
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
-	factoryOpened := false
-	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
-		factoryOpened = true
-		return &fakeResolver{}, nil, nil
-	})
+	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
+		"codereview/work-reviewer": {Login: "bot"},
+	}}
+	cmd, _ := newTestCommand(path, resolver)
 
-	err := root.Execute(cmd, []string{"--profile", "work", "me"})
-	if !errors.Is(err, config.ErrUnsupported) {
-		t.Fatalf("Execute error = %v, want ErrUnsupported", err)
+	if err := root.Execute(cmd, []string{"--profile", "work", "me"}); err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	if factoryOpened {
-		t.Fatal("resolver factory opened for unsupported git auth mode")
+	if len(resolver.calls) != 1 || resolver.calls[0].CredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("resolver calls = %#v, want reviewer ref", resolver.calls)
 	}
 }
 

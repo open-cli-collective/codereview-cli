@@ -126,12 +126,6 @@ func prevalidateIdentityProfiles(cfg config.File, profileName string, all bool) 
 }
 
 func prevalidatePostingIdentityProfile(name string, profile config.Profile) error {
-	if !profile.Git.AuthMode.Valid() {
-		return fmt.Errorf("%w: profiles.%s.git.auth_mode %q", config.ErrInvalid, name, profile.Git.AuthMode)
-	}
-	if !profile.Git.AuthMode.Supported() {
-		return fmt.Errorf("%w: profiles.%s.git.auth_mode %q", config.ErrUnsupported, name, profile.Git.AuthMode)
-	}
 	if profile.ReviewerCredentials != nil {
 		if !profile.ReviewerCredentials.AuthMode.Valid() {
 			return fmt.Errorf("%w: profiles.%s.reviewer_credentials.auth_mode %q", config.ErrInvalid, name, profile.ReviewerCredentials.AuthMode)
@@ -140,6 +134,12 @@ func prevalidatePostingIdentityProfile(name string, profile config.Profile) erro
 			return fmt.Errorf("%w: profiles.%s.reviewer_credentials.auth_mode %q", config.ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
 		}
 		return nil
+	}
+	if !profile.Git.AuthMode.Valid() {
+		return fmt.Errorf("%w: profiles.%s.git.auth_mode %q", config.ErrInvalid, name, profile.Git.AuthMode)
+	}
+	if !profile.Git.AuthMode.Supported() {
+		return fmt.Errorf("%w: profiles.%s.git.auth_mode %q", config.ErrUnsupported, name, profile.Git.AuthMode)
 	}
 	return nil
 }
