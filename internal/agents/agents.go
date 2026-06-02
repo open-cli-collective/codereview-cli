@@ -739,9 +739,15 @@ func pathWithin(child, parent string) bool {
 	if err != nil {
 		return false
 	}
+	if resolved, err := filepath.EvalSymlinks(childAbs); err == nil {
+		childAbs = resolved
+	}
 	parentAbs, err := filepath.Abs(parent)
 	if err != nil {
 		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(parentAbs); err == nil {
+		parentAbs = resolved
 	}
 	rel, err := filepath.Rel(parentAbs, childAbs)
 	if err != nil {

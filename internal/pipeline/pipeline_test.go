@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -739,7 +740,7 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 	}
 	var reviewerPrompts int
 	for _, request := range requests {
-		assertPromptOmitsLocalAgentSourceProvenance(t, request.Prompt)
+		assertPromptOmitsLocalAgentSourceProvenance(t, request.Prompt, result.Catalog.Sources)
 		if strings.Contains(request.Prompt, `"schema": "findings"`) {
 			reviewerPrompts++
 			if !strings.Contains(request.Prompt, `"agent"`) || !strings.Contains(request.Prompt, `"files"`) {
@@ -1384,18 +1385,44 @@ func assertAgentSourcesArtifact(t *testing.T, path, wantAgent string) {
 	if err := json.Unmarshal(data, &artifact); err != nil {
 		t.Fatalf("Unmarshal agent sources artifact: %v\n%s", err, data)
 	}
-	if len(artifact.Sources) == 0 || artifact.Sources[0].Fingerprint == "" || artifact.Sources[0].CanonicalPath == "" {
-		t.Fatalf("artifact sources = %#v, want fingerprinted canonical source", artifact.Sources)
+	if len(artifact.Sources) != 2 {
+		t.Fatalf("artifact sources len = %d, want profile and repo sources: %#v", len(artifact.Sources), artifact.Sources)
+	}
+	profileSource, ok := findArtifactSource(artifact.Sources, agents.SourceProfile)
+	if !ok {
+		t.Fatalf("artifact sources = %#v, want profile source", artifact.Sources)
+	}
+	if profileSource.Status != agents.SourceStatusAvailable || profileSource.Fingerprint == "" || profileSource.CanonicalPath == "" || len(profileSource.Warnings) == 0 {
+		t.Fatalf("profile source = %#v, want available source with fingerprint, canonical path, warnings", profileSource)
+	}
+	repoSource, ok := findArtifactSource(artifact.Sources, agents.SourceRepo)
+	if !ok {
+		t.Fatalf("artifact sources = %#v, want repo source", artifact.Sources)
+	}
+	if repoSource.Status != agents.SourceStatusMissing || repoSource.Present || repoSource.SHA == "" {
+		t.Fatalf("repo source = %#v, want missing repo source anchored to base SHA", repoSource)
 	}
 	for _, agent := range artifact.Agents {
-		if agent.ID == wantAgent && agent.Source.Fingerprint != "" {
+		if agent.ID == wantAgent &&
+			agent.Source.Fingerprint == profileSource.Fingerprint &&
+			agent.Source.CanonicalPath == profileSource.CanonicalPath &&
+			agent.Source.Status == agents.SourceStatusAvailable {
 			return
 		}
 	}
-	t.Fatalf("artifact agents = %#v, want %s with fingerprint", artifact.Agents, wantAgent)
+	t.Fatalf("artifact agents = %#v, want %s with exact profile source provenance", artifact.Agents, wantAgent)
 }
 
-func assertPromptOmitsLocalAgentSourceProvenance(t *testing.T, prompt string) {
+func findArtifactSource(sources []agents.SourceInfo, kind agents.SourceKind) (agents.SourceInfo, bool) {
+	for _, source := range sources {
+		if source.Kind == kind {
+			return source, true
+		}
+	}
+	return agents.SourceInfo{}, false
+}
+
+func assertPromptOmitsLocalAgentSourceProvenance(t *testing.T, prompt string, sources []agents.SourceInfo) {
 	t.Helper()
 	for _, forbidden := range []string{
 		"configured_path",
@@ -1407,6 +1434,18 @@ func assertPromptOmitsLocalAgentSourceProvenance(t *testing.T, prompt string) {
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("prompt contains local source provenance %q:\n%s", forbidden, prompt)
+		}
+	}
+	for _, source := range sources {
+		for _, forbidden := range []string{source.ConfiguredPath, source.CanonicalPath, source.Fingerprint} {
+			if forbidden != "" && strings.Contains(prompt, forbidden) {
+				t.Fatalf("prompt contains local source value %q:\n%s", forbidden, prompt)
+			}
+		}
+		for _, warning := range source.Warnings {
+			if warning != "" && strings.Contains(prompt, warning) {
+				t.Fatalf("prompt contains local source warning %q:\n%s", warning, prompt)
+			}
 		}
 	}
 }

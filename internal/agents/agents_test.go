@@ -60,6 +60,23 @@ func TestMissingFilesystemSourceFailsLoadAndInspectsMissing(t *testing.T) {
 	}
 }
 
+func TestUnreadableFilesystemSourceFailsLoadAndInspectsUnreadable(t *testing.T) {
+	notDir := filepath.Join(t.TempDir(), "agent-source-file")
+	if err := os.WriteFile(notDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile notDir: %v", err)
+	}
+
+	_, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{notDir}})
+	if err == nil || !strings.Contains(err.Error(), "agents: read source") {
+		t.Fatalf("Load error = %v, want read source failure", err)
+	}
+
+	sources := InspectProfileSources([]string{notDir})
+	if len(sources) != 1 || sources[0].Status != SourceStatusUnreadable || !sources[0].Present || sources[0].Error == "" {
+		t.Fatalf("sources = %#v, want non-fatal unreadable status", sources)
+	}
+}
+
 func TestFilesystemSourceSymlinkRecordsCanonicalPathAndFingerprint(t *testing.T) {
 	realRoot := t.TempDir()
 	writeAgent(t, realRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
