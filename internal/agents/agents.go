@@ -30,6 +30,9 @@ var (
 	ErrInvalid = errors.New("agents: invalid")
 	// ErrNotFound identifies a requested agent absent from a loaded catalog.
 	ErrNotFound = errors.New("agents: not found")
+	// ErrUnsafeSource identifies profile agent sources that are mutable or
+	// ambiguous for PR review execution.
+	ErrUnsafeSource = errors.New("agents: unsafe source")
 )
 
 // SourceKind identifies where an agent definition came from.
@@ -157,9 +160,10 @@ type RepoSource struct {
 
 // LoadOptions configures catalog loading.
 type LoadOptions struct {
-	ProfileDirs []string
-	Repo        *RepoSource
-	FlagDirs    []string
+	ProfileDirs               []string
+	Repo                      *RepoSource
+	FlagDirs                  []string
+	RequireSafeProfileSources bool
 }
 
 // RepoInfo describes the trusted repo-local source, when one was considered.
@@ -203,6 +207,11 @@ func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
 		agents, source, err := loadFileSource(dir, provenance)
 		if err != nil {
 			return Catalog{}, err
+		}
+		if opts.RequireSafeProfileSources {
+			if err := unsafeSourceError(source); err != nil {
+				return Catalog{}, err
+			}
 		}
 		sources = append(sources, source)
 		merged.add(agents)
@@ -254,6 +263,28 @@ func InspectProfileSources(dirs []string) []SourceInfo {
 		out = append(out, source)
 	}
 	return out
+}
+
+// RequireSafeProfileSources fails when profile sources are mutable or
+// ambiguous for PR review execution.
+func RequireSafeProfileSources(dirs []string) error {
+	for _, dir := range dirs {
+		source, err := inspectFileSource(dir, Provenance{Kind: SourceProfile})
+		if err != nil {
+			return err
+		}
+		if err := unsafeSourceError(source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func unsafeSourceError(source SourceInfo) error {
+	if len(source.Warnings) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: profile agent source %s is not trusted for PR review: %s", ErrUnsafeSource, source.ConfiguredPath, strings.Join(source.Warnings, "; "))
 }
 
 type catalogBuilder struct {

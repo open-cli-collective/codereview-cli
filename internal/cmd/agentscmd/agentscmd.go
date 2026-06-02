@@ -136,6 +136,7 @@ func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, f
 		FlagDirs:    append([]string(nil), flags.agentsDirs...),
 	}
 	if strings.TrimSpace(prArg) != "" {
+		loadOptions.RequireSafeProfileSources = true
 		ref, err := prref.ParseGitHubPullURL(prArg)
 		if err != nil {
 			return agents.Catalog{}, exitcode.Usage(err)
@@ -174,6 +175,8 @@ func mapLoadError(err error) error {
 		errors.Is(err, gitprovider.ErrStaleSHA):
 		return cmderr.Provider(err)
 	case errors.Is(err, agents.ErrInvalid):
+		return exitcode.Usage(err)
+	case errors.Is(err, agents.ErrUnsafeSource):
 		return exitcode.Usage(err)
 	default:
 		return err

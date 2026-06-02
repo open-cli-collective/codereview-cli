@@ -206,6 +206,45 @@ func TestFilesystemSourceWarningsForRelativeTempAndGitWorktreePaths(t *testing.T
 	}
 }
 
+func TestRequireSafeProfileSourcesRejectsRelativeTempAndGitWorktreePaths(t *testing.T) {
+	cwd := t.TempDir()
+	relativeRoot := filepath.Join(cwd, "agents")
+	writeAgent(t, relativeRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	t.Chdir(cwd)
+	err := RequireSafeProfileSources([]string{"agents"})
+	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "relative") {
+		t.Fatalf("relative error = %v, want ErrUnsafeSource with relative warning", err)
+	}
+
+	tempRoot := t.TempDir()
+	writeAgent(t, tempRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	err = RequireSafeProfileSources([]string{tempRoot})
+	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "OS temp") {
+		t.Fatalf("temp error = %v, want ErrUnsafeSource with temp warning", err)
+	}
+
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir .git: %v", err)
+	}
+	gitSource := filepath.Join(repoRoot, "agents")
+	writeAgent(t, gitSource, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	err = RequireSafeProfileSources([]string{gitSource})
+	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "Git worktree") {
+		t.Fatalf("git error = %v, want ErrUnsafeSource with Git worktree warning", err)
+	}
+}
+
+func TestLoadRequireSafeProfileSourcesRejectsUnsafeSource(t *testing.T) {
+	tempRoot := t.TempDir()
+	writeAgent(t, tempRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+
+	_, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{tempRoot}, RequireSafeProfileSources: true})
+	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "OS temp") {
+		t.Fatalf("Load error = %v, want ErrUnsafeSource with temp warning", err)
+	}
+}
+
 func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {
 	ctx := context.Background()
 	profileDir := t.TempDir()

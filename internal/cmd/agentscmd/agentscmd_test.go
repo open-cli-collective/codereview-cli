@@ -3,6 +3,7 @@ package agentscmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -66,6 +68,7 @@ func TestAgentsListFailsFastForUnreadableProfileSource(t *testing.T) {
 func TestAgentsListWithPRLoadsRepoBaseAndTrustNote(t *testing.T) {
 	profileDir := t.TempDir()
 	writeAgent(t, profileDir, "profile", "only", "profile desc", "profile prompt")
+	trustCurrentTempFixtures(t)
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig(profileDir)
 	cmd, out := newTestCommand(t, cfg, providerFactory(fake))
@@ -91,6 +94,47 @@ func TestAgentsListWithPRLoadsRepoBaseAndTrustNote(t *testing.T) {
 	}
 	if !strings.Contains(got.TrustNote, "PR-head .codereview/agents changes do not affect") {
 		t.Fatalf("trust_note = %q, want PR-head note", got.TrustNote)
+	}
+}
+
+func TestAgentsListWithPRRejectsUnsafeProfileSource(t *testing.T) {
+	tests := []struct {
+		name       string
+		source     func(t *testing.T) string
+		wantDetail string
+	}{
+		{name: "relative", source: relativeAgentSource, wantDetail: "relative"},
+		{name: "temp", source: tempAgentSource, wantDetail: "OS temp"},
+		{name: "git worktree", source: gitWorktreeAgentSource, wantDetail: "Git worktree"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
+			cfg := testConfig(tt.source(t))
+			cmd, _ := newTestCommand(t, cfg, providerFactory(fake))
+
+			err := root.Execute(cmd, []string{"agents", "list", prURL(ref)})
+			if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("Execute error = %v, want ErrUnsafeSource with %q", err, tt.wantDetail)
+			}
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want usage", got)
+			}
+		})
+	}
+}
+
+func TestAgentsShowWithPRRejectsUnsafeProfileSource(t *testing.T) {
+	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
+	cfg := testConfig(tempAgentSource(t))
+	cmd, _ := newTestCommand(t, cfg, providerFactory(fake))
+
+	err := root.Execute(cmd, []string{"agents", "show", "repo:reviewer", prURL(ref)})
+	if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), "OS temp") {
+		t.Fatalf("Execute error = %v, want ErrUnsafeSource with temp detail", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want usage", got)
 	}
 }
 
@@ -267,6 +311,39 @@ func writeAgent(t *testing.T, rootDir, category, agent, description, prompt stri
 	writeFile(t, filepath.Join(rootDir, category, "index.yaml"), "name: "+category+"\ndescription: "+category+" category\nowner: owner\n")
 	writeFile(t, filepath.Join(rootDir, category, agent, "index.yaml"), agentIndexYAML(agent, description))
 	writeFile(t, filepath.Join(rootDir, category, agent, "prompt.md"), prompt)
+}
+
+func relativeAgentSource(t *testing.T) string {
+	t.Helper()
+	cwd := t.TempDir()
+	source := filepath.Join(cwd, "agents")
+	writeAgent(t, source, "profile", "reviewer", "profile desc", "profile prompt")
+	t.Chdir(cwd)
+	return "agents"
+}
+
+func tempAgentSource(t *testing.T) string {
+	t.Helper()
+	source := t.TempDir()
+	writeAgent(t, source, "profile", "reviewer", "profile desc", "profile prompt")
+	return source
+}
+
+func gitWorktreeAgentSource(t *testing.T) string {
+	t.Helper()
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir .git: %v", err)
+	}
+	source := filepath.Join(repoRoot, "agents")
+	writeAgent(t, source, "profile", "reviewer", "profile desc", "profile prompt")
+	trustCurrentTempFixtures(t)
+	return source
+}
+
+func trustCurrentTempFixtures(t *testing.T) {
+	t.Helper()
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 }
 
 func agentIndexYAML(name, description string) string {

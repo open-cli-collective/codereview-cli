@@ -13,6 +13,7 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
@@ -420,6 +421,8 @@ func mapRunError(err error) error {
 		errors.Is(err, config.ErrProfileNotFound),
 		errors.Is(err, config.ErrUnsupported):
 		return cmderr.Config(err)
+	case errors.Is(err, agents.ErrUnsafeSource):
+		return exitcode.Usage(err)
 	case errors.Is(err, gitprovider.ErrAuth),
 		errors.Is(err, gitprovider.ErrPermission),
 		errors.Is(err, gitprovider.ErrRetryable),
