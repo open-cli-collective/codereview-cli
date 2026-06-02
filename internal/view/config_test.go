@@ -147,6 +147,31 @@ func TestRenderConfigClearTextIncludesResetFields(t *testing.T) {
 	}
 }
 
+func TestRenderConfigClearTextIncludesCacheErrorWithoutPath(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigClear{
+		Backend:       "file",
+		BackendSource: "config",
+		Cache:         &CacheClear{Status: "error", Error: "xdg cache unavailable"},
+	}
+
+	if err := RenderConfigClearText(&out, result); err != nil {
+		t.Fatalf("RenderConfigClearText: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Cache status: error",
+		"Cache error: xdg cache unavailable",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Cache path:") {
+		t.Fatalf("text output included empty cache path:\n%s", got)
+	}
+}
+
 func homeProfile() config.Profile {
 	return config.Profile{
 		Git: config.GitConfig{

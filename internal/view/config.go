@@ -245,12 +245,16 @@ func RenderConfigClearText(w io.Writer, result ConfigClear) error {
 			return err
 		}
 	}
-	if result.Cache != nil && result.Cache.Path != "" {
-		if err := writeKV(w, "Cache path", result.Cache.Path); err != nil {
-			return err
+	if result.Cache != nil {
+		if result.Cache.Path != "" {
+			if err := writeKV(w, "Cache path", result.Cache.Path); err != nil {
+				return err
+			}
 		}
-		if err := writeKV(w, "Cache status", result.Cache.Status); err != nil {
-			return err
+		if result.Cache.Status != "" {
+			if err := writeKV(w, "Cache status", result.Cache.Status); err != nil {
+				return err
+			}
 		}
 		if result.Cache.Error != "" {
 			return writeKV(w, "Cache error", result.Cache.Error)

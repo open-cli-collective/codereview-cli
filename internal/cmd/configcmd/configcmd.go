@@ -22,6 +22,8 @@ import (
 )
 
 var (
+	// Test seams. Tests that override these package-level functions must not run
+	// in parallel with other configcmd tests.
 	saveConfigFile   = config.Save
 	removeConfigFile = os.Remove
 	removeEmptyDir   = os.Remove
@@ -167,6 +169,8 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 						if renderErr := view.RenderConfigClearJSON(opts.Stdout, result); renderErr != nil {
 							return renderErr
 						}
+					} else if renderErr := view.RenderConfigClearText(opts.Stdout, result); renderErr != nil {
+						return renderErr
 					}
 					return cacheErr
 				}
@@ -258,8 +262,8 @@ func removeProfileFromConfig(path string, cfg config.File, profileName string) (
 	}
 	if cfg.DefaultProfile == profileName {
 		cfg.DefaultProfile = firstProfileName(cfg.Profiles)
+		change.defaultProfile = cfg.DefaultProfile
 	}
-	change.defaultProfile = cfg.DefaultProfile
 	if err := saveConfigFile(path, cfg); err != nil {
 		return configClearChange{}, err
 	}
@@ -267,6 +271,9 @@ func removeProfileFromConfig(path string, cfg config.File, profileName string) (
 }
 
 func firstProfileName(profiles map[string]config.Profile) string {
+	if len(profiles) == 0 {
+		return ""
+	}
 	names := make([]string, 0, len(profiles))
 	for name := range profiles {
 		names = append(names, name)
