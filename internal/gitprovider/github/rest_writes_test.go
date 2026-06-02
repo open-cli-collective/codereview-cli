@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/open-cli-collective/cli-common/credstore"
+
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
@@ -142,6 +144,7 @@ func TestRESTWritesValidateBeforeRequest(t *testing.T) {
 }
 
 func TestRESTWriteErrorTaxonomy(t *testing.T) {
+	secret := "ghp_rest_write_taxonomy_no_leak_canary_0002" // #nosec G101 -- distinctive test canary, not a real token.
 	tests := []struct {
 		name string
 		code int
@@ -163,7 +166,7 @@ func TestRESTWriteErrorTaxonomy(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requireJSONWrite(t, r)
 				w.WriteHeader(tt.code)
-				_, _ = w.Write([]byte(tt.body))
+				_, _ = w.Write([]byte(tt.body + secret))
 			}))
 			defer server.Close()
 			client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
@@ -174,6 +177,9 @@ func TestRESTWriteErrorTaxonomy(t *testing.T) {
 			}
 			if tt.not != nil && errors.Is(err, tt.not) {
 				t.Fatalf("error = %v, did not want %v", err, tt.not)
+			}
+			if leakErr := credstore.NoLeakAssertion([]byte(err.Error()), secret); leakErr != nil {
+				t.Fatalf("error leaked REST write canary: %v", leakErr)
 			}
 		})
 	}

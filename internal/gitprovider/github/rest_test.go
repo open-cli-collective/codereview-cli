@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/cli-common/credstore"
+
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
@@ -170,6 +172,27 @@ func TestGetFileAtRefRejectsUnsafePathBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestRESTHTTPErrorDoesNotLeakSecretBearingBody(t *testing.T) {
+	secret := "ghp_rest_no_leak_canary_0001" // #nosec G101 -- distinctive test canary, not a real token.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+secret {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"bad credentials ` + secret + `"}`))
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: secret, BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	_, err := client.GetPR(context.Background(), testPRRef())
+	if !errors.Is(err, gitprovider.ErrAuth) {
+		t.Fatalf("GetPR error = %v, want ErrAuth", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("GetPR error leaked secret material: %v", err)
+	}
+}
+
 func TestRESTPagination(t *testing.T) {
 	ref := testPRRef()
 	requests := map[string]int{}
@@ -250,6 +273,7 @@ func TestNextPageURLRejectsEnterpriseBasePathEscape(t *testing.T) {
 }
 
 func TestHTTPErrorTaxonomy(t *testing.T) {
+	secret := "ghp_rest_taxonomy_no_leak_canary_0002" // #nosec G101 -- distinctive test canary, not a real token.
 	tests := []struct {
 		status int
 		want   error
@@ -267,16 +291,19 @@ func TestHTTPErrorTaxonomy(t *testing.T) {
 		t.Run(http.StatusText(tt.status), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tt.status)
-				_, _ = w.Write([]byte(`{"message":"failed"}`))
+				_, _ = w.Write([]byte(`{"message":"failed ` + secret + `"}`))
 			}))
 			defer server.Close()
-			client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
-			_, err := client.WhoAmI(context.Background(), gitprovider.Credential{Type: credentialTypePAT, Token: "token"})
+			client := mustClient(t, Options{Token: secret, BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+			_, err := client.WhoAmI(context.Background(), gitprovider.Credential{Type: credentialTypePAT, Token: secret})
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("error = %v, want %v", err, tt.want)
 			}
 			if tt.not != nil && errors.Is(err, tt.not) {
 				t.Fatalf("error = %v, did not want %v", err, tt.not)
+			}
+			if leakErr := credstore.NoLeakAssertion([]byte(err.Error()), secret); leakErr != nil {
+				t.Fatalf("error leaked REST canary: %v", leakErr)
 			}
 		})
 	}

@@ -13,7 +13,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
@@ -168,7 +167,7 @@ func mapTransportError(op gitprovider.Operation, err error) error {
 }
 
 func mapHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
-	err := fmt.Errorf("github: status %d: %s", status, sanitizedBody(body))
+	err := httpStatusError(status, body)
 	switch status {
 	case http.StatusUnauthorized:
 		return gitprovider.WrapError(gitprovider.ErrAuth, op, err)
@@ -191,7 +190,7 @@ func mapHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
 }
 
 func mapWriteHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
-	err := fmt.Errorf("github: status %d: %s", status, sanitizedBody(body))
+	err := httpStatusError(status, body)
 	if status == http.StatusUnprocessableEntity {
 		if isCommitBoundWriteOperation(op) && isStaleSHABody(body) {
 			return gitprovider.WrapError(gitprovider.ErrStaleSHA, op, err)
@@ -211,15 +210,12 @@ func isStaleSHABody(body []byte) bool {
 		strings.Contains(normalized, "not the head commit")
 }
 
-func sanitizedBody(body []byte) string {
+func httpStatusError(status int, body []byte) error {
 	body = bytes.TrimSpace(body)
-	if len(body) > 256 {
-		body = body[:256]
-		for len(body) > 0 && !utf8.Valid(body) {
-			body = body[:len(body)-1]
-		}
+	if len(body) == 0 {
+		return fmt.Errorf("github: status %d", status)
 	}
-	return string(body)
+	return fmt.Errorf("github: status %d (response body redacted)", status)
 }
 
 func restURL(base *url.URL, parts ...string) string {
