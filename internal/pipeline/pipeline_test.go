@@ -828,11 +828,31 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 	var reviewerPrompts int
 	for _, request := range requests {
 		assertPromptOmitsLocalAgentSourceProvenance(t, request.Prompt, result.Catalog.Sources)
+		if !strings.Contains(request.Prompt, `"output_contract"`) {
+			t.Fatalf("prompt missing output contract: %s", request.Prompt)
+		}
+		if strings.Contains(request.Prompt, `"schema": "selection"`) &&
+			(!strings.Contains(request.Prompt, `"agent_id"`) ||
+				!strings.Contains(request.Prompt, `"thread_actions"`) ||
+				!strings.Contains(request.Prompt, `"schema_version"`)) {
+			t.Fatalf("selection prompt missing output schema fields: %s", request.Prompt)
+		}
 		if strings.Contains(request.Prompt, `"schema": "findings"`) {
 			reviewerPrompts++
 			if !strings.Contains(request.Prompt, `"agent"`) || !strings.Contains(request.Prompt, `"files"`) {
 				t.Fatalf("reviewer prompt missing agent/files context: %s", request.Prompt)
 			}
+			if !strings.Contains(request.Prompt, `"file_path"`) ||
+				!strings.Contains(request.Prompt, `"anchor"`) ||
+				!strings.Contains(request.Prompt, `"Do not provide finding_id`) {
+				t.Fatalf("reviewer prompt missing output schema fields: %s", request.Prompt)
+			}
+		}
+		if strings.Contains(request.Prompt, `"schema": "rollup"`) &&
+			(!strings.Contains(request.Prompt, `"review_event"`) ||
+				!strings.Contains(request.Prompt, `"dedupe_log"`) ||
+				!strings.Contains(request.Prompt, `"ordered_findings"`)) {
+			t.Fatalf("rollup prompt missing output schema fields: %s", request.Prompt)
 		}
 	}
 	if reviewerPrompts != 2 {
@@ -940,7 +960,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 		},
 		{
 			name:   "reviewer diff",
-			budget: 3000,
+			budget: 5000,
 			mutate: func(t *testing.T, provider *readOnlyProvider, _ *Request, _ *llm.FakeAdapter) {
 				t.Helper()
 				provider.diff.Raw = largeDiff("main.go", strings.Repeat("+var x = true\n", 400))
@@ -970,7 +990,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 		},
 		{
 			name:   "rollup",
-			budget: 3000,
+			budget: 5000,
 			queue: func(adapter *llm.FakeAdapter) {
 				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
 				adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, strings.Repeat("body ", 1000)), 1, 1))

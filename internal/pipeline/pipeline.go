@@ -779,12 +779,6 @@ func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitp
 			patchesByPath[patch.OldPath] = patch
 		}
 	}
-	type fileContext struct {
-		Path        string `json:"path"`
-		Diff        string `json:"diff"`
-		BaseContent string `json:"base_content,omitempty"`
-		HeadContent string `json:"head_content,omitempty"`
-	}
 	var files []fileContext
 	for _, path := range selected.Files {
 		patch, ok := patchesByPath[path]
@@ -817,10 +811,11 @@ func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitp
 		files = append(files, fc)
 	}
 	payload := map[string]any{
-		"task":   "review files and return findings JSON only",
-		"agent":  agentPromptFromAgent(agent),
-		"files":  files,
-		"schema": "findings",
+		"task":            "review files and return findings JSON only",
+		"output_contract": findingsOutputContract(agent.ID, patchPathsFromContexts(files)),
+		"agent":           agentPromptFromAgent(agent),
+		"files":           files,
+		"schema":          "findings",
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -869,6 +864,13 @@ func agentPromptsFromCatalog(catalog agents.Catalog) []agentPrompt {
 	return out
 }
 
+type fileContext struct {
+	Path        string `json:"path"`
+	Diff        string `json:"diff"`
+	BaseContent string `json:"base_content,omitempty"`
+	HeadContent string `json:"head_content,omitempty"`
+}
+
 func fetchFileOptional(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, gitRef string, path string) ([]byte, error) {
 	data, err := provider.GetFileAtRef(ctx, ref, gitRef, path)
 	if errors.Is(err, gitprovider.ErrNotFound) {
@@ -879,12 +881,13 @@ func fetchFileOptional(ctx context.Context, provider ReadProvider, ref gitprovid
 
 func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []FilePatch, threads []gitprovider.InlineThread) (string, error) {
 	payload := map[string]any{
-		"task":          "select reviewer agents and thread actions; return selection JSON only",
-		"schema":        "selection",
-		"pr":            pr,
-		"agents":        agentPromptsFromCatalog(catalog),
-		"changed_files": patchPaths(patches),
-		"threads":       threads,
+		"task":            "select reviewer agents and thread actions; return selection JSON only",
+		"output_contract": selectionOutputContract(catalog.Agents, patches, threads),
+		"schema":          "selection",
+		"pr":              pr,
+		"agents":          agentPromptsFromCatalog(catalog),
+		"changed_files":   patchPaths(patches),
+		"threads":         threads,
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -895,10 +898,11 @@ func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []F
 
 func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding) (string, error) {
 	payload := map[string]any{
-		"task":     "dedupe findings and return rollup JSON only",
-		"schema":   "rollup",
-		"pr":       pr,
-		"findings": findings,
+		"task":            "dedupe findings and return rollup JSON only",
+		"output_contract": rollupOutputContract(findings),
+		"schema":          "rollup",
+		"pr":              pr,
+		"findings":        findings,
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -916,6 +920,154 @@ type agentProvenanceArtifact struct {
 	ID         string            `json:"id"`
 	Provenance string            `json:"provenance"`
 	Source     agents.SourceInfo `json:"source"`
+}
+
+type outputContract struct {
+	Instructions   []string `json:"instructions"`
+	ResponseSchema any      `json:"response_schema"`
+	AllowedValues  any      `json:"allowed_values,omitempty"`
+	Example        any      `json:"example"`
+}
+
+func selectionOutputContract(agents []agents.Agent, patches []FilePatch, threads []gitprovider.InlineThread) outputContract {
+	agentIDs := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		agentIDs = append(agentIDs, agent.ID)
+	}
+	changedFiles := patchPaths(patches)
+	threadIDs := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		threadIDs = append(threadIDs, string(thread.ID))
+	}
+	return outputContract{
+		Instructions: []string{
+			"Return exactly one raw JSON object. Do not wrap it in Markdown fences.",
+			"Use only the keys shown in response_schema. Unknown keys are rejected.",
+			"allowed_values is context only; do not include allowed_values keys in the response.",
+			"schema_version must be 1.",
+			"selected_agents[].agent_id must be one of the allowed_agent_ids.",
+			"selected_agents[].files must contain only paths from changed_files.",
+			"thread_actions must be an empty array when there are no threads.",
+		},
+		ResponseSchema: map[string]any{
+			"schema_version":  "number, required, must be 1",
+			"selected_agents": "array of {agent_id: string, rationale: string, files: string[]}",
+			"thread_actions":  "array of {thread_id: string, decision: string, summary: string, safe_to_resolve_rationale: string}",
+			"reasoning":       "string",
+		},
+		AllowedValues: map[string]any{
+			"allowed_agent_ids": agentIDs,
+			"changed_files":     changedFiles,
+			"known_thread_ids":  threadIDs,
+			"thread_decisions":  []string{"skip", "summarize_only", "summarize_and_resolve"},
+		},
+		Example: map[string]any{
+			"schema_version": 1,
+			"selected_agents": []map[string]any{{
+				"agent_id":  firstOrPlaceholder(agentIDs, "category:agent-name"),
+				"rationale": "This agent applies to the changed files.",
+				"files":     firstNOrPlaceholder(changedFiles, "path/to/changed-file.ext", 1),
+			}},
+			"thread_actions": []map[string]any{},
+			"reasoning":      "Selected the relevant reviewers for the changed files.",
+		},
+	}
+}
+
+func findingsOutputContract(agentID string, changedFiles []string) outputContract {
+	return outputContract{
+		Instructions: []string{
+			"Return exactly one raw JSON object. Do not wrap it in Markdown fences.",
+			"Use only the keys shown in response_schema. Unknown keys are rejected.",
+			"allowed_values is context only; do not include allowed_values keys in the response.",
+			"schema_version must be 1.",
+			"agent_id must match the provided agent id.",
+			"findings must be an empty array when there are no actionable findings.",
+			"file_path must be one of changed_files.",
+			"Do not provide finding_id; the harness assigns IDs.",
+		},
+		ResponseSchema: map[string]any{
+			"schema_version": "number, required, must be 1",
+			"agent_id":       "string, required",
+			"findings":       "array of {severity: string, file_path: string, anchor: object, body: string}",
+			"anchor":         "object: {kind: 'file'} or {kind: 'line', side: 'RIGHT'|'LEFT', line: positive number}",
+		},
+		AllowedValues: map[string]any{
+			"severities":    []string{"blocking", "major", "minor", "nits"},
+			"changed_files": changedFiles,
+		},
+		Example: map[string]any{
+			"schema_version": 1,
+			"agent_id":       agentID,
+			"findings": []map[string]any{{
+				"severity":  "major",
+				"file_path": firstOrPlaceholder(changedFiles, "path/to/changed-file.ext"),
+				"anchor": map[string]any{
+					"kind": "file",
+				},
+				"body": "Explain the issue and the concrete impact. Include the suggested fix in the same body.",
+			}},
+		},
+	}
+}
+
+func rollupOutputContract(findings []review.Finding) outputContract {
+	findingIDs := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		findingIDs = append(findingIDs, finding.ID.String())
+	}
+	return outputContract{
+		Instructions: []string{
+			"Return exactly one raw JSON object. Do not wrap it in Markdown fences.",
+			"Use only the keys shown in response_schema. Unknown keys are rejected.",
+			"allowed_values is context only; do not include allowed_values keys in the response.",
+			"schema_version must be 1.",
+			"ordered_findings must include every kept finding exactly once.",
+			"dedupe_log must be empty when no findings are duplicates.",
+		},
+		ResponseSchema: map[string]any{
+			"schema_version":         "number, required, must be 1",
+			"review_event":           "string: approve, comment, or request_changes",
+			"review_event_rationale": "string",
+			"dedupe_log":             "array of {kept: finding_id, dropped: finding_id[], reason: string}",
+			"ordered_findings":       "array of finding ids after dedupe",
+		},
+		AllowedValues: map[string]any{
+			"available_finding_ids": findingIDs,
+		},
+		Example: map[string]any{
+			"schema_version":         1,
+			"review_event":           "comment",
+			"review_event_rationale": "Commenting because findings remain for human review.",
+			"dedupe_log":             []map[string]any{},
+			"ordered_findings":       findingIDs,
+		},
+	}
+}
+
+func patchPathsFromContexts(files []fileContext) []string {
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Path)
+	}
+	return paths
+}
+
+func firstOrPlaceholder(values []string, placeholder string) string {
+	if len(values) > 0 {
+		return values[0]
+	}
+	return placeholder
+}
+
+func firstNOrPlaceholder(values []string, placeholder string, count int) []string {
+	if len(values) == 0 {
+		return []string{placeholder}
+	}
+	if count > len(values) {
+		count = len(values)
+	}
+	return append([]string(nil), values[:count]...)
 }
 
 func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string) error {

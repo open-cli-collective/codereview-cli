@@ -176,6 +176,8 @@ func LLMAPIKeyForProvider(provider config.LLMProvider) (string, error) {
 		return AnthropicAPIKeyKey, nil
 	case config.LLMProviderOpenAI:
 		return OpenAIAPIKeyKey, nil
+	case config.LLMProviderPi:
+		return "", fmt.Errorf("%w: llm provider %q does not support api-key credentials", config.ErrUnsupported, provider)
 	default:
 		return "", fmt.Errorf("%w: llm provider %q", config.ErrInvalid, provider)
 	}
