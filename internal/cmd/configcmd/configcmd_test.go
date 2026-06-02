@@ -390,6 +390,36 @@ func TestConfigClearDryRunTextReportsDryRun(t *testing.T) {
 	assertFileBackendPresent(t, "home", credentials.GitTokenKey)
 }
 
+func TestConfigClearAllDryRunTextReportsPredictedReset(t *testing.T) {
+	cfg := fileBackendConfig(t)
+	cfg.DefaultProfile = "work"
+	path := saveTestConfig(t, cfg)
+	cacheFile := writeCacheSentinel(t)
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "clear", "--all", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Dry run: true",
+		"Credential targets:",
+		"Config profile removed: work",
+		"Default profile: home",
+		"Cache status: would_remove",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text output missing %q:\n%s", want, got)
+		}
+	}
+	assertFileBackendPresent(t, "work", credentials.GitTokenKey)
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache sentinel stat err = %v, want kept", err)
+	}
+}
+
 func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	alpha := cfg.Profiles["home"]
@@ -511,6 +541,16 @@ func TestConfigClearAllDryRunReportsProfileCacheAndPreservesState(t *testing.T) 
 	for i, want := range wantRefs {
 		if got.Cleared[i].Ref != want || len(got.Cleared[i].Keys) != 1 {
 			t.Fatalf("cleared[%d] = %#v, want ref %s with one key", i, got.Cleared[i], want)
+		}
+	}
+	wantKeys := map[string][]string{
+		"codereview/work":          {credentials.GitTokenKey},
+		"codereview/work-llm":      {credentials.AnthropicAPIKeyKey},
+		"codereview/work-reviewer": {credentials.GitTokenKey},
+	}
+	for _, cleared := range got.Cleared {
+		if !reflect.DeepEqual(cleared.Keys, wantKeys[cleared.Ref]) {
+			t.Fatalf("keys for %s = %#v, want %#v", cleared.Ref, cleared.Keys, wantKeys[cleared.Ref])
 		}
 	}
 	assertFileBackendPresent(t, "home", credentials.GitTokenKey)
