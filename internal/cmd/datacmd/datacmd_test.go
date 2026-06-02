@@ -126,6 +126,24 @@ func TestDataReadOnlyDoesNotBlockLegacyMigration(t *testing.T) {
 	}
 }
 
+func TestDataPruneDryRunWarnsForStagedLegacyMigration(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := mustLayout(t)
+	writeDataCommandFile(t, filepath.Join(statepaths.LegacyDataRoot(layout)+".migrating", "ledger.db"), "staged")
+	var stdout, stderr bytes.Buffer
+
+	if err := runDataCommand(&stdout, &stderr, "data", "prune", "--dry-run", "--json"); err != nil {
+		t.Fatalf("data prune dry-run: %v; stderr = %q", err, stderr.String())
+	}
+	var dryRun view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &dryRun); err != nil {
+		t.Fatalf("Unmarshal prune dry-run: %v; stdout = %q", err, stdout.String())
+	}
+	if len(dryRun.Warnings) != 1 || !strings.Contains(dryRun.Warnings[0], "dry-run does not migrate") {
+		t.Fatalf("warnings = %#v, want staged legacy migration warning", dryRun.Warnings)
+	}
+}
+
 func TestDataPruneDefaultIgnoresConfiguredRetention(t *testing.T) {
 	statedirtest.Hermetic(t)
 	maxAgeDays := 30
@@ -353,6 +371,16 @@ func allocateRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, ru
 		t.Fatalf("AllocateRun: %v", err)
 	}
 	return run
+}
+
+func writeDataCommandFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile %s: %v", path, err)
+	}
 }
 
 func dataPruneRunIDs(runs []view.DataRunItem) []string {

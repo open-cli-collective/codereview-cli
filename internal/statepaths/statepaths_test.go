@@ -431,6 +431,40 @@ func TestDefaultLayoutEnsuredDoesNotMigrateLegacyRoot(t *testing.T) {
 	}
 }
 
+func TestLegacyDataRootExistsIncludesStagedRoot(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	exists, err := LegacyDataRootExists(layout)
+	if err != nil {
+		t.Fatalf("initial LegacyDataRootExists: %v", err)
+	}
+	if exists {
+		t.Fatal("initial LegacyDataRootExists = true, want false")
+	}
+
+	stagedRoot := LegacyDataRoot(layout) + ".migrating"
+	writeStatepathsFile(t, filepath.Join(stagedRoot, "runs", "sentinel.txt"), "staged")
+	exists, err = LegacyDataRootExists(layout)
+	if err != nil {
+		t.Fatalf("staged LegacyDataRootExists: %v", err)
+	}
+	if !exists {
+		t.Fatal("staged LegacyDataRootExists = false, want true")
+	}
+
+	writeStatepathsFile(t, filepath.Join(LegacyDataRoot(layout), "ledger.db"), "legacy")
+	exists, err = LegacyDataRootExists(layout)
+	if err != nil {
+		t.Fatalf("both-root LegacyDataRootExists: %v", err)
+	}
+	if !exists {
+		t.Fatal("both-root LegacyDataRootExists = false, want true")
+	}
+}
+
 func TestMigrateLegacyDataRootMovesEntries(t *testing.T) {
 	statedirtest.Hermetic(t)
 	layout, err := DefaultLayoutEnsured()

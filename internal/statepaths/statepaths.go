@@ -225,7 +225,7 @@ func LegacyCacheRoot(layout Layout) string {
 
 // LegacyDataRootExists reports whether layout still has unmigrated legacy data.
 func LegacyDataRootExists(layout Layout) (bool, error) {
-	return legacyRootExists(LegacyDataRoot(layout), "data")
+	return legacyRootOrTempExists(LegacyDataRoot(layout), "data")
 }
 
 // MigrateLegacyDataRoot moves data written by releases that nested state under
@@ -252,6 +252,18 @@ func legacyRootExists(path, kind string) (bool, error) {
 		return false, fmt.Errorf("statepaths: legacy %s root %s is not a directory", kind, path)
 	}
 	return true, nil
+}
+
+func legacyRootOrTempExists(path, kind string) (bool, error) {
+	legacyExists, err := legacyRootExists(path, kind)
+	if err != nil {
+		return false, err
+	}
+	tempExists, err := legacyRootExists(path+".migrating", kind)
+	if err != nil {
+		return false, err
+	}
+	return legacyExists || tempExists, nil
 }
 
 func migrateLegacyRoot(root, legacyRoot, kind string) error {
