@@ -74,6 +74,20 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	if len(result.Sessions) != 3 {
 		t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(result.Sessions))
 	}
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
+	}
+	for _, request := range requests {
+		if request.Model != "sonnet" || request.Effort != "medium" {
+			t.Fatalf("request = model:%q effort:%q, want sonnet/medium from agent config", request.Model, request.Effort)
+		}
+	}
+	for _, session := range result.Sessions {
+		if session.Model != "sonnet" || session.Effort == nil || *session.Effort != "medium" {
+			t.Fatalf("session = model:%q effort:%v, want sonnet/medium from agent config", session.Model, session.Effort)
+		}
+	}
 	if got := result.Sessions[1].ProviderSessionID; got != "reviewer-session" {
 		t.Fatalf("reviewer provider session = %q", got)
 	}
@@ -131,6 +145,80 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 		if strings.Contains(string(data), "<!-- codereview:") {
 			t.Fatalf("artifact %s contains real marker: %s", path, data)
 		}
+	}
+}
+
+func TestDryRunLLMOverridesApplyToAllRequestsAndSessions(t *testing.T) {
+	tests := []struct {
+		name           string
+		modelOverride  string
+		effortOverride string
+		wantModel      string
+		wantEffort     string
+	}{
+		{name: "model and effort", modelOverride: "bench-model", effortOverride: "high", wantModel: "bench-model", wantEffort: "high"},
+		{name: "model only", modelOverride: "bench-model", wantModel: "bench-model", wantEffort: "medium"},
+		{name: "effort only", effortOverride: "high", wantModel: "sonnet", wantEffort: "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			req.LLMModelOverride = tt.modelOverride
+			req.LLMEffortOverride = tt.effortOverride
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+			adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+			adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+			adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+			result, err := DryRun(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:             fixedNow,
+				NewRunID:        func() string { return "run-override-" + strings.ReplaceAll(tt.name, " ", "-") },
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    findingSequence("finding"),
+				NewActionID:     actionSequence(),
+				MaxConcurrency:  1,
+			}, req)
+			if err != nil {
+				t.Fatalf("DryRun: %v", err)
+			}
+
+			requests := adapter.Requests()
+			if len(requests) != 3 {
+				t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
+			}
+			for _, request := range requests {
+				if request.Model != tt.wantModel || request.Effort != tt.wantEffort {
+					t.Fatalf("request = model:%q effort:%q, want %s/%s", request.Model, request.Effort, tt.wantModel, tt.wantEffort)
+				}
+			}
+			sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
+			if err != nil {
+				t.Fatalf("ListSessionsForRun: %v", err)
+			}
+			if len(sessions) != 3 {
+				t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(sessions))
+			}
+			for _, session := range sessions {
+				if session.Model != tt.wantModel || session.Effort == nil || *session.Effort != tt.wantEffort {
+					t.Fatalf("session = model:%q effort:%v, want %s/%s", session.Model, session.Effort, tt.wantModel, tt.wantEffort)
+				}
+			}
+			data, err := os.ReadFile(result.Artifacts.AgentSourcesJSON) // #nosec G304 -- test reads artifact paths returned by the pipeline under t.TempDir.
+			if err != nil {
+				t.Fatalf("ReadFile(%s): %v", result.Artifacts.AgentSourcesJSON, err)
+			}
+			if tt.modelOverride != "" && strings.Contains(string(data), tt.modelOverride) {
+				t.Fatalf("agent source artifact contains runtime override model: %s", data)
+			}
+			assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
+		})
 	}
 }
 
@@ -293,6 +381,38 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	}
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
 	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
+}
+
+func TestLiveRejectsLLMRuntimeOverrides(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.LLMModelOverride = "bench-model"
+	req.LLMEffortOverride = "high"
+	run := allocateLiveRun(t, store, provider, req, "run-live-override")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+
+	_, err := Live(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err == nil {
+		t.Fatal("Live error = nil, want LLM override rejection")
+	}
+	if !strings.Contains(err.Error(), "LLM runtime overrides require dry-run review") {
+		t.Fatalf("Live error = %v, want LLM override rejection", err)
+	}
+	if len(adapter.Requests()) != 0 {
+		t.Fatalf("adapter requests = %#v, want none", adapter.Requests())
+	}
 }
 
 func TestLiveNamedSessionResumesOrchestratorOnlyAndReturnsCandidate(t *testing.T) {
@@ -999,7 +1119,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 		queue  func(adapter *llm.FakeAdapter)
 	}{
 		{
-			name:   "selection",
+			name:   "selection default model",
 			budget: 100,
 			mutate: func(t *testing.T, _ *readOnlyProvider, req *Request, _ *llm.FakeAdapter) {
 				t.Helper()
@@ -1008,8 +1128,22 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				trustCurrentTempFixtures(t)
 				req.Profile.AgentSources = []string{dir}
 			},
-			want:  "context budget exceeded for selection",
-			runID: "run-budget-selection",
+			want:  "context budget exceeded for selection model sonnet",
+			runID: "run-budget-selection-default",
+		},
+		{
+			name:   "selection override model",
+			budget: 100,
+			mutate: func(t *testing.T, _ *readOnlyProvider, req *Request, _ *llm.FakeAdapter) {
+				t.Helper()
+				dir := t.TempDir()
+				writeAgent(t, dir, "harness", "reviewer", strings.Repeat("large ", 80), "prompt")
+				trustCurrentTempFixtures(t)
+				req.Profile.AgentSources = []string{dir}
+				req.LLMModelOverride = "bench-model"
+			},
+			want:  "context budget exceeded for selection model bench-model",
+			runID: "run-budget-selection-override",
 		},
 		{
 			name:   "reviewer diff",
@@ -1025,7 +1159,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 			runID: "run-budget-reviewer",
 		},
 		{
-			name:   "full content",
+			name:   "full content default model",
 			budget: 10000,
 			mutate: func(t *testing.T, provider *readOnlyProvider, req *Request, _ *llm.FakeAdapter) {
 				t.Helper()
@@ -1039,18 +1173,51 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 			queue: func(adapter *llm.FakeAdapter) {
 				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
 			},
-			want:  "context budget exceeded for full-content agent harness:reviewer",
-			runID: "run-budget-full-content",
+			want:  "context budget exceeded for full-content agent harness:reviewer file main.go model sonnet",
+			runID: "run-budget-full-content-default",
 		},
 		{
-			name:   "rollup",
+			name:   "full content override model",
+			budget: 10000,
+			mutate: func(t *testing.T, provider *readOnlyProvider, req *Request, _ *llm.FakeAdapter) {
+				t.Helper()
+				dir := t.TempDir()
+				writeAgentFullContent(t, dir, "harness", "reviewer")
+				trustCurrentTempFixtures(t)
+				req.Profile.AgentSources = []string{dir}
+				req.LLMModelOverride = "bench-model"
+				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: "main.go"}] = []byte(strings.Repeat("base\n", 3000))
+				provider.files[fileKey{gitRef: provider.pr.Head.SHA, path: "main.go"}] = []byte("package main\n")
+			},
+			queue: func(adapter *llm.FakeAdapter) {
+				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+			},
+			want:  "context budget exceeded for full-content agent harness:reviewer file main.go model bench-model",
+			runID: "run-budget-full-content-override",
+		},
+		{
+			name:   "rollup default model",
 			budget: 5000,
 			queue: func(adapter *llm.FakeAdapter) {
 				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
 				adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, strings.Repeat("body ", 1000)), 1, 1))
 			},
-			want:  "context budget exceeded for rollup",
-			runID: "run-budget-rollup",
+			want:  "context budget exceeded for rollup model sonnet",
+			runID: "run-budget-rollup-default",
+		},
+		{
+			name:   "rollup override model",
+			budget: 5000,
+			mutate: func(t *testing.T, _ *readOnlyProvider, req *Request, _ *llm.FakeAdapter) {
+				t.Helper()
+				req.LLMModelOverride = "bench-model"
+			},
+			queue: func(adapter *llm.FakeAdapter) {
+				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+				adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, strings.Repeat("body ", 1000)), 1, 1))
+			},
+			want:  "context budget exceeded for rollup model bench-model",
+			runID: "run-budget-rollup-override",
 		},
 	}
 
