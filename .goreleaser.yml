@@ -75,7 +75,7 @@ nfpms:
     package_name: cr
     vendor: Open CLI Collective
     homepage: https://github.com/open-cli-collective/codereview-cli
-    maintainer: Open CLI Collective <https://github.com/open-cli-collective>
+    maintainer: Open CLI Collective <open-cli-collective@users.noreply.github.com>
     description: Automated pull-request review CLI
     license: MIT
     formats:

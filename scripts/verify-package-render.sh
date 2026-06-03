@@ -38,12 +38,21 @@ require_grep 'cr_v#{version}_darwin_amd64.tar.gz' "$cask"
 
 for kind in deb rpm; do
   for arch in amd64 arm64; do
-    jq -e --arg kind ".$kind" --arg arch "$arch" '
-      .[] | select(.type == "Linux Package" and .goarch == $arch and .extra.Ext == $kind and .extra.ID == "cr")
+    jq -e --arg kind "$kind" --arg dotted ".$kind" --arg arch "$arch" '
+      .[] | select(
+        .type == "Linux Package" and
+        .goarch == $arch and
+        (.extra.Ext == $kind or .extra.Ext == $dotted) and
+        .extra.ID == "cr"
+      )
     ' "$dist_dir/artifacts.json" >/dev/null || fail "missing cr linux package artifact: $kind/$arch"
   done
 done
 
+# Winget and Chocolatey keep version/checksum placeholders in source; the shared
+# release workflow substitutes them from the real release assets before publish.
+# The generated windows archives above prove the archive naming those templates
+# reference is rendered by GoReleaser.
 winget_installer="packaging/winget/OpenCLICollective.cr.installer.yaml"
 require_file "packaging/winget/OpenCLICollective.cr.yaml"
 require_file "$winget_installer"

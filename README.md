@@ -20,6 +20,9 @@ Use `cr` when you want to:
 
 ## Installation
 
+Package-manager installs are available for versions after their
+package-channel release jobs publish successfully.
+
 ### Homebrew
 
 ```bash
@@ -35,7 +38,7 @@ choco install cr
 
 ### Linux Packages
 
-`cr` is published as `.deb` and `.rpm` packages through the
+`cr` release builds include `.deb` and `.rpm` packages for the
 [open-cli-collective/linux-packages](https://github.com/open-cli-collective/linux-packages)
 repository.
 

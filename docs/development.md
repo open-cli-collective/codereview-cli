@@ -63,6 +63,31 @@ Package-channel releases also use `CHOCOLATEY_API_KEY`,
 `WINGET_GITHUB_TOKEN`, and `LINUX_PACKAGES_DISPATCH_TOKEN` according to the
 shared distribution secret table.
 
+## Package Channel Release Mechanics
+
+`release.yml` delegates package publishing to the shared reusable release
+workflow. Repo-local files declare package identity and native metadata; the
+shared workflow owns publish mechanics.
+
+- Homebrew: GoReleaser renders `dist/homebrew/Casks/codereview-cli.rb` with
+  `skip_upload: true`; the shared Homebrew job pushes that generated cask to
+  `open-cli-collective/homebrew-tap` with `HOMEBREW_TAP_TOKEN`.
+- Chocolatey: the shared Chocolatey job rewrites
+  `packaging/chocolatey/cr.nuspec` from version `0.0.0` to the release version
+  and replaces `CHECKSUM_AMD64_PLACEHOLDER` /
+  `CHECKSUM_ARM64_PLACEHOLDER` in `chocolateyInstall.ps1` before packing and
+  pushing.
+- winget: the shared winget job resolves the release asset URLs/checksums and
+  submits `OpenCLICollective.cr` with `WINGET_GITHUB_TOKEN`.
+- Linux packages: GoReleaser renders `.deb` and `.rpm` artifacts named `cr`;
+  the shared workflow dispatches `package-release` to
+  `open-cli-collective/linux-packages` with `LINUX_PACKAGES_DISPATCH_TOKEN`.
+
+`make snapshot` runs a local GoReleaser snapshot and then
+`scripts/verify-package-render.sh`, which asserts the rendered cask, deb/rpm
+artifacts, native package templates, and release secret wiring match the
+declared package IDs.
+
 ## Shared Standards
 
 Use these sources for shared policy. Do not copy their mechanics into this file.
