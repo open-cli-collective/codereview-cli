@@ -47,6 +47,18 @@ make clean   # remove build artifacts
   review posting/gating in `internal/outbox`, `internal/gate`, and
   `internal/gateio`.
 
+## Release Secrets
+
+`auto-release.yml` passes `RELEASE_TAG_TOKEN` to the shared auto-release
+workflow as its `tag-token`. That credential must be separate from
+`GITHUB_TOKEN` so tag pushes retrigger `release.yml`, and separate from future
+package-channel credentials. The preferred long-term shape is the GitHub App
+installation-token path described in the shared release standard; until that is
+wired through, use a narrowly scoped `RELEASE_TAG_TOKEN`.
+
+`HOMEBREW_TAP_TOKEN` is reserved for Homebrew tap pushes when package channels
+are added. Do not reuse it for auto-release tag pushes.
+
 ## Shared Standards
 
 Use these sources for shared policy. Do not copy their mechanics into this file.
