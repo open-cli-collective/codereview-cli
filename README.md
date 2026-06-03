@@ -383,6 +383,19 @@ cr data prune --keep-last 10
 cr data purge --dry-run
 ```
 
+Validate and run a benchmark suite:
+
+```bash
+cr benchmark validate .codereview/benchmarks/reviewer.yml
+cr benchmark doctor .codereview/benchmarks/reviewer.yml --json
+cr benchmark run .codereview/benchmarks/reviewer.yml \
+  --candidate claude-sonnet-medium \
+  --case merged-security-pr
+```
+
+See [BENCHMARKING.md](BENCHMARKING.md) for suite schema, terminology, artifact
+layout, privacy guidance, and metric caveats.
+
 ## Command Reference
 
 All commands accept the global flags:
@@ -592,6 +605,8 @@ Review selection and execution flags:
 | `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
 | `--max-agents <n>` | Limit selected reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
+| `--llm-model <model>` | Override the LLM model for dry-run review. Requires `--dry-run` or `--no-post`; live reviews reject it. |
+| `--llm-effort <effort>` | Override the LLM effort for dry-run review. Requires `--dry-run` or `--no-post`; live reviews reject it. |
 | `--session <name>` | Reuse a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
 | `--verbose` | Include nits in review output and emit additional diagnostics. |
 
@@ -618,6 +633,49 @@ markers are reported as omitted because nothing is posted.
 Live text output includes run ID, gate status, decision, outcome, PR, artifacts,
 and post counts. JSON output includes `run`, `status`, `decision`, `message`,
 `outbox`, `artifacts`, and `fail_on_triggered`.
+
+### `cr benchmark`
+
+```text
+cr benchmark <command>
+```
+
+Validates, inspects, and runs benchmark suites. See
+[BENCHMARKING.md](BENCHMARKING.md) for the full benchmark guide.
+
+### `cr benchmark validate`
+
+```text
+cr benchmark validate <suite.yml>
+```
+
+Validates benchmark suite schema and configured profile compatibility without
+running reviews.
+
+### `cr benchmark doctor`
+
+```text
+cr benchmark doctor <suite.yml> [--candidate <id> ...] [--case <id> ...] [--results-dir <path>] [--cr-bin <path>] [--json]
+```
+
+Inspects benchmark readiness without running reviews. It reports the selected
+candidates and cases, resolved results directory, selected `cr` binary, profile
+availability, model/effort fields, agent directories, and warnings.
+
+### `cr benchmark run`
+
+```text
+cr benchmark run <suite.yml> [--candidate <id> ...] [--case <id> ...] [--results-dir <path>] [--cr-bin <path>] [--json]
+```
+
+Runs the selected candidate x case matrix by invoking `cr review --dry-run
+--json` for each run. It always uses dry-run review mode, captures stdout and
+stderr separately, records each child exit code, and writes generated artifacts
+under `.cr-bench/results/<suite-id>/<timestamp>/` unless `--results-dir` is set.
+
+Use `--candidate` and `--case` for benchmark selection. Candidate YAML fields
+such as `model`, `effort`, `agent_dirs`, `max_agents`, and `max_concurrency`
+control review runtime overrides.
 
 ### `cr sessions list`
 
