@@ -1,4 +1,4 @@
-.PHONY: all build test test-cover lint fmt tidy deps check install snapshot release clean
+.PHONY: all build test test-cover lint fmt tidy deps check install snapshot package-render-check release clean
 
 all: check
 
@@ -42,7 +42,11 @@ install:
 # GITHUB_TOKEN/GORELEASER_* in the environment can't accidentally publish — set
 # CONFIRM_RELEASE=1 to override.
 snapshot:
-	goreleaser release --snapshot --clean
+	goreleaser release --snapshot --clean --skip=publish
+	scripts/verify-package-render.sh
+
+package-render-check:
+	scripts/verify-package-render.sh
 
 release:
 ifneq ($(CONFIRM_RELEASE),1)
