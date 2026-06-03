@@ -59,6 +59,10 @@ wired through, use a narrowly scoped `RELEASE_TAG_TOKEN`.
 `HOMEBREW_TAP_TOKEN` is only for Homebrew tap pushes from the release workflow.
 Do not reuse it for auto-release tag pushes.
 
+Package-channel releases also use `CHOCOLATEY_API_KEY`,
+`WINGET_GITHUB_TOKEN`, and `LINUX_PACKAGES_DISPATCH_TOKEN` according to the
+shared distribution secret table.
+
 ## Shared Standards
 
 Use these sources for shared policy. Do not copy their mechanics into this file.

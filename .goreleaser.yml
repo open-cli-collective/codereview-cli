@@ -100,8 +100,8 @@ homebrew_casks:
         install: |
           system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cr"]
     caveats: |
-      To configure cr, run:
-        cr init
+      To configure cr, follow the setup examples in the README:
+        https://github.com/open-cli-collective/codereview-cli#authentication-and-setup
 
       Secrets are stored in the OS credential store. They are never written to
       config.yml.
