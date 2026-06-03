@@ -81,6 +81,8 @@ type commandFlags struct {
 	sessionName      string
 	jsonOutput       bool
 	verbose          bool
+	llmModel         string
+	llmEffort        string
 	maxAgents        int
 	maxConcurrency   int
 	allowSelfReview  bool
@@ -118,6 +120,8 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Named LLM session to reuse for live reviews")
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 	cmd.Flags().BoolVar(&flags.verbose, "verbose", false, "Emit additional diagnostic details")
+	cmd.Flags().StringVar(&flags.llmModel, "llm-model", "", "Override LLM model for dry-run review")
+	cmd.Flags().StringVar(&flags.llmEffort, "llm-effort", "", "Override LLM effort for dry-run review")
 	cmd.Flags().IntVar(&flags.maxAgents, "max-agents", 0, "Maximum selected reviewer agents")
 	cmd.Flags().IntVar(&flags.maxConcurrency, "max-concurrency", 0, "Maximum concurrent reviewer agents")
 	cmd.Flags().BoolVar(&flags.allowSelfReview, "allow-self-review", false, "Allow reviewer credentials matching the PR author")
@@ -129,6 +133,19 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory RuntimeFactory, flags commandFlags, prArg string) error {
 	if flags.noPost {
 		flags.dryRun = true
+	}
+	llmModelChanged := cmd.Flags().Changed("llm-model")
+	llmEffortChanged := cmd.Flags().Changed("llm-effort")
+	llmModel := strings.TrimSpace(flags.llmModel)
+	llmEffort := strings.TrimSpace(flags.llmEffort)
+	if llmModelChanged && llmModel == "" {
+		return exitcode.Usage(fmt.Errorf("--llm-model must be non-empty"))
+	}
+	if llmEffortChanged && llmEffort == "" {
+		return exitcode.Usage(fmt.Errorf("--llm-effort must be non-empty"))
+	}
+	if (llmModelChanged || llmEffortChanged) && !flags.dryRun {
+		return exitcode.Usage(fmt.Errorf("--llm-model and --llm-effort require --dry-run or --no-post"))
 	}
 	if flags.rerun && flags.retryPosts {
 		return exitcode.Usage(fmt.Errorf("--rerun and --retry-posts are mutually exclusive"))
@@ -206,6 +223,8 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		NoResolveThreads:    noResolve,
 		MajorRequestChanges: profile.ReviewPolicy.MajorEvent == config.ReviewMajorEventRequestChanges,
 		IncludeNits:         flags.verbose,
+		LLMModelOverride:    llmModel,
+		LLMEffortOverride:   llmEffort,
 	}
 	if !flags.dryRun {
 		return runLive(ctx, opts, flags, runtime.Runner, pipelineReq, failOn)

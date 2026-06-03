@@ -99,6 +99,9 @@ type Request struct {
 	PostingIdentity gitprovider.Identity
 	AgentDirs       []string
 
+	LLMModelOverride  string
+	LLMEffortOverride string
+
 	FailOn              *review.Severity
 	IncludeNits         bool
 	AllowSelfReview     bool
@@ -205,6 +208,9 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 
 // Live executes the review planning phases into a gate-allocated live run.
 func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
+	if strings.TrimSpace(req.LLMModelOverride) != "" || strings.TrimSpace(req.LLMEffortOverride) != "" {
+		return Result{}, fmt.Errorf("pipeline: LLM runtime overrides require dry-run review")
+	}
 	if strings.TrimSpace(run.RunID) == "" {
 		return Result{}, fmt.Errorf("pipeline: live run ID is required")
 	}
@@ -306,7 +312,8 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 
 	var sessionDrafts []sessionDraft
 	findingSession := map[review.FindingID]string{}
-	model, effort := orchestratorModel(catalog)
+	defaultModel, defaultEffort := orchestratorModel(catalog)
+	model, effort := resolveLLMRuntimeConfig(req, defaultModel, defaultEffort)
 	namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, model, now)
 	if err != nil {
 		return Result{}, err
@@ -537,11 +544,12 @@ func runReviewers(ctx context.Context, opts Options, req Request, pr gitprovider
 }
 
 func runReviewer(ctx context.Context, opts Options, req Request, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent) ([]review.Finding, sessionDraft, error) {
-	prompt, err := buildReviewerPrompt(ctx, opts, req, pr, parsed, selected, agent)
+	model, effort := resolveLLMRuntimeConfig(req, agent.Model, agent.Effort)
+	prompt, err := buildReviewerPrompt(ctx, opts, req, pr, parsed, selected, agent, model)
 	if err != nil {
 		return nil, sessionDraft{}, err
 	}
-	if err := opts.checkPromptBudget("reviewer", agent.ID, agent.Model, strings.Join(selected.Files, ","), prompt); err != nil {
+	if err := opts.checkPromptBudget("reviewer", agent.ID, model, strings.Join(selected.Files, ","), prompt); err != nil {
 		return nil, sessionDraft{}, err
 	}
 	logPath, err := artifacts.AgentLog(agent.ID)
@@ -549,7 +557,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, pr gitprovider.
 		return nil, sessionDraft{}, err
 	}
 	agentID := agent.ID
-	findings, session, err := runStructured(ctx, opts, ledger.SessionRoleReviewer, &agentID, agent.Model, agent.Effort, logPath, prompt, func(data []byte) (llm.Findings, error) {
+	findings, session, err := runStructured(ctx, opts, ledger.SessionRoleReviewer, &agentID, model, effort, logPath, prompt, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
 			KnownAgents:  map[string]bool{agent.ID: true},
 			ChangedFiles: changedFiles(parsed.Patches),
@@ -775,7 +783,7 @@ func pruneRetention(ctx context.Context, layout statepaths.Layout, store datalif
 	return nil
 }
 
-func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitprovider.PR, parsed ParsedDiff, selected llm.SelectedAgent, agent agents.Agent) (string, error) {
+func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitprovider.PR, parsed ParsedDiff, selected llm.SelectedAgent, agent agents.Agent, model string) (string, error) {
 	patchesByPath := map[string]FilePatch{}
 	for _, patch := range parsed.Patches {
 		patchesByPath[patch.Path] = patch
@@ -799,14 +807,14 @@ func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitp
 			if err != nil {
 				return "", err
 			}
-			if err := opts.checkPromptBudget("full-content", agent.ID, agent.Model, basePath, string(baseBytes)); err != nil {
+			if err := opts.checkPromptBudget("full-content", agent.ID, model, basePath, string(baseBytes)); err != nil {
 				return "", err
 			}
 			headBytes, err := fetchFileOptional(ctx, opts.Provider, req.PRRef, pr.Head.SHA, patch.Path)
 			if err != nil {
 				return "", err
 			}
-			if err := opts.checkPromptBudget("full-content", agent.ID, agent.Model, patch.Path, string(headBytes)); err != nil {
+			if err := opts.checkPromptBudget("full-content", agent.ID, model, patch.Path, string(headBytes)); err != nil {
 				return "", err
 			}
 			fc.BaseContent = string(baseBytes)
@@ -1496,6 +1504,16 @@ func orchestratorModel(catalog agents.Catalog) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+func resolveLLMRuntimeConfig(req Request, model, effort string) (string, string) {
+	if override := strings.TrimSpace(req.LLMModelOverride); override != "" {
+		model = override
+	}
+	if override := strings.TrimSpace(req.LLMEffortOverride); override != "" {
+		effort = override
+	}
+	return model, effort
 }
 
 func postingKey(identity gitprovider.Identity) string {

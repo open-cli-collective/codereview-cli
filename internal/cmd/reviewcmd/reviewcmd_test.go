@@ -78,6 +78,9 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	if len(req.AgentDirs) != 1 || req.AgentDirs[0] != "/tmp/agents" || !req.AllowSelfReview || !req.AllowSelfApprove || !req.NoResolveThreads || !req.MajorRequestChanges || !req.IncludeNits {
 		t.Fatalf("request flags = %#v", req)
 	}
+	if req.LLMModelOverride != "" || req.LLMEffortOverride != "" {
+		t.Fatalf("LLM overrides = model:%q effort:%q, want empty when flags omitted", req.LLMModelOverride, req.LLMEffortOverride)
+	}
 	if gotRuntime.MaxAgents != 3 || gotRuntime.MaxConcurrency != 2 {
 		t.Fatalf("runtime opts = %#v, want max agents/concurrency", gotRuntime)
 	}
@@ -191,6 +194,113 @@ func TestReviewNoPostIsDryRunAlias(t *testing.T) {
 	}
 	if len(runner.requests) != 1 {
 		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+}
+
+func TestReviewDryRunPassesLLMOverrides(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--llm-model", " bench-model ",
+		"--llm-effort", " high ",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	req := runner.requests[0]
+	if req.LLMModelOverride != "bench-model" || req.LLMEffortOverride != "high" {
+		t.Fatalf("LLM overrides = model:%q effort:%q, want bench-model/high", req.LLMModelOverride, req.LLMEffortOverride)
+	}
+}
+
+func TestReviewNoPostPassesLLMOverrides(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--no-post",
+		"--llm-model", "bench-model",
+		"--llm-effort", "medium",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	req := runner.requests[0]
+	if req.LLMModelOverride != "bench-model" || req.LLMEffortOverride != "medium" {
+		t.Fatalf("LLM overrides = model:%q effort:%q, want bench-model/medium", req.LLMModelOverride, req.LLMEffortOverride)
+	}
+}
+
+func TestReviewLiveRejectsLLMOverridesBeforeRuntimeFactory(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "model", args: []string{"--llm-model", "bench-model"}},
+		{name: "effort", args: []string{"--llm-effort", "high"}},
+		{name: "both", args: []string{"--llm-model", "bench-model", "--llm-effort", "high"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var factoryCalled bool
+			cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+				factoryCalled = true
+				return Runtime{Runner: &fakeRunner{liveResult: testLiveResult(false)}}, nil
+			})
+
+			args := append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, tt.args...)
+			err := root.Execute(cmd, args)
+			if err == nil {
+				t.Fatal("Execute error = nil, want usage error")
+			}
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want usage", got)
+			}
+			if factoryCalled {
+				t.Fatal("runtime factory was called for invalid live LLM override")
+			}
+		})
+	}
+}
+
+func TestReviewRejectsEmptyLLMOverridesBeforeRuntimeFactory(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "model", args: []string{"--dry-run", "--llm-model", " \t "}},
+		{name: "effort", args: []string{"--dry-run", "--llm-effort", " \t "}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var factoryCalled bool
+			cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+				factoryCalled = true
+				return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+			})
+
+			args := append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, tt.args...)
+			err := root.Execute(cmd, args)
+			if err == nil {
+				t.Fatal("Execute error = nil, want usage error")
+			}
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want usage", got)
+			}
+			if factoryCalled {
+				t.Fatal("runtime factory was called for empty LLM override")
+			}
+		})
 	}
 }
 
