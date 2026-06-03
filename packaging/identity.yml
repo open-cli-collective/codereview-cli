@@ -15,15 +15,15 @@ archives:
 # nuspec/winget manifests and run secretless channel jobs. Channels (and the
 # homebrew canonical_cask) are added when each is actually implemented.
 
-# The shared darwin gate writes seed_config.path under XDG_CONFIG_HOME. cr's
-# statedir-based config path resolves through os.UserConfigDir(); on macOS with
-# hermetic HOME that is "$HOME/Library/Application Support/codereview/config.yml".
-# The relative ".." intentionally escapes XDG_CONFIG_HOME back to HOME so the
-# probe seeds the path cr actually reads.
+# cr's statedir-based config path resolves through os.UserConfigDir(); on macOS
+# with hermetic HOME that is "$HOME/Library/Application Support". The shared
+# darwin gate's native_user_config seed base writes under that root without
+# path traversal.
 keychain_probe:
   env_unset: [CODEREVIEW_KEYRING_BACKEND]
   seed_config:
-    path: "../Library/Application Support/codereview/config.yml"
+    base: native_user_config
+    path: "codereview/config.yml"
     content: |
       default_profile: default
       profiles:
