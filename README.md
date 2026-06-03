@@ -605,8 +605,8 @@ Review selection and execution flags:
 | `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
 | `--max-agents <n>` | Limit selected reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
-| `--llm-model <model>` | Override the LLM model for dry-run review. Requires `--dry-run` or `--no-post`; live reviews reject it. |
-| `--llm-effort <effort>` | Override the LLM effort for dry-run review. Requires `--dry-run` or `--no-post`; live reviews reject it. |
+| `--llm-model <model>` | Override the LLM model for dry-run review. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
+| `--llm-effort <effort>` | Override the LLM effort for dry-run review. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
 | `--session <name>` | Reuse a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
 | `--verbose` | Include nits in review output and emit additional diagnostics. |
 

@@ -46,7 +46,9 @@ analysis:
 Generated results should be ignored by default in repositories that run
 benchmarks. They can contain private diffs, model output, stderr, local paths,
 artifact paths, profile names, model/provider metadata, and usage details.
-A typical repository ignore rule is:
+`cr benchmark run` does not create or update `.gitignore`; add the rule
+manually when the repository should keep benchmark results private. A typical
+repository ignore rule is:
 
 ```gitignore
 .cr-bench/
@@ -72,9 +74,10 @@ JSON artifacts store full RFC3339 timestamps:
 
 ## Suite Schema
 
-Prefer the canonical `agent_dirs` field for candidate agent directory lists.
-The loader accepts the older draft alias `agents_dir`, but a candidate cannot
-set both names.
+Prefer the canonical `agent_dirs` field for candidate agent directory lists. The
+loader currently accepts the draft alias `agents_dir` for compatibility and does
+not emit a deprecation warning, but new suites should use `agent_dirs`. A
+candidate cannot set both names.
 
 ```yaml
 suite:
@@ -85,7 +88,7 @@ suite:
 candidates:
   - id: claude-sonnet-medium
     profile: work-anthropic
-    model: claude-sonnet-4
+    model: claude-sonnet-4-5
     effort: medium
     agent_dirs:
       - ../agents
@@ -123,7 +126,9 @@ match the candidate profile's Git host. `model`, `effort`, `agent_dirs`,
 invalid.
 
 `effort` is the suite field for effort or reasoning-effort configuration. The
-selected adapter decides how to apply or translate it.
+selected adapter decides how to apply or translate it. Model IDs are
+provider-specific; use IDs accepted by the candidate profile's configured LLM
+provider and adapter.
 
 Relative `agent_dirs` are resolved from the suite file directory. Benchmark
 summaries include resolved agent directory metadata. The
@@ -161,9 +166,9 @@ cr benchmark run .codereview/benchmarks/oss-model-cost-check.yml \
   --json
 ```
 
-Use `--candidate <id>` and `--case <id>` for benchmark selection. Do not use
-ambiguous benchmark model-selection language. Models are candidate fields, not
-suite selectors.
+Use repeatable `--candidate <id>` and `--case <id>` flags for benchmark
+selection. Do not use ambiguous benchmark model-selection language. Models are
+candidate fields, not suite selectors.
 
 `run` shells out to `cr review` for each selected run. The generated command
 always uses dry-run JSON review mode:
@@ -205,7 +210,8 @@ Each run writes benchmark-owned artifacts under the selected results directory:
 ```
 
 Run IDs include the matrix index, candidate index, case index, candidate ID, and
-case ID:
+case ID. The `cNN` segment is the candidate index, and the `kNN` segment is the
+case index; `k` avoids reusing `c` for both candidate and case:
 
 ```text
 0001-c01-k01-claude-sonnet-medium-merged-security-pr
