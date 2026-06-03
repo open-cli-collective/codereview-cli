@@ -13,8 +13,9 @@ on:
         type: boolean
         default: true
 
-# The tag push uses the dedicated TAP_GITHUB_TOKEN via a credential helper, not
-# GITHUB_TOKEN — so the pushed tag retriggers release.yml.
+# The tag push uses the dedicated RELEASE_TAG_TOKEN via a credential helper, not
+# GITHUB_TOKEN, so the pushed tag retriggers release.yml. HOMEBREW_TAP_TOKEN is
+# reserved for future Homebrew tap pushes when package channels are added.
 permissions:
   contents: read
 
@@ -28,4 +29,4 @@ jobs:
       # — this is robust to either and always yields a real boolean.
       dry-run: ${{ github.event_name == 'workflow_dispatch' && (inputs.dry-run == true || inputs.dry-run == 'true') }}
     secrets:
-      tag-token: ${{ secrets.TAP_GITHUB_TOKEN }}
+      tag-token: ${{ secrets.RELEASE_TAG_TOKEN }}
