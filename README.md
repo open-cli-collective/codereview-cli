@@ -97,7 +97,9 @@ cr init --non-interactive \
 ```
 
 Setup with Pi's local RPC runtime. Install Pi first and make sure the `pi`
-binary is available on `PATH` before running `cr review`.
+binary is available on `PATH` before running `cr review`. When Pi exposes
+`--system-prompt`, `cr` uses it for structured-output hardening; older Pi
+installs fall back to sending the same instruction with the prompt.
 
 ```bash
 cr init --non-interactive \

@@ -96,6 +96,36 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	}
 }
 
+func TestPiRPCFallsBackWhenSystemPromptFlagIsUnavailable(t *testing.T) {
+	recordPath := filepath.Join(t.TempDir(), "record.json")
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnvWithSystemPromptSupport("success", recordPath, false),
+		Timeout:           5 * time.Second,
+	})
+
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "review this diff"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	record := readPiRPCRecord(t, recordPath)
+	if containsFlag(record.AdapterArgs, "--system-prompt") {
+		t.Fatalf("args = %#v, do not want unsupported --system-prompt flag", record.AdapterArgs)
+	}
+	if len(record.Commands) != 1 {
+		t.Fatalf("commands = %#v, want one prompt command", record.Commands)
+	}
+	message := record.Commands[0]["message"]
+	if !strings.Contains(message, piRPCSystemPrompt) || !strings.Contains(message, "User request:\nreview this diff") {
+		t.Fatalf("prompt message = %q, want fallback system prompt and user request", message)
+	}
+}
+
 func TestPiRPCProtocolFailures(t *testing.T) {
 	t.Run("prompt response failure", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
@@ -253,7 +283,7 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 
 func TestPiRPCRejectsUnsafeSpecs(t *testing.T) {
 	adapter := NewPiRPCAdapter(PiRPCOptions{})
-	args, err := adapter.buildArgs(Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"}, t.TempDir())
+	args, err := adapter.buildArgs(Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"}, t.TempDir(), true)
 	if err != nil {
 		t.Fatalf("buildArgs: %v", err)
 	}
@@ -266,6 +296,7 @@ func TestPiRPCRejectsUnsafeSpecs(t *testing.T) {
 		{name: "missing no extensions", args: removeFlag(args, "--no-extensions")},
 		{name: "print mode", args: append([]string{"-p"}, args...)},
 		{name: "text mode", args: replaceFlagValue(args, "--mode", "text")},
+		{name: "wrong system prompt", args: replaceFlagValue(args, "--system-prompt", "be loose")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := adapter.validateArgs(tt.args); !errors.Is(err, ErrUnsafeSubprocessConfig) {
@@ -285,6 +316,14 @@ func TestPiRPCResumeUnsupported(t *testing.T) {
 func TestPiRPCHelperProcess(_ *testing.T) {
 	if os.Getenv("LLM_PI_RPC_HELPER") != "1" {
 		return
+	}
+	if containsFlag(os.Args, "--help") {
+		fmt.Println("--mode")
+		fmt.Println("--no-tools")
+		if os.Getenv("LLM_HELPER_SYSTEM_PROMPT_SUPPORT") != "0" {
+			fmt.Println("--system-prompt")
+		}
+		os.Exit(0)
 	}
 	recordPath := os.Getenv("LLM_HELPER_RECORD")
 	cwd, _ := os.Getwd()
@@ -366,10 +405,19 @@ func piRPCHelperPrefix() []string {
 }
 
 func piRPCHelperEnv(mode string, recordPath string) []string {
+	return piRPCHelperEnvWithSystemPromptSupport(mode, recordPath, true)
+}
+
+func piRPCHelperEnvWithSystemPromptSupport(mode string, recordPath string, supported bool) []string {
+	supportValue := "0"
+	if supported {
+		supportValue = "1"
+	}
 	return []string{
 		"LLM_PI_RPC_HELPER=1",
 		"LLM_HELPER_MODE=" + mode,
 		"LLM_HELPER_RECORD=" + recordPath,
+		"LLM_HELPER_SYSTEM_PROMPT_SUPPORT=" + supportValue,
 	}
 }
 

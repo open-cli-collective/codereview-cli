@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	piRPCPromptID = "prompt-1"
+	piRPCPromptID     = "prompt-1"
 	piRPCSystemPrompt = "You are a strict JSON API for code review structured output. Return exactly one JSON object that matches the requested schema. Do not include markdown fences, prose, explanations, or leading/trailing text. The first byte of your final answer must be { and the last byte must be }."
 )
 
@@ -35,6 +35,8 @@ type PiRPCAdapter struct {
 	env               []string
 	timeout           time.Duration
 	scratchDirFactory ScratchDirFactory
+	capabilitiesMu    sync.Mutex
+	systemPromptFlag  *bool
 }
 
 // NewPiRPCAdapter returns a Pi RPC subprocess adapter.
@@ -92,7 +94,12 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 		_ = cleanup()
 		return nil, err
 	}
-	args, err := a.buildArgs(req, scratch)
+	supportsSystemPrompt, err := a.supportsSystemPromptFlag(ctx)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	args, err := a.buildArgs(req, scratch, supportsSystemPrompt)
 	if err != nil {
 		_ = cleanup()
 		return nil, err
@@ -168,7 +175,7 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 		_ = cleanup()
 		return nil, err
 	}
-	if err := writePiRPCPrompt(stdin, req.Prompt); err != nil {
+	if err := writePiRPCPrompt(stdin, piRPCPrompt(req.Prompt, supportsSystemPrompt)); err != nil {
 		cancel()
 		_ = procGroup.kill(cmd)
 		go func() { _, _ = io.Copy(io.Discard, stdout) }()
@@ -192,16 +199,18 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 	return stream, nil
 }
 
-func (a *PiRPCAdapter) buildArgs(req Request, _ string) ([]string, error) {
+func (a *PiRPCAdapter) buildArgs(req Request, _ string, supportsSystemPrompt bool) ([]string, error) {
 	args := []string{
 		"--mode", "rpc",
-		"--system-prompt", piRPCSystemPrompt,
 		"--no-tools",
 		"--no-extensions",
 		"--no-skills",
 		"--no-prompt-templates",
 		"--no-themes",
 		"--no-session",
+	}
+	if supportsSystemPrompt {
+		args = append(args, "--system-prompt", piRPCSystemPrompt)
 	}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
@@ -222,12 +231,53 @@ func (a *PiRPCAdapter) validateArgs(args []string) error {
 	if containsFlag(args, "--tools") || containsFlag(args, "-t") {
 		return fmt.Errorf("%w: pi_rpc must disable tools", ErrUnsafeSubprocessConfig)
 	}
-	for _, flag := range []string{"--system-prompt", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
+	for _, flag := range []string{"--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
 		if !containsFlag(args, flag) {
 			return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 		}
 	}
+	if containsFlag(args, "--system-prompt") && flagValue(args, "--system-prompt") != piRPCSystemPrompt {
+		return fmt.Errorf("%w: pi_rpc system prompt mismatch", ErrUnsafeSubprocessConfig)
+	}
 	return nil
+}
+
+func (a *PiRPCAdapter) supportsSystemPromptFlag(ctx context.Context) (bool, error) {
+	a.capabilitiesMu.Lock()
+	cached := a.systemPromptFlag
+	a.capabilitiesMu.Unlock()
+	if cached != nil {
+		return *cached, nil
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	execArgs := append(append([]string(nil), a.commandArgsPrefix...), "--help")
+	// #nosec G204 -- the Pi RPC adapter intentionally probes the configured CLI binary for flag support.
+	cmd := exec.CommandContext(checkCtx, a.command, execArgs...)
+	if len(a.env) > 0 {
+		cmd.Env = append(os.Environ(), a.env...)
+	}
+	output, err := cmd.CombinedOutput()
+	if checkCtx.Err() != nil {
+		return false, fmt.Errorf("llm pi rpc: checking system prompt support: %w", checkCtx.Err())
+	}
+	if err != nil {
+		return false, fmt.Errorf("llm pi rpc: checking system prompt support: %w", err)
+	}
+	supported := strings.Contains(string(output), "--system-prompt")
+
+	a.capabilitiesMu.Lock()
+	a.systemPromptFlag = &supported
+	a.capabilitiesMu.Unlock()
+	return supported, nil
+}
+
+func piRPCPrompt(prompt string, systemPromptFlagSupported bool) string {
+	if systemPromptFlagSupported {
+		return prompt
+	}
+	return piRPCSystemPrompt + "\n\nUser request:\n" + prompt
 }
 
 func writePiRPCPrompt(stdin io.Writer, prompt string) error {
