@@ -56,7 +56,7 @@ package-channel credentials. The preferred long-term shape is the GitHub App
 installation-token path described in the shared release standard; until that is
 wired through, use a narrowly scoped `RELEASE_TAG_TOKEN`.
 
-`HOMEBREW_TAP_TOKEN` is only for Homebrew tap pushes from the release workflow.
+`TAP_GITHUB_TOKEN` is only for Homebrew tap pushes from the release workflow.
 Do not reuse it for auto-release tag pushes.
 
 Package-channel releases also use `CHOCOLATEY_API_KEY`,
@@ -71,7 +71,7 @@ shared workflow owns publish mechanics.
 
 - Homebrew: GoReleaser renders `dist/homebrew/Casks/codereview-cli.rb` with
   `skip_upload: true`; the shared Homebrew job pushes that generated cask to
-  `open-cli-collective/homebrew-tap` with `HOMEBREW_TAP_TOKEN`.
+  `open-cli-collective/homebrew-tap` with `TAP_GITHUB_TOKEN`.
 - Chocolatey: the shared Chocolatey job rewrites
   `packaging/chocolatey/cr.nuspec` from version `0.0.0` to the release version
   and replaces `CHECKSUM_AMD64_PLACEHOLDER` /

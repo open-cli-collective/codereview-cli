@@ -68,7 +68,7 @@ require_grep "<id>cr</id>" "packaging/chocolatey/cr.nuspec"
 require_grep 'releases/download/v${version}' "packaging/chocolatey/tools/chocolateyInstall.ps1"
 require_grep 'cr_v${version}_windows_${arch}.zip' "packaging/chocolatey/tools/chocolateyInstall.ps1"
 
-require_grep 'homebrew-tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}' ".github/workflows/release.yml"
+require_grep 'homebrew-tap-token: ${{ secrets.TAP_GITHUB_TOKEN }}' ".github/workflows/release.yml"
 require_grep 'chocolatey-api-key: ${{ secrets.CHOCOLATEY_API_KEY }}' ".github/workflows/release.yml"
 require_grep 'winget-token: ${{ secrets.WINGET_GITHUB_TOKEN }}' ".github/workflows/release.yml"
 require_grep 'linux-dispatch-token: ${{ secrets.LINUX_PACKAGES_DISPATCH_TOKEN }}' ".github/workflows/release.yml"
