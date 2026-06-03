@@ -70,6 +70,42 @@ archives:
       - LICENSE
       - README.md
 
+nfpms:
+  - id: cr
+    package_name: cr
+    vendor: Open CLI Collective
+    homepage: https://github.com/open-cli-collective/codereview-cli
+    maintainer: Open CLI Collective <https://github.com/open-cli-collective>
+    description: Automated pull-request review CLI
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    contents:
+      - src: LICENSE
+        dst: /usr/share/licenses/cr/LICENSE
+
+homebrew_casks:
+  - name: codereview-cli
+    binaries: [cr]
+    skip_upload: true
+    repository:
+      owner: open-cli-collective
+      name: homebrew-tap
+    homepage: https://github.com/open-cli-collective/codereview-cli
+    description: Automated pull-request review CLI
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cr"]
+    caveats: |
+      To configure cr, run:
+        cr init
+
+      Secrets are stored in the OS credential store. They are never written to
+      config.yml.
+
 checksum:
   name_template: "checksums.txt"
 

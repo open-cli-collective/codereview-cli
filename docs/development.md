@@ -38,8 +38,8 @@ make clean   # remove build artifacts
 - Local workflow files: `.github/workflows/ci.yml`,
   `.github/workflows/auto-release.yml`, and `.github/workflows/release.yml`
 - Packaging identity: `packaging/identity.yml`
-- Current distribution status: GitHub release archives only; package channels
-  can be added when each channel is actually implemented.
+- Current distribution status: GitHub release archives plus standard package
+  channels declared in `packaging/identity.yml`.
 - Application package layering follows the active codereview implementation:
   command glue in `internal/cmd/*`, presentation in `internal/view`,
   state/config adapters in `internal/config`, `internal/ledger`, and
@@ -51,13 +51,13 @@ make clean   # remove build artifacts
 
 `auto-release.yml` passes `RELEASE_TAG_TOKEN` to the shared auto-release
 workflow as its `tag-token`. That credential must be separate from
-`GITHUB_TOKEN` so tag pushes retrigger `release.yml`, and separate from future
+`GITHUB_TOKEN` so tag pushes retrigger `release.yml`, and separate from
 package-channel credentials. The preferred long-term shape is the GitHub App
 installation-token path described in the shared release standard; until that is
 wired through, use a narrowly scoped `RELEASE_TAG_TOKEN`.
 
-`HOMEBREW_TAP_TOKEN` is reserved for Homebrew tap pushes when package channels
-are added. Do not reuse it for auto-release tag pushes.
+`HOMEBREW_TAP_TOKEN` is only for Homebrew tap pushes from the release workflow.
+Do not reuse it for auto-release tag pushes.
 
 ## Shared Standards
 

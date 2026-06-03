@@ -2,8 +2,8 @@ name: Release
 
 # Triggered by the release tag that auto-release.yml mints (or a manual tag
 # push). Builds with GoReleaser and publishes the GitHub release. codereview-cli
-# declares no packaging channels yet, so the reusable workflow's channel jobs
-# (homebrew/winget/chocolatey/linux) all skip — GitHub-release archives only.
+# declares the standard package channels in packaging/identity.yml; the reusable
+# workflow publishes each channel only when its manifest entry is present.
 on:
   push:
     tags:
@@ -28,3 +28,8 @@ jobs:
       # may surface as a real boolean or the string "true" depending on context
       # — this is robust to either and always yields a real boolean.
       dry-run: ${{ github.event_name == 'workflow_dispatch' && (inputs.dry-run == true || inputs.dry-run == 'true') }}
+    secrets:
+      homebrew-tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      chocolatey-api-key: ${{ secrets.CHOCOLATEY_API_KEY }}
+      winget-token: ${{ secrets.WINGET_GITHUB_TOKEN }}
+      linux-dispatch-token: ${{ secrets.LINUX_PACKAGES_DISPATCH_TOKEN }}
