@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/agentscmd"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/benchmarkcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/configcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/credentialcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/datacmd"
@@ -46,6 +47,6 @@ func buildRootCommand(stdin io.Reader, stdout, stderr io.Writer) (*cobra.Command
 		Stdout: stdout,
 		Stderr: stderr,
 	})
-	root.RegisterAll(cmd, opts, configcmd.Register, credentialcmd.Register, mecmd.Register, agentscmd.Register, reviewcmd.Register, sessionscmd.Register, datacmd.Register)
+	root.RegisterAll(cmd, opts, configcmd.Register, credentialcmd.Register, mecmd.Register, agentscmd.Register, reviewcmd.Register, sessionscmd.Register, datacmd.Register, benchmarkcmd.Register)
 	return cmd, opts
 }
