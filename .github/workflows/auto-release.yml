@@ -14,7 +14,7 @@ on:
         default: true
 
 # The tag push uses the dedicated RELEASE_TAG_TOKEN via a credential helper, not
-# GITHUB_TOKEN, so the pushed tag retriggers release.yml. HOMEBREW_TAP_TOKEN is
+# GITHUB_TOKEN, so the pushed tag retriggers release.yml. TAP_GITHUB_TOKEN is
 # only for release.yml Homebrew tap pushes.
 permissions:
   contents: read
