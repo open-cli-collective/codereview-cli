@@ -50,6 +50,7 @@ type PhaseMetrics struct {
 	Provider    string       `json:"provider,omitempty"`
 	Model       string       `json:"model,omitempty"`
 	StopReason  string       `json:"stop_reason,omitempty"`
+	LLMCalls    int          `json:"llm_calls"`
 	Turns       int          `json:"turns"`
 	ToolCalls   int          `json:"tool_calls"`
 	ToolResults int          `json:"tool_results"`
@@ -86,9 +87,7 @@ func ExtractRunMetrics(artifactPath string) (RunMetrics, error) {
 		metrics.Turns += phase.Turns
 		metrics.ToolCalls += phase.ToolCalls
 		metrics.ToolResults += phase.ToolResults
-		if phase.Tokens.TotalTokens > 0 || phase.Cost.Total > 0 {
-			metrics.LLMCalls++
-		}
+		metrics.LLMCalls += phase.LLMCalls
 		metrics.Tokens.add(phase.Tokens)
 		metrics.Cost.add(phase.Cost)
 	}
@@ -178,32 +177,44 @@ func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
 	if tokens.TotalTokens == 0 && cost.Total == 0 {
 		return
 	}
-	phase.Tokens = tokens
-	phase.Cost = cost
+	phase.LLMCalls++
+	phase.Tokens.add(tokens)
+	phase.Cost.add(cost)
 }
 
 func tokenMetricsFromUsage(usage map[string]any) TokenMetrics {
 	return TokenMetrics{
-		Input:       int64Value(usage["input"]),
-		Output:      int64Value(usage["output"]),
-		CacheRead:   int64Value(usage["cacheRead"]),
-		CacheWrite:  int64Value(usage["cacheWrite"]),
-		TotalTokens: int64Value(usage["totalTokens"]),
+		Input:       int64ValueFromKeys(usage, "input", "inputTokens", "input_tokens", "tokensIn", "tokens_in", "promptTokens", "prompt_tokens"),
+		Output:      int64ValueFromKeys(usage, "output", "outputTokens", "output_tokens", "tokensOut", "tokens_out", "completionTokens", "completion_tokens"),
+		CacheRead:   int64ValueFromKeys(usage, "cacheRead", "cache_read"),
+		CacheWrite:  int64ValueFromKeys(usage, "cacheWrite", "cache_write", "cacheCreate", "cache_create"),
+		TotalTokens: int64ValueFromKeys(usage, "totalTokens", "total_tokens", "tokens", "total"),
 	}
 }
 
 func costMetricsFromUsage(usage map[string]any) CostMetrics {
-	cost, ok := usage["cost"].(map[string]any)
+	costValue := usage["cost"]
+	cost, ok := costValue.(map[string]any)
 	if !ok {
-		return CostMetrics{}
+		return CostMetrics{
+			Total: float64ValueFromKeys(usage, "cost", "cost_usd", "costUSD", "totalCost", "total_cost"),
+		}
 	}
-	return CostMetrics{
-		Input:      float64Value(cost["input"]),
-		Output:     float64Value(cost["output"]),
-		CacheRead:  float64Value(cost["cacheRead"]),
-		CacheWrite: float64Value(cost["cacheWrite"]),
-		Total:      float64Value(cost["total"]),
+	total := float64ValueFromKeys(cost, "total", "totalCost", "total_cost", "costUSD", "cost_usd")
+	if total == 0 {
+		total = float64Value(costValue)
 	}
+	metrics := CostMetrics{
+		Input:      float64ValueFromKeys(cost, "input", "inputCost", "input_cost"),
+		Output:     float64ValueFromKeys(cost, "output", "outputCost", "output_cost"),
+		CacheRead:  float64ValueFromKeys(cost, "cacheRead", "cache_read", "cacheReadCost", "cache_read_cost"),
+		CacheWrite: float64ValueFromKeys(cost, "cacheWrite", "cache_write", "cacheCreate", "cache_create", "cacheWriteCost", "cache_write_cost", "cacheCreateCost", "cache_create_cost"),
+		Total:      total,
+	}
+	if metrics.Total == 0 {
+		metrics.Total = metrics.Input + metrics.Output + metrics.CacheRead + metrics.CacheWrite
+	}
+	return metrics
 }
 
 func (m *TokenMetrics) add(other TokenMetrics) {
@@ -223,7 +234,7 @@ func (m *CostMetrics) add(other CostMetrics) {
 }
 
 func phaseHasData(phase PhaseMetrics) bool {
-	return phase.Turns > 0 || phase.ToolCalls > 0 || phase.ToolResults > 0 || phase.Tokens.TotalTokens > 0 || phase.Cost.Total > 0
+	return phase.LLMCalls > 0 || phase.Turns > 0 || phase.ToolCalls > 0 || phase.ToolResults > 0 || phase.Tokens.TotalTokens > 0 || phase.Cost.Total > 0
 }
 
 func phaseName(logPath string) string {
@@ -266,6 +277,15 @@ func int64Value(value any) int64 {
 	}
 }
 
+func int64ValueFromKeys(values map[string]any, keys ...string) int64 {
+	for _, key := range keys {
+		if value := int64Value(values[key]); value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
 func float64Value(value any) float64 {
 	switch typed := value.(type) {
 	case float64:
@@ -277,6 +297,15 @@ func float64Value(value any) float64 {
 	default:
 		return 0
 	}
+}
+
+func float64ValueFromKeys(values map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		if value := float64Value(values[key]); value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func writeJSONFile(path string, value any) error {

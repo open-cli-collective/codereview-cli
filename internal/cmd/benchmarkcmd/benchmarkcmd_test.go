@@ -412,6 +412,7 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	assertFileContains(t, got.Artifacts.SuiteSummary, `"failure_count": 1`)
 	assertFileContains(t, got.Artifacts.SummaryJSONL, `"run_id":"0001-c01-k01-first-case_one"`)
 	assertFileContains(t, got.Artifacts.Report, "| `0004-c02-k02-second-case_two` |")
+	assertFileContains(t, got.Artifacts.Report, "| n/a | n/a |")
 	assertFileContains(t, got.Runs[0].Artifacts.ReviewJSON, `"run_id":"child-run-1"`)
 	assertFileContains(t, got.Runs[1].Artifacts.Stderr, "second stderr")
 	assertFileContains(t, got.Runs[0].Artifacts.MetricsJSON, `"finding_count": 1`)

@@ -672,15 +672,23 @@ func renderReportMarkdown(summary benchmarkSuiteSummary) string {
 	b.WriteString("| Run | Candidate | Case | Exit | Findings | Tokens | Cost |\n")
 	b.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: |\n")
 	for _, run := range summary.Runs {
-		tokens := int64(0)
-		cost := float64(0)
-		if run.Usage != nil {
-			tokens = run.Usage.Tokens.TotalTokens
-			cost = run.Usage.Cost.Total
-		}
-		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d | %d | %d | $%.6f |\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, run.FindingCount, tokens, cost)
+		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d | %d | %s | %s |\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, run.FindingCount, usageTokensCell(run.Usage), usageCostCell(run.Usage))
 	}
 	return b.String()
+}
+
+func usageTokensCell(usage *benchmark.RunMetrics) string {
+	if usage == nil || !usage.HasData() {
+		return "n/a"
+	}
+	return fmt.Sprintf("%d", usage.Tokens.TotalTokens)
+}
+
+func usageCostCell(usage *benchmark.RunMetrics) string {
+	if usage == nil || !usage.HasData() {
+		return "n/a"
+	}
+	return fmt.Sprintf("$%.6f", usage.Cost.Total)
 }
 
 func durationMS(duration time.Duration) int64 {

@@ -262,7 +262,9 @@ review output. Other local review artifacts referenced by that JSON may contain
 more detail, depending on adapter and review behavior.
 
 Treat these metric families as nullable unless the producing adapter or
-artifact actually reports them:
+artifact actually reports them. Generated reports render unavailable run-level
+usage as `n/a` instead of `0` so missing provider telemetry is not confused with
+real zero-token or zero-cost usage.
 
 | Metric family | Notes |
 |---------------|-------|
