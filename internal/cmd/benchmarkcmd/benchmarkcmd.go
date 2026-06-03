@@ -65,9 +65,9 @@ type doctorCase struct {
 func Register(rootCmd *cobra.Command, opts *root.Options) {
 	cmd := &cobra.Command{
 		Use:   "benchmark",
-		Short: "Validate and inspect benchmark suites",
+		Short: "Validate, inspect, and run benchmark suites",
 	}
-	cmd.AddCommand(newValidateCommand(opts), newDoctorCommand(opts))
+	cmd.AddCommand(newValidateCommand(opts), newDoctorCommand(opts), newRunCommand(opts))
 	rootCmd.AddCommand(cmd)
 }
 
