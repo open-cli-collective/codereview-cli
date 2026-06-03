@@ -36,7 +36,8 @@ func TestRun(t *testing.T) {
 		{name: "review command wired", args: []string{"review", "--help"}, wantCode: 0, wantStdout: "Run an automated pull-request review", wantStdoutSubstring: true},
 		{name: "sessions command wired", args: []string{"sessions", "--help"}, wantCode: 0, wantStdout: "Manage named LLM sessions", wantStdoutSubstring: true},
 		{name: "data command wired", args: []string{"data", "--help"}, wantCode: 0, wantStdout: "Manage local review data", wantStdoutSubstring: true},
-		{name: "benchmark command wired", args: []string{"benchmark", "--help"}, wantCode: 0, wantStdout: "Validate and inspect benchmark suites", wantStdoutSubstring: true},
+		{name: "benchmark command wired", args: []string{"benchmark", "--help"}, wantCode: 0, wantStdout: "Validate, inspect, and run benchmark suites", wantStdoutSubstring: true},
+		{name: "benchmark run command wired", args: []string{"benchmark", "run", "--help"}, wantCode: 0, wantStdout: "Run a benchmark suite", wantStdoutSubstring: true},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: 2, wantStderr: "unknown command", wantEmptyStdout: true},
 	}
 
