@@ -204,7 +204,7 @@ func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
 	var sources []SourceInfo
 	for _, dir := range opts.ProfileDirs {
 		provenance := Provenance{Kind: SourceProfile}
-		agents, source, err := loadFileSource(dir, provenance)
+		source, err := inspectFileSource(dir, provenance)
 		if err != nil {
 			return Catalog{}, err
 		}
@@ -212,6 +212,10 @@ func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
 			if err := unsafeSourceError(source); err != nil {
 				return Catalog{}, err
 			}
+		}
+		agents, source, err := loadFileSourceFromSource(source)
+		if err != nil {
+			return Catalog{}, err
 		}
 		sources = append(sources, source)
 		merged.add(agents)
@@ -338,11 +342,16 @@ func loadFileSource(rawDir string, provenance Provenance) ([]Agent, SourceInfo, 
 	if err != nil {
 		return nil, source, err
 	}
-	provenance = provenanceFromSource(source)
+	agents, source, err := loadFileSourceFromSource(source)
+	return agents, source, err
+}
+
+func loadFileSourceFromSource(source SourceInfo) ([]Agent, SourceInfo, error) {
+	provenance := provenanceFromSource(source)
 	dir := source.CanonicalPath
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, source, fmt.Errorf("agents: read source %s: %w", rawDir, err)
+		return nil, source, fmt.Errorf("agents: read source %s: %w", source.ConfiguredPath, err)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 

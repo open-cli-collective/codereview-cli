@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
@@ -67,6 +68,33 @@ func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 	}
 	if run.Outcome == nil || *run.Outcome != ledger.OutcomeComment {
 		t.Fatalf("run outcome = %#v, want comment", run.Outcome)
+	}
+}
+
+func TestRunRejectsUnsafeProfileAgentSourcesBeforeFreshAllocation(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.req.Profile.AgentSources = []string{t.TempDir()}
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	opts := fixture.opts(planner)
+	opts.NewRunID = func() string {
+		t.Fatal("NewRunID called before unsafe source rejection")
+		return ""
+	}
+
+	_, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), "OS temp") {
+		t.Fatalf("Run error = %v, want ErrUnsafeSource with temp detail", err)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("planner calls = %d, want no planning before unsafe source rejection", planner.calls)
+	}
+	runs, err := fixture.store.ListRuns(ctx)
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("runs len = %d, want no live run allocation: %#v", len(runs), runs)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gate"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
@@ -99,6 +100,9 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 	}
 	if req.Flags.Rerun && req.Flags.RetryPosts {
 		return Result{}, fmt.Errorf("reviewrun: --rerun and --retry-posts are mutually exclusive")
+	}
+	if err := agents.RequireSafeProfileSources(req.Pipeline.Profile.AgentSources); err != nil {
+		return Result{}, err
 	}
 	if err := pruneRetention(ctx, opts); err != nil {
 		return Result{}, err
