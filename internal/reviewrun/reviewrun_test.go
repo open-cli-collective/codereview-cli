@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,29 +73,42 @@ func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 }
 
 func TestRunRejectsUnsafeProfileAgentSourcesBeforeFreshAllocation(t *testing.T) {
-	ctx := context.Background()
-	fixture := newFixture(t)
-	fixture.req.Profile.AgentSources = []string{t.TempDir()}
-	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
-	opts := fixture.opts(planner)
-	opts.NewRunID = func() string {
-		t.Fatal("NewRunID called before unsafe source rejection")
-		return ""
+	tests := []struct {
+		name       string
+		source     func(t *testing.T) string
+		wantDetail string
+	}{
+		{name: "relative", source: relativeAgentSource, wantDetail: "relative"},
+		{name: "temp", source: func(t *testing.T) string { return t.TempDir() }, wantDetail: "OS temp"},
+		{name: "git worktree", source: gitWorktreeAgentSource, wantDetail: "Git worktree"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			fixture := newFixture(t)
+			fixture.req.Profile.AgentSources = []string{tt.source(t)}
+			planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+			opts := fixture.opts(planner)
+			opts.NewRunID = func() string {
+				t.Fatal("NewRunID called before unsafe source rejection")
+				return ""
+			}
 
-	_, err := Run(ctx, opts, Request{Pipeline: fixture.req})
-	if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), "OS temp") {
-		t.Fatalf("Run error = %v, want ErrUnsafeSource with temp detail", err)
-	}
-	if planner.calls != 0 {
-		t.Fatalf("planner calls = %d, want no planning before unsafe source rejection", planner.calls)
-	}
-	runs, err := fixture.store.ListRuns(ctx)
-	if err != nil {
-		t.Fatalf("ListRuns: %v", err)
-	}
-	if len(runs) != 0 {
-		t.Fatalf("runs len = %d, want no live run allocation: %#v", len(runs), runs)
+			_, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+			if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("Run error = %v, want ErrUnsafeSource with %q", err, tt.wantDetail)
+			}
+			if planner.calls != 0 {
+				t.Fatalf("planner calls = %d, want no planning before unsafe source rejection", planner.calls)
+			}
+			runs, err := fixture.store.ListRuns(ctx)
+			if err != nil {
+				t.Fatalf("ListRuns: %v", err)
+			}
+			if len(runs) != 0 {
+				t.Fatalf("runs len = %d, want no live run allocation: %#v", len(runs), runs)
+			}
+		})
 	}
 }
 
@@ -672,6 +686,30 @@ func (f *fixture) opts(planner Planner) Options {
 		Now:                     testNow,
 		StaleHeartbeatThreshold: time.Minute,
 	}
+}
+
+func relativeAgentSource(t *testing.T) string {
+	t.Helper()
+	cwd := t.TempDir()
+	source := filepath.Join(cwd, "agents")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatalf("MkdirAll relative agent source: %v", err)
+	}
+	t.Chdir(cwd)
+	return "agents"
+}
+
+func gitWorktreeAgentSource(t *testing.T) string {
+	t.Helper()
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir .git: %v", err)
+	}
+	source := filepath.Join(repoRoot, "agents")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatalf("MkdirAll git worktree agent source: %v", err)
+	}
+	return source
 }
 
 func (f *fixture) allocateRun(t *testing.T, runID, baseSHA string) ledger.Run {
