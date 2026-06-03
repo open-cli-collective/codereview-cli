@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,6 +36,7 @@ func TestRun(t *testing.T) {
 		{name: "review command wired", args: []string{"review", "--help"}, wantCode: 0, wantStdout: "Run an automated pull-request review", wantStdoutSubstring: true},
 		{name: "sessions command wired", args: []string{"sessions", "--help"}, wantCode: 0, wantStdout: "Manage named LLM sessions", wantStdoutSubstring: true},
 		{name: "data command wired", args: []string{"data", "--help"}, wantCode: 0, wantStdout: "Manage local review data", wantStdoutSubstring: true},
+		{name: "benchmark command wired", args: []string{"benchmark", "--help"}, wantCode: 0, wantStdout: "Validate and inspect benchmark suites", wantStdoutSubstring: true},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: 2, wantStderr: "unknown command", wantEmptyStdout: true},
 	}
 
@@ -76,6 +80,54 @@ func TestRunConfigShowJSON(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"active_profile": "home"`) {
 		t.Fatalf("stdout = %q, want active profile JSON", stdout.String())
+	}
+}
+
+func TestRunBenchmarkCommands(t *testing.T) {
+	statedirtest.Hermetic(t)
+	path, err := config.Path()
+	if err != nil {
+		t.Fatalf("config Path: %v", err)
+	}
+	if err := config.Save(path, mainTestConfig()); err != nil {
+		t.Fatalf("config Save: %v", err)
+	}
+	suitePath := filepath.Join(t.TempDir(), "suite.yml")
+	if err := os.WriteFile(suitePath, []byte(`
+suite:
+  id: suite1
+candidates:
+  - id: cand1
+    profile: home
+    model: sonnet
+cases:
+  - id: case1
+    pr: https://github.com/open-cli-collective/codereview-cli/pull/1
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile suite: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"benchmark", "validate", suitePath}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("validate exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Benchmark suite \"suite1\" is valid") {
+		t.Fatalf("validate stdout = %q, want success summary", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"benchmark", "doctor", suitePath, "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doctor exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal doctor JSON: %v\n%s", err, stdout.String())
+	}
+	if decoded["suite_id"] != "suite1" {
+		t.Fatalf("doctor JSON = %#v, want suite1", decoded)
 	}
 }
 
