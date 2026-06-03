@@ -802,6 +802,7 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 	dir := t.TempDir()
 	writeAgent(t, dir, "harness", "alpha", "alpha desc", "Review alpha files.")
 	writeAgent(t, dir, "harness", "beta", "beta desc", "Review beta files.")
+	trustCurrentTempFixtures(t)
 	req.Profile.AgentSources = []string{dir}
 	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
 	adapter := &promptAwareAdapter{}
@@ -879,6 +880,42 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("finding session agents = %#v, want %#v", got, want)
+	}
+}
+
+func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T) {
+	tests := []struct {
+		name       string
+		source     func(t *testing.T) string
+		wantDetail string
+	}{
+		{name: "relative", source: relativeAgentSource, wantDetail: "relative"},
+		{name: "temp", source: tempAgentSource, wantDetail: "OS temp"},
+		{name: "git worktree", source: gitWorktreeAgentSource, wantDetail: "Git worktree"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			req.Profile.AgentSources = []string{tt.source(t)}
+
+			_, err := DryRun(ctx, Options{
+				Provider: provider,
+				Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+				Store:    store,
+				Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:      fixedNow,
+				NewRunID: func() string {
+					t.Fatal("NewRunID called before unsafe source rejection")
+					return ""
+				},
+			}, req)
+			if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("DryRun error = %v, want ErrUnsafeSource with %q", err, tt.wantDetail)
+			}
+		})
 	}
 }
 
@@ -968,6 +1005,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				t.Helper()
 				dir := t.TempDir()
 				writeAgent(t, dir, "harness", "reviewer", strings.Repeat("large ", 80), "prompt")
+				trustCurrentTempFixtures(t)
 				req.Profile.AgentSources = []string{dir}
 			},
 			want:  "context budget exceeded for selection",
@@ -993,6 +1031,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				t.Helper()
 				dir := t.TempDir()
 				writeAgentFullContent(t, dir, "harness", "reviewer")
+				trustCurrentTempFixtures(t)
 				req.Profile.AgentSources = []string{dir}
 				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: "main.go"}] = []byte(strings.Repeat("base\n", 3000))
 				provider.files[fileKey{gitRef: provider.pr.Head.SHA, path: "main.go"}] = []byte("package main\n")
@@ -1231,6 +1270,7 @@ func dryRunHarness(t *testing.T) (*readOnlyProvider, Request) {
 	}
 	dir := t.TempDir()
 	writeAgent(t, dir, "harness", "reviewer", "reviewer desc", "Review carefully.")
+	trustCurrentTempFixtures(t)
 	provider := &readOnlyProvider{
 		pr:    pr,
 		diff:  gitprovider.UnifiedDiff{Raw: smallDiff("main.go")},
@@ -1246,6 +1286,11 @@ func dryRunHarness(t *testing.T) (*readOnlyProvider, Request) {
 		PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 	}
 	return provider, req
+}
+
+func trustCurrentTempFixtures(t *testing.T) {
+	t.Helper()
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 }
 
 func allocateLiveRun(t *testing.T, store *ledger.Store, provider *readOnlyProvider, req Request, runID string) ledger.Run {
@@ -1465,6 +1510,45 @@ func writeAgent(t *testing.T, rootDir, category, agent, description, prompt stri
 	writeFile(t, filepath.Join(rootDir, category, agent, "prompt.md"), prompt)
 }
 
+func relativeAgentSource(t *testing.T) string {
+	t.Helper()
+	cwd := t.TempDir()
+	source := filepath.Join(cwd, "agents")
+	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
+	t.Chdir(cwd)
+	return "agents"
+}
+
+func tempAgentSource(t *testing.T) string {
+	t.Helper()
+	tempRoot := os.TempDir()
+	if err := os.MkdirAll(tempRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll temp root: %v", err)
+	}
+	source, err := os.MkdirTemp(tempRoot, "codereview-agents-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(source); err != nil {
+			t.Fatalf("RemoveAll temp agent source: %v", err)
+		}
+	})
+	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
+	return source
+}
+
+func gitWorktreeAgentSource(t *testing.T) string {
+	t.Helper()
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir .git: %v", err)
+	}
+	source := filepath.Join(repoRoot, "agents")
+	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
+	return source
+}
+
 func writeAgentFullContent(t *testing.T, rootDir, category, agent string) {
 	t.Helper()
 	writeFile(t, filepath.Join(rootDir, category, "index.yaml"), "name: "+category+"\ndescription: "+category+" category\nowner: owner\n")
@@ -1511,8 +1595,8 @@ func assertAgentSourcesArtifact(t *testing.T, path, wantAgent string) {
 	if !ok {
 		t.Fatalf("artifact sources = %#v, want profile source", artifact.Sources)
 	}
-	if profileSource.Status != agents.SourceStatusAvailable || profileSource.Fingerprint == "" || profileSource.CanonicalPath == "" || len(profileSource.Warnings) == 0 {
-		t.Fatalf("profile source = %#v, want available source with fingerprint, canonical path, warnings", profileSource)
+	if profileSource.Status != agents.SourceStatusAvailable || profileSource.Fingerprint == "" || profileSource.CanonicalPath == "" || len(profileSource.Warnings) != 0 {
+		t.Fatalf("profile source = %#v, want trusted available source with fingerprint and canonical path", profileSource)
 	}
 	repoSource, ok := findArtifactSource(artifact.Sources, agents.SourceRepo)
 	if !ok {

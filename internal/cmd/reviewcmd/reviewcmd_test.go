@@ -18,6 +18,7 @@ import (
 	"github.com/open-cli-collective/cli-common/statedirtest"
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -851,6 +852,19 @@ func TestReviewMapsRunnerError(t *testing.T) {
 	}
 }
 
+func TestReviewMapsUnsafeAgentSourceError(t *testing.T) {
+	runner := &fakeRunner{err: fmt.Errorf("%w: profile agent source agents is not trusted", agents.ErrUnsafeSource)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want runner error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want usage", got)
+	}
+}
+
 type fakeRunner struct {
 	result       pipeline.Result
 	err          error
@@ -1049,6 +1063,7 @@ func writeReviewAgent(t *testing.T, rootDir string) {
 	writeReviewFile(t, filepath.Join(rootDir, "harness", "index.yaml"), "name: harness\ndescription: harness category\nowner: owner\n")
 	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "index.yaml"), "name: reviewer\ndescription: reviewer\nmodel: sonnet\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
 	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "prompt.md"), "Review carefully.")
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 }
 
 func writeReviewFile(t *testing.T, path, body string) {

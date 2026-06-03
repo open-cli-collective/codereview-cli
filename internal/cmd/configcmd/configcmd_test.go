@@ -144,6 +144,9 @@ func TestConfigShowJSONReportsAgentSourceDeploymentStatus(t *testing.T) {
 	if first.Status != agents.SourceStatusAvailable || !first.Present || first.Fingerprint == "" || first.CanonicalPath == "" {
 		t.Fatalf("first source = %#v, want available fingerprinted source", first)
 	}
+	if !hasConfigSourceWarning(first.Warnings, "OS temp") {
+		t.Fatalf("first source warnings = %#v, want nonfatal unsafe-source warning", first.Warnings)
+	}
 	second := got.AgentSources[1]
 	if second.Status != agents.SourceStatusMissing || second.Present || second.Error == "" {
 		t.Fatalf("second source = %#v, want missing non-fatal source", second)
@@ -152,6 +155,15 @@ func TestConfigShowJSONReportsAgentSourceDeploymentStatus(t *testing.T) {
 	if third.Status != agents.SourceStatusUnreadable || !third.Present || third.Error == "" {
 		t.Fatalf("third source = %#v, want unreadable non-fatal source", third)
 	}
+}
+
+func hasConfigSourceWarning(warnings []string, want string) bool {
+	for _, warning := range warnings {
+		if strings.Contains(warning, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestConfigShowReportsUnknownPresenceWhenKeyringCannotBeQueried(t *testing.T) {

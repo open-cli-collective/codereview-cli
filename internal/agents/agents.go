@@ -30,6 +30,9 @@ var (
 	ErrInvalid = errors.New("agents: invalid")
 	// ErrNotFound identifies a requested agent absent from a loaded catalog.
 	ErrNotFound = errors.New("agents: not found")
+	// ErrUnsafeSource identifies profile agent sources that are mutable or
+	// ambiguous for PR review execution.
+	ErrUnsafeSource = errors.New("agents: unsafe source")
 )
 
 // SourceKind identifies where an agent definition came from.
@@ -157,9 +160,10 @@ type RepoSource struct {
 
 // LoadOptions configures catalog loading.
 type LoadOptions struct {
-	ProfileDirs []string
-	Repo        *RepoSource
-	FlagDirs    []string
+	ProfileDirs               []string
+	Repo                      *RepoSource
+	FlagDirs                  []string
+	RequireSafeProfileSources bool
 }
 
 // RepoInfo describes the trusted repo-local source, when one was considered.
@@ -200,7 +204,16 @@ func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
 	var sources []SourceInfo
 	for _, dir := range opts.ProfileDirs {
 		provenance := Provenance{Kind: SourceProfile}
-		agents, source, err := loadFileSource(dir, provenance)
+		source, err := inspectFileSource(dir, provenance)
+		if err != nil {
+			return Catalog{}, err
+		}
+		if opts.RequireSafeProfileSources {
+			if err := unsafeSourceError(source); err != nil {
+				return Catalog{}, err
+			}
+		}
+		agents, source, err := loadFileSourceFromSource(source)
 		if err != nil {
 			return Catalog{}, err
 		}
@@ -256,6 +269,28 @@ func InspectProfileSources(dirs []string) []SourceInfo {
 	return out
 }
 
+// RequireSafeProfileSources fails when profile sources are mutable or
+// ambiguous for PR review execution.
+func RequireSafeProfileSources(dirs []string) error {
+	for _, dir := range dirs {
+		source, err := inspectFileSource(dir, Provenance{Kind: SourceProfile})
+		if err != nil {
+			return err
+		}
+		if err := unsafeSourceError(source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func unsafeSourceError(source SourceInfo) error {
+	if len(source.Warnings) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: profile agent source %s is not trusted for PR review: %s", ErrUnsafeSource, source.ConfiguredPath, strings.Join(source.Warnings, "; "))
+}
+
 type catalogBuilder struct {
 	agents map[string]Agent
 }
@@ -307,11 +342,16 @@ func loadFileSource(rawDir string, provenance Provenance) ([]Agent, SourceInfo, 
 	if err != nil {
 		return nil, source, err
 	}
-	provenance = provenanceFromSource(source)
+	agents, source, err := loadFileSourceFromSource(source)
+	return agents, source, err
+}
+
+func loadFileSourceFromSource(source SourceInfo) ([]Agent, SourceInfo, error) {
+	provenance := provenanceFromSource(source)
 	dir := source.CanonicalPath
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, source, fmt.Errorf("agents: read source %s: %w", rawDir, err)
+		return nil, source, fmt.Errorf("agents: read source %s: %w", source.ConfiguredPath, err)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 

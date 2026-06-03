@@ -225,6 +225,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	if err := validate(opts, req); err != nil {
 		return Result{}, err
 	}
+	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources); err != nil {
+		return Result{}, err
+	}
 	completed := false
 	if mode.live {
 		defer func() {
@@ -280,9 +283,10 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 	catalog, err := agents.Load(ctx, agents.LoadOptions{
-		ProfileDirs: append([]string(nil), req.Profile.AgentSources...),
-		Repo:        &agents.RepoSource{Reader: opts.Provider, Ref: req.PRRef, PR: pr},
-		FlagDirs:    append([]string(nil), req.AgentDirs...),
+		ProfileDirs:               append([]string(nil), req.Profile.AgentSources...),
+		Repo:                      &agents.RepoSource{Reader: opts.Provider, Ref: req.PRRef, PR: pr},
+		FlagDirs:                  append([]string(nil), req.AgentDirs...),
+		RequireSafeProfileSources: true,
 	})
 	if err != nil {
 		return Result{}, err

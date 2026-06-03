@@ -304,6 +304,7 @@ func newAuditHarness(t *testing.T) *auditHarness {
 	h.prKey = prKey
 	h.secrets = []string{h.gitSecret, h.reviewerSecret, h.llmSecret, h.keyringSecret}
 	writeAgent(t, h.agentDir, "harness", "reviewer", "No-leak harness reviewer.", "Review changed Go files without mentioning credentials.\n")
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 	return h
 }
 
