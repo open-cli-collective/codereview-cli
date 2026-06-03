@@ -496,11 +496,13 @@ func mergeUsage(summary *benchmarkSuiteSummary, usage benchmark.RunMetrics) {
 	summary.Usage.Turns += usage.Turns
 	summary.Usage.ToolCalls += usage.ToolCalls
 	summary.Usage.ToolResults += usage.ToolResults
+	summary.Usage.Tokens.Available = summary.Usage.Tokens.Available || usage.Tokens.Available
 	summary.Usage.Tokens.Input += usage.Tokens.Input
 	summary.Usage.Tokens.Output += usage.Tokens.Output
 	summary.Usage.Tokens.CacheRead += usage.Tokens.CacheRead
 	summary.Usage.Tokens.CacheWrite += usage.Tokens.CacheWrite
 	summary.Usage.Tokens.TotalTokens += usage.Tokens.TotalTokens
+	summary.Usage.Cost.Available = summary.Usage.Cost.Available || usage.Cost.Available
 	summary.Usage.Cost.Input += usage.Cost.Input
 	summary.Usage.Cost.Output += usage.Cost.Output
 	summary.Usage.Cost.CacheRead += usage.Cost.CacheRead

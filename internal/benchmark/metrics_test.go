@@ -35,6 +35,9 @@ func TestExtractRunMetricsAggregatesAgentLogs(t *testing.T) {
 	if metrics.Tokens.Input != 121 || metrics.Tokens.Output != 60 || metrics.Tokens.CacheRead != 22 || metrics.Tokens.CacheWrite != 4 || metrics.Tokens.TotalTokens != 207 {
 		t.Fatalf("tokens = %#v", metrics.Tokens)
 	}
+	if !metrics.Tokens.Available || !metrics.Cost.Available {
+		t.Fatalf("usage availability = tokens %v, cost %v; want both true", metrics.Tokens.Available, metrics.Cost.Available)
+	}
 	if metrics.Cost.Total != 4.19 {
 		t.Fatalf("cost total = %v", metrics.Cost.Total)
 	}
@@ -49,6 +52,30 @@ func TestExtractRunMetricsAggregatesAgentLogs(t *testing.T) {
 	}
 	if metrics.Phases[0].LLMCalls != 2 || metrics.Phases[1].LLMCalls != 2 {
 		t.Fatalf("phase llm calls = %d, %d; want 2, 2", metrics.Phases[0].LLMCalls, metrics.Phases[1].LLMCalls)
+	}
+}
+
+func TestExtractRunMetricsPreservesZeroValuedTelemetry(t *testing.T) {
+	artifactPath := t.TempDir()
+	logDir := filepath.Join(artifactPath, "agent-logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeLog(t, filepath.Join(logDir, "local-reviewer.jsonl"), `{"type":"message_end","message":{"role":"assistant","provider":"local","model":"free","usage":{"input":0,"output":0,"totalTokens":0,"cost_usd":0}}}
+`)
+
+	metrics, err := ExtractRunMetrics(artifactPath)
+	if err != nil {
+		t.Fatalf("ExtractRunMetrics: %v", err)
+	}
+	if !metrics.HasData() || !metrics.HasTokenUsage() || !metrics.HasCostUsage() {
+		t.Fatalf("metrics availability = data %v, tokens %v, cost %v; want all true", metrics.HasData(), metrics.HasTokenUsage(), metrics.HasCostUsage())
+	}
+	if metrics.LLMCalls != 1 {
+		t.Fatalf("LLMCalls = %d, want 1", metrics.LLMCalls)
+	}
+	if metrics.Tokens.TotalTokens != 0 || metrics.Cost.Total != 0 {
+		t.Fatalf("metrics = %#v, want explicit zero telemetry", metrics)
 	}
 }
 

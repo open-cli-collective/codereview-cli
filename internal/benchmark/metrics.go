@@ -26,6 +26,7 @@ type RunMetrics struct {
 
 // TokenMetrics records provider token usage.
 type TokenMetrics struct {
+	Available   bool  `json:"available"`
 	Input       int64 `json:"input"`
 	Output      int64 `json:"output"`
 	CacheRead   int64 `json:"cache_read"`
@@ -35,6 +36,7 @@ type TokenMetrics struct {
 
 // CostMetrics records provider-reported cost estimates.
 type CostMetrics struct {
+	Available  bool    `json:"available"`
 	Input      float64 `json:"input"`
 	Output     float64 `json:"output"`
 	CacheRead  float64 `json:"cache_read"`
@@ -60,17 +62,17 @@ type PhaseMetrics struct {
 
 // HasData reports whether metrics contain provider usage or activity.
 func (m RunMetrics) HasData() bool {
-	return len(m.Phases) > 0 || m.Turns > 0 || m.LLMCalls > 0 || m.ToolCalls > 0 || m.ToolResults > 0 || m.Tokens.TotalTokens > 0 || m.Cost.Total > 0
+	return len(m.Phases) > 0 || m.Turns > 0 || m.LLMCalls > 0 || m.ToolCalls > 0 || m.ToolResults > 0 || m.Tokens.Available || m.Cost.Available || m.Tokens.TotalTokens > 0 || m.Cost.Total > 0
 }
 
 // HasTokenUsage reports whether provider token telemetry was captured.
 func (m RunMetrics) HasTokenUsage() bool {
-	return m.Tokens.TotalTokens > 0
+	return m.Tokens.Available
 }
 
 // HasCostUsage reports whether provider cost telemetry was captured.
 func (m RunMetrics) HasCostUsage() bool {
-	return m.Cost.Total > 0
+	return m.Cost.Available
 }
 
 // ExtractRunMetrics reads agent JSONL logs from a review artifact directory.
@@ -184,7 +186,7 @@ func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = tokens.Input + tokens.Output + tokens.CacheRead + tokens.CacheWrite
 	}
-	if tokens.TotalTokens == 0 && cost.Total == 0 {
+	if !tokens.Available && !cost.Available {
 		return
 	}
 	phase.LLMCalls++
@@ -193,7 +195,9 @@ func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
 }
 
 func tokenMetricsFromUsage(usage map[string]any) TokenMetrics {
+	tokenKeys := []string{"input", "inputTokens", "input_tokens", "tokensIn", "tokens_in", "promptTokens", "prompt_tokens", "output", "outputTokens", "output_tokens", "tokensOut", "tokens_out", "completionTokens", "completion_tokens", "cacheRead", "cache_read", "cacheWrite", "cache_write", "cacheCreate", "cache_create", "totalTokens", "total_tokens", "tokens", "total"}
 	return TokenMetrics{
+		Available:   hasAnyKey(usage, tokenKeys...),
 		Input:       int64ValueFromKeys(usage, "input", "inputTokens", "input_tokens", "tokensIn", "tokens_in", "promptTokens", "prompt_tokens"),
 		Output:      int64ValueFromKeys(usage, "output", "outputTokens", "output_tokens", "tokensOut", "tokens_out", "completionTokens", "completion_tokens"),
 		CacheRead:   int64ValueFromKeys(usage, "cacheRead", "cache_read"),
@@ -207,7 +211,8 @@ func costMetricsFromUsage(usage map[string]any) CostMetrics {
 	cost, ok := costValue.(map[string]any)
 	if !ok {
 		return CostMetrics{
-			Total: float64ValueFromKeys(usage, "cost", "cost_usd", "costUSD", "totalCost", "total_cost"),
+			Available: hasAnyKey(usage, "cost", "cost_usd", "costUSD", "totalCost", "total_cost"),
+			Total:     float64ValueFromKeys(usage, "cost", "cost_usd", "costUSD", "totalCost", "total_cost"),
 		}
 	}
 	total := float64ValueFromKeys(cost, "total", "totalCost", "total_cost", "costUSD", "cost_usd")
@@ -215,6 +220,7 @@ func costMetricsFromUsage(usage map[string]any) CostMetrics {
 		total = float64Value(costValue)
 	}
 	metrics := CostMetrics{
+		Available:  true,
 		Input:      float64ValueFromKeys(cost, "input", "inputCost", "input_cost"),
 		Output:     float64ValueFromKeys(cost, "output", "outputCost", "output_cost"),
 		CacheRead:  float64ValueFromKeys(cost, "cacheRead", "cache_read", "cacheReadCost", "cache_read_cost"),
@@ -228,6 +234,7 @@ func costMetricsFromUsage(usage map[string]any) CostMetrics {
 }
 
 func (m *TokenMetrics) add(other TokenMetrics) {
+	m.Available = m.Available || other.Available
 	m.Input += other.Input
 	m.Output += other.Output
 	m.CacheRead += other.CacheRead
@@ -236,6 +243,7 @@ func (m *TokenMetrics) add(other TokenMetrics) {
 }
 
 func (m *CostMetrics) add(other CostMetrics) {
+	m.Available = m.Available || other.Available
 	m.Input += other.Input
 	m.Output += other.Output
 	m.CacheRead += other.CacheRead
@@ -244,7 +252,7 @@ func (m *CostMetrics) add(other CostMetrics) {
 }
 
 func phaseHasData(phase PhaseMetrics) bool {
-	return phase.LLMCalls > 0 || phase.Turns > 0 || phase.ToolCalls > 0 || phase.ToolResults > 0 || phase.Tokens.TotalTokens > 0 || phase.Cost.Total > 0
+	return phase.LLMCalls > 0 || phase.Turns > 0 || phase.ToolCalls > 0 || phase.ToolResults > 0 || phase.Tokens.Available || phase.Cost.Available || phase.Tokens.TotalTokens > 0 || phase.Cost.Total > 0
 }
 
 func phaseName(logPath string) string {
@@ -294,6 +302,15 @@ func int64ValueFromKeys(values map[string]any, keys ...string) int64 {
 		}
 	}
 	return 0
+}
+
+func hasAnyKey(values map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := values[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func float64Value(value any) float64 {

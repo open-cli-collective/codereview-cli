@@ -454,10 +454,14 @@ func TestRunExtractsUsageMetricsFromReviewArtifacts(t *testing.T) {
 	if got.Usage == nil || got.Usage.Tokens.TotalTokens != 18 || got.Usage.Cost.Total != 0.34 {
 		t.Fatalf("suite usage = %#v, want aggregate provider usage", got.Usage)
 	}
+	if !got.Usage.HasTokenUsage() || !got.Usage.HasCostUsage() {
+		t.Fatalf("suite usage availability = tokens %v, cost %v; want both true", got.Usage.HasTokenUsage(), got.Usage.HasCostUsage())
+	}
 	if got.Runs[0].Usage == nil || got.Runs[0].Usage.Phases[0].Name != "frontend:frontend-code-reviewer" {
 		t.Fatalf("run usage = %#v, want phase metrics", got.Runs[0].Usage)
 	}
 	assertFileContains(t, got.Artifacts.SuiteSummary, `"usage"`)
+	assertFileContains(t, got.Artifacts.SuiteSummary, `"available": true`)
 	assertFileContains(t, got.Artifacts.SummaryJSONL, `"total_tokens":18`)
 	assertFileContains(t, got.Artifacts.Report, "Tokens")
 	assertFileContains(t, got.Runs[0].Artifacts.MetricsJSON, `"cost"`)
@@ -467,8 +471,8 @@ func TestRenderReportMarkdownTreatsActivityOnlyUsageAsUnavailable(t *testing.T) 
 	report := renderReportMarkdown(benchmarkSuiteSummary{
 		SuiteID:      "suite1",
 		ResultsDir:   "/tmp/results",
-		RunCount:     1,
-		SuccessCount: 1,
+		RunCount:     2,
+		SuccessCount: 2,
 		Runs: []benchmarkRun{
 			{
 				RunID:        "run1",
@@ -480,17 +484,35 @@ func TestRenderReportMarkdownTreatsActivityOnlyUsageAsUnavailable(t *testing.T) 
 					ToolCalls: 3,
 				},
 			},
+			{
+				RunID:        "run2",
+				CandidateID:  "candidate2",
+				CaseID:       "case2",
+				FindingCount: 0,
+				Usage: &benchmark.RunMetrics{
+					Tokens: benchmark.TokenMetrics{Available: true},
+					Cost:   benchmark.CostMetrics{Available: true},
+				},
+			},
 		},
 		Usage: &benchmark.RunMetrics{
-			Turns:     2,
-			ToolCalls: 3,
+			Turns: 2,
+			Tokens: benchmark.TokenMetrics{
+				Available: true,
+			},
+			Cost: benchmark.CostMetrics{
+				Available: true,
+			},
 		},
 	})
-	if strings.Contains(report, "- Tokens: 0 total") || strings.Contains(report, "- Cost: $0.000000") {
-		t.Fatalf("report rendered activity-only summary as provider usage:\n%s", report)
+	if !strings.Contains(report, "- Tokens: 0 total") || !strings.Contains(report, "- Cost: $0.000000") {
+		t.Fatalf("report did not render explicit zero provider usage:\n%s", report)
 	}
 	if !strings.Contains(report, "| `run1` | `candidate1` | `case1` | 0 | 1 | n/a | n/a |") {
 		t.Fatalf("report missing activity-only n/a row:\n%s", report)
+	}
+	if !strings.Contains(report, "| `run2` | `candidate2` | `case2` | 0 | 0 | 0 | $0.000000 |") {
+		t.Fatalf("report missing explicit zero usage row:\n%s", report)
 	}
 }
 

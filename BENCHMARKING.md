@@ -264,7 +264,9 @@ more detail, depending on adapter and review behavior.
 Treat these metric families as nullable unless the producing adapter or
 artifact actually reports them. Generated reports render unavailable run-level
 usage as `n/a` instead of `0` so missing provider telemetry is not confused with
-real zero-token or zero-cost usage.
+real zero-token or zero-cost usage. In JSON artifacts, token and cost metric
+objects include `available` to distinguish explicitly reported zero values from
+missing telemetry.
 
 | Metric family | Notes |
 |---------------|-------|
