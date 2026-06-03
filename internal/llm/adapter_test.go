@@ -54,7 +54,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		if !strings.Contains(prompt, `"<value>"`) {
 			t.Fatalf("retry prompt = %q, want redacted value marker", prompt)
 		}
-		if len(prompt) > len("prompt\n\nThe previous structured output failed validation: ")+maxValidationErrorSummaryLen+len("...\nReturn corrected JSON only.") {
+		if len(prompt) > len("prompt\n\nThe previous structured output failed validation: ")+maxValidationErrorSummaryLen+len("...\nReturn corrected JSON only. The first byte must be { and the last byte must be }. Do not wrap the JSON in markdown fences or add prose.") {
 			t.Fatalf("retry prompt was not capped: len=%d", len(prompt))
 		}
 	})

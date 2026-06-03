@@ -138,7 +138,7 @@ func runOnceWithSession(ctx context.Context, adapter Adapter, resumeSessionID st
 }
 
 func retryPrompt(prompt string, err error) string {
-	return prompt + "\n\nThe previous structured output failed validation: " + validationErrorSummary(err) + "\nReturn corrected JSON only."
+	return prompt + "\n\nThe previous structured output failed validation: " + validationErrorSummary(err) + "\nReturn corrected JSON only. The first byte must be { and the last byte must be }. Do not wrap the JSON in markdown fences or add prose."
 }
 
 func validationErrorSummary(err error) string {

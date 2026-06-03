@@ -14,7 +14,10 @@ import (
 	"time"
 )
 
-const piRPCPromptID = "prompt-1"
+const (
+	piRPCPromptID = "prompt-1"
+	piRPCSystemPrompt = "You are a strict JSON API for code review structured output. Return exactly one JSON object that matches the requested schema. Do not include markdown fences, prose, explanations, or leading/trailing text. The first byte of your final answer must be { and the last byte must be }."
+)
 
 // PiRPCOptions configures the Pi RPC subprocess adapter.
 type PiRPCOptions struct {
@@ -192,6 +195,7 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 func (a *PiRPCAdapter) buildArgs(req Request, _ string) ([]string, error) {
 	args := []string{
 		"--mode", "rpc",
+		"--system-prompt", piRPCSystemPrompt,
 		"--no-tools",
 		"--no-extensions",
 		"--no-skills",
@@ -218,7 +222,7 @@ func (a *PiRPCAdapter) validateArgs(args []string) error {
 	if containsFlag(args, "--tools") || containsFlag(args, "-t") {
 		return fmt.Errorf("%w: pi_rpc must disable tools", ErrUnsafeSubprocessConfig)
 	}
-	for _, flag := range []string{"--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
+	for _, flag := range []string{"--system-prompt", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
 		if !containsFlag(args, flag) {
 			return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 		}
