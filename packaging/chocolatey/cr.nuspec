@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>cr</id>
+    <version>0.0.0</version>
+    <title>Code Review CLI</title>
+    <authors>Open CLI Collective</authors>
+    <owners>rianjs</owners>
+    <licenseUrl>https://github.com/open-cli-collective/codereview-cli/blob/main/LICENSE</licenseUrl>
+    <projectUrl>https://github.com/open-cli-collective/codereview-cli#readme</projectUrl>
+    <projectSourceUrl>https://github.com/open-cli-collective/codereview-cli</projectSourceUrl>
+    <packageSourceUrl>https://github.com/open-cli-collective/codereview-cli/tree/main/packaging/chocolatey</packageSourceUrl>
+    <bugTrackerUrl>https://github.com/open-cli-collective/codereview-cli/issues</bugTrackerUrl>
+    <copyright>Copyright (c) 2026 Open CLI Collective</copyright>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Automated pull-request review CLI.
+
+cr runs automated pull-request reviews, records review state locally, posts
+review output back to GitHub, and keeps durable metadata to resume, repair,
+inspect, and prune review runs.
+
+Binary: cr.exe</description>
+    <summary>Automated pull-request review CLI</summary>
+    <releaseNotes>https://github.com/open-cli-collective/codereview-cli/releases</releaseNotes>
+    <tags>code-review pull-request github cli automation</tags>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

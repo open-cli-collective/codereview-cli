@@ -20,14 +20,32 @@ Use `cr` when you want to:
 
 ## Installation
 
+Package-manager installs are available for versions after their
+package-channel release jobs publish successfully.
+
+### Homebrew
+
+```bash
+brew install --cask open-cli-collective/tap/codereview-cli
+```
+
+### Windows Package Managers
+
+```powershell
+winget install OpenCLICollective.cr
+choco install cr
+```
+
+### Linux Packages
+
+`cr` release builds include `.deb` and `.rpm` packages for the
+[open-cli-collective/linux-packages](https://github.com/open-cli-collective/linux-packages)
+repository.
+
 ### Binary Download
 
 Download a release archive from the
 [Releases page](https://github.com/open-cli-collective/codereview-cli/releases).
-
-For prebuilt binary distribution, `codereview-cli` currently ships GitHub
-release archives only. The `packaging/chocolatey` and `packaging/winget`
-directories are documentation stubs, not active distribution channels.
 
 ### From Source
 

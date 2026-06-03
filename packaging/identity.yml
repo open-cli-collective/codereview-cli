@@ -9,11 +9,13 @@ tag:
 archives:
   name_template: "cr_v{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
-# No `packages:` section by design — codereview-cli currently ships only the
-# GitHub-release archives. packaging/{chocolatey,winget} are README stubs, not
-# implemented channels; declaring them would make identity-check require real
-# nuspec/winget manifests and run secretless channel jobs. Channels (and the
-# homebrew canonical_cask) are added when each is actually implemented.
+packages:
+  # Homebrew's core cask tap already owns a disabled `cr` cask for Cool Reader,
+  # so the shared tap uses the repo name to avoid a user-facing token collision.
+  homebrew: { canonical_cask: codereview-cli }
+  winget: { id: OpenCLICollective.cr }
+  chocolatey: { id: cr }
+  linux: { package_name: cr }
 
 # cr's statedir-based config path resolves through os.UserConfigDir(); on macOS
 # with hermetic HOME that is "$HOME/Library/Application Support". The shared

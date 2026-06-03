@@ -38,8 +38,8 @@ make clean   # remove build artifacts
 - Local workflow files: `.github/workflows/ci.yml`,
   `.github/workflows/auto-release.yml`, and `.github/workflows/release.yml`
 - Packaging identity: `packaging/identity.yml`
-- Current distribution status: GitHub release archives only; package channels
-  can be added when each channel is actually implemented.
+- Current distribution status: GitHub release archives plus standard package
+  channels declared in `packaging/identity.yml`.
 - Application package layering follows the active codereview implementation:
   command glue in `internal/cmd/*`, presentation in `internal/view`,
   state/config adapters in `internal/config`, `internal/ledger`, and
@@ -51,13 +51,42 @@ make clean   # remove build artifacts
 
 `auto-release.yml` passes `RELEASE_TAG_TOKEN` to the shared auto-release
 workflow as its `tag-token`. That credential must be separate from
-`GITHUB_TOKEN` so tag pushes retrigger `release.yml`, and separate from future
+`GITHUB_TOKEN` so tag pushes retrigger `release.yml`, and separate from
 package-channel credentials. The preferred long-term shape is the GitHub App
 installation-token path described in the shared release standard; until that is
 wired through, use a narrowly scoped `RELEASE_TAG_TOKEN`.
 
-`HOMEBREW_TAP_TOKEN` is reserved for Homebrew tap pushes when package channels
-are added. Do not reuse it for auto-release tag pushes.
+`HOMEBREW_TAP_TOKEN` is only for Homebrew tap pushes from the release workflow.
+Do not reuse it for auto-release tag pushes.
+
+Package-channel releases also use `CHOCOLATEY_API_KEY`,
+`WINGET_GITHUB_TOKEN`, and `LINUX_PACKAGES_DISPATCH_TOKEN` according to the
+shared distribution secret table.
+
+## Package Channel Release Mechanics
+
+`release.yml` delegates package publishing to the shared reusable release
+workflow. Repo-local files declare package identity and native metadata; the
+shared workflow owns publish mechanics.
+
+- Homebrew: GoReleaser renders `dist/homebrew/Casks/codereview-cli.rb` with
+  `skip_upload: true`; the shared Homebrew job pushes that generated cask to
+  `open-cli-collective/homebrew-tap` with `HOMEBREW_TAP_TOKEN`.
+- Chocolatey: the shared Chocolatey job rewrites
+  `packaging/chocolatey/cr.nuspec` from version `0.0.0` to the release version
+  and replaces `CHECKSUM_AMD64_PLACEHOLDER` /
+  `CHECKSUM_ARM64_PLACEHOLDER` in `chocolateyInstall.ps1` before packing and
+  pushing.
+- winget: the shared winget job resolves the release asset URLs/checksums and
+  submits `OpenCLICollective.cr` with `WINGET_GITHUB_TOKEN`.
+- Linux packages: GoReleaser renders `.deb` and `.rpm` artifacts named `cr`;
+  the shared workflow dispatches `package-release` to
+  `open-cli-collective/linux-packages` with `LINUX_PACKAGES_DISPATCH_TOKEN`.
+
+`make snapshot` runs a local GoReleaser snapshot and then
+`scripts/verify-package-render.sh`, which asserts the rendered cask, deb/rpm
+artifacts, native package templates, and release secret wiring match the
+declared package IDs.
 
 ## Shared Standards
 
