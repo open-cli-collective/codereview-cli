@@ -96,11 +96,11 @@ cr init --non-interactive \
   --git-token-from-env GITHUB_TOKEN
 ```
 
-Setup with Pi's local RPC runtime. Install the npm-distributed Pi coding agent
-(`@earendil-works/pi-coding-agent` 0.74.0 or newer) and make sure the `pi`
-binary is available on `PATH` before running `cr review`. The Pi RPC adapter
-requires Pi's `--mode rpc` and `--system-prompt` flags for structured-output
-hardening.
+Setup with Pi's local RPC runtime. Install Pi's coding agent and make sure the
+`pi` binary is available on `PATH` before running `cr review`. New installs
+should use the current npm package (`@earendil-works/pi-coding-agent`); existing
+installs from the previous npm scope can also work if their `pi` binary supports
+the required `--mode rpc` and `--system-prompt` flags.
 
 ```bash
 cr init --non-interactive \
