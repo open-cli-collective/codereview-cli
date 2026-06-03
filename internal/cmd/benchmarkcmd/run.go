@@ -45,22 +45,23 @@ var (
 )
 
 type benchmarkSuiteSummary struct {
-	SuiteID            string               `json:"suite_id"`
-	SuitePath          string               `json:"suite_path"`
-	SuiteSHA256        string               `json:"suite_sha256"`
-	StartedAt          string               `json:"started_at"`
-	CompletedAt        string               `json:"completed_at"`
-	ResultsDir         string               `json:"results_dir"`
-	CRBin              string               `json:"cr_bin"`
-	SelectedCandidates []benchmarkCandidate `json:"selected_candidates"`
-	SelectedCases      []benchmarkCase      `json:"selected_cases"`
-	RunCount           int                  `json:"run_count"`
-	SuccessCount       int                  `json:"success_count"`
-	FailureCount       int                  `json:"failure_count"`
-	DurationMS         int64                `json:"duration_ms"`
-	SeverityCounts     map[string]int       `json:"severity_counts"`
-	Runs               []benchmarkRun       `json:"runs"`
-	Artifacts          suiteArtifacts       `json:"artifacts"`
+	SuiteID            string                `json:"suite_id"`
+	SuitePath          string                `json:"suite_path"`
+	SuiteSHA256        string                `json:"suite_sha256"`
+	StartedAt          string                `json:"started_at"`
+	CompletedAt        string                `json:"completed_at"`
+	ResultsDir         string                `json:"results_dir"`
+	CRBin              string                `json:"cr_bin"`
+	SelectedCandidates []benchmarkCandidate  `json:"selected_candidates"`
+	SelectedCases      []benchmarkCase       `json:"selected_cases"`
+	RunCount           int                   `json:"run_count"`
+	SuccessCount       int                   `json:"success_count"`
+	FailureCount       int                   `json:"failure_count"`
+	DurationMS         int64                 `json:"duration_ms"`
+	SeverityCounts     map[string]int        `json:"severity_counts"`
+	Usage              *benchmark.RunMetrics `json:"usage,omitempty"`
+	Runs               []benchmarkRun        `json:"runs"`
+	Artifacts          suiteArtifacts        `json:"artifacts"`
 }
 
 type benchmarkManifest struct {
@@ -110,18 +111,19 @@ type benchmarkCase struct {
 }
 
 type benchmarkRun struct {
-	RunID              string         `json:"run_id"`
-	CandidateID        string         `json:"candidate_id"`
-	CaseID             string         `json:"case_id"`
-	PRURL              string         `json:"pr_url"`
-	ReviewRunID        string         `json:"review_run_id,omitempty"`
-	ReviewArtifactPath string         `json:"review_artifact_path,omitempty"`
-	ExitCode           int            `json:"exit_code"`
-	DurationMS         int64          `json:"duration_ms"`
-	FindingCount       int            `json:"finding_count"`
-	SeverityCounts     map[string]int `json:"severity_counts"`
-	Warnings           []string       `json:"warnings"`
-	Artifacts          runArtifacts   `json:"artifacts"`
+	RunID              string                `json:"run_id"`
+	CandidateID        string                `json:"candidate_id"`
+	CaseID             string                `json:"case_id"`
+	PRURL              string                `json:"pr_url"`
+	ReviewRunID        string                `json:"review_run_id,omitempty"`
+	ReviewArtifactPath string                `json:"review_artifact_path,omitempty"`
+	ExitCode           int                   `json:"exit_code"`
+	DurationMS         int64                 `json:"duration_ms"`
+	FindingCount       int                   `json:"finding_count"`
+	SeverityCounts     map[string]int        `json:"severity_counts"`
+	Usage              *benchmark.RunMetrics `json:"usage,omitempty"`
+	Warnings           []string              `json:"warnings"`
+	Artifacts          runArtifacts          `json:"artifacts"`
 }
 
 type runArtifacts struct {
@@ -240,6 +242,9 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 				summary.FailureCount++
 			}
 			mergeSeverityCounts(summary.SeverityCounts, runSummary.SeverityCounts)
+			if runSummary.Usage != nil {
+				mergeUsage(&summary, *runSummary.Usage)
+			}
 		}
 	}
 
@@ -285,6 +290,11 @@ func executeBenchmarkRun(ctx context.Context, suiteDir, resultsDir, crBin, runID
 		runSummary.ReviewArtifactPath = parsed.Run.ArtifactPath
 		runSummary.FindingCount = len(parsed.Findings)
 		runSummary.SeverityCounts = severityCounts(parsed.Findings)
+		if usage, err := benchmark.ExtractRunMetrics(parsed.Run.ArtifactPath); err != nil {
+			runSummary.Warnings = append(runSummary.Warnings, fmt.Sprintf("usage metrics unavailable: %s", err.Error()))
+		} else if usage.HasData() {
+			runSummary.Usage = &usage
+		}
 	} else {
 		runSummary.Warnings = append(runSummary.Warnings, warnings...)
 	}
@@ -475,6 +485,29 @@ func mergeSeverityCounts(dst, src map[string]int) {
 	}
 }
 
+func mergeUsage(summary *benchmarkSuiteSummary, usage benchmark.RunMetrics) {
+	if !usage.HasData() {
+		return
+	}
+	if summary.Usage == nil {
+		summary.Usage = &benchmark.RunMetrics{}
+	}
+	summary.Usage.LLMCalls += usage.LLMCalls
+	summary.Usage.Turns += usage.Turns
+	summary.Usage.ToolCalls += usage.ToolCalls
+	summary.Usage.ToolResults += usage.ToolResults
+	summary.Usage.Tokens.Input += usage.Tokens.Input
+	summary.Usage.Tokens.Output += usage.Tokens.Output
+	summary.Usage.Tokens.CacheRead += usage.Tokens.CacheRead
+	summary.Usage.Tokens.CacheWrite += usage.Tokens.CacheWrite
+	summary.Usage.Tokens.TotalTokens += usage.Tokens.TotalTokens
+	summary.Usage.Cost.Input += usage.Cost.Input
+	summary.Usage.Cost.Output += usage.Cost.Output
+	summary.Usage.Cost.CacheRead += usage.Cost.CacheRead
+	summary.Usage.Cost.CacheWrite += usage.Cost.CacheWrite
+	summary.Usage.Cost.Total += usage.Cost.Total
+}
+
 func resolveAgentDir(suiteDir, configured string) string {
 	if filepath.IsAbs(configured) {
 		return configured
@@ -630,11 +663,22 @@ func renderReportMarkdown(summary benchmarkSuiteSummary) string {
 	fmt.Fprintf(&b, "- Results dir: `%s`\n", summary.ResultsDir)
 	fmt.Fprintf(&b, "- Runs: %d\n", summary.RunCount)
 	fmt.Fprintf(&b, "- Success: %d\n", summary.SuccessCount)
-	fmt.Fprintf(&b, "- Failure: %d\n\n", summary.FailureCount)
-	b.WriteString("| Run | Candidate | Case | Exit | Findings |\n")
-	b.WriteString("| --- | --- | --- | ---: | ---: |\n")
+	fmt.Fprintf(&b, "- Failure: %d\n", summary.FailureCount)
+	if summary.Usage != nil && summary.Usage.HasData() {
+		fmt.Fprintf(&b, "- Tokens: %d total (%d input, %d output, %d cache read, %d cache write)\n", summary.Usage.Tokens.TotalTokens, summary.Usage.Tokens.Input, summary.Usage.Tokens.Output, summary.Usage.Tokens.CacheRead, summary.Usage.Tokens.CacheWrite)
+		fmt.Fprintf(&b, "- Cost: $%.6f\n", summary.Usage.Cost.Total)
+	}
+	b.WriteString("\n")
+	b.WriteString("| Run | Candidate | Case | Exit | Findings | Tokens | Cost |\n")
+	b.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: |\n")
 	for _, run := range summary.Runs {
-		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d | %d |\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, run.FindingCount)
+		tokens := int64(0)
+		cost := float64(0)
+		if run.Usage != nil {
+			tokens = run.Usage.Tokens.TotalTokens
+			cost = run.Usage.Cost.Total
+		}
+		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d | %d | %d | $%.6f |\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, run.FindingCount, tokens, cost)
 	}
 	return b.String()
 }
