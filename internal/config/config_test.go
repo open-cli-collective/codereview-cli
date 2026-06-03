@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/open-cli-collective/cli-common/statedirtest"
@@ -167,6 +168,78 @@ profiles:
 	_, err := Load(path)
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("Load invalid enum error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestLoadAcceptsPiRPCSubscriptionProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeFile(t, path, `default_profile: pi
+profiles:
+  pi:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/pi
+    llm:
+      provider: pi
+      auth: subscription
+      adapter: pi_rpc
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	profile := cfg.Profiles["pi"]
+	if profile.LLM.Provider != LLMProviderPi || profile.LLM.Adapter != LLMAdapterPiRPC {
+		t.Fatalf("LLM = %#v, want pi/pi_rpc", profile.LLM)
+	}
+	refs, err := CredentialRefs(profile)
+	if err != nil {
+		t.Fatalf("CredentialRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("CredentialRefs = %#v, want only git credential for subscription auth", refs)
+	}
+}
+
+func TestValidateRejectsInvalidPiCombinations(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Profile)
+	}{
+		{name: "api key auth", mutate: func(profile *Profile) {
+			profile.LLM.Auth = LLMAuthAPIKey
+			profile.LLM.CredentialRef = "codereview/pi-llm"
+		}},
+		{name: "claude cli adapter", mutate: func(profile *Profile) {
+			profile.LLM.Adapter = LLMAdapterClaudeCLI
+		}},
+		{name: "anthropic api adapter", mutate: func(profile *Profile) {
+			profile.LLM.Adapter = LLMAdapterAnthropicAPI
+		}},
+		{name: "pi rpc adapter with anthropic provider", mutate: func(profile *Profile) {
+			profile.LLM.Provider = LLMProviderAnthropic
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			profile := cfg.Profiles["home"]
+			profile.LLM.Provider = LLMProviderPi
+			profile.LLM.Auth = LLMAuthSubscription
+			profile.LLM.Adapter = LLMAdapterPiRPC
+			profile.LLM.CredentialRef = ""
+			tt.mutate(&profile)
+			cfg.Profiles["home"] = profile
+			err := Validate(cfg)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Validate error = %v, want ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), "requires") {
+				t.Fatalf("Validate error = %v, want Pi compatibility guidance", err)
+			}
+		})
 	}
 }
 

@@ -78,6 +78,17 @@ cr init --non-interactive \
   --git-token-from-env GITHUB_TOKEN
 ```
 
+Setup with Pi's local RPC runtime. Install Pi first and make sure the `pi`
+binary is available on `PATH` before running `cr review`.
+
+```bash
+cr init --non-interactive \
+  --llm-provider pi \
+  --llm-auth subscription \
+  --llm-adapter pi_rpc \
+  --git-token-from-env GITHUB_TOKEN
+```
+
 Setup with a direct LLM API key:
 
 ```bash
@@ -155,8 +166,16 @@ profiles:
       major_event: comment
 ```
 
-For adapter-managed LLM credentials, use `auth: subscription`, set an adapter
-such as `claude_cli`, and omit `llm.credential_ref`.
+For adapter-managed LLM credentials, use `auth: subscription` and omit
+`llm.credential_ref`. Pi-backed profiles must set `provider: pi`,
+`auth: subscription`, and `adapter: pi_rpc` together:
+
+```yaml
+llm:
+  provider: pi
+  auth: subscription
+  adapter: pi_rpc
+```
 
 Agent definitions are non-secret deployment material, not credentials. Ship
 them separately from keyring pre-staging and point `agent_sources` at the
@@ -262,16 +281,17 @@ Supported values:
 | Field | Values |
 |-------|--------|
 | `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are recognized by the config schema but not implemented; validation rejects them in v1. GitHub App support is tracked in [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76). |
-| `llm.provider` | `anthropic`, `openai` |
+| `llm.provider` | `anthropic`, `openai`, `pi` |
 | `llm.auth` | `subscription`, `api_key` |
-| `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api` are usable for review. `codex_cli` is recognized by the config schema but rejected by `cr review` until no-tools mode is explicit. |
+| `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc` are usable for review. `codex_cli` is recognized by the config schema but rejected by `cr review` until no-tools mode is explicit. |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
 | `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
-logged-in CLI. `api_key` LLM auth requires `llm.credential_ref` and stores a
-provider-specific API key in the credential backend.
+logged-in CLI or local runtime. `api_key` LLM auth requires
+`llm.credential_ref` and stores a provider-specific API key in the credential
+backend.
 
 Credential key matrix:
 
@@ -283,7 +303,8 @@ Credential key matrix:
 | `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
 | `llm.credential_ref` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
 | `llm.credential_ref` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
-| Omitted `llm.credential_ref` | Adapter-managed LLM auth | `subscription` | None | None | Supported; credentials are owned by the selected adapter |
+| Omitted `llm.credential_ref` | Adapter-managed LLM auth | `subscription` + `anthropic`/`pi` | None | None | Supported; credentials are owned by the selected adapter |
+| `llm.credential_ref` | Pi direct API auth | `api_key` + `pi` | None | None | Unsupported; use adapter-managed `subscription` auth with `pi_rpc` |
 
 Upgrade note: pre-matrix versions used the generic `llm_api_key` key for direct
 LLM API credentials. Re-provision API-key LLM refs with `anthropic_api_key` or
@@ -394,7 +415,7 @@ Flags:
 | `--reviewer-auth-mode <mode>` | Reviewer Git auth mode, default `pat`. Reserved modes are recognized by config but not implemented in v1. |
 | `--reviewer-token-stdin` | Read the reviewer Git token from stdin and write key `git_token`. |
 | `--reviewer-token-from-env <env>` | Read the reviewer Git token from an environment variable and write key `git_token`. |
-| `--llm-provider <provider>` | LLM provider, default `anthropic`; also selects whether API-key ingress writes `anthropic_api_key` or `openai_api_key`. |
+| `--llm-provider <provider>` | LLM provider, default `anthropic`; also selects whether API-key ingress writes `anthropic_api_key` or `openai_api_key`. `pi` is adapter-managed and does not accept API-key ingress. |
 | `--llm-auth <mode>` | LLM auth mode, default `subscription`. Use `api_key` for keyring-managed direct API keys. |
 | `--llm-adapter <adapter>` | LLM adapter, default `claude_cli`. |
 | `--llm-credential-ref <ref>` | Credential ref for LLM API-key auth. Defaults to `codereview/<profile>-llm` when `--llm-auth api_key`. |

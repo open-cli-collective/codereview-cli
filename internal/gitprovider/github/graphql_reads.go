@@ -62,7 +62,6 @@ query($owner: String!, $repo: String!, $number: Int!, $threadAfter: String) {
               }
               path
               line
-              diffSide
               url
               createdAt
               updatedAt
@@ -78,6 +77,7 @@ const threadCommentsQuery = `
 query($threadID: ID!, $commentAfter: String) {
   node(id: $threadID) {
     ... on PullRequestReviewThread {
+      diffSide
       comments(first: 100, after: $commentAfter) {
         pageInfo {
           hasNextPage
@@ -99,7 +99,6 @@ query($threadID: ID!, $commentAfter: String) {
           }
           path
           line
-          diffSide
           url
           createdAt
           updatedAt
@@ -137,6 +136,7 @@ type threadsData struct {
 
 type threadCommentsData struct {
 	Node struct {
+		DiffSide string            `json:"diffSide"`
 		Comments commentConnection `json:"comments"`
 	} `json:"node"`
 }
@@ -170,7 +170,6 @@ type commentNode struct {
 	} `json:"commit"`
 	Path      string    `json:"path"`
 	Line      int       `json:"line"`
-	DiffSide  string    `json:"diffSide"`
 	URL       string    `json:"url"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -240,7 +239,7 @@ func (c *Client) ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) (
 		for _, node := range data.Repository.PullRequest.ReviewThreads.Nodes {
 			comments := make([]gitprovider.ThreadComment, 0, len(node.Comments.Nodes))
 			for _, comment := range node.Comments.Nodes {
-				mapped, err := mapThreadComment(node.ID, comment)
+				mapped, err := mapThreadComment(node.ID, node.DiffSide, comment)
 				if err != nil {
 					return nil, err
 				}
@@ -288,7 +287,7 @@ func (c *Client) fetchThreadComments(ctx context.Context, threadID string, after
 			return nil, err
 		}
 		for _, comment := range data.Node.Comments.Nodes {
-			mapped, err := mapThreadComment(threadID, comment)
+			mapped, err := mapThreadComment(threadID, data.Node.DiffSide, comment)
 			if err != nil {
 				return nil, err
 			}
@@ -301,12 +300,12 @@ func (c *Client) fetchThreadComments(ctx context.Context, threadID string, after
 	}
 }
 
-func mapThreadComment(threadID string, comment commentNode) (gitprovider.ThreadComment, error) {
+func mapThreadComment(threadID string, diffSide string, comment commentNode) (gitprovider.ThreadComment, error) {
 	id := comment.ID
 	if id == "" {
 		id = stringIDFromInt(comment.DatabaseID)
 	}
-	side, err := parseDiffSide(comment.DiffSide)
+	side, err := parseDiffSide(diffSide)
 	if err != nil {
 		return gitprovider.ThreadComment{}, err
 	}

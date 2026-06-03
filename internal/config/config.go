@@ -130,12 +130,13 @@ type LLMProvider string
 const (
 	LLMProviderAnthropic LLMProvider = "anthropic"
 	LLMProviderOpenAI    LLMProvider = "openai"
+	LLMProviderPi        LLMProvider = "pi"
 )
 
 // Valid reports whether p is a known LLM provider.
 func (p LLMProvider) Valid() bool {
 	switch p {
-	case LLMProviderAnthropic, LLMProviderOpenAI:
+	case LLMProviderAnthropic, LLMProviderOpenAI, LLMProviderPi:
 		return true
 	default:
 		return false
@@ -170,12 +171,13 @@ const (
 	LLMAdapterAnthropicAPI LLMAdapter = "anthropic_api"
 	LLMAdapterCodexCLI     LLMAdapter = "codex_cli"
 	LLMAdapterOpenAIAPI    LLMAdapter = "openai_api"
+	LLMAdapterPiRPC        LLMAdapter = "pi_rpc"
 )
 
 // Valid reports whether a is a known LLM adapter.
 func (a LLMAdapter) Valid() bool {
 	switch a {
-	case LLMAdapterClaudeCLI, LLMAdapterAnthropicAPI, LLMAdapterCodexCLI, LLMAdapterOpenAIAPI:
+	case LLMAdapterClaudeCLI, LLMAdapterAnthropicAPI, LLMAdapterCodexCLI, LLMAdapterOpenAIAPI, LLMAdapterPiRPC:
 		return true
 	default:
 		return false
@@ -466,6 +468,16 @@ func validateProfile(name string, profile Profile) error {
 	}
 	if !profile.LLM.Adapter.Valid() {
 		return invalid("profiles.%s.llm.adapter %q is invalid", name, profile.LLM.Adapter)
+	}
+	if profile.LLM.Provider == LLMProviderPi {
+		if profile.LLM.Auth != LLMAuthSubscription || profile.LLM.Adapter != LLMAdapterPiRPC {
+			return invalid("profiles.%s.llm provider pi requires auth subscription and adapter pi_rpc", name)
+		}
+	}
+	if profile.LLM.Adapter == LLMAdapterPiRPC {
+		if profile.LLM.Provider != LLMProviderPi || profile.LLM.Auth != LLMAuthSubscription {
+			return invalid("profiles.%s.llm adapter pi_rpc requires provider pi and auth subscription", name)
+		}
 	}
 	if profile.LLM.Auth == LLMAuthAPIKey && strings.TrimSpace(profile.LLM.CredentialRef) == "" {
 		return invalid("profiles.%s.llm.credential_ref is required for api_key auth", name)

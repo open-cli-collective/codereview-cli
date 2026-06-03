@@ -515,6 +515,42 @@ func TestInitNonInteractiveWritesProviderSpecificAPIKeySecret(t *testing.T) {
 	}
 }
 
+func TestInitNonInteractiveWritesPiRPCProfile(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	t.Setenv("CR_GIT_TOKEN", "git-token")
+	cmd, out, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"init",
+		"--non-interactive",
+		"--git-token-from-env", "CR_GIT_TOKEN",
+		"--llm-provider", string(config.LLMProviderPi),
+		"--llm-auth", string(config.LLMAuthSubscription),
+		"--llm-adapter", string(config.LLMAdapterPiRPC),
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String()+errOut.String(), "git-token") {
+		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := cfg.Profiles["default"]
+	if profile.LLM.Provider != config.LLMProviderPi ||
+		profile.LLM.Auth != config.LLMAuthSubscription ||
+		profile.LLM.Adapter != config.LLMAdapterPiRPC ||
+		profile.LLM.CredentialRef != "" {
+		t.Fatalf("LLM config = %#v, want pi subscription pi_rpc without credential ref", profile.LLM)
+	}
+	assertFileBundleKeys(t, "default", []string{credentials.GitTokenKey})
+	assertStored(t, "default", credentials.GitTokenKey, "git-token")
+}
+
 func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
@@ -688,6 +724,7 @@ func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 		{name: "unsupported reviewer auth", args: []string{"init", "--non-interactive", "--reviewer-auth-mode", string(config.GitAuthModeOAuthDevice)}},
 		{name: "empty reviewer env secret", args: []string{"init", "--non-interactive", "--reviewer-token-from-env", "CR_EMPTY_REVIEWER_TOKEN"}},
 		{name: "llm ingress under subscription auth", args: []string{"init", "--non-interactive", "--llm-api-key-from-env", "CR_LLM_KEY"}},
+		{name: "pi rpc adapter without pi provider", args: []string{"init", "--non-interactive", "--llm-adapter", string(config.LLMAdapterPiRPC)}},
 	}
 	t.Setenv("CR_LLM_KEY", "llm-key")
 	t.Setenv("CR_EMPTY_REVIEWER_TOKEN", "")
