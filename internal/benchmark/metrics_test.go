@@ -9,7 +9,7 @@ import (
 func TestExtractRunMetricsAggregatesAgentLogs(t *testing.T) {
 	artifactPath := t.TempDir()
 	logDir := filepath.Join(artifactPath, "agent-logs")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	writeLog(t, filepath.Join(logDir, "orchestrator-selection.jsonl"), `{"type":"agent_start"}

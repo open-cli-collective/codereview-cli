@@ -96,6 +96,7 @@ func ExtractRunMetrics(artifactPath string) (RunMetrics, error) {
 }
 
 func extractPhaseMetrics(logPath string) (PhaseMetrics, error) {
+	// #nosec G304 -- logPath is discovered from the benchmark-owned review artifact's agent-logs directory.
 	file, err := os.Open(logPath)
 	if err != nil {
 		return PhaseMetrics{}, err
@@ -279,6 +280,7 @@ func float64Value(value any) float64 {
 }
 
 func writeJSONFile(path string, value any) error {
+	// #nosec G304 -- path is a benchmark-owned output artifact path resolved by the caller.
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
