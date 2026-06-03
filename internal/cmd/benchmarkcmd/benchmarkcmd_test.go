@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -412,10 +413,107 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	assertFileContains(t, got.Artifacts.SuiteSummary, `"failure_count": 1`)
 	assertFileContains(t, got.Artifacts.SummaryJSONL, `"run_id":"0001-c01-k01-first-case_one"`)
 	assertFileContains(t, got.Artifacts.Report, "| `0004-c02-k02-second-case_two` |")
+	assertFileContains(t, got.Artifacts.Report, "| n/a | n/a |")
 	assertFileContains(t, got.Runs[0].Artifacts.ReviewJSON, `"run_id":"child-run-1"`)
 	assertFileContains(t, got.Runs[1].Artifacts.Stderr, "second stderr")
 	assertFileContains(t, got.Runs[0].Artifacts.MetricsJSON, `"finding_count": 1`)
 	assertBenchmarkArtifactJSON(t, got)
+}
+
+func TestRunExtractsUsageMetricsFromReviewArtifacts(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
+	crBin := writeExecutableCRBin(t)
+	resultsDir := filepath.Join(t.TempDir(), "results")
+	artifactPath := t.TempDir()
+	logDir := filepath.Join(artifactPath, "agent-logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll agent logs: %v", err)
+	}
+	writeLog(t, filepath.Join(logDir, "frontend%3Afrontend-code-reviewer.jsonl"), `{"type":"turn_start"}
+{"type":"message_end","message":{"provider":"opencode-go","model":"qwen3.6-plus","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"totalTokens":18,"cost":{"input":0.1,"output":0.2,"cacheRead":0.01,"cacheWrite":0.03,"total":0.34}},"stopReason":"stop"}}
+`)
+	withBenchmarkRunSeams(t, fixedBenchmarkTime(), func(context.Context, string, []string) reviewCommandResult {
+		return reviewCommandResult{Stdout: reviewDryRunJSONWithArtifact(t, "child-run-1", artifactPath, "minor"), ExitCode: 0}
+	})
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "run", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", resultsDir,
+		"--cr-bin", crBin,
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Usage == nil || got.Usage.Tokens.TotalTokens != 18 || got.Usage.Cost.Total != 0.34 {
+		t.Fatalf("suite usage = %#v, want aggregate provider usage", got.Usage)
+	}
+	if !got.Usage.HasTokenUsage() || !got.Usage.HasCostUsage() {
+		t.Fatalf("suite usage availability = tokens %v, cost %v; want both true", got.Usage.HasTokenUsage(), got.Usage.HasCostUsage())
+	}
+	if got.Runs[0].Usage == nil || got.Runs[0].Usage.Phases[0].Name != "frontend:frontend-code-reviewer" {
+		t.Fatalf("run usage = %#v, want phase metrics", got.Runs[0].Usage)
+	}
+	assertFileContains(t, got.Artifacts.SuiteSummary, `"usage"`)
+	assertFileContains(t, got.Artifacts.SuiteSummary, `"available": true`)
+	assertFileContains(t, got.Artifacts.SummaryJSONL, `"total_tokens":18`)
+	assertFileContains(t, got.Artifacts.Report, "Tokens")
+	assertFileContains(t, got.Runs[0].Artifacts.MetricsJSON, `"cost"`)
+}
+
+func TestRenderReportMarkdownTreatsActivityOnlyUsageAsUnavailable(t *testing.T) {
+	report := renderReportMarkdown(benchmarkSuiteSummary{
+		SuiteID:      "suite1",
+		ResultsDir:   "/tmp/results",
+		RunCount:     2,
+		SuccessCount: 2,
+		Runs: []benchmarkRun{
+			{
+				RunID:        "run1",
+				CandidateID:  "candidate1",
+				CaseID:       "case1",
+				FindingCount: 1,
+				Usage: &benchmark.RunMetrics{
+					Turns:     2,
+					ToolCalls: 3,
+				},
+			},
+			{
+				RunID:        "run2",
+				CandidateID:  "candidate2",
+				CaseID:       "case2",
+				FindingCount: 0,
+				Usage: &benchmark.RunMetrics{
+					Tokens: benchmark.TokenMetrics{Available: true},
+					Cost:   benchmark.CostMetrics{Available: true},
+				},
+			},
+		},
+		Usage: &benchmark.RunMetrics{
+			Turns: 2,
+			Tokens: benchmark.TokenMetrics{
+				Available: true,
+			},
+			Cost: benchmark.CostMetrics{
+				Available: true,
+			},
+		},
+	})
+	if !strings.Contains(report, "- Tokens: 0 total") || !strings.Contains(report, "- Cost: $0.000000") {
+		t.Fatalf("report did not render explicit zero provider usage:\n%s", report)
+	}
+	if !strings.Contains(report, "| `run1` | `candidate1` | `case1` | 0 | 1 | n/a | n/a |") {
+		t.Fatalf("report missing activity-only n/a row:\n%s", report)
+	}
+	if !strings.Contains(report, "| `run2` | `candidate2` | `case2` | 0 | 0 | 0 | $0.000000 |") {
+		t.Fatalf("report missing explicit zero usage row:\n%s", report)
+	}
 }
 
 func TestRunInvalidChildJSONWarnsAndContinues(t *testing.T) {
@@ -718,6 +816,11 @@ func fixedBenchmarkTime() time.Time {
 
 func reviewDryRunJSON(t *testing.T, runID string, severities ...string) []byte {
 	t.Helper()
+	return reviewDryRunJSONWithArtifact(t, runID, "/tmp/"+runID, severities...)
+}
+
+func reviewDryRunJSONWithArtifact(t *testing.T, runID, artifactPath string, severities ...string) []byte {
+	t.Helper()
 	findings := make([]view.ReviewFinding, 0, len(severities))
 	for i, severity := range severities {
 		findings = append(findings, view.ReviewFinding{
@@ -735,13 +838,13 @@ func reviewDryRunJSON(t *testing.T, runID string, severities ...string) []byte {
 			PRKey:        "github.com_open-cli-collective_codereview-cli_1",
 			PostMode:     "dry_run",
 			Outcome:      "dry_run",
-			ArtifactPath: "/tmp/" + runID,
+			ArtifactPath: artifactPath,
 		},
 		Findings: findings,
 		Artifacts: view.ReviewArtifacts{
-			Dir:            "/tmp/" + runID,
-			FindingsJSON:   "/tmp/" + runID + "/findings.json",
-			RollupMarkdown: "/tmp/" + runID + "/rollup.md",
+			Dir:            artifactPath,
+			FindingsJSON:   filepath.Join(artifactPath, "findings.json"),
+			RollupMarkdown: filepath.Join(artifactPath, "rollup.md"),
 		},
 	})
 	if err != nil {
@@ -828,6 +931,13 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("ReadFile %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func writeLog(t *testing.T, path string, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile log: %v", err)
+	}
 }
 
 func writePermissiveBenchmarkArtifact(t *testing.T, path, body string) {

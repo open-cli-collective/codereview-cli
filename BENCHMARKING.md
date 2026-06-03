@@ -232,7 +232,7 @@ Per-run artifacts:
 |----------|----------|
 | `review.json` | Raw stdout from `cr review --dry-run --json`. |
 | `stderr.txt` | Stderr from the child `cr review` process. |
-| `metrics.json` | Benchmark run summary for that candidate/case execution. |
+| `metrics.json` | Benchmark run summary for that candidate/case execution, including provider usage when available. |
 
 Benchmark artifacts are written with owner-only file permissions where the
 operating system supports them. Directories are owner-only as well.
@@ -251,6 +251,9 @@ The MVP measures rather than grades. Current benchmark summary artifacts include
 - run ID, candidate ID, case ID, and PR URL;
 - child review exit code and duration in milliseconds;
 - finding count and severity counts parsed from dry-run review JSON;
+- provider-reported usage from child review agent logs when available,
+  including LLM call count, turns, tool activity, tokens, cost, and per-phase
+  agent log summaries;
 - warning strings when child review output cannot be parsed;
 - benchmark artifact paths.
 
@@ -259,17 +262,21 @@ review output. Other local review artifacts referenced by that JSON may contain
 more detail, depending on adapter and review behavior.
 
 Treat these metric families as nullable unless the producing adapter or
-artifact actually reports them:
+artifact actually reports them. Generated reports render unavailable run-level
+usage as `n/a` instead of `0` so missing provider telemetry is not confused with
+real zero-token or zero-cost usage. In JSON artifacts, token and cost metric
+objects include `available` to distinguish explicitly reported zero values from
+missing telemetry.
 
 | Metric family | Notes |
 |---------------|-------|
-| Input tokens | Provider or adapter reported prompt/input tokens. |
-| Output tokens | Provider or adapter reported completion/output tokens. |
+| Input tokens | Provider or adapter reported prompt/input tokens, when present in child review agent logs. |
+| Output tokens | Provider or adapter reported completion/output tokens, when present in child review agent logs. |
 | Thinking/reasoning tokens | Only present when a provider exposes a separate count. |
-| Cache read | Provider or adapter reported cache-read tokens. |
-| Cache create | Provider or adapter reported cache-write/create tokens. |
+| Cache read | Provider or adapter reported cache-read tokens, when present in child review agent logs. |
+| Cache create | Provider or adapter reported cache-write/create tokens, when present in child review agent logs. |
 | Cost | Provider or adapter reported cost only. Do not use baked-in benchmark price tables for v1. |
-| Selected agents | Use raw review artifacts or agent logs when available. The benchmark summary records selected candidate inputs and resolved agent directories, not a stable selected-agent table today. |
+| Selected agents | Use raw review artifacts or agent logs when available. The benchmark summary records selected candidate inputs, resolved agent directories, and usage phase names, not a stable selected-agent table today. |
 | Observed SHAs | Record when available from review artifacts or downstream analysis. Expected SHAs in cases are comparison metadata. |
 | Anchor metrics | Not computed by the current runner. If added later, they should remain placement-only. |
 
