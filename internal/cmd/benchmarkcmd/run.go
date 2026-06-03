@@ -664,8 +664,10 @@ func renderReportMarkdown(summary benchmarkSuiteSummary) string {
 	fmt.Fprintf(&b, "- Runs: %d\n", summary.RunCount)
 	fmt.Fprintf(&b, "- Success: %d\n", summary.SuccessCount)
 	fmt.Fprintf(&b, "- Failure: %d\n", summary.FailureCount)
-	if summary.Usage != nil && summary.Usage.HasData() {
+	if summary.Usage != nil && summary.Usage.HasTokenUsage() {
 		fmt.Fprintf(&b, "- Tokens: %d total (%d input, %d output, %d cache read, %d cache write)\n", summary.Usage.Tokens.TotalTokens, summary.Usage.Tokens.Input, summary.Usage.Tokens.Output, summary.Usage.Tokens.CacheRead, summary.Usage.Tokens.CacheWrite)
+	}
+	if summary.Usage != nil && summary.Usage.HasCostUsage() {
 		fmt.Fprintf(&b, "- Cost: $%.6f\n", summary.Usage.Cost.Total)
 	}
 	b.WriteString("\n")
@@ -678,14 +680,14 @@ func renderReportMarkdown(summary benchmarkSuiteSummary) string {
 }
 
 func usageTokensCell(usage *benchmark.RunMetrics) string {
-	if usage == nil || !usage.HasData() {
+	if usage == nil || !usage.HasTokenUsage() {
 		return "n/a"
 	}
 	return fmt.Sprintf("%d", usage.Tokens.TotalTokens)
 }
 
 func usageCostCell(usage *benchmark.RunMetrics) string {
-	if usage == nil || !usage.HasData() {
+	if usage == nil || !usage.HasCostUsage() {
 		return "n/a"
 	}
 	return fmt.Sprintf("$%.6f", usage.Cost.Total)

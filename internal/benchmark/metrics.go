@@ -63,6 +63,16 @@ func (m RunMetrics) HasData() bool {
 	return len(m.Phases) > 0 || m.Turns > 0 || m.LLMCalls > 0 || m.ToolCalls > 0 || m.ToolResults > 0 || m.Tokens.TotalTokens > 0 || m.Cost.Total > 0
 }
 
+// HasTokenUsage reports whether provider token telemetry was captured.
+func (m RunMetrics) HasTokenUsage() bool {
+	return m.Tokens.TotalTokens > 0
+}
+
+// HasCostUsage reports whether provider cost telemetry was captured.
+func (m RunMetrics) HasCostUsage() bool {
+	return m.Cost.Total > 0
+}
+
 // ExtractRunMetrics reads agent JSONL logs from a review artifact directory.
 func ExtractRunMetrics(artifactPath string) (RunMetrics, error) {
 	artifactPath = strings.TrimSpace(artifactPath)

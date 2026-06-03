@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -460,6 +461,37 @@ func TestRunExtractsUsageMetricsFromReviewArtifacts(t *testing.T) {
 	assertFileContains(t, got.Artifacts.SummaryJSONL, `"total_tokens":18`)
 	assertFileContains(t, got.Artifacts.Report, "Tokens")
 	assertFileContains(t, got.Runs[0].Artifacts.MetricsJSON, `"cost"`)
+}
+
+func TestRenderReportMarkdownTreatsActivityOnlyUsageAsUnavailable(t *testing.T) {
+	report := renderReportMarkdown(benchmarkSuiteSummary{
+		SuiteID:      "suite1",
+		ResultsDir:   "/tmp/results",
+		RunCount:     1,
+		SuccessCount: 1,
+		Runs: []benchmarkRun{
+			{
+				RunID:        "run1",
+				CandidateID:  "candidate1",
+				CaseID:       "case1",
+				FindingCount: 1,
+				Usage: &benchmark.RunMetrics{
+					Turns:     2,
+					ToolCalls: 3,
+				},
+			},
+		},
+		Usage: &benchmark.RunMetrics{
+			Turns:     2,
+			ToolCalls: 3,
+		},
+	})
+	if strings.Contains(report, "- Tokens: 0 total") || strings.Contains(report, "- Cost: $0.000000") {
+		t.Fatalf("report rendered activity-only summary as provider usage:\n%s", report)
+	}
+	if !strings.Contains(report, "| `run1` | `candidate1` | `case1` | 0 | 1 | n/a | n/a |") {
+		t.Fatalf("report missing activity-only n/a row:\n%s", report)
+	}
 }
 
 func TestRunInvalidChildJSONWarnsAndContinues(t *testing.T) {
