@@ -663,14 +663,13 @@ func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvide
 func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter, error) {
 	switch llmConfig.Adapter {
 	case config.LLMAdapterClaudeCLI:
-		// The claude_cli adapter launches the CLI in --bare mode, which skips
-		// keychain reads and disables subscription/OAuth auth — auth is then
-		// strictly ANTHROPIC_API_KEY. Without it the subprocess exits "Not
-		// logged in", which otherwise surfaces only as a bare exit status 1.
-		if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
-			return nil, exitcode.AuthConfig(fmt.Errorf("claude_cli requires ANTHROPIC_API_KEY: the --bare reviewer sandbox disables subscription/OAuth auth, so export ANTHROPIC_API_KEY before running cr review"))
+		key, err := resolveClaudeCLIAPIKey(llmConfig, store)
+		if err != nil {
+			return nil, err
 		}
-		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{}), nil
+		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{
+			Env: []string{"ANTHROPIC_API_KEY=" + key},
+		}), nil
 	case config.LLMAdapterCodexCLI:
 		return nil, fmt.Errorf("%w: codex_cli is not supported for cr review until no-tools mode is explicit", config.ErrUnsupported)
 	case config.LLMAdapterPiRPC:
@@ -683,6 +682,52 @@ func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter
 	default:
 		return nil, fmt.Errorf("%w: unsupported LLM adapter %q", config.ErrUnsupported, llmConfig.Adapter)
 	}
+}
+
+// resolveClaudeCLIAPIKey resolves the Anthropic API key for the claude_cli
+// adapter. The adapter launches the CLI in --bare mode, which disables
+// subscription/OAuth auth and skips keychain reads, so auth is strictly the
+// ANTHROPIC_API_KEY environment variable. cr therefore resolves the key here —
+// from cr's own credential store when the profile declares a credential_ref
+// (api_key auth), otherwise from an ambient ANTHROPIC_API_KEY — and the caller
+// injects it into the subprocess environment at launch.
+//
+// NOTE: there is a known disconnect between the two sources. The claude CLI's
+// --bare mode only reads the ANTHROPIC_API_KEY environment variable; it does
+// not read cr's keychain-backed credential store. cr bridges that gap by
+// reading the stored key and injecting it as ANTHROPIC_API_KEY, so a
+// credential_ref behaves like the env var without the user exporting a secret
+// into their shell.
+func resolveClaudeCLIAPIKey(llmConfig config.LLMConfig, store *credstore.Store) (string, error) {
+	if ref := strings.TrimSpace(llmConfig.CredentialRef); ref != "" {
+		if store == nil {
+			return "", exitcode.AuthConfig(fmt.Errorf("claude_cli: credential_ref %q is set but no credential store is available", ref))
+		}
+		parsed, err := credentials.ParseRef(ref)
+		if err != nil {
+			return "", err
+		}
+		storeKey, err := credentials.KeyForPurpose(config.CredentialRef{
+			Purpose:  "llm",
+			Ref:      ref,
+			Mode:     string(llmConfig.Auth),
+			Provider: string(llmConfig.Provider),
+		})
+		if err != nil {
+			return "", err
+		}
+		value, err := store.Get(parsed.Profile, storeKey)
+		if err != nil {
+			return "", exitcode.AuthConfig(fmt.Errorf("claude_cli: read llm credential %s/%s: %w", ref, storeKey, err))
+		}
+		if strings.TrimSpace(value) != "" {
+			return value, nil
+		}
+	}
+	if env := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); env != "" {
+		return env, nil
+	}
+	return "", exitcode.AuthConfig(fmt.Errorf("claude_cli requires an Anthropic API key: store one with `cr set-credential` (api_key auth) or export ANTHROPIC_API_KEY — the --bare reviewer sandbox disables subscription/OAuth auth"))
 }
 
 var _ Runner = reviewRunner{}

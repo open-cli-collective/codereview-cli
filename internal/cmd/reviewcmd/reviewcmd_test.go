@@ -22,6 +22,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -1379,6 +1380,46 @@ func TestNewAdapterRequiresAnthropicAPIKeyForClaudeCLI(t *testing.T) {
 	t.Run("present key returns the adapter", func(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 		adapter, err := newAdapter(claudeCfg, nil)
+		if err != nil {
+			t.Fatalf("newAdapter: %v", err)
+		}
+		if adapter.Name() != "claude_cli" {
+			t.Fatalf("adapter.Name = %q, want claude_cli", adapter.Name())
+		}
+	})
+
+	t.Run("key resolved from the credential store with no ambient env", func(t *testing.T) {
+		// Ambient env is empty: success must come from the keychain-managed
+		// credential, proving cr resolves and (will) inject the stored key.
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		ref := "codereview/home"
+		cfg := config.LLMConfig{
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterClaudeCLI,
+			CredentialRef: ref,
+		}
+		store, err := credstore.Open(credentials.ServiceName, &credstore.Options{Backend: credstore.BackendMemory})
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		parsed, err := credentials.ParseRef(ref)
+		if err != nil {
+			t.Fatalf("parse ref: %v", err)
+		}
+		storeKey, err := credentials.KeyForPurpose(config.CredentialRef{
+			Purpose:  "llm",
+			Ref:      ref,
+			Mode:     string(cfg.Auth),
+			Provider: string(cfg.Provider),
+		})
+		if err != nil {
+			t.Fatalf("key for purpose: %v", err)
+		}
+		if err := store.Set(parsed.Profile, storeKey, "sk-ant-stored", credstore.WithOverwrite()); err != nil {
+			t.Fatalf("store.Set: %v", err)
+		}
+		adapter, err := newAdapter(cfg, store)
 		if err != nil {
 			t.Fatalf("newAdapter: %v", err)
 		}
