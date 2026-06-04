@@ -18,7 +18,7 @@ func TestExtractRunMetricsAggregatesAgentLogs(t *testing.T) {
 {"type":"message_end","message":{"role":"assistant","usage":{"tokens_in":7,"tokens_out":3,"cache_create":2,"cost_usd":0.25}}}
 `)
 	writeLog(t, filepath.Join(logDir, "frontend%3Afrontend-code-reviewer.jsonl"), `{"type":"turn_start"}
-{"type":"message_update","assistantMessageEvent":{"partial":{"role":"assistant","provider":"opencode-go","model":"deepseek-v4-pro","usage":{"input":100,"output":50,"cacheRead":20,"cacheWrite":0,"totalTokens":170,"cost":{"input":1,"output":2,"cacheRead":0.1,"cacheWrite":0,"total":3.1}},"stopReason":"stop"}}}
+{"type":"message_update","assistantMessageEvent":{"partial":{"role":"assistant","provider":"opencode-go","model":"deepseek-v4-pro","usage":{"input":1000,"output":500,"cacheRead":200,"cacheWrite":0,"totalTokens":1700,"cost":{"input":10,"output":20,"cacheRead":1,"cacheWrite":0,"total":31}},"stopReason":"stop"}}}
 {"type":"message_end","message":{"role":"assistant","usage":{"tokensIn":4,"tokensOut":2,"cacheCreate":1,"totalCost":0.5}}}
 `)
 
@@ -29,16 +29,16 @@ func TestExtractRunMetricsAggregatesAgentLogs(t *testing.T) {
 	if !metrics.HasData() {
 		t.Fatal("metrics.HasData() = false")
 	}
-	if metrics.Turns != 2 || metrics.LLMCalls != 4 {
+	if metrics.Turns != 2 || metrics.LLMCalls != 3 {
 		t.Fatalf("metrics activity = turns %d, llm calls %d", metrics.Turns, metrics.LLMCalls)
 	}
-	if metrics.Tokens.Input != 121 || metrics.Tokens.Output != 60 || metrics.Tokens.CacheRead != 22 || metrics.Tokens.CacheWrite != 4 || metrics.Tokens.TotalTokens != 207 {
+	if metrics.Tokens.Input != 21 || metrics.Tokens.Output != 10 || metrics.Tokens.CacheRead != 2 || metrics.Tokens.CacheWrite != 4 || metrics.Tokens.TotalTokens != 37 {
 		t.Fatalf("tokens = %#v", metrics.Tokens)
 	}
 	if !metrics.Tokens.Available || !metrics.Cost.Available {
 		t.Fatalf("usage availability = tokens %v, cost %v; want both true", metrics.Tokens.Available, metrics.Cost.Available)
 	}
-	if metrics.Cost.Total != 4.19 {
+	if metrics.Cost.Total != 1.09 {
 		t.Fatalf("cost total = %v", metrics.Cost.Total)
 	}
 	if len(metrics.Phases) != 2 {
@@ -50,8 +50,38 @@ func TestExtractRunMetricsAggregatesAgentLogs(t *testing.T) {
 	if metrics.Phases[1].Name != "orchestrator-selection" || metrics.Phases[1].Role != "orchestrator_selection" {
 		t.Fatalf("phase[1] = %#v", metrics.Phases[1])
 	}
-	if metrics.Phases[0].LLMCalls != 2 || metrics.Phases[1].LLMCalls != 2 {
-		t.Fatalf("phase llm calls = %d, %d; want 2, 2", metrics.Phases[0].LLMCalls, metrics.Phases[1].LLMCalls)
+	if metrics.Phases[0].LLMCalls != 1 || metrics.Phases[1].LLMCalls != 2 {
+		t.Fatalf("phase llm calls = %d, %d; want 1, 2", metrics.Phases[0].LLMCalls, metrics.Phases[1].LLMCalls)
+	}
+	if metrics.Phases[0].Provider != "opencode-go" || metrics.Phases[0].Model != "deepseek-v4-pro" || metrics.Phases[0].StopReason != "stop" {
+		t.Fatalf("phase[0] metadata = provider %q, model %q, stop %q", metrics.Phases[0].Provider, metrics.Phases[0].Model, metrics.Phases[0].StopReason)
+	}
+}
+
+func TestExtractRunMetricsIgnoresStreamingPartials(t *testing.T) {
+	artifactPath := t.TempDir()
+	logDir := filepath.Join(artifactPath, "agent-logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeLog(t, filepath.Join(logDir, "reviewer.jsonl"), `{"type":"turn_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"a","partial":{"role":"assistant","usage":{"input":100,"output":50,"totalTokens":150,"cost":{"total":3}}}}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"b","partial":{"role":"assistant","usage":{"input":100,"output":50,"totalTokens":150,"cost":{"total":3}}}}}
+{"type":"message_end","message":{"role":"assistant","usage":{"input":10,"output":5,"totalTokens":15,"cost":{"total":0.3}}}}
+`)
+
+	metrics, err := ExtractRunMetrics(artifactPath)
+	if err != nil {
+		t.Fatalf("ExtractRunMetrics: %v", err)
+	}
+	if metrics.LLMCalls != 1 {
+		t.Fatalf("LLMCalls = %d, want final message only", metrics.LLMCalls)
+	}
+	if metrics.Tokens.Input != 10 || metrics.Tokens.Output != 5 || metrics.Tokens.TotalTokens != 15 {
+		t.Fatalf("tokens = %#v, want final message only", metrics.Tokens)
+	}
+	if metrics.Cost.Total != 0.3 {
+		t.Fatalf("cost = %#v, want final message only", metrics.Cost)
 	}
 }
 

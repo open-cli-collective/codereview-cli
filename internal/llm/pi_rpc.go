@@ -349,7 +349,7 @@ func (s *piRPCStream) scanStdout(stdout io.Reader) piRPCScanResult {
 	var result piRPCScanResult
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
-		s.writeLog(append(line, '\n'))
+		s.writeLog(normalizePiRPCLogLine(line))
 		event, err := parsePiRPCEvent(line)
 		if err != nil {
 			s.cancel()
@@ -402,6 +402,68 @@ func (s *piRPCStream) writeLog(p []byte) {
 		return
 	}
 	_, _ = piRPCLogWriter{stream: s}.Write(p)
+}
+
+func normalizePiRPCLogLine(line []byte) []byte {
+	logLine := append([]byte(nil), line...)
+	if len(logLine) == 0 {
+		return []byte{'\n'}
+	}
+	var event map[string]json.RawMessage
+	if err := json.Unmarshal(line, &event); err != nil {
+		return append(logLine, '\n')
+	}
+	if rawString(event, "type") != "message_update" {
+		return append(logLine, '\n')
+	}
+	assistantEventRaw, ok := event["assistantMessageEvent"]
+	if !ok {
+		return append(logLine, '\n')
+	}
+	var assistantEvent map[string]json.RawMessage
+	if err := json.Unmarshal(assistantEventRaw, &assistantEvent); err != nil {
+		return append(logLine, '\n')
+	}
+	partialRaw, ok := assistantEvent["partial"]
+	if !ok {
+		return append(logLine, '\n')
+	}
+	if compactPartial := compactPiRPCPartialForLog(partialRaw); len(compactPartial) > 0 {
+		assistantEvent["partial"] = compactPartial
+	} else {
+		delete(assistantEvent, "partial")
+	}
+	normalizedAssistantEvent, err := json.Marshal(assistantEvent)
+	if err != nil {
+		return append(logLine, '\n')
+	}
+	event["assistantMessageEvent"] = normalizedAssistantEvent
+	normalized, err := json.Marshal(event)
+	if err != nil {
+		return append(logLine, '\n')
+	}
+	return append(normalized, '\n')
+}
+
+func compactPiRPCPartialForLog(partialRaw json.RawMessage) json.RawMessage {
+	var partial map[string]json.RawMessage
+	if err := json.Unmarshal(partialRaw, &partial); err != nil {
+		return nil
+	}
+	compact := make(map[string]json.RawMessage)
+	for _, key := range []string{"role", "provider", "model", "api", "stopReason"} {
+		if value, ok := partial[key]; ok {
+			compact[key] = value
+		}
+	}
+	if len(compact) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(compact)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func (s *piRPCStream) closeLog() {

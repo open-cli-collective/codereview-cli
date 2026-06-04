@@ -159,12 +159,12 @@ func accumulateEvent(phase *PhaseMetrics, event map[string]any) {
 	}
 	if assistantEvent, ok := event["assistantMessageEvent"].(map[string]any); ok {
 		if partial, ok := assistantEvent["partial"].(map[string]any); ok {
-			accumulateMessage(phase, partial)
+			accumulateMessageMetadata(phase, partial)
 		}
 	}
 }
 
-func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
+func accumulateMessageMetadata(phase *PhaseMetrics, message map[string]any) {
 	provider := stringValue(message["provider"])
 	model := stringValue(message["model"])
 	if provider != "" {
@@ -177,6 +177,10 @@ func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
 	if stopReason != "" {
 		phase.StopReason = stopReason
 	}
+}
+
+func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
+	accumulateMessageMetadata(phase, message)
 	usage, ok := message["usage"].(map[string]any)
 	if !ok {
 		return
