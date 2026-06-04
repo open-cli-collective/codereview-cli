@@ -116,6 +116,7 @@ func extractPhaseMetrics(logPath string) (PhaseMetrics, error) {
 
 	name := phaseName(logPath)
 	phase := PhaseMetrics{Name: name, Role: phaseRole(name), LogPath: logPath}
+	var partialUsageFallback *messageUsageMetrics
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
@@ -123,10 +124,13 @@ func extractPhaseMetrics(logPath string) (PhaseMetrics, error) {
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			return PhaseMetrics{}, fmt.Errorf("%s: %w", logPath, err)
 		}
-		accumulateEvent(&phase, event)
+		accumulateEvent(&phase, event, &partialUsageFallback)
 	}
 	if err := scanner.Err(); err != nil {
 		return PhaseMetrics{}, err
+	}
+	if phase.LLMCalls == 0 && partialUsageFallback != nil {
+		accumulateUsageMetrics(&phase, *partialUsageFallback)
 	}
 	if phase.Tokens.TotalTokens == 0 {
 		phase.Tokens.TotalTokens = phase.Tokens.Input + phase.Tokens.Output + phase.Tokens.CacheRead + phase.Tokens.CacheWrite
@@ -134,7 +138,7 @@ func extractPhaseMetrics(logPath string) (PhaseMetrics, error) {
 	return phase, nil
 }
 
-func accumulateEvent(phase *PhaseMetrics, event map[string]any) {
+func accumulateEvent(phase *PhaseMetrics, event map[string]any, partialUsageFallback **messageUsageMetrics) {
 	eventType := stringValue(event["type"])
 	switch eventType {
 	case "turn_start":
@@ -160,6 +164,10 @@ func accumulateEvent(phase *PhaseMetrics, event map[string]any) {
 	if assistantEvent, ok := event["assistantMessageEvent"].(map[string]any); ok {
 		if partial, ok := assistantEvent["partial"].(map[string]any); ok {
 			accumulateMessageMetadata(phase, partial)
+			if usage, ok := messageUsageFromMessage(partial); ok {
+				copied := usage
+				*partialUsageFallback = &copied
+			}
 		}
 	}
 }
@@ -181,9 +189,22 @@ func accumulateMessageMetadata(phase *PhaseMetrics, message map[string]any) {
 
 func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
 	accumulateMessageMetadata(phase, message)
-	usage, ok := message["usage"].(map[string]any)
+	usage, ok := messageUsageFromMessage(message)
 	if !ok {
 		return
+	}
+	accumulateUsageMetrics(phase, usage)
+}
+
+type messageUsageMetrics struct {
+	tokens TokenMetrics
+	cost   CostMetrics
+}
+
+func messageUsageFromMessage(message map[string]any) (messageUsageMetrics, bool) {
+	usage, ok := message["usage"].(map[string]any)
+	if !ok {
+		return messageUsageMetrics{}, false
 	}
 	tokens := tokenMetricsFromUsage(usage)
 	cost := costMetricsFromUsage(usage)
@@ -191,11 +212,15 @@ func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
 		tokens.TotalTokens = tokens.Input + tokens.Output + tokens.CacheRead + tokens.CacheWrite
 	}
 	if !tokens.Available && !cost.Available {
-		return
+		return messageUsageMetrics{}, false
 	}
+	return messageUsageMetrics{tokens: tokens, cost: cost}, true
+}
+
+func accumulateUsageMetrics(phase *PhaseMetrics, usage messageUsageMetrics) {
 	phase.LLMCalls++
-	phase.Tokens.add(tokens)
-	phase.Cost.add(cost)
+	phase.Tokens.add(usage.tokens)
+	phase.Cost.add(usage.cost)
 }
 
 func tokenMetricsFromUsage(usage map[string]any) TokenMetrics {

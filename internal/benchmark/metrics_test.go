@@ -58,7 +58,7 @@ func TestExtractRunMetricsAggregatesAgentLogs(t *testing.T) {
 	}
 }
 
-func TestExtractRunMetricsIgnoresStreamingPartials(t *testing.T) {
+func TestExtractRunMetricsUsesFinalUsageOverStreamingPartials(t *testing.T) {
 	artifactPath := t.TempDir()
 	logDir := filepath.Join(artifactPath, "agent-logs")
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
@@ -82,6 +82,35 @@ func TestExtractRunMetricsIgnoresStreamingPartials(t *testing.T) {
 	}
 	if metrics.Cost.Total != 0.3 {
 		t.Fatalf("cost = %#v, want final message only", metrics.Cost)
+	}
+}
+
+func TestExtractRunMetricsFallsBackToLastStreamingPartialUsage(t *testing.T) {
+	artifactPath := t.TempDir()
+	logDir := filepath.Join(artifactPath, "agent-logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeLog(t, filepath.Join(logDir, "partial-only-reviewer.jsonl"), `{"type":"turn_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"a","partial":{"role":"assistant","provider":"partial-provider","model":"partial-model","usage":{"input":50,"output":20,"totalTokens":70,"cost":{"total":1.2}}}}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"b","partial":{"role":"assistant","provider":"partial-provider","model":"partial-model","usage":{"input":60,"output":25,"totalTokens":85,"cost":{"total":1.5}}}}}
+`)
+
+	metrics, err := ExtractRunMetrics(artifactPath)
+	if err != nil {
+		t.Fatalf("ExtractRunMetrics: %v", err)
+	}
+	if metrics.LLMCalls != 1 {
+		t.Fatalf("LLMCalls = %d, want last partial counted once", metrics.LLMCalls)
+	}
+	if metrics.Tokens.Input != 60 || metrics.Tokens.Output != 25 || metrics.Tokens.TotalTokens != 85 {
+		t.Fatalf("tokens = %#v, want last partial usage", metrics.Tokens)
+	}
+	if metrics.Cost.Total != 1.5 {
+		t.Fatalf("cost = %#v, want last partial usage", metrics.Cost)
+	}
+	if len(metrics.Phases) != 1 || metrics.Phases[0].Provider != "partial-provider" || metrics.Phases[0].Model != "partial-model" {
+		t.Fatalf("phase metadata = %#v", metrics.Phases)
 	}
 }
 
