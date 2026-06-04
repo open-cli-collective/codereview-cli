@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -662,6 +663,13 @@ func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvide
 func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter, error) {
 	switch llmConfig.Adapter {
 	case config.LLMAdapterClaudeCLI:
+		// The claude_cli adapter launches the CLI in --bare mode, which skips
+		// keychain reads and disables subscription/OAuth auth — auth is then
+		// strictly ANTHROPIC_API_KEY. Without it the subprocess exits "Not
+		// logged in", which otherwise surfaces only as a bare exit status 1.
+		if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
+			return nil, exitcode.AuthConfig(fmt.Errorf("claude_cli requires ANTHROPIC_API_KEY: the --bare reviewer sandbox disables subscription/OAuth auth, so export ANTHROPIC_API_KEY before running cr review"))
+		}
 		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{}), nil
 	case config.LLMAdapterCodexCLI:
 		return nil, fmt.Errorf("%w: codex_cli is not supported for cr review until no-tools mode is explicit", config.ErrUnsupported)

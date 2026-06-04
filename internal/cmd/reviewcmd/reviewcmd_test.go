@@ -1355,6 +1355,39 @@ func TestFakeFactoryErrorIsReturned(t *testing.T) {
 	}
 }
 
+func TestNewAdapterRequiresAnthropicAPIKeyForClaudeCLI(t *testing.T) {
+	claudeCfg := config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterClaudeCLI,
+	}
+
+	t.Run("missing key fails fast with an actionable auth error", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		_, err := newAdapter(claudeCfg, nil)
+		if err == nil {
+			t.Fatal("newAdapter error = nil, want missing ANTHROPIC_API_KEY error")
+		}
+		if !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+			t.Fatalf("newAdapter error = %v, want it to name ANTHROPIC_API_KEY", err)
+		}
+		if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+			t.Fatalf("exit code = %d, want %d (auth/config)", got, exitcode.AuthConfigError)
+		}
+	})
+
+	t.Run("present key returns the adapter", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+		adapter, err := newAdapter(claudeCfg, nil)
+		if err != nil {
+			t.Fatalf("newAdapter: %v", err)
+		}
+		if adapter.Name() != "claude_cli" {
+			t.Fatalf("adapter.Name = %q, want claude_cli", adapter.Name())
+		}
+	})
+}
+
 func TestNewAdapterRejectsCodexCLIBestEffortByDefault(t *testing.T) {
 	_, err := newAdapter(config.LLMConfig{
 		Provider: config.LLMProviderOpenAI,
