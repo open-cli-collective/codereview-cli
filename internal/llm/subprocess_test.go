@@ -49,9 +49,9 @@ func TestSubprocessClaudeLaunchSafety(t *testing.T) {
 	}
 	record := readHelperRecord(t, recordPath)
 	assertFlagValue(t, record.AdapterArgs, "--tools", "")
-	assertFlagValue(t, record.AdapterArgs, "--mcp-config", "{}")
+	assertFlagValue(t, record.AdapterArgs, "--mcp-config", `{"mcpServers":{}}`)
 	assertFlagValue(t, record.AdapterArgs, "--output-format", "stream-json")
-	for _, flag := range []string{"--bare", "--print", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"} {
+	for _, flag := range []string{"--bare", "--print", "--verbose", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"} {
 		if !containsFlag(record.AdapterArgs, flag) {
 			t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
 		}

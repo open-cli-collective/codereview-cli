@@ -211,9 +211,10 @@ func (a *SubprocessAdapter) buildArgs(req Request, scratch string) ([]string, er
 		args := []string{
 			"--bare",
 			"--print",
+			"--verbose",
 			"--output-format", "stream-json",
 			"--tools", "",
-			"--mcp-config", "{}",
+			"--mcp-config", `{"mcpServers":{}}`,
 			"--strict-mcp-config",
 			"--disable-slash-commands",
 			"--no-session-persistence",
@@ -261,7 +262,7 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 		required := map[string]string{
 			"--output-format": "stream-json",
 			"--tools":         "",
-			"--mcp-config":    "{}",
+			"--mcp-config":    `{"mcpServers":{}}`,
 		}
 		for flag, value := range required {
 			got, ok := flagValueOK(checkedArgs, flag)
@@ -269,7 +270,7 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 				return fmt.Errorf("%w: missing %s %q", ErrUnsafeSubprocessConfig, flag, value)
 			}
 		}
-		for _, flag := range []string{"--bare", "--print", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"} {
+		for _, flag := range []string{"--bare", "--print", "--verbose", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"} {
 			if !containsFlag(checkedArgs, flag) {
 				return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 			}
