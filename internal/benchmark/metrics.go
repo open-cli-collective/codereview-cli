@@ -116,6 +116,7 @@ func extractPhaseMetrics(logPath string) (PhaseMetrics, error) {
 
 	name := phaseName(logPath)
 	phase := PhaseMetrics{Name: name, Role: phaseRole(name), LogPath: logPath}
+	partialFallbacks := newPartialUsageFallbacks()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
@@ -123,21 +124,23 @@ func extractPhaseMetrics(logPath string) (PhaseMetrics, error) {
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			return PhaseMetrics{}, fmt.Errorf("%s: %w", logPath, err)
 		}
-		accumulateEvent(&phase, event)
+		accumulateEvent(&phase, event, partialFallbacks)
 	}
 	if err := scanner.Err(); err != nil {
 		return PhaseMetrics{}, err
 	}
+	partialFallbacks.flush(&phase)
 	if phase.Tokens.TotalTokens == 0 {
 		phase.Tokens.TotalTokens = phase.Tokens.Input + phase.Tokens.Output + phase.Tokens.CacheRead + phase.Tokens.CacheWrite
 	}
 	return phase, nil
 }
 
-func accumulateEvent(phase *PhaseMetrics, event map[string]any) {
+func accumulateEvent(phase *PhaseMetrics, event map[string]any, partialFallbacks *partialUsageFallbacks) {
 	eventType := stringValue(event["type"])
 	switch eventType {
 	case "turn_start":
+		partialFallbacks.flushUnkeyed(phase)
 		phase.Turns++
 	case "tool_call", "tool_start":
 		phase.ToolCalls++
@@ -155,16 +158,23 @@ func accumulateEvent(phase *PhaseMetrics, event map[string]any) {
 	}
 
 	if message, ok := event["message"].(map[string]any); ok {
-		accumulateMessage(phase, message)
+		if accumulateMessage(phase, message) {
+			partialFallbacks.discard(messageKey(event, message))
+		} else if eventType == "message_end" {
+			partialFallbacks.flushOne(phase, messageKey(event, message))
+		}
 	}
 	if assistantEvent, ok := event["assistantMessageEvent"].(map[string]any); ok {
 		if partial, ok := assistantEvent["partial"].(map[string]any); ok {
-			accumulateMessage(phase, partial)
+			accumulateMessageMetadata(phase, partial)
+			if usage, ok := messageUsageFromMessage(partial); ok {
+				partialFallbacks.record(messageKey(event, partial), usage)
+			}
 		}
 	}
 }
 
-func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
+func accumulateMessageMetadata(phase *PhaseMetrics, message map[string]any) {
 	provider := stringValue(message["provider"])
 	model := stringValue(message["model"])
 	if provider != "" {
@@ -177,9 +187,27 @@ func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
 	if stopReason != "" {
 		phase.StopReason = stopReason
 	}
+}
+
+func accumulateMessage(phase *PhaseMetrics, message map[string]any) bool {
+	accumulateMessageMetadata(phase, message)
+	usage, ok := messageUsageFromMessage(message)
+	if !ok {
+		return false
+	}
+	accumulateUsageMetrics(phase, usage)
+	return true
+}
+
+type messageUsageMetrics struct {
+	tokens TokenMetrics
+	cost   CostMetrics
+}
+
+func messageUsageFromMessage(message map[string]any) (messageUsageMetrics, bool) {
 	usage, ok := message["usage"].(map[string]any)
 	if !ok {
-		return
+		return messageUsageMetrics{}, false
 	}
 	tokens := tokenMetricsFromUsage(usage)
 	cost := costMetricsFromUsage(usage)
@@ -187,11 +215,101 @@ func accumulateMessage(phase *PhaseMetrics, message map[string]any) {
 		tokens.TotalTokens = tokens.Input + tokens.Output + tokens.CacheRead + tokens.CacheWrite
 	}
 	if !tokens.Available && !cost.Available {
+		return messageUsageMetrics{}, false
+	}
+	return messageUsageMetrics{tokens: tokens, cost: cost}, true
+}
+
+func accumulateUsageMetrics(phase *PhaseMetrics, usage messageUsageMetrics) {
+	phase.LLMCalls++
+	phase.Tokens.add(usage.tokens)
+	phase.Cost.add(usage.cost)
+}
+
+type partialUsageFallbacks struct {
+	keyed  map[string]messageUsageMetrics
+	order  []string
+	active *messageUsageMetrics
+}
+
+func newPartialUsageFallbacks() *partialUsageFallbacks {
+	return &partialUsageFallbacks{keyed: make(map[string]messageUsageMetrics)}
+}
+
+func (f *partialUsageFallbacks) record(key string, usage messageUsageMetrics) {
+	if key == "" {
+		copied := usage
+		f.active = &copied
 		return
 	}
-	phase.LLMCalls++
-	phase.Tokens.add(tokens)
-	phase.Cost.add(cost)
+	if _, ok := f.keyed[key]; !ok {
+		f.order = append(f.order, key)
+	}
+	f.keyed[key] = usage
+}
+
+func (f *partialUsageFallbacks) discard(key string) {
+	if key != "" {
+		delete(f.keyed, key)
+		return
+	}
+	f.active = nil
+}
+
+func (f *partialUsageFallbacks) flushOne(phase *PhaseMetrics, key string) {
+	if key != "" {
+		if usage, ok := f.keyed[key]; ok {
+			accumulateUsageMetrics(phase, usage)
+			delete(f.keyed, key)
+		}
+		return
+	}
+	f.flushUnkeyed(phase)
+}
+
+func (f *partialUsageFallbacks) flushUnkeyed(phase *PhaseMetrics) {
+	if f.active == nil {
+		return
+	}
+	accumulateUsageMetrics(phase, *f.active)
+	f.active = nil
+}
+
+func (f *partialUsageFallbacks) flush(phase *PhaseMetrics) {
+	f.flushUnkeyed(phase)
+	for _, key := range f.order {
+		if usage, ok := f.keyed[key]; ok {
+			accumulateUsageMetrics(phase, usage)
+			delete(f.keyed, key)
+		}
+	}
+}
+
+func messageKey(event map[string]any, message map[string]any) string {
+	if key := stringValue(message["id"]); key != "" {
+		return key
+	}
+	if key := stringValue(message["messageId"]); key != "" {
+		return key
+	}
+	if key := stringValue(message["message_id"]); key != "" {
+		return key
+	}
+	if key := stringValue(event["messageId"]); key != "" {
+		return key
+	}
+	if key := stringValue(event["message_id"]); key != "" {
+		return key
+	}
+	if assistantEvent, ok := event["assistantMessageEvent"].(map[string]any); ok {
+		if key := stringValue(assistantEvent["messageId"]); key != "" {
+			return key
+		}
+		if key := stringValue(assistantEvent["message_id"]); key != "" {
+			return key
+		}
+	}
+	return ""
 }
 
 func tokenMetricsFromUsage(usage map[string]any) TokenMetrics {

@@ -96,6 +96,84 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	}
 }
 
+func TestPiRPCLogStripsCumulativeStreamingPartials(t *testing.T) {
+	recordPath := filepath.Join(t.TempDir(), "record.json")
+	logPath := filepath.Join(t.TempDir(), "pi-rpc.jsonl")
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnv("streaming-partials", recordPath),
+		Timeout:           5 * time.Second,
+	})
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Model:   "opencode-go/deepseek-v4-pro",
+		Effort:  "high",
+		Prompt:  "review this diff",
+		LogPath: logPath,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %s, want final assistant text", response.StructuredOutput)
+	}
+
+	logged, err := os.ReadFile(logPath) // #nosec G304 -- test reads the log path it created with t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(log): %v", err)
+	}
+	logText := string(logged)
+	if !strings.Contains(logText, `"message_update"`) || !strings.Contains(logText, `"thinking_delta"`) || !strings.Contains(logText, `"delta"`) {
+		t.Fatalf("log = %s, want normalized streaming update metadata", logText)
+	}
+	if !strings.Contains(logText, `"partial"`) || !strings.Contains(logText, `"provider"`) || !strings.Contains(logText, `"deepseek-v4-pro"`) {
+		t.Fatalf("log = %s, want compact partial metadata preserved", logText)
+	}
+	if !strings.Contains(logText, `"message_end"`) || !strings.Contains(logText, `"agent_end"`) {
+		t.Fatalf("log = %s, want final RPC events preserved", logText)
+	}
+	assertPiRPCMessageUpdatesCompacted(t, logged)
+	if len(logged) > 10_000 {
+		t.Fatalf("log size = %d bytes, want normalized bounded log", len(logged))
+	}
+}
+
+func assertPiRPCMessageUpdatesCompacted(t *testing.T, logged []byte) {
+	t.Helper()
+	scanner := bufio.NewScanner(strings.NewReader(string(logged)))
+	for scanner.Scan() {
+		var event map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("Unmarshal(log line): %v", err)
+		}
+		if event["type"] != "message_update" {
+			continue
+		}
+		assistantEvent, ok := event["assistantMessageEvent"].(map[string]any)
+		if !ok {
+			t.Fatalf("message_update = %#v, want assistantMessageEvent", event)
+		}
+		partial, ok := assistantEvent["partial"].(map[string]any)
+		if !ok {
+			t.Fatalf("message_update = %#v, want compact partial metadata", event)
+		}
+		if _, ok := partial["content"]; ok {
+			t.Fatalf("partial = %#v, want content stripped", partial)
+		}
+		if _, ok := partial["usage"]; ok {
+			t.Fatalf("partial = %#v, want usage stripped", partial)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("Scan(log): %v", err)
+	}
+}
+
 func TestPiRPCProtocolFailures(t *testing.T) {
 	t.Run("prompt response failure", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
@@ -316,6 +394,33 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		fmt.Println(`{"type":"agent_start","sessionId":"session-1"}`)
 		fmt.Println(`{"type":"message_end","message":{"role":"user","content":"review this diff"}}`)
 		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","text":"ignored"},{"type":"text","text":"{\"ok\":true}"}],"usage":{"tokensIn":3915,"tokensOut":50,"cacheRead":5,"cacheWrite":7,"cost":{"total":0.00392005}}}}`)
+		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+	case "streaming-partials":
+		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
+		fmt.Println(`{"type":"agent_start","sessionId":"session-1"}`)
+		thinking := ""
+		for i := 0; i < 25; i++ {
+			thinking += strings.Repeat("x", 200)
+			event := map[string]any{
+				"type": "message_update",
+				"assistantMessageEvent": map[string]any{
+					"type":         "thinking_delta",
+					"contentIndex": 0,
+					"delta":        "x",
+					"partial": map[string]any{
+						"role":       "assistant",
+						"provider":   "opencode-go",
+						"model":      "deepseek-v4-pro",
+						"stopReason": "stop",
+						"content":    []map[string]any{{"type": "thinking", "thinking": thinking}},
+						"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
+					},
+				},
+			}
+			data, _ := json.Marshal(event)
+			fmt.Println(string(data))
+		}
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"tokensIn":100,"tokensOut":50}}}`)
 		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
 	case "prompt-failure":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":false,"error":"No API key found for opencode-go"}`)
