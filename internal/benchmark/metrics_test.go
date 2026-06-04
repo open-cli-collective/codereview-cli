@@ -146,6 +146,33 @@ func TestExtractRunMetricsKeepsPartialFallbackPerCompletion(t *testing.T) {
 	}
 }
 
+func TestExtractRunMetricsKeepsUnkeyedFallbackWhenKeyedCompletionFinishes(t *testing.T) {
+	artifactPath := t.TempDir()
+	logDir := filepath.Join(artifactPath, "agent-logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeLog(t, filepath.Join(logDir, "mixed-keyed-reviewer.jsonl"), `{"type":"turn_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"a","partial":{"role":"assistant","usage":{"input":100,"output":50,"totalTokens":150,"cost":{"total":3}}}}}
+{"type":"message_update","assistantMessageEvent":{"messageId":"msg-2","type":"thinking_delta","delta":"b","partial":{"id":"msg-2","role":"assistant","usage":{"input":20,"output":10,"totalTokens":30,"cost":{"total":0.6}}}}}
+{"type":"message_end","message":{"id":"msg-2","role":"assistant","usage":{"input":2,"output":1,"totalTokens":3,"cost":{"total":0.06}}}}
+`)
+
+	metrics, err := ExtractRunMetrics(artifactPath)
+	if err != nil {
+		t.Fatalf("ExtractRunMetrics: %v", err)
+	}
+	if metrics.LLMCalls != 2 {
+		t.Fatalf("LLMCalls = %d, want unkeyed fallback plus keyed final message", metrics.LLMCalls)
+	}
+	if metrics.Tokens.Input != 102 || metrics.Tokens.Output != 51 || metrics.Tokens.TotalTokens != 153 {
+		t.Fatalf("tokens = %#v", metrics.Tokens)
+	}
+	if metrics.Cost.Total != 3.06 {
+		t.Fatalf("cost = %#v", metrics.Cost)
+	}
+}
+
 func TestExtractRunMetricsPreservesZeroValuedTelemetry(t *testing.T) {
 	artifactPath := t.TempDir()
 	logDir := filepath.Join(artifactPath, "agent-logs")

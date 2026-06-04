@@ -251,6 +251,7 @@ func (f *partialUsageFallbacks) record(key string, usage messageUsageMetrics) {
 func (f *partialUsageFallbacks) discard(key string) {
 	if key != "" {
 		delete(f.keyed, key)
+		return
 	}
 	f.active = nil
 }
