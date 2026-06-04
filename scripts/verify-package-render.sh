@@ -12,6 +12,10 @@ require_file() {
   [ -f "$1" ] || fail "missing file: $1"
 }
 
+require_absent() {
+  [ ! -e "$1" ] || fail "stale file present: $1"
+}
+
 require_grep() {
   local pattern="$1" file="$2"
   grep -Fq "$pattern" "$file" || fail "$file missing: $pattern"
@@ -56,11 +60,20 @@ done
 require_grep "winget: { id: OpenCLICollective.codereview-cli, bootstrap: true }" "packaging/identity.yml"
 require_grep "chocolatey: { id: codereview-cli }" "packaging/identity.yml"
 
+require_absent "packaging/winget/OpenCLICollective.cr.yaml"
+require_absent "packaging/winget/OpenCLICollective.cr.installer.yaml"
+require_absent "packaging/winget/OpenCLICollective.cr.locale.en-US.yaml"
+require_absent "packaging/chocolatey/cr.nuspec"
+
+winget_version="packaging/winget/OpenCLICollective.codereview-cli.yaml"
 winget_installer="packaging/winget/OpenCLICollective.codereview-cli.installer.yaml"
-require_file "packaging/winget/OpenCLICollective.codereview-cli.yaml"
+winget_locale="packaging/winget/OpenCLICollective.codereview-cli.locale.en-US.yaml"
+require_file "$winget_version"
 require_file "$winget_installer"
-require_file "packaging/winget/OpenCLICollective.codereview-cli.locale.en-US.yaml"
+require_file "$winget_locale"
+require_grep "PackageIdentifier: OpenCLICollective.codereview-cli" "$winget_version"
 require_grep "PackageIdentifier: OpenCLICollective.codereview-cli" "$winget_installer"
+require_grep "PackageIdentifier: OpenCLICollective.codereview-cli" "$winget_locale"
 require_grep "PortableCommandAlias: cr" "$winget_installer"
 require_grep "cr_v0.0.0_windows_amd64.zip" "$winget_installer"
 require_grep "cr_v0.0.0_windows_arm64.zip" "$winget_installer"
