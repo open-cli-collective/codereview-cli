@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -43,6 +44,10 @@ type ReadProvider interface {
 	ListTreeAtRef(context.Context, gitprovider.PRRef, string, string) ([]gitprovider.TreeEntry, error)
 	ListInlineThreads(context.Context, gitprovider.PRRef) ([]gitprovider.InlineThread, error)
 	Capabilities() gitprovider.ProviderCaps
+}
+
+type rangeDiffProvider interface {
+	GetDiffBetweenRefs(context.Context, gitprovider.PRRef, string, string) (gitprovider.UnifiedDiff, error)
 }
 
 // Store is the ledger behavior required by the dry-run pipeline.
@@ -101,6 +106,8 @@ type Request struct {
 
 	LLMModelOverride  string
 	LLMEffortOverride string
+	ReviewBaseSHA     string
+	ReviewHeadSHA     string
 
 	FailOn              *review.Severity
 	IncludeNits         bool
@@ -160,6 +167,10 @@ type Result struct {
 	FailOnTriggered       bool
 	EffectiveCaps         reviewplan.ProviderCaps
 	AgentDefsChanged      bool
+	CurrentBaseSHA        string
+	CurrentHeadSHA        string
+	ReviewBaseSHA         string
+	ReviewHeadSHA         string
 }
 
 type sessionDraft struct {
@@ -211,6 +222,9 @@ func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Resul
 	if strings.TrimSpace(req.LLMModelOverride) != "" || strings.TrimSpace(req.LLMEffortOverride) != "" {
 		return Result{}, fmt.Errorf("pipeline: LLM runtime overrides require dry-run review")
 	}
+	if strings.TrimSpace(req.ReviewBaseSHA) != "" || strings.TrimSpace(req.ReviewHeadSHA) != "" {
+		return Result{}, fmt.Errorf("pipeline: pinned review SHAs require dry-run review")
+	}
 	if strings.TrimSpace(run.RunID) == "" {
 		return Result{}, fmt.Errorf("pipeline: live run ID is required")
 	}
@@ -250,6 +264,15 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	if err != nil {
 		return Result{}, err
 	}
+	currentBaseSHA := pr.Base.SHA
+	currentHeadSHA := pr.Head.SHA
+	reviewBaseSHA := strings.TrimSpace(req.ReviewBaseSHA)
+	reviewHeadSHA := strings.TrimSpace(req.ReviewHeadSHA)
+	pinnedReview := reviewBaseSHA != "" || reviewHeadSHA != ""
+	if pinnedReview {
+		pr.Base.SHA = reviewBaseSHA
+		pr.Head.SHA = reviewHeadSHA
+	}
 	if sameIdentity(pr.Author, req.PostingIdentity) && req.Profile.ReviewerCredentials != nil && !req.AllowSelfReview {
 		return Result{}, fmt.Errorf("pipeline: reviewer credentials resolve to PR author %q; pass --allow-self-review to continue", req.PostingIdentity.Login)
 	}
@@ -276,7 +299,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	if err != nil {
 		return Result{}, err
 	}
-	diff, err := opts.Provider.GetDiff(ctx, req.PRRef)
+	diff, err := getReviewDiff(ctx, opts.Provider, req.PRRef, pr.Base.SHA, pr.Head.SHA, pinnedReview)
 	if err != nil {
 		return Result{}, err
 	}
@@ -308,6 +331,10 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		Catalog:          catalog,
 		EffectiveCaps:    effectiveCaps(opts.Provider.Capabilities(), req.NoResolveThreads),
 		AgentDefsChanged: agentDefinitionsChanged(parsed.Patches),
+		CurrentBaseSHA:   currentBaseSHA,
+		CurrentHeadSHA:   currentHeadSHA,
+		ReviewBaseSHA:    pr.Base.SHA,
+		ReviewHeadSHA:    pr.Head.SHA,
 	}
 
 	var sessionDrafts []sessionDraft
@@ -466,6 +493,17 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	completed = true
 	result.FailOnTriggered = failOnTriggered(result.Findings, req.FailOn)
 	return result, nil
+}
+
+func getReviewDiff(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, baseSHA, headSHA string, pinned bool) (gitprovider.UnifiedDiff, error) {
+	if !pinned {
+		return provider.GetDiff(ctx, ref)
+	}
+	rangeProvider, ok := provider.(rangeDiffProvider)
+	if !ok {
+		return gitprovider.UnifiedDiff{}, fmt.Errorf("pipeline: provider does not support pinned base/head diff review")
+	}
+	return rangeProvider.GetDiffBetweenRefs(ctx, ref, baseSHA, headSHA)
 }
 
 func isContextError(err error) bool {
@@ -1302,6 +1340,29 @@ func validate(opts Options, req Request) error {
 	}
 	if strings.TrimSpace(postingKey(req.PostingIdentity)) == "" {
 		return fmt.Errorf("pipeline: posting identity is required")
+	}
+	if err := validateReviewSHAs(req.ReviewBaseSHA, req.ReviewHeadSHA); err != nil {
+		return err
+	}
+	return nil
+}
+
+var reviewSHAPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+
+func validateReviewSHAs(baseSHA, headSHA string) error {
+	baseSHA = strings.TrimSpace(baseSHA)
+	headSHA = strings.TrimSpace(headSHA)
+	if baseSHA == "" && headSHA == "" {
+		return nil
+	}
+	if baseSHA == "" || headSHA == "" {
+		return fmt.Errorf("pipeline: review base and head SHAs must be set together")
+	}
+	if !reviewSHAPattern.MatchString(baseSHA) {
+		return fmt.Errorf("pipeline: review base SHA must be a 7-64 character hex SHA")
+	}
+	if !reviewSHAPattern.MatchString(headSHA) {
+		return fmt.Errorf("pipeline: review head SHA must be a 7-64 character hex SHA")
 	}
 	return nil
 }

@@ -128,6 +128,9 @@ cases:
 		{name: "negative max concurrency", body: replaceSuiteLine(validSuiteYAML(), "    max_concurrency: 3", "    max_concurrency: -1"), want: "max_concurrency"},
 		{name: "blank model when present", body: replaceSuiteLine(validSuiteYAML(), "    model: gpt-5.1", `    model: "  "`), want: "model must be non-empty"},
 		{name: "blank effort when present", body: replaceSuiteLine(validSuiteYAML(), "    effort: high", `    effort: "  "`), want: "effort must be non-empty"},
+		{name: "invalid review base sha", body: replaceSuiteLine(validSuiteYAML(), "    review_base_sha: 1111111", "    review_base_sha: notsha"), want: "review_base_sha"},
+		{name: "blank review head sha", body: replaceSuiteLine(validSuiteYAML(), "    review_head_sha: 2222222", `    review_head_sha: "  "`), want: "review_head_sha must be non-empty"},
+		{name: "missing review head sha", body: replaceSuiteLine(validSuiteYAML(), "    review_head_sha: 2222222\n", ""), want: "must be set together"},
 		{name: "invalid expected sha", body: replaceSuiteLine(validSuiteYAML(), "    expected_base_sha: abc1234", "    expected_base_sha: notsha"), want: "expected_base_sha"},
 		{name: "blank expected sha", body: replaceSuiteLine(validSuiteYAML(), "    expected_head_sha: def5678", `    expected_head_sha: "  "`), want: "expected_head_sha must be non-empty"},
 		{name: "invalid anchor side", body: replaceSuiteLine(validSuiteYAML(), "        side: RIGHT", "        side: MIDDLE"), want: "side must be RIGHT or LEFT"},
@@ -259,6 +262,8 @@ candidates:
 cases:
   - id: case1
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1
+    review_base_sha: 1111111
+    review_head_sha: 2222222
     expected_base_sha: abc1234
     expected_head_sha: def5678
     anchors:

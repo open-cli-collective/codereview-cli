@@ -241,6 +241,62 @@ func TestReviewNoPostPassesLLMOverrides(t *testing.T) {
 	}
 }
 
+func TestReviewDryRunPassesReviewSHAOverrides(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--review-base-sha", " 1111111 ",
+		"--review-head-sha", " 2222222 ",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	req := runner.requests[0]
+	if req.ReviewBaseSHA != "1111111" || req.ReviewHeadSHA != "2222222" {
+		t.Fatalf("review SHAs = base:%q head:%q, want 1111111/2222222", req.ReviewBaseSHA, req.ReviewHeadSHA)
+	}
+}
+
+func TestReviewRejectsInvalidReviewSHAOverrides(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "base only", args: []string{"--dry-run", "--review-base-sha", "1111111"}},
+		{name: "head only", args: []string{"--dry-run", "--review-head-sha", "2222222"}},
+		{name: "blank base", args: []string{"--dry-run", "--review-base-sha", " ", "--review-head-sha", "2222222"}},
+		{name: "invalid head", args: []string{"--dry-run", "--review-base-sha", "1111111", "--review-head-sha", "notsha"}},
+		{name: "live", args: []string{"--review-base-sha", "1111111", "--review-head-sha", "2222222"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var factoryCalled bool
+			cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+				factoryCalled = true
+				return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+			})
+
+			args := append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, tt.args...)
+			err := root.Execute(cmd, args)
+			if err == nil {
+				t.Fatal("Execute error = nil, want usage error")
+			}
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want usage", got)
+			}
+			if factoryCalled {
+				t.Fatal("runtime factory was called for invalid review SHA override")
+			}
+		})
+	}
+}
+
 func TestReviewLiveRejectsLLMOverridesBeforeRuntimeFactory(t *testing.T) {
 	tests := []struct {
 		name string

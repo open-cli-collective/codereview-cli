@@ -96,10 +96,14 @@ func (c *Candidate) UnmarshalYAML(value *yaml.Node) error {
 type Case struct {
 	ID              string   `yaml:"id" json:"id"`
 	PR              string   `yaml:"pr" json:"pr"`
+	ReviewBaseSHA   string   `yaml:"review_base_sha,omitempty" json:"review_base_sha,omitempty"`
+	ReviewHeadSHA   string   `yaml:"review_head_sha,omitempty" json:"review_head_sha,omitempty"`
 	ExpectedBaseSHA string   `yaml:"expected_base_sha,omitempty" json:"expected_base_sha,omitempty"`
 	ExpectedHeadSHA string   `yaml:"expected_head_sha,omitempty" json:"expected_head_sha,omitempty"`
 	Anchors         []Anchor `yaml:"anchors,omitempty" json:"anchors,omitempty"`
 
+	reviewBaseSHASet   bool
+	reviewHeadSHASet   bool
 	expectedBaseSHASet bool
 	expectedHeadSHASet bool
 }
@@ -110,6 +114,8 @@ func (c *Case) UnmarshalYAML(value *yaml.Node) error {
 	type rawCase struct {
 		ID              string   `yaml:"id"`
 		PR              string   `yaml:"pr"`
+		ReviewBaseSHA   string   `yaml:"review_base_sha"`
+		ReviewHeadSHA   string   `yaml:"review_head_sha"`
 		ExpectedBaseSHA string   `yaml:"expected_base_sha"`
 		ExpectedHeadSHA string   `yaml:"expected_head_sha"`
 		Anchors         []Anchor `yaml:"anchors"`
@@ -121,9 +127,13 @@ func (c *Case) UnmarshalYAML(value *yaml.Node) error {
 	*c = Case{
 		ID:                 raw.ID,
 		PR:                 raw.PR,
+		ReviewBaseSHA:      raw.ReviewBaseSHA,
+		ReviewHeadSHA:      raw.ReviewHeadSHA,
 		ExpectedBaseSHA:    raw.ExpectedBaseSHA,
 		ExpectedHeadSHA:    raw.ExpectedHeadSHA,
 		Anchors:            raw.Anchors,
+		reviewBaseSHASet:   mappingHasKey(value, "review_base_sha"),
+		reviewHeadSHASet:   mappingHasKey(value, "review_head_sha"),
 		expectedBaseSHASet: mappingHasKey(value, "expected_base_sha"),
 		expectedHeadSHASet: mappingHasKey(value, "expected_head_sha"),
 	}
@@ -191,6 +201,8 @@ func Normalize(suite *SuiteFile) {
 		c := &suite.Cases[i]
 		c.ID = strings.TrimSpace(c.ID)
 		c.PR = strings.TrimSpace(c.PR)
+		c.ReviewBaseSHA = strings.TrimSpace(c.ReviewBaseSHA)
+		c.ReviewHeadSHA = strings.TrimSpace(c.ReviewHeadSHA)
 		c.ExpectedBaseSHA = strings.TrimSpace(c.ExpectedBaseSHA)
 		c.ExpectedHeadSHA = strings.TrimSpace(c.ExpectedHeadSHA)
 		for j := range c.Anchors {
@@ -317,6 +329,15 @@ func validateCases(cases []Case) error {
 		seen[benchCase.ID] = true
 		if _, err := prref.ParseGitHubPullURL(benchCase.PR); err != nil {
 			return fmt.Errorf("%w: case %q invalid PR URL: %w", ErrInvalid, benchCase.ID, err)
+		}
+		if err := validateOptionalSHA("review_base_sha", benchCase.ID, benchCase.ReviewBaseSHA, benchCase.reviewBaseSHASet); err != nil {
+			return err
+		}
+		if err := validateOptionalSHA("review_head_sha", benchCase.ID, benchCase.ReviewHeadSHA, benchCase.reviewHeadSHASet); err != nil {
+			return err
+		}
+		if (benchCase.ReviewBaseSHA == "") != (benchCase.ReviewHeadSHA == "") {
+			return fmt.Errorf("%w: case %q review_base_sha and review_head_sha must be set together", ErrInvalid, benchCase.ID)
 		}
 		if err := validateOptionalSHA("expected_base_sha", benchCase.ID, benchCase.ExpectedBaseSHA, benchCase.expectedBaseSHASet); err != nil {
 			return err
@@ -453,7 +474,8 @@ func validateKnownFields(doc *yaml.Node) error {
 		}
 		for i, benchCase := range node.Content {
 			if err := validateMappingKeys(benchCase, fmt.Sprintf("case[%d]", i), map[string]bool{
-				"id": true, "pr": true, "expected_base_sha": true, "expected_head_sha": true, "anchors": true,
+				"id": true, "pr": true, "review_base_sha": true, "review_head_sha": true,
+				"expected_base_sha": true, "expected_head_sha": true, "anchors": true,
 			}); err != nil {
 				return err
 			}
