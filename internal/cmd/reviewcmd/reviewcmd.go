@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -83,6 +84,8 @@ type commandFlags struct {
 	verbose          bool
 	llmModel         string
 	llmEffort        string
+	reviewBaseSHA    string
+	reviewHeadSHA    string
 	maxAgents        int
 	maxConcurrency   int
 	allowSelfReview  bool
@@ -122,6 +125,8 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.verbose, "verbose", false, "Emit additional diagnostic details")
 	cmd.Flags().StringVar(&flags.llmModel, "llm-model", "", "Override LLM model for dry-run review")
 	cmd.Flags().StringVar(&flags.llmEffort, "llm-effort", "", "Override LLM effort for dry-run review")
+	cmd.Flags().StringVar(&flags.reviewBaseSHA, "review-base-sha", "", "Review this base commit SHA instead of the PR's current base SHA; requires --dry-run and --review-head-sha")
+	cmd.Flags().StringVar(&flags.reviewHeadSHA, "review-head-sha", "", "Review this head commit SHA instead of the PR's current head SHA; requires --dry-run and --review-base-sha")
 	cmd.Flags().IntVar(&flags.maxAgents, "max-agents", 0, "Maximum selected reviewer agents")
 	cmd.Flags().IntVar(&flags.maxConcurrency, "max-concurrency", 0, "Maximum concurrent reviewer agents")
 	cmd.Flags().BoolVar(&flags.allowSelfReview, "allow-self-review", false, "Allow reviewer credentials matching the PR author")
@@ -136,8 +141,12 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	llmModelChanged := cmd.Flags().Changed("llm-model")
 	llmEffortChanged := cmd.Flags().Changed("llm-effort")
+	reviewBaseChanged := cmd.Flags().Changed("review-base-sha")
+	reviewHeadChanged := cmd.Flags().Changed("review-head-sha")
 	llmModel := strings.TrimSpace(flags.llmModel)
 	llmEffort := strings.TrimSpace(flags.llmEffort)
+	reviewBaseSHA := strings.TrimSpace(flags.reviewBaseSHA)
+	reviewHeadSHA := strings.TrimSpace(flags.reviewHeadSHA)
 	if llmModelChanged && llmModel == "" {
 		return exitcode.Usage(fmt.Errorf("--llm-model must be non-empty"))
 	}
@@ -146,6 +155,20 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	if (llmModelChanged || llmEffortChanged) && !flags.dryRun {
 		return exitcode.Usage(fmt.Errorf("--llm-model and --llm-effort require --dry-run or --no-post"))
+	}
+	if reviewBaseChanged != reviewHeadChanged {
+		return exitcode.Usage(fmt.Errorf("--review-base-sha and --review-head-sha must be set together"))
+	}
+	if reviewBaseChanged {
+		if err := validateReviewSHAFlag("--review-base-sha", reviewBaseSHA); err != nil {
+			return exitcode.Usage(err)
+		}
+		if err := validateReviewSHAFlag("--review-head-sha", reviewHeadSHA); err != nil {
+			return exitcode.Usage(err)
+		}
+		if !flags.dryRun {
+			return exitcode.Usage(fmt.Errorf("--review-base-sha and --review-head-sha require --dry-run or --no-post"))
+		}
 	}
 	if flags.rerun && flags.retryPosts {
 		return exitcode.Usage(fmt.Errorf("--rerun and --retry-posts are mutually exclusive"))
@@ -225,6 +248,8 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		IncludeNits:         flags.verbose,
 		LLMModelOverride:    llmModel,
 		LLMEffortOverride:   llmEffort,
+		ReviewBaseSHA:       reviewBaseSHA,
+		ReviewHeadSHA:       reviewHeadSHA,
 	}
 	if !flags.dryRun {
 		return runLive(ctx, opts, flags, runtime.Runner, pipelineReq, failOn)
@@ -248,6 +273,18 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	if result.FailOnTriggered && failOn != nil {
 		return exitcode.With(exitcode.Failure, fmt.Errorf("findings at or above --fail-on %s", failOn.String()))
+	}
+	return nil
+}
+
+var reviewSHAFlagPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+
+func validateReviewSHAFlag(name, sha string) error {
+	if sha == "" {
+		return fmt.Errorf("%s must be non-empty", name)
+	}
+	if !reviewSHAFlagPattern.MatchString(sha) {
+		return fmt.Errorf("%s must be a 7-64 character hex SHA", name)
 	}
 	return nil
 }
@@ -288,6 +325,8 @@ func newReviewDryRun(result pipeline.Result) (view.ReviewDryRun, error) {
 			PostMode:     result.Run.PostMode.String(),
 			Outcome:      outcome,
 			ArtifactPath: result.Run.ArtifactPath,
+			BaseSHA:      result.ReviewBaseSHA,
+			HeadSHA:      result.ReviewHeadSHA,
 		},
 		RollupMarkdown:  result.Plan.RollupMarkdown,
 		FailOnTriggered: result.FailOnTriggered,
@@ -306,6 +345,12 @@ func newReviewDryRun(result pipeline.Result) (view.ReviewDryRun, error) {
 			WeeklyRemainingPct: result.Quota.WeeklyRemainingPct,
 			Low:                result.QuotaLow,
 		}
+	}
+	if result.CurrentBaseSHA != "" && result.CurrentBaseSHA != result.ReviewBaseSHA {
+		rendered.Run.CurrentBaseSHA = result.CurrentBaseSHA
+	}
+	if result.CurrentHeadSHA != "" && result.CurrentHeadSHA != result.ReviewHeadSHA {
+		rendered.Run.CurrentHeadSHA = result.CurrentHeadSHA
 	}
 	for _, finding := range result.Plan.AnchoredFindings {
 		rendered.Findings = append(rendered.Findings, viewFinding(finding))
@@ -356,6 +401,14 @@ func newReviewLive(result reviewrun.Result) view.ReviewLive {
 		},
 	}
 	if result.Pipeline != nil {
+		rendered.Run.BaseSHA = result.Pipeline.ReviewBaseSHA
+		rendered.Run.HeadSHA = result.Pipeline.ReviewHeadSHA
+		if result.Pipeline.CurrentBaseSHA != "" && result.Pipeline.CurrentBaseSHA != result.Pipeline.ReviewBaseSHA {
+			rendered.Run.CurrentBaseSHA = result.Pipeline.CurrentBaseSHA
+		}
+		if result.Pipeline.CurrentHeadSHA != "" && result.Pipeline.CurrentHeadSHA != result.Pipeline.ReviewHeadSHA {
+			rendered.Run.CurrentHeadSHA = result.Pipeline.CurrentHeadSHA
+		}
 		rendered.Artifacts = view.ReviewArtifacts{
 			Dir:            result.Pipeline.Artifacts.Dir,
 			DiffPatch:      result.Pipeline.Artifacts.DiffPatch,

@@ -343,6 +343,9 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		got.Runs[3].ExitCode != 0 || got.Runs[3].ReviewRunID != "child-run-4" {
 		t.Fatalf("run summaries = %#v, want parsed first run, early failure, and later completion", got.Runs)
 	}
+	if got.Runs[1].RequestedReviewBaseSHA != "1111111" || got.Runs[1].RequestedReviewHeadSHA != "2222222" {
+		t.Fatalf("second run requested SHAs = %#v, want pinned case SHAs", got.Runs[1])
+	}
 	if len(invocations) != 4 {
 		t.Fatalf("invocations = %d, want 4", len(invocations))
 	}
@@ -363,6 +366,8 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--profile", "home",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/2",
 		"--dry-run", "--json",
+		"--review-base-sha", "1111111",
+		"--review-head-sha", "2222222",
 		"--llm-model", "sonnet",
 		"--llm-effort", "high",
 		"--agents-dir", got.SelectedCandidates[0].AgentDirs[0].Resolved,
@@ -371,6 +376,9 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	}
 	if strings.Join(invocations[1].args, "\x00") != strings.Join(wantSecondArgs, "\x00") {
 		t.Fatalf("second args = %#v, want %#v", invocations[1].args, wantSecondArgs)
+	}
+	if len(got.SelectedCases) != 2 || got.SelectedCases[1].ReviewBaseSHA != "1111111" || got.SelectedCases[1].ReviewHeadSHA != "2222222" {
+		t.Fatalf("selected cases = %#v, want review SHAs on case_two", got.SelectedCases)
 	}
 	wantThirdArgs := []string{
 		"--profile", "home",
@@ -388,6 +396,8 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--profile", "home",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/2",
 		"--dry-run", "--json",
+		"--review-base-sha", "1111111",
+		"--review-head-sha", "2222222",
 		"--llm-model", "kimi",
 		"--llm-effort", "low",
 		"--agents-dir", got.SelectedCandidates[1].AgentDirs[0].Resolved,
@@ -766,6 +776,8 @@ cases:
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1
   - id: case_two
     pr: https://github.com/open-cli-collective/codereview-cli/pull/2
+    review_base_sha: 1111111
+    review_head_sha: 2222222
 `
 	body = strings.ReplaceAll(body, "AGENT_DIR", agentDir)
 	return strings.ReplaceAll(body, "MISSING_AGENT_DIR", missingAgentDir)
@@ -839,6 +851,8 @@ func reviewDryRunJSONWithArtifact(t *testing.T, runID, artifactPath string, seve
 			PostMode:     "dry_run",
 			Outcome:      "dry_run",
 			ArtifactPath: artifactPath,
+			BaseSHA:      "review-base",
+			HeadSHA:      "review-head",
 		},
 		Findings: findings,
 		Artifacts: view.ReviewArtifacts{

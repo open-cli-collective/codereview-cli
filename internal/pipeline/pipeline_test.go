@@ -149,6 +149,109 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	}
 }
 
+func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	writeAgentFullContent(t, req.Profile.AgentSources[0], "harness", "reviewer")
+	currentBaseSHA := provider.pr.Base.SHA
+	reviewBaseSHA := strings.Repeat("1", 40)
+	reviewHeadSHA := strings.Repeat("2", 40)
+	req.ReviewBaseSHA = reviewBaseSHA
+	req.ReviewHeadSHA = reviewHeadSHA
+	provider.diffBetween = gitprovider.UnifiedDiff{Raw: smallDiff("main.go")}
+	provider.files[fileKey{gitRef: reviewBaseSHA, path: "main.go"}] = []byte("package main\nvar changed = false\n")
+	provider.files[fileKey{gitRef: reviewHeadSHA, path: "main.go"}] = []byte("package main\nvar changed = true\n")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-pinned" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	if len(provider.diffBetweenCalls) != 1 || provider.diffBetweenCalls[0].baseSHA != reviewBaseSHA || provider.diffBetweenCalls[0].headSHA != reviewHeadSHA {
+		t.Fatalf("diff between calls = %#v, want pinned base/head", provider.diffBetweenCalls)
+	}
+	if result.CurrentBaseSHA != strings.Repeat("b", 40) || result.CurrentHeadSHA != strings.Repeat("a", 40) ||
+		result.ReviewBaseSHA != reviewBaseSHA || result.ReviewHeadSHA != reviewHeadSHA {
+		t.Fatalf("result SHAs = current %s/%s review %s/%s", result.CurrentBaseSHA, result.CurrentHeadSHA, result.ReviewBaseSHA, result.ReviewHeadSHA)
+	}
+	if !strings.Contains(result.Artifacts.Dir, reviewHeadSHA) || !strings.Contains(result.Artifacts.Dir, reviewBaseSHA) {
+		t.Fatalf("artifact dir = %s, want pinned head/base SHAs", result.Artifacts.Dir)
+	}
+	if !containsFileCall(provider.fileCalls, fileKey{gitRef: reviewBaseSHA, path: "main.go"}) ||
+		!containsFileCall(provider.fileCalls, fileKey{gitRef: reviewHeadSHA, path: "main.go"}) {
+		t.Fatalf("file calls = %#v, want pinned base/head refs", provider.fileCalls)
+	}
+	requests := adapter.Requests()
+	if len(requests) < 1 {
+		t.Fatalf("adapter requests = %d, want selection request", len(requests))
+	}
+	selectionPrompt := requests[0].Prompt
+	if !strings.Contains(selectionPrompt, reviewBaseSHA) || !strings.Contains(selectionPrompt, reviewHeadSHA) {
+		t.Fatalf("selection prompt missing pinned review SHAs: %s", selectionPrompt)
+	}
+	if strings.Contains(selectionPrompt, currentBaseSHA) || strings.Contains(selectionPrompt, provider.pr.Head.SHA) {
+		t.Fatalf("selection prompt contains current PR SHAs: %s", selectionPrompt)
+	}
+	if provider.threadCalls != 0 {
+		t.Fatalf("thread calls = %d, want no live thread reads for pinned review", provider.threadCalls)
+	}
+	if !containsFileCall(provider.treeCalls, fileKey{gitRef: currentBaseSHA, path: ".codereview/agents"}) {
+		t.Fatalf("tree calls = %#v, want repo agents loaded from current base SHA", provider.treeCalls)
+	}
+	if containsFileCall(provider.treeCalls, fileKey{gitRef: reviewBaseSHA, path: ".codereview/agents"}) {
+		t.Fatalf("tree calls = %#v, want no repo agent load from pinned review base SHA", provider.treeCalls)
+	}
+	assertFileContains(t, result.Artifacts.DiffPatch, "diff --git a/main.go b/main.go")
+}
+
+func TestDryRunWithPinnedReviewSHAsRejectsForkHeads(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.ReviewBaseSHA = strings.Repeat("1", 40)
+	req.ReviewHeadSHA = strings.Repeat("2", 40)
+	provider.pr.Head.Owner = "fork-owner"
+	provider.pr.Head.Repo = "codereview-cli-fork"
+
+	_, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-pinned-fork" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err == nil || !strings.Contains(err.Error(), "does not support fork PR heads") {
+		t.Fatalf("DryRun error = %v, want clear fork-head rejection", err)
+	}
+	if len(provider.diffBetweenCalls) != 0 {
+		t.Fatalf("diff between calls = %#v, want rejection before compare", provider.diffBetweenCalls)
+	}
+}
+
 func TestDryRunLLMOverridesApplyToAllRequestsAndSessions(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -1272,13 +1375,23 @@ func TestSessionRowIDForFindingRequiresReviewerSession(t *testing.T) {
 }
 
 type readOnlyProvider struct {
-	pr      gitprovider.PR
-	diff    gitprovider.UnifiedDiff
-	files   map[fileKey][]byte
-	trees   map[fileKey][]gitprovider.TreeEntry
-	threads []gitprovider.InlineThread
-	caps    gitprovider.ProviderCaps
-	onGetPR func()
+	pr               gitprovider.PR
+	diff             gitprovider.UnifiedDiff
+	diffBetween      gitprovider.UnifiedDiff
+	diffBetweenCalls []shaPair
+	files            map[fileKey][]byte
+	fileCalls        []fileKey
+	trees            map[fileKey][]gitprovider.TreeEntry
+	treeCalls        []fileKey
+	threads          []gitprovider.InlineThread
+	threadCalls      int
+	caps             gitprovider.ProviderCaps
+	onGetPR          func()
+}
+
+type shaPair struct {
+	baseSHA string
+	headSHA string
 }
 
 type promptAwareAdapter struct {
@@ -1398,7 +1511,13 @@ func (p *readOnlyProvider) GetDiff(context.Context, gitprovider.PRRef) (gitprovi
 	return p.diff, nil
 }
 
+func (p *readOnlyProvider) GetDiffBetweenRefs(_ context.Context, _ gitprovider.PRRef, baseSHA, headSHA string) (gitprovider.UnifiedDiff, error) {
+	p.diffBetweenCalls = append(p.diffBetweenCalls, shaPair{baseSHA: baseSHA, headSHA: headSHA})
+	return p.diffBetween, nil
+}
+
 func (p *readOnlyProvider) GetFileAtRef(_ context.Context, _ gitprovider.PRRef, gitRef string, path string) ([]byte, error) {
+	p.fileCalls = append(p.fileCalls, fileKey{gitRef: gitRef, path: path})
 	data, ok := p.files[fileKey{gitRef: gitRef, path: path}]
 	if !ok {
 		return nil, gitprovider.ErrNotFound
@@ -1407,6 +1526,7 @@ func (p *readOnlyProvider) GetFileAtRef(_ context.Context, _ gitprovider.PRRef, 
 }
 
 func (p *readOnlyProvider) ListTreeAtRef(_ context.Context, _ gitprovider.PRRef, gitRef string, path string) ([]gitprovider.TreeEntry, error) {
+	p.treeCalls = append(p.treeCalls, fileKey{gitRef: gitRef, path: path})
 	entries, ok := p.trees[fileKey{gitRef: gitRef, path: path}]
 	if !ok {
 		return nil, gitprovider.ErrNotFound
@@ -1415,11 +1535,21 @@ func (p *readOnlyProvider) ListTreeAtRef(_ context.Context, _ gitprovider.PRRef,
 }
 
 func (p *readOnlyProvider) ListInlineThreads(context.Context, gitprovider.PRRef) ([]gitprovider.InlineThread, error) {
+	p.threadCalls++
 	return append([]gitprovider.InlineThread(nil), p.threads...), nil
 }
 
 func (p *readOnlyProvider) Capabilities() gitprovider.ProviderCaps {
 	return p.caps
+}
+
+func containsFileCall(calls []fileKey, want fileKey) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
 }
 
 func dryRunHarness(t *testing.T) (*readOnlyProvider, Request) {

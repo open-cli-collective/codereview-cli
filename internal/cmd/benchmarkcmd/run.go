@@ -106,24 +106,34 @@ type benchmarkAgentDir struct {
 type benchmarkCase struct {
 	ID              string `json:"id"`
 	PR              string `json:"pr"`
+	ReviewBaseSHA   string `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA   string `json:"review_head_sha,omitempty"`
 	ExpectedBaseSHA string `json:"expected_base_sha,omitempty"`
 	ExpectedHeadSHA string `json:"expected_head_sha,omitempty"`
 }
 
 type benchmarkRun struct {
-	RunID              string                `json:"run_id"`
-	CandidateID        string                `json:"candidate_id"`
-	CaseID             string                `json:"case_id"`
-	PRURL              string                `json:"pr_url"`
-	ReviewRunID        string                `json:"review_run_id,omitempty"`
-	ReviewArtifactPath string                `json:"review_artifact_path,omitempty"`
-	ExitCode           int                   `json:"exit_code"`
-	DurationMS         int64                 `json:"duration_ms"`
-	FindingCount       int                   `json:"finding_count"`
-	SeverityCounts     map[string]int        `json:"severity_counts"`
-	Usage              *benchmark.RunMetrics `json:"usage,omitempty"`
-	Warnings           []string              `json:"warnings"`
-	Artifacts          runArtifacts          `json:"artifacts"`
+	RunID                  string                `json:"run_id"`
+	CandidateID            string                `json:"candidate_id"`
+	CaseID                 string                `json:"case_id"`
+	PRURL                  string                `json:"pr_url"`
+	RequestedReviewBaseSHA string                `json:"requested_review_base_sha,omitempty"`
+	RequestedReviewHeadSHA string                `json:"requested_review_head_sha,omitempty"`
+	ExpectedBaseSHA        string                `json:"expected_base_sha,omitempty"`
+	ExpectedHeadSHA        string                `json:"expected_head_sha,omitempty"`
+	ReviewRunID            string                `json:"review_run_id,omitempty"`
+	ReviewArtifactPath     string                `json:"review_artifact_path,omitempty"`
+	ReviewBaseSHA          string                `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA          string                `json:"review_head_sha,omitempty"`
+	CurrentBaseSHA         string                `json:"current_base_sha,omitempty"`
+	CurrentHeadSHA         string                `json:"current_head_sha,omitempty"`
+	ExitCode               int                   `json:"exit_code"`
+	DurationMS             int64                 `json:"duration_ms"`
+	FindingCount           int                   `json:"finding_count"`
+	SeverityCounts         map[string]int        `json:"severity_counts"`
+	Usage                  *benchmark.RunMetrics `json:"usage,omitempty"`
+	Warnings               []string              `json:"warnings"`
+	Artifacts              runArtifacts          `json:"artifacts"`
 }
 
 type runArtifacts struct {
@@ -272,15 +282,19 @@ func executeBenchmarkRun(ctx context.Context, suiteDir, resultsDir, crBin, runID
 	child := runReviewCommand(ctx, crBin, args)
 
 	runSummary := benchmarkRun{
-		RunID:          runID,
-		CandidateID:    candidate.ID,
-		CaseID:         benchCase.ID,
-		PRURL:          benchCase.PR,
-		ExitCode:       child.ExitCode,
-		DurationMS:     durationMS(child.Duration),
-		SeverityCounts: map[string]int{},
-		Warnings:       []string{},
-		Artifacts:      artifacts,
+		RunID:                  runID,
+		CandidateID:            candidate.ID,
+		CaseID:                 benchCase.ID,
+		PRURL:                  benchCase.PR,
+		RequestedReviewBaseSHA: benchCase.ReviewBaseSHA,
+		RequestedReviewHeadSHA: benchCase.ReviewHeadSHA,
+		ExpectedBaseSHA:        benchCase.ExpectedBaseSHA,
+		ExpectedHeadSHA:        benchCase.ExpectedHeadSHA,
+		ExitCode:               child.ExitCode,
+		DurationMS:             durationMS(child.Duration),
+		SeverityCounts:         map[string]int{},
+		Warnings:               []string{},
+		Artifacts:              artifacts,
 	}
 	if child.Err != nil && child.ExitCode < 0 {
 		runSummary.Warnings = append(runSummary.Warnings, fmt.Sprintf("review command failed to start or complete: %s", child.Err.Error()))
@@ -288,6 +302,10 @@ func executeBenchmarkRun(ctx context.Context, suiteDir, resultsDir, crBin, runID
 	if parsed, warnings := parseReviewDryRun(child.Stdout, child.ExitCode); parsed != nil {
 		runSummary.ReviewRunID = parsed.Run.RunID
 		runSummary.ReviewArtifactPath = parsed.Run.ArtifactPath
+		runSummary.ReviewBaseSHA = parsed.Run.BaseSHA
+		runSummary.ReviewHeadSHA = parsed.Run.HeadSHA
+		runSummary.CurrentBaseSHA = parsed.Run.CurrentBaseSHA
+		runSummary.CurrentHeadSHA = parsed.Run.CurrentHeadSHA
 		runSummary.FindingCount = len(parsed.Findings)
 		runSummary.SeverityCounts = severityCounts(parsed.Findings)
 		if usage, err := benchmark.ExtractRunMetrics(parsed.Run.ArtifactPath); err != nil {
@@ -342,6 +360,12 @@ func runReviewCommandReal(ctx context.Context, crBin string, args []string) revi
 
 func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchmark.Case) []string {
 	args := []string{"--profile", candidate.Profile, "review", benchCase.PR, "--dry-run", "--json"}
+	if benchCase.ReviewBaseSHA != "" {
+		args = append(args, "--review-base-sha", benchCase.ReviewBaseSHA)
+	}
+	if benchCase.ReviewHeadSHA != "" {
+		args = append(args, "--review-head-sha", benchCase.ReviewHeadSHA)
+	}
 	if candidate.Model != "" {
 		args = append(args, "--llm-model", candidate.Model)
 	}
@@ -450,6 +474,8 @@ func summarizeCases(cases []benchmark.Case) []benchmarkCase {
 		out = append(out, benchmarkCase{
 			ID:              benchCase.ID,
 			PR:              benchCase.PR,
+			ReviewBaseSHA:   benchCase.ReviewBaseSHA,
+			ReviewHeadSHA:   benchCase.ReviewHeadSHA,
 			ExpectedBaseSHA: benchCase.ExpectedBaseSHA,
 			ExpectedHeadSHA: benchCase.ExpectedHeadSHA,
 		})

@@ -610,6 +610,8 @@ Review selection and execution flags:
 | `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--llm-model <model>` | Override the LLM model for dry-run review. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
 | `--llm-effort <effort>` | Override the LLM effort for dry-run review. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
+| `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
+| `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
 | `--session <name>` | Reuse a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
 | `--verbose` | Include nits in review output and emit additional diagnostics. |
 
@@ -678,7 +680,9 @@ under `.cr-bench/results/<suite-id>/<timestamp>/` unless `--results-dir` is set.
 
 Use `--candidate` and `--case` for benchmark selection. Candidate YAML fields
 such as `model`, `effort`, `agent_dirs`, `max_agents`, and `max_concurrency`
-control review runtime overrides.
+control review runtime overrides. Case YAML fields `review_base_sha` and
+`review_head_sha` pin the exact base/head commit pair reviewed by the dry-run
+child command.
 
 ### `cr sessions list`
 

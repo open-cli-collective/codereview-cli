@@ -109,6 +109,31 @@ func TestRESTReadMethodsMapResponses(t *testing.T) {
 	}
 }
 
+func TestGetDiffBetweenRefsUsesCompareEndpoint(t *testing.T) {
+	ref := testPRRef()
+	var accept string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.URL.EscapedPath() != "/repos/open%20cli/repo+name/compare/abc1234...def5678" {
+			t.Fatalf("path = %s, want compare endpoint", r.URL.String())
+		}
+		accept = r.Header.Get("Accept")
+		_, _ = w.Write([]byte("diff --git a/main.go b/main.go"))
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	diff, err := client.GetDiffBetweenRefs(context.Background(), ref, " abc1234 ", " def5678 ")
+	if err != nil {
+		t.Fatalf("GetDiffBetweenRefs: %v", err)
+	}
+	if !strings.Contains(diff.Raw, "diff --git") || accept != acceptDiff {
+		t.Fatalf("diff = %#v accept=%q, want diff response and diff accept", diff, accept)
+	}
+}
+
 func TestGetPRStateMapping(t *testing.T) {
 	ref := testPRRef()
 	tests := []struct {
