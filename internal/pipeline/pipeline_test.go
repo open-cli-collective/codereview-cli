@@ -1242,6 +1242,44 @@ func TestFindingsOutputContractScopesAnchorToFindingItems(t *testing.T) {
 	}
 }
 
+func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
+	prompt, err := buildRollupPrompt(gitprovider.PR{}, []review.Finding{
+		{
+			ID:       "finding-1",
+			Severity: review.SeverityMajor,
+			FilePath: "main.go",
+			Anchor:   review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 10},
+			Body:     "same issue text",
+		},
+		{
+			ID:       "finding-2",
+			Severity: review.SeverityMajor,
+			FilePath: "main.go",
+			Anchor:   review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 20},
+			Body:     "same issue text",
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRollupPrompt: %v", err)
+	}
+
+	var payload struct {
+		Findings []rollupFindingPrompt `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		t.Fatalf("unmarshal rollup prompt: %v", err)
+	}
+	if len(payload.Findings) != 2 {
+		t.Fatalf("rollup findings = %d, want 2", len(payload.Findings))
+	}
+	if payload.Findings[0].Location.Line != 10 || payload.Findings[1].Location.Line != 20 {
+		t.Fatalf("rollup finding locations = %#v", payload.Findings)
+	}
+	if strings.Contains(prompt, `"anchor"`) {
+		t.Fatalf("rollup prompt leaked raw anchor key: %s", prompt)
+	}
+}
+
 func TestDryRunContextBudgetFailures(t *testing.T) {
 	tests := []struct {
 		name   string
