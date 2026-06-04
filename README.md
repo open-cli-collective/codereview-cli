@@ -32,8 +32,8 @@ brew install --cask open-cli-collective/tap/codereview-cli
 ### Windows Package Managers
 
 ```powershell
-winget install OpenCLICollective.cr
-choco install cr
+winget install OpenCLICollective.codereview-cli
+choco install codereview-cli
 ```
 
 ### Linux Packages

@@ -53,18 +53,21 @@ done
 # release workflow substitutes them from the real release assets before publish.
 # The generated windows archives above prove the archive naming those templates
 # reference is rendered by GoReleaser.
-winget_installer="packaging/winget/OpenCLICollective.cr.installer.yaml"
-require_file "packaging/winget/OpenCLICollective.cr.yaml"
+require_grep "winget: { id: OpenCLICollective.codereview-cli, bootstrap: true }" "packaging/identity.yml"
+require_grep "chocolatey: { id: codereview-cli }" "packaging/identity.yml"
+
+winget_installer="packaging/winget/OpenCLICollective.codereview-cli.installer.yaml"
+require_file "packaging/winget/OpenCLICollective.codereview-cli.yaml"
 require_file "$winget_installer"
-require_file "packaging/winget/OpenCLICollective.cr.locale.en-US.yaml"
-require_grep "PackageIdentifier: OpenCLICollective.cr" "$winget_installer"
+require_file "packaging/winget/OpenCLICollective.codereview-cli.locale.en-US.yaml"
+require_grep "PackageIdentifier: OpenCLICollective.codereview-cli" "$winget_installer"
 require_grep "PortableCommandAlias: cr" "$winget_installer"
 require_grep "cr_v0.0.0_windows_amd64.zip" "$winget_installer"
 require_grep "cr_v0.0.0_windows_arm64.zip" "$winget_installer"
 
-require_file "packaging/chocolatey/cr.nuspec"
+require_file "packaging/chocolatey/codereview-cli.nuspec"
 require_file "packaging/chocolatey/tools/chocolateyInstall.ps1"
-require_grep "<id>cr</id>" "packaging/chocolatey/cr.nuspec"
+require_grep "<id>codereview-cli</id>" "packaging/chocolatey/codereview-cli.nuspec"
 require_grep 'releases/download/v${version}' "packaging/chocolatey/tools/chocolateyInstall.ps1"
 require_grep 'cr_v${version}_windows_${arch}.zip' "packaging/chocolatey/tools/chocolateyInstall.ps1"
 

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
-    <id>cr</id>
+    <id>codereview-cli</id>
     <version>0.0.0</version>
     <title>Code Review CLI</title>
     <authors>Open CLI Collective</authors>

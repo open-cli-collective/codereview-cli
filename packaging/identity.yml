@@ -13,8 +13,8 @@ packages:
   # Homebrew's core cask tap already owns a disabled `cr` cask for Cool Reader,
   # so the shared tap uses the repo name to avoid a user-facing token collision.
   homebrew: { canonical_cask: codereview-cli }
-  winget: { id: OpenCLICollective.cr }
-  chocolatey: { id: cr }
+  winget: { id: OpenCLICollective.codereview-cli, bootstrap: true }
+  chocolatey: { id: codereview-cli }
   linux: { package_name: cr }
 
 # cr's statedir-based config path resolves through os.UserConfigDir(); on macOS
