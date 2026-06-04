@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -1330,10 +1331,24 @@ func (a *promptAwareAdapter) Start(_ context.Context, req llm.Request) (llm.Stre
 	case strings.Contains(req.Prompt, "harness:beta"):
 		return staticStream{sessionID: "beta-session", output: findingsJSON("harness:beta", "other.go", "major", 2, "Beta finding")}, nil
 	case strings.Contains(req.Prompt, `"schema": "rollup"`):
-		return staticStream{sessionID: "rollup-session", output: rollupJSON("comment", []string{"finding-1", "finding-2"})}, nil
+		return staticStream{sessionID: "rollup-session", output: rollupJSON("comment", findingIDsFromPrompt(req.Prompt))}, nil
 	default:
 		return nil, fmt.Errorf("unexpected prompt: %s", req.Prompt)
 	}
+}
+
+func findingIDsFromPrompt(prompt string) []string {
+	matches := regexp.MustCompile(`finding-\d+`).FindAllString(prompt, -1)
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if seen[match] {
+			continue
+		}
+		seen[match] = true
+		ids = append(ids, match)
+	}
+	return ids
 }
 
 func (a *promptAwareAdapter) Requests() []llm.Request {
