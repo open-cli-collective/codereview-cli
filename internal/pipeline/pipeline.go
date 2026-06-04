@@ -966,13 +966,33 @@ func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding) (string, er
 		"output_contract": rollupOutputContract(findings),
 		"schema":          "rollup",
 		"pr":              pr,
-		"findings":        findings,
+		"findings":        rollupFindingsPrompt(findings),
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("pipeline: build rollup prompt: %w", err)
 	}
 	return string(body), nil
+}
+
+type rollupFindingPrompt struct {
+	ID       string `json:"id"`
+	Severity string `json:"severity"`
+	FilePath string `json:"file_path"`
+	Body     string `json:"body"`
+}
+
+func rollupFindingsPrompt(findings []review.Finding) []rollupFindingPrompt {
+	out := make([]rollupFindingPrompt, 0, len(findings))
+	for _, finding := range findings {
+		out = append(out, rollupFindingPrompt{
+			ID:       finding.ID.String(),
+			Severity: finding.Severity.String(),
+			FilePath: finding.FilePath,
+			Body:     finding.Body,
+		})
+	}
+	return out
 }
 
 type agentSourcesArtifact struct {
@@ -1064,8 +1084,7 @@ func findingsOutputContract(agentID string, changedFiles []string) outputContrac
 		ResponseSchema: map[string]any{
 			"schema_version": "number, required, must be 1",
 			"agent_id":       "string, required",
-			"findings":       "array of {severity: string, file_path: string, anchor: object, body: string}",
-			"anchor":         "object: {kind: 'file'} or {kind: 'line', side: 'RIGHT'|'LEFT', line: positive number}",
+			"findings":       "array of {severity: string, file_path: string, anchor: {kind: 'file'} or {kind: 'line', side: 'RIGHT'|'LEFT', line: positive number}, body: string}",
 		},
 		AllowedValues: map[string]any{
 			"severities":    []string{"blocking", "major", "minor", "nits"},
@@ -1097,8 +1116,10 @@ func rollupOutputContract(findings []review.Finding) outputContract {
 			"Use only the keys shown in response_schema. Unknown keys are rejected.",
 			"allowed_values is context only; do not include allowed_values keys in the response.",
 			"schema_version must be 1.",
-			"ordered_findings must include every kept finding exactly once.",
-			"dedupe_log must be empty when no findings are duplicates.",
+			"ordered_findings must contain finding ID strings only and include every kept finding exactly once.",
+			"dedupe_log kept and dropped values must contain finding ID strings only, never finding objects.",
+			"Do not include finding fields such as severity, file_path, anchor, body, or finding_id in the response.",
+			"dedupe_log must be an empty array when no findings are duplicates.",
 		},
 		ResponseSchema: map[string]any{
 			"schema_version":         "number, required, must be 1",

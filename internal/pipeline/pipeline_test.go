@@ -1079,6 +1079,14 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 				!strings.Contains(request.Prompt, `"ordered_findings"`)) {
 			t.Fatalf("rollup prompt missing output schema fields: %s", request.Prompt)
 		}
+		if strings.Contains(request.Prompt, `"schema": "rollup"`) {
+			if strings.Contains(request.Prompt, `"anchor"`) {
+				t.Fatalf("rollup prompt leaked finding anchors: %s", request.Prompt)
+			}
+			if !strings.Contains(request.Prompt, `"Do not include finding fields such as severity, file_path, anchor, body, or finding_id in the response."`) {
+				t.Fatalf("rollup prompt missing explicit finding-object rejection: %s", request.Prompt)
+			}
+		}
 	}
 	if reviewerPrompts != 2 {
 		t.Fatalf("reviewer prompts = %d, want 2", reviewerPrompts)
@@ -1210,6 +1218,24 @@ func TestSelectionOutputContractExampleHasNoAgentsWhenCatalogEmpty(t *testing.T)
 	}
 	if len(selected) != 0 {
 		t.Fatalf("selected_agents = %#v, want empty when no agents are allowed", selected)
+	}
+}
+
+func TestFindingsOutputContractScopesAnchorToFindingItems(t *testing.T) {
+	contract := findingsOutputContract("agent-1", []string{"main.go"})
+	schema, ok := contract.ResponseSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("response schema type = %T, want map", contract.ResponseSchema)
+	}
+	if _, ok := schema["anchor"]; ok {
+		t.Fatalf("response schema exposes anchor as a top-level field: %#v", schema)
+	}
+	findingsSchema, ok := schema["findings"].(string)
+	if !ok {
+		t.Fatalf("findings schema type = %T, want string", schema["findings"])
+	}
+	if !strings.Contains(findingsSchema, "anchor") {
+		t.Fatalf("findings schema does not describe item anchors: %q", findingsSchema)
 	}
 }
 
