@@ -73,12 +73,14 @@ shared workflow owns publish mechanics.
   `skip_upload: true`; the shared Homebrew job pushes that generated cask to
   `open-cli-collective/homebrew-tap` with `TAP_GITHUB_TOKEN`.
 - Chocolatey: the shared Chocolatey job rewrites
-  `packaging/chocolatey/cr.nuspec` from version `0.0.0` to the release version
+  `packaging/chocolatey/codereview-cli.nuspec` from version `0.0.0` to the release version
   and replaces `CHECKSUM_AMD64_PLACEHOLDER` /
   `CHECKSUM_ARM64_PLACEHOLDER` in `chocolateyInstall.ps1` before packing and
   pushing.
 - winget: the shared winget job resolves the release asset URLs/checksums and
-  submits `OpenCLICollective.cr` with `WINGET_GITHUB_TOKEN`.
+  submits `OpenCLICollective.codereview-cli` with `WINGET_GITHUB_TOKEN`;
+  because this is a first-time package id, `packaging/identity.yml` keeps
+  `packages.winget.bootstrap: true` until the package exists upstream.
 - Linux packages: GoReleaser renders `.deb` and `.rpm` artifacts named `cr`;
   the shared workflow dispatches `package-release` to
   `open-cli-collective/linux-packages` with `LINUX_PACKAGES_DISPATCH_TOKEN`.
