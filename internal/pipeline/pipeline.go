@@ -363,7 +363,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.Plan = plan
 	} else {
-		selectionPrompt, err := buildSelectionPrompt(pr, catalog, parsed.Patches, threads)
+		selectionPrompt, err := buildSelectionPrompt(reviewPR, catalog, parsed.Patches, threads)
 		if err != nil {
 			return Result{}, err
 		}

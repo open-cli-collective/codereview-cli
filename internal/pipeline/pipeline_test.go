@@ -198,6 +198,17 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 		!containsFileCall(provider.fileCalls, fileKey{gitRef: reviewHeadSHA, path: "main.go"}) {
 		t.Fatalf("file calls = %#v, want pinned base/head refs", provider.fileCalls)
 	}
+	requests := adapter.Requests()
+	if len(requests) < 1 {
+		t.Fatalf("adapter requests = %d, want selection request", len(requests))
+	}
+	selectionPrompt := requests[0].Prompt
+	if !strings.Contains(selectionPrompt, reviewBaseSHA) || !strings.Contains(selectionPrompt, reviewHeadSHA) {
+		t.Fatalf("selection prompt missing pinned review SHAs: %s", selectionPrompt)
+	}
+	if strings.Contains(selectionPrompt, currentBaseSHA) || strings.Contains(selectionPrompt, provider.pr.Head.SHA) {
+		t.Fatalf("selection prompt contains current PR SHAs: %s", selectionPrompt)
+	}
 	if provider.threadCalls != 0 {
 		t.Fatalf("thread calls = %d, want no live thread reads for pinned review", provider.threadCalls)
 	}
