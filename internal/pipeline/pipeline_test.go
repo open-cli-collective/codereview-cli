@@ -154,6 +154,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	writeAgentFullContent(t, req.Profile.AgentSources[0], "harness", "reviewer")
+	currentBaseSHA := provider.pr.Base.SHA
 	reviewBaseSHA := strings.Repeat("1", 40)
 	reviewHeadSHA := strings.Repeat("2", 40)
 	req.ReviewBaseSHA = reviewBaseSHA
@@ -197,7 +198,46 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 		!containsFileCall(provider.fileCalls, fileKey{gitRef: reviewHeadSHA, path: "main.go"}) {
 		t.Fatalf("file calls = %#v, want pinned base/head refs", provider.fileCalls)
 	}
+	if provider.threadCalls != 0 {
+		t.Fatalf("thread calls = %d, want no live thread reads for pinned review", provider.threadCalls)
+	}
+	if !containsFileCall(provider.treeCalls, fileKey{gitRef: currentBaseSHA, path: ".codereview/agents"}) {
+		t.Fatalf("tree calls = %#v, want repo agents loaded from current base SHA", provider.treeCalls)
+	}
+	if containsFileCall(provider.treeCalls, fileKey{gitRef: reviewBaseSHA, path: ".codereview/agents"}) {
+		t.Fatalf("tree calls = %#v, want no repo agent load from pinned review base SHA", provider.treeCalls)
+	}
 	assertFileContains(t, result.Artifacts.DiffPatch, "diff --git a/main.go b/main.go")
+}
+
+func TestDryRunWithPinnedReviewSHAsRejectsForkHeads(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.ReviewBaseSHA = strings.Repeat("1", 40)
+	req.ReviewHeadSHA = strings.Repeat("2", 40)
+	provider.pr.Head.Owner = "fork-owner"
+	provider.pr.Head.Repo = "codereview-cli-fork"
+
+	_, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-pinned-fork" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err == nil || !strings.Contains(err.Error(), "does not support fork PR heads") {
+		t.Fatalf("DryRun error = %v, want clear fork-head rejection", err)
+	}
+	if len(provider.diffBetweenCalls) != 0 {
+		t.Fatalf("diff between calls = %#v, want rejection before compare", provider.diffBetweenCalls)
+	}
 }
 
 func TestDryRunLLMOverridesApplyToAllRequestsAndSessions(t *testing.T) {
@@ -1330,7 +1370,9 @@ type readOnlyProvider struct {
 	files            map[fileKey][]byte
 	fileCalls        []fileKey
 	trees            map[fileKey][]gitprovider.TreeEntry
+	treeCalls        []fileKey
 	threads          []gitprovider.InlineThread
+	threadCalls      int
 	caps             gitprovider.ProviderCaps
 	onGetPR          func()
 }
@@ -1458,6 +1500,7 @@ func (p *readOnlyProvider) GetFileAtRef(_ context.Context, _ gitprovider.PRRef, 
 }
 
 func (p *readOnlyProvider) ListTreeAtRef(_ context.Context, _ gitprovider.PRRef, gitRef string, path string) ([]gitprovider.TreeEntry, error) {
+	p.treeCalls = append(p.treeCalls, fileKey{gitRef: gitRef, path: path})
 	entries, ok := p.trees[fileKey{gitRef: gitRef, path: path}]
 	if !ok {
 		return nil, gitprovider.ErrNotFound
@@ -1466,6 +1509,7 @@ func (p *readOnlyProvider) ListTreeAtRef(_ context.Context, _ gitprovider.PRRef,
 }
 
 func (p *readOnlyProvider) ListInlineThreads(context.Context, gitprovider.PRRef) ([]gitprovider.InlineThread, error) {
+	p.threadCalls++
 	return append([]gitprovider.InlineThread(nil), p.threads...), nil
 }
 

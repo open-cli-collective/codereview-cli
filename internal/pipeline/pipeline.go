@@ -269,9 +269,13 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	reviewBaseSHA := strings.TrimSpace(req.ReviewBaseSHA)
 	reviewHeadSHA := strings.TrimSpace(req.ReviewHeadSHA)
 	pinnedReview := reviewBaseSHA != "" || reviewHeadSHA != ""
+	reviewPR := pr
 	if pinnedReview {
-		pr.Base.SHA = reviewBaseSHA
-		pr.Head.SHA = reviewHeadSHA
+		if err := validatePinnedReviewPR(req.PRRef, pr); err != nil {
+			return Result{}, err
+		}
+		reviewPR.Base.SHA = reviewBaseSHA
+		reviewPR.Head.SHA = reviewHeadSHA
 	}
 	if sameIdentity(pr.Author, req.PostingIdentity) && req.Profile.ReviewerCredentials != nil && !req.AllowSelfReview {
 		return Result{}, fmt.Errorf("pipeline: reviewer credentials resolve to PR author %q; pass --allow-self-review to continue", req.PostingIdentity.Login)
@@ -286,7 +290,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		runID = mode.run.RunID
 		artifacts = ArtifactPathsFromDir(mode.run.ArtifactPath)
 	} else {
-		artifacts, err = ArtifactPathsForRun(opts.Layout, req.PRRef, pr, req.ProfileName, postingKey(req.PostingIdentity), runID)
+		artifacts, err = ArtifactPathsForRun(opts.Layout, req.PRRef, reviewPR, req.ProfileName, postingKey(req.PostingIdentity), runID)
 		if err != nil {
 			return Result{}, err
 		}
@@ -299,7 +303,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	if err != nil {
 		return Result{}, err
 	}
-	diff, err := getReviewDiff(ctx, opts.Provider, req.PRRef, pr.Base.SHA, pr.Head.SHA, pinnedReview)
+	diff, err := getReviewDiff(ctx, opts.Provider, req.PRRef, reviewPR.Base.SHA, reviewPR.Head.SHA, pinnedReview)
 	if err != nil {
 		return Result{}, err
 	}
@@ -307,9 +311,12 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	if err != nil {
 		return Result{}, err
 	}
-	threads, err := opts.Provider.ListInlineThreads(ctx, req.PRRef)
-	if err != nil {
-		return Result{}, err
+	var threads []gitprovider.InlineThread
+	if !pinnedReview {
+		threads, err = opts.Provider.ListInlineThreads(ctx, req.PRRef)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	catalog, err := agents.Load(ctx, agents.LoadOptions{
 		ProfileDirs:               append([]string(nil), req.Profile.AgentSources...),
@@ -333,8 +340,8 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		AgentDefsChanged: agentDefinitionsChanged(parsed.Patches),
 		CurrentBaseSHA:   currentBaseSHA,
 		CurrentHeadSHA:   currentHeadSHA,
-		ReviewBaseSHA:    pr.Base.SHA,
-		ReviewHeadSHA:    pr.Head.SHA,
+		ReviewBaseSHA:    reviewPR.Base.SHA,
+		ReviewHeadSHA:    reviewPR.Head.SHA,
 	}
 
 	var sessionDrafts []sessionDraft
@@ -384,7 +391,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		sessionDrafts = append(sessionDrafts, selectionSession)
 		namedSession.recordSessionID(selectionSession)
 
-		findings, reviewerSessions, reviewerFindingSessions, err := runReviewers(ctx, opts, req, pr, catalog, parsed, artifacts, selection, maxConcurrency)
+		findings, reviewerSessions, reviewerFindingSessions, err := runReviewers(ctx, opts, req, reviewPR, catalog, parsed, artifacts, selection, maxConcurrency)
 		if err != nil {
 			return Result{}, err
 		}
@@ -394,7 +401,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			findingSession[id] = rowID
 		}
 
-		rollupPrompt, err := buildRollupPrompt(pr, findings)
+		rollupPrompt, err := buildRollupPrompt(reviewPR, findings)
 		if err != nil {
 			return Result{}, err
 		}
@@ -421,7 +428,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
 		}
 
-		plan, err := opts.buildPlan(req, pr, mode.planPostMode, result.EffectiveCaps, parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged)
+		plan, err := opts.buildPlan(req, reviewPR, mode.planPostMode, result.EffectiveCaps, parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged)
 		if err != nil {
 			return Result{}, err
 		}
@@ -434,8 +441,8 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			PRKey:           prKey,
 			PRURL:           req.PRURL,
 			RunID:           runID,
-			SHA:             pr.Head.SHA,
-			BaseSHA:         pr.Base.SHA,
+			SHA:             reviewPR.Head.SHA,
+			BaseSHA:         reviewPR.Base.SHA,
 			Profile:         req.ProfileName,
 			PostingIdentity: postingKey(req.PostingIdentity),
 			PostMode:        ledger.PostModeDryRun,
@@ -504,6 +511,13 @@ func getReviewDiff(ctx context.Context, provider ReadProvider, ref gitprovider.P
 		return gitprovider.UnifiedDiff{}, fmt.Errorf("pipeline: provider does not support pinned base/head diff review")
 	}
 	return rangeProvider.GetDiffBetweenRefs(ctx, ref, baseSHA, headSHA)
+}
+
+func validatePinnedReviewPR(ref gitprovider.PRRef, pr gitprovider.PR) error {
+	if pr.Head.Host != "" && pr.Head.Host != ref.Host || pr.Head.Owner != "" && pr.Head.Owner != ref.Owner || pr.Head.Repo != "" && pr.Head.Repo != ref.Repo {
+		return fmt.Errorf("pipeline: pinned base/head review does not support fork PR heads; head repository %s/%s differs from base repository %s/%s", pr.Head.Owner, pr.Head.Repo, ref.Owner, ref.Repo)
+	}
+	return nil
 }
 
 func isContextError(err error) bool {

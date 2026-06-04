@@ -193,6 +193,11 @@ When set on the candidate, `run` also passes:
 | `agent_dirs[]` | `--agents-dir <path>` |
 | `max_agents` | `--max-agents <n>` |
 | `max_concurrency` | `--max-concurrency <n>` |
+
+When set on the case, `run` also passes:
+
+| Case field | Review flag |
+|------------|-------------|
 | `review_base_sha` | `--review-base-sha <sha>` |
 | `review_head_sha` | `--review-head-sha <sha>` |
 
