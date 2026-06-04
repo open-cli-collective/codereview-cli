@@ -106,6 +106,8 @@ candidates:
 cases:
   - id: merged-security-pr
     pr: https://github.com/OWNER/REPO/pull/123
+    review_base_sha: 1111111
+    review_head_sha: 2222222
     expected_base_sha: abc1234
     expected_head_sha: def5678
     anchors:
@@ -116,8 +118,13 @@ cases:
 ```
 
 IDs must be unique within their list and use letters, numbers, underscores, or
-hyphens. PRs must be GitHub pull request URLs. Expected SHA fields are optional,
-but when present they must be non-empty 7 to 64 character hexadecimal SHAs.
+hyphens. PRs must be GitHub pull request URLs. `review_base_sha` and
+`review_head_sha` are optional, but must be set together when present; they pin
+the exact base/head commit pair that `cr review --dry-run` evaluates instead of
+the PR's current branch state. Expected SHA fields are optional baseline
+metadata for downstream reports and graders; they do not change what gets
+reviewed. All SHA fields must be non-empty 7 to 64 character hexadecimal SHAs
+when present.
 
 Candidate `profile` must reference a configured profile. Candidate PR hosts must
 match the candidate profile's Git host. `model`, `effort`, `agent_dirs`,
@@ -187,6 +194,13 @@ When set on the candidate, `run` also passes:
 | `max_agents` | `--max-agents <n>` |
 | `max_concurrency` | `--max-concurrency <n>` |
 
+When set on the case, `run` also passes:
+
+| Case field | Review flag |
+|------------|-------------|
+| `review_base_sha` | `--review-base-sha <sha>` |
+| `review_head_sha` | `--review-head-sha <sha>` |
+
 Unset fields are omitted. Posting, retry, approval, thread-resolution, session,
 and live-review flags are never taken from the suite.
 
@@ -249,6 +263,8 @@ The MVP measures rather than grades. Current benchmark summary artifacts include
 - selected candidates and cases;
 - resolved candidate agent directory metadata;
 - run ID, candidate ID, case ID, and PR URL;
+- requested pinned review base/head SHAs when a case sets them, plus expected
+  baseline SHAs when provided;
 - child review exit code and duration in milliseconds;
 - finding count and severity counts parsed from dry-run review JSON;
 - provider-reported usage from child review agent logs when available,

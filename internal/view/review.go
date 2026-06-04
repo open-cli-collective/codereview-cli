@@ -30,12 +30,16 @@ type ReviewLive struct {
 
 // ReviewRun describes the durable run envelope.
 type ReviewRun struct {
-	RunID        string `json:"run_id"`
-	PRURL        string `json:"pr_url"`
-	PRKey        string `json:"pr_key"`
-	PostMode     string `json:"post_mode"`
-	Outcome      string `json:"outcome"`
-	ArtifactPath string `json:"artifact_path"`
+	RunID          string `json:"run_id"`
+	PRURL          string `json:"pr_url"`
+	PRKey          string `json:"pr_key"`
+	PostMode       string `json:"post_mode"`
+	Outcome        string `json:"outcome"`
+	ArtifactPath   string `json:"artifact_path"`
+	BaseSHA        string `json:"base_sha,omitempty"`
+	HeadSHA        string `json:"head_sha,omitempty"`
+	CurrentBaseSHA string `json:"current_base_sha,omitempty"`
+	CurrentHeadSHA string `json:"current_head_sha,omitempty"`
 }
 
 // ReviewOutbox summarizes live posting state.

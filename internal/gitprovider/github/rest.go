@@ -109,6 +109,28 @@ func (c *Client) GetDiff(ctx context.Context, ref gitprovider.PRRef) (gitprovide
 	return gitprovider.UnifiedDiff{Raw: string(body)}, nil
 }
 
+// GetDiffBetweenRefs returns the raw unified diff between two git refs in the
+// pull request's base repository.
+func (c *Client) GetDiffBetweenRefs(ctx context.Context, ref gitprovider.PRRef, baseSHA, headSHA string) (gitprovider.UnifiedDiff, error) {
+	if err := c.validatePRRef(ref); err != nil {
+		return gitprovider.UnifiedDiff{}, err
+	}
+	baseSHA = strings.TrimSpace(baseSHA)
+	headSHA = strings.TrimSpace(headSHA)
+	if baseSHA == "" {
+		return gitprovider.UnifiedDiff{}, fmt.Errorf("%w: base SHA is required", ErrValidation)
+	}
+	if headSHA == "" {
+		return gitprovider.UnifiedDiff{}, fmt.Errorf("%w: head SHA is required", ErrValidation)
+	}
+	endpoint := restURL(c.baseURL, "repos", ref.Owner, ref.Repo, "compare", baseSHA+"..."+headSHA)
+	body, _, err := c.doREST(ctx, gitprovider.OperationGetDiffBetweenRefs, http.MethodGet, endpoint, c.token, acceptDiff, nil)
+	if err != nil {
+		return gitprovider.UnifiedDiff{}, err
+	}
+	return gitprovider.UnifiedDiff{Raw: string(body)}, nil
+}
+
 // GetFileAtRef returns raw file contents at a git ref.
 func (c *Client) GetFileAtRef(ctx context.Context, ref gitprovider.PRRef, gitRef string, filePath string) ([]byte, error) {
 	if err := c.validatePRRef(ref); err != nil {
