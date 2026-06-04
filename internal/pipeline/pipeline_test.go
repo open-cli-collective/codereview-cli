@@ -1083,7 +1083,10 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 			if strings.Contains(request.Prompt, `"anchor"`) {
 				t.Fatalf("rollup prompt leaked finding anchors: %s", request.Prompt)
 			}
-			if !strings.Contains(request.Prompt, `"Do not include finding fields such as severity, file_path, anchor, body, or finding_id in the response."`) {
+			if !strings.Contains(request.Prompt, `"location"`) {
+				t.Fatalf("rollup prompt missing finding location context: %s", request.Prompt)
+			}
+			if !strings.Contains(request.Prompt, `"Use finding location only to distinguish findings during dedupe; do not include finding fields such as severity, file_path, location, body, anchor, or finding_id in the response."`) {
 				t.Fatalf("rollup prompt missing explicit finding-object rejection: %s", request.Prompt)
 			}
 		}

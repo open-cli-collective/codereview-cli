@@ -976,10 +976,17 @@ func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding) (string, er
 }
 
 type rollupFindingPrompt struct {
-	ID       string `json:"id"`
-	Severity string `json:"severity"`
-	FilePath string `json:"file_path"`
-	Body     string `json:"body"`
+	ID       string                      `json:"id"`
+	Severity string                      `json:"severity"`
+	FilePath string                      `json:"file_path"`
+	Location rollupFindingLocationPrompt `json:"location"`
+	Body     string                      `json:"body"`
+}
+
+type rollupFindingLocationPrompt struct {
+	Kind string `json:"kind"`
+	Side string `json:"side,omitempty"`
+	Line int    `json:"line,omitempty"`
 }
 
 func rollupFindingsPrompt(findings []review.Finding) []rollupFindingPrompt {
@@ -989,7 +996,12 @@ func rollupFindingsPrompt(findings []review.Finding) []rollupFindingPrompt {
 			ID:       finding.ID.String(),
 			Severity: finding.Severity.String(),
 			FilePath: finding.FilePath,
-			Body:     finding.Body,
+			Location: rollupFindingLocationPrompt{
+				Kind: finding.Anchor.Kind.String(),
+				Side: finding.Anchor.Side.String(),
+				Line: finding.Anchor.Line,
+			},
+			Body: finding.Body,
 		})
 	}
 	return out
@@ -1118,7 +1130,7 @@ func rollupOutputContract(findings []review.Finding) outputContract {
 			"schema_version must be 1.",
 			"ordered_findings must contain finding ID strings only and include every kept finding exactly once.",
 			"dedupe_log kept and dropped values must contain finding ID strings only, never finding objects.",
-			"Do not include finding fields such as severity, file_path, anchor, body, or finding_id in the response.",
+			"Use finding location only to distinguish findings during dedupe; do not include finding fields such as severity, file_path, location, body, anchor, or finding_id in the response.",
 			"dedupe_log must be an empty array when no findings are duplicates.",
 		},
 		ResponseSchema: map[string]any{
