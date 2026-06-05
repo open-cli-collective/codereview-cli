@@ -177,6 +177,10 @@ func extractSingleJSONObject(data []byte) ([]byte, bool) {
 		if !ok {
 			continue
 		}
+		if hasJSONContainerOutside(data[:i], data[end+1:]) {
+			i = end
+			continue
+		}
 		candidate := bytes.TrimSpace(data[i : end+1])
 		if json.Valid(candidate) {
 			candidates = append(candidates, candidate)
@@ -187,6 +191,10 @@ func extractSingleJSONObject(data []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return append([]byte(nil), candidates[0]...), true
+}
+
+func hasJSONContainerOutside(prefix []byte, suffix []byte) bool {
+	return bytes.ContainsAny(prefix, "[]") || bytes.ContainsAny(suffix, "[]")
 }
 
 func objectEnd(data []byte, start int) (int, bool) {

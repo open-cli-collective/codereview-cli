@@ -89,6 +89,24 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 	})
 
+	t.Run("does not recover object embedded in json array", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`[{"ok":true}]`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad2`)}})
+		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+			if string(data) != `{"ok":true}` {
+				return "", errors.New("bad json")
+			}
+			return "ok", nil
+		})
+		if err == nil {
+			t.Fatal("RunStructured error = nil, want validation failure")
+		}
+		if got := len(adapter.Requests()); got != 2 {
+			t.Fatalf("requests = %d, want retry after array-wrapped output", got)
+		}
+	})
+
 	t.Run("recovers single json object on retry", func(t *testing.T) {
 		adapter := &FakeAdapter{}
 		adapter.Queue(FakeResult{SessionID: "s1", Response: Response{StructuredOutput: []byte(`bad1`)}})
