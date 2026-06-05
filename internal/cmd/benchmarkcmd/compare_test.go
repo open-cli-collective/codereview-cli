@@ -58,6 +58,9 @@ func TestCompareCommandWritesArtifactsAndJSONWithoutConfig(t *testing.T) {
 	}
 	assertFileContains(t, got.Artifacts.ComparisonJSON, `"placement_caveat"`)
 	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "Anchor overlap is mechanical placement only")
+	if strings.Contains(out.String(), "UNIQUE_BODY_SHOULD_NOT_LEAK") || strings.Contains(out.String(), "UNIQUE_ROLLUP_TEXT_SHOULD_NOT_LEAK") {
+		t.Fatalf("stdout JSON leaked raw review text:\n%s", out.String())
+	}
 	for _, artifact := range []string{got.Artifacts.ComparisonJSON, got.Artifacts.ComparisonMarkdown} {
 		body := readFile(t, artifact)
 		for _, forbidden := range []string{"UNIQUE_BODY_SHOULD_NOT_LEAK", "UNIQUE_UNMATCHED_BODY_SHOULD_NOT_LEAK", "UNIQUE_ROLLUP_TEXT_SHOULD_NOT_LEAK"} {
@@ -65,6 +68,56 @@ func TestCompareCommandWritesArtifactsAndJSONWithoutConfig(t *testing.T) {
 				t.Fatalf("%s leaked %q:\n%s", artifact, forbidden, body)
 			}
 		}
+	}
+}
+
+func TestComparePreservesMatrixOrderAndAggregatesTotals(t *testing.T) {
+	resultsDir := t.TempDir()
+	summary := comparisonFixtureSummary(resultsDir)
+	summary.SelectedCandidates = append(summary.SelectedCandidates, benchmarkCandidate{ID: "second", Profile: "work", Model: "kimi"})
+	summary.SelectedCases = append(summary.SelectedCases, benchmarkCase{ID: "case_two", PR: "https://github.com/open-cli-collective/codereview-cli/pull/2"})
+	summary.Runs = []benchmarkRun{
+		matrixFixtureRun(resultsDir, "0001-c01-k01-first-case_one", "first", "case_one", 0, failureNone, 2, map[string]int{"major": 1, "minor": 1}, 10),
+		matrixFixtureRun(resultsDir, "0002-c01-k02-first-case_two", "first", "case_two", 0, failureNone, 1, map[string]int{"nits": 1}, 20),
+		matrixFixtureRun(resultsDir, "0003-c02-k01-second-case_one", "second", "case_one", 5, failureUpstreamError, 0, map[string]int{}, 30),
+		matrixFixtureRun(resultsDir, "0004-c02-k02-second-case_two", "second", "case_two", 0, failureNone, 3, map[string]int{"major": 2, "advice": 1}, 40),
+	}
+	writeComparisonFixture(t, summary)
+	for _, run := range summary.Runs {
+		if run.ExitCode == 0 {
+			writeReviewJSON(t, run.Artifacts.ReviewJSON, view.ReviewDryRun{Run: view.ReviewRun{RunID: run.ReviewRunID}})
+		}
+	}
+
+	got, err := writeComparisonArtifactsForResultsDir(resultsDir)
+	if err != nil {
+		t.Fatalf("writeComparisonArtifactsForResultsDir: %v", err)
+	}
+	wantRunOrder := []string{
+		"0001-c01-k01-first-case_one",
+		"0002-c01-k02-first-case_two",
+		"0003-c02-k01-second-case_one",
+		"0004-c02-k02-second-case_two",
+	}
+	for i, want := range wantRunOrder {
+		if got.Runs[i].RunID != want {
+			t.Fatalf("run order[%d] = %s, want %s", i, got.Runs[i].RunID, want)
+		}
+	}
+	if len(got.CaseTotals) != 2 || got.CaseTotals[0].CaseID != "case_one" || got.CaseTotals[1].CaseID != "case_two" {
+		t.Fatalf("case totals order = %#v, want suite case order", got.CaseTotals)
+	}
+	if got.CaseTotals[0].RunCount != 2 || got.CaseTotals[0].CompletedCount != 1 || got.CaseTotals[0].FailedCount != 1 || got.CaseTotals[0].FindingCount != 2 {
+		t.Fatalf("case_one total = %#v, want 2 runs, 1 completed, 1 failed, 2 findings", got.CaseTotals[0])
+	}
+	if len(got.CandidateTotals) != 2 || got.CandidateTotals[0].CandidateID != "first" || got.CandidateTotals[1].CandidateID != "second" {
+		t.Fatalf("candidate totals order = %#v, want suite candidate order", got.CandidateTotals)
+	}
+	if got.CandidateTotals[0].RunCount != 2 || got.CandidateTotals[0].FindingCount != 3 || got.CandidateTotals[0].DurationMS != 30 {
+		t.Fatalf("first candidate total = %#v, want aggregate findings/duration", got.CandidateTotals[0])
+	}
+	if got.CandidateTotals[1].RunCount != 2 || got.CandidateTotals[1].CompletedCount != 1 || got.CandidateTotals[1].FailedCount != 1 || got.CandidateTotals[1].SeverityCounts["advice"] != 1 {
+		t.Fatalf("second candidate total = %#v, want failure and unknown severity aggregate", got.CandidateTotals[1])
 	}
 }
 
@@ -340,6 +393,29 @@ func comparisonFixtureSummary(resultsDir string) benchmarkSuiteSummary {
 			Report:             filepath.Join(resultsDir, "report.md"),
 			ComparisonJSON:     filepath.Join(resultsDir, "comparison.json"),
 			ComparisonMarkdown: filepath.Join(resultsDir, "comparison.md"),
+		},
+	}
+}
+
+func matrixFixtureRun(resultsDir, runID, candidateID, caseID string, exitCode int, failureClass string, findingCount int, severities map[string]int, durationMS int64) benchmarkRun {
+	runDir := filepath.Join(resultsDir, runID)
+	return benchmarkRun{
+		RunID:                 runID,
+		CandidateID:           candidateID,
+		CaseID:                caseID,
+		PRURL:                 "https://github.com/open-cli-collective/codereview-cli/pull/1",
+		ExitCode:              exitCode,
+		RetryCount:            0,
+		FailureClassification: failureClass,
+		FindingCount:          findingCount,
+		SeverityCounts:        severities,
+		DurationMS:            durationMS,
+		ReviewRunID:           "review-" + runID,
+		Artifacts: runArtifacts{
+			Dir:         runDir,
+			ReviewJSON:  filepath.Join(runDir, "review.json"),
+			Stderr:      filepath.Join(runDir, "stderr.txt"),
+			MetricsJSON: filepath.Join(runDir, "metrics.json"),
 		},
 	}
 }
