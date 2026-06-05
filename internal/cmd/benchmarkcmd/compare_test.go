@@ -61,6 +61,20 @@ func TestCompareCommandWritesArtifactsAndJSONWithoutConfig(t *testing.T) {
 	if strings.Contains(out.String(), "UNIQUE_BODY_SHOULD_NOT_LEAK") || strings.Contains(out.String(), "UNIQUE_ROLLUP_TEXT_SHOULD_NOT_LEAK") {
 		t.Fatalf("stdout JSON leaked raw review text:\n%s", out.String())
 	}
+	assertExactJSONKeys(t, out.Bytes(), []string{
+		"schema_version",
+		"suite_id",
+		"results_dir",
+		"source_artifacts",
+		"artifacts",
+		"placement_caveat",
+		"candidates",
+		"cases",
+		"runs",
+		"case_totals",
+		"candidate_totals",
+		"warnings",
+	})
 	for _, artifact := range []string{got.Artifacts.ComparisonJSON, got.Artifacts.ComparisonMarkdown} {
 		body := readFile(t, artifact)
 		for _, forbidden := range []string{"UNIQUE_BODY_SHOULD_NOT_LEAK", "UNIQUE_UNMATCHED_BODY_SHOULD_NOT_LEAK", "UNIQUE_ROLLUP_TEXT_SHOULD_NOT_LEAK"} {
@@ -232,6 +246,27 @@ func TestCompareRejectsSymlinkReviewJSONEscape(t *testing.T) {
 	}
 }
 
+func TestCompareRejectsDanglingSymlinkReviewJSON(t *testing.T) {
+	resultsDir := t.TempDir()
+	summary := comparisonFixtureSummary(resultsDir)
+	summary.Runs[0].Artifacts.ReviewJSON = filepath.Join(resultsDir, "symlinked", "review.json")
+	writeComparisonFixture(t, summary)
+	if err := os.MkdirAll(filepath.Dir(summary.Runs[0].Artifacts.ReviewJSON), 0o700); err != nil {
+		t.Fatalf("MkdirAll symlink dir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing-review.json"), summary.Runs[0].Artifacts.ReviewJSON); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	got, err := writeComparisonArtifactsForResultsDir(resultsDir)
+	if err != nil {
+		t.Fatalf("writeComparisonArtifactsForResultsDir: %v", err)
+	}
+	if got.Runs[0].FailureClassification != failureMissingArtifact || got.Runs[0].Status != runStatusPartial {
+		t.Fatalf("dangling symlink class/status = %s/%s, want missing_artifact/partial", got.Runs[0].FailureClassification, got.Runs[0].Status)
+	}
+}
+
 func TestComparisonMarkdownRendersUnknownSeverities(t *testing.T) {
 	resultsDir := t.TempDir()
 	summary := comparisonFixtureSummary(resultsDir)
@@ -249,6 +284,37 @@ func TestComparisonMarkdownRendersUnknownSeverities(t *testing.T) {
 	}
 	if !strings.Contains(markdown, "| `first` | `case_one` | completed | 0 | none | 2 | 0 | 1 | 0 | 0 | 2 |") {
 		t.Fatalf("markdown missing unknown severity count:\n%s", markdown)
+	}
+}
+
+func TestComparisonMarkdownEscapesTableCells(t *testing.T) {
+	report := comparisonReport{
+		SuiteID:         "suite|one",
+		ResultsDir:      "/tmp/results",
+		PlacementCaveat: placementCaveat,
+		Cases:           []benchmarkCase{{ID: "case|one", PR: "https://example.test/pr/1"}},
+		Runs: []comparisonRun{{
+			RunID:                 "run|one",
+			CandidateID:           "candidate|one",
+			CaseID:                "case|one",
+			Status:                runStatusCompleted,
+			FailureClassification: failureNone,
+			SeverityCounts:        map[string]int{},
+			Artifacts: comparisonRunArtifacts{
+				ReviewJSON:  "/tmp/results/review|one.json",
+				Stderr:      "/tmp/results/stderr.txt",
+				MetricsJSON: "/tmp/results/metrics.json",
+			},
+		}},
+		CaseTotals:      []comparisonCaseTotal{{CaseID: "case|one", SeverityCounts: map[string]int{}}},
+		CandidateTotals: []comparisonCandidateTotal{{CandidateID: "candidate|one", SeverityCounts: map[string]int{}}},
+	}
+
+	markdown := renderComparisonMarkdown(report)
+	for _, want := range []string{"candidate\\|one", "case\\|one", "review\\|one.json", "run\\|one"} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing escaped %q:\n%s", want, markdown)
+		}
 	}
 }
 
@@ -293,6 +359,10 @@ func TestCompareAnchorsPlacementLabels(t *testing.T) {
 	noAnchorSummary, noAnchorResults, noAnchorUnmatched := compareAnchors(nil, findings)
 	if noAnchorSummary != nil || noAnchorResults != nil || noAnchorUnmatched != nil {
 		t.Fatalf("no-anchor output = %#v %#v %#v, want omitted", noAnchorSummary, noAnchorResults, noAnchorUnmatched)
+	}
+	badSummary, badResults, badUnmatched := compareAnchors([]benchmark.Anchor{{ID: "bad", File: "main.go", Side: "RIGHT", Lines: []int{1}}}, findings)
+	if badSummary == nil || len(badResults) != 0 || badSummary.AnchorOverlapMiss != 0 || len(badUnmatched) != len(findings) {
+		t.Fatalf("bad-anchor output = %#v %#v %#v, want no anchor result and unmatched findings", badSummary, badResults, badUnmatched)
 	}
 }
 
@@ -449,6 +519,30 @@ func writeReviewJSON(t *testing.T, path string, review view.ReviewDryRun) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("WriteFile review JSON: %v", err)
 	}
+}
+
+func assertExactJSONKeys(t *testing.T, data []byte, want []string) {
+	t.Helper()
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal JSON object: %v\n%s", err, string(data))
+	}
+	if len(got) != len(want) {
+		t.Fatalf("JSON keys = %#v, want exactly %#v", keysOf(got), want)
+	}
+	for _, key := range want {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("JSON keys = %#v, missing %q", keysOf(got), key)
+		}
+	}
+}
+
+func keysOf(values map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func benchmarkSuiteWithAnchor(t *testing.T) string {

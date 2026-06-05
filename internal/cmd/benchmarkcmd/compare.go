@@ -372,10 +372,17 @@ func benchmarkArtifactPathInResultsDir(resultsDir, artifactPath string) (string,
 	if err != nil {
 		return "", false, fmt.Sprintf("results dir cannot be resolved: %v", err)
 	}
-	realArtifact, err := filepath.EvalSymlinks(abs)
+	info, err := os.Lstat(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return abs, true, ""
+		}
+		return "", false, fmt.Sprintf("%s cannot be inspected: %v", artifactPath, err)
+	}
+	realArtifact, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", false, fmt.Sprintf("%s cannot be resolved: %v", artifactPath, err)
 		}
 		return "", false, fmt.Sprintf("%s cannot be resolved: %v", artifactPath, err)
 	}
@@ -431,6 +438,9 @@ func compareAnchors(anchors []benchmark.Anchor, findings []view.ReviewFinding) (
 	results := make([]anchorResult, 0, len(anchors))
 	matchedFinding := make([]bool, len(findings))
 	for _, anchor := range anchors {
+		if len(anchor.Lines) < 2 {
+			continue
+		}
 		result := anchorResult{
 			AnchorID:  anchor.ID,
 			File:      anchor.File,
@@ -479,7 +489,7 @@ func compareAnchors(anchors []benchmark.Anchor, findings []view.ReviewFinding) (
 }
 
 func findingOverlapsAnchor(finding view.ReviewFinding, anchor benchmark.Anchor) bool {
-	if finding.Line == nil {
+	if finding.Line == nil || len(anchor.Lines) < 2 {
 		return false
 	}
 	line := *finding.Line
@@ -606,8 +616,8 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 	b.WriteString(" ---: | ---: | ---: |\n")
 	for _, run := range comparison.Runs {
 		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %d | %s | %d |",
-			run.CandidateID,
-			run.CaseID,
+			markdownCell(run.CandidateID),
+			markdownCell(run.CaseID),
 			run.Status,
 			run.ExitCode,
 			run.FailureClassification,
@@ -624,8 +634,8 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 	}
 	b.WriteString("\n## Cases\n\n")
 	for _, benchCase := range comparison.Cases {
-		fmt.Fprintf(&b, "### `%s`\n\n", benchCase.ID)
-		fmt.Fprintf(&b, "- PR: `%s`\n", benchCase.PR)
+		fmt.Fprintf(&b, "### `%s`\n\n", markdownCode(benchCase.ID))
+		fmt.Fprintf(&b, "- PR: `%s`\n", markdownCode(benchCase.PR))
 		writeOptionalMarkdownKV(&b, "Requested base SHA", benchCase.ReviewBaseSHA)
 		writeOptionalMarkdownKV(&b, "Requested head SHA", benchCase.ReviewHeadSHA)
 		writeOptionalMarkdownKV(&b, "Expected base SHA", benchCase.ExpectedBaseSHA)
@@ -641,30 +651,60 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 			if run.AnchorSummary != nil {
 				summary = *run.AnchorSummary
 			}
-			fmt.Fprintf(&b, "| `%s` | %s | %d | %d | %d | %d | %d |\n", run.CandidateID, run.Status, run.FindingCount, summary.AnchorOverlapHit, summary.AnchorOverlapMiss, summary.MultipleAnchorOverlaps, summary.UnmatchedFinding)
+			fmt.Fprintf(&b, "| `%s` | %s | %d | %d | %d | %d | %d |\n", markdownCode(run.CandidateID), run.Status, run.FindingCount, summary.AnchorOverlapHit, summary.AnchorOverlapMiss, summary.MultipleAnchorOverlaps, summary.UnmatchedFinding)
 		}
 		b.WriteString("\n")
 		for _, run := range comparison.Runs {
 			if run.CaseID != benchCase.ID || len(run.AnchorResults) == 0 {
 				continue
 			}
-			fmt.Fprintf(&b, "Anchor placement for candidate `%s`:\n\n", run.CandidateID)
+			fmt.Fprintf(&b, "Anchor placement for candidate `%s`:\n\n", markdownCode(run.CandidateID))
 			b.WriteString("| Anchor | File | Side | Lines | Placement | Finding IDs |\n")
 			b.WriteString("| --- | --- | --- | ---: | --- | --- |\n")
 			for _, anchor := range run.AnchorResults {
-				fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d-%d | %s | %s |\n", anchor.AnchorID, anchor.File, anchor.Side, anchor.StartLine, anchor.EndLine, anchor.PlacementLabel, markdownFindingIDs(anchor.FindingIDs))
+				fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d-%d | %s | %s |\n", markdownCode(anchor.AnchorID), markdownCode(anchor.File), markdownCode(anchor.Side), anchor.StartLine, anchor.EndLine, anchor.PlacementLabel, markdownFindingIDs(anchor.FindingIDs))
 			}
 			if len(run.UnmatchedFindings) > 0 {
 				b.WriteString("\nUnmatched findings:\n\n")
 				b.WriteString("| Finding | File | Side | Line | Placement |\n")
 				b.WriteString("| --- | --- | --- | ---: | --- |\n")
 				for _, finding := range run.UnmatchedFindings {
-					fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %s | %s |\n", finding.FindingID, finding.File, finding.Side, optionalLineCell(finding.Line), finding.PlacementLabel)
+					fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %s | %s |\n", markdownCode(finding.FindingID), markdownCode(finding.File), markdownCode(finding.Side), optionalLineCell(finding.Line), finding.PlacementLabel)
 				}
 			}
 			b.WriteString("\n")
 		}
 	}
+	b.WriteString("## Case Totals\n\n")
+	b.WriteString("| Case | Runs | Completed | Failed | Partial | Findings |")
+	for _, severity := range severityColumns {
+		fmt.Fprintf(&b, " %s |", severityHeader(severity))
+	}
+	b.WriteString(" Anchor hit | Anchor miss | Multiple anchor overlaps | Unmatched findings |\n")
+	b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: |")
+	for range severityColumns {
+		b.WriteString(" ---: |")
+	}
+	b.WriteString(" ---: | ---: | ---: | ---: |\n")
+	for _, total := range comparison.CaseTotals {
+		anchors := anchorSummary{}
+		if total.AnchorSummary != nil {
+			anchors = *total.AnchorSummary
+		}
+		fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d | %d |",
+			markdownCode(total.CaseID),
+			total.RunCount,
+			total.CompletedCount,
+			total.FailedCount,
+			total.PartialCount,
+			total.FindingCount,
+		)
+		for _, severity := range severityColumns {
+			fmt.Fprintf(&b, " %d |", total.SeverityCounts[severity])
+		}
+		fmt.Fprintf(&b, " %d | %d | %d | %d |\n", anchors.AnchorOverlapHit, anchors.AnchorOverlapMiss, anchors.MultipleAnchorOverlaps, anchors.UnmatchedFinding)
+	}
+	b.WriteString("\n")
 	b.WriteString("## Candidate Totals\n\n")
 	b.WriteString("| Candidate | Runs | Completed | Failed | Partial | Findings |")
 	for _, severity := range severityColumns {
@@ -678,7 +718,7 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 	b.WriteString(" ---: | ---: | ---: |\n")
 	for _, total := range comparison.CandidateTotals {
 		fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d | %d |",
-			total.CandidateID,
+			markdownCell(total.CandidateID),
 			total.RunCount,
 			total.CompletedCount,
 			total.FailedCount,
@@ -698,7 +738,7 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 	b.WriteString("| Run | Review JSON | Stderr | Metrics | Durable review artifacts |\n")
 	b.WriteString("| --- | --- | --- | --- | --- |\n")
 	for _, run := range comparison.Runs {
-		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | `%s` | `%s` |\n", run.RunID, run.Artifacts.ReviewJSON, run.Artifacts.Stderr, run.Artifacts.MetricsJSON, run.Artifacts.ReviewArtifactPath)
+		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | `%s` | `%s` |\n", markdownCode(run.RunID), markdownCode(run.Artifacts.ReviewJSON), markdownCode(run.Artifacts.Stderr), markdownCode(run.Artifacts.MetricsJSON), markdownCode(run.Artifacts.ReviewArtifactPath))
 	}
 	return b.String()
 }
@@ -751,7 +791,7 @@ func writeOptionalMarkdownKV(b *strings.Builder, label, value string) {
 	if value == "" {
 		return
 	}
-	fmt.Fprintf(b, "- %s: `%s`\n", label, value)
+	fmt.Fprintf(b, "- %s: `%s`\n", label, markdownCode(value))
 }
 
 func markdownFindingIDs(ids []string) string {
@@ -761,9 +801,21 @@ func markdownFindingIDs(ids []string) string {
 	copied := append([]string(nil), ids...)
 	sort.Strings(copied)
 	for i, id := range copied {
-		copied[i] = "`" + id + "`"
+		copied[i] = "`" + markdownCode(id) + "`"
 	}
 	return strings.Join(copied, ", ")
+}
+
+func markdownCode(value string) string {
+	value = strings.ReplaceAll(value, "`", "\\`")
+	value = strings.ReplaceAll(value, "|", "\\|")
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	return value
+}
+
+func markdownCell(value string) string {
+	return markdownCode(value)
 }
 
 func optionalLineCell(line *int) string {

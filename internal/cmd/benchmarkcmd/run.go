@@ -276,7 +276,7 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 		return benchmarkSuiteSummary{}, err
 	}
 	if _, err := writeComparisonArtifactsForResultsDir(summary.ResultsDir); err != nil {
-		return benchmarkSuiteSummary{}, err
+		return benchmarkSuiteSummary{}, fmt.Errorf("benchmark: write comparison artifacts after suite artifacts were written to %s; rerun `cr benchmark compare %s`: %w", summary.ResultsDir, summary.ResultsDir, err)
 	}
 	return summary, nil
 }
@@ -543,10 +543,7 @@ func classifyRuntimeFailure(exitCode int, err error, stdout []byte, parsed bool)
 	case exitcode.UpstreamError:
 		return failureUpstreamError
 	default:
-		if exitCode != exitcode.Success {
-			return failureChildExitNonzero
-		}
-		return failureUnavailable
+		return failureChildExitNonzero
 	}
 }
 
