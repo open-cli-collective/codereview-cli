@@ -645,7 +645,7 @@ and post counts. JSON output includes `run`, `status`, `decision`, `message`,
 cr benchmark <command>
 ```
 
-Validates, inspects, and runs benchmark suites. See
+Validates, inspects, runs, and compares benchmark suites. See
 [BENCHMARKING.md](BENCHMARKING.md) for the full benchmark guide.
 
 ### `cr benchmark validate`
@@ -683,6 +683,18 @@ such as `model`, `effort`, `agent_dirs`, `max_agents`, and `max_concurrency`
 control review runtime overrides. Case YAML fields `review_base_sha` and
 `review_head_sha` pin the exact base/head commit pair reviewed by the dry-run
 child command.
+
+### `cr benchmark compare`
+
+```text
+cr benchmark compare <results-dir> [--json]
+```
+
+Reads an existing benchmark results directory and writes deterministic
+`comparison.json` and `comparison.md` artifacts. Comparison is local-only: it
+does not invoke models, read live PR state, mutate Git provider state, or
+require provider credentials. `cr benchmark run` writes the same comparison
+artifacts automatically.
 
 ### `cr sessions list`
 

@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	runTimestampLayout = "2006-01-02T150405Z"
-	artifactDirPerm    = 0o700
-	artifactFilePerm   = 0o600
+	benchmarkArtifactSchemaVersion = 1
+	runTimestampLayout             = "2006-01-02T150405Z"
+	artifactDirPerm                = 0o700
+	artifactFilePerm               = 0o600
 )
 
 type reviewCommandResult struct {
@@ -45,6 +46,7 @@ var (
 )
 
 type benchmarkSuiteSummary struct {
+	SchemaVersion      int                   `json:"schema_version"`
 	SuiteID            string                `json:"suite_id"`
 	SuitePath          string                `json:"suite_path"`
 	SuiteSHA256        string                `json:"suite_sha256"`
@@ -65,6 +67,7 @@ type benchmarkSuiteSummary struct {
 }
 
 type benchmarkManifest struct {
+	SchemaVersion      int                    `json:"schema_version"`
 	SuiteID            string                 `json:"suite_id"`
 	SuitePath          string                 `json:"suite_path"`
 	SuiteSHA256        string                 `json:"suite_sha256"`
@@ -104,12 +107,13 @@ type benchmarkAgentDir struct {
 }
 
 type benchmarkCase struct {
-	ID              string `json:"id"`
-	PR              string `json:"pr"`
-	ReviewBaseSHA   string `json:"review_base_sha,omitempty"`
-	ReviewHeadSHA   string `json:"review_head_sha,omitempty"`
-	ExpectedBaseSHA string `json:"expected_base_sha,omitempty"`
-	ExpectedHeadSHA string `json:"expected_head_sha,omitempty"`
+	ID              string             `json:"id"`
+	PR              string             `json:"pr"`
+	ReviewBaseSHA   string             `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA   string             `json:"review_head_sha,omitempty"`
+	ExpectedBaseSHA string             `json:"expected_base_sha,omitempty"`
+	ExpectedHeadSHA string             `json:"expected_head_sha,omitempty"`
+	Anchors         []benchmark.Anchor `json:"anchors,omitempty"`
 }
 
 type benchmarkRun struct {
@@ -128,6 +132,8 @@ type benchmarkRun struct {
 	CurrentBaseSHA         string                `json:"current_base_sha,omitempty"`
 	CurrentHeadSHA         string                `json:"current_head_sha,omitempty"`
 	ExitCode               int                   `json:"exit_code"`
+	RetryCount             int                   `json:"retry_count"`
+	FailureClassification  string                `json:"failure_classification"`
 	DurationMS             int64                 `json:"duration_ms"`
 	FindingCount           int                   `json:"finding_count"`
 	SeverityCounts         map[string]int        `json:"severity_counts"`
@@ -144,10 +150,12 @@ type runArtifacts struct {
 }
 
 type suiteArtifacts struct {
-	Manifest     string `json:"manifest"`
-	SummaryJSONL string `json:"summary_jsonl"`
-	SuiteSummary string `json:"suite_summary"`
-	Report       string `json:"report"`
+	Manifest           string `json:"manifest"`
+	SummaryJSONL       string `json:"summary_jsonl"`
+	SuiteSummary       string `json:"suite_summary"`
+	Report             string `json:"report"`
+	ComparisonJSON     string `json:"comparison_json"`
+	ComparisonMarkdown string `json:"comparison_md"`
 }
 
 type runFlags struct {
@@ -218,6 +226,7 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 
 	suiteDir := filepath.Dir(suite.Path)
 	summary := benchmarkSuiteSummary{
+		SchemaVersion:      benchmarkArtifactSchemaVersion,
 		SuiteID:            suite.Suite.ID,
 		SuitePath:          suite.Path,
 		SuiteSHA256:        suiteHash,
@@ -228,10 +237,12 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 		SelectedCases:      summarizeCases(selectedCases),
 		SeverityCounts:     map[string]int{},
 		Artifacts: suiteArtifacts{
-			Manifest:     filepath.Join(resultsDir, "manifest.json"),
-			SummaryJSONL: filepath.Join(resultsDir, "summary.jsonl"),
-			SuiteSummary: filepath.Join(resultsDir, "suite-summary.json"),
-			Report:       filepath.Join(resultsDir, "report.md"),
+			Manifest:           filepath.Join(resultsDir, "manifest.json"),
+			SummaryJSONL:       filepath.Join(resultsDir, "summary.jsonl"),
+			SuiteSummary:       filepath.Join(resultsDir, "suite-summary.json"),
+			Report:             filepath.Join(resultsDir, "report.md"),
+			ComparisonJSON:     filepath.Join(resultsDir, "comparison.json"),
+			ComparisonMarkdown: filepath.Join(resultsDir, "comparison.md"),
 		},
 	}
 
@@ -264,6 +275,9 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 	if err := writeSuiteArtifacts(summary); err != nil {
 		return benchmarkSuiteSummary{}, err
 	}
+	if _, err := writeComparisonArtifactsForResultsDir(summary.ResultsDir); err != nil {
+		return benchmarkSuiteSummary{}, err
+	}
 	return summary, nil
 }
 
@@ -291,6 +305,7 @@ func executeBenchmarkRun(ctx context.Context, suiteDir, resultsDir, crBin, runID
 		ExpectedBaseSHA:        benchCase.ExpectedBaseSHA,
 		ExpectedHeadSHA:        benchCase.ExpectedHeadSHA,
 		ExitCode:               child.ExitCode,
+		RetryCount:             0,
 		DurationMS:             durationMS(child.Duration),
 		SeverityCounts:         map[string]int{},
 		Warnings:               []string{},
@@ -299,7 +314,9 @@ func executeBenchmarkRun(ctx context.Context, suiteDir, resultsDir, crBin, runID
 	if child.Err != nil && child.ExitCode < 0 {
 		runSummary.Warnings = append(runSummary.Warnings, fmt.Sprintf("review command failed to start or complete: %s", child.Err.Error()))
 	}
-	if parsed, warnings := parseReviewDryRun(child.Stdout, child.ExitCode); parsed != nil {
+	parsed, warnings := parseReviewDryRun(child.Stdout, child.ExitCode)
+	runSummary.FailureClassification = classifyRuntimeFailure(child.ExitCode, child.Err, child.Stdout, parsed != nil)
+	if parsed != nil {
 		runSummary.ReviewRunID = parsed.Run.RunID
 		runSummary.ReviewArtifactPath = parsed.Run.ArtifactPath
 		runSummary.ReviewBaseSHA = parsed.Run.BaseSHA
@@ -478,6 +495,7 @@ func summarizeCases(cases []benchmark.Case) []benchmarkCase {
 			ReviewHeadSHA:   benchCase.ReviewHeadSHA,
 			ExpectedBaseSHA: benchCase.ExpectedBaseSHA,
 			ExpectedHeadSHA: benchCase.ExpectedHeadSHA,
+			Anchors:         append([]benchmark.Anchor(nil), benchCase.Anchors...),
 		})
 	}
 	return out
@@ -503,6 +521,33 @@ func severityCounts(findings []view.ReviewFinding) map[string]int {
 		counts[finding.Severity]++
 	}
 	return counts
+}
+
+func classifyRuntimeFailure(exitCode int, err error, stdout []byte, parsed bool) string {
+	if err != nil && exitCode < 0 {
+		return failureChildProcessError
+	}
+	switch exitCode {
+	case exitcode.Success:
+		if parsed {
+			return failureNone
+		}
+		if len(bytes.TrimSpace(stdout)) == 0 {
+			return failureMissingReviewJSON
+		}
+		return failureInvalidReviewJSON
+	case exitcode.UsageError:
+		return failureUsageError
+	case exitcode.AuthConfigError:
+		return failureAuthConfigError
+	case exitcode.UpstreamError:
+		return failureUpstreamError
+	default:
+		if exitCode != exitcode.Success {
+			return failureChildExitNonzero
+		}
+		return failureUnavailable
+	}
 }
 
 func mergeSeverityCounts(dst, src map[string]int) {
@@ -591,6 +636,7 @@ func suiteFileSHA256(path string) (string, error) {
 
 func writeSuiteArtifacts(summary benchmarkSuiteSummary) error {
 	manifest := benchmarkManifest{
+		SchemaVersion:      benchmarkArtifactSchemaVersion,
 		SuiteID:            summary.SuiteID,
 		SuitePath:          summary.SuitePath,
 		SuiteSHA256:        summary.SuiteSHA256,

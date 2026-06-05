@@ -1,0 +1,376 @@
+package benchmarkcmd
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+
+	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/view"
+)
+
+func TestCompareCommandWritesArtifactsAndJSONWithoutConfig(t *testing.T) {
+	resultsDir := t.TempDir()
+	summary := comparisonFixtureSummary(resultsDir)
+	writeComparisonFixture(t, summary)
+	writeReviewJSON(t, summary.Runs[0].Artifacts.ReviewJSON, view.ReviewDryRun{
+		Run:            view.ReviewRun{RunID: "child-run-1", ArtifactPath: "/outside/durable-review"},
+		RollupMarkdown: "UNIQUE_ROLLUP_TEXT_SHOULD_NOT_LEAK",
+		Findings: []view.ReviewFinding{
+			{ID: "hit", Severity: "major", FilePath: "main.go", Side: "RIGHT", Line: intPtrForBenchmark(2), Body: "UNIQUE_BODY_SHOULD_NOT_LEAK"},
+			{ID: "unmatched", Severity: "minor", FilePath: "other.go", Side: "RIGHT", Line: intPtrForBenchmark(9), Body: "UNIQUE_UNMATCHED_BODY_SHOULD_NOT_LEAK"},
+		},
+	})
+
+	cmd, out := newCompareOnlyTestCommand(filepath.Join(t.TempDir(), "missing-config.yml"))
+	oldRunner := runReviewCommand
+	runReviewCommand = func(context.Context, string, []string) reviewCommandResult {
+		t.Fatal("compare must not invoke review command")
+		return reviewCommandResult{}
+	}
+	t.Cleanup(func() { runReviewCommand = oldRunner })
+
+	if err := root.Execute(cmd, []string{"benchmark", "compare", resultsDir, "--json"}); err != nil {
+		t.Fatalf("Execute compare: %v", err)
+	}
+	var got comparisonReport
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal compare JSON: %v\n%s", err, out.String())
+	}
+	if got.SchemaVersion != benchmarkArtifactSchemaVersion || got.SuiteID != "suite1" || len(got.Runs) != 1 {
+		t.Fatalf("comparison = %#v, want schema, suite, and one run", got)
+	}
+	if got.Runs[0].Status != runStatusCompleted || got.Runs[0].FailureClassification != failureNone {
+		t.Fatalf("run status/class = %s/%s, want completed/none", got.Runs[0].Status, got.Runs[0].FailureClassification)
+	}
+	if got.Runs[0].PRURL == "" || got.Runs[0].RequestedReviewBaseSHA != "1111111" || got.Runs[0].ReviewBaseSHA != "review-base" || got.Runs[0].CurrentHeadSHA != "current-head" {
+		t.Fatalf("run identity = %#v, want PR and requested/observed/current SHAs", got.Runs[0])
+	}
+	if got.Runs[0].AnchorSummary == nil || got.Runs[0].AnchorSummary.AnchorOverlapHit != 1 || got.Runs[0].AnchorSummary.AnchorOverlapMiss != 1 || got.Runs[0].AnchorSummary.UnmatchedFinding != 1 {
+		t.Fatalf("anchor summary = %#v, want hit, miss, unmatched", got.Runs[0].AnchorSummary)
+	}
+	assertFileContains(t, got.Artifacts.ComparisonJSON, `"placement_caveat"`)
+	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "Anchor overlap is mechanical placement only")
+	for _, artifact := range []string{got.Artifacts.ComparisonJSON, got.Artifacts.ComparisonMarkdown} {
+		body := readFile(t, artifact)
+		for _, forbidden := range []string{"UNIQUE_BODY_SHOULD_NOT_LEAK", "UNIQUE_UNMATCHED_BODY_SHOULD_NOT_LEAK", "UNIQUE_ROLLUP_TEXT_SHOULD_NOT_LEAK"} {
+			if strings.Contains(body, forbidden) {
+				t.Fatalf("%s leaked %q:\n%s", artifact, forbidden, body)
+			}
+		}
+	}
+}
+
+func TestCompareClassifiesFailuresAndPathEscapes(t *testing.T) {
+	resultsDir := t.TempDir()
+	outsideReview := filepath.Join(t.TempDir(), "review.json")
+	if err := os.WriteFile(outsideReview, []byte(`{"findings":[]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile outside review: %v", err)
+	}
+	summary := comparisonFixtureSummary(resultsDir)
+	summary.Runs = []benchmarkRun{
+		{
+			RunID:                 "usage",
+			CandidateID:           "first",
+			CaseID:                "case_one",
+			ExitCode:              2,
+			RetryCount:            0,
+			FailureClassification: failureUsageError,
+			SeverityCounts:        map[string]int{},
+			Artifacts:             runArtifacts{ReviewJSON: filepath.Join(resultsDir, "usage", "review.json")},
+		},
+		{
+			RunID:                 "missing",
+			CandidateID:           "first",
+			CaseID:                "case_one",
+			ExitCode:              0,
+			RetryCount:            0,
+			FailureClassification: failureNone,
+			SeverityCounts:        map[string]int{},
+			Artifacts:             runArtifacts{ReviewJSON: filepath.Join(resultsDir, "missing", "review.json")},
+		},
+		{
+			RunID:                 "invalid",
+			CandidateID:           "first",
+			CaseID:                "case_one",
+			ExitCode:              0,
+			RetryCount:            0,
+			FailureClassification: failureNone,
+			SeverityCounts:        map[string]int{},
+			Artifacts:             runArtifacts{ReviewJSON: filepath.Join(resultsDir, "invalid", "review.json")},
+		},
+		{
+			RunID:                 "escape",
+			CandidateID:           "first",
+			CaseID:                "case_one",
+			ExitCode:              0,
+			RetryCount:            0,
+			FailureClassification: failureNone,
+			SeverityCounts:        map[string]int{},
+			Artifacts:             runArtifacts{ReviewJSON: outsideReview},
+		},
+	}
+	writeComparisonFixture(t, summary)
+	writeLog(t, summary.Runs[0].Artifacts.ReviewJSON, "")
+	if err := os.MkdirAll(filepath.Dir(summary.Runs[2].Artifacts.ReviewJSON), 0o700); err != nil {
+		t.Fatalf("MkdirAll invalid run: %v", err)
+	}
+	writeLog(t, summary.Runs[2].Artifacts.ReviewJSON, "{bad json")
+
+	got, err := writeComparisonArtifactsForResultsDir(resultsDir)
+	if err != nil {
+		t.Fatalf("writeComparisonArtifactsForResultsDir: %v", err)
+	}
+	classes := map[string]string{}
+	statuses := map[string]string{}
+	for _, run := range got.Runs {
+		classes[run.RunID] = run.FailureClassification
+		statuses[run.RunID] = run.Status
+	}
+	if classes["usage"] != failureUsageError || statuses["usage"] != runStatusFailed {
+		t.Fatalf("usage class/status = %s/%s, want usage_error/failed", classes["usage"], statuses["usage"])
+	}
+	if classes["missing"] != failureMissingArtifact || statuses["missing"] != runStatusPartial {
+		t.Fatalf("missing class/status = %s/%s, want missing_artifact/partial", classes["missing"], statuses["missing"])
+	}
+	if classes["invalid"] != failureInvalidReviewJSON || statuses["invalid"] != runStatusPartial {
+		t.Fatalf("invalid class/status = %s/%s, want invalid_review_json/partial", classes["invalid"], statuses["invalid"])
+	}
+	if classes["escape"] != failureMissingArtifact || statuses["escape"] != runStatusPartial {
+		t.Fatalf("escape class/status = %s/%s, want missing_artifact/partial", classes["escape"], statuses["escape"])
+	}
+}
+
+func TestCompareRejectsUnsupportedSchema(t *testing.T) {
+	resultsDir := t.TempDir()
+	summary := comparisonFixtureSummary(resultsDir)
+	summary.SchemaVersion = 0
+	writeComparisonFixture(t, summary)
+
+	_, err := writeComparisonArtifactsForResultsDir(resultsDir)
+	if err == nil {
+		t.Fatal("writeComparisonArtifactsForResultsDir error = nil, want unsupported schema")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Fatalf("error = %v, want schema_version", err)
+	}
+}
+
+func TestCompareAnchorsPlacementLabels(t *testing.T) {
+	anchors := []benchmark.Anchor{
+		{ID: "multiple", File: "main.go", Side: "RIGHT", Lines: []int{1, 3}},
+		{ID: "miss", File: "main.go", Side: "RIGHT", Lines: []int{10, 12}},
+	}
+	findings := []view.ReviewFinding{
+		{ID: "first", FilePath: "main.go", Side: "RIGHT", Line: intPtrForBenchmark(2)},
+		{ID: "second", FilePath: "main.go", Side: "RIGHT", Line: intPtrForBenchmark(3)},
+		{ID: "wrong-file", FilePath: "other.go", Side: "RIGHT", Line: intPtrForBenchmark(2)},
+		{ID: "wrong-side", FilePath: "main.go", Side: "LEFT", Line: intPtrForBenchmark(2)},
+		{ID: "no-line", FilePath: "main.go", Side: "RIGHT"},
+	}
+
+	summary, results, unmatched := compareAnchors(anchors, findings)
+	if summary == nil || summary.MultipleAnchorOverlaps != 1 || summary.AnchorOverlapMiss != 1 || summary.AnchorOverlapHit != 0 || summary.UnmatchedFinding != 3 {
+		t.Fatalf("summary = %#v, want multiple=1 miss=1 unmatched=3", summary)
+	}
+	if len(results) != 2 || results[0].PlacementLabel != placementMultipleAnchors || results[1].PlacementLabel != placementAnchorMiss {
+		t.Fatalf("results = %#v, want multiple then miss", results)
+	}
+	if len(unmatched) != 3 || unmatched[0].PlacementLabel != placementUnmatched || unmatched[2].FindingID != "no-line" {
+		t.Fatalf("unmatched = %#v, want three unmatched findings", unmatched)
+	}
+	noAnchorSummary, noAnchorResults, noAnchorUnmatched := compareAnchors(nil, findings)
+	if noAnchorSummary != nil || noAnchorResults != nil || noAnchorUnmatched != nil {
+		t.Fatalf("no-anchor output = %#v %#v %#v, want omitted", noAnchorSummary, noAnchorResults, noAnchorUnmatched)
+	}
+}
+
+func TestRunWritesComparisonArtifactsAndEmbedsAnchors(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	suitePath := writeBenchmarkSuite(t, benchmarkSuiteWithAnchor(t))
+	crBin := writeExecutableCRBin(t)
+	resultsDir := filepath.Join(t.TempDir(), "results")
+	withBenchmarkRunSeams(t, fixedBenchmarkTime(), func(context.Context, string, []string) reviewCommandResult {
+		return reviewCommandResult{Stdout: reviewDryRunJSONWithAnchorFinding(t, "child-run-1", "main.go", "RIGHT", 2), ExitCode: 0}
+	})
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "run", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", resultsDir,
+		"--cr-bin", crBin,
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute run: %v", err)
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal run JSON: %v\n%s", err, out.String())
+	}
+	if got.SchemaVersion != benchmarkArtifactSchemaVersion || got.Runs[0].RetryCount != 0 || got.Runs[0].FailureClassification != failureNone {
+		t.Fatalf("run schema/retry/class = %d/%d/%s", got.SchemaVersion, got.Runs[0].RetryCount, got.Runs[0].FailureClassification)
+	}
+	if len(got.SelectedCases[0].Anchors) != 1 {
+		t.Fatalf("selected case anchors = %#v, want one anchor", got.SelectedCases[0].Anchors)
+	}
+	assertFileContains(t, got.Artifacts.ComparisonJSON, `"anchor_overlap_hit": 1`)
+	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "anchor_overlap_hit")
+}
+
+func newCompareOnlyTestCommand(configPath string) (*cobra.Command, *bytes.Buffer) {
+	var out bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: configPath,
+		Stdout:     &out,
+		Stderr:     &bytes.Buffer{},
+	})
+	Register(cmd, opts)
+	return cmd, &out
+}
+
+func comparisonFixtureSummary(resultsDir string) benchmarkSuiteSummary {
+	runDir := filepath.Join(resultsDir, "0001-c01-k01-first-case_one")
+	return benchmarkSuiteSummary{
+		SchemaVersion: benchmarkArtifactSchemaVersion,
+		SuiteID:       "suite1",
+		ResultsDir:    resultsDir,
+		SelectedCandidates: []benchmarkCandidate{{
+			ID:      "first",
+			Profile: "home",
+			Model:   "sonnet",
+			Effort:  "high",
+		}},
+		SelectedCases: []benchmarkCase{{
+			ID: "case_one",
+			PR: "https://github.com/open-cli-collective/codereview-cli/pull/1",
+			Anchors: []benchmark.Anchor{
+				{ID: "expected-hit", File: "main.go", Side: "RIGHT", Lines: []int{1, 3}},
+				{ID: "expected-miss", File: "main.go", Side: "RIGHT", Lines: []int{10, 12}},
+			},
+		}},
+		Runs: []benchmarkRun{{
+			RunID:                  "0001-c01-k01-first-case_one",
+			CandidateID:            "first",
+			CaseID:                 "case_one",
+			PRURL:                  "https://github.com/open-cli-collective/codereview-cli/pull/1",
+			RequestedReviewBaseSHA: "1111111",
+			RequestedReviewHeadSHA: "2222222",
+			ExpectedBaseSHA:        "aaaaaaa",
+			ExpectedHeadSHA:        "bbbbbbb",
+			ReviewBaseSHA:          "review-base",
+			ReviewHeadSHA:          "review-head",
+			CurrentBaseSHA:         "current-base",
+			CurrentHeadSHA:         "current-head",
+			ExitCode:               0,
+			RetryCount:             0,
+			FailureClassification:  failureNone,
+			FindingCount:           2,
+			SeverityCounts:         map[string]int{"major": 1, "minor": 1},
+			Artifacts: runArtifacts{
+				Dir:         runDir,
+				ReviewJSON:  filepath.Join(runDir, "review.json"),
+				Stderr:      filepath.Join(runDir, "stderr.txt"),
+				MetricsJSON: filepath.Join(runDir, "metrics.json"),
+			},
+			ReviewArtifactPath: "/outside/durable-review",
+		}},
+		Artifacts: suiteArtifacts{
+			Manifest:           filepath.Join(resultsDir, "manifest.json"),
+			SummaryJSONL:       filepath.Join(resultsDir, "summary.jsonl"),
+			SuiteSummary:       filepath.Join(resultsDir, "suite-summary.json"),
+			Report:             filepath.Join(resultsDir, "report.md"),
+			ComparisonJSON:     filepath.Join(resultsDir, "comparison.json"),
+			ComparisonMarkdown: filepath.Join(resultsDir, "comparison.md"),
+		},
+	}
+}
+
+func writeComparisonFixture(t *testing.T, summary benchmarkSuiteSummary) {
+	t.Helper()
+	if err := os.MkdirAll(summary.ResultsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll results: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(summary.Runs[0].Artifacts.ReviewJSON), 0o700); err != nil {
+		t.Fatalf("MkdirAll run: %v", err)
+	}
+	data, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		t.Fatalf("Marshal summary: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(summary.ResultsDir, "suite-summary.json"), append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile suite-summary: %v", err)
+	}
+}
+
+func writeReviewJSON(t *testing.T, path string, review view.ReviewDryRun) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll review dir: %v", err)
+	}
+	data, err := json.Marshal(review)
+	if err != nil {
+		t.Fatalf("Marshal review: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile review JSON: %v", err)
+	}
+}
+
+func benchmarkSuiteWithAnchor(t *testing.T) string {
+	t.Helper()
+	return `
+suite:
+  id: suite1
+  name: Suite One
+  version: 1
+candidates:
+  - id: first
+    profile: home
+    model: sonnet
+cases:
+  - id: case_one
+    pr: https://github.com/open-cli-collective/codereview-cli/pull/1
+    anchors:
+      - id: expected-hit
+        file: main.go
+        side: RIGHT
+        lines: [1, 3]
+`
+}
+
+func reviewDryRunJSONWithAnchorFinding(t *testing.T, runID, file, side string, line int) []byte {
+	t.Helper()
+	data, err := json.Marshal(view.ReviewDryRun{
+		Run: view.ReviewRun{
+			RunID:        runID,
+			PRURL:        "https://github.com/open-cli-collective/codereview-cli/pull/1",
+			PRKey:        "github.com_open-cli-collective_codereview-cli_1",
+			PostMode:     "dry_run",
+			Outcome:      "dry_run",
+			ArtifactPath: "/tmp/" + runID,
+			BaseSHA:      "review-base",
+			HeadSHA:      "review-head",
+		},
+		Findings: []view.ReviewFinding{{
+			ID:        "finding-1",
+			Severity:  "major",
+			FilePath:  file,
+			Anchoring: "inline",
+			Side:      side,
+			Line:      intPtrForBenchmark(line),
+			Body:      "body must not be copied to comparison",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal review dry-run: %v", err)
+	}
+	return data
+}
