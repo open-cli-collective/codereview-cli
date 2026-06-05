@@ -146,6 +146,57 @@ func TestCompareClassifiesFailuresAndPathEscapes(t *testing.T) {
 	if classes["escape"] != failureMissingArtifact || statuses["escape"] != runStatusPartial {
 		t.Fatalf("escape class/status = %s/%s, want missing_artifact/partial", classes["escape"], statuses["escape"])
 	}
+	for _, run := range got.Runs {
+		if run.AnchorSummary != nil {
+			t.Fatalf("run %s anchor summary = %#v, want nil when review placement is unavailable", run.RunID, run.AnchorSummary)
+		}
+	}
+}
+
+func TestCompareRejectsSymlinkReviewJSONEscape(t *testing.T) {
+	resultsDir := t.TempDir()
+	outsideReview := filepath.Join(t.TempDir(), "review.json")
+	writeReviewJSON(t, outsideReview, view.ReviewDryRun{Run: view.ReviewRun{RunID: "outside"}})
+	summary := comparisonFixtureSummary(resultsDir)
+	summary.Runs[0].Artifacts.ReviewJSON = filepath.Join(resultsDir, "symlinked", "review.json")
+	writeComparisonFixture(t, summary)
+	if err := os.MkdirAll(filepath.Dir(summary.Runs[0].Artifacts.ReviewJSON), 0o700); err != nil {
+		t.Fatalf("MkdirAll symlink dir: %v", err)
+	}
+	if err := os.Symlink(outsideReview, summary.Runs[0].Artifacts.ReviewJSON); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	got, err := writeComparisonArtifactsForResultsDir(resultsDir)
+	if err != nil {
+		t.Fatalf("writeComparisonArtifactsForResultsDir: %v", err)
+	}
+	if got.Runs[0].FailureClassification != failureMissingArtifact || got.Runs[0].Status != runStatusPartial {
+		t.Fatalf("symlink class/status = %s/%s, want missing_artifact/partial", got.Runs[0].FailureClassification, got.Runs[0].Status)
+	}
+	if got.Runs[0].AnchorSummary != nil {
+		t.Fatalf("symlink anchor summary = %#v, want nil", got.Runs[0].AnchorSummary)
+	}
+}
+
+func TestComparisonMarkdownRendersUnknownSeverities(t *testing.T) {
+	resultsDir := t.TempDir()
+	summary := comparisonFixtureSummary(resultsDir)
+	summary.Runs[0].SeverityCounts = map[string]int{"advice": 2, "major": 1}
+	writeComparisonFixture(t, summary)
+	writeReviewJSON(t, summary.Runs[0].Artifacts.ReviewJSON, view.ReviewDryRun{Run: view.ReviewRun{RunID: "child-run-1"}})
+
+	got, err := writeComparisonArtifactsForResultsDir(resultsDir)
+	if err != nil {
+		t.Fatalf("writeComparisonArtifactsForResultsDir: %v", err)
+	}
+	markdown := readFile(t, got.Artifacts.ComparisonMarkdown)
+	if !strings.Contains(markdown, "Nits | advice | Duration ms") {
+		t.Fatalf("markdown missing sorted unknown severity header:\n%s", markdown)
+	}
+	if !strings.Contains(markdown, "| `first` | `case_one` | completed | 0 | none | 2 | 0 | 1 | 0 | 0 | 2 |") {
+		t.Fatalf("markdown missing unknown severity count:\n%s", markdown)
+	}
 }
 
 func TestCompareRejectsUnsupportedSchema(t *testing.T) {

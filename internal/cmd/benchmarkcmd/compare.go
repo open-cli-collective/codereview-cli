@@ -305,11 +305,11 @@ func buildComparison(summary benchmarkSuiteSummary, resultsDir string) compariso
 		}
 		row.Warnings = append(row.Warnings, read.warnings...)
 		if len(benchCase.Anchors) > 0 {
-			findings := []view.ReviewFinding{}
 			if read.parsed != nil {
-				findings = read.parsed.Findings
+				row.AnchorSummary, row.AnchorResults, row.UnmatchedFindings = compareAnchors(benchCase.Anchors, read.parsed.Findings)
+			} else {
+				row.Warnings = append(row.Warnings, "anchor placement unavailable: review JSON could not be parsed")
 			}
-			row.AnchorSummary, row.AnchorResults, row.UnmatchedFindings = compareAnchors(benchCase.Anchors, findings)
 		}
 		comparison.Runs = append(comparison.Runs, row)
 		accumulateCaseTotal(caseTotals[run.CaseID], row)
@@ -367,6 +367,24 @@ func benchmarkArtifactPathInResultsDir(resultsDir, artifactPath string) (string,
 	}
 	if rel == "." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." || filepath.IsAbs(rel) {
 		return "", false, fmt.Sprintf("%s is outside results dir", artifactPath)
+	}
+	realResultsDir, err := filepath.EvalSymlinks(resultsDir)
+	if err != nil {
+		return "", false, fmt.Sprintf("results dir cannot be resolved: %v", err)
+	}
+	realArtifact, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return abs, true, ""
+		}
+		return "", false, fmt.Sprintf("%s cannot be resolved: %v", artifactPath, err)
+	}
+	realRel, err := filepath.Rel(realResultsDir, realArtifact)
+	if err != nil {
+		return "", false, err.Error()
+	}
+	if realRel == "." || strings.HasPrefix(realRel, ".."+string(os.PathSeparator)) || realRel == ".." || filepath.IsAbs(realRel) {
+		return "", false, fmt.Sprintf("%s resolves outside results dir", artifactPath)
 	}
 	return abs, true, ""
 }
@@ -567,6 +585,7 @@ func renderCompareText(opts *root.Options, comparison comparisonReport) error {
 
 func renderComparisonMarkdown(comparison comparisonReport) string {
 	var b strings.Builder
+	severityColumns := comparisonSeverityColumns(comparison)
 	fmt.Fprintf(&b, "# Benchmark Comparison: %s\n\n", comparison.SuiteID)
 	fmt.Fprintf(&b, "- Results dir: `%s`\n", comparison.ResultsDir)
 	fmt.Fprintf(&b, "- Placement caveat: %s\n\n", comparison.PlacementCaveat)
@@ -575,20 +594,29 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 	fmt.Fprintf(&b, "- Manifest: `%s`\n", comparison.SourceArtifacts.Manifest)
 	fmt.Fprintf(&b, "- JSONL: `%s`\n\n", comparison.SourceArtifacts.SummaryJSONL)
 	b.WriteString("## Candidate x Case Status\n\n")
-	b.WriteString("| Candidate | Case | Status | Exit | Failure | Findings | Blocking | Major | Minor | Nits | Duration ms | Tokens | Cost |\n")
-	b.WriteString("| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+	b.WriteString("| Candidate | Case | Status | Exit | Failure | Findings |")
+	for _, severity := range severityColumns {
+		fmt.Fprintf(&b, " %s |", severityHeader(severity))
+	}
+	b.WriteString(" Duration ms | Tokens | Cost |\n")
+	b.WriteString("| --- | --- | --- | ---: | --- | ---: |")
+	for range severityColumns {
+		b.WriteString(" ---: |")
+	}
+	b.WriteString(" ---: | ---: | ---: |\n")
 	for _, run := range comparison.Runs {
-		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %d | %s | %d | %d | %d | %d | %d | %d | %s | %s |\n",
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %d | %s | %d |",
 			run.CandidateID,
 			run.CaseID,
 			run.Status,
 			run.ExitCode,
 			run.FailureClassification,
 			run.FindingCount,
-			run.SeverityCounts[severityOrderForCompare[0]],
-			run.SeverityCounts[severityOrderForCompare[1]],
-			run.SeverityCounts[severityOrderForCompare[2]],
-			run.SeverityCounts[severityOrderForCompare[3]],
+		)
+		for _, severity := range severityColumns {
+			fmt.Fprintf(&b, " %d |", run.SeverityCounts[severity])
+		}
+		fmt.Fprintf(&b, " %d | %s | %s |\n",
 			run.DurationMS,
 			usageTokensCell(run.Usage),
 			usageCostCell(run.Usage),
@@ -638,20 +666,29 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 		}
 	}
 	b.WriteString("## Candidate Totals\n\n")
-	b.WriteString("| Candidate | Runs | Completed | Failed | Partial | Findings | Blocking | Major | Minor | Nits | Duration ms | Tokens | Cost |\n")
-	b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+	b.WriteString("| Candidate | Runs | Completed | Failed | Partial | Findings |")
+	for _, severity := range severityColumns {
+		fmt.Fprintf(&b, " %s |", severityHeader(severity))
+	}
+	b.WriteString(" Duration ms | Tokens | Cost |\n")
+	b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: |")
+	for range severityColumns {
+		b.WriteString(" ---: |")
+	}
+	b.WriteString(" ---: | ---: | ---: |\n")
 	for _, total := range comparison.CandidateTotals {
-		fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | %s |\n",
+		fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d | %d |",
 			total.CandidateID,
 			total.RunCount,
 			total.CompletedCount,
 			total.FailedCount,
 			total.PartialCount,
 			total.FindingCount,
-			total.SeverityCounts[severityOrderForCompare[0]],
-			total.SeverityCounts[severityOrderForCompare[1]],
-			total.SeverityCounts[severityOrderForCompare[2]],
-			total.SeverityCounts[severityOrderForCompare[3]],
+		)
+		for _, severity := range severityColumns {
+			fmt.Fprintf(&b, " %d |", total.SeverityCounts[severity])
+		}
+		fmt.Fprintf(&b, " %d | %s | %s |\n",
 			total.DurationMS,
 			usageTokensCell(total.Usage),
 			usageCostCell(total.Usage),
@@ -664,6 +701,50 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | `%s` | `%s` |\n", run.RunID, run.Artifacts.ReviewJSON, run.Artifacts.Stderr, run.Artifacts.MetricsJSON, run.Artifacts.ReviewArtifactPath)
 	}
 	return b.String()
+}
+
+func comparisonSeverityColumns(comparison comparisonReport) []string {
+	known := map[string]bool{}
+	columns := append([]string(nil), severityOrderForCompare...)
+	for _, severity := range columns {
+		known[severity] = true
+	}
+	unknown := map[string]bool{}
+	for _, run := range comparison.Runs {
+		for severity := range run.SeverityCounts {
+			if !known[severity] {
+				unknown[severity] = true
+			}
+		}
+	}
+	for _, total := range comparison.CandidateTotals {
+		for severity := range total.SeverityCounts {
+			if !known[severity] {
+				unknown[severity] = true
+			}
+		}
+	}
+	var sorted []string
+	for severity := range unknown {
+		sorted = append(sorted, severity)
+	}
+	sort.Strings(sorted)
+	return append(columns, sorted...)
+}
+
+func severityHeader(severity string) string {
+	switch severity {
+	case "blocking":
+		return "Blocking"
+	case "major":
+		return "Major"
+	case "minor":
+		return "Minor"
+	case "nits":
+		return "Nits"
+	default:
+		return severity
+	}
 }
 
 func writeOptionalMarkdownKV(b *strings.Builder, label, value string) {
