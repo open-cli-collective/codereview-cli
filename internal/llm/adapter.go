@@ -3,7 +3,9 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -71,6 +73,11 @@ type StructuredResult[T any] struct {
 	SessionID string
 }
 
+type decodedValue[T any] struct {
+	Value    T
+	Response Response
+}
+
 // RunStructured runs a structured-output request and retries one validation
 // failure with a deterministic correction prompt. On retry success, the
 // returned Response is the final successful attempt's response; this helper does
@@ -98,9 +105,9 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if err != nil {
 		return StructuredResult[T]{Response: response}, err
 	}
-	value, decodeErr := decode(response.StructuredOutput)
+	decoded, decodeErr := decodeResponse(response, decode)
 	if decodeErr == nil {
-		return StructuredResult[T]{Value: value, Response: response, SessionID: sessionID}, nil
+		return StructuredResult[T]{Value: decoded.Value, Response: decoded.Response, SessionID: sessionID}, nil
 	}
 
 	retryReq := req
@@ -113,11 +120,11 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if err != nil {
 		return StructuredResult[T]{Response: retryResponse}, err
 	}
-	retryValue, retryErr := decode(retryResponse.StructuredOutput)
+	retryDecoded, retryErr := decodeResponse(retryResponse, decode)
 	if retryErr != nil {
 		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID}, fmt.Errorf("structured output invalid after retry: first: %w; second: %w", decodeErr, retryErr)
 	}
-	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID}, nil
+	return StructuredResult[T]{Value: retryDecoded.Value, Response: retryDecoded.Response, SessionID: retrySessionID}, nil
 }
 
 func runOnceWithSession(ctx context.Context, adapter Adapter, resumeSessionID string, req Request) (string, Response, error) {
@@ -139,6 +146,84 @@ func runOnceWithSession(ctx context.Context, adapter Adapter, resumeSessionID st
 
 func retryPrompt(prompt string, err error) string {
 	return prompt + "\n\nThe previous structured output failed validation: " + validationErrorSummary(err) + "\nReturn corrected JSON only. Do not wrap the JSON in markdown fences, add prose, or include any leading or trailing text."
+}
+
+func decodeResponse[T any](response Response, decode Decoder[T]) (decodedValue[T], error) {
+	value, err := decode(response.StructuredOutput)
+	if err == nil {
+		return decodedValue[T]{Value: value, Response: response}, nil
+	}
+	recovered, ok := extractSingleJSONObject(response.StructuredOutput)
+	if !ok {
+		var zero T
+		return decodedValue[T]{Value: zero, Response: response}, err
+	}
+	recoveredValue, recoveredErr := decode(recovered)
+	if recoveredErr != nil {
+		var zero T
+		return decodedValue[T]{Value: zero, Response: response}, err
+	}
+	response.StructuredOutput = recovered
+	return decodedValue[T]{Value: recoveredValue, Response: response}, nil
+}
+
+func extractSingleJSONObject(data []byte) ([]byte, bool) {
+	var candidates [][]byte
+	for i := 0; i < len(data); i++ {
+		if data[i] != '{' {
+			continue
+		}
+		end, ok := objectEnd(data, i)
+		if !ok {
+			continue
+		}
+		candidate := bytes.TrimSpace(data[i : end+1])
+		if json.Valid(candidate) {
+			candidates = append(candidates, candidate)
+		}
+		i = end
+	}
+	if len(candidates) != 1 {
+		return nil, false
+	}
+	return append([]byte(nil), candidates[0]...), true
+}
+
+func objectEnd(data []byte, start int) (int, bool) {
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(data); i++ {
+		ch := data[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+			if depth < 0 {
+				return 0, false
+			}
+		}
+	}
+	return 0, false
 }
 
 func validationErrorSummary(err error) string {
