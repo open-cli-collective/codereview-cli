@@ -161,7 +161,7 @@ func decodeResponse[T any](response Response, decode Decoder[T]) (decodedValue[T
 	recoveredValue, recoveredErr := decode(recovered)
 	if recoveredErr != nil {
 		var zero T
-		return decodedValue[T]{Value: zero, Response: response}, err
+		return decodedValue[T]{Value: zero, Response: response}, recoveredErr
 	}
 	response.StructuredOutput = recovered
 	return decodedValue[T]{Value: recoveredValue, Response: response}, nil
@@ -177,7 +177,7 @@ func extractSingleJSONObject(data []byte) ([]byte, bool) {
 		if !ok {
 			continue
 		}
-		if hasJSONContainerOutside(data[:i], data[end+1:]) {
+		if hasArrayWrapperAdjacentToObject(data[:i], data[end+1:]) {
 			i = end
 			continue
 		}
@@ -193,8 +193,11 @@ func extractSingleJSONObject(data []byte) ([]byte, bool) {
 	return append([]byte(nil), candidates[0]...), true
 }
 
-func hasJSONContainerOutside(prefix []byte, suffix []byte) bool {
-	return bytes.ContainsAny(prefix, "[]") || bytes.ContainsAny(suffix, "[]")
+func hasArrayWrapperAdjacentToObject(prefix []byte, suffix []byte) bool {
+	prefix = bytes.TrimSpace(prefix)
+	suffix = bytes.TrimSpace(suffix)
+	return len(prefix) > 0 && prefix[len(prefix)-1] == '[' ||
+		len(suffix) > 0 && suffix[0] == ']'
 }
 
 func objectEnd(data []byte, start int) (int, bool) {

@@ -71,6 +71,29 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 	})
 
+	t.Run("recovers single json object with bracketed prose", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{SessionID: "s1", Response: Response{
+			StructuredOutput: []byte("[note] Here is [the JSON]: {\"ok\":true} [done]"),
+		}})
+
+		got, response, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+			if string(data) != `{"ok":true}` {
+				return "", errors.New("bad json")
+			}
+			return "ok", nil
+		})
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if got != "ok" || string(response.StructuredOutput) != `{"ok":true}` {
+			t.Fatalf("RunStructured = %q %#v, want recovered json response", got, response)
+		}
+		if got := len(adapter.Requests()); got != 1 {
+			t.Fatalf("requests = %d, want no retry", got)
+		}
+	})
+
 	t.Run("does not recover ambiguous json objects", func(t *testing.T) {
 		adapter := &FakeAdapter{}
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`first {"ok":true} second {"ok":true}`)}})
@@ -104,6 +127,32 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 		if got := len(adapter.Requests()); got != 2 {
 			t.Fatalf("requests = %d, want retry after array-wrapped output", got)
+		}
+	})
+
+	t.Run("uses recovered schema error in retry prompt", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`Here is JSON: {"ok":false}`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"ok":true}`)}})
+
+		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+			if string(data) != `{"ok":true}` {
+				return "", errors.New("ok must be true")
+			}
+			return "ok", nil
+		})
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if got != "ok" {
+			t.Fatalf("RunStructured = %q, want ok", got)
+		}
+		requests := adapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("requests = %d, want retry", len(requests))
+		}
+		if !strings.Contains(requests[1].Prompt, "ok must be true") {
+			t.Fatalf("retry prompt = %q, want recovered schema error", requests[1].Prompt)
 		}
 	})
 
