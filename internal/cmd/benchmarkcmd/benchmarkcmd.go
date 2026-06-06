@@ -67,7 +67,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 		Use:   "benchmark",
 		Short: "Validate, inspect, and run benchmark suites",
 	}
-	cmd.AddCommand(newValidateCommand(opts), newDoctorCommand(opts), newRunCommand(opts))
+	cmd.AddCommand(newValidateCommand(opts), newDoctorCommand(opts), newRunCommand(opts), newCompareCommand(opts))
 	rootCmd.AddCommand(cmd)
 }
 

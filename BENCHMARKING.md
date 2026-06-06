@@ -173,6 +173,13 @@ cr benchmark run .codereview/benchmarks/oss-model-cost-check.yml \
   --json
 ```
 
+Compare an already-completed benchmark result directory:
+
+```bash
+cr benchmark compare .cr-bench/results/debug-run
+cr benchmark compare .cr-bench/results/debug-run --json
+```
+
 Use repeatable `--candidate <id>` and `--case <id>` flags for benchmark
 selection. Do not use ambiguous benchmark model-selection language. Models are
 candidate fields, not suite selectors.
@@ -207,6 +214,12 @@ and live-review flags are never taken from the suite.
 `--cr-bin <path>` selects the binary used for child review runs. If omitted,
 `run` uses the current `cr` binary. `doctor` reports the binary it would use.
 
+`compare` reads the benchmark-owned artifacts in an existing results directory
+and writes `comparison.json` and `comparison.md`. It is local-only: it does not
+invoke models, re-read live PR state, mutate Git provider state, or require
+provider credentials. `run` writes the same comparison artifacts automatically
+after the suite artifacts are written.
+
 ## Artifacts
 
 Each run writes benchmark-owned artifacts under the selected results directory:
@@ -217,6 +230,8 @@ Each run writes benchmark-owned artifacts under the selected results directory:
   summary.jsonl
   suite-summary.json
   report.md
+  comparison.json
+  comparison.md
   0001-c01-k01-<candidate-id>-<case-id>/
     review.json
     stderr.txt
@@ -239,6 +254,8 @@ Suite-level artifacts:
 | `summary.jsonl` | One compact JSON run summary per line. |
 | `suite-summary.json` | Full benchmark summary including selected inputs, counts, run summaries, and artifact paths. |
 | `report.md` | Compact human-readable run table. |
+| `comparison.json` | Deterministic candidate x case comparison, failure classification, usage fields, artifact paths, and anchor placement metadata when anchors exist. |
+| `comparison.md` | Compact human-readable comparison report emphasizing per-case results before aggregate totals. |
 
 Per-run artifacts:
 
@@ -246,7 +263,7 @@ Per-run artifacts:
 |----------|----------|
 | `review.json` | Raw stdout from `cr review --dry-run --json`. |
 | `stderr.txt` | Stderr from the child `cr review` process. |
-| `metrics.json` | Benchmark run summary for that candidate/case execution, including provider usage when available. |
+| `metrics.json` | Benchmark run summary for that candidate/case execution, including provider usage when available. This is not a raw provider metrics file. |
 
 Benchmark artifacts are written with owner-only file permissions where the
 operating system supports them. Directories are owner-only as well.
@@ -266,6 +283,9 @@ The MVP measures rather than grades. Current benchmark summary artifacts include
 - requested pinned review base/head SHAs when a case sets them, plus expected
   baseline SHAs when provided;
 - child review exit code and duration in milliseconds;
+- retry count, currently `0` because benchmark candidate/case executions are
+  not retried by the runner;
+- coarse failure classification derived from local run facts and exit codes;
 - finding count and severity counts parsed from dry-run review JSON;
 - provider-reported usage from child review agent logs when available,
   including LLM call count, turns, tool activity, tokens, cost, and per-phase
@@ -294,7 +314,7 @@ missing telemetry.
 | Cost | Provider or adapter reported cost only. Do not use baked-in benchmark price tables for v1. |
 | Selected agents | Use raw review artifacts or agent logs when available. The benchmark summary records selected candidate inputs, resolved agent directories, and usage phase names, not a stable selected-agent table today. |
 | Observed SHAs | Record when available from review artifacts or downstream analysis. Expected SHAs in cases are comparison metadata. |
-| Anchor metrics | Not computed by the current runner. If added later, they should remain placement-only. |
+| Anchor metrics | Computed by `comparison.json` and `comparison.md` when cases define anchors. They are placement-only. |
 
 Finding counts and severity counts are not quality scores. They are raw measures
 for comparing review behavior across candidate configurations.
@@ -312,15 +332,20 @@ anchors:
 ```
 
 Anchors use a file path, a diff side (`RIGHT` or `LEFT`), and a changed-line
-range. The current suite validator accepts and validates anchor metadata. The
-runner does not compute anchor hit/miss metrics today.
-
-If anchor hit/miss reporting is added later, it should answer placement
-questions only:
+range. Comparison artifacts use anchors to answer placement questions only:
 
 - Did a finding attach to this file?
 - Did it attach to the expected diff side?
 - Did it attach within this changed-line range?
+
+Placement labels are mechanical:
+
+| Label | Meaning |
+|-------|---------|
+| `anchor_overlap_hit` | Exactly one finding overlaps the expected file, side, and line range. |
+| `anchor_overlap_miss` | No finding overlaps the expected anchor. |
+| `multiple_anchor_overlaps` | More than one finding overlaps the same expected anchor. |
+| `unmatched_finding` | A finding does not overlap any expected anchor for that case. |
 
 Anchors do not answer semantic questions:
 
@@ -330,6 +355,10 @@ Anchors do not answer semantic questions:
 - Should it block the PR?
 
 Do not turn anchor matches into pass/fail grading in the benchmark MVP.
+
+Comparison artifacts preserve placement metadata such as finding IDs, file,
+side, and line. They do not copy finding bodies, rollups, prompt contents, or
+other raw LLM-generated text from `review.json`.
 
 ## Privacy
 
