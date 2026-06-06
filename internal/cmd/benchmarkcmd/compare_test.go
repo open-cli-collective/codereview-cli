@@ -220,6 +220,64 @@ func TestCompareClassifiesFailuresAndPathEscapes(t *testing.T) {
 	}
 }
 
+func TestCompareDeduplicatesInvalidJSONWarnings(t *testing.T) {
+	resultsDir := t.TempDir()
+	summary := comparisonFixtureSummary(resultsDir)
+	invalidReviewJSON := "{bad json"
+	var review view.ReviewDryRun
+	parseErr := json.Unmarshal([]byte(invalidReviewJSON), &review)
+	if parseErr == nil {
+		t.Fatal("invalid review JSON unexpectedly parsed")
+	}
+	parseWarning := "review JSON parse failed: " + parseErr.Error()
+	anchorWarning := "anchor placement unavailable: review JSON could not be parsed"
+	summary.Runs[0].Warnings = []string{
+		"runtime warning",
+		parseWarning,
+		parseWarning,
+		anchorWarning,
+	}
+	writeComparisonFixture(t, summary)
+	writeLog(t, summary.Runs[0].Artifacts.ReviewJSON, invalidReviewJSON)
+
+	got, err := writeComparisonArtifactsForResultsDir(resultsDir)
+	if err != nil {
+		t.Fatalf("writeComparisonArtifactsForResultsDir: %v", err)
+	}
+	wantWarnings := []string{"runtime warning", parseWarning, anchorWarning}
+	if len(got.Runs[0].Warnings) != len(wantWarnings) {
+		t.Fatalf("warnings = %#v, want %#v", got.Runs[0].Warnings, wantWarnings)
+	}
+	for i, want := range wantWarnings {
+		if got.Runs[0].Warnings[i] != want {
+			t.Fatalf("warnings[%d] = %q, want %q; warnings=%#v", i, got.Runs[0].Warnings[i], want, got.Runs[0].Warnings)
+		}
+	}
+	comparisonJSON := readFile(t, got.Artifacts.ComparisonJSON)
+	if strings.Count(comparisonJSON, parseWarning) != 1 {
+		t.Fatalf("comparison JSON contains parse warning %d times, want once:\n%s", strings.Count(comparisonJSON, parseWarning), comparisonJSON)
+	}
+	if strings.Count(comparisonJSON, anchorWarning) != 1 {
+		t.Fatalf("comparison JSON contains anchor warning %d times, want once:\n%s", strings.Count(comparisonJSON, anchorWarning), comparisonJSON)
+	}
+}
+
+func TestAppendUniqueWarningsPreservesFirstSeenOrder(t *testing.T) {
+	got := appendUniqueWarnings([]string{"first", "second", "first"}, "third", "second", "fourth")
+	want := []string{"first", "second", "third", "fourth"}
+	if len(got) != len(want) {
+		t.Fatalf("warnings = %#v, want %#v", got, want)
+	}
+	for i, wantWarning := range want {
+		if got[i] != wantWarning {
+			t.Fatalf("warnings[%d] = %q, want %q; warnings=%#v", i, got[i], wantWarning, got)
+		}
+	}
+	if got := appendUniqueWarnings(nil); got != nil {
+		t.Fatalf("empty warnings = %#v, want nil", got)
+	}
+}
+
 func TestCompareRejectsSymlinkReviewJSONEscape(t *testing.T) {
 	resultsDir := t.TempDir()
 	outsideReview := filepath.Join(t.TempDir(), "review.json")

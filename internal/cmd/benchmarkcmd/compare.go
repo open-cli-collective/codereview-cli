@@ -301,14 +301,14 @@ func buildComparison(summary benchmarkSuiteSummary, resultsDir string) compariso
 				MetricsJSON:        run.Artifacts.MetricsJSON,
 				ReviewArtifactPath: run.ReviewArtifactPath,
 			},
-			Warnings: append([]string(nil), run.Warnings...),
+			Warnings: appendUniqueWarnings(nil, run.Warnings...),
 		}
-		row.Warnings = append(row.Warnings, read.warnings...)
+		row.Warnings = appendUniqueWarnings(row.Warnings, read.warnings...)
 		if len(benchCase.Anchors) > 0 {
 			if read.parsed != nil {
 				row.AnchorSummary, row.AnchorResults, row.UnmatchedFindings = compareAnchors(benchCase.Anchors, read.parsed.Findings)
 			} else {
-				row.Warnings = append(row.Warnings, "anchor placement unavailable: review JSON could not be parsed")
+				row.Warnings = appendUniqueWarnings(row.Warnings, "anchor placement unavailable: review JSON could not be parsed")
 			}
 		}
 		comparison.Runs = append(comparison.Runs, row)
@@ -327,6 +327,29 @@ func buildComparison(summary benchmarkSuiteSummary, resultsDir string) compariso
 		}
 	}
 	return comparison
+}
+
+func appendUniqueWarnings(dst []string, warnings ...string) []string {
+	seen := make(map[string]struct{}, len(dst)+len(warnings))
+	unique := dst[:0]
+	for _, warning := range dst {
+		if _, ok := seen[warning]; ok {
+			continue
+		}
+		seen[warning] = struct{}{}
+		unique = append(unique, warning)
+	}
+	for _, warning := range warnings {
+		if _, ok := seen[warning]; ok {
+			continue
+		}
+		seen[warning] = struct{}{}
+		unique = append(unique, warning)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	return unique
 }
 
 func readReviewArtifactForCompare(resultsDir string, run benchmarkRun) reviewArtifactRead {
