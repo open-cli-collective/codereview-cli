@@ -64,6 +64,9 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	if record.Cwd == "" || record.Cwd == repoRootForTest(t) {
 		t.Fatalf("cwd = %q, want adapter workdir outside repo", record.Cwd)
 	}
+	if wantWorkDir := filepath.Join(filepath.Dir(recordPath), "claude-bg-workdir"); !samePath(t, record.Cwd, wantWorkDir) {
+		t.Fatalf("cwd = %q, want configured Claude bg workdir %q", record.Cwd, wantWorkDir)
+	}
 	if record.CwdEntries != 0 {
 		t.Fatalf("cwd entries = %d, want empty adapter workdir before launch", record.CwdEntries)
 	}
@@ -91,7 +94,11 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	configDir := filepath.Join(tempDir, "claude")
 	adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
 
-	stream, err := adapter.Resume(context.Background(), "prior-session", Request{Prompt: "resume prompt"})
+	stream, err := adapter.Resume(context.Background(), "prior-session", Request{
+		Model:  "sonnet",
+		Effort: "high",
+		Prompt: "resume prompt",
+	})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
@@ -103,6 +110,8 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	}
 	record := readHelperRecord(t, recordPath)
 	assertFlagValue(t, record.AdapterArgs, "--resume", "prior-session")
+	assertFlagValue(t, record.AdapterArgs, "--model", "sonnet")
+	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
 	if record.StdinBytes == 0 || !strings.Contains(record.Stdin, "resume prompt") {
 		t.Fatalf("stdin = %q, want resumed prompt", record.Stdin)
 	}
@@ -217,6 +226,46 @@ func TestSubprocessClaudeWaitsForDelayedIdleSessionID(t *testing.T) {
 	}
 	if sessionID != "session-delayed" || string(response.StructuredOutput) != `{"ok":true}` {
 		t.Fatalf("result = %q session = %q, want delayed session", response.StructuredOutput, sessionID)
+	}
+}
+
+func TestSubprocessClaudePollsUntilTerminalState(t *testing.T) {
+	tempDir := t.TempDir()
+	configDir := filepath.Join(tempDir, "claude")
+	scratch := filepath.Join(tempDir, "scratch")
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		t.Fatalf("Mkdir(scratch): %v", err)
+	}
+	jobID := "job-transition"
+	statePath := filepath.Join(configDir, "jobs", jobID, "state.json")
+	writeClaudeHelperState(t, statePath, map[string]any{
+		"state":    "working",
+		"tempo":    "busy",
+		"inFlight": map[string]any{"tasks": 1, "queued": 0},
+	})
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		if err := os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"done":true}`), 0o600); err != nil {
+			return
+		}
+		if err := writeClaudeHelperStateFile(statePath, map[string]any{
+			"state":     "done",
+			"sessionId": "session-transition",
+		}); err != nil {
+			return
+		}
+	}()
+
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{
+		Env:     []string{"CLAUDE_CONFIG_DIR=" + configDir},
+		Timeout: 5 * time.Second,
+	})
+	response, sessionID, err := adapter.waitForClaudeBGResult(context.Background(), jobID, scratch)
+	if err != nil {
+		t.Fatalf("waitForClaudeBGResult: %v", err)
+	}
+	if sessionID != "session-transition" || string(response.StructuredOutput) != `{"done":true}` {
+		t.Fatalf("result = %q session = %q, want terminal transition result", response.StructuredOutput, sessionID)
 	}
 }
 
