@@ -1383,6 +1383,20 @@ func TestNewAdapterCreatesPiRPC(t *testing.T) {
 	}
 }
 
+func TestNewAdapterCreatesClaudeCLIWithResume(t *testing.T) {
+	adapter, err := newAdapter(config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterClaudeCLI,
+	}, nil)
+	if err != nil {
+		t.Fatalf("newAdapter: %v", err)
+	}
+	if adapter.Name() != "claude_cli" || !adapter.SupportsResume() {
+		t.Fatalf("adapter = %s resume=%v, want claude_cli with resume", adapter.Name(), adapter.SupportsResume())
+	}
+}
+
 func TestNewAdapterRejectsPiRPCNonSubscription(t *testing.T) {
 	_, err := newAdapter(config.LLMConfig{
 		Provider:      config.LLMProviderPi,
