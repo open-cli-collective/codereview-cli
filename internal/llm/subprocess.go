@@ -54,6 +54,7 @@ var (
 	claudeBGJobIDDirectRE = regexp.MustCompile(`backgrounded\s+.\s+([A-Za-z0-9_-]+)`)
 	claudeBGJobIDAttachRE = regexp.MustCompile(`\bclaude\s+attach\s+([A-Za-z0-9_-]+)\b`)
 	claudeBGJobIDRE       = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	claudeBGUserCacheDir  = os.UserCacheDir
 	claudeBGTerminalState = map[string]bool{
 		"done":    true,
 		"failed":  true,
@@ -1068,13 +1069,16 @@ func (a *SubprocessAdapter) cleanupClaudeBGJob(ctx context.Context, jobID string
 	if !claudeBGJobIDRE.MatchString(jobID) {
 		return fmt.Errorf("llm subprocess: invalid Claude background job id %q", jobID)
 	}
-	stateFailed := resultErr != nil
-	if stateFailed {
+	var cleanupErr error
+	if resultErr != nil {
 		if err := a.runClaudeBGControl(ctx, scratch, "stop", jobID); err != nil {
-			return err
+			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}
-	return a.runClaudeBGControl(ctx, scratch, "rm", jobID)
+	if err := a.runClaudeBGControl(ctx, scratch, "rm", jobID); err != nil {
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	return cleanupErr
 }
 
 func (a *SubprocessAdapter) runClaudeBGControl(ctx context.Context, scratch string, verb string, jobID string) error {
@@ -1144,7 +1148,7 @@ func claudeBGWorkingDir(env []string) (string, error) {
 	if value := strings.TrimSpace(os.Getenv("CR_CLAUDE_BG_WORK_DIR")); value != "" {
 		return ensureClaudeBGWorkingDir(value)
 	}
-	base, err := os.UserCacheDir()
+	base, err := claudeBGUserCacheDir()
 	if err != nil || strings.TrimSpace(base) == "" {
 		base = os.TempDir()
 	}

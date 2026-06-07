@@ -316,7 +316,9 @@ backend.
 
 For Anthropic subscription profiles, `adapter: claude_cli` runs Claude Code
 background jobs, reads the review result from an adapter-owned scratch file, and
-records the Claude provider session returned by the job state.
+records the Claude provider session returned by the job state. Background jobs
+run from a stable cache workdir so Claude Code can resolve resumed sessions
+consistently; set `CR_CLAUDE_BG_WORK_DIR` to override that workdir.
 
 Credential key matrix:
 

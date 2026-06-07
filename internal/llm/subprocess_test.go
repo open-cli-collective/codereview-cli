@@ -126,6 +126,7 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 		{name: "failed", mode: "bg-failed", wantErr: "failed: model failed", wantStop: true},
 		{name: "waiting", mode: "bg-waiting", wantErr: "waiting: waiting for input", wantStop: true},
 		{name: "stopped", mode: "bg-stopped", wantErr: "stopped: stopped by user", wantStop: true},
+		{name: "stop fails still removes", mode: "bg-stop-fails", wantErr: "blocked: stop will fail", wantStop: true},
 		{name: "missing result", mode: "bg-missing-result", wantErr: "completed without writing result file", wantSession: "session-missing", wantStop: true},
 		{name: "empty result", mode: "bg-empty-result", wantErr: "empty result file", wantSession: "session-empty", wantStop: true},
 		{name: "timeout", mode: "bg-running", wantErrIs: context.DeadlineExceeded, wantStop: true, timeout: 50 * time.Millisecond},
@@ -216,6 +217,29 @@ func TestSubprocessClaudeWaitsForDelayedIdleSessionID(t *testing.T) {
 	}
 	if sessionID != "session-delayed" || string(response.StructuredOutput) != `{"ok":true}` {
 		t.Fatalf("result = %q session = %q, want delayed session", response.StructuredOutput, sessionID)
+	}
+}
+
+func TestSubprocessClaudeDefaultWorkingDirUsesCacheRoot(t *testing.T) {
+	cacheRoot := t.TempDir()
+	t.Setenv("CR_CLAUDE_BG_WORK_DIR", "")
+	oldUserCacheDir := claudeBGUserCacheDir
+	claudeBGUserCacheDir = func() (string, error) { return cacheRoot, nil }
+	t.Cleanup(func() { claudeBGUserCacheDir = oldUserCacheDir })
+
+	workDir, err := claudeBGWorkingDir(nil)
+	if err != nil {
+		t.Fatalf("claudeBGWorkingDir: %v", err)
+	}
+	if !strings.Contains(workDir, "codereview-cli") || !strings.Contains(workDir, "claude-bg-workdir") {
+		t.Fatalf("workDir = %q, want codereview-cli claude bg cache path", workDir)
+	}
+	info, err := os.Stat(workDir)
+	if err != nil {
+		t.Fatalf("Stat(workDir): %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("workDir is not a directory: %q", workDir)
 	}
 }
 
@@ -569,6 +593,10 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		appendHelperRecord(recordPath, record)
 	}
 	if len(args) > 0 && (args[0] == "stop" || args[0] == "rm") {
+		if os.Getenv("LLM_HELPER_MODE") == "bg-stop-fails" && args[0] == "stop" {
+			fmt.Fprintln(os.Stderr, "stop refused")
+			os.Exit(44)
+		}
 		os.Exit(0)
 	}
 	if containsFlag(args, "--bg") {
@@ -709,6 +737,9 @@ func runClaudeBGHelper(mode string, args []string) {
 		writeResult = false
 	case "bg-stopped":
 		state = map[string]any{"state": "stopped", "message": "stopped by user"}
+		writeResult = false
+	case "bg-stop-fails":
+		state = map[string]any{"state": "blocked", "detail": "stop will fail"}
 		writeResult = false
 	case "bg-missing-result":
 		state = map[string]any{"state": "done", "sessionId": "session-missing"}
