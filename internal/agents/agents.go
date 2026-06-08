@@ -135,7 +135,8 @@ type Agent struct {
 	Name                 string     `json:"name"`
 	Category             Category   `json:"category"`
 	Description          string     `json:"description,omitempty"`
-	Model                string     `json:"model,omitempty"`
+	ModelTier            string     `json:"model_tier,omitempty"`
+	ModelID              string     `json:"model_id,omitempty"`
 	Effort               string     `json:"effort,omitempty"`
 	FileGlobs            []string   `json:"file_globs,omitempty"`
 	AppliesWhen          []string   `json:"applies_when,omitempty"`
@@ -330,7 +331,8 @@ type categoryYAML struct {
 type agentYAML struct {
 	Name                 string   `yaml:"name"`
 	Description          string   `yaml:"description"`
-	Model                string   `yaml:"model"`
+	ModelTier            string   `yaml:"model_tier"`
+	ModelID              string   `yaml:"model_id"`
 	Effort               string   `yaml:"effort"`
 	FileGlobs            []string `yaml:"file_globs"`
 	AppliesWhen          []string `yaml:"applies_when"`
@@ -421,6 +423,9 @@ func readFileAgent(agentPath string, category Category, pathName string, provena
 		return Agent{}, err
 	}
 	if err := validateMatchingName("agent", pathName, index.Name); err != nil {
+		return Agent{}, err
+	}
+	if err := validateAgentYAML(category.Name, pathName, index); err != nil {
 		return Agent{}, err
 	}
 	prompt, err := os.ReadFile(filepath.Join(agentPath, "prompt.md")) // #nosec G304 -- path is from an agent source directory.
@@ -528,6 +533,9 @@ func readRepoAgent(ctx context.Context, reader RepoReader, ref gitprovider.PRRef
 	if err := validateMatchingName("agent", pathName, index.Name); err != nil {
 		return Agent{}, err
 	}
+	if err := validateAgentYAML(category.Name, pathName, index); err != nil {
+		return Agent{}, err
+	}
 	prompt, err := reader.GetFileAtRef(ctx, ref, gitRef, path.Join(agentPath, "prompt.md"))
 	if err != nil {
 		return Agent{}, err
@@ -541,13 +549,49 @@ func newAgent(category Category, name string, index agentYAML, prompt string, pr
 		Name:                 name,
 		Category:             category,
 		Description:          index.Description,
-		Model:                index.Model,
-		Effort:               index.Effort,
+		ModelTier:            strings.TrimSpace(index.ModelTier),
+		ModelID:              strings.TrimSpace(index.ModelID),
+		Effort:               strings.TrimSpace(index.Effort),
 		FileGlobs:            append([]string(nil), index.FileGlobs...),
 		AppliesWhen:          append([]string(nil), index.AppliesWhen...),
 		NeedsFullFileContent: index.NeedsFullFileContent,
 		Prompt:               prompt,
 		Provenance:           provenance,
+	}
+}
+
+func validateAgentYAML(categoryName, agentName string, index agentYAML) error {
+	modelTier := strings.TrimSpace(index.ModelTier)
+	modelID := strings.TrimSpace(index.ModelID)
+	switch {
+	case modelTier == "" && modelID == "":
+		return fmt.Errorf("%w: agent %s:%s requires model_tier or model_id", ErrInvalid, categoryName, agentName)
+	case modelTier != "" && modelID != "":
+		return fmt.Errorf("%w: agent %s:%s cannot set both model_tier and model_id", ErrInvalid, categoryName, agentName)
+	case modelTier != "":
+		if !validModelTier(modelTier) {
+			return fmt.Errorf("%w: agent %s:%s model_tier %q is invalid", ErrInvalid, categoryName, agentName, modelTier)
+		}
+	}
+
+	effort := strings.TrimSpace(index.Effort)
+	if effort == "" {
+		return fmt.Errorf("%w: agent %s:%s effort is required", ErrInvalid, categoryName, agentName)
+	}
+	switch effort {
+	case "low", "medium", "high":
+		return nil
+	default:
+		return fmt.Errorf("%w: agent %s:%s effort %q is invalid", ErrInvalid, categoryName, agentName, effort)
+	}
+}
+
+func validModelTier(value string) bool {
+	switch value {
+	case "small", "medium", "large":
+		return true
+	default:
+		return false
 	}
 }
 

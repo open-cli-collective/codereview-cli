@@ -37,6 +37,9 @@ func TestConfigShowText(t *testing.T) {
 	if !strings.Contains(out.String(), "adapter-managed; not stored by cr") {
 		t.Fatalf("stdout = %q, want adapter-managed LLM note", out.String())
 	}
+	if !strings.Contains(out.String(), "medium: sonnet (built_in)") {
+		t.Fatalf("stdout = %q, want built-in model map", out.String())
+	}
 }
 
 func TestConfigShowProfileFlag(t *testing.T) {
@@ -223,6 +226,136 @@ func TestConfigShowOpenAIAPIKeyStatus(t *testing.T) {
 		return
 	}
 	t.Fatalf("credential refs = %#v, want llm ref", got.CredentialRefs)
+}
+
+func TestConfigLLMModelsListAndResolve(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+
+	cmd, out := newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "llm", "models", "list"}); err != nil {
+		t.Fatalf("Execute list: %v", err)
+	}
+	if !strings.Contains(out.String(), "small: <unset> (unset)") ||
+		!strings.Contains(out.String(), "medium: sonnet (built_in)") ||
+		!strings.Contains(out.String(), "large: opus (built_in)") {
+		t.Fatalf("list stdout = %q, want effective Claude CLI defaults", out.String())
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "llm", "models", "list", "--json"}); err != nil {
+		t.Fatalf("Execute list json: %v", err)
+	}
+	var listed modelMapResultView
+	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
+		t.Fatalf("Unmarshal list JSON: %v\n%s", err, out.String())
+	}
+	if listed.ActiveProfile != "home" || len(listed.Models) != 3 || listed.Models[1].Model != "sonnet" || listed.Models[1].Source != "built_in" {
+		t.Fatalf("list JSON = %#v, want home built-in medium", listed)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "llm", "models", "resolve", "medium", "--json"}); err != nil {
+		t.Fatalf("Execute resolve json: %v", err)
+	}
+	var resolved modelResolveResult
+	if err := json.Unmarshal(out.Bytes(), &resolved); err != nil {
+		t.Fatalf("Unmarshal resolve JSON: %v\n%s", err, out.String())
+	}
+	if resolved.Model != "sonnet" || resolved.Source != "built_in" || resolved.Tier != "medium" {
+		t.Fatalf("resolve JSON = %#v, want built-in medium sonnet", resolved)
+	}
+}
+
+func TestConfigLLMModelsSetUnsetAndReset(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+
+	cmd, out := newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "llm", "models", "set", "medium", "claude-custom"}); err != nil {
+		t.Fatalf("Execute set: %v", err)
+	}
+	if !strings.Contains(out.String(), "Set medium: claude-custom") {
+		t.Fatalf("set stdout = %q", out.String())
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after set: %v", err)
+	}
+	if got := cfg.Profiles["home"].LLM.ModelMap["medium"]; got != "claude-custom" {
+		t.Fatalf("model_map.medium = %q, want claude-custom", got)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "llm", "models", "unset", "medium"}); err != nil {
+		t.Fatalf("Execute unset: %v", err)
+	}
+	if !strings.Contains(out.String(), "Unset medium") {
+		t.Fatalf("unset stdout = %q", out.String())
+	}
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after unset: %v", err)
+	}
+	if cfg.Profiles["home"].LLM.ModelMap != nil {
+		t.Fatalf("model_map after unset = %#v, want nil", cfg.Profiles["home"].LLM.ModelMap)
+	}
+
+	cmd, _ = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "llm", "models", "set", "large", "claude-large"}); err != nil {
+		t.Fatalf("Execute second set: %v", err)
+	}
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "llm", "models", "reset", "--provider", "anthropic"}); err != nil {
+		t.Fatalf("Execute reset: %v", err)
+	}
+	if !strings.Contains(out.String(), "Reset model map for profile home") {
+		t.Fatalf("reset stdout = %q", out.String())
+	}
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after reset: %v", err)
+	}
+	if cfg.Profiles["home"].LLM.ModelMap != nil {
+		t.Fatalf("model_map after reset = %#v, want nil", cfg.Profiles["home"].LLM.ModelMap)
+	}
+}
+
+func TestConfigLLMModelsRejectsInvalidInputs(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "bad tier", args: []string{"config", "llm", "models", "set", "flagship", "gpt"}},
+		{name: "blank model", args: []string{"config", "llm", "models", "set", "medium", " \t "}},
+		{name: "provider guard mismatch", args: []string{"config", "llm", "models", "reset", "--provider", "openai"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, _ := newTestCommand(path)
+			err := root.Execute(cmd, tt.args)
+			if err == nil {
+				t.Fatal("Execute error = nil, want usage error")
+			}
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want usage", got)
+			}
+		})
+	}
+}
+
+func TestConfigLLMModelsResolveReportsUnmappedTier(t *testing.T) {
+	cfg := testConfig()
+	profile := cfg.Profiles["work"]
+	profile.LLM.ModelMap = nil
+	cfg.Profiles["work"] = profile
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"--profile", "work", "config", "llm", "models", "resolve", "medium"})
+	if err == nil || !strings.Contains(err.Error(), `model_tier "medium" is not mapped`) {
+		t.Fatalf("Execute error = %v, want unmapped tier", err)
+	}
 }
 
 func TestRootJSONFlagStillDeferred(t *testing.T) {

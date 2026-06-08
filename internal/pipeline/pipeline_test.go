@@ -326,6 +326,96 @@ func TestDryRunLLMOverridesApplyToAllRequestsAndSessions(t *testing.T) {
 	}
 }
 
+func TestDryRunAgentModelIDBypassesModelMapForReviewer(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	writeAgentModelID(t, req.Profile.AgentSources[0], "harness", "reviewer", "agent-provider-model")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-model-id" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
+	}
+	wantModels := []string{"sonnet", "agent-provider-model", "sonnet"}
+	for i, request := range requests {
+		if request.Model != wantModels[i] || request.Effort != "medium" {
+			t.Fatalf("request[%d] = model:%q effort:%q, want %s/medium", i, request.Model, request.Effort, wantModels[i])
+		}
+	}
+	sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListSessionsForRun: %v", err)
+	}
+	for i, session := range sessions {
+		if session.Model != wantModels[i] {
+			t.Fatalf("session[%d].Model = %q, want %q", i, session.Model, wantModels[i])
+		}
+	}
+}
+
+func TestDryRunLLMModelOverrideBypassesAgentModelID(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	writeAgentModelID(t, req.Profile.AgentSources[0], "harness", "reviewer", "agent-provider-model")
+	req.LLMModelOverride = "override-model"
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-model-id-override" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	for _, request := range adapter.Requests() {
+		if request.Model != "override-model" || request.Effort != "medium" {
+			t.Fatalf("request = model:%q effort:%q, want override-model/medium", request.Model, request.Effort)
+		}
+	}
+	data, err := os.ReadFile(result.Artifacts.AgentSourcesJSON) // #nosec G304 -- test reads artifact paths returned by the pipeline under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", result.Artifacts.AgentSourcesJSON, err)
+	}
+	if strings.Contains(string(data), "override-model") {
+		t.Fatalf("agent source artifact contains runtime override model: %s", data)
+	}
+}
+
 func TestDryRunPrunesConfiguredRetentionBeforeFetch(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -1935,8 +2025,13 @@ func writeAgentFullContent(t *testing.T, rootDir, category, agent string) {
 	writeFile(t, filepath.Join(rootDir, category, agent, "prompt.md"), "Review full files.")
 }
 
+func writeAgentModelID(t *testing.T, rootDir, category, agent, modelID string) {
+	t.Helper()
+	writeFile(t, filepath.Join(rootDir, category, agent, "index.yaml"), fmt.Sprintf("name: %s\ndescription: %s desc\nmodel_id: %s\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n", agent, agent, modelID))
+}
+
 func agentYAML(name, description string, needsFullContent bool) string {
-	return fmt.Sprintf("name: %s\ndescription: %s\nmodel: sonnet\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: %t\n", name, description, needsFullContent)
+	return fmt.Sprintf("name: %s\ndescription: %s\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: %t\n", name, description, needsFullContent)
 }
 
 func writeFile(t *testing.T, path, body string) {

@@ -2,8 +2,10 @@
 package configcmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -192,8 +194,310 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, clearCmd)
+	configCmd.AddCommand(showCmd, clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
+}
+
+func newLLMCommand(opts *root.Options) *cobra.Command {
+	llmCmd := &cobra.Command{
+		Use:   "llm",
+		Short: "Inspect and update LLM profile configuration",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+	modelsCmd := &cobra.Command{
+		Use:   "models",
+		Short: "Inspect and update LLM model tier mappings",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+
+	var listJSON bool
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List effective model tier mappings",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config llm models list takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			_, _, profileName, profile, err := loadActiveProfile(opts)
+			if err != nil {
+				return err
+			}
+			result := modelMapResult(profileName, profile)
+			if listJSON {
+				return renderModelJSON(opts.Stdout, result)
+			}
+			return renderModelMapText(opts.Stdout, result)
+		},
+	}
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "Emit JSON")
+
+	setCmd := &cobra.Command{
+		Use:   "set <tier> <model>",
+		Short: "Set a model tier mapping on the active profile",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return exitcode.Usage(fmt.Errorf("config llm models set requires <tier> and <model>"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			tier, err := parseModelTierArg(args[0])
+			if err != nil {
+				return err
+			}
+			model := strings.TrimSpace(args[1])
+			if model == "" {
+				return exitcode.Usage(fmt.Errorf("model must be non-empty"))
+			}
+			path, cfg, profileName, profile, err := loadActiveProfile(opts)
+			if err != nil {
+				return err
+			}
+			if profile.LLM.ModelMap == nil {
+				profile.LLM.ModelMap = config.ModelMap{}
+			}
+			profile.LLM.ModelMap[string(tier)] = model
+			cfg.Profiles[profileName] = profile
+			if err := saveConfigFile(path, cfg); err != nil {
+				return cmderr.Config(err)
+			}
+			_, err = fmt.Fprintf(opts.Stdout, "Set %s: %s\n", tier, model)
+			return err
+		},
+	}
+
+	unsetCmd := &cobra.Command{
+		Use:   "unset <tier>",
+		Short: "Remove a model tier mapping from the active profile",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return exitcode.Usage(fmt.Errorf("config llm models unset requires <tier>"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			tier, err := parseModelTierArg(args[0])
+			if err != nil {
+				return err
+			}
+			path, cfg, profileName, profile, err := loadActiveProfile(opts)
+			if err != nil {
+				return err
+			}
+			if profile.LLM.ModelMap != nil {
+				delete(profile.LLM.ModelMap, string(tier))
+				if len(profile.LLM.ModelMap) == 0 {
+					profile.LLM.ModelMap = nil
+				}
+			}
+			cfg.Profiles[profileName] = profile
+			if err := saveConfigFile(path, cfg); err != nil {
+				return cmderr.Config(err)
+			}
+			_, err = fmt.Fprintf(opts.Stdout, "Unset %s\n", tier)
+			return err
+		},
+	}
+
+	var resetProvider string
+	resetCmd := &cobra.Command{
+		Use:   "reset",
+		Short: "Reset the active profile model map to built-in defaults",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config llm models reset takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, cfg, profileName, profile, err := loadActiveProfile(opts)
+			if err != nil {
+				return err
+			}
+			if guard := strings.TrimSpace(resetProvider); guard != "" {
+				provider := config.LLMProvider(guard)
+				if !provider.Valid() {
+					return exitcode.Usage(fmt.Errorf("--provider %q is invalid", guard))
+				}
+				if provider != profile.LLM.Provider {
+					return exitcode.Usage(fmt.Errorf("--provider %q does not match active profile provider %q", guard, profile.LLM.Provider))
+				}
+			}
+			profile.LLM.ModelMap = nil
+			cfg.Profiles[profileName] = profile
+			if err := saveConfigFile(path, cfg); err != nil {
+				return cmderr.Config(err)
+			}
+			_, err = fmt.Fprintf(opts.Stdout, "Reset model map for profile %s\n", profileName)
+			return err
+		},
+	}
+	resetCmd.Flags().StringVar(&resetProvider, "provider", "", "Optional provider guard for the active profile")
+
+	var resolveJSON bool
+	resolveCmd := &cobra.Command{
+		Use:   "resolve <tier>",
+		Short: "Resolve a model tier under the active profile",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return exitcode.Usage(fmt.Errorf("config llm models resolve requires <tier>"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			tier, err := parseModelTierArg(args[0])
+			if err != nil {
+				return err
+			}
+			_, _, profileName, profile, err := loadActiveProfile(opts)
+			if err != nil {
+				return err
+			}
+			resolved, ok := config.ResolveModelTier(profile.LLM, tier)
+			if !ok {
+				return fmt.Errorf("model_tier %q is not mapped for provider %q adapter %q", tier, profile.LLM.Provider, profile.LLM.Adapter)
+			}
+			result := modelResolveResult{
+				ActiveProfile: profileName,
+				Provider:      string(profile.LLM.Provider),
+				Adapter:       string(profile.LLM.Adapter),
+				Tier:          string(tier),
+				Model:         resolved.Model,
+				Source:        string(resolved.Source),
+			}
+			if resolveJSON {
+				return renderModelJSON(opts.Stdout, result)
+			}
+			return renderModelResolveText(opts.Stdout, result)
+		},
+	}
+	resolveCmd.Flags().BoolVar(&resolveJSON, "json", false, "Emit JSON")
+
+	modelsCmd.AddCommand(listCmd, setCmd, unsetCmd, resetCmd, resolveCmd)
+	llmCmd.AddCommand(modelsCmd)
+	return llmCmd
+}
+
+type modelMapResultView struct {
+	ActiveProfile string        `json:"active_profile"`
+	Provider      string        `json:"provider"`
+	Adapter       string        `json:"adapter"`
+	Models        []modelMapRow `json:"models"`
+}
+
+type modelMapRow struct {
+	Tier   string `json:"tier"`
+	Model  string `json:"model,omitempty"`
+	Source string `json:"source"`
+}
+
+type modelResolveResult struct {
+	ActiveProfile string `json:"active_profile"`
+	Provider      string `json:"provider"`
+	Adapter       string `json:"adapter"`
+	Tier          string `json:"tier"`
+	Model         string `json:"model"`
+	Source        string `json:"source"`
+}
+
+func loadActiveProfile(opts *root.Options) (string, config.File, string, config.Profile, error) {
+	path, err := configPath(opts)
+	if err != nil {
+		return "", config.File{}, "", config.Profile{}, exitcode.AuthConfig(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return "", config.File{}, "", config.Profile{}, cmderr.Config(err)
+	}
+	profileName, profile, err := config.ResolveProfile(cfg, opts.Profile)
+	if err != nil {
+		return "", config.File{}, "", config.Profile{}, cmderr.Config(err)
+	}
+	return path, cfg, profileName, profile, nil
+}
+
+func parseModelTierArg(raw string) (config.ModelTier, error) {
+	tier := config.ModelTier(strings.TrimSpace(raw))
+	if !tier.Valid() {
+		return "", exitcode.Usage(fmt.Errorf("model tier must be one of small, medium, large"))
+	}
+	return tier, nil
+}
+
+func modelMapResult(profileName string, profile config.Profile) modelMapResultView {
+	effective := config.EffectiveModelMap(profile.LLM)
+	result := modelMapResultView{
+		ActiveProfile: profileName,
+		Provider:      string(profile.LLM.Provider),
+		Adapter:       string(profile.LLM.Adapter),
+	}
+	for _, tier := range config.ModelTiers() {
+		row := modelMapRow{Tier: string(tier), Source: "unset"}
+		if resolved, ok := effective[tier]; ok {
+			row.Model = resolved.Model
+			row.Source = string(resolved.Source)
+		}
+		result.Models = append(result.Models, row)
+	}
+	return result
+}
+
+func renderModelJSON(w io.Writer, value any) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
+}
+
+func renderModelMapText(w io.Writer, result modelMapResultView) error {
+	if _, err := fmt.Fprintf(w, "Profile: %s\n", result.ActiveProfile); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Provider: %s\n", result.Provider); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Adapter: %s\n", result.Adapter); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Model map:"); err != nil {
+		return err
+	}
+	for _, row := range result.Models {
+		model := row.Model
+		if model == "" {
+			model = "<unset>"
+		}
+		if _, err := fmt.Fprintf(w, "  %s: %s (%s)\n", row.Tier, model, row.Source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderModelResolveText(w io.Writer, result modelResolveResult) error {
+	if _, err := fmt.Fprintf(w, "Profile: %s\n", result.ActiveProfile); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Provider: %s\n", result.Provider); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Adapter: %s\n", result.Adapter); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Tier: %s\n", result.Tier); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Model: %s\n", result.Model); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(w, "Source: %s\n", result.Source)
+	return err
 }
 
 type configClearChange struct {

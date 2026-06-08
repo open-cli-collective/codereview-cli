@@ -419,6 +419,25 @@ func TestReviewRejectsEmptyLLMOverridesBeforeRuntimeFactory(t *testing.T) {
 	}
 }
 
+func TestReviewRejectsInvalidLLMEffortBeforeRuntimeFactory(t *testing.T) {
+	var factoryCalled bool
+	cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+		factoryCalled = true
+		return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+	})
+
+	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--llm-effort", "xhigh"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want usage", got)
+	}
+	if factoryCalled {
+		t.Fatal("runtime factory was called for invalid LLM effort")
+	}
+}
+
 func TestReviewProfileResolveThreadsNeverDisablesThreadResolution(t *testing.T) {
 	cfg := testConfig()
 	profile := cfg.Profiles["home"]
@@ -1286,7 +1305,7 @@ func stringPtr(value string) *string {
 func writeReviewAgent(t *testing.T, rootDir string) {
 	t.Helper()
 	writeReviewFile(t, filepath.Join(rootDir, "harness", "index.yaml"), "name: harness\ndescription: harness category\nowner: owner\n")
-	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "index.yaml"), "name: reviewer\ndescription: reviewer\nmodel: sonnet\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
+	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "index.yaml"), "name: reviewer\ndescription: reviewer\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
 	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "prompt.md"), "Review carefully.")
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 }

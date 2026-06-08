@@ -346,8 +346,11 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 
 	var sessionDrafts []sessionDraft
 	findingSession := map[review.FindingID]string{}
-	defaultModel, defaultEffort := orchestratorModel(catalog)
-	model, effort := resolveLLMRuntimeConfig(req, defaultModel, defaultEffort)
+	runtimeConfig, err := resolveOrchestratorRuntimeConfig(req)
+	if err != nil {
+		return Result{}, err
+	}
+	model, effort := runtimeConfig.model, runtimeConfig.effort
 	namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, model, now)
 	if err != nil {
 		return Result{}, err
@@ -596,7 +599,11 @@ func runReviewers(ctx context.Context, opts Options, req Request, pr gitprovider
 }
 
 func runReviewer(ctx context.Context, opts Options, req Request, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent) ([]review.Finding, sessionDraft, error) {
-	model, effort := resolveLLMRuntimeConfig(req, agent.Model, agent.Effort)
+	runtimeConfig, err := resolveAgentRuntimeConfig(req, agent)
+	if err != nil {
+		return nil, sessionDraft{}, err
+	}
+	model, effort := runtimeConfig.model, runtimeConfig.effort
 	prompt, err := buildReviewerPrompt(ctx, opts, req, pr, parsed, selected, agent, model)
 	if err != nil {
 		return nil, sessionDraft{}, err
@@ -893,7 +900,8 @@ type agentPrompt struct {
 	Name                 string          `json:"name"`
 	Category             agents.Category `json:"category"`
 	Description          string          `json:"description,omitempty"`
-	Model                string          `json:"model,omitempty"`
+	ModelTier            string          `json:"model_tier,omitempty"`
+	ModelID              string          `json:"model_id,omitempty"`
 	Effort               string          `json:"effort,omitempty"`
 	FileGlobs            []string        `json:"file_globs,omitempty"`
 	AppliesWhen          []string        `json:"applies_when,omitempty"`
@@ -909,7 +917,8 @@ func agentPromptFromAgent(agent agents.Agent) agentPrompt {
 		Name:                 agent.Name,
 		Category:             agent.Category,
 		Description:          agent.Description,
-		Model:                agent.Model,
+		ModelTier:            agent.ModelTier,
+		ModelID:              agent.ModelID,
 		Effort:               agent.Effort,
 		FileGlobs:            append([]string(nil), agent.FileGlobs...),
 		AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
@@ -1605,23 +1614,65 @@ func agentDefinitionsChanged(patches []FilePatch) bool {
 	return false
 }
 
-func orchestratorModel(catalog agents.Catalog) (string, string) {
-	for _, agent := range catalog.Agents {
-		if strings.TrimSpace(agent.Model) != "" || strings.TrimSpace(agent.Effort) != "" {
-			return agent.Model, agent.Effort
-		}
-	}
-	return "", ""
+type llmRuntimeConfig struct {
+	model  string
+	effort string
 }
 
-func resolveLLMRuntimeConfig(req Request, model, effort string) (string, string) {
+func resolveOrchestratorRuntimeConfig(req Request) (llmRuntimeConfig, error) {
+	model, err := resolveModelTier(req, config.ModelTierMedium)
+	if strings.TrimSpace(req.LLMModelOverride) != "" {
+		model, err = "", nil
+	}
+	if err != nil {
+		return llmRuntimeConfig{}, err
+	}
+	return applyLLMRuntimeOverrides(req, model, "medium"), nil
+}
+
+func resolveAgentRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeConfig, error) {
+	model, err := resolveAgentModel(req, agent)
+	if strings.TrimSpace(req.LLMModelOverride) != "" {
+		model, err = "", nil
+	}
+	if err != nil {
+		return llmRuntimeConfig{}, err
+	}
+	return applyLLMRuntimeOverrides(req, model, agent.Effort), nil
+}
+
+func resolveAgentModel(req Request, agent agents.Agent) (string, error) {
+	if modelID := strings.TrimSpace(agent.ModelID); modelID != "" {
+		return modelID, nil
+	}
+	tier := config.ModelTier(strings.TrimSpace(agent.ModelTier))
+	if !tier.Valid() {
+		return "", fmt.Errorf("pipeline: agent %s model_tier %q is invalid", agent.ID, agent.ModelTier)
+	}
+	model, err := resolveModelTier(req, tier)
+	if err != nil {
+		return "", fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
+	}
+	return model, nil
+}
+
+func resolveModelTier(req Request, tier config.ModelTier) (string, error) {
+	resolved, ok := config.ResolveModelTier(req.Profile.LLM, tier)
+	if !ok {
+		llmConfig := req.Profile.LLM
+		return "", fmt.Errorf("model_tier %q is not mapped for provider %q adapter %q", tier, llmConfig.Provider, llmConfig.Adapter)
+	}
+	return resolved.Model, nil
+}
+
+func applyLLMRuntimeOverrides(req Request, model, effort string) llmRuntimeConfig {
 	if override := strings.TrimSpace(req.LLMModelOverride); override != "" {
 		model = override
 	}
 	if override := strings.TrimSpace(req.LLMEffortOverride); override != "" {
 		effort = override
 	}
-	return model, effort
+	return llmRuntimeConfig{model: model, effort: effort}
 }
 
 func postingKey(identity gitprovider.Identity) string {

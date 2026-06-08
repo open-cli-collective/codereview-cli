@@ -194,6 +194,8 @@ profiles:
       auth: api_key
       adapter: anthropic_api
       credential_ref: codereview/work-llm
+      model_map:
+        medium: claude-sonnet-model-id
     agent_sources:
       - ~/.config/codereview/agents
     review_policy:
@@ -239,6 +241,26 @@ agents/
       index.yaml
       prompt.md
 ```
+
+Agent `index.yaml` files must declare exactly one model selector and an
+explicit effort:
+
+```yaml
+name: secrets
+description: Reviews credential and secret-handling changes.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/*.go"
+applies_when:
+  - Go files changed
+needs_full_file_content: false
+```
+
+Use `model_tier: small|medium|large` for portable shared catalogs. Use
+`model_id: <provider-model-id>` only when an agent intentionally requires one
+provider-specific model. `effort` is independent and must be one of
+`low`, `medium`, or `high`.
 
 `cr config show --json` reports each configured source by path, presence,
 status, canonical path, warnings, and SHA-256 fingerprint prefix without
@@ -326,6 +348,7 @@ Supported values:
 | `llm.provider` | `anthropic`, `openai`, `pi` |
 | `llm.auth` | `subscription`, `api_key` |
 | `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc`, and `codex_cli` are usable for review. `codex_cli` requires `provider: openai` and `auth: subscription`, and is currently best-effort/beta because Codex does not yet expose an explicit all-tools-disabled flag. |
+| `llm.model_map` keys | `small`, `medium`, `large` |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
 | `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
@@ -334,6 +357,25 @@ Supported values:
 logged-in CLI or local runtime. `api_key` LLM auth requires
 `llm.credential_ref` and stores a provider-specific API key in the credential
 backend.
+
+Reviewer agents use provider-neutral `model_tier` values. At runtime, `cr`
+resolves `model_tier` through the active profile's `llm.model_map` plus
+provider+adapter built-ins. User `llm.model_map` entries override built-ins,
+and model IDs are opaque strings so future provider models can be configured
+without a CLI update.
+
+Built-in model maps:
+
+| Provider | Adapter | small | medium | large |
+|----------|---------|-------|--------|-------|
+| `openai` | `codex_cli` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
+| `openai` | `openai_api` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
+| `anthropic` | `claude_cli` | unset | `sonnet` | `opus` |
+| `anthropic` | `anthropic_api` | unset | unset | unset |
+| `pi` | `pi_rpc` | unset | unset | unset |
+
+`anthropic_api`, `pi_rpc`, and `claude_cli` small-tier usage require explicit
+`llm.model_map` entries.
 
 For Anthropic subscription profiles, `adapter: claude_cli` runs Claude Code
 background jobs, writes the full review task to `cr-prompt.txt` in an
@@ -549,6 +591,25 @@ definition contents.
 
 `--json` emits the same information as structured JSON.
 
+### `cr config llm models`
+
+```text
+cr config llm models list [--json]
+cr config llm models resolve <tier> [--json]
+cr config llm models set <tier> <model>
+cr config llm models unset <tier>
+cr config llm models reset [--provider <provider>]
+```
+
+Inspects and updates the active profile's `llm.model_map`. `list` shows the
+effective `small`/`medium`/`large` map, including whether each value came from
+profile config, built-in defaults, or is unset. `resolve` prints the concrete
+provider model ID for one tier under the active profile.
+
+`set`, `unset`, and `reset` mutate only the active profile. `reset` clears the
+configured map so built-ins apply again; `--provider` is a safety guard and
+must match the active profile provider.
+
 ### `cr config clear`
 
 ```text
@@ -616,9 +677,9 @@ Flags:
 cr agents show <name> [PR] [--agents-dir <path> ...] [--json]
 ```
 
-Shows one agent, including category metadata, model, effort, file globs,
-`applies_when`, `needs_full_file_content`, prompt, provenance, and trust note
-when repo-local agents are considered.
+Shows one agent, including category metadata, `model_tier` or `model_id`,
+effort, file globs, `applies_when`, `needs_full_file_content`, prompt,
+provenance, and trust note when repo-local agents are considered.
 
 ### `cr review`
 
@@ -645,8 +706,8 @@ Review selection and execution flags:
 | `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
 | `--max-agents <n>` | Limit selected reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
-| `--llm-model <model>` | Override the LLM model for dry-run review. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
-| `--llm-effort <effort>` | Override the LLM effort for dry-run review. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
+| `--llm-model <model>` | Exact provider model ID passthrough for dry-run review; bypasses `model_tier`, `model_id`, and `llm.model_map`. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
+| `--llm-effort <effort>` | Override LLM effort for dry-run review with `low`, `medium`, or `high`. Independent from `--llm-model`. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
 | `--session <name>` | Reuse a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |

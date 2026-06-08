@@ -153,6 +153,9 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if llmEffortChanged && llmEffort == "" {
 		return exitcode.Usage(fmt.Errorf("--llm-effort must be non-empty"))
 	}
+	if llmEffortChanged && !validLLMEffort(llmEffort) {
+		return exitcode.Usage(fmt.Errorf("--llm-effort must be one of low, medium, high"))
+	}
 	if (llmModelChanged || llmEffortChanged) && !flags.dryRun {
 		return exitcode.Usage(fmt.Errorf("--llm-model and --llm-effort require --dry-run or --no-post"))
 	}
@@ -275,6 +278,15 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return exitcode.With(exitcode.Failure, fmt.Errorf("findings at or above --fail-on %s", failOn.String()))
 	}
 	return nil
+}
+
+func validLLMEffort(value string) bool {
+	switch value {
+	case "low", "medium", "high":
+		return true
+	default:
+		return false
+	}
 }
 
 var reviewSHAFlagPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
