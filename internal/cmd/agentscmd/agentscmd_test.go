@@ -347,7 +347,7 @@ func trustCurrentTempFixtures(t *testing.T) {
 }
 
 func agentIndexYAML(name, description string) string {
-	return "name: " + name + "\ndescription: " + description + "\nmodel: sonnet\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n"
+	return "name: " + name + "\ndescription: " + description + "\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n"
 }
 
 func writeFile(t *testing.T, path, body string) {

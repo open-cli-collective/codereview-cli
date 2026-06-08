@@ -22,7 +22,8 @@ type AgentSummary struct {
 	Category    string            `json:"category"`
 	Name        string            `json:"name"`
 	Description string            `json:"description,omitempty"`
-	Model       string            `json:"model,omitempty"`
+	ModelTier   string            `json:"model_tier,omitempty"`
+	ModelID     string            `json:"model_id,omitempty"`
 	Effort      string            `json:"effort,omitempty"`
 	Provenance  string            `json:"provenance"`
 	Source      agents.SourceInfo `json:"source"`
@@ -44,7 +45,8 @@ type AgentDetail struct {
 	CategoryOwner        string            `json:"category_owner,omitempty"`
 	Name                 string            `json:"name"`
 	Description          string            `json:"description,omitempty"`
-	Model                string            `json:"model,omitempty"`
+	ModelTier            string            `json:"model_tier,omitempty"`
+	ModelID              string            `json:"model_id,omitempty"`
 	Effort               string            `json:"effort,omitempty"`
 	FileGlobs            []string          `json:"file_globs,omitempty"`
 	AppliesWhen          []string          `json:"applies_when,omitempty"`
@@ -63,7 +65,8 @@ func NewAgentsList(catalog agents.Catalog) AgentsList {
 			Category:    agent.Category.Name,
 			Name:        agent.Name,
 			Description: agent.Description,
-			Model:       agent.Model,
+			ModelTier:   agent.ModelTier,
+			ModelID:     agent.ModelID,
 			Effort:      agent.Effort,
 			Provenance:  agent.Provenance.String(),
 			Source:      agent.Provenance.SourceInfo(),
@@ -82,7 +85,8 @@ func NewAgentsShow(agent agents.Agent, catalog agents.Catalog) AgentsShow {
 			CategoryOwner:        agent.Category.Owner,
 			Name:                 agent.Name,
 			Description:          agent.Description,
-			Model:                agent.Model,
+			ModelTier:            agent.ModelTier,
+			ModelID:              agent.ModelID,
 			Effort:               agent.Effort,
 			FileGlobs:            append([]string(nil), agent.FileGlobs...),
 			AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
@@ -114,7 +118,10 @@ func RenderAgentsListText(w io.Writer, result AgentsList) error {
 			if err := writeOptionalKV(w, "    Description", agent.Description); err != nil {
 				return err
 			}
-			if err := writeOptionalKV(w, "    Model", agent.Model); err != nil {
+			if err := writeOptionalKV(w, "    Model tier", agent.ModelTier); err != nil {
+				return err
+			}
+			if err := writeOptionalKV(w, "    Model ID", agent.ModelID); err != nil {
 				return err
 			}
 			if err := writeOptionalKV(w, "    Effort", agent.Effort); err != nil {
@@ -162,7 +169,10 @@ func RenderAgentsShowText(w io.Writer, result AgentsShow) error {
 	if _, err := fmt.Fprintln(w, "Runtime:"); err != nil {
 		return err
 	}
-	if err := writeOptionalKV(w, "  Model", agent.Model); err != nil {
+	if err := writeOptionalKV(w, "  Model tier", agent.ModelTier); err != nil {
+		return err
+	}
+	if err := writeOptionalKV(w, "  Model ID", agent.ModelID); err != nil {
 		return err
 	}
 	if err := writeOptionalKV(w, "  Effort", agent.Effort); err != nil {

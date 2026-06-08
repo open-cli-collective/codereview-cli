@@ -144,6 +144,10 @@ LLM:
   Auth: subscription
   Adapter: claude_cli
   Credential ref: adapter-managed; not stored by cr
+  Model map:
+    small: <unset> (unset)
+    medium: sonnet (built_in)
+    large: opus (built_in)
 Credentials:
   - git: codereview/home (pat)
     git_token: missing
