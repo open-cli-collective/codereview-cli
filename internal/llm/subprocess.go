@@ -49,6 +49,8 @@ const (
 	claudeBGResultFilename = "cr-result.json"
 	claudeBGPollInterval   = 500 * time.Millisecond
 	claudeBGSessionIDGrace = 10 * time.Second
+	claudeBGControlTimeout = 10 * time.Second
+	claudeBGStaleJobAge    = 24 * time.Hour
 )
 
 var (
@@ -591,8 +593,8 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 		}
 	}
 	if jobID != "" {
-		if err := adapter.cleanupClaudeBGJob(context.WithoutCancel(ctx), jobID, result.err, workDir); err != nil && result.err == nil {
-			result.err = err
+		if err := adapter.cleanupClaudeBGJob(context.WithoutCancel(ctx), jobID, result.err, workDir); err != nil {
+			s.writeCleanupWarning(err)
 		}
 	}
 
@@ -662,6 +664,13 @@ func (s *subprocessStream) writeLog(p []byte) {
 		return
 	}
 	_, _ = subprocessLogWriter{stream: s}.Write(p)
+}
+
+func (s *subprocessStream) writeCleanupWarning(err error) {
+	if err == nil {
+		return
+	}
+	s.writeLog([]byte("warning: " + err.Error() + "\n"))
 }
 
 func (s *subprocessStream) closeLog() {
@@ -1084,29 +1093,241 @@ func (a *SubprocessAdapter) cleanupClaudeBGJob(ctx context.Context, jobID string
 	if err := a.runClaudeBGControl(ctx, workDir, "rm", jobID); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
+	if err := a.gcClaudeBGJobs(ctx, workDir); err != nil {
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
 	return cleanupErr
 }
 
 func (a *SubprocessAdapter) runClaudeBGControl(ctx context.Context, workDir string, verb string, jobID string) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	execArgs := append(append([]string(nil), a.commandArgsPrefix...), verb, jobID)
-	// #nosec G204 -- control verbs target the adapter-owned Claude CLI binary and validated job id.
-	cmd := exec.CommandContext(cmdCtx, a.command, execArgs...)
-	cmd.Dir = workDir
-	if len(a.env) > 0 {
-		cmd.Env = append(os.Environ(), a.env...)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
+	stdout, stderr, err := a.runClaudeBGCommand(ctx, workDir, verb, jobID)
+	if err != nil {
+		detail := strings.TrimSpace(string(stderr))
+		if detail == "" {
+			detail = strings.TrimSpace(string(stdout))
+		}
 		if detail != "" {
 			return fmt.Errorf("llm subprocess: Claude bg cleanup %s failed: %w: %s", verb, err, detail)
 		}
 		return fmt.Errorf("llm subprocess: Claude bg cleanup %s failed: %w", verb, err)
 	}
 	return nil
+}
+
+func (a *SubprocessAdapter) runClaudeBGCommand(ctx context.Context, workDir string, args ...string) ([]byte, []byte, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, claudeBGControlTimeout)
+	defer cancel()
+	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
+	// #nosec G204 -- control verbs target the adapter-owned Claude CLI binary and validated job id.
+	cmd := exec.CommandContext(cmdCtx, a.command, execArgs...)
+	cmd.Dir = workDir
+	if len(a.env) > 0 {
+		cmd.Env = append(os.Environ(), a.env...)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+func (a *SubprocessAdapter) gcClaudeBGJobs(ctx context.Context, workDir string) error {
+	jobsDir := filepath.Join(claudeConfigDirFromEnv(a.env), "jobs")
+	entries, err := os.ReadDir(jobsDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("llm subprocess: Claude bg stale-job scan failed: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	now := time.Now()
+	staleJobIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		jobID := strings.TrimSpace(entry.Name())
+		if !claudeBGJobIDRE.MatchString(jobID) {
+			continue
+		}
+		statePath := filepath.Join(jobsDir, jobID, "state.json")
+		stateInfo, err := os.Stat(statePath)
+		if err != nil || stateInfo.IsDir() || now.Sub(stateInfo.ModTime()) < claudeBGStaleJobAge {
+			continue
+		}
+		staleJobIDs = append(staleJobIDs, jobID)
+	}
+	if len(staleJobIDs) == 0 {
+		return nil
+	}
+	activeJobs, err := a.listActiveClaudeBGJobs(ctx, workDir)
+	if err != nil {
+		return err
+	}
+	var cleanupErr error
+	for _, jobID := range staleJobIDs {
+		if activeJobs[jobID] {
+			continue
+		}
+		jobDir := filepath.Join(jobsDir, jobID)
+		statePath := filepath.Join(jobDir, "state.json")
+		state, ok := readClaudeBGState(statePath)
+		if !ok || !claudeBGOwnsJob(state, workDir) {
+			continue
+		}
+		if err := a.runClaudeBGControl(ctx, workDir, "rm", jobID); err != nil {
+			if removeErr := os.RemoveAll(jobDir); removeErr != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("llm subprocess: Claude bg stale metadata cleanup failed for %s: %w", jobID, errors.Join(err, removeErr)))
+			}
+		}
+	}
+	return cleanupErr
+}
+
+func (a *SubprocessAdapter) listActiveClaudeBGJobs(ctx context.Context, workDir string) (map[string]bool, error) {
+	stdout, stderr, err := a.runClaudeBGCommand(ctx, workDir, "agents", "--json")
+	if err != nil {
+		detail := strings.TrimSpace(string(stderr))
+		if detail == "" {
+			detail = strings.TrimSpace(string(stdout))
+		}
+		if detail != "" {
+			return nil, fmt.Errorf("llm subprocess: Claude bg active-agent discovery failed: %w: %s", err, detail)
+		}
+		return nil, fmt.Errorf("llm subprocess: Claude bg active-agent discovery failed: %w", err)
+	}
+	activeJobs, err := parseClaudeBGActiveJobs(stdout)
+	if err != nil {
+		return nil, fmt.Errorf("llm subprocess: Claude bg active-agent discovery failed: %w", err)
+	}
+	return activeJobs, nil
+}
+
+func parseClaudeBGActiveJobs(data []byte) (map[string]bool, error) {
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, fmt.Errorf("malformed JSON: %w", err)
+	}
+	activeJobs := map[string]bool{}
+	collectClaudeBGActiveJobs(decoded, activeJobs)
+	return activeJobs, nil
+}
+
+func collectClaudeBGActiveJobs(value any, activeJobs map[string]bool) {
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			collectClaudeBGActiveJobs(item, activeJobs)
+		}
+	case map[string]any:
+		if jobID := claudeBGStateString(typed, "id", "jobId", "job_id"); jobID != "" && claudeBGJobIDRE.MatchString(jobID) {
+			activeJobs[jobID] = true
+		}
+		for _, key := range []string{"agents", "items", "data"} {
+			if nested, ok := typed[key]; ok {
+				collectClaudeBGActiveJobs(nested, activeJobs)
+			}
+		}
+	}
+}
+
+func claudeBGOwnsJob(state map[string]any, workDir string) bool {
+	if cwd := claudeBGStateString(state, "cwd"); cwd != "" && sameCleanPath(cwd, workDir) {
+		return true
+	}
+	if claudeBGIntentOwnsJob(state["intent"]) {
+		return true
+	}
+	if claudeBGRespawnFlagsOwnJob(state["respawnFlags"]) {
+		return true
+	}
+	return false
+}
+
+func claudeBGIntentOwnsJob(value any) bool {
+	for _, candidate := range flattenStateStrings(value, 0) {
+		if strings.Contains(candidate, claudeBGPromptFilename) || strings.Contains(candidate, claudeBGResultFilename) || strings.Contains(candidate, "codereview-llm-") {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeBGRespawnFlagsOwnJob(value any) bool {
+	tokens := flattenCommandTokens(value)
+	for i := 0; i < len(tokens); i++ {
+		token := tokens[i]
+		// #nosec G101 -- this compares a known CLI flag name, not a secret token.
+		if token == "--add-dir" && i+1 < len(tokens) && isCodereviewScratchDir(tokens[i+1]) {
+			return true
+		}
+		if value, ok := strings.CutPrefix(token, "--add-dir="); ok && isCodereviewScratchDir(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func flattenStateStrings(value any, depth int) []string {
+	if depth > 8 {
+		return nil
+	}
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return nil
+		}
+		return []string{typed}
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, flattenStateStrings(item, depth+1)...)
+		}
+		return out
+	case []any:
+		var out []string
+		for _, item := range typed {
+			out = append(out, flattenStateStrings(item, depth+1)...)
+		}
+		return out
+	case map[string]any:
+		var out []string
+		for _, item := range typed {
+			out = append(out, flattenStateStrings(item, depth+1)...)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func flattenCommandTokens(value any) []string {
+	stringsOnly := flattenStateStrings(value, 0)
+	tokens := make([]string, 0, len(stringsOnly))
+	for _, item := range stringsOnly {
+		tokens = append(tokens, strings.Fields(item)...)
+	}
+	return tokens
+}
+
+func isCodereviewScratchDir(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	return strings.HasPrefix(filepath.Base(filepath.Clean(path)), "codereview-llm-")
+}
+
+func claudeBGStateString(state map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(fmt.Sprint(state[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return ""
 }
 
 func writeClaudeBGPromptFile(prompt string, scratch string) error {

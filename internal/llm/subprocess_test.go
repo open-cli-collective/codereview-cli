@@ -87,6 +87,9 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 		t.Fatalf("positional prompt = %q, want prompt/result file paths", promptArg)
 	}
 	assertClaudeCleanup(t, records, "job-1", false, configDir)
+	if _, err := os.Stat(record.AddDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("scratch dir exists after cleanup: stat err = %v", err)
+	}
 
 	// #nosec G304 -- test reads the log path it created with t.TempDir.
 	logged, err := os.ReadFile(logPath)
@@ -201,6 +204,150 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 			}
 			assertClaudeCleanup(t, readHelperRecords(t, recordPath), "job-1", false, configDir)
 		})
+	}
+}
+
+func TestSubprocessClaudeStaleJobGC(t *testing.T) {
+	t.Run("owned stale job is removed", func(t *testing.T) {
+		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
+		configDir := filepath.Join(tempDir, "claude")
+		workDir := helperClaudeWorkDir(recordPath)
+		if err := os.MkdirAll(workDir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(workDir): %v", err)
+		}
+		adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
+		writeClaudeHelperStateAt(t, filepath.Join(configDir, "jobs", "job-stale", "state.json"), map[string]any{"cwd": workDir}, time.Now().Add(-25*time.Hour))
+
+		if err := adapter.cleanupClaudeBGJob(context.Background(), "job-1", nil, workDir); err != nil {
+			t.Fatalf("cleanupClaudeBGJob: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(configDir, "jobs", "job-stale")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("job-stale exists after cleanup: stat err = %v", err)
+		}
+		if !hasClaudeControlRecord(readHelperRecords(t, recordPath), "rm", "job-stale") {
+			t.Fatal("missing rm for stale owned job")
+		}
+	})
+
+	t.Run("unrelated stale job is left alone", func(t *testing.T) {
+		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
+		configDir := filepath.Join(tempDir, "claude")
+		workDir := helperClaudeWorkDir(recordPath)
+		if err := os.MkdirAll(workDir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(workDir): %v", err)
+		}
+		adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
+		writeClaudeHelperStateAt(t, filepath.Join(configDir, "jobs", "job-unrelated", "state.json"), map[string]any{
+			"cwd":          filepath.Join(tempDir, "elsewhere"),
+			"intent":       "plain prompt",
+			"respawnFlags": []any{"--model", "sonnet"},
+		}, time.Now().Add(-25*time.Hour))
+
+		if err := adapter.cleanupClaudeBGJob(context.Background(), "job-1", nil, workDir); err != nil {
+			t.Fatalf("cleanupClaudeBGJob: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(configDir, "jobs", "job-unrelated")); err != nil {
+			t.Fatalf("job-unrelated missing after cleanup: %v", err)
+		}
+		if hasClaudeControlRecord(readHelperRecords(t, recordPath), "rm", "job-unrelated") {
+			t.Fatal("unexpected rm for unrelated stale job")
+		}
+	})
+
+	t.Run("active stale job is skipped", func(t *testing.T) {
+		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
+		configDir := filepath.Join(tempDir, "claude")
+		workDir := helperClaudeWorkDir(recordPath)
+		if err := os.MkdirAll(workDir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(workDir): %v", err)
+		}
+		adapter := newClaudeHelperAdapterWithEnv("success", recordPath, configDir, 5*time.Second,
+			`LLM_HELPER_CLAUDE_AGENTS_JSON=[{"id":"job-active"}]`,
+		)
+		writeClaudeHelperStateAt(t, filepath.Join(configDir, "jobs", "job-active", "state.json"), map[string]any{"cwd": workDir}, time.Now().Add(-25*time.Hour))
+
+		if err := adapter.cleanupClaudeBGJob(context.Background(), "job-1", nil, workDir); err != nil {
+			t.Fatalf("cleanupClaudeBGJob: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(configDir, "jobs", "job-active")); err != nil {
+			t.Fatalf("job-active missing after cleanup: %v", err)
+		}
+		if hasClaudeControlRecord(readHelperRecords(t, recordPath), "rm", "job-active") {
+			t.Fatal("unexpected rm for active stale job")
+		}
+	})
+
+	t.Run("rm refusal falls back to direct deletion", func(t *testing.T) {
+		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
+		configDir := filepath.Join(tempDir, "claude")
+		workDir := helperClaudeWorkDir(recordPath)
+		if err := os.MkdirAll(workDir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(workDir): %v", err)
+		}
+		adapter := newClaudeHelperAdapterWithEnv("success", recordPath, configDir, 5*time.Second,
+			"LLM_HELPER_CLAUDE_FAIL_RM_IDS=job-stale",
+		)
+		writeClaudeHelperStateAt(t, filepath.Join(configDir, "jobs", "job-stale", "state.json"), map[string]any{
+			"respawnFlags": []any{"--add-dir", filepath.Join(tempDir, "codereview-llm-stale")},
+		}, time.Now().Add(-25*time.Hour))
+
+		if err := adapter.cleanupClaudeBGJob(context.Background(), "job-1", nil, workDir); err != nil {
+			t.Fatalf("cleanupClaudeBGJob: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(configDir, "jobs", "job-stale")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("job-stale exists after fallback cleanup: stat err = %v", err)
+		}
+		if !hasClaudeControlRecord(readHelperRecords(t, recordPath), "rm", "job-stale") {
+			t.Fatal("missing rm attempt before stale fallback delete")
+		}
+	})
+}
+
+func TestSubprocessClaudeCleanupWarningsDoNotFailSuccess(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	logPath := filepath.Join(tempDir, "events.log")
+	workDir := helperClaudeWorkDir(recordPath)
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(workDir): %v", err)
+	}
+	writeClaudeHelperStateAt(t, filepath.Join(configDir, "jobs", "job-stale", "state.json"), map[string]any{"cwd": workDir}, time.Now().Add(-25*time.Hour))
+	adapter := newClaudeHelperAdapterWithEnv("success", recordPath, configDir, 5*time.Second,
+		"LLM_HELPER_CLAUDE_AGENTS_JSON={bad json",
+	)
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Prompt:  "prompt",
+		LogPath: logPath,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %q, want success response", response.StructuredOutput)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "jobs", "job-stale")); err != nil {
+		t.Fatalf("job-stale missing after fail-closed agents discovery: %v", err)
+	}
+	logged, err := os.ReadFile(logPath) // #nosec G304 -- test reads the log path it created with t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(log): %v", err)
+	}
+	logText := string(logged)
+	if !strings.Contains(logText, "warning: llm subprocess: Claude bg active-agent discovery failed") {
+		t.Fatalf("log = %q, want cleanup warning", logText)
+	}
+	if !strings.Contains(logText, "malformed JSON") {
+		t.Fatalf("log = %q, want malformed JSON detail", logText)
 	}
 }
 
@@ -666,12 +813,37 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 	if recordPath != "" {
 		appendHelperRecord(recordPath, record)
 	}
-	if len(args) > 0 && (args[0] == "stop" || args[0] == "rm") {
-		if os.Getenv("LLM_HELPER_MODE") == "bg-stop-fails" && args[0] == "stop" {
-			fmt.Fprintln(os.Stderr, "stop refused")
-			os.Exit(44)
+	if len(args) > 0 {
+		switch args[0] {
+		case "stop":
+			if os.Getenv("LLM_HELPER_MODE") == "bg-stop-fails" || helperControlShouldFail("LLM_HELPER_CLAUDE_FAIL_STOP_IDS", args) {
+				fmt.Fprintln(os.Stderr, "stop refused")
+				os.Exit(44)
+			}
+			os.Exit(0)
+		case "rm":
+			if helperControlShouldFail("LLM_HELPER_CLAUDE_FAIL_RM_IDS", args) {
+				fmt.Fprintln(os.Stderr, "rm refused")
+				os.Exit(45)
+			}
+			// #nosec G703 -- helper removes only a test CLAUDE_CONFIG_DIR job path under t.TempDir.
+			if err := os.RemoveAll(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "jobs", args[1])); err != nil {
+				fmt.Fprintf(os.Stderr, "rm cleanup failed: %v\n", err)
+				os.Exit(47)
+			}
+			os.Exit(0)
+		case "agents":
+			if os.Getenv("LLM_HELPER_CLAUDE_AGENTS_FAIL") == "1" {
+				fmt.Fprintln(os.Stderr, "agents refused")
+				os.Exit(46)
+			}
+			if payload := os.Getenv("LLM_HELPER_CLAUDE_AGENTS_JSON"); payload != "" {
+				fmt.Print(payload)
+				os.Exit(0)
+			}
+			fmt.Print("[]")
+			os.Exit(0)
 		}
-		os.Exit(0)
 	}
 	if containsFlag(args, "--bg") {
 		runClaudeBGHelper(os.Getenv("LLM_HELPER_MODE"), args)
@@ -737,10 +909,14 @@ type helperRecord struct {
 }
 
 func newClaudeHelperAdapter(mode string, recordPath string, configDir string, timeout time.Duration) *SubprocessAdapter {
+	return newClaudeHelperAdapterWithEnv(mode, recordPath, configDir, timeout)
+}
+
+func newClaudeHelperAdapterWithEnv(mode string, recordPath string, configDir string, timeout time.Duration, extraEnv ...string) *SubprocessAdapter {
 	return NewClaudeCLIAdapter(SubprocessOptions{
 		Command:           os.Args[0],
 		commandArgsPrefix: helperPrefix(),
-		Env:               helperClaudeEnv(mode, recordPath, configDir),
+		Env:               append(helperClaudeEnv(mode, recordPath, configDir), extraEnv...),
 		Timeout:           timeout,
 	})
 }
@@ -760,8 +936,11 @@ func helperPrefix() []string {
 }
 
 func helperClaudeEnv(mode string, recordPath string, configDir string) []string {
-	workDir := filepath.Join(filepath.Dir(recordPath), "claude-bg-workdir")
-	return append(helperEnv(mode, recordPath), "CLAUDE_CONFIG_DIR="+configDir, "CR_CLAUDE_BG_WORK_DIR="+workDir)
+	return append(helperEnv(mode, recordPath), "CLAUDE_CONFIG_DIR="+configDir, "CR_CLAUDE_BG_WORK_DIR="+helperClaudeWorkDir(recordPath))
+}
+
+func helperClaudeWorkDir(recordPath string) string {
+	return filepath.Join(filepath.Dir(recordPath), "claude-bg-workdir")
 }
 
 func helperEnv(mode string, recordPath string) []string {
@@ -779,6 +958,18 @@ func adapterArgsFromHelper() []string {
 		}
 	}
 	return nil
+}
+
+func helperControlShouldFail(envKey string, args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	for _, jobID := range strings.Split(os.Getenv(envKey), ",") {
+		if strings.TrimSpace(jobID) == args[1] {
+			return true
+		}
+	}
+	return false
 }
 
 func runClaudeBGHelper(mode string, args []string) {
@@ -865,6 +1056,16 @@ func writeClaudeHelperStateFile(path string, state map[string]any) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
+func writeClaudeHelperStateAt(t *testing.T, path string, state map[string]any, modTime time.Time) {
+	t.Helper()
+	if err := writeClaudeHelperStateFile(path, state); err != nil {
+		t.Fatalf("writeClaudeHelperStateFile: %v", err)
+	}
+	if err := os.Chtimes(path, modTime, modTime); err != nil {
+		t.Fatalf("Chtimes(state): %v", err)
+	}
+}
+
 func appendHelperRecord(path string, record helperRecord) {
 	data, _ := json.Marshal(record)
 	// #nosec G304,G306,G703 -- helper writes only to a t.TempDir path supplied by the parent test.
@@ -933,6 +1134,15 @@ func assertClaudeCleanup(t *testing.T, records []helperRecord, jobID string, wan
 	if !rmSeen {
 		t.Fatalf("rmSeen = false, want true in records %#v", records)
 	}
+}
+
+func hasClaudeControlRecord(records []helperRecord, verb string, jobID string) bool {
+	for _, record := range records {
+		if len(record.AdapterArgs) == 2 && record.AdapterArgs[0] == verb && record.AdapterArgs[1] == jobID {
+			return true
+		}
+	}
+	return false
 }
 
 func readPID(t *testing.T, path string) int {
