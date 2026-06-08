@@ -262,6 +262,11 @@ Use `model_tier: small|medium|large` for portable shared catalogs. Use
 provider-specific model. `effort` is independent and must be one of
 `low`, `medium`, or `high`.
 
+Legacy agent files that use `model: sonnet` or another provider-specific
+`model` value must be updated. Replace portable intent with `model_tier`
+and move provider-specific defaults into profile `llm.model_map`; use
+`model_id` only for intentionally non-portable agents.
+
 `cr config show --json` reports each configured source by path, presence,
 status, canonical path, warnings, and SHA-256 fingerprint prefix without
 inlining `index.yaml` or `prompt.md`. Missing or unreadable sources are shown as

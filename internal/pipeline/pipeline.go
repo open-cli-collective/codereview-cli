@@ -23,6 +23,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
@@ -1624,21 +1625,21 @@ type llmRuntimeConfig struct {
 }
 
 func resolveOrchestratorRuntimeConfig(req Request) (llmRuntimeConfig, error) {
-	model, err := resolveModelTier(req, config.ModelTierMedium)
 	if strings.TrimSpace(req.LLMModelOverride) != "" {
-		model, err = "", nil
+		return applyLLMRuntimeOverrides(req, "", string(modelprefs.EffortMedium)), nil
 	}
+	model, err := resolveModelTier(req, config.ModelTierMedium)
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return applyLLMRuntimeOverrides(req, model, "medium"), nil
+	return applyLLMRuntimeOverrides(req, model, string(modelprefs.EffortMedium)), nil
 }
 
 func resolveAgentRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeConfig, error) {
-	model, err := resolveAgentModel(req, agent)
 	if strings.TrimSpace(req.LLMModelOverride) != "" {
-		model, err = "", nil
+		return applyLLMRuntimeOverrides(req, "", agent.Effort), nil
 	}
+	model, err := resolveAgentModel(req, agent)
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}

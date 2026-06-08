@@ -25,6 +25,7 @@ import (
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
@@ -281,12 +282,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 }
 
 func validLLMEffort(value string) bool {
-	switch value {
-	case "low", "medium", "high":
-		return true
-	default:
-		return false
-	}
+	return modelprefs.Effort(value).Valid()
 }
 
 var reviewSHAFlagPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)

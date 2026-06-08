@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 )
 
 const (
@@ -578,12 +579,10 @@ func validateAgentYAML(categoryName, agentName string, index agentYAML) error {
 	if effort == "" {
 		return fmt.Errorf("%w: agent %s:%s effort is required", ErrInvalid, categoryName, agentName)
 	}
-	switch effort {
-	case "low", "medium", "high":
-		return nil
-	default:
+	if !modelprefs.Effort(effort).Valid() {
 		return fmt.Errorf("%w: agent %s:%s effort %q is invalid", ErrInvalid, categoryName, agentName, effort)
 	}
+	return nil
 }
 
 func validModelTier(value string) bool {
