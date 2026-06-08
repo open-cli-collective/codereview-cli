@@ -394,6 +394,20 @@ func TestParseClaudeBGActiveJobs(t *testing.T) {
 		}
 	})
 
+	t.Run("fails closed beyond traversal depth", func(t *testing.T) {
+		var nested any = map[string]any{"id": "job-too-deep"}
+		for i := 0; i < claudeBGInspectMaxDepth+2; i++ {
+			nested = map[string]any{"wrapper": nested}
+		}
+		payload, err := json.Marshal(nested)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		if _, err := parseClaudeBGActiveJobs(payload); err == nil || !strings.Contains(err.Error(), "unrecognized non-empty JSON shape") {
+			t.Fatalf("parseClaudeBGActiveJobs error = %v, want unrecognized non-empty JSON shape", err)
+		}
+	})
+
 	t.Run("allows empty arrays", func(t *testing.T) {
 		activeJobs, err := parseClaudeBGActiveJobs([]byte(`[]`))
 		if err != nil {

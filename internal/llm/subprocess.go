@@ -45,12 +45,15 @@ const (
 	subprocessClaude subprocessKind = "claude_cli"
 	subprocessCodex  subprocessKind = "codex_cli"
 
-	claudeBGPromptFilename = "cr-prompt.txt"
-	claudeBGResultFilename = "cr-result.json"
-	claudeBGPollInterval   = 500 * time.Millisecond
-	claudeBGSessionIDGrace = 10 * time.Second
-	claudeBGControlTimeout = 10 * time.Second
-	claudeBGStaleJobAge    = 24 * time.Hour
+	claudeBGPromptFilename  = "cr-prompt.txt"
+	claudeBGResultFilename  = "cr-result.json"
+	claudeBGPollInterval    = 500 * time.Millisecond
+	claudeBGSessionIDGrace  = 10 * time.Second
+	claudeBGControlTimeout  = 10 * time.Second
+	claudeBGInspectMaxDepth = 8
+	// Stale metadata GC only touches jobs whose state has been idle for at least a day.
+	// Shorter windows risk racing manually resumed or slow-to-settle background sessions.
+	claudeBGStaleJobAge = 24 * time.Hour
 )
 
 var (
@@ -1173,6 +1176,8 @@ func (a *SubprocessAdapter) gcClaudeBGJobs(ctx context.Context, workDir string) 
 	}
 	activeJobs, err := a.listActiveClaudeBGJobs(ctx, workDir)
 	if err != nil {
+		// Fail closed when the active job set is unavailable so stale GC cannot
+		// remove a job that might still be running.
 		return err
 	}
 	var cleanupErr error
@@ -1186,13 +1191,20 @@ func (a *SubprocessAdapter) gcClaudeBGJobs(ctx context.Context, workDir string) 
 		if !ok || !claudeBGOwnsJob(state, workDir) {
 			continue
 		}
-		if err := a.runClaudeBGControl(ctx, workDir, "rm", jobID); err != nil {
-			if removeErr := os.RemoveAll(jobDir); removeErr != nil {
-				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("llm subprocess: Claude bg stale metadata cleanup failed for %s: %w", jobID, errors.Join(err, removeErr)))
-			}
+		if err := a.removeStaleClaudeBGJobDir(ctx, workDir, jobID, jobDir); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}
 	return cleanupErr
+}
+
+func (a *SubprocessAdapter) removeStaleClaudeBGJobDir(ctx context.Context, workDir string, jobID string, jobDir string) error {
+	if err := a.runClaudeBGControl(ctx, workDir, "rm", jobID); err != nil {
+		if removeErr := os.RemoveAll(jobDir); removeErr != nil {
+			return fmt.Errorf("llm subprocess: Claude bg stale metadata cleanup failed for %s: %w", jobID, errors.Join(err, removeErr))
+		}
+	}
+	return nil
 }
 
 func (a *SubprocessAdapter) listActiveClaudeBGJobs(ctx context.Context, workDir string) (map[string]bool, error) {
@@ -1215,30 +1227,33 @@ func (a *SubprocessAdapter) listActiveClaudeBGJobs(ctx context.Context, workDir 
 }
 
 func parseClaudeBGActiveJobs(data []byte) (map[string]bool, error) {
-	var decoded any
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	var jsonRoot any
+	if err := json.Unmarshal(data, &jsonRoot); err != nil {
 		return nil, fmt.Errorf("malformed JSON: %w", err)
 	}
 	activeJobs := map[string]bool{}
-	collectClaudeBGActiveJobs(decoded, activeJobs)
-	if len(activeJobs) == 0 && claudeBGJSONShapeNonEmpty(decoded) {
+	collectClaudeBGActiveJobs(jsonRoot, 0, activeJobs)
+	if len(activeJobs) == 0 && claudeBGJSONShapeNonEmpty(jsonRoot) {
 		return nil, errors.New("unrecognized non-empty JSON shape")
 	}
 	return activeJobs, nil
 }
 
-func collectClaudeBGActiveJobs(value any, activeJobs map[string]bool) {
+func collectClaudeBGActiveJobs(value any, depth int, activeJobs map[string]bool) {
+	if depth > claudeBGInspectMaxDepth {
+		return
+	}
 	switch typed := value.(type) {
 	case []any:
 		for _, item := range typed {
-			collectClaudeBGActiveJobs(item, activeJobs)
+			collectClaudeBGActiveJobs(item, depth+1, activeJobs)
 		}
 	case map[string]any:
 		if jobID := claudeBGStateString(typed, "id", "jobId", "job_id"); jobID != "" && claudeBGJobIDRE.MatchString(jobID) {
 			activeJobs[jobID] = true
 		}
 		for _, nested := range typed {
-			collectClaudeBGActiveJobs(nested, activeJobs)
+			collectClaudeBGActiveJobs(nested, depth+1, activeJobs)
 		}
 	}
 }
@@ -1250,8 +1265,7 @@ func claudeBGJSONShapeNonEmpty(value any) bool {
 	case map[string]any:
 		return len(typed) > 0
 	default:
-		stringValue := strings.TrimSpace(fmt.Sprint(typed))
-		return stringValue != "" && stringValue != "<nil>"
+		return claudeBGSprintedValue(typed) != ""
 	}
 }
 
@@ -1285,7 +1299,7 @@ func claudeBGRespawnFlagsOwnJob(value any) bool {
 		if token == "--add-dir" && i+1 < len(tokens) && isCodereviewScratchDir(tokens[i+1]) {
 			return true
 		}
-		if value, ok := strings.CutPrefix(token, "--add-dir="); ok && isCodereviewScratchDir(value) {
+		if addDirPath, ok := strings.CutPrefix(token, "--add-dir="); ok && isCodereviewScratchDir(addDirPath) {
 			return true
 		}
 	}
@@ -1293,7 +1307,7 @@ func claudeBGRespawnFlagsOwnJob(value any) bool {
 }
 
 func flattenStateStrings(value any, depth int) []string {
-	if depth > 8 {
+	if depth > claudeBGInspectMaxDepth {
 		return nil
 	}
 	switch typed := value.(type) {
@@ -1343,11 +1357,19 @@ func isCodereviewScratchDir(path string) bool {
 
 func claudeBGStateString(state map[string]any, keys ...string) string {
 	for _, key := range keys {
-		if value := strings.TrimSpace(fmt.Sprint(state[key])); value != "" && value != "<nil>" {
+		if value := claudeBGSprintedValue(state[key]); value != "" {
 			return value
 		}
 	}
 	return ""
+}
+
+func claudeBGSprintedValue(value any) string {
+	stringValue := strings.TrimSpace(fmt.Sprint(value))
+	if stringValue == "" || stringValue == "<nil>" {
+		return ""
+	}
+	return stringValue
 }
 
 func writeClaudeBGPromptFile(prompt string, scratch string) error {
