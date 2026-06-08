@@ -351,6 +351,34 @@ func TestSubprocessClaudeCleanupWarningsDoNotFailSuccess(t *testing.T) {
 	}
 }
 
+func TestParseClaudeBGActiveJobs(t *testing.T) {
+	t.Run("recurses through unknown wrapper keys", func(t *testing.T) {
+		activeJobs, err := parseClaudeBGActiveJobs([]byte(`{"wrapper":{"sessions":[{"id":"job-active"}]}}`))
+		if err != nil {
+			t.Fatalf("parseClaudeBGActiveJobs: %v", err)
+		}
+		if !activeJobs["job-active"] {
+			t.Fatalf("activeJobs = %#v, want job-active", activeJobs)
+		}
+	})
+
+	t.Run("fails closed on non-empty shape without ids", func(t *testing.T) {
+		if _, err := parseClaudeBGActiveJobs([]byte(`{"wrapper":{"sessions":[{"state":"running"}]}}`)); err == nil || !strings.Contains(err.Error(), "unrecognized non-empty JSON shape") {
+			t.Fatalf("parseClaudeBGActiveJobs error = %v, want unrecognized non-empty JSON shape", err)
+		}
+	})
+
+	t.Run("allows empty arrays", func(t *testing.T) {
+		activeJobs, err := parseClaudeBGActiveJobs([]byte(`[]`))
+		if err != nil {
+			t.Fatalf("parseClaudeBGActiveJobs: %v", err)
+		}
+		if len(activeJobs) != 0 {
+			t.Fatalf("activeJobs = %#v, want empty", activeJobs)
+		}
+	})
+}
+
 func TestSubprocessClaudeWaitsForDelayedIdleSessionID(t *testing.T) {
 	tempDir := t.TempDir()
 	configDir := filepath.Join(tempDir, "claude")

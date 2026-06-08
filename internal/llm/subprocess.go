@@ -592,6 +592,7 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 			s.setSessionID(sessionID)
 		}
 	}
+	s.runCleanup()
 	if jobID != "" {
 		if err := adapter.cleanupClaudeBGJob(context.WithoutCancel(ctx), jobID, result.err, workDir); err != nil {
 			s.writeCleanupWarning(err)
@@ -600,9 +601,7 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 
 	s.cancel()
 	s.closeLog()
-	if s.cleanup != nil {
-		_ = s.cleanup()
-	}
+	s.runCleanup()
 	s.mu.Lock()
 	s.result = result
 	s.mu.Unlock()
@@ -671,6 +670,14 @@ func (s *subprocessStream) writeCleanupWarning(err error) {
 		return
 	}
 	s.writeLog([]byte("warning: " + err.Error() + "\n"))
+}
+
+func (s *subprocessStream) runCleanup() {
+	if s.cleanup == nil {
+		return
+	}
+	_ = s.cleanup()
+	s.cleanup = nil
 }
 
 func (s *subprocessStream) closeLog() {
@@ -1214,6 +1221,9 @@ func parseClaudeBGActiveJobs(data []byte) (map[string]bool, error) {
 	}
 	activeJobs := map[string]bool{}
 	collectClaudeBGActiveJobs(decoded, activeJobs)
+	if len(activeJobs) == 0 && claudeBGJSONShapeNonEmpty(decoded) {
+		return nil, errors.New("unrecognized non-empty JSON shape")
+	}
 	return activeJobs, nil
 }
 
@@ -1227,11 +1237,21 @@ func collectClaudeBGActiveJobs(value any, activeJobs map[string]bool) {
 		if jobID := claudeBGStateString(typed, "id", "jobId", "job_id"); jobID != "" && claudeBGJobIDRE.MatchString(jobID) {
 			activeJobs[jobID] = true
 		}
-		for _, key := range []string{"agents", "items", "data"} {
-			if nested, ok := typed[key]; ok {
-				collectClaudeBGActiveJobs(nested, activeJobs)
-			}
+		for _, nested := range typed {
+			collectClaudeBGActiveJobs(nested, activeJobs)
 		}
+	}
+}
+
+func claudeBGJSONShapeNonEmpty(value any) bool {
+	switch typed := value.(type) {
+	case []any:
+		return len(typed) > 0
+	case map[string]any:
+		return len(typed) > 0
+	default:
+		stringValue := strings.TrimSpace(fmt.Sprint(typed))
+		return stringValue != "" && stringValue != "<nil>"
 	}
 }
 
