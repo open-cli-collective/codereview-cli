@@ -230,6 +230,28 @@ func TestSubprocessClaudeStaleJobGC(t *testing.T) {
 		}
 	})
 
+	t.Run("owned fresh job is left alone", func(t *testing.T) {
+		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
+		configDir := filepath.Join(tempDir, "claude")
+		workDir := helperClaudeWorkDir(recordPath)
+		if err := os.MkdirAll(workDir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(workDir): %v", err)
+		}
+		adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
+		writeClaudeHelperStateAt(t, filepath.Join(configDir, "jobs", "job-fresh", "state.json"), map[string]any{"cwd": workDir}, time.Now().Add(-(claudeBGStaleJobAge - time.Minute)))
+
+		if err := adapter.cleanupClaudeBGJob(context.Background(), "job-1", nil, workDir); err != nil {
+			t.Fatalf("cleanupClaudeBGJob: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(configDir, "jobs", "job-fresh")); err != nil {
+			t.Fatalf("job-fresh missing after cleanup: %v", err)
+		}
+		if hasClaudeControlRecord(readHelperRecords(t, recordPath), "rm", "job-fresh") {
+			t.Fatal("unexpected rm for fresh owned job")
+		}
+	})
+
 	t.Run("unrelated stale job is left alone", func(t *testing.T) {
 		tempDir := t.TempDir()
 		recordPath := filepath.Join(tempDir, "records.jsonl")
@@ -335,8 +357,12 @@ func TestSubprocessClaudeCleanupWarningsDoNotFailSuccess(t *testing.T) {
 	if string(response.StructuredOutput) != `{"ok":true}` {
 		t.Fatalf("StructuredOutput = %q, want success response", response.StructuredOutput)
 	}
+	record := readHelperRecord(t, recordPath)
 	if _, err := os.Stat(filepath.Join(configDir, "jobs", "job-stale")); err != nil {
 		t.Fatalf("job-stale missing after fail-closed agents discovery: %v", err)
+	}
+	if _, err := os.Stat(record.AddDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("scratch dir exists after warning-path cleanup: stat err = %v", err)
 	}
 	logged, err := os.ReadFile(logPath) // #nosec G304 -- test reads the log path it created with t.TempDir.
 	if err != nil {
