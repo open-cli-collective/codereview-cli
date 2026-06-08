@@ -213,8 +213,19 @@ func (a *PiRPCAdapter) buildArgs(req Request, _ string) ([]string, error) {
 }
 
 func (a *PiRPCAdapter) validateArgs(args []string) error {
-	if containsFlag(args, "-p") || containsFlag(args, "--print") {
-		return fmt.Errorf("%w: pi_rpc must not use print mode", ErrUnsafeSubprocessConfig)
+	if err := validateAllowedFlags("pi_rpc", args, map[string]bool{
+		"--mode":                true,
+		"--system-prompt":       true,
+		"--no-tools":            false,
+		"--no-extensions":       false,
+		"--no-skills":           false,
+		"--no-prompt-templates": false,
+		"--no-themes":           false,
+		"--no-session":          false,
+		"--model":               true,
+		"--thinking":            true,
+	}); err != nil {
+		return err
 	}
 	if flagValue(args, "--mode") != "rpc" {
 		return fmt.Errorf("%w: pi_rpc must use rpc mode", ErrUnsafeSubprocessConfig)

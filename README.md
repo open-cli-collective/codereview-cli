@@ -314,6 +314,15 @@ logged-in CLI or local runtime. `api_key` LLM auth requires
 `llm.credential_ref` and stores a provider-specific API key in the credential
 backend.
 
+For Anthropic subscription profiles, `adapter: claude_cli` runs Claude Code
+background jobs, writes the full review task to `cr-prompt.txt` in an
+adapter-owned scratch directory, and starts `claude --bg` with a compact
+positional prompt that allows only `Read,Write`. The adapter reads the review
+result from `cr-result.json` in that scratch directory and records the Claude
+provider session returned by the job state. Background jobs run from a stable
+cache workdir so Claude Code can resolve resumed sessions consistently; set
+`CR_CLAUDE_BG_WORK_DIR` to override that workdir.
+
 Credential key matrix:
 
 | Profile field | Purpose | Auth/provider | Required keys | Optional keys | v1 behavior |
@@ -816,7 +825,9 @@ text is escaped before posting.
 turns. A named session is scoped by name, profile, provider, adapter, model, and
 host. Profile/provider/adapter/model mismatches are errors. Host mismatches warn
 and continue. If the active adapter does not support resume, `cr` starts fresh
-and records the new provider session when available.
+and records the new provider session when available. `claude_cli` supports
+resume by launching a new Claude Code background job with the stored provider
+session.
 
 ### Retention
 

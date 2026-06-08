@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +44,25 @@ type subprocessKind string
 const (
 	subprocessClaude subprocessKind = "claude_cli"
 	subprocessCodex  subprocessKind = "codex_cli"
+
+	claudeBGPromptFilename = "cr-prompt.txt"
+	claudeBGResultFilename = "cr-result.json"
+	claudeBGPollInterval   = 500 * time.Millisecond
+	claudeBGSessionIDGrace = 10 * time.Second
+)
+
+var (
+	claudeBGJobIDDirectRE = regexp.MustCompile(`backgrounded\s+.\s+([A-Za-z0-9_-]+)`)
+	claudeBGJobIDAttachRE = regexp.MustCompile(`\bclaude\s+attach\s+([A-Za-z0-9_-]+)\b`)
+	claudeBGJobIDRE       = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	claudeBGUserCacheDir  = os.UserCacheDir
+	claudeBGTerminalState = map[string]bool{
+		"done":    true,
+		"failed":  true,
+		"waiting": true,
+		"stopped": true,
+		"blocked": true,
+	}
 )
 
 // SubprocessAdapter runs a subscription CLI as an LLM adapter.
@@ -88,7 +110,7 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 func (a *SubprocessAdapter) Name() string { return string(a.kind) }
 
 // SupportsResume reports whether subprocess session resume is implemented.
-func (a *SubprocessAdapter) SupportsResume() bool { return false }
+func (a *SubprocessAdapter) SupportsResume() bool { return a.kind == subprocessClaude }
 
 // SupportsCacheAccounting reports whether cache usage metrics are guaranteed.
 func (a *SubprocessAdapter) SupportsCacheAccounting() bool { return false }
@@ -103,9 +125,16 @@ func (a *SubprocessAdapter) Quota(context.Context) (Quota, bool, error) {
 
 // Start launches the configured subprocess in a fresh scratch directory.
 func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, error) {
+	if a.kind == subprocessClaude {
+		return a.startClaudeBG(ctx, req, "")
+	}
 	if a.kind == subprocessCodex && !a.allowBestEffortNoTools {
 		return nil, fmt.Errorf("%w: codex_cli requires AllowBestEffortNoTools until Codex exposes an all-tools-disabled flag", ErrUnsafeSubprocessConfig)
 	}
+	return a.startJSONLSubprocess(ctx, req)
+}
+
+func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Request) (Stream, error) {
 	scratch, cleanup, err := a.scratchDirFactory()
 	if err != nil {
 		return nil, err
@@ -200,23 +229,139 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 	return stream, nil
 }
 
-// Resume is unsupported until subprocess session persistence is designed.
-func (a *SubprocessAdapter) Resume(context.Context, string, Request) (Stream, error) {
-	return nil, fmt.Errorf("llm subprocess: resume unsupported for %s", a.kind)
+func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resumeSessionID string) (Stream, error) {
+	scratch, cleanup, err := a.scratchDirFactory()
+	if err != nil {
+		return nil, err
+	}
+	if cleanup == nil {
+		cleanup = func() error { return nil }
+	}
+	scratch, err = validateScratchDir(scratch)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	if err := writeClaudeBGPromptFile(req.Prompt, scratch); err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	args, err := a.buildArgsForSession(req, scratch, resumeSessionID)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	if err := a.validateArgs(args, scratch); err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	workDir, err := claudeBGWorkingDir(a.env)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+
+	procCtx, cancel := context.WithCancel(ctx)
+	if a.timeout > 0 {
+		procCtx, cancel = context.WithTimeout(ctx, a.timeout)
+	}
+	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
+	// #nosec G204 -- subprocess adapters intentionally launch configured CLI binaries after validating adapter-owned safety args.
+	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
+	cmd.Dir = workDir
+	procGroup, err := newProcessGroup(cmd)
+	if err != nil {
+		cancel()
+		_ = cleanup()
+		return nil, err
+	}
+	cmd.Cancel = func() error {
+		return procGroup.kill(cmd)
+	}
+	if len(a.env) > 0 {
+		cmd.Env = append(os.Environ(), a.env...)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+	logFile, err := openSubprocessLog(req.LogPath)
+	if err != nil {
+		cancel()
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		cancel()
+		closeSubprocessLog(logFile)
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+	if err := procGroup.afterStart(cmd); err != nil {
+		cancel()
+		_ = procGroup.kill(cmd)
+		go func() { _, _ = io.Copy(io.Discard, stdout) }()
+		go func() { _, _ = io.Copy(io.Discard, stderr) }()
+		_ = cmd.Wait()
+		closeSubprocessLog(logFile)
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+
+	stream := &subprocessStream{
+		cancel:       cancel,
+		done:         make(chan struct{}),
+		logFile:      logFile,
+		cleanup:      cleanup,
+		processGroup: procGroup,
+	}
+	go stream.runClaudeBG(procCtx, a, cmd, stdout, stderr, scratch, workDir)
+	return stream, nil
+}
+
+// Resume starts a subprocess request from an existing provider session when the
+// adapter supports provider-side session reuse.
+func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Request) (Stream, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if a.kind != subprocessClaude {
+		return nil, fmt.Errorf("llm subprocess: resume unsupported for %s", a.kind)
+	}
+	if sessionID == "" {
+		// A blank session id is treated as a fresh start so callers can pass
+		// through optional resume state without special-casing the first run.
+		return a.Start(ctx, req)
+	}
+	return a.startClaudeBG(ctx, req, sessionID)
 }
 
 func (a *SubprocessAdapter) buildArgs(req Request, scratch string) ([]string, error) {
+	return a.buildArgsForSession(req, scratch, "")
+}
+
+func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, resumeSessionID string) ([]string, error) {
 	switch a.kind {
 	case subprocessClaude:
 		args := []string{
-			"--bare",
-			"--print",
-			"--output-format", "stream-json",
-			"--tools", "",
-			"--mcp-config", "{}",
-			"--strict-mcp-config",
-			"--disable-slash-commands",
-			"--no-session-persistence",
+			"--bg",
+			"--tools", "Read,Write",
+			"--permission-mode", "acceptEdits",
+			"--add-dir", scratch,
+		}
+		if resumeSessionID != "" {
+			args = append(args, "--resume", resumeSessionID)
 		}
 		if req.Model != "" {
 			args = append(args, "--model", req.Model)
@@ -224,7 +369,7 @@ func (a *SubprocessAdapter) buildArgs(req Request, scratch string) ([]string, er
 		if req.Effort != "" {
 			args = append(args, "--effort", req.Effort)
 		}
-		return append(args, "--", req.Prompt), nil
+		return append(args, "--", claudeBGPositionalPrompt(scratch)), nil
 	case subprocessCodex:
 		args := []string{
 			"exec",
@@ -250,7 +395,7 @@ func (a *SubprocessAdapter) buildArgs(req Request, scratch string) ([]string, er
 
 func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 	checkedArgs := argsBeforePrompt(args)
-	if containsFlag(checkedArgs, "--add-dir") || containsFlag(checkedArgs, "--search") {
+	if containsFlag(checkedArgs, "--search") {
 		return fmt.Errorf("%w: unsafe tool-enabling flag present", ErrUnsafeSubprocessConfig)
 	}
 	if flagValue(checkedArgs, "--sandbox") == "danger-full-access" {
@@ -258,10 +403,26 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 	}
 	switch a.kind {
 	case subprocessClaude:
+		if len(checkedArgs)+2 != len(args) || args[len(checkedArgs)] != "--" || strings.TrimSpace(args[len(checkedArgs)+1]) == "" {
+			return fmt.Errorf("%w: claude_cli must receive a positional background prompt", ErrUnsafeSubprocessConfig)
+		}
+		if err := validateAllowedFlags("claude_cli", checkedArgs, map[string]bool{
+			"--bg":              false,
+			"--tools":           true,
+			"--permission-mode": true,
+			"--add-dir":         true,
+			"--resume":          true,
+			"--model":           true,
+			"--effort":          true,
+		}); err != nil {
+			return err
+		}
+		if !containsFlag(checkedArgs, "--bg") {
+			return fmt.Errorf("%w: claude_cli must use background jobs", ErrUnsafeSubprocessConfig)
+		}
 		required := map[string]string{
-			"--output-format": "stream-json",
-			"--tools":         "",
-			"--mcp-config":    "{}",
+			"--tools":           "Read,Write",
+			"--permission-mode": "acceptEdits",
 		}
 		for flag, value := range required {
 			got, ok := flagValueOK(checkedArgs, flag)
@@ -269,12 +430,14 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 				return fmt.Errorf("%w: missing %s %q", ErrUnsafeSubprocessConfig, flag, value)
 			}
 		}
-		for _, flag := range []string{"--bare", "--print", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"} {
-			if !containsFlag(checkedArgs, flag) {
-				return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
-			}
+		addDir, ok := flagValueOK(checkedArgs, "--add-dir")
+		if !ok || !sameCleanPath(addDir, scratch) {
+			return fmt.Errorf("%w: claude_cli must restrict add-dir to scratch dir", ErrUnsafeSubprocessConfig)
 		}
 	case subprocessCodex:
+		if containsFlag(checkedArgs, "--add-dir") {
+			return fmt.Errorf("%w: unsafe tool-enabling flag present", ErrUnsafeSubprocessConfig)
+		}
 		if len(checkedArgs) == 0 || checkedArgs[0] != "exec" {
 			return fmt.Errorf("%w: codex_cli must use exec", ErrUnsafeSubprocessConfig)
 		}
@@ -364,6 +527,76 @@ func (s *subprocessStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Rea
 	if s.processGroup != nil {
 		_ = s.processGroup.close()
 	}
+	s.closeLog()
+	if s.cleanup != nil {
+		_ = s.cleanup()
+	}
+	s.mu.Lock()
+	s.result = result
+	s.mu.Unlock()
+	close(s.done)
+}
+
+func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessAdapter, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader, scratch string, workDir string) {
+	stderrDone := make(chan bytes.Buffer, 1)
+	go func() {
+		var stderrBuf bytes.Buffer
+		if s.logFile != nil {
+			_, _ = io.Copy(io.MultiWriter(subprocessLogWriter{stream: s}, &stderrBuf), stderr)
+		} else {
+			_, _ = io.Copy(&stderrBuf, stderr)
+		}
+		stderrDone <- stderrBuf
+	}()
+
+	launchStdout, readErr := io.ReadAll(stdout)
+	if len(launchStdout) > 0 {
+		s.writeLog(launchStdout)
+	}
+	waitErr := cmd.Wait()
+	stderrBuf := <-stderrDone
+
+	result := subprocessResult{}
+	jobID := ""
+	if readErr != nil {
+		result.err = readErr
+	} else if ctx.Err() != nil {
+		result.err = ctx.Err()
+	} else if waitErr != nil {
+		detail := strings.TrimSpace(stderrBuf.String())
+		if detail == "" {
+			detail = strings.TrimSpace(string(launchStdout))
+		}
+		if detail != "" {
+			result.err = fmt.Errorf("llm subprocess: Claude bg launch failed: %w: %s", waitErr, detail)
+		} else {
+			result.err = waitErr
+		}
+	} else {
+		jobID = extractClaudeBGJobID(string(launchStdout))
+		if jobID == "" {
+			result.err = errors.New("llm subprocess: could not parse Claude background job id")
+		}
+	}
+
+	if s.processGroup != nil {
+		_ = s.processGroup.close()
+	}
+
+	if result.err == nil {
+		var sessionID string
+		result.response, sessionID, result.err = adapter.waitForClaudeBGResult(ctx, jobID, scratch)
+		if sessionID != "" {
+			s.setSessionID(sessionID)
+		}
+	}
+	if jobID != "" {
+		if err := adapter.cleanupClaudeBGJob(context.WithoutCancel(ctx), jobID, result.err, workDir); err != nil && result.err == nil {
+			result.err = err
+		}
+	}
+
+	s.cancel()
 	s.closeLog()
 	if s.cleanup != nil {
 		_ = s.cleanup()
@@ -651,6 +884,360 @@ func mergeUsage(current Usage, next Usage) Usage {
 	return current
 }
 
+func (a *SubprocessAdapter) waitForClaudeBGResult(ctx context.Context, jobID string, scratch string) (Response, string, error) {
+	resultPaths := []string{
+		filepath.Join(scratch, claudeBGResultFilename),
+		filepath.Join(claudeConfigDirFromEnv(a.env), "jobs", jobID, "tmp", claudeBGResultFilename),
+	}
+	state, err := a.waitForClaudeBGState(ctx, jobID, resultPaths)
+	if err != nil {
+		return Response{}, extractClaudeBGSessionID(state), err
+	}
+	sessionID := extractClaudeBGSessionID(state)
+	if sessionID == "" {
+		sessionID, state = a.waitForClaudeBGSessionID(ctx, jobID, state)
+	}
+	if sessionID == "" {
+		return Response{}, "", fmt.Errorf("llm subprocess: Claude background job completed without session id: %s", claudeBGStateDetail(state))
+	}
+	output, err := readFirstNonEmptyFile(resultPaths)
+	if err != nil {
+		return Response{}, sessionID, err
+	}
+	return Response{StructuredOutput: output}, sessionID, nil
+}
+
+func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID string, resultPaths []string) (map[string]any, error) {
+	statePath := filepath.Join(claudeConfigDirFromEnv(a.env), "jobs", jobID, "state.json")
+	lastState := map[string]any{"state": "starting", "job_id": jobID}
+	ticker := time.NewTicker(claudeBGPollInterval)
+	defer ticker.Stop()
+
+	for {
+		state, ok := readClaudeBGState(statePath)
+		if ok {
+			state["job_id"] = jobID
+			lastState = state
+			stateName := strings.TrimSpace(fmt.Sprint(state["state"]))
+			if claudeBGIdleWithResultFile(state, resultPaths) {
+				state["state"] = "done"
+				state["result_file_ready_state"] = stateName
+				return state, nil
+			}
+			if claudeBGTerminalState[stateName] {
+				if stateName == "done" {
+					return state, nil
+				}
+				return state, fmt.Errorf("llm subprocess: Claude background job %s: %s", stateName, claudeBGStateDetail(state))
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			lastState["state"] = "timeout"
+			if detail := claudeBGStateDetail(lastState); detail != "" && detail != "no detail" {
+				return lastState, fmt.Errorf("llm subprocess: Claude background job timed out: %s: %w", detail, ctx.Err())
+			}
+			return lastState, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (a *SubprocessAdapter) waitForClaudeBGSessionID(ctx context.Context, jobID string, lastState map[string]any) (string, map[string]any) {
+	statePath := filepath.Join(claudeConfigDirFromEnv(a.env), "jobs", jobID, "state.json")
+	deadline := time.NewTimer(claudeBGSessionIDGrace)
+	defer deadline.Stop()
+	ticker := time.NewTicker(claudeBGPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", lastState
+		case <-deadline.C:
+			return "", lastState
+		case <-ticker.C:
+			state, ok := readClaudeBGState(statePath)
+			if !ok {
+				continue
+			}
+			state["job_id"] = jobID
+			lastState = state
+			if sessionID := extractClaudeBGSessionID(state); sessionID != "" {
+				return sessionID, state
+			}
+		}
+	}
+}
+
+func readClaudeBGState(path string) (map[string]any, bool) {
+	// #nosec G304 -- Claude bg state path is derived from adapter env and job id.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, false
+	}
+	return state, true
+}
+
+func claudeBGIdleWithResultFile(state map[string]any, resultPaths []string) bool {
+	stateName := strings.TrimSpace(fmt.Sprint(state["state"]))
+	if stateName != "working" {
+		return false
+	}
+	tempo, hasTempo := state["tempo"]
+	if !hasTempo || strings.TrimSpace(fmt.Sprint(tempo)) != "idle" {
+		return false
+	}
+	if inFlight, ok := state["inFlight"].(map[string]any); ok {
+		if numericStateValue(inFlight["tasks"]) != 0 || numericStateValue(inFlight["queued"]) != 0 {
+			return false
+		}
+	}
+	return anyNonEmptyFile(resultPaths)
+}
+
+func numericStateValue(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed)
+	case int:
+		return typed
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func anyNonEmptyFile(paths []string) bool {
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() && info.Size() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func readFirstNonEmptyFile(paths []string) ([]byte, error) {
+	for _, path := range paths {
+		// #nosec G304 -- result paths are adapter-owned scratch/job tmp paths.
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if len(strings.TrimSpace(string(data))) == 0 {
+			return nil, errors.New("llm subprocess: Claude background job wrote an empty result file")
+		}
+		return data, nil
+	}
+	return nil, errors.New("llm subprocess: Claude background job completed without writing result file")
+}
+
+func claudeBGStateDetail(state map[string]any) string {
+	for _, key := range []string{"detail", "error", "message", "needs"} {
+		if value := strings.TrimSpace(fmt.Sprint(state[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	if output, ok := state["output"].(map[string]any); ok {
+		for _, key := range []string{"error", "message"} {
+			if value := strings.TrimSpace(fmt.Sprint(output[key])); value != "" && value != "<nil>" {
+				return value
+			}
+		}
+	}
+	return "no detail"
+}
+
+func extractClaudeBGSessionID(state map[string]any) string {
+	for _, key := range []string{"sessionId", "session_id", "resumeSessionId", "resume_session_id"} {
+		if value := strings.TrimSpace(fmt.Sprint(state[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	if output, ok := state["output"].(map[string]any); ok {
+		for _, key := range []string{"sessionId", "session_id"} {
+			if value := strings.TrimSpace(fmt.Sprint(output[key])); value != "" && value != "<nil>" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func (a *SubprocessAdapter) cleanupClaudeBGJob(ctx context.Context, jobID string, resultErr error, workDir string) error {
+	if !claudeBGJobIDRE.MatchString(jobID) {
+		return fmt.Errorf("llm subprocess: invalid Claude background job id %q", jobID)
+	}
+	var cleanupErr error
+	if resultErr != nil {
+		if err := a.runClaudeBGControl(ctx, workDir, "stop", jobID); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	if err := a.runClaudeBGControl(ctx, workDir, "rm", jobID); err != nil {
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	return cleanupErr
+}
+
+func (a *SubprocessAdapter) runClaudeBGControl(ctx context.Context, workDir string, verb string, jobID string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	execArgs := append(append([]string(nil), a.commandArgsPrefix...), verb, jobID)
+	// #nosec G204 -- control verbs target the adapter-owned Claude CLI binary and validated job id.
+	cmd := exec.CommandContext(cmdCtx, a.command, execArgs...)
+	cmd.Dir = workDir
+	if len(a.env) > 0 {
+		cmd.Env = append(os.Environ(), a.env...)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail != "" {
+			return fmt.Errorf("llm subprocess: Claude bg cleanup %s failed: %w: %s", verb, err, detail)
+		}
+		return fmt.Errorf("llm subprocess: Claude bg cleanup %s failed: %w", verb, err)
+	}
+	return nil
+}
+
+func writeClaudeBGPromptFile(prompt string, scratch string) error {
+	promptPath := filepath.Join(scratch, claudeBGPromptFilename)
+	resultPath := filepath.Join(scratch, claudeBGResultFilename)
+	if err := os.WriteFile(promptPath, []byte(wrapClaudeBGPrompt(prompt, resultPath)), 0o600); err != nil {
+		return fmt.Errorf("llm subprocess: writing Claude bg prompt file: %w", err)
+	}
+	return nil
+}
+
+func claudeBGPositionalPrompt(scratch string) string {
+	promptPath := filepath.Join(scratch, claudeBGPromptFilename)
+	resultPath := filepath.Join(scratch, claudeBGResultFilename)
+	return fmt.Sprintf("Read %s and follow its instructions exactly. Use the Write tool to write the final structured result to %s. Do not answer in chat.", promptPath, resultPath)
+}
+
+func wrapClaudeBGPrompt(prompt string, resultPath string) string {
+	return strings.TrimSpace(prompt) + "\n\n" + strings.TrimSpace(fmt.Sprintf(`codereview-cli completion contract:
+- When the review is complete, use the Write tool to write the final structured JSON result to this exact file path: %s
+- The file contents must be only the final JSON value requested by the review instructions.
+- Do not wrap the JSON in markdown fences.
+- Do not write any explanatory text before or after the JSON in that file.`, resultPath)) + "\n"
+}
+
+func extractClaudeBGJobID(output string) string {
+	for _, re := range []*regexp.Regexp{claudeBGJobIDDirectRE, claudeBGJobIDAttachRE} {
+		match := re.FindStringSubmatch(output)
+		if len(match) == 2 && claudeBGJobIDRE.MatchString(match[1]) {
+			return match[1]
+		}
+	}
+	return ""
+}
+
+func claudeConfigDirFromEnv(env []string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], "CLAUDE_CONFIG_DIR=") {
+			if value := strings.TrimSpace(strings.TrimPrefix(env[i], "CLAUDE_CONFIG_DIR=")); value != "" {
+				return value
+			}
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); value != "" {
+		return value
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		return filepath.Join(home, ".claude")
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".claude")
+	}
+	return ".claude"
+}
+
+func claudeBGWorkingDir(env []string) (string, error) {
+	if value := envValue(env, "CR_CLAUDE_BG_WORK_DIR"); value != "" {
+		return ensureClaudeBGWorkingDir(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("CR_CLAUDE_BG_WORK_DIR")); value != "" {
+		return ensureClaudeBGWorkingDir(value)
+	}
+	base, err := claudeBGUserCacheDir()
+	if err != nil || strings.TrimSpace(base) == "" {
+		base = os.TempDir()
+	}
+	return ensureClaudeBGWorkingDir(filepath.Join(base, "codereview-cli", "claude-bg-workdir"))
+}
+
+func ensureClaudeBGWorkingDir(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(env[i], prefix))
+		}
+	}
+	return ""
+}
+
+func sameCleanPath(left string, right string) bool {
+	leftAbs, leftErr := filepath.Abs(left)
+	rightAbs, rightErr := filepath.Abs(right)
+	if leftErr == nil {
+		left = leftAbs
+	}
+	if rightErr == nil {
+		right = rightAbs
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func validateAllowedFlags(adapterName string, args []string, allowed map[string]bool) error {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		flag := arg
+		inlineValue := false
+		if name, _, ok := strings.Cut(arg, "="); ok {
+			flag = name
+			inlineValue = true
+		}
+		hasValue, ok := allowed[flag]
+		if !ok {
+			return fmt.Errorf("%w: unexpected %s flag %s", ErrUnsafeSubprocessConfig, adapterName, arg)
+		}
+		if inlineValue {
+			if !hasValue {
+				return fmt.Errorf("%w: %s flag %s does not accept a value", ErrUnsafeSubprocessConfig, adapterName, flag)
+			}
+			continue
+		}
+		if hasValue {
+			i++
+		}
+	}
+	return nil
+}
+
 func containsFlag(args []string, flag string) bool {
 	for _, arg := range args {
 		if arg == flag {
@@ -669,6 +1256,9 @@ func flagValueOK(args []string, flag string) (string, bool) {
 	for i, arg := range args {
 		if arg == flag && i+1 < len(args) {
 			return args[i+1], true
+		}
+		if value, ok := strings.CutPrefix(arg, flag+"="); ok {
+			return value, true
 		}
 	}
 	return "", false

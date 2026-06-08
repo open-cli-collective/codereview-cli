@@ -69,11 +69,6 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 			t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
 		}
 	}
-	for _, flag := range []string{"-p", "--print"} {
-		if containsFlag(record.AdapterArgs, flag) {
-			t.Fatalf("args = %#v, do not want print mode flag %s", record.AdapterArgs, flag)
-		}
-	}
 	if len(record.Commands) != 1 {
 		t.Fatalf("commands = %#v, want one prompt command", record.Commands)
 	}
@@ -342,7 +337,7 @@ func TestPiRPCRejectsUnsafeSpecs(t *testing.T) {
 		{name: "tools allowlist", args: append([]string{"--tools", "read"}, args...)},
 		{name: "missing no tools", args: removeFlag(args, "--no-tools")},
 		{name: "missing no extensions", args: removeFlag(args, "--no-extensions")},
-		{name: "print mode", args: append([]string{"-p"}, args...)},
+		{name: "unexpected flag", args: append([]string{"--unexpected"}, args...)},
 		{name: "text mode", args: replaceFlagValue(args, "--mode", "text")},
 		{name: "wrong system prompt", args: replaceFlagValue(args, "--system-prompt", "be loose")},
 	} {
