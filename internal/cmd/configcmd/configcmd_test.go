@@ -319,6 +319,65 @@ func TestConfigLLMModelsSetUnsetAndReset(t *testing.T) {
 	}
 }
 
+func TestConfigLLMModelsMutatesSelectedProfileOnly(t *testing.T) {
+	cfg := testConfig()
+	home := cfg.Profiles["home"]
+	home.LLM.ModelMap = config.ModelMap{"medium": "home-model"}
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+
+	cmd, _ := newTestCommand(path)
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "llm", "models", "set", "medium", "work-model"}); err != nil {
+		t.Fatalf("Execute work set: %v", err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after work set: %v", err)
+	}
+	if got := loaded.Profiles["work"].LLM.ModelMap["medium"]; got != "work-model" {
+		t.Fatalf("work model_map.medium = %q, want work-model", got)
+	}
+	if got := loaded.Profiles["home"].LLM.ModelMap["medium"]; got != "home-model" {
+		t.Fatalf("home model_map.medium = %q, want unchanged home-model", got)
+	}
+
+	cmd, _ = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "llm", "models", "unset", "medium"}); err != nil {
+		t.Fatalf("Execute work unset: %v", err)
+	}
+	loaded, err = config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after work unset: %v", err)
+	}
+	if loaded.Profiles["work"].LLM.ModelMap != nil {
+		t.Fatalf("work model_map after unset = %#v, want nil", loaded.Profiles["work"].LLM.ModelMap)
+	}
+	if got := loaded.Profiles["home"].LLM.ModelMap["medium"]; got != "home-model" {
+		t.Fatalf("home model_map.medium = %q, want unchanged home-model", got)
+	}
+
+	work := loaded.Profiles["work"]
+	work.LLM.ModelMap = config.ModelMap{"large": "work-large"}
+	loaded.Profiles["work"] = work
+	if err := config.Save(path, loaded); err != nil {
+		t.Fatalf("Save before work reset: %v", err)
+	}
+	cmd, _ = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "llm", "models", "reset", "--provider", "anthropic"}); err != nil {
+		t.Fatalf("Execute work reset: %v", err)
+	}
+	loaded, err = config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after work reset: %v", err)
+	}
+	if loaded.Profiles["work"].LLM.ModelMap != nil {
+		t.Fatalf("work model_map after reset = %#v, want nil", loaded.Profiles["work"].LLM.ModelMap)
+	}
+	if got := loaded.Profiles["home"].LLM.ModelMap["medium"]; got != "home-model" {
+		t.Fatalf("home model_map.medium = %q, want unchanged home-model", got)
+	}
+}
+
 func TestConfigLLMModelsRejectsInvalidInputs(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	tests := []struct {

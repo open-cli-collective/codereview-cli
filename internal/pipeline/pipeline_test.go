@@ -288,6 +288,49 @@ func TestDryRunNoDiffDoesNotResolveUnmappedModelTier(t *testing.T) {
 	}
 }
 
+func TestDryRunAgentModelTierUsesProfileModelMapOverride(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.Profile.LLM.ModelMap = config.ModelMap{"medium": "profile-medium-model"}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-model-map-override" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	for _, request := range adapter.Requests() {
+		if request.Model != "profile-medium-model" || request.Effort != "medium" {
+			t.Fatalf("request = model:%q effort:%q, want profile-medium-model/medium", request.Model, request.Effort)
+		}
+	}
+	sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListSessionsForRun: %v", err)
+	}
+	for _, session := range sessions {
+		if session.Model != "profile-medium-model" {
+			t.Fatalf("session.Model = %q, want profile-medium-model", session.Model)
+		}
+	}
+}
+
 func TestDryRunLLMOverridesApplyToAllRequestsAndSessions(t *testing.T) {
 	tests := []struct {
 		name           string
