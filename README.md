@@ -110,6 +110,19 @@ cr init --non-interactive \
   --git-token-from-env GITHUB_TOKEN
 ```
 
+Setup with Codex CLI subscription auth. Install Codex CLI, log in with your
+subscription, and make sure the `codex` binary is available on `PATH` before
+running `cr review`. This path is supported for review, but remains
+best-effort/beta until Codex exposes an explicit all-tools-disabled flag.
+
+```bash
+cr init --non-interactive \
+  --llm-provider openai \
+  --llm-auth subscription \
+  --llm-adapter codex_cli \
+  --git-token-from-env GITHUB_TOKEN
+```
+
 Setup with a direct LLM API key:
 
 ```bash
@@ -188,8 +201,16 @@ profiles:
 ```
 
 For adapter-managed LLM credentials, use `auth: subscription` and omit
-`llm.credential_ref`. Pi-backed profiles must set `provider: pi`,
-`auth: subscription`, and `adapter: pi_rpc` together:
+`llm.credential_ref`. Codex-backed profiles must set `provider: openai`,
+`auth: subscription`, and `adapter: codex_cli` together. Pi-backed profiles
+must set `provider: pi`, `auth: subscription`, and `adapter: pi_rpc` together:
+
+```yaml
+llm:
+  provider: openai
+  auth: subscription
+  adapter: codex_cli
+```
 
 ```yaml
 llm:
@@ -304,7 +325,7 @@ Supported values:
 | `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are recognized by the config schema but not implemented; validation rejects them in v1. GitHub App support is tracked in [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76). |
 | `llm.provider` | `anthropic`, `openai`, `pi` |
 | `llm.auth` | `subscription`, `api_key` |
-| `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc` are usable for review. `codex_cli` is recognized by the config schema but rejected by `cr review` until no-tools mode is explicit. |
+| `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc`, and `codex_cli` are usable for review. `codex_cli` requires `provider: openai` and `auth: subscription`, and is currently best-effort/beta because Codex does not yet expose an explicit all-tools-disabled flag. |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
 | `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
@@ -323,6 +344,13 @@ provider session returned by the job state. Background jobs run from a stable
 cache workdir so Claude Code can resolve resumed sessions consistently; set
 `CR_CLAUDE_BG_WORK_DIR` to override that workdir.
 
+For OpenAI subscription profiles, `adapter: codex_cli` runs `codex exec` in an
+adapter-owned scratch directory with `--json`, `--ephemeral`,
+`--skip-git-repo-check`, `--ignore-user-config`, `--ignore-rules`, a read-only
+sandbox, and a scratch `--cd`. The adapter rejects unsafe flags and fails the
+review if Codex emits tool-use events. This remains best-effort/beta because
+Codex CLI does not yet expose a first-class all-tools-disabled flag.
+
 Credential key matrix:
 
 | Profile field | Purpose | Auth/provider | Required keys | Optional keys | v1 behavior |
@@ -333,7 +361,7 @@ Credential key matrix:
 | `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
 | `llm.credential_ref` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
 | `llm.credential_ref` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
-| Omitted `llm.credential_ref` | Adapter-managed LLM auth | `subscription` + `anthropic`/`pi` | None | None | Supported; credentials are owned by the selected adapter |
+| Omitted `llm.credential_ref` | Adapter-managed LLM auth | `subscription` + `anthropic`/`openai`/`pi` | None | None | Supported; credentials are owned by the selected adapter. `openai + codex_cli` is best-effort/beta until Codex exposes an explicit all-tools-disabled flag |
 | `llm.credential_ref` | Pi direct API auth | `api_key` + `pi` | None | None | Unsupported; use adapter-managed `subscription` auth with `pi_rpc` |
 
 Upgrade note: pre-matrix versions used the generic `llm_api_key` key for direct

@@ -796,6 +796,16 @@ func TestSubprocessToolUseDetectionIsPreciseAndBounded(t *testing.T) {
 	}
 }
 
+func TestParseSubprocessEventExtractsAgentMessageText(t *testing.T) {
+	event, err := parseSubprocessEvent([]byte(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`))
+	if err != nil {
+		t.Fatalf("parseSubprocessEvent(agent_message): %v", err)
+	}
+	if string(event.structuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %q, want JSON text from agent_message", event.structuredOutput)
+	}
+}
+
 func TestSubprocessClaudeRealBackgroundJob(t *testing.T) {
 	if os.Getenv("CR_CLAUDE_BG_INTEGRATION") != "1" {
 		t.Skip("set CR_CLAUDE_BG_INTEGRATION=1 to run the real Claude background-job contract check")
@@ -919,11 +929,11 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 	}
 	switch os.Getenv("LLM_HELPER_MODE") {
 	case "success":
-		fmt.Println(`{"type":"session.started","session_id":"session-1"}`)
+		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)
 		fmt.Println(`{"type":"unknown.event","ignored":true}`)
-		fmt.Println(`{"type":"response","usage":{"tokens_in":7,"tokens_out":11,"cache_read":null,"cost_usd":null},"structured_output":{"ok":true}}`)
+		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
 	case "tool":
-		fmt.Println(`{"type":"session.started","session_id":"session-1"}`)
+		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)
 		fmt.Println(`{"type":"tool_use","name":"Read"}`)
 		time.Sleep(10 * time.Second)
 	case "nested-tool":
@@ -948,9 +958,9 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		time.Sleep(10 * time.Second)
 	case "malformed":
 		fmt.Println(`{"type":`)
-		fmt.Println(`{"type":"response","structured_output":{"ok":true}}`)
+		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
 	default:
-		fmt.Println(`{"type":"response","structured_output":{"ok":true}}`)
+		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
 	}
 	os.Exit(0)
 }

@@ -185,6 +185,65 @@ func TestNewRuntimeMigratesLegacyDataAndCache(t *testing.T) {
 	}
 }
 
+func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
+	statedirtest.Hermetic(t)
+	previousAPIKey, hadAPIKey := os.LookupEnv("OPENAI_API_KEY")
+	if err := os.Unsetenv("OPENAI_API_KEY"); err != nil {
+		t.Fatalf("Unsetenv(OPENAI_API_KEY): %v", err)
+	}
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
+	t.Cleanup(func() {
+		if hadAPIKey {
+			_ = os.Setenv("OPENAI_API_KEY", previousAPIKey)
+			return
+		}
+		_ = os.Unsetenv("OPENAI_API_KEY")
+	})
+
+	cfg := testConfig()
+	cfg.Keyring.Backend = "file"
+	profile := cfg.Profiles["home"]
+	profile.LLM = config.LLMConfig{
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterCodexCLI,
+	}
+	cfg.Profiles["home"] = profile
+
+	provider := &gitprovider.Fake{}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		newAdapter,
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	opts := &root.Options{Stderr: io.Discard}
+	runtime, err := newRuntime(cmd, opts, cfg, profile, RuntimeOptions{})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		defer runtime.Cleanup()
+	}
+	if runtime.PostingIdentity != identity {
+		t.Fatalf("PostingIdentity = %#v, want %#v", runtime.PostingIdentity, identity)
+	}
+	runner, ok := runtime.Runner.(reviewRunner)
+	if !ok {
+		t.Fatalf("Runner type = %T, want reviewRunner", runtime.Runner)
+	}
+	if runner.pipeline.Adapter == nil || runner.pipeline.Adapter.Name() != "codex_cli" {
+		t.Fatalf("pipeline adapter = %#v, want codex_cli", runner.pipeline.Adapter)
+	}
+}
+
 func TestReviewNoPostIsDryRunAlias(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -1355,17 +1414,17 @@ func TestFakeFactoryErrorIsReturned(t *testing.T) {
 	}
 }
 
-func TestNewAdapterRejectsCodexCLIBestEffortByDefault(t *testing.T) {
-	_, err := newAdapter(config.LLMConfig{
+func TestNewAdapterCreatesCodexCLI(t *testing.T) {
+	adapter, err := newAdapter(config.LLMConfig{
 		Provider: config.LLMProviderOpenAI,
 		Auth:     config.LLMAuthSubscription,
 		Adapter:  config.LLMAdapterCodexCLI,
 	}, nil)
-	if !errors.Is(err, config.ErrUnsupported) {
-		t.Fatalf("newAdapter error = %v, want config.ErrUnsupported", err)
+	if err != nil {
+		t.Fatalf("newAdapter: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no-tools mode is explicit") {
-		t.Fatalf("newAdapter error = %v, want explicit no-tools explanation", err)
+	if adapter.Name() != "codex_cli" {
+		t.Fatalf("adapter.Name = %q, want codex_cli", adapter.Name())
 	}
 }
 
@@ -1394,6 +1453,21 @@ func TestNewAdapterCreatesClaudeCLIWithResume(t *testing.T) {
 	}
 	if adapter.Name() != "claude_cli" || !adapter.SupportsResume() {
 		t.Fatalf("adapter = %s resume=%v, want claude_cli with resume", adapter.Name(), adapter.SupportsResume())
+	}
+}
+
+func TestNewAdapterRejectsCodexCLINonSubscription(t *testing.T) {
+	_, err := newAdapter(config.LLMConfig{
+		Provider:      config.LLMProviderOpenAI,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterCodexCLI,
+		CredentialRef: "codereview/openai",
+	}, nil)
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("newAdapter error = %v, want config.ErrUnsupported", err)
+	}
+	if !strings.Contains(err.Error(), "requires provider openai with subscription auth") {
+		t.Fatalf("newAdapter error = %v, want Codex compatibility guidance", err)
 	}
 }
 
