@@ -202,6 +202,37 @@ profiles:
 	}
 }
 
+func TestLoadAcceptsCodexCLISubscriptionProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeFile(t, path, `default_profile: codex
+profiles:
+  codex:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/codex
+    llm:
+      provider: openai
+      auth: subscription
+      adapter: codex_cli
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	profile := cfg.Profiles["codex"]
+	if profile.LLM.Provider != LLMProviderOpenAI || profile.LLM.Adapter != LLMAdapterCodexCLI {
+		t.Fatalf("LLM = %#v, want openai/codex_cli", profile.LLM)
+	}
+	refs, err := CredentialRefs(profile)
+	if err != nil {
+		t.Fatalf("CredentialRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("CredentialRefs = %#v, want only git credential for subscription auth", refs)
+	}
+}
+
 func TestValidateRejectsInvalidPiCombinations(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -238,6 +269,41 @@ func TestValidateRejectsInvalidPiCombinations(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "requires") {
 				t.Fatalf("Validate error = %v, want Pi compatibility guidance", err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsInvalidCodexCLICombinations(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Profile)
+	}{
+		{name: "anthropic provider", mutate: func(profile *Profile) {
+			profile.LLM.Provider = LLMProviderAnthropic
+		}},
+		{name: "api key auth", mutate: func(profile *Profile) {
+			profile.LLM.Auth = LLMAuthAPIKey
+			profile.LLM.CredentialRef = "codereview/codex-llm"
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			profile := cfg.Profiles["home"]
+			profile.LLM.Provider = LLMProviderOpenAI
+			profile.LLM.Auth = LLMAuthSubscription
+			profile.LLM.Adapter = LLMAdapterCodexCLI
+			profile.LLM.CredentialRef = ""
+			tt.mutate(&profile)
+			cfg.Profiles["home"] = profile
+			err := Validate(cfg)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Validate error = %v, want ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), "codex_cli requires provider openai and auth subscription") {
+				t.Fatalf("Validate error = %v, want Codex compatibility guidance", err)
 			}
 		})
 	}

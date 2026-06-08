@@ -767,6 +767,16 @@ func rawStructuredOutput(raw map[string]json.RawMessage) []byte {
 			}
 		}
 	}
+	if value, ok := raw["item"]; ok {
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(value, &nested); err == nil {
+			if rawString(nested, "type") == "agent_message" {
+				if text := rawString(nested, "text"); strings.TrimSpace(text) != "" {
+					return []byte(text)
+				}
+			}
+		}
+	}
 	return nil
 }
 
