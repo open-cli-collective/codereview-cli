@@ -346,19 +346,13 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 
 	var sessionDrafts []sessionDraft
 	findingSession := map[review.FindingID]string{}
-	runtimeConfig, err := resolveOrchestratorRuntimeConfig(req)
-	if err != nil {
-		return Result{}, err
-	}
-	model, effort := runtimeConfig.model, runtimeConfig.effort
-	namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, model, now)
-	if err != nil {
-		return Result{}, err
-	}
 
 	if len(parsed.Patches) == 0 {
-		if namedSession.enabled {
-			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
+		if sessionName := strings.TrimSpace(req.SessionName); sessionName != "" {
+			if !mode.live {
+				return Result{}, fmt.Errorf("pipeline: named session %q requires live review", sessionName)
+			}
+			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", sessionName))
 		}
 		plan, err := opts.buildPlan(req, pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged)
 		if err != nil {
@@ -366,6 +360,16 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.Plan = plan
 	} else {
+		runtimeConfig, err := resolveOrchestratorRuntimeConfig(req)
+		if err != nil {
+			return Result{}, err
+		}
+		model, effort := runtimeConfig.model, runtimeConfig.effort
+		namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, model, now)
+		if err != nil {
+			return Result{}, err
+		}
+
 		selectionPrompt, err := buildSelectionPrompt(reviewPR, catalog, parsed.Patches, threads)
 		if err != nil {
 			return Result{}, err

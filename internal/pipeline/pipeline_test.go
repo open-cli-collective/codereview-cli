@@ -252,6 +252,42 @@ func TestDryRunWithPinnedReviewSHAsRejectsForkHeads(t *testing.T) {
 	}
 }
 
+func TestDryRunNoDiffDoesNotResolveUnmappedModelTier(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff = gitprovider.UnifiedDiff{}
+	req.Profile.LLM = config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthAPIKey,
+		Adapter:  config.LLMAdapterAnthropicAPI,
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-no-diff-unmapped" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter was invoked: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeNothingToReview {
+		t.Fatalf("Plan.Outcome = %q, want %q", result.Plan.Outcome, reviewplan.OutcomeNothingToReview)
+	}
+}
+
 func TestDryRunLLMOverridesApplyToAllRequestsAndSessions(t *testing.T) {
 	tests := []struct {
 		name           string
