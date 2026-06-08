@@ -45,6 +45,7 @@ const (
 	subprocessClaude subprocessKind = "claude_cli"
 	subprocessCodex  subprocessKind = "codex_cli"
 
+	claudeBGPromptFilename = "cr-prompt.txt"
 	claudeBGResultFilename = "cr-result.json"
 	claudeBGPollInterval   = 500 * time.Millisecond
 	claudeBGSessionIDGrace = 2 * time.Second
@@ -241,6 +242,10 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 		_ = cleanup()
 		return nil, err
 	}
+	if err := writeClaudeBGPromptFile(req.Prompt, scratch); err != nil {
+		_ = cleanup()
+		return nil, err
+	}
 	args, err := a.buildArgsForSession(req, scratch, resumeSessionID)
 	if err != nil {
 		_ = cleanup()
@@ -264,7 +269,6 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 	// #nosec G204 -- subprocess adapters intentionally launch configured CLI binaries after validating adapter-owned safety args.
 	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
 	cmd.Dir = workDir
-	cmd.Stdin = strings.NewReader(wrapClaudeBGPrompt(req.Prompt, filepath.Join(scratch, claudeBGResultFilename)))
 	procGroup, err := newProcessGroup(cmd)
 	if err != nil {
 		cancel()
@@ -336,6 +340,8 @@ func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Re
 		return nil, fmt.Errorf("llm subprocess: resume unsupported for %s", a.kind)
 	}
 	if sessionID == "" {
+		// A blank session id is treated as a fresh start so callers can pass
+		// through optional resume state without special-casing the first run.
 		return a.Start(ctx, req)
 	}
 	return a.startClaudeBG(ctx, req, sessionID)
@@ -350,7 +356,7 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 	case subprocessClaude:
 		args := []string{
 			"--bg",
-			"--tools", "Write",
+			"--tools", "Read,Write",
 			"--permission-mode", "acceptEdits",
 			"--add-dir", scratch,
 		}
@@ -363,7 +369,7 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		if req.Effort != "" {
 			args = append(args, "--effort", req.Effort)
 		}
-		return args, nil
+		return append(args, "--", claudeBGPositionalPrompt(scratch)), nil
 	case subprocessCodex:
 		args := []string{
 			"exec",
@@ -397,8 +403,8 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 	}
 	switch a.kind {
 	case subprocessClaude:
-		if len(checkedArgs) != len(args) {
-			return fmt.Errorf("%w: claude_cli must receive prompt on stdin", ErrUnsafeSubprocessConfig)
+		if len(checkedArgs)+2 != len(args) || args[len(checkedArgs)] != "--" || strings.TrimSpace(args[len(checkedArgs)+1]) == "" {
+			return fmt.Errorf("%w: claude_cli must receive a positional background prompt", ErrUnsafeSubprocessConfig)
 		}
 		if err := validateAllowedFlags("claude_cli", checkedArgs, map[string]bool{
 			"--bg":              false,
@@ -415,7 +421,7 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 			return fmt.Errorf("%w: claude_cli must use background jobs", ErrUnsafeSubprocessConfig)
 		}
 		required := map[string]string{
-			"--tools":           "Write",
+			"--tools":           "Read,Write",
 			"--permission-mode": "acceptEdits",
 		}
 		for flag, value := range required {
@@ -1065,29 +1071,29 @@ func extractClaudeBGSessionID(state map[string]any) string {
 	return ""
 }
 
-func (a *SubprocessAdapter) cleanupClaudeBGJob(ctx context.Context, jobID string, resultErr error, scratch string) error {
+func (a *SubprocessAdapter) cleanupClaudeBGJob(ctx context.Context, jobID string, resultErr error, workDir string) error {
 	if !claudeBGJobIDRE.MatchString(jobID) {
 		return fmt.Errorf("llm subprocess: invalid Claude background job id %q", jobID)
 	}
 	var cleanupErr error
 	if resultErr != nil {
-		if err := a.runClaudeBGControl(ctx, scratch, "stop", jobID); err != nil {
+		if err := a.runClaudeBGControl(ctx, workDir, "stop", jobID); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}
-	if err := a.runClaudeBGControl(ctx, scratch, "rm", jobID); err != nil {
+	if err := a.runClaudeBGControl(ctx, workDir, "rm", jobID); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
 	return cleanupErr
 }
 
-func (a *SubprocessAdapter) runClaudeBGControl(ctx context.Context, scratch string, verb string, jobID string) error {
+func (a *SubprocessAdapter) runClaudeBGControl(ctx context.Context, workDir string, verb string, jobID string) error {
 	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), verb, jobID)
 	// #nosec G204 -- control verbs target the adapter-owned Claude CLI binary and validated job id.
 	cmd := exec.CommandContext(cmdCtx, a.command, execArgs...)
-	cmd.Dir = scratch
+	cmd.Dir = workDir
 	if len(a.env) > 0 {
 		cmd.Env = append(os.Environ(), a.env...)
 	}
@@ -1101,6 +1107,21 @@ func (a *SubprocessAdapter) runClaudeBGControl(ctx context.Context, scratch stri
 		return fmt.Errorf("llm subprocess: Claude bg cleanup %s failed: %w", verb, err)
 	}
 	return nil
+}
+
+func writeClaudeBGPromptFile(prompt string, scratch string) error {
+	promptPath := filepath.Join(scratch, claudeBGPromptFilename)
+	resultPath := filepath.Join(scratch, claudeBGResultFilename)
+	if err := os.WriteFile(promptPath, []byte(wrapClaudeBGPrompt(prompt, resultPath)), 0o600); err != nil {
+		return fmt.Errorf("llm subprocess: writing Claude bg prompt file: %w", err)
+	}
+	return nil
+}
+
+func claudeBGPositionalPrompt(scratch string) string {
+	promptPath := filepath.Join(scratch, claudeBGPromptFilename)
+	resultPath := filepath.Join(scratch, claudeBGResultFilename)
+	return fmt.Sprintf("Read %s and follow its instructions exactly. Use the Write tool to write the final structured result to %s. Do not answer in chat.", promptPath, resultPath)
 }
 
 func wrapClaudeBGPrompt(prompt string, resultPath string) string {
@@ -1194,9 +1215,21 @@ func validateAllowedFlags(adapterName string, args []string, allowed map[string]
 		if !strings.HasPrefix(arg, "-") {
 			continue
 		}
-		hasValue, ok := allowed[arg]
+		flag := arg
+		inlineValue := false
+		if name, _, ok := strings.Cut(arg, "="); ok {
+			flag = name
+			inlineValue = true
+		}
+		hasValue, ok := allowed[flag]
 		if !ok {
 			return fmt.Errorf("%w: unexpected %s flag %s", ErrUnsafeSubprocessConfig, adapterName, arg)
+		}
+		if inlineValue {
+			if !hasValue {
+				return fmt.Errorf("%w: %s flag %s does not accept a value", ErrUnsafeSubprocessConfig, adapterName, flag)
+			}
+			continue
 		}
 		if hasValue {
 			i++
@@ -1223,6 +1256,9 @@ func flagValueOK(args []string, flag string) (string, bool) {
 	for i, arg := range args {
 		if arg == flag && i+1 < len(args) {
 			return args[i+1], true
+		}
+		if value, ok := strings.CutPrefix(arg, flag+"="); ok {
+			return value, true
 		}
 	}
 	return "", false

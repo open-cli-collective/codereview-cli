@@ -50,7 +50,7 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	if !containsFlag(record.AdapterArgs, "--bg") {
 		t.Fatalf("args = %#v, want --bg", record.AdapterArgs)
 	}
-	assertFlagValue(t, record.AdapterArgs, "--tools", "Write")
+	assertFlagValue(t, record.AdapterArgs, "--tools", "Read,Write")
 	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "acceptEdits")
 	assertFlagValue(t, record.AdapterArgs, "--model", "sonnet")
 	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
@@ -70,11 +70,21 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	if record.CwdEntries != 0 {
 		t.Fatalf("cwd entries = %d, want empty adapter workdir before launch", record.CwdEntries)
 	}
-	if record.AddDirEntries != 0 {
-		t.Fatalf("add-dir entries = %d, want empty result scratch before launch", record.AddDirEntries)
+	if record.AddDirEntries != 1 {
+		t.Fatalf("add-dir entries = %d, want prompt file before launch", record.AddDirEntries)
 	}
-	if record.StdinBytes == 0 || !strings.Contains(record.Stdin, claudeBGResultFilename) || !strings.Contains(record.Stdin, "prompt") {
-		t.Fatalf("stdin = %q, want prompt plus result-file contract", record.Stdin)
+	if record.StdinBytes != 0 {
+		t.Fatalf("stdin bytes = %d, want empty stdin for Claude bg positional prompt", record.StdinBytes)
+	}
+	if record.PromptFileBytes == 0 || !strings.Contains(record.PromptFile, claudeBGResultFilename) || !strings.Contains(record.PromptFile, "prompt") {
+		t.Fatalf("prompt file = %q, want prompt plus result-file contract", record.PromptFile)
+	}
+	checkedArgs := argsBeforePrompt(record.AdapterArgs)
+	if len(checkedArgs)+2 != len(record.AdapterArgs) || record.AdapterArgs[len(checkedArgs)] != "--" {
+		t.Fatalf("args = %#v, want -- separated positional prompt", record.AdapterArgs)
+	}
+	if promptArg := record.AdapterArgs[len(checkedArgs)+1]; !strings.Contains(promptArg, claudeBGPromptFilename) || !strings.Contains(promptArg, claudeBGResultFilename) {
+		t.Fatalf("positional prompt = %q, want prompt/result file paths", promptArg)
 	}
 	assertClaudeCleanup(t, records, "job-1", false, configDir)
 
@@ -112,8 +122,11 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	assertFlagValue(t, record.AdapterArgs, "--resume", "prior-session")
 	assertFlagValue(t, record.AdapterArgs, "--model", "sonnet")
 	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
-	if record.StdinBytes == 0 || !strings.Contains(record.Stdin, "resume prompt") {
-		t.Fatalf("stdin = %q, want resumed prompt", record.Stdin)
+	if record.StdinBytes != 0 {
+		t.Fatalf("stdin bytes = %d, want empty stdin for resumed Claude bg prompt", record.StdinBytes)
+	}
+	if record.PromptFileBytes == 0 || !strings.Contains(record.PromptFile, "resume prompt") {
+		t.Fatalf("prompt file = %q, want resumed prompt", record.PromptFile)
 	}
 }
 
@@ -425,6 +438,12 @@ func TestSubprocessRejectsUnsafeSpecs(t *testing.T) {
 			}
 		})
 	}
+	inlineClaudeArgs := replaceSubprocessFlagPairWithEquals(claudeArgs, "--tools")
+	inlineClaudeArgs = replaceSubprocessFlagPairWithEquals(inlineClaudeArgs, "--permission-mode")
+	inlineClaudeArgs = replaceSubprocessFlagPairWithEquals(inlineClaudeArgs, "--add-dir")
+	if err := claude.validateArgs(inlineClaudeArgs, scratch); err != nil {
+		t.Fatalf("validateArgs(claude inline flags): %v", err)
+	}
 
 	codex := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
 	codexScratch := t.TempDir()
@@ -637,6 +656,10 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 	if record.AddDir != "" {
 		addDirEntries, _ := os.ReadDir(record.AddDir)
 		record.AddDirEntries = len(addDirEntries)
+		if promptData, err := os.ReadFile(filepath.Join(record.AddDir, claudeBGPromptFilename)); err == nil { // #nosec G304 -- helper reads adapter-owned prompt scratch file in tests.
+			record.PromptFile = string(promptData)
+			record.PromptFileBytes = len(promptData)
+		}
 	}
 	if recordPath != "" {
 		appendHelperRecord(recordPath, record)
@@ -707,6 +730,8 @@ type helperRecord struct {
 	ClaudeConfigDir string   `json:"claude_config_dir"`
 	AddDir          string   `json:"add_dir"`
 	AddDirEntries   int      `json:"add_dir_entries"`
+	PromptFile      string   `json:"prompt_file"`
+	PromptFileBytes int      `json:"prompt_file_bytes"`
 }
 
 func newClaudeHelperAdapter(mode string, recordPath string, configDir string, timeout time.Duration) *SubprocessAdapter {
@@ -881,6 +906,9 @@ func readHelperRecords(t *testing.T, path string) []helperRecord {
 
 func assertClaudeCleanup(t *testing.T, records []helperRecord, jobID string, wantStop bool, configDir string) {
 	t.Helper()
+	if len(records) == 0 {
+		t.Fatalf("assertClaudeCleanup: no records, cannot verify cleanup")
+	}
 	stopSeen := false
 	rmSeen := false
 	for _, record := range records[1:] {
@@ -969,6 +997,19 @@ func replaceSubprocessFlagValue(args []string, flag string, value string) []stri
 			out[i+1] = value
 			return out
 		}
+	}
+	return out
+}
+
+func replaceSubprocessFlagPairWithEquals(args []string, flag string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag && i+1 < len(args) {
+			out = append(out, flag+"="+args[i+1])
+			i++
+			continue
+		}
+		out = append(out, args[i])
 	}
 	return out
 }
