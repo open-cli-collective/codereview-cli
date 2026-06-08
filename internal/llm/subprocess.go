@@ -48,7 +48,7 @@ const (
 	claudeBGPromptFilename = "cr-prompt.txt"
 	claudeBGResultFilename = "cr-result.json"
 	claudeBGPollInterval   = 500 * time.Millisecond
-	claudeBGSessionIDGrace = 2 * time.Second
+	claudeBGSessionIDGrace = 10 * time.Second
 )
 
 var (
@@ -989,7 +989,7 @@ func claudeBGIdleWithResultFile(state map[string]any, resultPaths []string) bool
 		return false
 	}
 	tempo, hasTempo := state["tempo"]
-	if hasTempo && strings.TrimSpace(fmt.Sprint(tempo)) != "idle" {
+	if !hasTempo || strings.TrimSpace(fmt.Sprint(tempo)) != "idle" {
 		return false
 	}
 	if inFlight, ok := state["inFlight"].(map[string]any); ok {

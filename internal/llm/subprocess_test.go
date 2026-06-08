@@ -118,6 +118,8 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	if stream.SessionID() != "session-1" {
 		t.Fatalf("SessionID = %q, want session-1", stream.SessionID())
 	}
+	records := readHelperRecords(t, recordPath)
+	assertClaudeCleanup(t, records, "job-1", false, configDir)
 	record := readHelperRecord(t, recordPath)
 	assertFlagValue(t, record.AdapterArgs, "--resume", "prior-session")
 	assertFlagValue(t, record.AdapterArgs, "--model", "sonnet")
