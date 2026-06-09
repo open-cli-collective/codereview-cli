@@ -944,26 +944,22 @@ func agentPromptFromAgent(agent agents.Agent) agentPrompt {
 }
 
 type selectionAgentPrompt struct {
-	ID                   string          `json:"id"`
-	Name                 string          `json:"name"`
-	Category             agents.Category `json:"category"`
-	FileGlobs            []string        `json:"file_globs,omitempty"`
-	AppliesWhen          []string        `json:"applies_when,omitempty"`
-	NeedsFullFileContent bool            `json:"needs_full_file_content"`
-	Provenance           string          `json:"provenance"`
-	Overridden           []string        `json:"overridden,omitempty"`
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	Category             string   `json:"category,omitempty"`
+	FileGlobs            []string `json:"file_globs,omitempty"`
+	AppliesWhen          []string `json:"applies_when,omitempty"`
+	NeedsFullFileContent bool     `json:"needs_full_file_content"`
 }
 
 func selectionAgentPromptFromAgent(agent agents.Agent) selectionAgentPrompt {
 	return selectionAgentPrompt{
 		ID:                   agent.ID,
 		Name:                 agent.Name,
-		Category:             agent.Category,
+		Category:             agent.Category.Name,
 		FileGlobs:            append([]string(nil), agent.FileGlobs...),
 		AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
 		NeedsFullFileContent: agent.NeedsFullFileContent,
-		Provenance:           agent.Provenance.String(),
-		Overridden:           append([]string(nil), agent.Overridden...),
 	}
 }
 

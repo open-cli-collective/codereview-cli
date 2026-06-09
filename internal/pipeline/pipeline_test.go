@@ -1355,7 +1355,7 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 			if !strings.Contains(request.Prompt, `"applies_when"`) {
 				t.Fatalf("selection prompt missing applies_when routing metadata: %s", request.Prompt)
 			}
-			for _, forbidden := range []string{"Review alpha files.", "Review beta files.", `"prompt"`} {
+			for _, forbidden := range []string{"Review alpha files.", "Review beta files.", `"prompt"`, `"owner"`, `"provenance"`, `"overridden"`} {
 				if strings.Contains(request.Prompt, forbidden) {
 					t.Fatalf("selection prompt leaked reviewer execution instructions %q: %s", forbidden, request.Prompt)
 				}
