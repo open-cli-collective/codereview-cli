@@ -236,10 +236,10 @@ func writeRunFooter(out *strings.Builder, run RunSummary) {
 
 	if len(run.Workstreams) > 0 {
 		out.WriteString("\n**Per-workstream usage**\n\n")
-		out.WriteString("| Workstream | Model | In | Out | Cache read | Cache create | Cost |\n")
-		out.WriteString("|---|---|---:|---:|---:|---:|---:|\n")
+		out.WriteString("| Workstream | Model | In | Out | Cache read | Cache create | Cost | Duration |\n")
+		out.WriteString("|---|---|---:|---:|---:|---:|---:|---:|\n")
 		for _, workstream := range run.Workstreams {
-			fmt.Fprintf(out, "| %s | %s | %s | %s | %s | %s | %s |\n",
+			fmt.Fprintf(out, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
 				escapeCell(workstream.Name),
 				escapeCell(orUnavailable(workstream.Model)),
 				formatTokens(workstream.TokensIn),
@@ -247,6 +247,7 @@ func writeRunFooter(out *strings.Builder, run RunSummary) {
 				formatTokens(workstream.CacheRead),
 				formatTokens(workstream.CacheCreate),
 				formatUSD(workstream.CostUSD),
+				formatDurationMS(workstream.DurationMS),
 			)
 		}
 	}
@@ -313,6 +314,8 @@ func formatDurationMS(value *int64) string {
 		return fmt.Sprintf("%dh %02dm", hours, minutes)
 	case minutes > 0:
 		return fmt.Sprintf("%dm %02ds", minutes, seconds)
+	case totalSeconds == 0 && *value > 0:
+		return "<1s"
 	default:
 		return fmt.Sprintf("%ds", seconds)
 	}

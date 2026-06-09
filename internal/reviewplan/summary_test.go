@@ -76,8 +76,8 @@ func TestRollupSummaryRendering(t *testing.T) {
 			"| Cost | $1.00 |",
 			"| Tokens | 126.3k in / 12.6k out |",
 			"**Per-workstream usage**",
-			"| orchestrator-selection | sonnet | 40.2k | 4.0k | 80.4k | 20.1k | $0.25 |",
-			"| orchestrator-rollup | sonnet | 12.0k | 1.2k | 24.0k | 6.0k | $0.25 |",
+			"| orchestrator-selection | sonnet | 40.2k | 4.0k | 80.4k | 20.1k | $0.25 | 30s |",
+			"| orchestrator-rollup | sonnet | 12.0k | 1.2k | 24.0k | 6.0k | $0.25 | 30s |",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
@@ -152,7 +152,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 			t.Fatalf("Build: %v", err)
 		}
 		md := plan.RollupMarkdown
-		if !strings.Contains(md, "| orchestrator-selection | sonnet | unavailable | unavailable | unavailable | unavailable | unavailable |") {
+		if !strings.Contains(md, "| orchestrator-selection | sonnet | unavailable | unavailable | unavailable | unavailable | unavailable | unavailable |") {
 			t.Fatalf("usage-less workstream row wrong:\n%s", md)
 		}
 		if !strings.Contains(md, "| Duration | 2m 07s |") {
@@ -369,6 +369,8 @@ func TestFormatHelpers(t *testing.T) {
 		{"usd nil", formatUSD(nil), "unavailable"},
 		{"usd value", formatUSD(float64Ptr(1.084)), "$1.08"},
 		{"duration nil", formatDurationMS(nil), "unavailable"},
+		{"duration sub-second", formatDurationMS(int64Ptr(450)), "<1s"},
+		{"duration zero", formatDurationMS(int64Ptr(0)), "0s"},
 		{"duration seconds", formatDurationMS(int64Ptr(42_000)), "42s"},
 		{"duration minutes", formatDurationMS(int64Ptr(127_000)), "2m 07s"},
 		{"duration hours", formatDurationMS(int64Ptr(3_726_000)), "1h 02m"},
