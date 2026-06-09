@@ -262,6 +262,10 @@ Use `model_tier: small|medium|large` for portable shared catalogs. Use
 provider-specific model. `effort` is independent and must be one of
 `low`, `medium`, or `high`.
 
+`applies_when` is the selector's routing contract. Keep it focused on when the
+agent should be chosen for a change. Reviewer execution instructions belong in
+`prompt.md` and are not sent to the selector.
+
 Legacy agent files that use `model: sonnet` or another provider-specific
 `model` value must be updated. Replace portable intent with `model_tier`
 and move provider-specific defaults into profile `llm.model_map`; use
@@ -711,8 +715,11 @@ Review selection and execution flags:
 | `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
 | `--max-agents <n>` | Limit selected reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
-| `--llm-model <model>` | Exact provider model ID passthrough for dry-run review; bypasses `model_tier`, `model_id`, and `llm.model_map`. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
-| `--llm-effort <effort>` | Override LLM effort for dry-run review with `low`, `medium`, or `high`. Independent from `--llm-model`. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
+| `--selection-model <model>` | Exact provider model ID passthrough for the selection stage only. Bypasses the default medium-tier selection model resolution. Requires `--dry-run` or `--no-post`. |
+| `--selection-effort <effort>` | Override selection-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
+| `--selection-prompt <path>` | Load selection-stage instruction text from a file while preserving the structured JSON selection protocol. Requires `--dry-run` or `--no-post`. |
+| `--reviewer-model <model>` | Exact provider model ID passthrough for reviewer stages only. Bypasses reviewer agent `model_tier`, `model_id`, and profile model-map resolution. Requires `--dry-run` or `--no-post`. |
+| `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
 | `--session <name>` | Reuse a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
@@ -783,9 +790,11 @@ under `.cr-bench/results/<suite-id>/<timestamp>/` unless `--results-dir` is set.
 
 Use `--candidate` and `--case` for benchmark selection. Candidate YAML fields
 such as `model`, `effort`, `agent_dirs`, `max_agents`, and `max_concurrency`
-control review runtime overrides. Case YAML fields `review_base_sha` and
-`review_head_sha` pin the exact base/head commit pair reviewed by the dry-run
-child command.
+control review runtime overrides. For the current benchmark schema, candidate
+`model` maps to both `--selection-model` and `--reviewer-model`, and candidate
+`effort` maps to both `--selection-effort` and `--reviewer-effort`. Case YAML
+fields `review_base_sha` and `review_head_sha` pin the exact base/head commit
+pair reviewed by the dry-run child command.
 
 ### `cr benchmark compare`
 

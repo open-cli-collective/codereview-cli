@@ -353,8 +353,10 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--profile", "home",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/1",
 		"--dry-run", "--json",
-		"--llm-model", "sonnet",
-		"--llm-effort", "high",
+		"--selection-model", "sonnet",
+		"--reviewer-model", "sonnet",
+		"--selection-effort", "high",
+		"--reviewer-effort", "high",
 		"--agents-dir", got.SelectedCandidates[0].AgentDirs[0].Resolved,
 		"--max-agents", "5",
 		"--max-concurrency", "3",
@@ -368,8 +370,10 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--dry-run", "--json",
 		"--review-base-sha", "1111111",
 		"--review-head-sha", "2222222",
-		"--llm-model", "sonnet",
-		"--llm-effort", "high",
+		"--selection-model", "sonnet",
+		"--reviewer-model", "sonnet",
+		"--selection-effort", "high",
+		"--reviewer-effort", "high",
 		"--agents-dir", got.SelectedCandidates[0].AgentDirs[0].Resolved,
 		"--max-agents", "5",
 		"--max-concurrency", "3",
@@ -384,8 +388,10 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--profile", "home",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/1",
 		"--dry-run", "--json",
-		"--llm-model", "kimi",
-		"--llm-effort", "low",
+		"--selection-model", "kimi",
+		"--reviewer-model", "kimi",
+		"--selection-effort", "low",
+		"--reviewer-effort", "low",
 		"--agents-dir", got.SelectedCandidates[1].AgentDirs[0].Resolved,
 		"--agents-dir", got.SelectedCandidates[1].AgentDirs[1].Resolved,
 	}
@@ -398,8 +404,10 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--dry-run", "--json",
 		"--review-base-sha", "1111111",
 		"--review-head-sha", "2222222",
-		"--llm-model", "kimi",
-		"--llm-effort", "low",
+		"--selection-model", "kimi",
+		"--reviewer-model", "kimi",
+		"--selection-effort", "low",
+		"--reviewer-effort", "low",
 		"--agents-dir", got.SelectedCandidates[1].AgentDirs[0].Resolved,
 		"--agents-dir", got.SelectedCandidates[1].AgentDirs[1].Resolved,
 	}
@@ -416,6 +424,11 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		for _, forbidden := range []string{"--no-post", "--rerun", "--retry-posts", "--approve", "--session", "--allow-self-approve"} {
 			if stringSliceContains(invocation.args, forbidden) {
 				t.Fatalf("args = %#v, contains forbidden live/posting flag %s", invocation.args, forbidden)
+			}
+		}
+		for _, removed := range []string{"--llm-model", "--llm-effort"} {
+			if stringSliceContains(invocation.args, removed) {
+				t.Fatalf("args = %#v, contains removed review override flag %s", invocation.args, removed)
 			}
 		}
 	}
@@ -865,6 +878,45 @@ func reviewDryRunJSONWithArtifact(t *testing.T, runID, artifactPath string, seve
 		t.Fatalf("Marshal review dry-run: %v", err)
 	}
 	return data
+}
+
+func TestReviewArgsMapsLegacyCandidateOverridesToStageFlags(t *testing.T) {
+	suiteDir := t.TempDir()
+	benchCase := benchmark.Case{PR: "https://github.com/open-cli-collective/codereview-cli/pull/1"}
+	tests := []struct {
+		name      string
+		candidate benchmark.Candidate
+		required  []string
+		forbidden []string
+	}{
+		{
+			name:      "model only",
+			candidate: benchmark.Candidate{Profile: "home", Model: "sonnet"},
+			required:  []string{"--selection-model", "sonnet", "--reviewer-model", "sonnet"},
+			forbidden: []string{"--selection-effort", "--reviewer-effort", "--llm-model", "--llm-effort"},
+		},
+		{
+			name:      "effort only",
+			candidate: benchmark.Candidate{Profile: "home", Effort: "high"},
+			required:  []string{"--selection-effort", "high", "--reviewer-effort", "high"},
+			forbidden: []string{"--selection-model", "--reviewer-model", "--llm-model", "--llm-effort"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := reviewArgs(suiteDir, tt.candidate, benchCase)
+			for _, required := range tt.required {
+				if !stringSliceContains(args, required) {
+					t.Fatalf("args = %#v, missing required token %q", args, required)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if stringSliceContains(args, forbidden) {
+					t.Fatalf("args = %#v, contains forbidden token %q", args, forbidden)
+				}
+			}
+		})
+	}
 }
 
 func writeExecutableCRBin(t *testing.T) string {

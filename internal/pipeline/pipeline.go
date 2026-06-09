@@ -105,10 +105,13 @@ type Request struct {
 	PostingIdentity gitprovider.Identity
 	AgentDirs       []string
 
-	LLMModelOverride  string
-	LLMEffortOverride string
-	ReviewBaseSHA     string
-	ReviewHeadSHA     string
+	SelectionModelOverride      string
+	SelectionEffortOverride     string
+	SelectionPromptInstructions string
+	ReviewerModelOverride       string
+	ReviewerEffortOverride      string
+	ReviewBaseSHA               string
+	ReviewHeadSHA               string
 
 	FailOn              *review.Severity
 	IncludeNits         bool
@@ -220,8 +223,8 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 
 // Live executes the review planning phases into a gate-allocated live run.
 func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
-	if strings.TrimSpace(req.LLMModelOverride) != "" || strings.TrimSpace(req.LLMEffortOverride) != "" {
-		return Result{}, fmt.Errorf("pipeline: LLM runtime overrides require dry-run review")
+	if hasDryRunStageOverrides(req) {
+		return Result{}, fmt.Errorf("pipeline: selection and reviewer overrides require dry-run review")
 	}
 	if strings.TrimSpace(req.ReviewBaseSHA) != "" || strings.TrimSpace(req.ReviewHeadSHA) != "" {
 		return Result{}, fmt.Errorf("pipeline: pinned review SHAs require dry-run review")
@@ -361,7 +364,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.Plan = plan
 	} else {
-		runtimeConfig, err := resolveOrchestratorRuntimeConfig(req)
+		runtimeConfig, err := resolveSelectionRuntimeConfig(req)
 		if err != nil {
 			return Result{}, err
 		}
@@ -371,7 +374,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			return Result{}, err
 		}
 
-		selectionPrompt, err := buildSelectionPrompt(reviewPR, catalog, parsed.Patches, threads)
+		selectionPrompt, err := buildSelectionPrompt(reviewPR, catalog, parsed.Patches, threads, req.SelectionPromptInstructions)
 		if err != nil {
 			return Result{}, err
 		}
@@ -409,18 +412,24 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			findingSession[id] = rowID
 		}
 
+		rollupRuntimeConfig, err := resolveSynthesisRuntimeConfig(req)
+		if err != nil {
+			return Result{}, err
+		}
+		rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
+
 		rollupPrompt, err := buildRollupPrompt(reviewPR, findings)
 		if err != nil {
 			return Result{}, err
 		}
-		if err := opts.checkPromptBudget("rollup", "", model, "", rollupPrompt); err != nil {
+		if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
 			return Result{}, err
 		}
 		rollupLog, err := artifacts.AgentLog("orchestrator-rollup")
 		if err != nil {
 			return Result{}, err
 		}
-		rollup, rollupSession, err := runStructuredResume(ctx, opts, ledger.SessionRoleOrchestrator, nil, model, effort, rollupLog, rollupPrompt, namedSession.resumeID(), func(data []byte) (review.Rollup, error) {
+		rollup, rollupSession, err := runStructuredResume(ctx, opts, ledger.SessionRoleOrchestrator, nil, rollupModel, rollupEffort, rollupLog, rollupPrompt, namedSession.resumeID(), func(data []byte) (review.Rollup, error) {
 			return llm.DecodeRollup(data, llm.RollupOptions{
 				FindingSeverities:         findingSeverities(findings),
 				MajorEventRequestsChanges: req.MajorRequestChanges,
@@ -604,7 +613,7 @@ func runReviewers(ctx context.Context, opts Options, req Request, pr gitprovider
 }
 
 func runReviewer(ctx context.Context, opts Options, req Request, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent) ([]review.Finding, sessionDraft, error) {
-	runtimeConfig, err := resolveAgentRuntimeConfig(req, agent)
+	runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 	if err != nil {
 		return nil, sessionDraft{}, err
 	}
@@ -934,10 +943,30 @@ func agentPromptFromAgent(agent agents.Agent) agentPrompt {
 	}
 }
 
-func agentPromptsFromCatalog(catalog agents.Catalog) []agentPrompt {
-	out := make([]agentPrompt, 0, len(catalog.Agents))
+type selectionAgentPrompt struct {
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	Category             string   `json:"category,omitempty"`
+	FileGlobs            []string `json:"file_globs,omitempty"`
+	AppliesWhen          []string `json:"applies_when,omitempty"`
+	NeedsFullFileContent bool     `json:"needs_full_file_content"`
+}
+
+func selectionAgentPromptFromAgent(agent agents.Agent) selectionAgentPrompt {
+	return selectionAgentPrompt{
+		ID:                   agent.ID,
+		Name:                 agent.Name,
+		Category:             agent.Category.Name,
+		FileGlobs:            append([]string(nil), agent.FileGlobs...),
+		AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
+		NeedsFullFileContent: agent.NeedsFullFileContent,
+	}
+}
+
+func selectionAgentPromptsFromCatalog(catalog agents.Catalog) []selectionAgentPrompt {
+	out := make([]selectionAgentPrompt, 0, len(catalog.Agents))
 	for _, agent := range catalog.Agents {
-		out = append(out, agentPromptFromAgent(agent))
+		out = append(out, selectionAgentPromptFromAgent(agent))
 	}
 	return out
 }
@@ -957,15 +986,20 @@ func fetchFileOptional(ctx context.Context, provider ReadProvider, ref gitprovid
 	return data, err
 }
 
-func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []FilePatch, threads []gitprovider.InlineThread) (string, error) {
+const defaultSelectionTask = "select reviewer agents and thread actions; return selection JSON only"
+
+func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []FilePatch, threads []gitprovider.InlineThread, selectionInstructions string) (string, error) {
 	payload := map[string]any{
-		"task":            "select reviewer agents and thread actions; return selection JSON only",
+		"task":            defaultSelectionTask,
 		"output_contract": selectionOutputContract(catalog.Agents, patches, threads),
 		"schema":          "selection",
 		"pr":              pr,
-		"agents":          agentPromptsFromCatalog(catalog),
+		"agents":          selectionAgentPromptsFromCatalog(catalog),
 		"changed_files":   patchPaths(patches),
 		"threads":         threads,
+	}
+	if instructions := strings.TrimSpace(selectionInstructions); instructions != "" {
+		payload["selection_instructions"] = instructions
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -1624,26 +1658,42 @@ type llmRuntimeConfig struct {
 	effort string
 }
 
-func resolveOrchestratorRuntimeConfig(req Request) (llmRuntimeConfig, error) {
-	if strings.TrimSpace(req.LLMModelOverride) != "" {
-		return applyLLMRuntimeOverrides(req, "", string(modelprefs.EffortMedium)), nil
+func hasDryRunStageOverrides(req Request) bool {
+	return strings.TrimSpace(req.SelectionModelOverride) != "" ||
+		strings.TrimSpace(req.SelectionEffortOverride) != "" ||
+		strings.TrimSpace(req.SelectionPromptInstructions) != "" ||
+		strings.TrimSpace(req.ReviewerModelOverride) != "" ||
+		strings.TrimSpace(req.ReviewerEffortOverride) != ""
+}
+
+func resolveSelectionRuntimeConfig(req Request) (llmRuntimeConfig, error) {
+	if strings.TrimSpace(req.SelectionModelOverride) != "" {
+		return applyStageRuntimeOverrides(req.SelectionModelOverride, req.SelectionEffortOverride, "", string(modelprefs.EffortMedium)), nil
 	}
 	model, err := resolveModelTier(req, config.ModelTierMedium)
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return applyLLMRuntimeOverrides(req, model, string(modelprefs.EffortMedium)), nil
+	return applyStageRuntimeOverrides(req.SelectionModelOverride, req.SelectionEffortOverride, model, string(modelprefs.EffortMedium)), nil
 }
 
-func resolveAgentRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeConfig, error) {
-	if strings.TrimSpace(req.LLMModelOverride) != "" {
-		return applyLLMRuntimeOverrides(req, "", agent.Effort), nil
+func resolveSynthesisRuntimeConfig(req Request) (llmRuntimeConfig, error) {
+	model, err := resolveModelTier(req, config.ModelTierMedium)
+	if err != nil {
+		return llmRuntimeConfig{}, err
+	}
+	return llmRuntimeConfig{model: model, effort: string(modelprefs.EffortMedium)}, nil
+}
+
+func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeConfig, error) {
+	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
+		return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, "", agent.Effort), nil
 	}
 	model, err := resolveAgentModel(req, agent)
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return applyLLMRuntimeOverrides(req, model, agent.Effort), nil
+	return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, model, agent.Effort), nil
 }
 
 func resolveAgentModel(req Request, agent agents.Agent) (string, error) {
@@ -1670,11 +1720,11 @@ func resolveModelTier(req Request, tier config.ModelTier) (string, error) {
 	return resolved.Model, nil
 }
 
-func applyLLMRuntimeOverrides(req Request, model, effort string) llmRuntimeConfig {
-	if override := strings.TrimSpace(req.LLMModelOverride); override != "" {
+func applyStageRuntimeOverrides(modelOverride, effortOverride, model, effort string) llmRuntimeConfig {
+	if override := strings.TrimSpace(modelOverride); override != "" {
 		model = override
 	}
-	if override := strings.TrimSpace(req.LLMEffortOverride); override != "" {
+	if override := strings.TrimSpace(effortOverride); override != "" {
 		effort = override
 	}
 	return llmRuntimeConfig{model: model, effort: effort}

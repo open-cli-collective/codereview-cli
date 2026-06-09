@@ -384,10 +384,16 @@ func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchm
 		args = append(args, "--review-head-sha", benchCase.ReviewHeadSHA)
 	}
 	if candidate.Model != "" {
-		args = append(args, "--llm-model", candidate.Model)
+		args = append(args,
+			"--selection-model", candidate.Model,
+			"--reviewer-model", candidate.Model,
+		)
 	}
 	if candidate.Effort != "" {
-		args = append(args, "--llm-effort", candidate.Effort)
+		args = append(args,
+			"--selection-effort", candidate.Effort,
+			"--reviewer-effort", candidate.Effort,
+		)
 	}
 	for _, dir := range candidate.AgentDirs {
 		args = append(args, "--agents-dir", resolveAgentDir(suiteDir, dir))

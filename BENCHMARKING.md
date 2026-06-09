@@ -193,10 +193,14 @@ cr --profile <candidate.profile> review <case.pr> --dry-run --json ...
 
 When set on the candidate, `run` also passes:
 
+These mappings are the current bridge while benchmark candidates still use the
+legacy top-level `model` and `effort` fields. Explicit per-stage recipes land
+separately.
+
 | Candidate field | Review flag |
 |-----------------|-------------|
-| `model` | `--llm-model <model>` |
-| `effort` | `--llm-effort <effort>` |
+| `model` | `--selection-model <model>` and `--reviewer-model <model>` |
+| `effort` | `--selection-effort <effort>` and `--reviewer-effort <effort>` |
 | `agent_dirs[]` | `--agents-dir <path>` |
 | `max_agents` | `--max-agents <n>` |
 | `max_concurrency` | `--max-concurrency <n>` |
