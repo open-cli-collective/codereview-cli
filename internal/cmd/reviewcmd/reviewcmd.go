@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -83,8 +85,11 @@ type commandFlags struct {
 	sessionName      string
 	jsonOutput       bool
 	verbose          bool
-	llmModel         string
-	llmEffort        string
+	selectionModel   string
+	selectionEffort  string
+	selectionPrompt  string
+	reviewerModel    string
+	reviewerEffort   string
 	reviewBaseSHA    string
 	reviewHeadSHA    string
 	maxAgents        int
@@ -124,8 +129,11 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Named LLM session to reuse for live reviews")
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 	cmd.Flags().BoolVar(&flags.verbose, "verbose", false, "Emit additional diagnostic details")
-	cmd.Flags().StringVar(&flags.llmModel, "llm-model", "", "Override LLM model for dry-run review")
-	cmd.Flags().StringVar(&flags.llmEffort, "llm-effort", "", "Override LLM effort for dry-run review")
+	cmd.Flags().StringVar(&flags.selectionModel, "selection-model", "", "Override selection model for dry-run review")
+	cmd.Flags().StringVar(&flags.selectionEffort, "selection-effort", "", "Override selection effort for dry-run review")
+	cmd.Flags().StringVar(&flags.selectionPrompt, "selection-prompt", "", "Override selection instructions from a file for dry-run review")
+	cmd.Flags().StringVar(&flags.reviewerModel, "reviewer-model", "", "Override reviewer models for dry-run review")
+	cmd.Flags().StringVar(&flags.reviewerEffort, "reviewer-effort", "", "Override reviewer effort for dry-run review")
 	cmd.Flags().StringVar(&flags.reviewBaseSHA, "review-base-sha", "", "Review this base commit SHA instead of the PR's current base SHA; requires --dry-run and --review-head-sha")
 	cmd.Flags().StringVar(&flags.reviewHeadSHA, "review-head-sha", "", "Review this head commit SHA instead of the PR's current head SHA; requires --dry-run and --review-base-sha")
 	cmd.Flags().IntVar(&flags.maxAgents, "max-agents", 0, "Maximum selected reviewer agents")
@@ -140,25 +148,44 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if flags.noPost {
 		flags.dryRun = true
 	}
-	llmModelChanged := cmd.Flags().Changed("llm-model")
-	llmEffortChanged := cmd.Flags().Changed("llm-effort")
+	selectionModelChanged := cmd.Flags().Changed("selection-model")
+	selectionEffortChanged := cmd.Flags().Changed("selection-effort")
+	selectionPromptChanged := cmd.Flags().Changed("selection-prompt")
+	reviewerModelChanged := cmd.Flags().Changed("reviewer-model")
+	reviewerEffortChanged := cmd.Flags().Changed("reviewer-effort")
 	reviewBaseChanged := cmd.Flags().Changed("review-base-sha")
 	reviewHeadChanged := cmd.Flags().Changed("review-head-sha")
-	llmModel := strings.TrimSpace(flags.llmModel)
-	llmEffort := strings.TrimSpace(flags.llmEffort)
+	selectionModel := strings.TrimSpace(flags.selectionModel)
+	selectionEffort := strings.TrimSpace(flags.selectionEffort)
+	selectionPromptPath := strings.TrimSpace(flags.selectionPrompt)
+	reviewerModel := strings.TrimSpace(flags.reviewerModel)
+	reviewerEffort := strings.TrimSpace(flags.reviewerEffort)
 	reviewBaseSHA := strings.TrimSpace(flags.reviewBaseSHA)
 	reviewHeadSHA := strings.TrimSpace(flags.reviewHeadSHA)
-	if llmModelChanged && llmModel == "" {
-		return exitcode.Usage(fmt.Errorf("--llm-model must be non-empty"))
+	if selectionModelChanged && selectionModel == "" {
+		return exitcode.Usage(fmt.Errorf("--selection-model must be non-empty"))
 	}
-	if llmEffortChanged && llmEffort == "" {
-		return exitcode.Usage(fmt.Errorf("--llm-effort must be non-empty"))
+	if selectionEffortChanged && selectionEffort == "" {
+		return exitcode.Usage(fmt.Errorf("--selection-effort must be non-empty"))
 	}
-	if llmEffortChanged && !validLLMEffort(llmEffort) {
-		return exitcode.Usage(fmt.Errorf("--llm-effort must be one of low, medium, high"))
+	if selectionEffortChanged && !validModelEffort(selectionEffort) {
+		return exitcode.Usage(fmt.Errorf("--selection-effort must be one of low, medium, high"))
 	}
-	if (llmModelChanged || llmEffortChanged) && !flags.dryRun {
-		return exitcode.Usage(fmt.Errorf("--llm-model and --llm-effort require --dry-run or --no-post"))
+	if selectionPromptChanged && selectionPromptPath == "" {
+		return exitcode.Usage(fmt.Errorf("--selection-prompt must be non-empty"))
+	}
+	if reviewerModelChanged && reviewerModel == "" {
+		return exitcode.Usage(fmt.Errorf("--reviewer-model must be non-empty"))
+	}
+	if reviewerEffortChanged && reviewerEffort == "" {
+		return exitcode.Usage(fmt.Errorf("--reviewer-effort must be non-empty"))
+	}
+	if reviewerEffortChanged && !validModelEffort(reviewerEffort) {
+		return exitcode.Usage(fmt.Errorf("--reviewer-effort must be one of low, medium, high"))
+	}
+	stageOverrideChanged := selectionModelChanged || selectionEffortChanged || selectionPromptChanged || reviewerModelChanged || reviewerEffortChanged
+	if stageOverrideChanged && !flags.dryRun {
+		return exitcode.Usage(fmt.Errorf("--selection-model, --selection-effort, --selection-prompt, --reviewer-model, and --reviewer-effort require --dry-run or --no-post"))
 	}
 	if reviewBaseChanged != reviewHeadChanged {
 		return exitcode.Usage(fmt.Errorf("--review-base-sha and --review-head-sha must be set together"))
@@ -189,6 +216,15 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	if flags.maxConcurrency < 0 {
 		return exitcode.Usage(fmt.Errorf("--max-concurrency must be non-negative"))
+	}
+	selectionPromptInstructions := ""
+	selectionPromptProvenance := ""
+	if selectionPromptChanged {
+		var err error
+		selectionPromptInstructions, selectionPromptProvenance, err = loadSelectionPromptOverride(selectionPromptPath)
+		if err != nil {
+			return exitcode.Usage(err)
+		}
 	}
 	var failOn *review.Severity
 	if strings.TrimSpace(flags.failOn) != "" {
@@ -237,23 +273,27 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	noResolve := flags.noResolveThreads || profile.ReviewPolicy.ResolveThreads == config.ResolveThreadsNever
 	pipelineReq := pipeline.Request{
-		PRRef:               ref,
-		PRURL:               prArg,
-		ProfileName:         profileName,
-		SessionName:         sessionName,
-		Profile:             profile,
-		PostingIdentity:     runtime.PostingIdentity,
-		AgentDirs:           append([]string(nil), flags.agentsDirs...),
-		FailOn:              failOn,
-		AllowSelfReview:     flags.allowSelfReview,
-		AllowSelfApprove:    flags.allowSelfApprove,
-		NoResolveThreads:    noResolve,
-		MajorRequestChanges: profile.ReviewPolicy.MajorEvent == config.ReviewMajorEventRequestChanges,
-		IncludeNits:         flags.verbose,
-		LLMModelOverride:    llmModel,
-		LLMEffortOverride:   llmEffort,
-		ReviewBaseSHA:       reviewBaseSHA,
-		ReviewHeadSHA:       reviewHeadSHA,
+		PRRef:                       ref,
+		PRURL:                       prArg,
+		ProfileName:                 profileName,
+		SessionName:                 sessionName,
+		Profile:                     profile,
+		PostingIdentity:             runtime.PostingIdentity,
+		AgentDirs:                   append([]string(nil), flags.agentsDirs...),
+		FailOn:                      failOn,
+		AllowSelfReview:             flags.allowSelfReview,
+		AllowSelfApprove:            flags.allowSelfApprove,
+		NoResolveThreads:            noResolve,
+		MajorRequestChanges:         profile.ReviewPolicy.MajorEvent == config.ReviewMajorEventRequestChanges,
+		IncludeNits:                 flags.verbose,
+		SelectionModelOverride:      selectionModel,
+		SelectionEffortOverride:     selectionEffort,
+		SelectionPromptInstructions: selectionPromptInstructions,
+		SelectionPromptProvenance:   selectionPromptProvenance,
+		ReviewerModelOverride:       reviewerModel,
+		ReviewerEffortOverride:      reviewerEffort,
+		ReviewBaseSHA:               reviewBaseSHA,
+		ReviewHeadSHA:               reviewHeadSHA,
 	}
 	if !flags.dryRun {
 		return runLive(ctx, opts, flags, runtime.Runner, pipelineReq, failOn)
@@ -281,8 +321,35 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	return nil
 }
 
-func validLLMEffort(value string) bool {
+func validModelEffort(value string) bool {
 	return modelprefs.Effort(value).Valid()
+}
+
+func loadSelectionPromptOverride(rawPath string) (string, string, error) {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return "", "", fmt.Errorf("--selection-prompt must be non-empty")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", fmt.Errorf("--selection-prompt must resolve to a readable file: %w", err)
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", "", fmt.Errorf("--selection-prompt must reference a readable file: %w", err)
+	}
+	if info.IsDir() {
+		return "", "", fmt.Errorf("--selection-prompt must reference a file, not a directory")
+	}
+	data, err := os.ReadFile(absPath) // #nosec G304 -- user-selected prompt override path is explicit CLI input.
+	if err != nil {
+		return "", "", fmt.Errorf("--selection-prompt must reference a readable file: %w", err)
+	}
+	instructions := strings.TrimSpace(string(data))
+	if instructions == "" {
+		return "", "", fmt.Errorf("--selection-prompt file must contain non-empty prompt text")
+	}
+	return instructions, absPath, nil
 }
 
 var reviewSHAFlagPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
