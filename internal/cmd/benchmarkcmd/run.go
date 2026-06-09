@@ -115,6 +115,7 @@ type benchmarkSynthesisStage = benchmarkSelectionStage
 
 type benchmarkReviewerStage struct {
 	Model     string              `json:"model,omitempty"`
+	ModelTier string              `json:"model_tier,omitempty"`
 	Effort    string              `json:"effort,omitempty"`
 	AgentDirs []benchmarkAgentDir `json:"agent_dirs,omitempty"`
 }
@@ -441,6 +442,9 @@ func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchm
 	if candidate.Stages.Reviewers.Model != "" {
 		args = append(args, "--reviewer-model", candidate.Stages.Reviewers.Model)
 	}
+	if candidate.Stages.Reviewers.ModelTier != "" {
+		args = append(args, "--reviewer-model-tier", candidate.Stages.Reviewers.ModelTier)
+	}
 	if candidate.Stages.Reviewers.Effort != "" {
 		args = append(args, "--reviewer-effort", candidate.Stages.Reviewers.Effort)
 	}
@@ -525,6 +529,7 @@ func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []be
 				},
 				Reviewers: benchmarkReviewerStage{
 					Model:     candidate.Stages.Reviewers.Model,
+					ModelTier: candidate.Stages.Reviewers.ModelTier,
 					Effort:    candidate.Stages.Reviewers.Effort,
 					AgentDirs: summarizeAgentDirs(suiteDir, candidate.Stages.Reviewers.AgentDirs),
 				},

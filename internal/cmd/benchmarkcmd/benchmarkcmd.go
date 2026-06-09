@@ -60,6 +60,7 @@ type doctorSelectionStage struct {
 
 type doctorReviewerStage struct {
 	Model     string           `json:"model,omitempty"`
+	ModelTier string           `json:"model_tier,omitempty"`
 	Effort    string           `json:"effort,omitempty"`
 	AgentDirs []doctorAgentDir `json:"agent_dirs"`
 }
@@ -206,6 +207,7 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 				},
 				Reviewers: doctorReviewerStage{
 					Model:     candidate.Stages.Reviewers.Model,
+					ModelTier: candidate.Stages.Reviewers.ModelTier,
 					Effort:    candidate.Stages.Reviewers.Effort,
 					AgentDirs: make([]doctorAgentDir, 0, len(candidate.Stages.Reviewers.AgentDirs)),
 				},
@@ -259,6 +261,10 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 		if candidate.Stages.Synthesis != nil {
 			synthesisText = fmt.Sprintf(" synthesis=%s/%s", candidate.Stages.Synthesis.Model, candidate.Stages.Synthesis.Effort)
 		}
+		reviewerModel := candidate.Stages.Reviewers.Model
+		if candidate.Stages.Reviewers.ModelTier != "" {
+			reviewerModel = "tier:" + candidate.Stages.Reviewers.ModelTier
+		}
 		if _, err := fmt.Fprintf(
 			opts.Stdout,
 			"- candidate %s profile=%s available=%t selection=%s/%s reviewers=%s/%s reviewer_agent_dirs=%d%s\n",
@@ -267,7 +273,7 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 			candidate.ProfileAvailable,
 			candidate.Stages.Selection.Model,
 			candidate.Stages.Selection.Effort,
-			candidate.Stages.Reviewers.Model,
+			reviewerModel,
 			candidate.Stages.Reviewers.Effort,
 			len(candidate.Stages.Reviewers.AgentDirs),
 			synthesisText,

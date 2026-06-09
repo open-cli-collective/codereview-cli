@@ -75,9 +75,11 @@ type SelectionStage struct {
 // ReviewerStage configures the benchmark reviewer execution phase.
 type ReviewerStage struct {
 	Model     string   `yaml:"model,omitempty" json:"model,omitempty"`
+	ModelTier string   `yaml:"model_tier,omitempty" json:"model_tier,omitempty"`
 	Effort    string   `yaml:"effort,omitempty" json:"effort,omitempty"`
 	AgentDirs []string `yaml:"agent_dirs,omitempty" json:"agent_dirs,omitempty"`
 
+	modelTierSet bool
 	modelSet     bool
 	effortSet    bool
 	agentDirsSet bool
@@ -156,6 +158,7 @@ func (s *SelectionStage) UnmarshalYAML(value *yaml.Node) error {
 func (s *ReviewerStage) UnmarshalYAML(value *yaml.Node) error {
 	type rawReviewerStage struct {
 		Model     string   `yaml:"model"`
+		ModelTier string   `yaml:"model_tier"`
 		Effort    string   `yaml:"effort"`
 		AgentDirs []string `yaml:"agent_dirs"`
 		AgentsDir []string `yaml:"agents_dir"`
@@ -175,9 +178,11 @@ func (s *ReviewerStage) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*s = ReviewerStage{
 		Model:        raw.Model,
+		ModelTier:    raw.ModelTier,
 		Effort:       raw.Effort,
 		AgentDirs:    agentDirs,
 		modelSet:     mappingHasKey(value, "model"),
+		modelTierSet: mappingHasKey(value, "model_tier"),
 		effortSet:    mappingHasKey(value, "effort"),
 		agentDirsSet: hasAgentDirs || hasAgentsDir,
 	}
@@ -290,6 +295,7 @@ func Normalize(suite *SuiteFile) {
 		c.Stages.Synthesis.Effort = strings.TrimSpace(c.Stages.Synthesis.Effort)
 		c.Stages.Synthesis.Prompt = strings.TrimSpace(c.Stages.Synthesis.Prompt)
 		c.Stages.Reviewers.Model = strings.TrimSpace(c.Stages.Reviewers.Model)
+		c.Stages.Reviewers.ModelTier = strings.TrimSpace(c.Stages.Reviewers.ModelTier)
 		c.Stages.Reviewers.Effort = strings.TrimSpace(c.Stages.Reviewers.Effort)
 		for j := range c.Stages.Reviewers.AgentDirs {
 			c.Stages.Reviewers.AgentDirs[j] = strings.TrimSpace(c.Stages.Reviewers.AgentDirs[j])
@@ -461,6 +467,15 @@ func validateReviewerStageStructural(candidateID string, stages CandidateStages)
 	if stages.Reviewers.modelSet && stages.Reviewers.Model == "" {
 		return fmt.Errorf("%w: candidate %q stages.reviewers.model must be non-empty when present", ErrInvalid, candidateID)
 	}
+	if stages.Reviewers.modelTierSet && stages.Reviewers.ModelTier == "" {
+		return fmt.Errorf("%w: candidate %q stages.reviewers.model_tier must be non-empty when present", ErrInvalid, candidateID)
+	}
+	if stages.Reviewers.Model != "" && stages.Reviewers.ModelTier != "" {
+		return fmt.Errorf("%w: candidate %q stages.reviewers cannot set both model and model_tier", ErrInvalid, candidateID)
+	}
+	if stages.Reviewers.ModelTier != "" && !config.ModelTier(stages.Reviewers.ModelTier).Valid() {
+		return fmt.Errorf("%w: candidate %q stages.reviewers.model_tier must be one of small, medium, large", ErrInvalid, candidateID)
+	}
 	if stages.Reviewers.effortSet && stages.Reviewers.Effort == "" {
 		return fmt.Errorf("%w: candidate %q stages.reviewers.effort must be non-empty when present", ErrInvalid, candidateID)
 	}
@@ -506,8 +521,8 @@ func validateRunCandidates(suite SuiteFile) error {
 		if !candidate.Stages.reviewersSet {
 			return fmt.Errorf("%w: candidate %q stages.reviewers is required for benchmark run", ErrInvalid, candidate.ID)
 		}
-		if candidate.Stages.Reviewers.Model == "" {
-			return fmt.Errorf("%w: candidate %q stages.reviewers.model is required for benchmark run", ErrInvalid, candidate.ID)
+		if candidate.Stages.Reviewers.Model == "" && candidate.Stages.Reviewers.ModelTier == "" {
+			return fmt.Errorf("%w: candidate %q stages.reviewers.model or stages.reviewers.model_tier is required for benchmark run", ErrInvalid, candidate.ID)
 		}
 		if candidate.Stages.Reviewers.Effort == "" {
 			return fmt.Errorf("%w: candidate %q stages.reviewers.effort is required for benchmark run", ErrInvalid, candidate.ID)
@@ -735,7 +750,7 @@ func validateKnownFields(doc *yaml.Node) error {
 			reviewers := mappingValue(stages, "reviewers")
 			if reviewers != nil {
 				if err := validateMappingKeys(reviewers, fmt.Sprintf("candidate[%d] stages.reviewers", i), map[string]bool{
-					"model": true, "effort": true, "agent_dirs": true, "agents_dir": true,
+					"model": true, "model_tier": true, "effort": true, "agent_dirs": true, "agents_dir": true,
 				}); err != nil {
 					return err
 				}

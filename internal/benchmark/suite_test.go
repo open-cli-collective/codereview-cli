@@ -113,6 +113,15 @@ func TestValidateForRunAcceptsEmptyReviewerAgentDirsField(t *testing.T) {
 	}
 }
 
+func TestValidateForRunAcceptsReviewerModelTierWithoutReviewerModel(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), "      reviewers:\n        model: gpt-5.4\n        effort: high\n", "      reviewers:\n        model_tier: medium\n        effort: high\n", 1)
+	suite := loadSuite(t, body)
+
+	if err := ValidateForRun(suite, testConfig()); err != nil {
+		t.Fatalf("ValidateForRun: %v", err)
+	}
+}
+
 func TestValidateForRunRejectsMissingReviewerStage(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), `      reviewers:
         model: gpt-5.4
@@ -128,6 +137,16 @@ func TestValidateForRunRejectsMissingReviewerStage(t *testing.T) {
 	err := ValidateForRun(suite, testConfig())
 	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "stages.reviewers is required for benchmark run") {
 		t.Fatalf("ValidateForRun error = %v, want missing reviewer stage rejection", err)
+	}
+}
+
+func TestValidateRejectsReviewerModelAndModelTierTogether(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), "      reviewers:\n        model: gpt-5.4\n        effort: high\n", "      reviewers:\n        model: gpt-5.4\n        model_tier: medium\n        effort: high\n", 1)
+	suite := loadSuite(t, body)
+
+	err := Validate(suite, testConfig())
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "cannot set both model and model_tier") {
+		t.Fatalf("Validate error = %v, want model/model_tier conflict", err)
 	}
 }
 

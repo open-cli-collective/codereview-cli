@@ -337,6 +337,42 @@ func TestModelMapValidationAndResolution(t *testing.T) {
 	if got, ok := ResolveModelTier(resolved.LLM, ModelTierLarge); !ok || got.Model != "gpt-5.5" || got.Source != ModelMapSourceBuiltIn {
 		t.Fatalf("ResolveModelTier large = %#v ok=%t, want built-in gpt-5.5", got, ok)
 	}
+	if resolved.LLM.ReviewerModelTier != "" {
+		t.Fatalf("ReviewerModelTier = %q, want empty by default", resolved.LLM.ReviewerModelTier)
+	}
+}
+
+func TestReviewerModelTierValidationAndNormalization(t *testing.T) {
+	cfg := validFile()
+	profile := cfg.Profiles["home"]
+	profile.LLM.ReviewerModelTier = " medium "
+	cfg.Profiles["home"] = profile
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	_, resolved, err := ResolveProfile(cfg, "home")
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if resolved.LLM.ReviewerModelTier != ModelTierMedium {
+		t.Fatalf("ReviewerModelTier = %q, want %q", resolved.LLM.ReviewerModelTier, ModelTierMedium)
+	}
+}
+
+func TestValidateRejectsInvalidReviewerModelTier(t *testing.T) {
+	cfg := validFile()
+	profile := cfg.Profiles["home"]
+	profile.LLM.ReviewerModelTier = "flagship"
+	cfg.Profiles["home"] = profile
+
+	err := Validate(cfg)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Validate error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "reviewer_model_tier") {
+		t.Fatalf("Validate error = %v, want reviewer_model_tier guidance", err)
+	}
 }
 
 func TestBuiltInModelMapIsProviderAdapterSpecific(t *testing.T) {

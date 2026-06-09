@@ -257,7 +257,8 @@ applies_when:
 needs_full_file_content: false
 ```
 
-Use `model_tier: small|medium|large` for portable shared catalogs. Use
+Use `model_tier: small|medium|large` for portable shared catalogs. It means the
+minimum acceptable reviewer tier for that agent, not a direct model pick. Use
 `model_id: <provider-model-id>` only when an agent intentionally requires one
 provider-specific model. `effort` is independent and must be one of
 `low`, `medium`, or `high`.
@@ -336,6 +337,7 @@ profiles:
       provider: anthropic
       auth: subscription
       adapter: claude_cli
+      reviewer_model_tier: small
     agent_sources:
       - ~/.config/codereview/agents
     review_policy:
@@ -358,6 +360,7 @@ Supported values:
 | `llm.auth` | `subscription`, `api_key` |
 | `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc`, and `codex_cli` are usable for review. `codex_cli` requires `provider: openai` and `auth: subscription`, and is currently best-effort/beta because Codex does not yet expose an explicit all-tools-disabled flag. |
 | `llm.model_map` keys | `small`, `medium`, `large` |
+| `llm.reviewer_model_tier` | `small`, `medium`, `large` |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
 | `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
@@ -367,11 +370,39 @@ logged-in CLI or local runtime. `api_key` LLM auth requires
 `llm.credential_ref` and stores a provider-specific API key in the credential
 backend.
 
-Reviewer agents use provider-neutral `model_tier` values. At runtime, `cr`
-resolves `model_tier` through the active profile's `llm.model_map` plus
-provider+adapter built-ins. User `llm.model_map` entries override built-ins,
-and model IDs are opaque strings so future provider models can be configured
-without a CLI update.
+Reviewer agents use provider-neutral `model_tier` values as minimum floors. At
+runtime, `cr` combines the profile's `llm.reviewer_model_tier` baseline with
+the agent floor and resolves the higher tier through the active profile's
+`llm.model_map` plus provider+adapter built-ins. User `llm.model_map` entries
+override built-ins, and model IDs are opaque strings so future provider models
+can be configured without a CLI update.
+
+Effective reviewer tier is:
+
+```text
+max(llm.reviewer_model_tier, agent.model_tier)
+```
+
+When `llm.reviewer_model_tier` is omitted, `cr` defaults it to `small`.
+`model_id` stays an exact provider-specific selection and does not participate
+in the tier-floor calculation.
+
+Migration note: older releases treated reviewer `model_tier` as a direct map
+lookup. Current releases treat it as a minimum acceptable tier, so profiles can
+raise the reviewer baseline without editing shared agent catalogs.
+
+Dry-run and no-post runs also record selected reviewer runtime resolution in
+`agent-sources.json` for auditability. Each selected agent may include
+`reviewer_runtime` with:
+
+| Field | Meaning |
+|-------|---------|
+| `mode` | `tier_floor` for portable tier resolution, `exact_model` for agent `model_id` passthrough |
+| `floor_tier` | Declared agent `model_tier` floor when `mode=tier_floor` |
+| `baseline_tier` | Effective operator baseline tier used for this run |
+| `effective_tier` | Higher of baseline and agent floor |
+| `resolved_model` | Resolved provider model, from the active model map for `tier_floor` or from agent `model_id` for `exact_model` |
+| `model_map_source` | `built_in` or `config` for the resolved tier mapping |
 
 Built-in model maps:
 
@@ -722,6 +753,7 @@ Review selection and execution flags:
 | `--selection-effort <effort>` | Override selection-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
 | `--selection-prompt <path>` | Load selection-stage instruction text from a file while preserving the structured JSON selection protocol. Requires `--dry-run` or `--no-post`. |
 | `--reviewer-model <model>` | Exact provider model ID passthrough for reviewer stages only. Bypasses reviewer agent `model_tier`, `model_id`, and profile model-map resolution. Requires `--dry-run` or `--no-post`. |
+| `--reviewer-model-tier <tier>` | Override the reviewer baseline tier only with `small`, `medium`, or `large`. This still respects higher agent `model_tier` floors. Requires `--dry-run` or `--no-post`. |
 | `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
@@ -798,9 +830,10 @@ such as `stages.selection`, `stages.reviewers`, `max_agents`, and
 `max_concurrency` control review runtime overrides. `stages.selection.model`
 and `stages.selection.effort` map to `--selection-model` and
 `--selection-effort`; optional `stages.selection.prompt` maps to
-`--selection-prompt`. `stages.reviewers.model`, `stages.reviewers.effort`, and
-`stages.reviewers.agent_dirs[]` map to `--reviewer-model`,
-`--reviewer-effort`, and repeated `--agents-dir` flags. Case YAML fields
+`--selection-prompt`. `stages.reviewers.model` remains the exact-model bypass,
+while `stages.reviewers.model_tier` maps to `--reviewer-model-tier`.
+`stages.reviewers.effort` and `stages.reviewers.agent_dirs[]` map to
+`--reviewer-effort` and repeated `--agents-dir` flags. Case YAML fields
 `review_base_sha` and `review_head_sha` pin the exact base/head commit pair
 reviewed by the dry-run child command. Optional `stages.synthesis` metadata is
 reserved for future benchmark support and does not change `benchmark run`
