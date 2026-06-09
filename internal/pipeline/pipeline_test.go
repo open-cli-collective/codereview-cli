@@ -80,13 +80,13 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 		t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
 	}
 	for _, request := range requests {
-		if request.Model != "sonnet" || request.Effort != "medium" {
-			t.Fatalf("request = model:%q effort:%q, want sonnet/medium from agent config", request.Model, request.Effort)
+		if request.Model != "claude-sonnet-4-6" || request.Effort != "medium" {
+			t.Fatalf("request = model:%q effort:%q, want claude-sonnet-4-6/medium from agent config", request.Model, request.Effort)
 		}
 	}
 	for _, session := range result.Sessions {
-		if session.Model != "sonnet" || session.Effort == nil || *session.Effort != "medium" {
-			t.Fatalf("session = model:%q effort:%v, want sonnet/medium from agent config", session.Model, session.Effort)
+		if session.Model != "claude-sonnet-4-6" || session.Effort == nil || *session.Effort != "medium" {
+			t.Fatalf("session = model:%q effort:%v, want claude-sonnet-4-6/medium from agent config", session.Model, session.Effort)
 		}
 	}
 	if got := result.Sessions[1].ProviderSessionID; got != "reviewer-session" {
@@ -364,8 +364,8 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 		result.ReviewBaseSHA != provider.pr.Base.SHA || result.ReviewHeadSHA != provider.pr.Head.SHA {
 		t.Fatalf("result SHAs = current %s/%s review %s/%s, want provider PR SHAs", result.CurrentBaseSHA, result.CurrentHeadSHA, result.ReviewBaseSHA, result.ReviewHeadSHA)
 	}
-	if result.SelectionSession.ProviderSessionID != "selection-session" || result.SelectionSession.Model != "sonnet" || result.SelectionSession.Effort != "medium" {
-		t.Fatalf("selection session = %#v, want selection-session sonnet/medium", result.SelectionSession)
+	if result.SelectionSession.ProviderSessionID != "selection-session" || result.SelectionSession.Model != "claude-sonnet-4-6" || result.SelectionSession.Effort != "medium" {
+		t.Fatalf("selection session = %#v, want selection-session claude-sonnet-4-6/medium", result.SelectionSession)
 	}
 	expectedLog, err := expectedArtifacts.AgentLog("orchestrator-selection")
 	if err != nil {
@@ -559,7 +559,7 @@ func TestSelectionOnlyContextBudgetFailure(t *testing.T) {
 		Now:      fixedNow,
 		Budget:   ContextBudget{MaxPromptBytes: 100},
 	}, selectionRequestFromReview(req, t.TempDir()))
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for selection model sonnet") {
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for selection model claude-sonnet-4-6") {
 		t.Fatalf("SelectionOnly error = %v, want selection budget failure", err)
 	}
 	if len(adapter.Requests()) != 0 {
@@ -690,19 +690,19 @@ func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
 			name:           "model and effort",
 			modelOverride:  "bench-model",
 			effortOverride: "high",
-			wantModels:     []string{"bench-model", "sonnet", "sonnet"},
+			wantModels:     []string{"bench-model", "claude-sonnet-4-6", "claude-sonnet-4-6"},
 			wantEfforts:    []string{"high", "medium", "medium"},
 		},
 		{
 			name:          "model only",
 			modelOverride: "bench-model",
-			wantModels:    []string{"bench-model", "sonnet", "sonnet"},
+			wantModels:    []string{"bench-model", "claude-sonnet-4-6", "claude-sonnet-4-6"},
 			wantEfforts:   []string{"medium", "medium", "medium"},
 		},
 		{
 			name:           "effort only",
 			effortOverride: "high",
-			wantModels:     []string{"sonnet", "sonnet", "sonnet"},
+			wantModels:     []string{"claude-sonnet-4-6", "claude-sonnet-4-6", "claude-sonnet-4-6"},
 			wantEfforts:    []string{"high", "medium", "medium"},
 		},
 	}
@@ -796,7 +796,7 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"sonnet", "bench-reviewer-model", "sonnet"}
+	wantModels := []string{"claude-sonnet-4-6", "bench-reviewer-model", "claude-sonnet-4-6"}
 	wantEfforts := []string{"medium", "low", "medium"}
 	requests := adapter.Requests()
 	for i, request := range requests {
@@ -846,7 +846,7 @@ func TestDryRunAgentModelIDBypassesModelMapForReviewer(t *testing.T) {
 	if len(requests) != 3 {
 		t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
 	}
-	wantModels := []string{"sonnet", "agent-provider-model", "sonnet"}
+	wantModels := []string{"claude-sonnet-4-6", "agent-provider-model", "claude-sonnet-4-6"}
 	for i, request := range requests {
 		if request.Model != wantModels[i] || request.Effort != "medium" {
 			t.Fatalf("request[%d] = model:%q effort:%q, want %s/medium", i, request.Model, request.Effort, wantModels[i])
@@ -891,7 +891,7 @@ func TestDryRunReviewerModelOverrideBypassesAgentModelID(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"sonnet", "override-model", "sonnet"}
+	wantModels := []string{"claude-sonnet-4-6", "override-model", "claude-sonnet-4-6"}
 	for i, request := range adapter.Requests() {
 		if request.Model != wantModels[i] || request.Effort != "medium" {
 			t.Fatalf("request[%d] = model:%q effort:%q, want %s/medium", i, request.Model, request.Effort, wantModels[i])
@@ -1228,7 +1228,7 @@ func TestLiveNamedSessionScopeMismatchRefusesBeforeLLM(t *testing.T) {
 		{name: "profile", mutate: func(s *ledger.NamedSession) { s.Profile = "other" }, wantErr: "profile mismatch"},
 		{name: "provider", mutate: func(s *ledger.NamedSession) { s.Provider = "openai" }, wantErr: "provider mismatch"},
 		{name: "adapter", mutate: func(s *ledger.NamedSession) { s.Adapter = "other-adapter" }, wantErr: "adapter mismatch"},
-		{name: "model", mutate: func(s *ledger.NamedSession) { s.Model = "opus" }, wantErr: "model mismatch"},
+		{name: "model", mutate: func(s *ledger.NamedSession) { s.Model = "claude-opus-4-8" }, wantErr: "model mismatch"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1919,7 +1919,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				trustCurrentTempFixtures(t)
 				req.Profile.AgentSources = []string{dir}
 			},
-			want:  "context budget exceeded for selection model sonnet",
+			want:  "context budget exceeded for selection model claude-sonnet-4-6",
 			runID: "run-budget-selection-default",
 		},
 		{
@@ -1964,7 +1964,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 			queue: func(adapter *llm.FakeAdapter) {
 				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
 			},
-			want:  "context budget exceeded for full-content agent harness:reviewer file main.go model sonnet",
+			want:  "context budget exceeded for full-content agent harness:reviewer file main.go model claude-sonnet-4-6",
 			runID: "run-budget-full-content-default",
 		},
 		{
@@ -1993,7 +1993,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
 				adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, strings.Repeat("body ", 1000)), 1, 1))
 			},
-			want:  "context budget exceeded for rollup model sonnet",
+			want:  "context budget exceeded for rollup model claude-sonnet-4-6",
 			runID: "run-budget-rollup-default",
 		},
 		{
@@ -2007,7 +2007,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
 				adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, strings.Repeat("body ", 1000)), 1, 1))
 			},
-			want:  "context budget exceeded for rollup model sonnet",
+			want:  "context budget exceeded for rollup model claude-sonnet-4-6",
 			runID: "run-budget-rollup-override",
 		},
 	}
@@ -2339,7 +2339,7 @@ func namedSessionForRequest(req Request, providerSessionID string) ledger.NamedS
 		Profile:           req.ProfileName,
 		Provider:          string(req.Profile.LLM.Provider),
 		Adapter:           "fake-llm",
-		Model:             "sonnet",
+		Model:             "claude-sonnet-4-6",
 		Host:              req.PRRef.Host,
 		ProviderSessionID: providerSessionID,
 		CreatedAt:         fixedNow(),

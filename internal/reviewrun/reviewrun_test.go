@@ -919,7 +919,7 @@ func testNamedSessionCandidate(providerSessionID string) ledger.NamedSession {
 		Profile:           "home",
 		Provider:          "anthropic",
 		Adapter:           "fake-llm",
-		Model:             "sonnet",
+		Model:             "claude-sonnet-4-6",
 		Host:              "github.com",
 		ProviderSessionID: providerSessionID,
 		CreatedAt:         testNow().Add(-time.Hour),

@@ -38,8 +38,8 @@ func TestAnthropicAPIAdapterRequestAndResponse(t *testing.T) {
 		if _, ok := body["tools"]; ok {
 			t.Fatalf("request body includes tools: %#v", body)
 		}
-		if got := body["model"]; got != "claude-3-5-sonnet" {
-			t.Fatalf("model = %#v, want claude-3-5-sonnet", got)
+		if got := body["model"]; got != "claude-sonnet-4-6" {
+			t.Fatalf("model = %#v, want claude-sonnet-4-6", got)
 		}
 		if got, ok := body["max_tokens"].(float64); !ok || got <= 0 {
 			t.Fatalf("max_tokens = %#v, want positive number", body["max_tokens"])
@@ -61,7 +61,7 @@ func TestAnthropicAPIAdapterRequestAndResponse(t *testing.T) {
 		t.Fatalf("NewAnthropicAPIAdapter: %v", err)
 	}
 	logPath := filepath.Join(t.TempDir(), "anthropic.jsonl")
-	stream, err := adapter.Start(context.Background(), Request{Model: "claude-3-5-sonnet", Prompt: "prompt", LogPath: logPath})
+	stream, err := adapter.Start(context.Background(), Request{Model: "claude-sonnet-4-6", Prompt: "prompt", LogPath: logPath})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 		if !ok || reasoning["effort"] != "high" {
 			t.Fatalf("reasoning = %#v, want effort high", body["reasoning"])
 		}
-		if body["model"] != "gpt-5.1" || body["input"] != "prompt" {
+		if body["model"] != "gpt-5.4" || body["input"] != "prompt" {
 			t.Fatalf("request body = %#v, want model and input", body)
 		}
 		_, _ = fmt.Fprint(w, `{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":5,"output_tokens":12,"input_tokens_details":{"cached_tokens":2}}}`)
@@ -127,7 +127,7 @@ func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 		t.Fatalf("NewOpenAIAPIAdapter: %v", err)
 	}
 	logPath := filepath.Join(t.TempDir(), "openai.jsonl")
-	stream, err := adapter.Start(context.Background(), Request{Model: "gpt-5.1", Effort: "high", Prompt: "prompt", LogPath: logPath})
+	stream, err := adapter.Start(context.Background(), Request{Model: "gpt-5.4", Effort: "high", Prompt: "prompt", LogPath: logPath})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
