@@ -218,10 +218,9 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return exitcode.Usage(fmt.Errorf("--max-concurrency must be non-negative"))
 	}
 	selectionPromptInstructions := ""
-	selectionPromptProvenance := ""
 	if selectionPromptChanged {
 		var err error
-		selectionPromptInstructions, selectionPromptProvenance, err = loadSelectionPromptOverride(selectionPromptPath)
+		selectionPromptInstructions, err = loadSelectionPromptOverride(selectionPromptPath)
 		if err != nil {
 			return exitcode.Usage(err)
 		}
@@ -289,7 +288,6 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		SelectionModelOverride:      selectionModel,
 		SelectionEffortOverride:     selectionEffort,
 		SelectionPromptInstructions: selectionPromptInstructions,
-		SelectionPromptProvenance:   selectionPromptProvenance,
 		ReviewerModelOverride:       reviewerModel,
 		ReviewerEffortOverride:      reviewerEffort,
 		ReviewBaseSHA:               reviewBaseSHA,
@@ -325,31 +323,31 @@ func validModelEffort(value string) bool {
 	return modelprefs.Effort(value).Valid()
 }
 
-func loadSelectionPromptOverride(rawPath string) (string, string, error) {
+func loadSelectionPromptOverride(rawPath string) (string, error) {
 	path := strings.TrimSpace(rawPath)
 	if path == "" {
-		return "", "", fmt.Errorf("--selection-prompt must be non-empty")
+		return "", fmt.Errorf("--selection-prompt must be non-empty")
 	}
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return "", "", fmt.Errorf("--selection-prompt must resolve to a readable file: %w", err)
+		return "", fmt.Errorf("--selection-prompt must resolve to a readable file: %w", err)
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return "", "", fmt.Errorf("--selection-prompt must reference a readable file: %w", err)
+		return "", fmt.Errorf("--selection-prompt must reference a readable file: %w", err)
 	}
 	if info.IsDir() {
-		return "", "", fmt.Errorf("--selection-prompt must reference a file, not a directory")
+		return "", fmt.Errorf("--selection-prompt must reference a file, not a directory")
 	}
 	data, err := os.ReadFile(absPath) // #nosec G304 -- user-selected prompt override path is explicit CLI input.
 	if err != nil {
-		return "", "", fmt.Errorf("--selection-prompt must reference a readable file: %w", err)
+		return "", fmt.Errorf("--selection-prompt must reference a readable file: %w", err)
 	}
 	instructions := strings.TrimSpace(string(data))
 	if instructions == "" {
-		return "", "", fmt.Errorf("--selection-prompt file must contain non-empty prompt text")
+		return "", fmt.Errorf("--selection-prompt file must contain non-empty prompt text")
 	}
-	return instructions, absPath, nil
+	return instructions, nil
 }
 
 var reviewSHAFlagPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)

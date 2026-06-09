@@ -258,7 +258,6 @@ func TestDryRunSelectionPromptInstructionsStayInsideStructuredPayload(t *testing
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	req.SelectionPromptInstructions = "Prefer applies_when over prompt wording when routing."
-	req.SelectionPromptProvenance = "/tmp/selection.md"
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))

@@ -79,7 +79,7 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 		t.Fatalf("request flags = %#v", req)
 	}
 	if req.SelectionModelOverride != "" || req.SelectionEffortOverride != "" ||
-		req.SelectionPromptInstructions != "" || req.SelectionPromptProvenance != "" ||
+		req.SelectionPromptInstructions != "" ||
 		req.ReviewerModelOverride != "" || req.ReviewerEffortOverride != "" {
 		t.Fatalf("stage overrides = %#v, want empty when flags omitted", req)
 	}
@@ -286,8 +286,8 @@ func TestReviewDryRunPassesStageOverrides(t *testing.T) {
 	if req.ReviewerModelOverride != "bench-reviewer-model" || req.ReviewerEffortOverride != "low" {
 		t.Fatalf("reviewer overrides = model:%q effort:%q, want bench-reviewer-model/low", req.ReviewerModelOverride, req.ReviewerEffortOverride)
 	}
-	if req.SelectionPromptInstructions != "Use applies_when as the routing contract." || req.SelectionPromptProvenance != promptPath {
-		t.Fatalf("selection prompt override = instructions:%q provenance:%q", req.SelectionPromptInstructions, req.SelectionPromptProvenance)
+	if req.SelectionPromptInstructions != "Use applies_when as the routing contract." {
+		t.Fatalf("selection prompt override instructions = %q", req.SelectionPromptInstructions)
 	}
 }
 
