@@ -389,11 +389,11 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		Artifacts:                   prepared.artifacts,
 		MaxAgents:                   opts.maxAgents(),
 	})
+	result.SelectionSession = selectionSessionFromDraft(session)
 	if err != nil {
-		return SelectionResult{}, err
+		return result, err
 	}
 	result.Selection = selection
-	result.SelectionSession = selectionSessionFromDraft(session)
 	return result, nil
 }
 
@@ -792,10 +792,10 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 		})
 	})
 	if err != nil {
-		return llm.Selection{}, sessionDraft{}, err
+		return llm.Selection{}, selectionSession, err
 	}
 	if len(selection.SelectedAgents) > req.MaxAgents {
-		return llm.Selection{}, sessionDraft{}, fmt.Errorf("pipeline: selected agents %d exceeds max %d", len(selection.SelectedAgents), req.MaxAgents)
+		return llm.Selection{}, selectionSession, fmt.Errorf("pipeline: selected agents %d exceeds max %d", len(selection.SelectedAgents), req.MaxAgents)
 	}
 	return selection, selectionSession, nil
 }

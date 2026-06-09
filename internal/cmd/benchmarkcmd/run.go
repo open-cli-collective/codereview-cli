@@ -25,6 +25,8 @@ import (
 
 const (
 	benchmarkArtifactSchemaVersion = 2
+	benchmarkModeReview            = "review"
+	benchmarkModeSelection         = "selection"
 	runTimestampLayout             = "2006-01-02T150405Z"
 	artifactDirPerm                = 0o700
 	artifactFilePerm               = 0o600
@@ -47,6 +49,7 @@ var (
 
 type benchmarkSuiteSummary struct {
 	SchemaVersion      int                   `json:"schema_version"`
+	Mode               string                `json:"mode,omitempty"`
 	SuiteID            string                `json:"suite_id"`
 	SuitePath          string                `json:"suite_path"`
 	SuiteSHA256        string                `json:"suite_sha256"`
@@ -68,6 +71,7 @@ type benchmarkSuiteSummary struct {
 
 type benchmarkManifest struct {
 	SchemaVersion      int                    `json:"schema_version"`
+	Mode               string                 `json:"mode,omitempty"`
 	SuiteID            string                 `json:"suite_id"`
 	SuitePath          string                 `json:"suite_path"`
 	SuiteSHA256        string                 `json:"suite_sha256"`
@@ -141,36 +145,46 @@ type benchmarkCase struct {
 }
 
 type benchmarkRun struct {
-	RunID                  string                `json:"run_id"`
-	CandidateID            string                `json:"candidate_id"`
-	CaseID                 string                `json:"case_id"`
-	PRURL                  string                `json:"pr_url"`
-	RequestedReviewBaseSHA string                `json:"requested_review_base_sha,omitempty"`
-	RequestedReviewHeadSHA string                `json:"requested_review_head_sha,omitempty"`
-	ExpectedBaseSHA        string                `json:"expected_base_sha,omitempty"`
-	ExpectedHeadSHA        string                `json:"expected_head_sha,omitempty"`
-	ReviewRunID            string                `json:"review_run_id,omitempty"`
-	ReviewArtifactPath     string                `json:"review_artifact_path,omitempty"`
-	ReviewBaseSHA          string                `json:"review_base_sha,omitempty"`
-	ReviewHeadSHA          string                `json:"review_head_sha,omitempty"`
-	CurrentBaseSHA         string                `json:"current_base_sha,omitempty"`
-	CurrentHeadSHA         string                `json:"current_head_sha,omitempty"`
-	ExitCode               int                   `json:"exit_code"`
-	RetryCount             int                   `json:"retry_count"`
-	FailureClassification  string                `json:"failure_classification"`
-	DurationMS             int64                 `json:"duration_ms"`
-	FindingCount           int                   `json:"finding_count"`
-	SeverityCounts         map[string]int        `json:"severity_counts"`
-	Usage                  *benchmark.RunMetrics `json:"usage,omitempty"`
-	Warnings               []string              `json:"warnings"`
-	Artifacts              runArtifacts          `json:"artifacts"`
+	RunID                  string                   `json:"run_id"`
+	CandidateID            string                   `json:"candidate_id"`
+	CaseID                 string                   `json:"case_id"`
+	PRURL                  string                   `json:"pr_url"`
+	RequestedReviewBaseSHA string                   `json:"requested_review_base_sha,omitempty"`
+	RequestedReviewHeadSHA string                   `json:"requested_review_head_sha,omitempty"`
+	ExpectedBaseSHA        string                   `json:"expected_base_sha,omitempty"`
+	ExpectedHeadSHA        string                   `json:"expected_head_sha,omitempty"`
+	ReviewRunID            string                   `json:"review_run_id,omitempty"`
+	ReviewArtifactPath     string                   `json:"review_artifact_path,omitempty"`
+	ReviewBaseSHA          string                   `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA          string                   `json:"review_head_sha,omitempty"`
+	CurrentBaseSHA         string                   `json:"current_base_sha,omitempty"`
+	CurrentHeadSHA         string                   `json:"current_head_sha,omitempty"`
+	ExitCode               int                      `json:"exit_code"`
+	RetryCount             int                      `json:"retry_count"`
+	FailureClassification  string                   `json:"failure_classification"`
+	DurationMS             int64                    `json:"duration_ms"`
+	FindingCount           int                      `json:"finding_count"`
+	SeverityCounts         map[string]int           `json:"severity_counts"`
+	SelectedAgents         []benchmarkSelectedAgent `json:"selected_agents,omitempty"`
+	ThreadActionCount      int                      `json:"thread_action_count,omitempty"`
+	Usage                  *benchmark.RunMetrics    `json:"usage,omitempty"`
+	Warnings               []string                 `json:"warnings"`
+	Artifacts              runArtifacts             `json:"artifacts"`
 }
 
 type runArtifacts struct {
-	Dir         string `json:"dir"`
-	ReviewJSON  string `json:"review_json"`
-	Stderr      string `json:"stderr"`
-	MetricsJSON string `json:"metrics_json"`
+	Dir           string `json:"dir"`
+	ReviewJSON    string `json:"review_json,omitempty"`
+	SelectionJSON string `json:"selection_json,omitempty"`
+	SelectionLog  string `json:"selection_log,omitempty"`
+	RecipeJSON    string `json:"recipe_json,omitempty"`
+	Stderr        string `json:"stderr"`
+	MetricsJSON   string `json:"metrics_json"`
+}
+
+type benchmarkSelectedAgent struct {
+	AgentID string   `json:"agent_id"`
+	Files   []string `json:"files,omitempty"`
 }
 
 type suiteArtifacts struct {
@@ -251,6 +265,7 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 	suiteDir := filepath.Dir(suite.Path)
 	summary := benchmarkSuiteSummary{
 		SchemaVersion:      benchmarkArtifactSchemaVersion,
+		Mode:               benchmarkModeReview,
 		SuiteID:            suite.Suite.ID,
 		SuitePath:          suite.Path,
 		SuiteSHA256:        suiteHash,
@@ -482,6 +497,17 @@ func benchmarkRunID(matrixIndex, candidateIndex, caseIndex int, candidate benchm
 	return fmt.Sprintf("%04d-c%02d-k%02d-%s-%s", matrixIndex, candidateIndex+1, caseIndex+1, candidate.ID, benchCase.ID)
 }
 
+func summaryMode(summary benchmarkSuiteSummary) string {
+	switch strings.TrimSpace(summary.Mode) {
+	case "", benchmarkModeReview:
+		return benchmarkModeReview
+	case benchmarkModeSelection:
+		return benchmarkModeSelection
+	default:
+		return strings.TrimSpace(summary.Mode)
+	}
+}
+
 func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []benchmarkCandidate {
 	out := make([]benchmarkCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -584,6 +610,11 @@ func summarizeCases(cases []benchmark.Case) []benchmarkCase {
 		})
 	}
 	return out
+}
+
+type benchmarkRunRecipe struct {
+	Candidate benchmarkCandidate `json:"candidate"`
+	Case      benchmarkCase      `json:"case"`
 }
 
 func parseReviewDryRun(stdout []byte, exitCode int) (*view.ReviewDryRun, []string) {
@@ -719,6 +750,7 @@ func suiteFileSHA256(path string) (string, error) {
 func writeSuiteArtifacts(summary benchmarkSuiteSummary) error {
 	manifest := benchmarkManifest{
 		SchemaVersion:      benchmarkArtifactSchemaVersion,
+		Mode:               summaryMode(summary),
 		SuiteID:            summary.SuiteID,
 		SuitePath:          summary.SuitePath,
 		SuiteSHA256:        summary.SuiteSHA256,
@@ -814,6 +846,9 @@ func renderRunText(opts *root.Options, summary benchmarkSuiteSummary) error {
 }
 
 func renderReportMarkdown(summary benchmarkSuiteSummary) string {
+	if summaryMode(summary) == benchmarkModeSelection {
+		return renderSelectionReportMarkdown(summary)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Benchmark Report: %s\n\n", summary.SuiteID)
 	fmt.Fprintf(&b, "- Results dir: `%s`\n", summary.ResultsDir)

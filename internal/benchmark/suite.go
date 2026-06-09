@@ -338,6 +338,15 @@ func ValidateForRun(suite SuiteFile, cfg config.File) error {
 	return validateRunCandidates(suite)
 }
 
+// ValidateForSelection applies the stricter selector-only requirements used by
+// benchmark select.
+func ValidateForSelection(suite SuiteFile, cfg config.File) error {
+	if err := Validate(suite, cfg); err != nil {
+		return err
+	}
+	return validateSelectionCandidates(suite)
+}
+
 // Select returns suite-order candidates and cases after optional ID filtering.
 func Select(suite SuiteFile, candidateIDs, caseIDs []string) ([]Candidate, []Case, error) {
 	candidateSet, err := filterIDSet("candidate", candidateIDs)
@@ -461,11 +470,8 @@ func validateReviewerStageStructural(candidateID string, stages CandidateStages)
 func validateRunCandidates(suite SuiteFile) error {
 	suiteDir := filepath.Dir(suite.Path)
 	for _, candidate := range suite.Candidates {
-		if candidate.Stages.Selection.Model == "" {
-			return fmt.Errorf("%w: candidate %q stages.selection.model is required for benchmark run", ErrInvalid, candidate.ID)
-		}
-		if candidate.Stages.Selection.Effort == "" {
-			return fmt.Errorf("%w: candidate %q stages.selection.effort is required for benchmark run", ErrInvalid, candidate.ID)
+		if err := validateRequiredSelectionRecipe(candidate.ID, candidate.Stages.Selection, suiteDir, suite.Path, "benchmark run"); err != nil {
+			return err
 		}
 		if !candidate.Stages.reviewersSet {
 			return fmt.Errorf("%w: candidate %q stages.reviewers is required for benchmark run", ErrInvalid, candidate.ID)
@@ -479,10 +485,30 @@ func validateRunCandidates(suite SuiteFile) error {
 		if !candidate.Stages.Reviewers.agentDirsSet {
 			return fmt.Errorf("%w: candidate %q stages.reviewers.agent_dirs is required for benchmark run", ErrInvalid, candidate.ID)
 		}
-		if prompt := candidate.Stages.Selection.Prompt; prompt != "" && suite.Path != "" {
-			if err := validateSelectionPromptFile(candidate.ID, suiteDir, prompt); err != nil {
-				return err
-			}
+	}
+	return nil
+}
+
+func validateSelectionCandidates(suite SuiteFile) error {
+	suiteDir := filepath.Dir(suite.Path)
+	for _, candidate := range suite.Candidates {
+		if err := validateRequiredSelectionRecipe(candidate.ID, candidate.Stages.Selection, suiteDir, suite.Path, "benchmark select"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRequiredSelectionRecipe(candidateID string, selection SelectionStage, suiteDir, suitePath, mode string) error {
+	if selection.Model == "" {
+		return fmt.Errorf("%w: candidate %q stages.selection.model is required for %s", ErrInvalid, candidateID, mode)
+	}
+	if selection.Effort == "" {
+		return fmt.Errorf("%w: candidate %q stages.selection.effort is required for %s", ErrInvalid, candidateID, mode)
+	}
+	if prompt := selection.Prompt; prompt != "" && suitePath != "" {
+		if err := validateSelectionPromptFile(candidateID, suiteDir, prompt); err != nil {
+			return err
 		}
 	}
 	return nil
