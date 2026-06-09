@@ -5,18 +5,25 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"time"
 )
 
 // claudeBGTranscriptUsage aggregates adapter-reported usage for a completed
 // Claude background job from the session transcript referenced by the job
-// state. Missing or unreadable transcripts yield empty usage: the caller
-// treats usage as nullable, never zero.
+// state. Resumed sessions share a transcript with earlier jobs, so only
+// assistant turns timestamped at or after the job's createdAt are counted;
+// without a provable job boundary the usage stays nullable, never zero.
 func claudeBGTranscriptUsage(state map[string]any) Usage {
 	path, _ := state["linkScanPath"].(string)
 	if strings.TrimSpace(path) == "" {
 		return Usage{}
 	}
-	return claudeTranscriptUsage(path)
+	createdAtRaw, _ := state["createdAt"].(string)
+	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(createdAtRaw))
+	if err != nil {
+		return Usage{}
+	}
+	return claudeTranscriptUsage(path, createdAt)
 }
 
 type claudeTranscriptUsagePayload struct {
@@ -27,17 +34,18 @@ type claudeTranscriptUsagePayload struct {
 }
 
 type claudeTranscriptEvent struct {
-	Type    string `json:"type"`
-	Message struct {
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+	Message   struct {
 		ID    string                        `json:"id"`
 		Usage *claudeTranscriptUsagePayload `json:"usage"`
 	} `json:"message"`
 }
 
-// claudeTranscriptUsage sums per-turn assistant usage from a Claude session
-// transcript. Streaming writes repeat an assistant message with the same id;
-// the last occurrence per message id wins so turns are not double-counted.
-func claudeTranscriptUsage(path string) Usage {
+// claudeTranscriptUsage sums per-turn assistant usage recorded at or after
+// since. Streaming writes repeat an assistant message with the same id; the
+// last occurrence per message id wins so turns are not double-counted.
+func claudeTranscriptUsage(path string, since time.Time) Usage {
 	// #nosec G304 -- transcript path comes from the Claude bg job state file.
 	file, err := os.Open(path)
 	if err != nil {
@@ -54,6 +62,10 @@ func claudeTranscriptUsage(path string) Usage {
 			continue
 		}
 		if event.Type != "assistant" || event.Message.Usage == nil || event.Message.ID == "" {
+			continue
+		}
+		timestamp, err := time.Parse(time.RFC3339, event.Timestamp)
+		if err != nil || timestamp.Before(since) {
 			continue
 		}
 		perMessage[event.Message.ID] = *event.Message.Usage
