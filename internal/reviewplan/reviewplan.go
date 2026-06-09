@@ -116,6 +116,12 @@ type Request struct {
 	IncludeNits             bool
 	MaxInlineComments       int
 
+	// RunSummary is the execution metadata rendered in the rollup footer.
+	RunSummary RunSummary
+	// FindingReviewers maps each finding to the reviewer agent ID that
+	// produced it; findings absent from the map group as unattributed.
+	FindingReviewers map[review.FindingID]string
+
 	Now         func() time.Time
 	NewActionID ActionIDGenerator
 }
@@ -151,6 +157,9 @@ type Plan struct {
 	RollupMarkdown   string
 	Actions          []Action
 	AnchoredFindings []AnchoredFinding
+	// Summary is the derived rollup metadata the rendered markdown was
+	// built from; dry-run JSON exposes the same object.
+	Summary Summary
 }
 
 // Action is one planner-local planned action.
@@ -389,7 +398,8 @@ func (b *builder) buildReview() (Plan, error) {
 	actions = append(actions, commentActions...)
 
 	anchored := b.anchoredForOrdered(ordered)
-	rollupBody := b.renderRollup(ordered, anchored)
+	summary := b.deriveSummary(b.renderedFindings(ordered))
+	rollupBody := b.renderRollup(ordered, anchored, summary)
 	rollup, err := b.newAction(ActionKindRollupComment)
 	if err != nil {
 		return Plan{}, err
@@ -416,7 +426,23 @@ func (b *builder) buildReview() (Plan, error) {
 		RollupMarkdown:   rollupBody,
 		Actions:          actions,
 		AnchoredFindings: b.anchoredInInputOrder(),
+		Summary:          summary,
 	}, nil
+}
+
+// renderedFindings filters ordered findings to those the rollup renders.
+func (b *builder) renderedFindings(ordered []review.Finding) []review.Finding {
+	if b.req.IncludeNits {
+		return ordered
+	}
+	rendered := make([]review.Finding, 0, len(ordered))
+	for _, finding := range ordered {
+		if finding.Severity == review.SeverityNits {
+			continue
+		}
+		rendered = append(rendered, finding)
+	}
+	return rendered
 }
 
 func (b *builder) orderedFindings() ([]review.Finding, error) {
@@ -696,49 +722,92 @@ func firstFallbackHunk(file DiffFile) (DiffHunk, bool) {
 	return DiffHunk{}, false
 }
 
-func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFinding) string {
+func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFinding, summary Summary) string {
 	var out strings.Builder
 	out.WriteString("## Automated PR Review\n\n")
 	writeRunMetadata(&out, b.req)
 	out.WriteString("### Summary\n\n")
-	counts := severityCounts(ordered)
-	out.WriteString("| Severity | Findings |\n")
-	out.WriteString("|----------|----------|\n")
-	for _, severity := range review.SeverityOrder() {
-		if severity == review.SeverityNits && !b.req.IncludeNits {
-			continue
+	if len(summary.Reviewers) > 0 {
+		writeReviewerTable(&out, summary.Reviewers)
+		b.writeReviewerSections(&out, anchored, summary.Reviewers)
+	} else {
+		counts := severityCounts(ordered)
+		out.WriteString("| Severity | Findings |\n")
+		out.WriteString("|----------|----------|\n")
+		for _, severity := range review.SeverityOrder() {
+			if severity == review.SeverityNits && !b.req.IncludeNits {
+				continue
+			}
+			out.WriteString("| ")
+			out.WriteString(severity.String())
+			out.WriteString(" | ")
+			fmt.Fprint(&out, counts[severity])
+			out.WriteString(" |\n")
 		}
-		out.WriteString("| ")
-		out.WriteString(severity.String())
-		out.WriteString(" | ")
-		fmt.Fprint(&out, counts[severity])
-		out.WriteString(" |\n")
+		out.WriteString("\n")
+		for _, finding := range anchored {
+			if finding.Severity == review.SeverityNits && !b.req.IncludeNits {
+				continue
+			}
+			writeFindingBlock(&out, finding)
+		}
 	}
-	out.WriteString("\n")
-	for _, finding := range anchored {
-		if finding.Severity == review.SeverityNits && !b.req.IncludeNits {
-			continue
-		}
-		out.WriteString("### ")
-		out.WriteString(displaySeverity(finding.Severity))
-		out.WriteString(" - `")
-		out.WriteString(finding.FilePath)
-		if finding.Line != nil {
-			out.WriteString(":")
-			fmt.Fprint(&out, *finding.Line)
-		}
-		out.WriteString("`\n\n")
-		out.WriteString("> ")
-		out.WriteString(strings.ReplaceAll(finding.Body, "\n", "\n> "))
-		out.WriteString("\n\n")
-	}
-	threadSummary := threadSummaryCounts(b.req.ThreadActions, b.req.ProviderCaps)
-	fmt.Fprintf(&out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", threadSummary.considered, threadSummary.summarized, threadSummary.resolved)
+	fmt.Fprintf(&out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", summary.Threads.Considered, summary.Threads.Summarized, summary.Threads.Resolved)
 	if b.req.AgentDefinitionsChanged {
 		out.WriteString("\n---\n\n")
 		out.WriteString("> Note: This PR modifies reviewer definitions under `.codereview/agents/`. The review was conducted using base-branch versions; changes will affect future reviews after merge.\n")
 	}
+	writeRunFooter(&out, summary.Run, summary.Totals)
 	return strings.TrimSpace(out.String())
+}
+
+// writeReviewerSections renders findings grouped per reviewer in summary
+// order, each group inside a collapsible details block.
+func (b *builder) writeReviewerSections(out *strings.Builder, anchored []AnchoredFinding, reviewers []ReviewerSummary) {
+	grouped := map[string][]AnchoredFinding{}
+	for _, finding := range anchored {
+		if finding.Severity == review.SeverityNits && !b.req.IncludeNits {
+			continue
+		}
+		name := b.req.FindingReviewers[finding.FindingID]
+		if name == "" {
+			name = UnattributedReviewer
+		}
+		grouped[name] = append(grouped[name], finding)
+	}
+	for _, reviewer := range reviewers {
+		findings := grouped[reviewer.Name]
+		if len(findings) == 0 {
+			continue
+		}
+		label := fmt.Sprintf("%s (%d finding", escapeCell(reviewer.Name), len(findings))
+		if len(findings) > 1 {
+			label += "s"
+		}
+		label += ")"
+		out.WriteString("<details>\n<summary><strong>")
+		out.WriteString(label)
+		out.WriteString("</strong></summary>\n\n")
+		for _, finding := range findings {
+			writeFindingBlock(out, finding)
+		}
+		out.WriteString("</details>\n\n")
+	}
+}
+
+func writeFindingBlock(out *strings.Builder, finding AnchoredFinding) {
+	out.WriteString("### ")
+	out.WriteString(displaySeverity(finding.Severity))
+	out.WriteString(" - `")
+	out.WriteString(finding.FilePath)
+	if finding.Line != nil {
+		out.WriteString(":")
+		fmt.Fprint(out, *finding.Line)
+	}
+	out.WriteString("`\n\n")
+	out.WriteString("> ")
+	out.WriteString(strings.ReplaceAll(finding.Body, "\n", "\n> "))
+	out.WriteString("\n\n")
 }
 
 func (b *builder) renderNoDiffRollup() string {
@@ -779,22 +848,16 @@ func severityCounts(findings []review.Finding) map[review.Severity]int {
 	return counts
 }
 
-type threadCounts struct {
-	considered int
-	summarized int
-	resolved   int
-}
-
-func threadSummaryCounts(actions []review.ThreadAction, caps ProviderCaps) threadCounts {
-	var counts threadCounts
+func threadSummaryCounts(actions []review.ThreadAction, caps ProviderCaps) ThreadCounts {
+	var counts ThreadCounts
 	for _, action := range actions {
 		if action.Decision == review.ThreadDecisionSkip {
 			continue
 		}
-		counts.considered++
-		counts.summarized++
+		counts.Considered++
+		counts.Summarized++
 		if action.Decision == review.ThreadDecisionSummarizeAndResolve && caps.ThreadResolution {
-			counts.resolved++
+			counts.Resolved++
 		}
 	}
 	return counts

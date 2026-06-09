@@ -35,6 +35,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/version"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -306,6 +307,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		ReviewerEffortOverride:      reviewerEffort,
 		ReviewBaseSHA:               reviewBaseSHA,
 		ReviewHeadSHA:               reviewHeadSHA,
+		ToolVersion:                 version.Version,
 	}
 	if !flags.dryRun {
 		return runLive(ctx, opts, flags, runtime.Runner, pipelineReq, failOn)
@@ -399,6 +401,51 @@ func runLive(ctx context.Context, opts *root.Options, flags commandFlags, runner
 	return nil
 }
 
+func newReviewSummary(summary reviewplan.Summary) view.ReviewSummary {
+	// Arrays serialize as [], never null, so JSON consumers see one shape.
+	out := view.ReviewSummary{
+		Reviewers: []view.ReviewReviewerSummary{},
+		Threads: view.ReviewThreadCounts{
+			Considered: summary.Threads.Considered,
+			Summarized: summary.Threads.Summarized,
+			Resolved:   summary.Threads.Resolved,
+		},
+		Run: view.ReviewRunSummary{
+			ToolVersion:       summary.Run.ToolVersion,
+			Adapter:           summary.Run.Adapter,
+			Model:             summary.Run.Model,
+			PostingIdentity:   summary.Run.PostingIdentity,
+			SelectedReviewers: summary.Run.SelectedReviewers,
+			WallDurationMS:    summary.Run.WallDurationMS,
+			Workstreams:       []view.ReviewWorkstream{},
+		},
+		Totals: view.ReviewWorkstreamTotals{
+			TokensIn:          summary.Totals.TokensIn,
+			TokensOut:         summary.Totals.TokensOut,
+			CacheRead:         summary.Totals.CacheRead,
+			CacheCreate:       summary.Totals.CacheCreate,
+			CostUSD:           summary.Totals.CostUSD,
+			ComputeDurationMS: summary.Totals.ComputeDurationMS,
+		},
+	}
+	for _, reviewer := range summary.Reviewers {
+		out.Reviewers = append(out.Reviewers, view.ReviewReviewerSummary{Name: reviewer.Name, Findings: reviewer.Findings})
+	}
+	for _, workstream := range summary.Run.Workstreams {
+		out.Run.Workstreams = append(out.Run.Workstreams, view.ReviewWorkstream{
+			Name:        workstream.Name,
+			Model:       workstream.Model,
+			TokensIn:    workstream.TokensIn,
+			TokensOut:   workstream.TokensOut,
+			CacheRead:   workstream.CacheRead,
+			CacheCreate: workstream.CacheCreate,
+			CostUSD:     workstream.CostUSD,
+			DurationMS:  workstream.DurationMS,
+		})
+	}
+	return out
+}
+
 func newReviewDryRun(result pipeline.Result) (view.ReviewDryRun, error) {
 	outcome := ledger.OutcomeDryRun.String()
 	if result.Run.Outcome != nil {
@@ -416,6 +463,7 @@ func newReviewDryRun(result pipeline.Result) (view.ReviewDryRun, error) {
 			HeadSHA:      result.ReviewHeadSHA,
 		},
 		RollupMarkdown:  result.Plan.RollupMarkdown,
+		Summary:         newReviewSummary(result.Plan.Summary),
 		FailOnTriggered: result.FailOnTriggered,
 		Artifacts: view.ReviewArtifacts{
 			Dir:            result.Artifacts.Dir,

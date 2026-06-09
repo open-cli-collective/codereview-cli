@@ -53,6 +53,59 @@ func TestRenderReviewDryRunJSON(t *testing.T) {
 	}
 }
 
+func TestRenderReviewDryRunJSONSummaryPreservesNulls(t *testing.T) {
+	tokensIn := 1200
+	result := testReviewDryRun()
+	result.Summary = ReviewSummary{
+		Reviewers: []ReviewReviewerSummary{{Name: "go:tests", Findings: 2}},
+		Threads:   ReviewThreadCounts{Considered: 1, Summarized: 1},
+		Run: ReviewRunSummary{
+			ToolVersion:       "0.3.63",
+			Adapter:           "claude_cli",
+			Model:             "sonnet",
+			PostingIdentity:   "review-bot",
+			SelectedReviewers: []string{"go:tests"},
+			Workstreams: []ReviewWorkstream{{
+				Name:     "go:tests",
+				Model:    "sonnet",
+				TokensIn: &tokensIn,
+			}},
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderReviewDryRunJSON(&out, result); err != nil {
+		t.Fatalf("RenderReviewDryRunJSON: %v", err)
+	}
+	var decoded struct {
+		Summary struct {
+			Reviewers []ReviewReviewerSummary `json:"reviewers"`
+			Run       struct {
+				Workstreams []map[string]json.RawMessage `json:"workstreams"`
+			} `json:"run"`
+			Totals map[string]json.RawMessage `json:"totals"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if len(decoded.Summary.Reviewers) != 1 || decoded.Summary.Reviewers[0].Findings != 2 {
+		t.Fatalf("summary reviewers = %#v", decoded.Summary.Reviewers)
+	}
+	workstream := decoded.Summary.Run.Workstreams[0]
+	if string(workstream["tokens_in"]) != "1200" {
+		t.Fatalf("tokens_in = %s, want 1200", workstream["tokens_in"])
+	}
+	for _, field := range []string{"tokens_out", "cost_usd", "duration_ms"} {
+		if string(workstream[field]) != "null" {
+			t.Fatalf("workstream %s = %s, want null (never zero)", field, workstream[field])
+		}
+	}
+	if string(decoded.Summary.Totals["cost_usd"]) != "null" {
+		t.Fatalf("totals cost_usd = %s, want null", decoded.Summary.Totals["cost_usd"])
+	}
+}
+
 func testReviewDryRun() ReviewDryRun {
 	return ReviewDryRun{
 		Run: ReviewRun{

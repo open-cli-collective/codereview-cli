@@ -1905,6 +1905,132 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 	}
 }
 
+func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	dir := t.TempDir()
+	writeAgent(t, dir, "harness", "alpha", "alpha desc", "Review alpha files.")
+	writeAgent(t, dir, "harness", "beta", "beta desc", "Review beta files.")
+	trustCurrentTempFixtures(t)
+	req.Profile.AgentSources = []string{dir}
+	req.ToolVersion = "0.0.0-test"
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         &promptAwareAdapter{},
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-summary" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  2,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	summary := result.Plan.Summary
+	var workstreamNames []string
+	for _, workstream := range summary.Run.Workstreams {
+		workstreamNames = append(workstreamNames, workstream.Name)
+	}
+	wantNames := []string{"orchestrator-selection", "harness:alpha", "harness:beta", "orchestrator-rollup"}
+	if !reflect.DeepEqual(workstreamNames, wantNames) {
+		t.Fatalf("workstream names = %#v, want %#v", workstreamNames, wantNames)
+	}
+	if !reflect.DeepEqual(summary.Run.SelectedReviewers, []string{"harness:alpha", "harness:beta"}) {
+		t.Fatalf("selected reviewers = %#v", summary.Run.SelectedReviewers)
+	}
+	if summary.Run.ToolVersion != "0.0.0-test" || summary.Run.PostingIdentity == "" {
+		t.Fatalf("run summary identity = %#v", summary.Run)
+	}
+	if summary.Run.WallDurationMS == nil {
+		t.Fatalf("wall duration missing: %#v", summary.Run)
+	}
+	reviewerCounts := map[string]int{}
+	for _, reviewer := range summary.Reviewers {
+		reviewerCounts[reviewer.Name] = reviewer.Findings
+	}
+	if reviewerCounts["harness:alpha"] != 1 || reviewerCounts["harness:beta"] != 1 {
+		t.Fatalf("reviewer counts = %#v, want one finding each", summary.Reviewers)
+	}
+	for _, want := range []string{"| Reviewer | Findings |", "Per-workstream usage", "| orchestrator-selection |"} {
+		if !strings.Contains(result.Plan.RollupMarkdown, want) {
+			t.Fatalf("rollup markdown missing %q:\n%s", want, result.Plan.RollupMarkdown)
+		}
+	}
+}
+
+func TestSharedWorkstreamModel(t *testing.T) {
+	cases := []struct {
+		name   string
+		models []string
+		want   string
+	}{
+		{"all same", []string{"sonnet", "sonnet", "sonnet"}, "sonnet"},
+		{"mixed", []string{"opus", "sonnet", "sonnet"}, ""},
+		{"unreported model makes headline unavailable", []string{"", "sonnet", "sonnet"}, ""},
+		{"none", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var workstreams []reviewplan.WorkstreamUsage
+			for _, model := range tc.models {
+				workstreams = append(workstreams, reviewplan.WorkstreamUsage{Model: model})
+			}
+			if got := sharedWorkstreamModel(workstreams); got != tc.want {
+				t.Fatalf("sharedWorkstreamModel(%v) = %q, want %q", tc.models, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
+	agentID := "harness:alpha"
+	inputs := planRunInputs{
+		hasRun:    true,
+		selection: sessionDraft{adapter: "fake", model: "sonnet", response: llm.Response{DurationMS: 0}},
+		reviewers: []sessionDraft{{rowID: "row-1", agentID: &agentID, model: "sonnet", response: llm.Response{DurationMS: 25}}},
+		rollup:    sessionDraft{model: "sonnet", startedAt: fixedNow(), completedAt: fixedNow().Add(2 * time.Second)},
+		selectedAgents: []llm.SelectedAgent{
+			{AgentID: agentID},
+			{AgentID: "harness:missing-draft"},
+		},
+		findingSessions: map[review.FindingID]string{"f-1": "row-1", "f-2": "row-unknown"},
+		startedAt:       fixedNow(),
+	}
+	summary, findingReviewers := Options{Now: fixedNow}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
+
+	var names []string
+	for _, workstream := range summary.Workstreams {
+		names = append(names, workstream.Name)
+	}
+	want := []string{"orchestrator-selection", agentID, "orchestrator-rollup"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("workstreams = %#v, want missing-draft agent skipped: %#v", names, want)
+	}
+	if !reflect.DeepEqual(summary.SelectedReviewers, []string{agentID, "harness:missing-draft"}) {
+		t.Fatalf("selected reviewers = %#v, must keep the draft-less agent", summary.SelectedReviewers)
+	}
+	if summary.Workstreams[0].DurationMS != nil {
+		t.Fatalf("zero duration must render unavailable, got %v", *summary.Workstreams[0].DurationMS)
+	}
+	if summary.Workstreams[1].DurationMS == nil || *summary.Workstreams[1].DurationMS != 25 {
+		t.Fatalf("reported duration lost: %#v", summary.Workstreams[1])
+	}
+	if summary.Workstreams[2].DurationMS == nil || *summary.Workstreams[2].DurationMS != 2000 {
+		t.Fatalf("start/complete fallback duration missing: %#v", summary.Workstreams[2])
+	}
+	if !reflect.DeepEqual(findingReviewers, map[review.FindingID]string{"f-1": agentID}) {
+		t.Fatalf("finding reviewers = %#v, want unknown session unattributed", findingReviewers)
+	}
+}
+
 func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T) {
 	tests := []struct {
 		name       string

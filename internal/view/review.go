@@ -11,10 +11,67 @@ type ReviewDryRun struct {
 	Run             ReviewRun       `json:"run"`
 	Quota           *ReviewQuota    `json:"quota,omitempty"`
 	RollupMarkdown  string          `json:"rollup_markdown"`
+	Summary         ReviewSummary   `json:"summary"`
 	Findings        []ReviewFinding `json:"findings"`
 	Actions         []ReviewAction  `json:"actions"`
 	Artifacts       ReviewArtifacts `json:"artifacts"`
 	FailOnTriggered bool            `json:"fail_on_triggered"`
+}
+
+// ReviewSummary mirrors the derived rollup metadata the rendered comment was
+// built from. Usage fields are nullable; null means not reported, never zero.
+type ReviewSummary struct {
+	Reviewers []ReviewReviewerSummary `json:"reviewers"`
+	Threads   ReviewThreadCounts      `json:"threads"`
+	Run       ReviewRunSummary        `json:"run"`
+	Totals    ReviewWorkstreamTotals  `json:"totals"`
+}
+
+// ReviewReviewerSummary is one reviewer row with its rendered finding count.
+type ReviewReviewerSummary struct {
+	Name     string `json:"name"`
+	Findings int    `json:"findings"`
+}
+
+// ReviewThreadCounts summarizes PR discussion thread handling.
+type ReviewThreadCounts struct {
+	Considered int `json:"considered"`
+	Summarized int `json:"summarized"`
+	Resolved   int `json:"resolved"`
+}
+
+// ReviewRunSummary is the execution metadata rendered in the rollup footer.
+type ReviewRunSummary struct {
+	ToolVersion       string             `json:"tool_version,omitempty"`
+	Adapter           string             `json:"adapter,omitempty"`
+	Model             string             `json:"model,omitempty"`
+	PostingIdentity   string             `json:"posting_identity,omitempty"`
+	SelectedReviewers []string           `json:"selected_reviewers,omitempty"`
+	WallDurationMS    *int64             `json:"wall_duration_ms"`
+	Workstreams       []ReviewWorkstream `json:"workstreams"`
+}
+
+// ReviewWorkstream is adapter-reported usage for one workstream.
+type ReviewWorkstream struct {
+	Name        string   `json:"name"`
+	Model       string   `json:"model,omitempty"`
+	TokensIn    *int     `json:"tokens_in"`
+	TokensOut   *int     `json:"tokens_out"`
+	CacheRead   *int     `json:"cache_read"`
+	CacheCreate *int     `json:"cache_create"`
+	CostUSD     *float64 `json:"cost_usd"`
+	DurationMS  *int64   `json:"duration_ms"`
+}
+
+// ReviewWorkstreamTotals holds run-wide aggregates; each field is non-null
+// only when every workstream reported it.
+type ReviewWorkstreamTotals struct {
+	TokensIn          *int     `json:"tokens_in"`
+	TokensOut         *int     `json:"tokens_out"`
+	CacheRead         *int     `json:"cache_read"`
+	CacheCreate       *int     `json:"cache_create"`
+	CostUSD           *float64 `json:"cost_usd"`
+	ComputeDurationMS *int64   `json:"compute_duration_ms"`
 }
 
 // ReviewLive is the presentation model for live `cr review`.

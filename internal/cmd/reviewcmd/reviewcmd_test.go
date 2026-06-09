@@ -1271,6 +1271,52 @@ func TestNewReviewDryRunRejectsInvalidPlannedPayload(t *testing.T) {
 	}
 }
 
+func TestNewReviewDryRunMapsPlanSummary(t *testing.T) {
+	tokensIn := 1200
+	wall := int64(5000)
+	result := testPipelineResult(false)
+	result.Plan.Summary = reviewplan.Summary{
+		Reviewers: []reviewplan.ReviewerSummary{{Name: "go:tests", Findings: 2}},
+		Threads:   reviewplan.ThreadCounts{Considered: 3, Summarized: 2, Resolved: 1},
+		Run: reviewplan.RunSummary{
+			ToolVersion:       "0.0.0-test",
+			Adapter:           "claude_cli",
+			Model:             "sonnet",
+			PostingIdentity:   "review-bot",
+			SelectedReviewers: []string{"go:tests"},
+			WallDurationMS:    &wall,
+			Workstreams:       []reviewplan.WorkstreamUsage{{Name: "go:tests", Model: "sonnet", TokensIn: &tokensIn}},
+		},
+		Totals: reviewplan.AggregateUsage{TokensIn: &tokensIn},
+	}
+
+	rendered, err := newReviewDryRun(result)
+	if err != nil {
+		t.Fatalf("newReviewDryRun: %v", err)
+	}
+	summary := rendered.Summary
+	if len(summary.Reviewers) != 1 || summary.Reviewers[0].Name != "go:tests" || summary.Reviewers[0].Findings != 2 {
+		t.Fatalf("summary reviewers = %#v", summary.Reviewers)
+	}
+	if summary.Threads != (view.ReviewThreadCounts{Considered: 3, Summarized: 2, Resolved: 1}) {
+		t.Fatalf("summary threads = %#v", summary.Threads)
+	}
+	run := summary.Run
+	if run.ToolVersion != "0.0.0-test" || run.Adapter != "claude_cli" || run.Model != "sonnet" ||
+		run.PostingIdentity != "review-bot" || len(run.SelectedReviewers) != 1 ||
+		run.WallDurationMS == nil || *run.WallDurationMS != wall {
+		t.Fatalf("summary run = %#v", run)
+	}
+	if len(run.Workstreams) != 1 || run.Workstreams[0].Name != "go:tests" ||
+		run.Workstreams[0].TokensIn == nil || *run.Workstreams[0].TokensIn != tokensIn ||
+		run.Workstreams[0].CostUSD != nil {
+		t.Fatalf("summary workstreams = %#v", run.Workstreams)
+	}
+	if rendered.Summary.Totals.TokensIn == nil || *rendered.Summary.Totals.TokensIn != tokensIn || rendered.Summary.Totals.CostUSD != nil {
+		t.Fatalf("summary totals = %#v", rendered.Summary.Totals)
+	}
+}
+
 func TestReviewMapsRunnerError(t *testing.T) {
 	runner := &fakeRunner{err: gitprovider.ErrRetryable}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
