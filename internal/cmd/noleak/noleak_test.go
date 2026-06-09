@@ -350,6 +350,7 @@ func (h *auditHarness) config() config.File {
 					Auth:          config.LLMAuthAPIKey,
 					Adapter:       config.LLMAdapterAnthropicAPI,
 					CredentialRef: "codereview/default-llm",
+					ModelMap:      config.ModelMap{"medium": "claude-3-5-sonnet"},
 				},
 				AgentSources: []string{h.agentDir},
 				ReviewPolicy: config.ReviewPolicy{
@@ -877,7 +878,7 @@ func secretEnv(h *auditHarness) map[string]string {
 func writeAgent(t *testing.T, rootDir, category, agent, description, prompt string) {
 	t.Helper()
 	writeFile(t, filepath.Join(rootDir, category, "index.yaml"), "name: "+category+"\ndescription: "+category+" category\nowner: owner\n")
-	writeFile(t, filepath.Join(rootDir, category, agent, "index.yaml"), "name: "+agent+"\ndescription: "+description+"\nmodel: sonnet\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
+	writeFile(t, filepath.Join(rootDir, category, agent, "index.yaml"), "name: "+agent+"\ndescription: "+description+"\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
 	writeFile(t, filepath.Join(rootDir, category, agent, "prompt.md"), prompt)
 }
 

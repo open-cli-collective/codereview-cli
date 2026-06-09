@@ -110,6 +110,19 @@ cr init --non-interactive \
   --git-token-from-env GITHUB_TOKEN
 ```
 
+Setup with Codex CLI subscription auth. Install Codex CLI, log in with your
+subscription, and make sure the `codex` binary is available on `PATH` before
+running `cr review`. This path is supported for review, but remains
+best-effort/beta until Codex exposes an explicit all-tools-disabled flag.
+
+```bash
+cr init --non-interactive \
+  --llm-provider openai \
+  --llm-auth subscription \
+  --llm-adapter codex_cli \
+  --git-token-from-env GITHUB_TOKEN
+```
+
 Setup with a direct LLM API key:
 
 ```bash
@@ -181,6 +194,8 @@ profiles:
       auth: api_key
       adapter: anthropic_api
       credential_ref: codereview/work-llm
+      model_map:
+        medium: claude-sonnet-model-id
     agent_sources:
       - ~/.config/codereview/agents
     review_policy:
@@ -188,8 +203,16 @@ profiles:
 ```
 
 For adapter-managed LLM credentials, use `auth: subscription` and omit
-`llm.credential_ref`. Pi-backed profiles must set `provider: pi`,
-`auth: subscription`, and `adapter: pi_rpc` together:
+`llm.credential_ref`. Codex-backed profiles must set `provider: openai`,
+`auth: subscription`, and `adapter: codex_cli` together. Pi-backed profiles
+must set `provider: pi`, `auth: subscription`, and `adapter: pi_rpc` together:
+
+```yaml
+llm:
+  provider: openai
+  auth: subscription
+  adapter: codex_cli
+```
 
 ```yaml
 llm:
@@ -218,6 +241,35 @@ agents/
       index.yaml
       prompt.md
 ```
+
+Agent `index.yaml` files must declare exactly one model selector and an
+explicit effort:
+
+```yaml
+name: secrets
+description: Reviews credential and secret-handling changes.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/*.go"
+applies_when:
+  - Go files changed
+needs_full_file_content: false
+```
+
+Use `model_tier: small|medium|large` for portable shared catalogs. Use
+`model_id: <provider-model-id>` only when an agent intentionally requires one
+provider-specific model. `effort` is independent and must be one of
+`low`, `medium`, or `high`.
+
+`applies_when` is the selector's routing contract. Keep it focused on when the
+agent should be chosen for a change. Reviewer execution instructions belong in
+`prompt.md` and are not sent to the selector.
+
+Legacy agent files that use `model: sonnet` or another provider-specific
+`model` value must be updated. Replace portable intent with `model_tier`
+and move provider-specific defaults into profile `llm.model_map`; use
+`model_id` only for intentionally non-portable agents.
 
 `cr config show --json` reports each configured source by path, presence,
 status, canonical path, warnings, and SHA-256 fingerprint prefix without
@@ -304,7 +356,8 @@ Supported values:
 | `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are recognized by the config schema but not implemented; validation rejects them in v1. GitHub App support is tracked in [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76). |
 | `llm.provider` | `anthropic`, `openai`, `pi` |
 | `llm.auth` | `subscription`, `api_key` |
-| `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc` are usable for review. `codex_cli` is recognized by the config schema but rejected by `cr review` until no-tools mode is explicit. |
+| `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc`, and `codex_cli` are usable for review. `codex_cli` requires `provider: openai` and `auth: subscription`, and is currently best-effort/beta because Codex does not yet expose an explicit all-tools-disabled flag. |
+| `llm.model_map` keys | `small`, `medium`, `large` |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
 | `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
@@ -313,6 +366,41 @@ Supported values:
 logged-in CLI or local runtime. `api_key` LLM auth requires
 `llm.credential_ref` and stores a provider-specific API key in the credential
 backend.
+
+Reviewer agents use provider-neutral `model_tier` values. At runtime, `cr`
+resolves `model_tier` through the active profile's `llm.model_map` plus
+provider+adapter built-ins. User `llm.model_map` entries override built-ins,
+and model IDs are opaque strings so future provider models can be configured
+without a CLI update.
+
+Built-in model maps:
+
+| Provider | Adapter | small | medium | large |
+|----------|---------|-------|--------|-------|
+| `openai` | `codex_cli` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
+| `openai` | `openai_api` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
+| `anthropic` | `claude_cli` | unset | `sonnet` | `opus` |
+| `anthropic` | `anthropic_api` | unset | unset | unset |
+| `pi` | `pi_rpc` | unset | unset | unset |
+
+`anthropic_api`, `pi_rpc`, and `claude_cli` small-tier usage require explicit
+`llm.model_map` entries.
+
+For Anthropic subscription profiles, `adapter: claude_cli` runs Claude Code
+background jobs, writes the full review task to `cr-prompt.txt` in an
+adapter-owned scratch directory, and starts `claude --bg` with a compact
+positional prompt that allows only `Read,Write`. The adapter reads the review
+result from `cr-result.json` in that scratch directory and records the Claude
+provider session returned by the job state. Background jobs run from a stable
+cache workdir so Claude Code can resolve resumed sessions consistently; set
+`CR_CLAUDE_BG_WORK_DIR` to override that workdir.
+
+For OpenAI subscription profiles, `adapter: codex_cli` runs `codex exec` in an
+adapter-owned scratch directory with `--json`, `--ephemeral`,
+`--skip-git-repo-check`, `--ignore-user-config`, `--ignore-rules`, a read-only
+sandbox, and a scratch `--cd`. The adapter rejects unsafe flags and fails the
+review if Codex emits tool-use events. This remains best-effort/beta because
+Codex CLI does not yet expose a first-class all-tools-disabled flag.
 
 Credential key matrix:
 
@@ -324,7 +412,7 @@ Credential key matrix:
 | `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
 | `llm.credential_ref` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
 | `llm.credential_ref` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
-| Omitted `llm.credential_ref` | Adapter-managed LLM auth | `subscription` + `anthropic`/`pi` | None | None | Supported; credentials are owned by the selected adapter |
+| Omitted `llm.credential_ref` | Adapter-managed LLM auth | `subscription` + `anthropic`/`openai`/`pi` | None | None | Supported; credentials are owned by the selected adapter. `openai + codex_cli` is best-effort/beta until Codex exposes an explicit all-tools-disabled flag |
 | `llm.credential_ref` | Pi direct API auth | `api_key` + `pi` | None | None | Unsupported; use adapter-managed `subscription` auth with `pi_rpc` |
 
 Upgrade note: pre-matrix versions used the generic `llm_api_key` key for direct
@@ -391,6 +479,9 @@ Validate and run a benchmark suite:
 ```bash
 cr benchmark validate .codereview/benchmarks/reviewer.yml
 cr benchmark doctor .codereview/benchmarks/reviewer.yml --json
+cr benchmark select .codereview/benchmarks/reviewer.yml \
+  --candidate claude-sonnet-medium \
+  --case merged-security-pr
 cr benchmark run .codereview/benchmarks/reviewer.yml \
   --candidate claude-sonnet-medium \
   --case merged-security-pr
@@ -512,6 +603,25 @@ definition contents.
 
 `--json` emits the same information as structured JSON.
 
+### `cr config llm models`
+
+```text
+cr config llm models list [--json]
+cr config llm models resolve <tier> [--json]
+cr config llm models set <tier> <model>
+cr config llm models unset <tier>
+cr config llm models reset [--provider <provider>]
+```
+
+Inspects and updates the active profile's `llm.model_map`. `list` shows the
+effective `small`/`medium`/`large` map, including whether each value came from
+profile config, built-in defaults, or is unset. `resolve` prints the concrete
+provider model ID for one tier under the active profile.
+
+`set`, `unset`, and `reset` mutate only the active profile. `reset` clears the
+configured map so built-ins apply again; `--provider` is a safety guard and
+must match the active profile provider.
+
 ### `cr config clear`
 
 ```text
@@ -579,9 +689,9 @@ Flags:
 cr agents show <name> [PR] [--agents-dir <path> ...] [--json]
 ```
 
-Shows one agent, including category metadata, model, effort, file globs,
-`applies_when`, `needs_full_file_content`, prompt, provenance, and trust note
-when repo-local agents are considered.
+Shows one agent, including category metadata, `model_tier` or `model_id`,
+effort, file globs, `applies_when`, `needs_full_file_content`, prompt,
+provenance, and trust note when repo-local agents are considered.
 
 ### `cr review`
 
@@ -608,8 +718,11 @@ Review selection and execution flags:
 | `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
 | `--max-agents <n>` | Limit selected reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
-| `--llm-model <model>` | Override the LLM model for dry-run review. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
-| `--llm-effort <effort>` | Override the LLM effort for dry-run review. Requires `--dry-run` or `--no-post`; without either flag the command returns usage error exit code 2 before running review. |
+| `--selection-model <model>` | Exact provider model ID passthrough for the selection stage only. Bypasses the default medium-tier selection model resolution. Requires `--dry-run` or `--no-post`. |
+| `--selection-effort <effort>` | Override selection-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
+| `--selection-prompt <path>` | Load selection-stage instruction text from a file while preserving the structured JSON selection protocol. Requires `--dry-run` or `--no-post`. |
+| `--reviewer-model <model>` | Exact provider model ID passthrough for reviewer stages only. Bypasses reviewer agent `model_tier`, `model_id`, and profile model-map resolution. Requires `--dry-run` or `--no-post`. |
+| `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
 | `--session <name>` | Reuse a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
@@ -645,7 +758,7 @@ and post counts. JSON output includes `run`, `status`, `decision`, `message`,
 cr benchmark <command>
 ```
 
-Validates, inspects, and runs benchmark suites. See
+Validates, inspects, runs, and compares benchmark suites. See
 [BENCHMARKING.md](BENCHMARKING.md) for the full benchmark guide.
 
 ### `cr benchmark validate`
@@ -655,7 +768,8 @@ cr benchmark validate <suite.yml>
 ```
 
 Validates benchmark suite schema and configured profile compatibility without
-running reviews.
+running reviews. For the current full-pipeline commands, this includes
+stage-recipe validation and selection prompt file readiness checks.
 
 ### `cr benchmark doctor`
 
@@ -665,7 +779,8 @@ cr benchmark doctor <suite.yml> [--candidate <id> ...] [--case <id> ...] [--resu
 
 Inspects benchmark readiness without running reviews. It reports the selected
 candidates and cases, resolved results directory, selected `cr` binary, profile
-availability, model/effort fields, agent directories, and warnings.
+availability, selection/reviewer/synthesis stage recipes, reviewer agent
+directories, and warnings.
 
 ### `cr benchmark run`
 
@@ -679,10 +794,59 @@ stderr separately, records each child exit code, and writes generated artifacts
 under `.cr-bench/results/<suite-id>/<timestamp>/` unless `--results-dir` is set.
 
 Use `--candidate` and `--case` for benchmark selection. Candidate YAML fields
-such as `model`, `effort`, `agent_dirs`, `max_agents`, and `max_concurrency`
-control review runtime overrides. Case YAML fields `review_base_sha` and
-`review_head_sha` pin the exact base/head commit pair reviewed by the dry-run
-child command.
+such as `stages.selection`, `stages.reviewers`, `max_agents`, and
+`max_concurrency` control review runtime overrides. `stages.selection.model`
+and `stages.selection.effort` map to `--selection-model` and
+`--selection-effort`; optional `stages.selection.prompt` maps to
+`--selection-prompt`. `stages.reviewers.model`, `stages.reviewers.effort`, and
+`stages.reviewers.agent_dirs[]` map to `--reviewer-model`,
+`--reviewer-effort`, and repeated `--agents-dir` flags. Case YAML fields
+`review_base_sha` and `review_head_sha` pin the exact base/head commit pair
+reviewed by the dry-run child command. Optional `stages.synthesis` metadata is
+reserved for future benchmark support and does not change `benchmark run`
+execution yet.
+
+### `cr benchmark select`
+
+```text
+cr benchmark select <suite.yml> [--candidate <id> ...] [--case <id> ...] [--results-dir <path>] [--json]
+```
+
+Runs the selected candidate x case matrix through the extracted in-process
+selection phase only. It reuses the same profile, provider, adapter, and agent
+catalog loading semantics as `cr review`, but stops after selector execution.
+It does not spawn a child `cr review`, does not run reviewer agents, and does
+not run synthesis.
+
+Candidate `stages.selection.model` and `stages.selection.effort` map to
+selection overrides directly. Optional `stages.selection.prompt` is loaded from
+disk into selection instructions, and optional
+`stages.reviewers.agent_dirs[]` are passed into the selector catalog so
+candidate reviewer packs still influence routing. Case YAML
+`review_base_sha` and `review_head_sha` still pin the exact base/head commit
+pair used to build the selector diff view.
+
+Optional `stages.synthesis` metadata is preserved in summaries and selector
+`recipe.json` artifacts, but selector-only benchmarking still stops after
+selection. Dedicated synthesis benchmarking is future work.
+
+Selector benchmarks write selector-specific per-run artifacts such as
+`selection.json`, `recipe.json`, `metrics.json`, and selection log metadata.
+When one selector run fails after partial execution, `benchmark select` records
+that run as failed and continues the remaining matrix when it can still write
+trustworthy suite artifacts.
+
+### `cr benchmark compare`
+
+```text
+cr benchmark compare <results-dir> [--json]
+```
+
+Reads an existing benchmark results directory and writes deterministic
+`comparison.json` and `comparison.md` artifacts. Comparison is local-only: it
+does not invoke models, read live PR state, mutate Git provider state, or
+require provider credentials. `cr benchmark run` and `cr benchmark select`
+write the same comparison artifacts automatically.
 
 ### `cr sessions list`
 
@@ -804,7 +968,9 @@ text is escaped before posting.
 turns. A named session is scoped by name, profile, provider, adapter, model, and
 host. Profile/provider/adapter/model mismatches are errors. Host mismatches warn
 and continue. If the active adapter does not support resume, `cr` starts fresh
-and records the new provider session when available.
+and records the new provider session when available. `claude_cli` supports
+resume by launching a new Claude Code background job with the stored provider
+session.
 
 ### Retention
 

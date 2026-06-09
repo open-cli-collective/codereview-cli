@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 )
 
@@ -40,54 +41,145 @@ type Suite struct {
 
 // Candidate is one review configuration to try against each selected case.
 type Candidate struct {
-	ID             string   `yaml:"id" json:"id"`
-	Profile        string   `yaml:"profile" json:"profile"`
-	Model          string   `yaml:"model,omitempty" json:"model,omitempty"`
-	Effort         string   `yaml:"effort,omitempty" json:"effort,omitempty"`
-	AgentDirs      []string `yaml:"agent_dirs,omitempty" json:"agent_dirs,omitempty"`
-	MaxAgents      int      `yaml:"max_agents,omitempty" json:"max_agents,omitempty"`
-	MaxConcurrency int      `yaml:"max_concurrency,omitempty" json:"max_concurrency,omitempty"`
+	ID             string          `yaml:"id" json:"id"`
+	Profile        string          `yaml:"profile" json:"profile"`
+	Stages         CandidateStages `yaml:"stages" json:"stages"`
+	MaxAgents      int             `yaml:"max_agents,omitempty" json:"max_agents,omitempty"`
+	MaxConcurrency int             `yaml:"max_concurrency,omitempty" json:"max_concurrency,omitempty"`
+
+	stagesSet bool
+}
+
+// CandidateStages groups the per-phase runtime recipes for a benchmark candidate.
+type CandidateStages struct {
+	Selection SelectionStage `yaml:"selection" json:"selection"`
+	Reviewers ReviewerStage  `yaml:"reviewers,omitempty" json:"reviewers,omitempty"`
+	Synthesis SelectionStage `yaml:"synthesis,omitempty" json:"synthesis,omitempty"`
+
+	selectionSet bool
+	reviewersSet bool
+	synthesisSet bool
+}
+
+// SelectionStage configures the benchmark selection/orchestration phase.
+type SelectionStage struct {
+	Model  string `yaml:"model,omitempty" json:"model,omitempty"`
+	Effort string `yaml:"effort,omitempty" json:"effort,omitempty"`
+	Prompt string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 
 	modelSet  bool
 	effortSet bool
+	promptSet bool
 }
 
-// UnmarshalYAML accepts the canonical agent_dirs field and the draft agents_dir
-// alias, but rejects documents that use both on the same candidate.
+// ReviewerStage configures the benchmark reviewer execution phase.
+type ReviewerStage struct {
+	Model     string   `yaml:"model,omitempty" json:"model,omitempty"`
+	Effort    string   `yaml:"effort,omitempty" json:"effort,omitempty"`
+	AgentDirs []string `yaml:"agent_dirs,omitempty" json:"agent_dirs,omitempty"`
+
+	modelSet     bool
+	effortSet    bool
+	agentDirsSet bool
+}
+
+// UnmarshalYAML tracks candidate field presence for validation.
 func (c *Candidate) UnmarshalYAML(value *yaml.Node) error {
 	type rawCandidate struct {
-		ID             string   `yaml:"id"`
-		Profile        string   `yaml:"profile"`
-		Model          string   `yaml:"model"`
-		Effort         string   `yaml:"effort"`
-		AgentDirs      []string `yaml:"agent_dirs"`
-		AgentsDir      []string `yaml:"agents_dir"`
-		MaxAgents      int      `yaml:"max_agents"`
-		MaxConcurrency int      `yaml:"max_concurrency"`
+		ID             string          `yaml:"id"`
+		Profile        string          `yaml:"profile"`
+		Stages         CandidateStages `yaml:"stages"`
+		MaxAgents      int             `yaml:"max_agents"`
+		MaxConcurrency int             `yaml:"max_concurrency"`
 	}
 	var raw rawCandidate
 	if err := value.Decode(&raw); err != nil {
 		return fmt.Errorf("%w: decode candidate: %w", ErrInvalid, err)
 	}
+	*c = Candidate{
+		ID:             raw.ID,
+		Profile:        raw.Profile,
+		Stages:         raw.Stages,
+		MaxAgents:      raw.MaxAgents,
+		MaxConcurrency: raw.MaxConcurrency,
+		stagesSet:      mappingHasKey(value, "stages"),
+	}
+	return nil
+}
+
+// UnmarshalYAML tracks per-stage field presence for validation.
+func (s *CandidateStages) UnmarshalYAML(value *yaml.Node) error {
+	type rawStages struct {
+		Selection SelectionStage `yaml:"selection"`
+		Reviewers ReviewerStage  `yaml:"reviewers"`
+		Synthesis SelectionStage `yaml:"synthesis"`
+	}
+	var raw rawStages
+	if err := value.Decode(&raw); err != nil {
+		return fmt.Errorf("%w: decode stages: %w", ErrInvalid, err)
+	}
+	*s = CandidateStages{
+		Selection:    raw.Selection,
+		Reviewers:    raw.Reviewers,
+		Synthesis:    raw.Synthesis,
+		selectionSet: mappingHasKey(value, "selection"),
+		reviewersSet: mappingHasKey(value, "reviewers"),
+		synthesisSet: mappingHasKey(value, "synthesis"),
+	}
+	return nil
+}
+
+// UnmarshalYAML tracks selection stage field presence for validation.
+func (s *SelectionStage) UnmarshalYAML(value *yaml.Node) error {
+	type rawSelectionStage struct {
+		Model  string `yaml:"model"`
+		Effort string `yaml:"effort"`
+		Prompt string `yaml:"prompt"`
+	}
+	var raw rawSelectionStage
+	if err := value.Decode(&raw); err != nil {
+		return fmt.Errorf("%w: decode selection stage: %w", ErrInvalid, err)
+	}
+	*s = SelectionStage{
+		Model:     raw.Model,
+		Effort:    raw.Effort,
+		Prompt:    raw.Prompt,
+		modelSet:  mappingHasKey(value, "model"),
+		effortSet: mappingHasKey(value, "effort"),
+		promptSet: mappingHasKey(value, "prompt"),
+	}
+	return nil
+}
+
+// UnmarshalYAML accepts the canonical agent_dirs field and the draft agents_dir
+// alias inside reviewer stage recipes, but rejects documents that use both.
+func (s *ReviewerStage) UnmarshalYAML(value *yaml.Node) error {
+	type rawReviewerStage struct {
+		Model     string   `yaml:"model"`
+		Effort    string   `yaml:"effort"`
+		AgentDirs []string `yaml:"agent_dirs"`
+		AgentsDir []string `yaml:"agents_dir"`
+	}
+	var raw rawReviewerStage
+	if err := value.Decode(&raw); err != nil {
+		return fmt.Errorf("%w: decode reviewers stage: %w", ErrInvalid, err)
+	}
 	hasAgentDirs := mappingHasKey(value, "agent_dirs")
 	hasAgentsDir := mappingHasKey(value, "agents_dir")
 	if hasAgentDirs && hasAgentsDir {
-		return fmt.Errorf("%w: candidate %q cannot set both agent_dirs and agents_dir", ErrInvalid, raw.ID)
+		return fmt.Errorf("%w: reviewers stage cannot set both agent_dirs and agents_dir", ErrInvalid)
 	}
 	agentDirs := raw.AgentDirs
 	if hasAgentsDir {
 		agentDirs = raw.AgentsDir
 	}
-	*c = Candidate{
-		ID:             raw.ID,
-		Profile:        raw.Profile,
-		Model:          raw.Model,
-		Effort:         raw.Effort,
-		AgentDirs:      agentDirs,
-		MaxAgents:      raw.MaxAgents,
-		MaxConcurrency: raw.MaxConcurrency,
-		modelSet:       mappingHasKey(value, "model"),
-		effortSet:      mappingHasKey(value, "effort"),
+	*s = ReviewerStage{
+		Model:        raw.Model,
+		Effort:       raw.Effort,
+		AgentDirs:    agentDirs,
+		modelSet:     mappingHasKey(value, "model"),
+		effortSet:    mappingHasKey(value, "effort"),
+		agentDirsSet: hasAgentDirs || hasAgentsDir,
 	}
 	return nil
 }
@@ -191,10 +283,16 @@ func Normalize(suite *SuiteFile) {
 		c := &suite.Candidates[i]
 		c.ID = strings.TrimSpace(c.ID)
 		c.Profile = strings.TrimSpace(c.Profile)
-		c.Model = strings.TrimSpace(c.Model)
-		c.Effort = strings.TrimSpace(c.Effort)
-		for j := range c.AgentDirs {
-			c.AgentDirs[j] = strings.TrimSpace(c.AgentDirs[j])
+		c.Stages.Selection.Model = strings.TrimSpace(c.Stages.Selection.Model)
+		c.Stages.Selection.Effort = strings.TrimSpace(c.Stages.Selection.Effort)
+		c.Stages.Selection.Prompt = strings.TrimSpace(c.Stages.Selection.Prompt)
+		c.Stages.Synthesis.Model = strings.TrimSpace(c.Stages.Synthesis.Model)
+		c.Stages.Synthesis.Effort = strings.TrimSpace(c.Stages.Synthesis.Effort)
+		c.Stages.Synthesis.Prompt = strings.TrimSpace(c.Stages.Synthesis.Prompt)
+		c.Stages.Reviewers.Model = strings.TrimSpace(c.Stages.Reviewers.Model)
+		c.Stages.Reviewers.Effort = strings.TrimSpace(c.Stages.Reviewers.Effort)
+		for j := range c.Stages.Reviewers.AgentDirs {
+			c.Stages.Reviewers.AgentDirs[j] = strings.TrimSpace(c.Stages.Reviewers.AgentDirs[j])
 		}
 	}
 	for i := range suite.Cases {
@@ -214,7 +312,8 @@ func Normalize(suite *SuiteFile) {
 	}
 }
 
-// Validate checks suite schema and profile/case compatibility without running reviews.
+// Validate checks suite schema and profile/case compatibility without assuming a
+// specific benchmark command mode.
 func Validate(suite SuiteFile, cfg config.File) error {
 	Normalize(&suite)
 	if err := validateID("suite id", suite.Suite.ID); err != nil {
@@ -236,6 +335,24 @@ func Validate(suite SuiteFile, cfg config.File) error {
 		return err
 	}
 	return validateCandidateCaseHosts(suite.Candidates, suite.Cases, cfg)
+}
+
+// ValidateForRun applies the stricter full-pipeline requirements used by the
+// current benchmark validate/doctor/run commands.
+func ValidateForRun(suite SuiteFile, cfg config.File) error {
+	if err := Validate(suite, cfg); err != nil {
+		return err
+	}
+	return validateRunCandidates(suite)
+}
+
+// ValidateForSelection applies the stricter selector-only requirements used by
+// benchmark select.
+func ValidateForSelection(suite SuiteFile, cfg config.File) error {
+	if err := Validate(suite, cfg); err != nil {
+		return err
+	}
+	return validateSelectionCandidates(suite)
 }
 
 // Select returns suite-order candidates and cases after optional ID filtering.
@@ -296,11 +413,17 @@ func validateCandidates(candidates []Candidate, cfg config.File) error {
 		if _, ok := cfg.Profiles[candidate.Profile]; !ok {
 			return fmt.Errorf("%w: candidate %q references unknown profile %q", ErrInvalid, candidate.ID, candidate.Profile)
 		}
-		if candidate.modelSet && candidate.Model == "" {
-			return fmt.Errorf("%w: candidate %q model must be non-empty when present", ErrInvalid, candidate.ID)
+		if !candidate.stagesSet {
+			return fmt.Errorf("%w: candidate %q stages is required", ErrInvalid, candidate.ID)
 		}
-		if candidate.effortSet && candidate.Effort == "" {
-			return fmt.Errorf("%w: candidate %q effort must be non-empty when present", ErrInvalid, candidate.ID)
+		if err := validateSelectionStage(candidate.ID, candidate.Stages); err != nil {
+			return err
+		}
+		if err := validateReviewerStageStructural(candidate.ID, candidate.Stages); err != nil {
+			return err
+		}
+		if err := validateSynthesisStageStructural(candidate.ID, candidate.Stages); err != nil {
+			return err
 		}
 		if candidate.MaxAgents < 0 {
 			return fmt.Errorf("%w: candidate %q max_agents must be non-negative", ErrInvalid, candidate.ID)
@@ -308,11 +431,142 @@ func validateCandidates(candidates []Candidate, cfg config.File) error {
 		if candidate.MaxConcurrency < 0 {
 			return fmt.Errorf("%w: candidate %q max_concurrency must be non-negative", ErrInvalid, candidate.ID)
 		}
-		for j, dir := range candidate.AgentDirs {
-			if dir == "" {
-				return fmt.Errorf("%w: candidate %q agent_dirs[%d] must be non-empty", ErrInvalid, candidate.ID, j)
-			}
+	}
+	return nil
+}
+
+func validateSelectionStage(candidateID string, stages CandidateStages) error {
+	if !stages.selectionSet {
+		return fmt.Errorf("%w: candidate %q stages.selection is required", ErrInvalid, candidateID)
+	}
+	if stages.Selection.modelSet && stages.Selection.Model == "" {
+		return fmt.Errorf("%w: candidate %q stages.selection.model must be non-empty when present", ErrInvalid, candidateID)
+	}
+	if stages.Selection.effortSet && stages.Selection.Effort == "" {
+		return fmt.Errorf("%w: candidate %q stages.selection.effort must be non-empty when present", ErrInvalid, candidateID)
+	}
+	if stages.Selection.promptSet && stages.Selection.Prompt == "" {
+		return fmt.Errorf("%w: candidate %q stages.selection.prompt must be non-empty when present", ErrInvalid, candidateID)
+	}
+	if stages.Selection.Effort != "" && !modelprefs.Effort(stages.Selection.Effort).Valid() {
+		return fmt.Errorf("%w: candidate %q stages.selection.effort must be one of low, medium, high", ErrInvalid, candidateID)
+	}
+	return nil
+}
+
+func validateReviewerStageStructural(candidateID string, stages CandidateStages) error {
+	if !stages.reviewersSet {
+		return nil
+	}
+	if stages.Reviewers.modelSet && stages.Reviewers.Model == "" {
+		return fmt.Errorf("%w: candidate %q stages.reviewers.model must be non-empty when present", ErrInvalid, candidateID)
+	}
+	if stages.Reviewers.effortSet && stages.Reviewers.Effort == "" {
+		return fmt.Errorf("%w: candidate %q stages.reviewers.effort must be non-empty when present", ErrInvalid, candidateID)
+	}
+	if stages.Reviewers.Effort != "" && !modelprefs.Effort(stages.Reviewers.Effort).Valid() {
+		return fmt.Errorf("%w: candidate %q stages.reviewers.effort must be one of low, medium, high", ErrInvalid, candidateID)
+	}
+	if !stages.Reviewers.agentDirsSet {
+		return nil
+	}
+	for i, dir := range stages.Reviewers.AgentDirs {
+		if dir == "" {
+			return fmt.Errorf("%w: candidate %q stages.reviewers.agent_dirs[%d] must be non-empty", ErrInvalid, candidateID, i)
 		}
+	}
+	return nil
+}
+
+func validateSynthesisStageStructural(candidateID string, stages CandidateStages) error {
+	if !stages.synthesisSet {
+		return nil
+	}
+	if stages.Synthesis.Model == "" {
+		return fmt.Errorf("%w: candidate %q stages.synthesis.model is required when stages.synthesis is set", ErrInvalid, candidateID)
+	}
+	if stages.Synthesis.Effort == "" {
+		return fmt.Errorf("%w: candidate %q stages.synthesis.effort is required when stages.synthesis is set", ErrInvalid, candidateID)
+	}
+	if stages.Synthesis.promptSet && stages.Synthesis.Prompt == "" {
+		return fmt.Errorf("%w: candidate %q stages.synthesis.prompt must be non-empty when present", ErrInvalid, candidateID)
+	}
+	if !modelprefs.Effort(stages.Synthesis.Effort).Valid() {
+		return fmt.Errorf("%w: candidate %q stages.synthesis.effort must be one of low, medium, high", ErrInvalid, candidateID)
+	}
+	return nil
+}
+
+func validateRunCandidates(suite SuiteFile) error {
+	suiteDir := filepath.Dir(suite.Path)
+	for _, candidate := range suite.Candidates {
+		if err := validateRequiredSelectionRecipe(candidate.ID, candidate.Stages.Selection, suiteDir, suite.Path, "benchmark run"); err != nil {
+			return err
+		}
+		if !candidate.Stages.reviewersSet {
+			return fmt.Errorf("%w: candidate %q stages.reviewers is required for benchmark run", ErrInvalid, candidate.ID)
+		}
+		if candidate.Stages.Reviewers.Model == "" {
+			return fmt.Errorf("%w: candidate %q stages.reviewers.model is required for benchmark run", ErrInvalid, candidate.ID)
+		}
+		if candidate.Stages.Reviewers.Effort == "" {
+			return fmt.Errorf("%w: candidate %q stages.reviewers.effort is required for benchmark run", ErrInvalid, candidate.ID)
+		}
+		if !candidate.Stages.Reviewers.agentDirsSet {
+			return fmt.Errorf("%w: candidate %q stages.reviewers.agent_dirs is required for benchmark run", ErrInvalid, candidate.ID)
+		}
+	}
+	return nil
+}
+
+func validateSelectionCandidates(suite SuiteFile) error {
+	suiteDir := filepath.Dir(suite.Path)
+	for _, candidate := range suite.Candidates {
+		if err := validateRequiredSelectionRecipe(candidate.ID, candidate.Stages.Selection, suiteDir, suite.Path, "benchmark select"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRequiredSelectionRecipe(candidateID string, selection SelectionStage, suiteDir, suitePath, commandName string) error {
+	if selection.Model == "" {
+		return fmt.Errorf("%w: candidate %q stages.selection.model is required for %s", ErrInvalid, candidateID, commandName)
+	}
+	if selection.Effort == "" {
+		return fmt.Errorf("%w: candidate %q stages.selection.effort is required for %s", ErrInvalid, candidateID, commandName)
+	}
+	if prompt := selection.Prompt; prompt != "" && suitePath != "" {
+		if err := validateSelectionPromptFile(candidateID, suiteDir, prompt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resolveSuiteRelativePath(baseDir, path string) string {
+	path = filepath.FromSlash(path)
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(baseDir, path)
+}
+
+func validateSelectionPromptFile(candidateID, suiteDir, prompt string) error {
+	resolved := resolveSuiteRelativePath(suiteDir, prompt)
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must reference a readable file relative to the suite", ErrInvalid, candidateID, prompt)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must reference a file, not a directory", ErrInvalid, candidateID, prompt)
+	}
+	data, err := os.ReadFile(resolved) // #nosec G304 -- suite-selected prompt path is explicit benchmark input.
+	if err != nil {
+		return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must reference a readable file relative to the suite", ErrInvalid, candidateID, prompt)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must contain non-empty prompt text", ErrInvalid, candidateID, prompt)
 	}
 	return nil
 }
@@ -457,11 +711,42 @@ func validateKnownFields(doc *yaml.Node) error {
 		}
 		for i, candidate := range node.Content {
 			if err := validateMappingKeys(candidate, fmt.Sprintf("candidate[%d]", i), map[string]bool{
-				"id": true, "profile": true, "model": true, "effort": true,
-				"agent_dirs": true, "agents_dir": true,
+				"id": true, "profile": true, "stages": true,
 				"max_agents": true, "max_concurrency": true,
 			}); err != nil {
 				return err
+			}
+			stages := mappingValue(candidate, "stages")
+			if stages != nil {
+				if err := validateMappingKeys(stages, fmt.Sprintf("candidate[%d] stages", i), map[string]bool{
+					"selection": true, "reviewers": true, "synthesis": true,
+				}); err != nil {
+					return err
+				}
+			}
+			selection := mappingValue(stages, "selection")
+			if selection != nil {
+				if err := validateMappingKeys(selection, fmt.Sprintf("candidate[%d] stages.selection", i), map[string]bool{
+					"model": true, "effort": true, "prompt": true,
+				}); err != nil {
+					return err
+				}
+			}
+			reviewers := mappingValue(stages, "reviewers")
+			if reviewers != nil {
+				if err := validateMappingKeys(reviewers, fmt.Sprintf("candidate[%d] stages.reviewers", i), map[string]bool{
+					"model": true, "effort": true, "agent_dirs": true, "agents_dir": true,
+				}); err != nil {
+					return err
+				}
+			}
+			synthesis := mappingValue(stages, "synthesis")
+			if synthesis != nil {
+				if err := validateMappingKeys(synthesis, fmt.Sprintf("candidate[%d] stages.synthesis", i), map[string]bool{
+					"model": true, "effort": true, "prompt": true,
+				}); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -511,7 +796,7 @@ func validateMappingKeys(node *yaml.Node, label string, allowed map[string]bool)
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
-	if node.Kind != yaml.MappingNode {
+	if node == nil || node.Kind != yaml.MappingNode {
 		return nil
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {

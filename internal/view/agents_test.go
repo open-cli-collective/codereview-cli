@@ -135,7 +135,7 @@ func testAgentsCatalog() agents.Catalog {
 			Name:        "architecture",
 			Category:    agents.Category{Name: "harness", Description: "Engineering reviewers.", Owner: "rianjs"},
 			Description: "Reviews architecture.",
-			Model:       "sonnet",
+			ModelTier:   "medium",
 			Effort:      "medium",
 			FileGlobs:   []string{"**/*.go"},
 			AppliesWhen: []string{"Go files changed"},

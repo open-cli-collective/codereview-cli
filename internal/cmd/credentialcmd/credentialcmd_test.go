@@ -725,6 +725,7 @@ func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 		{name: "empty reviewer env secret", args: []string{"init", "--non-interactive", "--reviewer-token-from-env", "CR_EMPTY_REVIEWER_TOKEN"}},
 		{name: "llm ingress under subscription auth", args: []string{"init", "--non-interactive", "--llm-api-key-from-env", "CR_LLM_KEY"}},
 		{name: "pi rpc adapter without pi provider", args: []string{"init", "--non-interactive", "--llm-adapter", string(config.LLMAdapterPiRPC)}},
+		{name: "codex cli adapter without openai provider", args: []string{"init", "--non-interactive", "--llm-adapter", string(config.LLMAdapterCodexCLI)}},
 	}
 	t.Setenv("CR_LLM_KEY", "llm-key")
 	t.Setenv("CR_EMPTY_REVIEWER_TOKEN", "")

@@ -132,6 +132,9 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 	} else if err := writeKV(w, "  Credential ref", "adapter-managed; not stored by cr"); err != nil {
 		return err
 	}
+	if err := renderConfigModelMap(w, show.Profile.LLM); err != nil {
+		return err
+	}
 
 	if len(show.AgentSources) > 0 {
 		if _, err := fmt.Fprintln(w, "Agent sources:"); err != nil {
@@ -197,6 +200,25 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 		return err
 	}
 	return writeKV(w, "  Enforcement", string(show.Data.Retention.Enforcement))
+}
+
+func renderConfigModelMap(w io.Writer, llm config.LLMConfig) error {
+	if _, err := fmt.Fprintln(w, "  Model map:"); err != nil {
+		return err
+	}
+	effective := config.EffectiveModelMap(llm)
+	for _, tier := range config.ModelTiers() {
+		model := "<unset>"
+		source := "unset"
+		if resolved, ok := effective[tier]; ok {
+			model = resolved.Model
+			source = string(resolved.Source)
+		}
+		if _, err := fmt.Fprintf(w, "    %s: %s (%s)\n", tier, model, source); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RenderConfigJSON writes the config summary as indented JSON.

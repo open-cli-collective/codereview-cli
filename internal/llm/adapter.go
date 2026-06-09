@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -15,6 +16,10 @@ import (
 const maxValidationErrorSummaryLen = 500
 
 var validationQuotedValueRE = regexp.MustCompile(`"([^"\\]|\\.)*"`)
+
+// ErrStructuredOutputInvalidAfterRetry marks a structured-output request whose
+// initial response and single validation retry both failed decoding.
+var ErrStructuredOutputInvalidAfterRetry = errors.New("structured output invalid after retry")
 
 // Adapter is the provider-neutral LLM boundary.
 type Adapter interface {
@@ -122,7 +127,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	}
 	retryDecoded, retryErr := decodeResponse(retryResponse, decode)
 	if retryErr != nil {
-		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID}, fmt.Errorf("structured output invalid after retry: first: %w; second: %w", decodeErr, retryErr)
+		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID}, fmt.Errorf("%w: first: %w; second: %w", ErrStructuredOutputInvalidAfterRetry, decodeErr, retryErr)
 	}
 	return StructuredResult[T]{Value: retryDecoded.Value, Response: retryDecoded.Response, SessionID: retrySessionID}, nil
 }

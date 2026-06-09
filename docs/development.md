@@ -16,6 +16,12 @@ version plumbing in `internal/version`. Review orchestration is split across
 `internal/pipeline`, `internal/reviewrun`, `internal/reviewplan`,
 `internal/outbox`, `internal/gate`, and `internal/gateio`.
 
+Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
+`SelectionOnly`. `DryRun` and `Live` execute the full review pipeline, while
+`SelectionOnly` runs just the selection phase with caller-owned artifact paths
+and no ledger or posting side effects so benchmark tooling can reuse the real
+selector implementation.
+
 ## Quick Commands
 
 ```bash
