@@ -1161,7 +1161,9 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 
 // sharedWorkstreamModel reports the run's headline model only when every
 // workstream reported the same one; mixed or partially-reported models render
-// the headline as unavailable and rely on the per-workstream table.
+// the headline as unavailable and rely on the per-workstream table. The
+// consensus covers only workstreams with session drafts — a selected agent
+// that produced no draft has no model data to contribute.
 func sharedWorkstreamModel(workstreams []reviewplan.WorkstreamUsage) string {
 	model := ""
 	for i, workstream := range workstreams {
@@ -1184,10 +1186,15 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 		CacheCreate: usage.CacheCreate,
 		CostUSD:     usage.CostUSD,
 	}
-	// Zero means the adapter never reported a duration; it renders as
-	// unavailable, not 0s. A real sub-millisecond LLM call does not happen.
-	if draft.response.DurationMS > 0 {
+	// Zero means the adapter never reported a duration; fall back to the
+	// pipeline's own start/complete clock for the workstream, and render
+	// unavailable (not 0s) when neither source has data.
+	switch {
+	case draft.response.DurationMS > 0:
 		duration := draft.response.DurationMS
+		workstream.DurationMS = &duration
+	case !draft.startedAt.IsZero() && draft.completedAt.After(draft.startedAt):
+		duration := draft.completedAt.Sub(draft.startedAt).Milliseconds()
 		workstream.DurationMS = &duration
 	}
 	return workstream

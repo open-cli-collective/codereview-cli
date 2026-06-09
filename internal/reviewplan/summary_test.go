@@ -245,6 +245,9 @@ func TestRollupSummaryRendering(t *testing.T) {
 		if len(plan.Summary.Reviewers) != 0 {
 			t.Fatalf("reviewers derived without attribution: %#v", plan.Summary.Reviewers)
 		}
+		if plan.Summary.Totals != (AggregateUsage{}) {
+			t.Fatalf("totals derived without workstreams: %#v", plan.Summary.Totals)
+		}
 	})
 
 	t.Run("workstream table renders rows in the order given", func(t *testing.T) {

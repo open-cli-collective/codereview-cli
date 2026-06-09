@@ -1996,7 +1996,7 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 		hasRun:    true,
 		selection: sessionDraft{adapter: "fake", model: "sonnet", response: llm.Response{DurationMS: 0}},
 		reviewers: []sessionDraft{{rowID: "row-1", agentID: &agentID, model: "sonnet", response: llm.Response{DurationMS: 25}}},
-		rollup:    sessionDraft{model: "sonnet"},
+		rollup:    sessionDraft{model: "sonnet", startedAt: fixedNow(), completedAt: fixedNow().Add(2 * time.Second)},
 		selectedAgents: []llm.SelectedAgent{
 			{AgentID: agentID},
 			{AgentID: "harness:missing-draft"},
@@ -2022,6 +2022,9 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 	}
 	if summary.Workstreams[1].DurationMS == nil || *summary.Workstreams[1].DurationMS != 25 {
 		t.Fatalf("reported duration lost: %#v", summary.Workstreams[1])
+	}
+	if summary.Workstreams[2].DurationMS == nil || *summary.Workstreams[2].DurationMS != 2000 {
+		t.Fatalf("start/complete fallback duration missing: %#v", summary.Workstreams[2])
 	}
 	if !reflect.DeepEqual(findingReviewers, map[review.FindingID]string{"f-1": agentID}) {
 		t.Fatalf("finding reviewers = %#v, want unknown session unattributed", findingReviewers)

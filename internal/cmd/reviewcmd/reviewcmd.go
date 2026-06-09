@@ -402,7 +402,9 @@ func runLive(ctx context.Context, opts *root.Options, flags commandFlags, runner
 }
 
 func newReviewSummary(summary reviewplan.Summary) view.ReviewSummary {
+	// Arrays serialize as [], never null, so JSON consumers see one shape.
 	out := view.ReviewSummary{
+		Reviewers: []view.ReviewReviewerSummary{},
 		Threads: view.ReviewThreadCounts{
 			Considered: summary.Threads.Considered,
 			Summarized: summary.Threads.Summarized,
@@ -415,6 +417,7 @@ func newReviewSummary(summary reviewplan.Summary) view.ReviewSummary {
 			PostingIdentity:   summary.Run.PostingIdentity,
 			SelectedReviewers: summary.Run.SelectedReviewers,
 			WallDurationMS:    summary.Run.WallDurationMS,
+			Workstreams:       []view.ReviewWorkstream{},
 		},
 		Totals: view.ReviewWorkstreamTotals{
 			TokensIn:          summary.Totals.TokensIn,

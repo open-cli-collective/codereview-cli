@@ -48,7 +48,7 @@ type ReviewRunSummary struct {
 	PostingIdentity   string             `json:"posting_identity,omitempty"`
 	SelectedReviewers []string           `json:"selected_reviewers,omitempty"`
 	WallDurationMS    *int64             `json:"wall_duration_ms"`
-	Workstreams       []ReviewWorkstream `json:"workstreams,omitempty"`
+	Workstreams       []ReviewWorkstream `json:"workstreams"`
 }
 
 // ReviewWorkstream is adapter-reported usage for one workstream.
