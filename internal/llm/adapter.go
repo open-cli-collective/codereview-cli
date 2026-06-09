@@ -235,14 +235,20 @@ func hasArrayWrapperAdjacentToObject(prefix []byte, suffix []byte) bool {
 
 func hasJSONFragmentBoundary(prefix []byte, suffix []byte) bool {
 	prefix = bytes.TrimSpace(prefix)
-	if startsJSONMemberFragment(prefix) {
+	if hasTrailingJSONMemberFragment(prefix) {
 		return true
 	}
 	if len(prefix) > 0 && prefix[len(prefix)-1] == ',' && isJSONValueSequence(bytes.TrimSpace(prefix[:len(prefix)-1])) {
 		return true
 	}
 	suffix = bytes.TrimSpace(suffix)
-	if len(suffix) == 0 || suffix[0] != ',' {
+	if len(suffix) == 0 {
+		return false
+	}
+	if suffix[0] == '}' || suffix[0] == ']' {
+		return true
+	}
+	if suffix[0] != ',' {
 		return false
 	}
 	rest := bytes.TrimSpace(suffix[1:])
@@ -267,6 +273,36 @@ func startsJSONMemberFragment(data []byte) bool {
 		case '"':
 			rest := bytes.TrimSpace(data[i+1:])
 			return len(rest) > 0 && rest[0] == ':'
+		}
+	}
+	return false
+}
+
+func hasTrailingJSONMemberFragment(data []byte) bool {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return false
+	}
+	escaped := false
+	inString := false
+	for i := 0; i < len(data); i++ {
+		ch := data[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				rest := bytes.TrimSpace(data[i+1:])
+				return len(rest) > 0 && rest[0] == ':' && !bytes.ContainsAny(rest[1:], "}]")
+			}
+			continue
+		}
+		if ch == '"' {
+			inString = true
 		}
 	}
 	return false
