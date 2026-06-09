@@ -3,6 +3,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -103,7 +104,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if err != nil {
 		return StructuredResult[T]{Response: response}, err
 	}
-	value, decodeErr := decode(response.StructuredOutput)
+	value, decodeErr := decodeStructured(decode, response.StructuredOutput)
 	if decodeErr == nil {
 		return StructuredResult[T]{Value: value, Response: response, SessionID: sessionID}, nil
 	}
@@ -118,11 +119,33 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if err != nil {
 		return StructuredResult[T]{Response: retryResponse}, err
 	}
-	retryValue, retryErr := decode(retryResponse.StructuredOutput)
+	retryValue, retryErr := decodeStructured(decode, retryResponse.StructuredOutput)
 	if retryErr != nil {
 		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID}, fmt.Errorf("%w: first: %w; second: %w", ErrStructuredOutputInvalidAfterRetry, decodeErr, retryErr)
 	}
 	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID}, nil
+}
+
+// decodeStructured strict-decodes data, then on failure recovers a response
+// that wraps exactly one balanced top-level JSON object in surrounding prose by
+// decoding the extracted object with the same schema decoder. When the
+// extracted object also fails the schema, that error is returned because it
+// describes the real schema violation; otherwise the strict error stands.
+func decodeStructured[T any](decode Decoder[T], data []byte) (T, error) {
+	value, err := decode(data)
+	if err == nil {
+		return value, nil
+	}
+	var zero T
+	extracted, ok := extractSingleJSONObject(data)
+	if !ok || bytes.Equal(extracted, data) {
+		return zero, err
+	}
+	extractedValue, extractedErr := decode(extracted)
+	if extractedErr != nil {
+		return zero, extractedErr
+	}
+	return extractedValue, nil
 }
 
 func runOnceWithSession(ctx context.Context, adapter Adapter, resumeSessionID string, req Request) (string, Response, error) {
