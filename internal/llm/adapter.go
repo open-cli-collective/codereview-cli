@@ -3,6 +3,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -137,7 +138,7 @@ func decodeStructured[T any](decode Decoder[T], data []byte) (T, error) {
 	}
 	var zero T
 	extracted, ok := extractSingleJSONObject(data)
-	if !ok {
+	if !ok || bytes.Equal(extracted, data) {
 		return zero, err
 	}
 	extractedValue, extractedErr := decode(extracted)
