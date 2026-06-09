@@ -321,6 +321,7 @@ cases:
 		{name: "blank selection effort when present", body: replaceSuiteLine(validSuiteYAML(), "        effort: high", `        effort: "  "`), want: "stages.selection.effort must be non-empty"},
 		{name: "missing synthesis model", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        effort: low\n"), want: "stages.synthesis.model is required when stages.synthesis is set"},
 		{name: "invalid synthesis effort", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.1\n        effort: invalid\n"), want: "stages.synthesis.effort must be one of low, medium, high"},
+		{name: "blank synthesis prompt", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.1\n        effort: low\n        prompt: \"  \"\n"), want: "stages.synthesis.prompt must be non-empty when present"},
 		{name: "invalid reviewer effort", body: strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        effort: invalid\n        agent_dirs:", 1), want: "stages.reviewers.effort must be one of low, medium, high"},
 		{name: "invalid review base sha", body: replaceSuiteLine(validSuiteYAML(), "    review_base_sha: 1111111", "    review_base_sha: notsha"), want: "review_base_sha"},
 		{name: "blank review head sha", body: replaceSuiteLine(validSuiteYAML(), "    review_head_sha: 2222222", `    review_head_sha: "  "`), want: "review_head_sha must be non-empty"},

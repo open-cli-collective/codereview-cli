@@ -150,6 +150,22 @@ func TestDoctorJSONReportsOptionalSynthesisStage(t *testing.T) {
 	}
 }
 
+func TestDoctorJSONWarnsForMissingSynthesisPrompt(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	suitePath := writeBenchmarkSuite(t, withBenchmarkSynthesisStage(validBenchmarkSuite(t), filepath.Join(t.TempDir(), "missing-synthesis.md")))
+
+	if err := root.Execute(cmd, []string{"benchmark", "doctor", suitePath, "--candidate", "first", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got doctorReport
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if len(got.Warnings) == 0 || !strings.Contains(strings.Join(got.Warnings, "\n"), "synthesis prompt") {
+		t.Fatalf("warnings = %#v, want synthesis prompt warning", got.Warnings)
+	}
+}
+
 func TestDoctorJSONResolvesCRBinFromPATH(t *testing.T) {
 	cmd, out := newTestCommand(t)
 	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
@@ -541,6 +557,29 @@ func TestRunSummaryAndComparePreserveOptionalSynthesisStage(t *testing.T) {
 		got.SelectedCandidates[0].Stages.Synthesis.Prompt == nil ||
 		got.SelectedCandidates[0].Stages.Synthesis.Prompt.ContentSHA256 == "" {
 		t.Fatalf("summary synthesis stage = %#v, want prompt provenance hash", got.SelectedCandidates[0].Stages.Synthesis)
+	}
+	var persistedSummary benchmarkSuiteSummary
+	if data, err := os.ReadFile(got.Artifacts.SuiteSummary); err != nil {
+		t.Fatalf("ReadFile suite summary: %v", err)
+	} else if err := json.Unmarshal(data, &persistedSummary); err != nil {
+		t.Fatalf("Unmarshal suite summary: %v", err)
+	}
+	if len(persistedSummary.SelectedCandidates) != 1 ||
+		persistedSummary.SelectedCandidates[0].Stages.Synthesis == nil ||
+		persistedSummary.SelectedCandidates[0].Stages.Synthesis.Prompt == nil ||
+		persistedSummary.SelectedCandidates[0].Stages.Synthesis.Prompt.ContentSHA256 == "" {
+		t.Fatalf("persisted suite summary = %#v, want synthesis prompt provenance", persistedSummary.SelectedCandidates)
+	}
+	var persistedManifest benchmarkManifest
+	if data, err := os.ReadFile(got.Artifacts.Manifest); err != nil {
+		t.Fatalf("ReadFile manifest: %v", err)
+	} else if err := json.Unmarshal(data, &persistedManifest); err != nil {
+		t.Fatalf("Unmarshal manifest: %v", err)
+	}
+	if len(persistedManifest.SelectedCandidates) != 1 ||
+		persistedManifest.SelectedCandidates[0].Stages.Synthesis == nil ||
+		persistedManifest.SelectedCandidates[0].Stages.Synthesis.Model != "claude-opus-4-8" {
+		t.Fatalf("persisted manifest = %#v, want synthesis stage metadata", persistedManifest.SelectedCandidates)
 	}
 	var comparison comparisonReport
 	if data, err := os.ReadFile(got.Artifacts.ComparisonJSON); err != nil {
