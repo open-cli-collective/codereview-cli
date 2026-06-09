@@ -61,6 +61,19 @@ func TestValidateForRunAcceptsEmptyReviewerAgentDirsField(t *testing.T) {
 	}
 }
 
+func TestValidateForRunRejectsMissingReviewerAgentDirsField(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), "        agent_dirs:\n          - .codereview/agents\n", "", 1)
+	suite := loadSuite(t, body)
+
+	if err := Validate(suite, testConfig()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	err := ValidateForRun(suite, testConfig())
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "stages.reviewers.agent_dirs is required for benchmark run") {
+		t.Fatalf("ValidateForRun error = %v, want missing reviewer agent_dirs rejection", err)
+	}
+}
+
 func TestValidateForRunRejectsEmptySelectionPromptFile(t *testing.T) {
 	dir := t.TempDir()
 	suitePath := filepath.Join(dir, "suite.yml")
