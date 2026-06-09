@@ -65,7 +65,12 @@ func claudeTranscriptUsage(path string, since time.Time) Usage {
 			continue
 		}
 		timestamp, err := time.Parse(time.RFC3339, event.Timestamp)
-		if err != nil || timestamp.Before(since) {
+		if err != nil {
+			// An unscopeable usage event could belong to this job; a sum
+			// that skips it would look complete while being partial.
+			return Usage{}
+		}
+		if timestamp.Before(since) {
 			continue
 		}
 		perMessage[event.Message.ID] = *event.Message.Usage

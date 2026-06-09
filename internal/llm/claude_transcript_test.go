@@ -42,13 +42,22 @@ not json at all
 
 	t.Run("prior-session turns before job creation are excluded", func(t *testing.T) {
 		path := writeTranscript(t, `{"type":"assistant","timestamp":"2026-06-09T19:30:00Z","message":{"id":"old","usage":{"input_tokens":5000,"output_tokens":5000}}}
-{"type":"assistant","message":{"id":"untimed","usage":{"input_tokens":7000,"output_tokens":7000}}}
 {"type":"assistant","timestamp":"2026-06-09T20:00:02Z","message":{"id":"current","usage":{"input_tokens":10,"output_tokens":20}}}
 `)
 
 		usage := claudeBGTranscriptUsage(map[string]any{"linkScanPath": path, "createdAt": transcriptJobCreatedAt})
 		if usage.TokensIn == nil || *usage.TokensIn != 10 || usage.TokensOut == nil || *usage.TokensOut != 20 {
 			t.Fatalf("usage = %#v, want only the current job's turn (in=10 out=20)", usage)
+		}
+	})
+
+	t.Run("unscopeable usage event makes the whole transcript unavailable", func(t *testing.T) {
+		path := writeTranscript(t, `{"type":"assistant","message":{"id":"untimed","usage":{"input_tokens":7000,"output_tokens":7000}}}
+{"type":"assistant","timestamp":"2026-06-09T20:00:02Z","message":{"id":"current","usage":{"input_tokens":10,"output_tokens":20}}}
+`)
+
+		if usage := claudeBGTranscriptUsage(map[string]any{"linkScanPath": path, "createdAt": transcriptJobCreatedAt}); usage != (Usage{}) {
+			t.Fatalf("usage = %#v, want empty (no silently partial sums)", usage)
 		}
 	})
 
