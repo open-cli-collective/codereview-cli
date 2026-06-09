@@ -230,12 +230,16 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"a":1} and {"a":2}`)}})
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"a":1} and {"a":2}`)}})
 
+		var decodedCandidate string
 		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
 			if s := string(data); s == `{"a":1}` || s == `{"a":2}` {
-				t.Fatalf("decoder called with extracted candidate %q from ambiguous output", s)
+				decodedCandidate = s
 			}
 			return "", errors.New("invalid")
 		})
+		if decodedCandidate != "" {
+			t.Fatalf("decoder called with extracted candidate %q from ambiguous output", decodedCandidate)
+		}
 		if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
 			t.Fatalf("RunStructured error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
 		}

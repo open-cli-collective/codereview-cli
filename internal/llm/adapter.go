@@ -135,13 +135,13 @@ func decodeStructured[T any](decode Decoder[T], data []byte) (T, error) {
 	if err == nil {
 		return value, nil
 	}
+	var zero T
 	extracted, ok := extractSingleJSONObject(data)
 	if !ok {
-		return value, err
+		return zero, err
 	}
 	extractedValue, extractedErr := decode(extracted)
 	if extractedErr != nil {
-		var zero T
 		return zero, extractedErr
 	}
 	return extractedValue, nil

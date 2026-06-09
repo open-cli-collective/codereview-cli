@@ -5,7 +5,10 @@ import "encoding/json"
 // extractSingleJSONObject returns the single balanced top-level JSON object
 // found in data, if exactly one syntactically valid candidate exists. Zero or
 // multiple valid candidates return ok=false: ambiguous output must not be
-// recovered.
+// recovered. Invalid spans are deliberately re-scanned one byte past their
+// opening brace so prose braces wrapping a valid object cannot hide it; the
+// resulting worst case is quadratic in nesting depth, which is irrelevant at
+// LLM response sizes.
 func extractSingleJSONObject(data []byte) ([]byte, bool) {
 	var (
 		candidate []byte
