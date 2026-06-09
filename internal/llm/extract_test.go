@@ -15,6 +15,7 @@ func TestExtractSingleJSONObject(t *testing.T) {
 		{"braces inside strings", `note {"msg":"use { and } freely"} end`, `{"msg":"use { and } freely"}`, true},
 		{"escaped quotes inside strings", `{"msg":"she said \"hi\" {ok}"}`, `{"msg":"she said \"hi\" {ok}"}`, true},
 		{"prose braces alongside one valid object", `Here is {the thing}: {"a":1}`, `{"a":1}`, true},
+		{"valid object nested in invalid prose braces", `before {note {"ok":true}} after`, `{"ok":true}`, true},
 		{"markdown fenced object", "```json\n{\"a\":1}\n```", `{"a":1}`, true},
 		{"zero objects", `no json here`, "", false},
 		{"two objects", `{"a":1} and {"a":2}`, "", false},

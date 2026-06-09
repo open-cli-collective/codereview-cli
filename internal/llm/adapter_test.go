@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -189,9 +190,14 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 		OK bool `json:"ok"`
 	}
 	decodeProbe := func(data []byte) (probe, error) {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
 		var p probe
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := decoder.Decode(&p); err != nil {
 			return probe{}, err
+		}
+		if decoder.More() {
+			return probe{}, errors.New("trailing content after JSON object")
 		}
 		if !p.OK {
 			return probe{}, errors.New("ok must be true")

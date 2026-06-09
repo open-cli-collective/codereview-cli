@@ -16,16 +16,16 @@ func extractSingleJSONObject(data []byte) ([]byte, bool) {
 			continue
 		}
 		span, end, balanced := scanBalancedObject(data, i)
-		if !balanced {
+		if !balanced || !json.Valid(span) {
+			// Keep scanning inside invalid spans: prose braces wrapping a
+			// valid object must not hide it.
 			continue
 		}
-		if json.Valid(span) {
-			if found {
-				return nil, false
-			}
-			candidate = span
-			found = true
+		if found {
+			return nil, false
 		}
+		candidate = span
+		found = true
 		i = end
 	}
 	return candidate, found
