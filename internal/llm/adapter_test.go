@@ -244,6 +244,27 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 		}
 	})
 
+	t.Run("extracted object failing schema surfaces schema error in retry prompt", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`Here: {"ok":false}`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"ok":true}`)}})
+
+		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, decodeProbe)
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if !got.OK {
+			t.Fatalf("value = %#v, want retry value", got)
+		}
+		requests := adapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("requests = %d, want one retry", len(requests))
+		}
+		if !strings.Contains(requests[1].Prompt, "ok must be true") {
+			t.Fatalf("retry prompt = %q, want extracted object's schema error", requests[1].Prompt)
+		}
+	})
+
 	t.Run("recovers prose-wrapped object on retry attempt", func(t *testing.T) {
 		adapter := &FakeAdapter{}
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`no json at all`)}})
