@@ -350,7 +350,7 @@ func (h *auditHarness) config() config.File {
 					Auth:          config.LLMAuthAPIKey,
 					Adapter:       config.LLMAdapterAnthropicAPI,
 					CredentialRef: "codereview/default-llm",
-					ModelMap:      config.ModelMap{"medium": "claude-3-5-sonnet"},
+					ModelMap:      config.ModelMap{"medium": "claude-sonnet-4-6"},
 				},
 				AgentSources: []string{h.agentDir},
 				ReviewPolicy: config.ReviewPolicy{
@@ -520,7 +520,7 @@ func (h *auditHarness) seedNamedSession(t *testing.T) {
 		Profile:           "default",
 		Provider:          string(config.LLMProviderAnthropic),
 		Adapter:           string(config.LLMAdapterAnthropicAPI),
-		Model:             "claude-3-5-sonnet",
+		Model:             "claude-sonnet-4-6",
 		Host:              "github.com",
 		ProviderSessionID: "provider-session-safe-001",
 		CreatedAt:         h.now.Add(-time.Hour),

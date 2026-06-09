@@ -30,11 +30,11 @@ func TestValidateAcceptsZeroNumericLimits(t *testing.T) {
 
 func TestValidateForRunRejectsStructuralOnlySelectionRecipe(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), `      selection:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         prompt: prompts/selection-v1.md
       reviewers:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         agent_dirs:
           - .codereview/agents
@@ -54,7 +54,7 @@ func TestValidateForRunRejectsStructuralOnlySelectionRecipe(t *testing.T) {
 
 func TestValidateForSelectionAcceptsMissingReviewerStage(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), `      reviewers:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         agent_dirs:
           - .codereview/agents
@@ -68,11 +68,11 @@ func TestValidateForSelectionAcceptsMissingReviewerStage(t *testing.T) {
 
 func TestValidateForSelectionRejectsStructuralOnlySelectionRecipe(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), `      selection:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         prompt: prompts/selection-v1.md
       reviewers:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         agent_dirs:
           - .codereview/agents
@@ -92,7 +92,7 @@ func TestValidateForSelectionRejectsStructuralOnlySelectionRecipe(t *testing.T) 
 
 func TestValidateRejectsMissingSelectionStage(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), `      selection:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         prompt: prompts/selection-v1.md
 `, "", 1)
@@ -115,7 +115,7 @@ func TestValidateForRunAcceptsEmptyReviewerAgentDirsField(t *testing.T) {
 
 func TestValidateForRunRejectsMissingReviewerStage(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), `      reviewers:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         agent_dirs:
           - .codereview/agents
@@ -211,10 +211,10 @@ candidates:
     profile: home
     stages:
       selection:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
       reviewers:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         agent_dirs: [agents]
         agents_dir: [other]
@@ -236,10 +236,10 @@ candidates:
     profile: home
     stages:
       selection:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
       reviewers:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         agent_dirs: agents
 cases:
@@ -284,13 +284,13 @@ candidates:
     profile: home
     stages:
       selection:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
   - id: " cand1 "
     profile: home
     stages:
       selection:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
 cases:
   - id: case1
@@ -304,7 +304,7 @@ candidates:
     profile: home
     stages:
       selection:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
 cases:
   - id: case1
@@ -317,11 +317,11 @@ cases:
 		{name: "host mismatch", body: replaceSuiteLine(validSuiteYAML(), "    pr: https://github.com/open-cli-collective/codereview-cli/pull/1", "    pr: https://ghe.example/open-cli-collective/codereview-cli/pull/1"), want: "does not match"},
 		{name: "negative max agents", body: replaceSuiteLine(validSuiteYAML(), "    max_agents: 5", "    max_agents: -1"), want: "max_agents"},
 		{name: "negative max concurrency", body: replaceSuiteLine(validSuiteYAML(), "    max_concurrency: 3", "    max_concurrency: -1"), want: "max_concurrency"},
-		{name: "blank selection model when present", body: replaceSuiteLine(validSuiteYAML(), "        model: gpt-5.1", `        model: "  "`), want: "stages.selection.model must be non-empty"},
+		{name: "blank selection model when present", body: replaceSuiteLine(validSuiteYAML(), "        model: gpt-5.4", `        model: "  "`), want: "stages.selection.model must be non-empty"},
 		{name: "blank selection effort when present", body: replaceSuiteLine(validSuiteYAML(), "        effort: high", `        effort: "  "`), want: "stages.selection.effort must be non-empty"},
 		{name: "missing synthesis model", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        effort: low\n"), want: "stages.synthesis.model is required when stages.synthesis is set"},
-		{name: "invalid synthesis effort", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.1\n        effort: invalid\n"), want: "stages.synthesis.effort must be one of low, medium, high"},
-		{name: "blank synthesis prompt", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.1\n        effort: low\n        prompt: \"  \"\n"), want: "stages.synthesis.prompt must be non-empty when present"},
+		{name: "invalid synthesis effort", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.4\n        effort: invalid\n"), want: "stages.synthesis.effort must be one of low, medium, high"},
+		{name: "blank synthesis prompt", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.4\n        effort: low\n        prompt: \"  \"\n"), want: "stages.synthesis.prompt must be non-empty when present"},
 		{name: "invalid reviewer effort", body: strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        effort: invalid\n        agent_dirs:", 1), want: "stages.reviewers.effort must be one of low, medium, high"},
 		{name: "invalid review base sha", body: replaceSuiteLine(validSuiteYAML(), "    review_base_sha: 1111111", "    review_base_sha: notsha"), want: "review_base_sha"},
 		{name: "blank review head sha", body: replaceSuiteLine(validSuiteYAML(), "    review_head_sha: 2222222", `    review_head_sha: "  "`), want: "review_head_sha must be non-empty"},
@@ -362,7 +362,7 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}{
 		{name: "root", body: validSuiteYAML() + "\nextra: true\n", want: `suite root unknown field "extra"`},
 		{name: "suite", body: replaceSuiteLine(validSuiteYAML(), "  version: 1", "  version: 1\n  extra: true"), want: `suite unknown field "extra"`},
-		{name: "candidate", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    model: gpt-5.1\n    stages:"), want: `candidate[0] unknown field "model"`},
+		{name: "candidate", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    model: gpt-5.4\n    stages:"), want: `candidate[0] unknown field "model"`},
 		{name: "candidate effort", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    effort: high\n    stages:"), want: `candidate[0] unknown field "effort"`},
 		{name: "candidate agent dirs", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    agent_dirs:\n      - .codereview/agents\n    stages:"), want: `candidate[0] unknown field "agent_dirs"`},
 		{name: "candidate agents dir alias", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    agents_dir:\n      - .codereview/agents\n    stages:"), want: `candidate[0] unknown field "agents_dir"`},
@@ -455,11 +455,11 @@ candidates:
     profile: home
     stages:
       selection:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         prompt: prompts/selection-v1.md
       reviewers:
-        model: gpt-5.1
+        model: gpt-5.4
         effort: high
         agent_dirs:
           - .codereview/agents
@@ -485,7 +485,7 @@ func replaceSuiteLine(body, old, replacement string) string {
 }
 
 func withSynthesisStage(body, prompt string) string {
-	stage := "      synthesis:\n        model: gpt-5.1\n        effort: low\n"
+	stage := "      synthesis:\n        model: gpt-5.4\n        effort: low\n"
 	if prompt != "" {
 		stage += "        prompt: " + prompt + "\n"
 	}

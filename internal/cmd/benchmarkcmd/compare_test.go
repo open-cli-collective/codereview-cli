@@ -158,7 +158,7 @@ func TestCompareSelectionModeShowsSelectedReviewers(t *testing.T) {
 			ID:      "first",
 			Profile: "home",
 			Stages: benchmarkCandidateStages{
-				Selection: benchmarkSelectionStage{Model: "sonnet", Effort: "high"},
+				Selection: benchmarkSelectionStage{Model: "claude-sonnet-4-6", Effort: "high"},
 			},
 		}},
 		SelectedCases: []benchmarkCase{{
@@ -620,7 +620,7 @@ func comparisonFixtureSummary(resultsDir string) benchmarkSuiteSummary {
 			ID:      "first",
 			Profile: "home",
 			Stages: benchmarkCandidateStages{
-				Selection: benchmarkSelectionStage{Model: "sonnet", Effort: "high"},
+				Selection: benchmarkSelectionStage{Model: "claude-sonnet-4-6", Effort: "high"},
 			},
 		}},
 		SelectedCases: []benchmarkCase{{
@@ -770,10 +770,10 @@ candidates:
     profile: home
     stages:
       selection:
-        model: sonnet
+        model: claude-sonnet-4-6
         effort: high
       reviewers:
-        model: sonnet
+        model: claude-sonnet-4-6
         effort: high
         agent_dirs:
           - AGENT_DIR

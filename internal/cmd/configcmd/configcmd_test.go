@@ -37,7 +37,7 @@ func TestConfigShowText(t *testing.T) {
 	if !strings.Contains(out.String(), "adapter-managed; not stored by cr") {
 		t.Fatalf("stdout = %q, want adapter-managed LLM note", out.String())
 	}
-	if !strings.Contains(out.String(), "medium: sonnet (built_in)") {
+	if !strings.Contains(out.String(), "medium: claude-sonnet-4-6 (built_in)") {
 		t.Fatalf("stdout = %q, want built-in model map", out.String())
 	}
 }
@@ -236,8 +236,8 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 		t.Fatalf("Execute list: %v", err)
 	}
 	if !strings.Contains(out.String(), "small: <unset> (unset)") ||
-		!strings.Contains(out.String(), "medium: sonnet (built_in)") ||
-		!strings.Contains(out.String(), "large: opus (built_in)") {
+		!strings.Contains(out.String(), "medium: claude-sonnet-4-6 (built_in)") ||
+		!strings.Contains(out.String(), "large: claude-opus-4-8 (built_in)") {
 		t.Fatalf("list stdout = %q, want effective Claude CLI defaults", out.String())
 	}
 
@@ -249,7 +249,7 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
 		t.Fatalf("Unmarshal list JSON: %v\n%s", err, out.String())
 	}
-	if listed.ActiveProfile != "home" || len(listed.Models) != 3 || listed.Models[1].Model != "sonnet" || listed.Models[1].Source != "built_in" {
+	if listed.ActiveProfile != "home" || len(listed.Models) != 3 || listed.Models[1].Model != "claude-sonnet-4-6" || listed.Models[1].Source != "built_in" {
 		t.Fatalf("list JSON = %#v, want home built-in medium", listed)
 	}
 
@@ -261,8 +261,8 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &resolved); err != nil {
 		t.Fatalf("Unmarshal resolve JSON: %v\n%s", err, out.String())
 	}
-	if resolved.Model != "sonnet" || resolved.Source != "built_in" || resolved.Tier != "medium" {
-		t.Fatalf("resolve JSON = %#v, want built-in medium sonnet", resolved)
+	if resolved.Model != "claude-sonnet-4-6" || resolved.Source != "built_in" || resolved.Tier != "medium" {
+		t.Fatalf("resolve JSON = %#v, want built-in medium claude-sonnet-4-6", resolved)
 	}
 }
 

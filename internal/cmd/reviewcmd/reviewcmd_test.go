@@ -812,7 +812,7 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetNamedSession: %v", err)
 	}
-	if session.ProviderSessionID != "rollup-session" || session.Profile != "home" || session.Model != "sonnet" {
+	if session.ProviderSessionID != "rollup-session" || session.Profile != "home" || session.Model != "claude-sonnet-4-6" {
 		t.Fatalf("named session = %#v, want live runner persisted rollup scoped to profile/model", session)
 	}
 	resumes := adapter.Resumes()

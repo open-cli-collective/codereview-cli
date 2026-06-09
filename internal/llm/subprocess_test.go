@@ -23,7 +23,7 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
 
 	stream, err := adapter.Start(context.Background(), Request{
-		Model:   "sonnet",
+		Model:   "claude-sonnet-4-6",
 		Effort:  "high",
 		Prompt:  "prompt",
 		LogPath: logPath,
@@ -52,7 +52,7 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	}
 	assertFlagValue(t, record.AdapterArgs, "--tools", "Read,Write")
 	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "acceptEdits")
-	assertFlagValue(t, record.AdapterArgs, "--model", "sonnet")
+	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-4-6")
 	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
 	if addDir := flagValue(record.AdapterArgs, "--add-dir"); !samePath(t, addDir, record.Cwd) {
 		if !samePath(t, addDir, record.AddDir) {
@@ -108,7 +108,7 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
 
 	stream, err := adapter.Resume(context.Background(), "prior-session", Request{
-		Model:  "sonnet",
+		Model:  "claude-sonnet-4-6",
 		Effort: "high",
 		Prompt: "resume prompt",
 	})
@@ -125,7 +125,7 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	assertClaudeCleanup(t, records, "job-1", false, configDir)
 	record := readHelperRecord(t, recordPath)
 	assertFlagValue(t, record.AdapterArgs, "--resume", "prior-session")
-	assertFlagValue(t, record.AdapterArgs, "--model", "sonnet")
+	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-4-6")
 	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
 	if record.StdinBytes != 0 {
 		t.Fatalf("stdin bytes = %d, want empty stdin for resumed Claude bg prompt", record.StdinBytes)
@@ -264,7 +264,7 @@ func TestSubprocessClaudeStaleJobGC(t *testing.T) {
 		writeClaudeHelperStateAt(t, filepath.Join(configDir, "jobs", "job-unrelated", "state.json"), map[string]any{
 			"cwd":          filepath.Join(tempDir, "elsewhere"),
 			"intent":       "plain prompt",
-			"respawnFlags": []any{"--model", "sonnet"},
+			"respawnFlags": []any{"--model", "claude-sonnet-4-6"},
 		}, time.Now().Add(-25*time.Hour))
 
 		if err := adapter.cleanupClaudeBGJob(context.Background(), "job-1", nil, workDir); err != nil {
@@ -825,7 +825,7 @@ func TestSubprocessClaudeRealBackgroundJob(t *testing.T) {
 	defer cancel()
 
 	stream, err := adapter.Start(ctx, Request{
-		Model:  "sonnet",
+		Model:  "claude-sonnet-4-6",
 		Effort: "high",
 		Prompt: "Return this exact structured JSON object and nothing else: {\"ok\":true}",
 	})
@@ -845,7 +845,7 @@ func TestSubprocessClaudeRealBackgroundJob(t *testing.T) {
 	}
 
 	resumeStream, err := adapter.Resume(ctx, stream.SessionID(), Request{
-		Model:  "sonnet",
+		Model:  "claude-sonnet-4-6",
 		Effort: "high",
 		Prompt: "Return this exact structured JSON object and nothing else: {\"resumed\":true}",
 	})
