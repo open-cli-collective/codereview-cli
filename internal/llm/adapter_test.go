@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -196,7 +197,8 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 		if err := decoder.Decode(&p); err != nil {
 			return probe{}, err
 		}
-		if decoder.More() {
+		var trailing json.RawMessage
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 			return probe{}, errors.New("trailing content after JSON object")
 		}
 		if !p.OK {
