@@ -1673,10 +1673,11 @@ func TestDryRunRejectsSelfReviewWhenReviewerCredentialsMatchAuthor(t *testing.T)
 	provider, req := dryRunHarness(t)
 	req.Profile.ReviewerCredentials = &config.ReviewerCredentials{AuthMode: config.GitAuthModePAT, CredentialRef: "codereview/reviewer"}
 	req.PostingIdentity = provider.pr.Author
+	adapter := &llm.FakeAdapter{QuotaErr: errors.New("quota should not be called")}
 
 	_, err := DryRun(context.Background(), Options{
 		Provider: provider,
-		Adapter:  &llm.FakeAdapter{},
+		Adapter:  adapter,
 		Store:    &noopStore{},
 		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
 	}, req)
@@ -1685,6 +1686,12 @@ func TestDryRunRejectsSelfReviewWhenReviewerCredentialsMatchAuthor(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "--allow-self-review") {
 		t.Fatalf("DryRun error = %v, want allow-self-review guidance", err)
+	}
+	if provider.diffCalls != 0 || provider.threadCalls != 0 || len(provider.treeCalls) != 0 {
+		t.Fatalf("provider side effects = diff:%d threads:%d tree:%#v, want early self-review rejection before diff/thread/catalog work", provider.diffCalls, provider.threadCalls, provider.treeCalls)
+	}
+	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter was invoked: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
 	}
 }
 
@@ -1923,6 +1930,7 @@ func TestSessionRowIDForFindingRequiresReviewerSession(t *testing.T) {
 type readOnlyProvider struct {
 	pr               gitprovider.PR
 	diff             gitprovider.UnifiedDiff
+	diffCalls        int
 	diffBetween      gitprovider.UnifiedDiff
 	diffBetweenCalls []shaPair
 	files            map[fileKey][]byte
@@ -2054,6 +2062,7 @@ func (p *readOnlyProvider) GetPR(context.Context, gitprovider.PRRef) (gitprovide
 }
 
 func (p *readOnlyProvider) GetDiff(context.Context, gitprovider.PRRef) (gitprovider.UnifiedDiff, error) {
+	p.diffCalls++
 	return p.diff, nil
 }
 

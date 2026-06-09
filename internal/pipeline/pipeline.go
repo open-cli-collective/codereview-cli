@@ -263,6 +263,7 @@ type selectionSetupRequest struct {
 	ReviewBaseSHA    string
 	ReviewHeadSHA    string
 	NoResolveThreads bool
+	ResolvedPR       *reviewPRContext
 	ResolveArtifacts func(gitprovider.PR) (ArtifactPaths, error)
 }
 
@@ -299,6 +300,14 @@ type selectionPhaseRequest struct {
 	Artifacts                   ArtifactPaths
 	ResumeSessionID             string
 	MaxAgents                   int
+}
+
+type reviewPRContext struct {
+	pr             gitprovider.PR
+	reviewPR       gitprovider.PR
+	pinnedReview   bool
+	currentBaseSHA string
+	currentHeadSHA string
 }
 
 // DryRun executes the dry-run review pipeline.
@@ -410,6 +419,13 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	if mode.live {
 		runID = mode.run.RunID
 	}
+	reviewCtx, err := resolveReviewPRContext(ctx, opts.Provider, req.PRRef, req.ReviewBaseSHA, req.ReviewHeadSHA)
+	if err != nil {
+		return Result{}, err
+	}
+	if sameIdentity(reviewCtx.pr.Author, req.PostingIdentity) && req.Profile.ReviewerCredentials != nil && !req.AllowSelfReview {
+		return Result{}, fmt.Errorf("pipeline: reviewer credentials resolve to PR author %q; pass --allow-self-review to continue", req.PostingIdentity.Login)
+	}
 	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
 		PRRef:            req.PRRef,
 		Profile:          req.Profile,
@@ -417,6 +433,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
 		NoResolveThreads: req.NoResolveThreads,
+		ResolvedPR:       &reviewCtx,
 		ResolveArtifacts: func(reviewPR gitprovider.PR) (ArtifactPaths, error) {
 			if mode.live {
 				return ArtifactPathsFromDir(mode.run.ArtifactPath), nil
@@ -426,9 +443,6 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	})
 	if err != nil {
 		return Result{}, err
-	}
-	if sameIdentity(prepared.pr.Author, req.PostingIdentity) && req.Profile.ReviewerCredentials != nil && !req.AllowSelfReview {
-		return Result{}, fmt.Errorf("pipeline: reviewer credentials resolve to PR author %q; pass --allow-self-review to continue", req.PostingIdentity.Login)
 	}
 
 	result := prepared.result()
@@ -649,23 +663,16 @@ func selectionSessionFromDraft(draft sessionDraft) SelectionSession {
 }
 
 func prepareSelectionContext(ctx context.Context, opts Options, req selectionSetupRequest) (preparedSelectionContext, error) {
-	pr, err := opts.Provider.GetPR(ctx, req.PRRef)
-	if err != nil {
-		return preparedSelectionContext{}, err
-	}
-	currentBaseSHA := pr.Base.SHA
-	currentHeadSHA := pr.Head.SHA
-	reviewBaseSHA := strings.TrimSpace(req.ReviewBaseSHA)
-	reviewHeadSHA := strings.TrimSpace(req.ReviewHeadSHA)
-	pinnedReview := reviewBaseSHA != "" || reviewHeadSHA != ""
-	reviewPR := pr
-	if pinnedReview {
-		if err := validatePinnedReviewPR(req.PRRef, pr); err != nil {
+	reviewCtx := req.ResolvedPR
+	if reviewCtx == nil {
+		resolved, err := resolveReviewPRContext(ctx, opts.Provider, req.PRRef, req.ReviewBaseSHA, req.ReviewHeadSHA)
+		if err != nil {
 			return preparedSelectionContext{}, err
 		}
-		reviewPR.Base.SHA = reviewBaseSHA
-		reviewPR.Head.SHA = reviewHeadSHA
+		reviewCtx = &resolved
 	}
+	pr := reviewCtx.pr
+	reviewPR := reviewCtx.reviewPR
 	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
 	if err != nil {
 		return preparedSelectionContext{}, err
@@ -685,7 +692,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 	if err != nil {
 		return preparedSelectionContext{}, err
 	}
-	diff, err := getReviewDiff(ctx, opts.Provider, req.PRRef, reviewPR.Base.SHA, reviewPR.Head.SHA, pinnedReview)
+	diff, err := getReviewDiff(ctx, opts.Provider, req.PRRef, reviewPR.Base.SHA, reviewPR.Head.SHA, reviewCtx.pinnedReview)
 	if err != nil {
 		return preparedSelectionContext{}, err
 	}
@@ -694,7 +701,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		return preparedSelectionContext{}, err
 	}
 	var threads []gitprovider.InlineThread
-	if !pinnedReview {
+	if !reviewCtx.pinnedReview {
 		threads, err = opts.Provider.ListInlineThreads(ctx, req.PRRef)
 		if err != nil {
 			return preparedSelectionContext{}, err
@@ -725,10 +732,37 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		catalog:          catalog,
 		effectiveCaps:    effectiveCaps(opts.Provider.Capabilities(), req.NoResolveThreads),
 		agentDefsChanged: agentDefinitionsChanged(parsed.Patches),
-		currentBaseSHA:   currentBaseSHA,
-		currentHeadSHA:   currentHeadSHA,
+		currentBaseSHA:   reviewCtx.currentBaseSHA,
+		currentHeadSHA:   reviewCtx.currentHeadSHA,
 		reviewBaseSHA:    reviewPR.Base.SHA,
 		reviewHeadSHA:    reviewPR.Head.SHA,
+	}, nil
+}
+
+func resolveReviewPRContext(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, reviewBaseSHA, reviewHeadSHA string) (reviewPRContext, error) {
+	pr, err := provider.GetPR(ctx, ref)
+	if err != nil {
+		return reviewPRContext{}, err
+	}
+	currentBaseSHA := pr.Base.SHA
+	currentHeadSHA := pr.Head.SHA
+	reviewBaseSHA = strings.TrimSpace(reviewBaseSHA)
+	reviewHeadSHA = strings.TrimSpace(reviewHeadSHA)
+	pinnedReview := reviewBaseSHA != "" || reviewHeadSHA != ""
+	reviewPR := pr
+	if pinnedReview {
+		if err := validatePinnedReviewPR(ref, pr); err != nil {
+			return reviewPRContext{}, err
+		}
+		reviewPR.Base.SHA = reviewBaseSHA
+		reviewPR.Head.SHA = reviewHeadSHA
+	}
+	return reviewPRContext{
+		pr:             pr,
+		reviewPR:       reviewPR,
+		pinnedReview:   pinnedReview,
+		currentBaseSHA: currentBaseSHA,
+		currentHeadSHA: currentHeadSHA,
 	}, nil
 }
 
