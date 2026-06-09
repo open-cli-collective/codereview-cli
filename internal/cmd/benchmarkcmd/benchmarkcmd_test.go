@@ -880,6 +880,45 @@ func reviewDryRunJSONWithArtifact(t *testing.T, runID, artifactPath string, seve
 	return data
 }
 
+func TestReviewArgsMapsLegacyCandidateOverridesToStageFlags(t *testing.T) {
+	suiteDir := t.TempDir()
+	benchCase := benchmark.Case{PR: "https://github.com/open-cli-collective/codereview-cli/pull/1"}
+	tests := []struct {
+		name      string
+		candidate benchmark.Candidate
+		required  []string
+		forbidden []string
+	}{
+		{
+			name:      "model only",
+			candidate: benchmark.Candidate{Profile: "home", Model: "sonnet"},
+			required:  []string{"--selection-model", "sonnet", "--reviewer-model", "sonnet"},
+			forbidden: []string{"--selection-effort", "--reviewer-effort", "--llm-model", "--llm-effort"},
+		},
+		{
+			name:      "effort only",
+			candidate: benchmark.Candidate{Profile: "home", Effort: "high"},
+			required:  []string{"--selection-effort", "high", "--reviewer-effort", "high"},
+			forbidden: []string{"--selection-model", "--reviewer-model", "--llm-model", "--llm-effort"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := reviewArgs(suiteDir, tt.candidate, benchCase)
+			for _, required := range tt.required {
+				if !stringSliceContains(args, required) {
+					t.Fatalf("args = %#v, missing required token %q", args, required)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if stringSliceContains(args, forbidden) {
+					t.Fatalf("args = %#v, contains forbidden token %q", args, forbidden)
+				}
+			}
+		})
+	}
+}
+
 func writeExecutableCRBin(t *testing.T) string {
 	t.Helper()
 	name := "cr"

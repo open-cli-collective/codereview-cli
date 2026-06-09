@@ -1374,6 +1374,9 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 			if !strings.Contains(request.Prompt, `"prompt"`) {
 				t.Fatalf("reviewer prompt missing agent prompt field: %s", request.Prompt)
 			}
+			if !strings.Contains(request.Prompt, "Review alpha files.") && !strings.Contains(request.Prompt, "Review beta files.") {
+				t.Fatalf("reviewer prompt missing prompt.md body text: %s", request.Prompt)
+			}
 		}
 		if strings.Contains(request.Prompt, `"schema": "rollup"`) &&
 			(!strings.Contains(request.Prompt, `"review_event"`) ||
