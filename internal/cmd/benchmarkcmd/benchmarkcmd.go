@@ -296,7 +296,7 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 }
 
 func summarizeDoctorOptionalStage(stage benchmark.SelectionStage) *doctorSelectionStage {
-	if strings.TrimSpace(stage.Model) == "" && strings.TrimSpace(stage.Effort) == "" && strings.TrimSpace(stage.Prompt) == "" {
+	if !isOptionalStageConfigured(stage) {
 		return nil
 	}
 	return &doctorSelectionStage{

@@ -538,7 +538,7 @@ func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []be
 }
 
 func summarizeOptionalSynthesisStage(suiteDir string, stage benchmark.SelectionStage) *benchmarkSynthesisStage {
-	if strings.TrimSpace(stage.Model) == "" && strings.TrimSpace(stage.Effort) == "" && strings.TrimSpace(stage.Prompt) == "" {
+	if !isOptionalStageConfigured(stage) {
 		return nil
 	}
 	return &benchmarkSynthesisStage{
@@ -546,6 +546,12 @@ func summarizeOptionalSynthesisStage(suiteDir string, stage benchmark.SelectionS
 		Effort: stage.Effort,
 		Prompt: summarizePromptFile(suiteDir, stage.Prompt),
 	}
+}
+
+func isOptionalStageConfigured(stage benchmark.SelectionStage) bool {
+	return strings.TrimSpace(stage.Model) != "" ||
+		strings.TrimSpace(stage.Effort) != "" ||
+		strings.TrimSpace(stage.Prompt) != ""
 }
 
 func summarizePromptFile(suiteDir, configured string) *benchmarkPromptFile {
