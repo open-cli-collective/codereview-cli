@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -179,6 +180,76 @@ func TestRunStructuredWithSessionResume(t *testing.T) {
 		}
 		if !strings.Contains(resumes[1].Request.Prompt, "failed validation") {
 			t.Fatalf("retry prompt = %q, want validation suffix", resumes[1].Request.Prompt)
+		}
+	})
+}
+
+func TestRunStructuredProseRecovery(t *testing.T) {
+	type probe struct {
+		OK bool `json:"ok"`
+	}
+	decodeProbe := func(data []byte) (probe, error) {
+		var p probe
+		if err := json.Unmarshal(data, &p); err != nil {
+			return probe{}, err
+		}
+		if !p.OK {
+			return probe{}, errors.New("ok must be true")
+		}
+		return p, nil
+	}
+
+	t.Run("recovers prose-wrapped object without retry", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{SessionID: "s1", Response: Response{
+			StructuredOutput: []byte(`Sure! Here it is: {"ok":true} Hope that helps.`),
+		}})
+
+		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, decodeProbe)
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if !got.OK {
+			t.Fatalf("value = %#v, want recovered object", got)
+		}
+		if requests := len(adapter.Requests()); requests != 1 {
+			t.Fatalf("requests = %d, want recovery without retry", requests)
+		}
+	})
+
+	t.Run("rejects ambiguous output with multiple objects", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"a":1} and {"a":2}`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"a":1} and {"a":2}`)}})
+
+		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+			if s := string(data); s == `{"a":1}` || s == `{"a":2}` {
+				t.Fatalf("decoder called with extracted candidate %q from ambiguous output", s)
+			}
+			return "", errors.New("invalid")
+		})
+		if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+			t.Fatalf("RunStructured error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
+		}
+		if requests := len(adapter.Requests()); requests != 2 {
+			t.Fatalf("requests = %d, want retry path preserved", requests)
+		}
+	})
+
+	t.Run("recovers prose-wrapped object on retry attempt", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`no json at all`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`Here you go: {"ok":true}`)}})
+
+		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, decodeProbe)
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if !got.OK {
+			t.Fatalf("value = %#v, want recovered object on retry", got)
+		}
+		if requests := len(adapter.Requests()); requests != 2 {
+			t.Fatalf("requests = %d, want exactly one retry", requests)
 		}
 	})
 }
