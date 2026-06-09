@@ -101,7 +101,14 @@ suite:
 candidates:
   - id: cand1
     profile: home
-    model: sonnet
+    stages:
+      selection:
+        model: sonnet
+        effort: high
+      reviewers:
+        model: sonnet
+        effort: high
+        agent_dirs: []
 cases:
   - id: case1
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1

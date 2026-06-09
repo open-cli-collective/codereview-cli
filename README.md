@@ -765,7 +765,8 @@ cr benchmark validate <suite.yml>
 ```
 
 Validates benchmark suite schema and configured profile compatibility without
-running reviews.
+running reviews. For the current full-pipeline commands, this includes
+stage-recipe validation and selection prompt file readiness checks.
 
 ### `cr benchmark doctor`
 
@@ -775,7 +776,8 @@ cr benchmark doctor <suite.yml> [--candidate <id> ...] [--case <id> ...] [--resu
 
 Inspects benchmark readiness without running reviews. It reports the selected
 candidates and cases, resolved results directory, selected `cr` binary, profile
-availability, model/effort fields, agent directories, and warnings.
+availability, selection/reviewer stage recipes, reviewer agent directories, and
+warnings.
 
 ### `cr benchmark run`
 
@@ -789,12 +791,15 @@ stderr separately, records each child exit code, and writes generated artifacts
 under `.cr-bench/results/<suite-id>/<timestamp>/` unless `--results-dir` is set.
 
 Use `--candidate` and `--case` for benchmark selection. Candidate YAML fields
-such as `model`, `effort`, `agent_dirs`, `max_agents`, and `max_concurrency`
-control review runtime overrides. For the current benchmark schema, candidate
-`model` maps to both `--selection-model` and `--reviewer-model`, and candidate
-`effort` maps to both `--selection-effort` and `--reviewer-effort`. Case YAML
-fields `review_base_sha` and `review_head_sha` pin the exact base/head commit
-pair reviewed by the dry-run child command.
+such as `stages.selection`, `stages.reviewers`, `max_agents`, and
+`max_concurrency` control review runtime overrides. `stages.selection.model`
+and `stages.selection.effort` map to `--selection-model` and
+`--selection-effort`; optional `stages.selection.prompt` maps to
+`--selection-prompt`. `stages.reviewers.model`, `stages.reviewers.effort`, and
+`stages.reviewers.agent_dirs[]` map to `--reviewer-model`,
+`--reviewer-effort`, and repeated `--agents-dir` flags. Case YAML fields
+`review_base_sha` and `review_head_sha` pin the exact base/head commit pair
+reviewed by the dry-run child command.
 
 ### `cr benchmark compare`
 

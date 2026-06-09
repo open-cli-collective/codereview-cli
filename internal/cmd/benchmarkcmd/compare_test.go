@@ -88,7 +88,13 @@ func TestCompareCommandWritesArtifactsAndJSONWithoutConfig(t *testing.T) {
 func TestComparePreservesMatrixOrderAndAggregatesTotals(t *testing.T) {
 	resultsDir := t.TempDir()
 	summary := comparisonFixtureSummary(resultsDir)
-	summary.SelectedCandidates = append(summary.SelectedCandidates, benchmarkCandidate{ID: "second", Profile: "work", Model: "kimi"})
+	summary.SelectedCandidates = append(summary.SelectedCandidates, benchmarkCandidate{
+		ID:      "second",
+		Profile: "work",
+		Stages: benchmarkCandidateStages{
+			Selection: benchmarkSelectionStage{Model: "kimi"},
+		},
+	})
 	summary.SelectedCases = append(summary.SelectedCases, benchmarkCase{ID: "case_two", PR: "https://github.com/open-cli-collective/codereview-cli/pull/2"})
 	summary.Runs = []benchmarkRun{
 		matrixFixtureRun(resultsDir, "0001-c01-k01-first-case_one", "first", "case_one", 0, failureNone, 2, map[string]int{"major": 1, "minor": 1}, 10),
@@ -379,7 +385,7 @@ func TestComparisonMarkdownEscapesTableCells(t *testing.T) {
 func TestCompareRejectsUnsupportedSchema(t *testing.T) {
 	resultsDir := t.TempDir()
 	summary := comparisonFixtureSummary(resultsDir)
-	summary.SchemaVersion = 0
+	summary.SchemaVersion = benchmarkArtifactSchemaVersion - 1
 	writeComparisonFixture(t, summary)
 
 	_, err := writeComparisonArtifactsForResultsDir(resultsDir)
@@ -477,8 +483,9 @@ func comparisonFixtureSummary(resultsDir string) benchmarkSuiteSummary {
 		SelectedCandidates: []benchmarkCandidate{{
 			ID:      "first",
 			Profile: "home",
-			Model:   "sonnet",
-			Effort:  "high",
+			Stages: benchmarkCandidateStages{
+				Selection: benchmarkSelectionStage{Model: "sonnet", Effort: "high"},
+			},
 		}},
 		SelectedCases: []benchmarkCase{{
 			ID: "case_one",
@@ -605,7 +612,8 @@ func keysOf(values map[string]json.RawMessage) []string {
 
 func benchmarkSuiteWithAnchor(t *testing.T) string {
 	t.Helper()
-	return `
+	agentDir := t.TempDir()
+	body := `
 suite:
   id: suite1
   name: Suite One
@@ -613,7 +621,15 @@ suite:
 candidates:
   - id: first
     profile: home
-    model: sonnet
+    stages:
+      selection:
+        model: sonnet
+        effort: high
+      reviewers:
+        model: sonnet
+        effort: high
+        agent_dirs:
+          - AGENT_DIR
 cases:
   - id: case_one
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1
@@ -623,6 +639,7 @@ cases:
         side: RIGHT
         lines: [1, 3]
 `
+	return strings.ReplaceAll(body, "AGENT_DIR", agentDir)
 }
 
 func reviewDryRunJSONWithAnchorFinding(t *testing.T, runID, file, side string, line int) []byte {

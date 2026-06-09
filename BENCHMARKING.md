@@ -17,16 +17,16 @@ discussion:
 | Run | One candidate executed on one case. |
 
 A candidate is not a suite. A candidate is the review configuration under test:
-the base profile plus optional model, effort, agent directory, max-agent, and
+the base profile plus explicit stage recipes and optional max-agent and
 concurrency overrides. A suite is the container that combines candidates and
 cases into a matrix.
 
 Profiles remain the account and execution context. They provide Git host/auth,
 reviewer identity, LLM provider/auth/adapter, configured agent sources, and
-review policy. Candidate fields only adjust dry-run review runtime behavior.
-Candidate `agent_dirs` are passed as additional trusted agent sources; they
-follow normal `cr review --agents-dir` precedence after profile and repo-local
-base-branch sources.
+review policy. Candidate stage recipes only adjust dry-run review runtime
+behavior. Candidate `stages.reviewers.agent_dirs` values are passed as
+additional trusted agent sources; they follow normal `cr review --agents-dir`
+precedence after profile and repo-local base-branch sources.
 
 ## Directory Conventions
 
@@ -74,10 +74,11 @@ JSON artifacts store full RFC3339 timestamps:
 
 ## Suite Schema
 
-Prefer the canonical `agent_dirs` field for candidate agent directory lists. The
-loader currently accepts the draft alias `agents_dir` for compatibility and does
-not emit a deprecation warning, but new suites should use `agent_dirs`. A
-candidate cannot set both names.
+Prefer the canonical `stages.reviewers.agent_dirs` field for candidate agent
+directory lists. The loader currently accepts the draft alias
+`stages.reviewers.agents_dir` for compatibility and does not emit a deprecation
+warning, but new suites should use `agent_dirs`. A candidate cannot set both
+names.
 
 ```yaml
 suite:
@@ -88,19 +89,30 @@ suite:
 candidates:
   - id: claude-sonnet-medium
     profile: work-anthropic
-    model: claude-sonnet-4-5
-    effort: medium
-    agent_dirs:
-      - ../agents
+    stages:
+      selection:
+        model: claude-sonnet-4-5
+        effort: medium
+        prompt: prompts/selection-v1.md
+      reviewers:
+        model: claude-sonnet-4-5
+        effort: medium
+        agent_dirs:
+          - ../agents
     max_agents: 5
     max_concurrency: 5
 
   - id: kimi-low
     profile: work-fireworks
-    model: moonshotai/Kimi-K2
-    effort: low
-    agent_dirs:
-      - ../agents
+    stages:
+      selection:
+        model: moonshotai/Kimi-K2
+        effort: low
+      reviewers:
+        model: moonshotai/Kimi-K2
+        effort: low
+        agent_dirs:
+          - ../agents
     max_agents: 5
 
 cases:
@@ -127,9 +139,15 @@ reviewed. All SHA fields must be non-empty 7 to 64 character hexadecimal SHAs
 when present.
 
 Candidate `profile` must reference a configured profile. Candidate PR hosts must
-match the candidate profile's Git host. `model`, `effort`, `agent_dirs`,
-`max_agents`, and `max_concurrency` are optional. Omit max fields or set them to
-`0` to use the corresponding `cr review` default. Negative max values are
+match the candidate profile's Git host. For the current full-pipeline
+`validate`, `doctor`, and `run` commands, candidates must declare exact
+provider model IDs and effort values for both `stages.selection` and
+`stages.reviewers`. `stages.selection.prompt` is optional, but when set it must
+reference a readable non-empty file relative to the suite. The
+`stages.reviewers.agent_dirs` field must be present for full-pipeline
+benchmarks, but it may be `[]` to rely only on profile and repo-local agent
+sources. `max_agents` and `max_concurrency` are optional; omit them or set them
+to `0` to use the corresponding `cr review` default. Negative max values are
 invalid.
 
 `effort` is the suite field for effort or reasoning-effort configuration. The
@@ -137,11 +155,12 @@ selected adapter decides how to apply or translate it. Model IDs are
 provider-specific; use IDs accepted by the candidate profile's configured LLM
 provider and adapter.
 
-Relative `agent_dirs` are resolved from the suite file directory. Benchmark
-summaries include resolved agent directory metadata. The
+Relative `stages.reviewers.agent_dirs` are resolved from the suite file
+directory. Benchmark summaries include resolved agent directory metadata. The
 `dir_metadata_hash` field is metadata-only provenance based on relative path,
 file size, and file mode. It does not hash prompt contents and is not a full
-source reproducibility fingerprint.
+source reproducibility fingerprint. Prompt file summaries record resolved path
+and content hash without inlining prompt contents.
 
 ## Commands
 
@@ -182,7 +201,7 @@ cr benchmark compare .cr-bench/results/debug-run --json
 
 Use repeatable `--candidate <id>` and `--case <id>` flags for benchmark
 selection. Do not use ambiguous benchmark model-selection language. Models are
-candidate fields, not suite selectors.
+stage recipe fields, not suite selectors.
 
 `run` shells out to `cr review` for each selected run. The generated command
 always uses dry-run JSON review mode:
@@ -193,15 +212,14 @@ cr --profile <candidate.profile> review <case.pr> --dry-run --json ...
 
 When set on the candidate, `run` also passes:
 
-These mappings are the current bridge while benchmark candidates still use the
-legacy top-level `model` and `effort` fields. Explicit per-stage recipes land
-separately.
-
 | Candidate field | Review flag |
 |-----------------|-------------|
-| `model` | `--selection-model <model>` and `--reviewer-model <model>` |
-| `effort` | `--selection-effort <effort>` and `--reviewer-effort <effort>` |
-| `agent_dirs[]` | `--agents-dir <path>` |
+| `stages.selection.model` | `--selection-model <model>` |
+| `stages.selection.effort` | `--selection-effort <effort>` |
+| `stages.selection.prompt` | `--selection-prompt <path>` |
+| `stages.reviewers.model` | `--reviewer-model <model>` |
+| `stages.reviewers.effort` | `--reviewer-effort <effort>` |
+| `stages.reviewers.agent_dirs[]` | `--agents-dir <path>` |
 | `max_agents` | `--max-agents <n>` |
 | `max_concurrency` | `--max-concurrency <n>` |
 

@@ -82,20 +82,24 @@ func TestDoctorJSONReportsSelectedReadiness(t *testing.T) {
 	if got.ResolvedResultsDir != resultsDir || got.CRBin != crBin {
 		t.Fatalf("resolved paths = results:%q cr:%q, want %q/%q", got.ResolvedResultsDir, got.CRBin, resultsDir, crBin)
 	}
-	if len(got.Candidates) != 1 || got.Candidates[0].ID != "second" || got.Candidates[0].Model != "kimi" || got.Candidates[0].Effort != "low" {
+	if len(got.Candidates) != 1 || got.Candidates[0].ID != "second" ||
+		got.Candidates[0].Stages.Selection.Model != "kimi" ||
+		got.Candidates[0].Stages.Selection.Effort != "low" ||
+		got.Candidates[0].Stages.Reviewers.Model != "kimi" ||
+		got.Candidates[0].Stages.Reviewers.Effort != "low" {
 		t.Fatalf("candidates = %#v, want selected second", got.Candidates)
 	}
 	if !got.Candidates[0].ProfileAvailable || got.Candidates[0].GitHost != "github.com" {
 		t.Fatalf("profile readiness = %#v, want available github.com", got.Candidates[0])
 	}
-	if len(got.Candidates[0].AgentDirs) != 2 {
-		t.Fatalf("agent dirs = %#v, want existing and missing dirs", got.Candidates[0].AgentDirs)
+	if len(got.Candidates[0].Stages.Reviewers.AgentDirs) != 2 {
+		t.Fatalf("agent dirs = %#v, want existing and missing dirs", got.Candidates[0].Stages.Reviewers.AgentDirs)
 	}
-	if !got.Candidates[0].AgentDirs[0].Exists || !got.Candidates[0].AgentDirs[0].IsDir {
-		t.Fatalf("first agent dir = %#v, want existing dir", got.Candidates[0].AgentDirs[0])
+	if !got.Candidates[0].Stages.Reviewers.AgentDirs[0].Exists || !got.Candidates[0].Stages.Reviewers.AgentDirs[0].IsDir {
+		t.Fatalf("first agent dir = %#v, want existing dir", got.Candidates[0].Stages.Reviewers.AgentDirs[0])
 	}
-	if got.Candidates[0].AgentDirs[1].Exists || got.Candidates[0].AgentDirs[1].Warning == "" {
-		t.Fatalf("second agent dir = %#v, want missing warning", got.Candidates[0].AgentDirs[1])
+	if got.Candidates[0].Stages.Reviewers.AgentDirs[1].Exists || got.Candidates[0].Stages.Reviewers.AgentDirs[1].Warning == "" {
+		t.Fatalf("second agent dir = %#v, want missing warning", got.Candidates[0].Stages.Reviewers.AgentDirs[1])
 	}
 	if len(got.Cases) != 1 || got.Cases[0].ID != "case_two" {
 		t.Fatalf("cases = %#v, want selected case_two", got.Cases)
@@ -249,7 +253,7 @@ func TestDoctorTextUsesDefaultResultsDir(t *testing.T) {
 		"Candidates: 2",
 		"Cases: 2",
 		"Results dir: " + wantResultsDir,
-		"candidate first profile=home available=true model=sonnet effort=high agent_dirs=1",
+		"candidate first profile=home available=true selection=sonnet/high reviewers=sonnet/high reviewer_agent_dirs=1",
 		"case case_one pr=https://github.com/open-cli-collective/codereview-cli/pull/1",
 		"Warnings: 1",
 		"agent dir",
@@ -324,11 +328,14 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	if len(got.SelectedCandidates) != 2 || got.SelectedCandidates[0].ID != "first" || got.SelectedCandidates[1].ID != "second" {
 		t.Fatalf("selected candidates = %#v, want both candidates", got.SelectedCandidates)
 	}
-	if len(got.SelectedCandidates[0].AgentDirs) != 1 || got.SelectedCandidates[0].AgentDirs[0].DirMetadataHash == "" {
-		t.Fatalf("first agent dir metadata = %#v, want metadata hash", got.SelectedCandidates[0].AgentDirs)
+	if got.SelectedCandidates[0].Stages.Selection.Prompt == nil || got.SelectedCandidates[0].Stages.Selection.Prompt.ContentSHA256 == "" {
+		t.Fatalf("first selection prompt summary = %#v, want prompt metadata hash", got.SelectedCandidates[0].Stages.Selection.Prompt)
 	}
-	if len(got.SelectedCandidates[1].AgentDirs) != 2 || got.SelectedCandidates[1].AgentDirs[1].Warning == "" {
-		t.Fatalf("second agent dir metadata = %#v, want missing-dir warning", got.SelectedCandidates[1].AgentDirs)
+	if len(got.SelectedCandidates[0].Stages.Reviewers.AgentDirs) != 1 || got.SelectedCandidates[0].Stages.Reviewers.AgentDirs[0].DirMetadataHash == "" {
+		t.Fatalf("first reviewer agent dir metadata = %#v, want metadata hash", got.SelectedCandidates[0].Stages.Reviewers.AgentDirs)
+	}
+	if len(got.SelectedCandidates[1].Stages.Reviewers.AgentDirs) != 2 || got.SelectedCandidates[1].Stages.Reviewers.AgentDirs[1].Warning == "" {
+		t.Fatalf("second reviewer agent dir metadata = %#v, want missing-dir warning", got.SelectedCandidates[1].Stages.Reviewers.AgentDirs)
 	}
 	if len(got.Runs) != 4 ||
 		got.Runs[0].RunID != "0001-c01-k01-first-case_one" ||
@@ -346,6 +353,31 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	if got.Runs[1].RequestedReviewBaseSHA != "1111111" || got.Runs[1].RequestedReviewHeadSHA != "2222222" {
 		t.Fatalf("second run requested SHAs = %#v, want pinned case SHAs", got.Runs[1])
 	}
+	var persistedSummary benchmarkSuiteSummary
+	if data, err := os.ReadFile(got.Artifacts.SuiteSummary); err != nil {
+		t.Fatalf("ReadFile suite summary: %v", err)
+	} else if err := json.Unmarshal(data, &persistedSummary); err != nil {
+		t.Fatalf("Unmarshal suite summary: %v", err)
+	}
+	if persistedSummary.SchemaVersion != benchmarkArtifactSchemaVersion ||
+		len(persistedSummary.SelectedCandidates) != 2 ||
+		persistedSummary.SelectedCandidates[0].Stages.Selection.Model != "sonnet" ||
+		persistedSummary.SelectedCandidates[0].Stages.Reviewers.Model != "sonnet" ||
+		persistedSummary.SelectedCandidates[1].Stages.Reviewers.Model != "kimi" {
+		t.Fatalf("persisted suite summary = %#v, want nested candidate stages", persistedSummary.SelectedCandidates)
+	}
+	var persistedManifest benchmarkManifest
+	if data, err := os.ReadFile(got.Artifacts.Manifest); err != nil {
+		t.Fatalf("ReadFile manifest: %v", err)
+	} else if err := json.Unmarshal(data, &persistedManifest); err != nil {
+		t.Fatalf("Unmarshal manifest: %v", err)
+	}
+	if persistedManifest.SchemaVersion != benchmarkArtifactSchemaVersion ||
+		len(persistedManifest.SelectedCandidates) != 2 ||
+		persistedManifest.SelectedCandidates[0].Stages.Selection.Model != "sonnet" ||
+		persistedManifest.SelectedCandidates[1].Stages.Reviewers.Effort != "low" {
+		t.Fatalf("persisted manifest = %#v, want nested candidate stages", persistedManifest.SelectedCandidates)
+	}
 	if len(invocations) != 4 {
 		t.Fatalf("invocations = %d, want 4", len(invocations))
 	}
@@ -354,10 +386,11 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/1",
 		"--dry-run", "--json",
 		"--selection-model", "sonnet",
-		"--reviewer-model", "sonnet",
 		"--selection-effort", "high",
+		"--selection-prompt", got.SelectedCandidates[0].Stages.Selection.Prompt.Resolved,
+		"--reviewer-model", "sonnet",
 		"--reviewer-effort", "high",
-		"--agents-dir", got.SelectedCandidates[0].AgentDirs[0].Resolved,
+		"--agents-dir", got.SelectedCandidates[0].Stages.Reviewers.AgentDirs[0].Resolved,
 		"--max-agents", "5",
 		"--max-concurrency", "3",
 	}
@@ -371,10 +404,11 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--review-base-sha", "1111111",
 		"--review-head-sha", "2222222",
 		"--selection-model", "sonnet",
-		"--reviewer-model", "sonnet",
 		"--selection-effort", "high",
+		"--selection-prompt", got.SelectedCandidates[0].Stages.Selection.Prompt.Resolved,
+		"--reviewer-model", "sonnet",
 		"--reviewer-effort", "high",
-		"--agents-dir", got.SelectedCandidates[0].AgentDirs[0].Resolved,
+		"--agents-dir", got.SelectedCandidates[0].Stages.Reviewers.AgentDirs[0].Resolved,
 		"--max-agents", "5",
 		"--max-concurrency", "3",
 	}
@@ -389,11 +423,11 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/1",
 		"--dry-run", "--json",
 		"--selection-model", "kimi",
-		"--reviewer-model", "kimi",
 		"--selection-effort", "low",
+		"--reviewer-model", "kimi",
 		"--reviewer-effort", "low",
-		"--agents-dir", got.SelectedCandidates[1].AgentDirs[0].Resolved,
-		"--agents-dir", got.SelectedCandidates[1].AgentDirs[1].Resolved,
+		"--agents-dir", got.SelectedCandidates[1].Stages.Reviewers.AgentDirs[0].Resolved,
+		"--agents-dir", got.SelectedCandidates[1].Stages.Reviewers.AgentDirs[1].Resolved,
 	}
 	if strings.Join(invocations[2].args, "\x00") != strings.Join(wantThirdArgs, "\x00") {
 		t.Fatalf("third args = %#v, want %#v", invocations[2].args, wantThirdArgs)
@@ -405,11 +439,11 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--review-base-sha", "1111111",
 		"--review-head-sha", "2222222",
 		"--selection-model", "kimi",
-		"--reviewer-model", "kimi",
 		"--selection-effort", "low",
+		"--reviewer-model", "kimi",
 		"--reviewer-effort", "low",
-		"--agents-dir", got.SelectedCandidates[1].AgentDirs[0].Resolved,
-		"--agents-dir", got.SelectedCandidates[1].AgentDirs[1].Resolved,
+		"--agents-dir", got.SelectedCandidates[1].Stages.Reviewers.AgentDirs[0].Resolved,
+		"--agents-dir", got.SelectedCandidates[1].Stages.Reviewers.AgentDirs[1].Resolved,
 	}
 	if strings.Join(invocations[3].args, "\x00") != strings.Join(wantFourthArgs, "\x00") {
 		t.Fatalf("fourth args = %#v, want %#v", invocations[3].args, wantFourthArgs)
@@ -763,6 +797,10 @@ func validBenchmarkSuite(t *testing.T) string {
 	t.Helper()
 	agentDir := t.TempDir()
 	missingAgentDir := filepath.Join(t.TempDir(), "missing")
+	promptPath := filepath.Join(t.TempDir(), "selection-v1.md")
+	if err := os.WriteFile(promptPath, []byte("Use applies_when when selecting reviewers."), 0o600); err != nil {
+		t.Fatalf("WriteFile prompt: %v", err)
+	}
 	body := `
 suite:
   id: suite1
@@ -771,19 +809,30 @@ suite:
 candidates:
   - id: first
     profile: home
-    model: sonnet
-    effort: high
-    agent_dirs:
-      - AGENT_DIR
+    stages:
+      selection:
+        model: sonnet
+        effort: high
+        prompt: PROMPT_PATH
+      reviewers:
+        model: sonnet
+        effort: high
+        agent_dirs:
+          - AGENT_DIR
     max_agents: 5
     max_concurrency: 3
   - id: second
     profile: home
-    model: kimi
-    effort: low
-    agent_dirs:
-      - AGENT_DIR
-      - MISSING_AGENT_DIR
+    stages:
+      selection:
+        model: kimi
+        effort: low
+      reviewers:
+        model: kimi
+        effort: low
+        agent_dirs:
+          - AGENT_DIR
+          - MISSING_AGENT_DIR
 cases:
   - id: case_one
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1
@@ -792,8 +841,9 @@ cases:
     review_base_sha: 1111111
     review_head_sha: 2222222
 `
+	body = strings.ReplaceAll(body, "MISSING_AGENT_DIR", missingAgentDir)
 	body = strings.ReplaceAll(body, "AGENT_DIR", agentDir)
-	return strings.ReplaceAll(body, "MISSING_AGENT_DIR", missingAgentDir)
+	return strings.ReplaceAll(body, "PROMPT_PATH", promptPath)
 }
 
 func testConfig() config.File {
@@ -880,7 +930,7 @@ func reviewDryRunJSONWithArtifact(t *testing.T, runID, artifactPath string, seve
 	return data
 }
 
-func TestReviewArgsMapsLegacyCandidateOverridesToStageFlags(t *testing.T) {
+func TestReviewArgsMapsExplicitStageRecipesToReviewFlags(t *testing.T) {
 	suiteDir := t.TempDir()
 	benchCase := benchmark.Case{PR: "https://github.com/open-cli-collective/codereview-cli/pull/1"}
 	tests := []struct {
@@ -890,16 +940,28 @@ func TestReviewArgsMapsLegacyCandidateOverridesToStageFlags(t *testing.T) {
 		forbidden []string
 	}{
 		{
-			name:      "model only",
-			candidate: benchmark.Candidate{Profile: "home", Model: "sonnet"},
-			required:  []string{"--selection-model", "sonnet", "--reviewer-model", "sonnet"},
-			forbidden: []string{"--selection-effort", "--reviewer-effort", "--llm-model", "--llm-effort"},
+			name: "selection prompt and reviewer dirs",
+			candidate: benchmark.Candidate{
+				Profile: "home",
+				Stages: benchmark.CandidateStages{
+					Selection: benchmark.SelectionStage{Model: "sonnet", Effort: "high", Prompt: "selection.md"},
+					Reviewers: benchmark.ReviewerStage{Model: "kimi", Effort: "low", AgentDirs: []string{"agents"}},
+				},
+			},
+			required:  []string{"--selection-model", "sonnet", "--selection-effort", "high", "--selection-prompt", filepath.Join(suiteDir, "selection.md"), "--reviewer-model", "kimi", "--reviewer-effort", "low", "--agents-dir", filepath.Join(suiteDir, "agents")},
+			forbidden: []string{"--llm-model", "--llm-effort"},
 		},
 		{
-			name:      "effort only",
-			candidate: benchmark.Candidate{Profile: "home", Effort: "high"},
-			required:  []string{"--selection-effort", "high", "--reviewer-effort", "high"},
-			forbidden: []string{"--selection-model", "--reviewer-model", "--llm-model", "--llm-effort"},
+			name: "review shas",
+			candidate: benchmark.Candidate{
+				Profile: "home",
+				Stages: benchmark.CandidateStages{
+					Selection: benchmark.SelectionStage{Model: "sonnet", Effort: "high"},
+					Reviewers: benchmark.ReviewerStage{Model: "sonnet", Effort: "high", AgentDirs: []string{}},
+				},
+			},
+			required:  []string{"--selection-model", "sonnet", "--reviewer-model", "sonnet", "--selection-effort", "high", "--reviewer-effort", "high"},
+			forbidden: []string{"--selection-prompt", "--llm-model", "--llm-effort"},
 		},
 	}
 	for _, tt := range tests {
