@@ -1905,6 +1905,67 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 	}
 }
 
+func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	dir := t.TempDir()
+	writeAgent(t, dir, "harness", "alpha", "alpha desc", "Review alpha files.")
+	writeAgent(t, dir, "harness", "beta", "beta desc", "Review beta files.")
+	trustCurrentTempFixtures(t)
+	req.Profile.AgentSources = []string{dir}
+	req.ToolVersion = "0.0.0-test"
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         &promptAwareAdapter{},
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-summary" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  2,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	summary := result.Plan.Summary
+	var workstreamNames []string
+	for _, workstream := range summary.Run.Workstreams {
+		workstreamNames = append(workstreamNames, workstream.Name)
+	}
+	wantNames := []string{"orchestrator-selection", "harness:alpha", "harness:beta", "orchestrator-rollup"}
+	if !reflect.DeepEqual(workstreamNames, wantNames) {
+		t.Fatalf("workstream names = %#v, want %#v", workstreamNames, wantNames)
+	}
+	if !reflect.DeepEqual(summary.Run.SelectedReviewers, []string{"harness:alpha", "harness:beta"}) {
+		t.Fatalf("selected reviewers = %#v", summary.Run.SelectedReviewers)
+	}
+	if summary.Run.ToolVersion != "0.0.0-test" || summary.Run.PostingIdentity == "" {
+		t.Fatalf("run summary identity = %#v", summary.Run)
+	}
+	if summary.Run.WallDurationMS == nil {
+		t.Fatalf("wall duration missing: %#v", summary.Run)
+	}
+	reviewerCounts := map[string]int{}
+	for _, reviewer := range summary.Reviewers {
+		reviewerCounts[reviewer.Name] = reviewer.Findings
+	}
+	if reviewerCounts["harness:alpha"] != 1 || reviewerCounts["harness:beta"] != 1 {
+		t.Fatalf("reviewer counts = %#v, want one finding each", summary.Reviewers)
+	}
+	for _, want := range []string{"| Reviewer | Findings |", "Per-workstream usage", "| orchestrator-selection |"} {
+		if !strings.Contains(result.Plan.RollupMarkdown, want) {
+			t.Fatalf("rollup markdown missing %q:\n%s", want, result.Plan.RollupMarkdown)
+		}
+	}
+}
+
 func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T) {
 	tests := []struct {
 		name       string

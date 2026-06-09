@@ -124,6 +124,10 @@ type Request struct {
 	AllowSelfApprove    bool
 	NoResolveThreads    bool
 	MajorRequestChanges bool
+
+	// ToolVersion is the raw cr version string rendered in the rollup
+	// footer (e.g. "0.3.63").
+	ToolVersion string
 }
 
 // SelectionRequest runs only the selection phase without review persistence or posting.
@@ -462,7 +466,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			}
 			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", sessionName))
 		}
-		plan, err := opts.buildPlan(req, prepared.pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged)
+		plan, err := opts.buildPlan(req, prepared.pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged, planRunInputs{})
 		if err != nil {
 			return Result{}, err
 		}
@@ -541,7 +545,15 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
 		}
 
-		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged)
+		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
+			hasRun:          true,
+			selection:       selectionSession,
+			reviewers:       reviewerSessions,
+			rollup:          rollupSession,
+			selectedAgents:  selection.SelectedAgents,
+			findingSessions: findingSession,
+			startedAt:       now,
+		})
 		if err != nil {
 			return Result{}, err
 		}
@@ -1091,7 +1103,82 @@ func (d sessionDraft) toLedger(runID string) ledger.Session {
 	return session
 }
 
-func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewplan.PostMode, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool) (reviewplan.Plan, error) {
+// planRunInputs carries the session telemetry buildPlan turns into the
+// rollup's RunSummary and finding attribution.
+type planRunInputs struct {
+	hasRun          bool
+	selection       sessionDraft
+	reviewers       []sessionDraft
+	rollup          sessionDraft
+	selectedAgents  []llm.SelectedAgent
+	findingSessions map[review.FindingID]string
+	startedAt       time.Time
+}
+
+func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewplan.RunSummary, map[review.FindingID]string) {
+	if !inputs.hasRun {
+		return reviewplan.RunSummary{}, nil
+	}
+	reviewerByAgent := map[string]sessionDraft{}
+	agentByRow := map[string]string{}
+	for _, draft := range inputs.reviewers {
+		if draft.agentID == nil {
+			continue
+		}
+		reviewerByAgent[*draft.agentID] = draft
+		agentByRow[draft.rowID] = *draft.agentID
+	}
+
+	workstreams := []reviewplan.WorkstreamUsage{workstreamUsage("orchestrator-selection", inputs.selection)}
+	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
+	for _, selected := range inputs.selectedAgents {
+		selectedIDs = append(selectedIDs, selected.AgentID)
+		if draft, ok := reviewerByAgent[selected.AgentID]; ok {
+			workstreams = append(workstreams, workstreamUsage(selected.AgentID, draft))
+		}
+	}
+	workstreams = append(workstreams, workstreamUsage("orchestrator-rollup", inputs.rollup))
+
+	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
+	summary := reviewplan.RunSummary{
+		ToolVersion:       req.ToolVersion,
+		Adapter:           inputs.selection.adapter,
+		Model:             inputs.selection.model,
+		PostingIdentity:   postingKey(req.PostingIdentity),
+		SelectedReviewers: selectedIDs,
+		WallDurationMS:    &wallMS,
+		Workstreams:       workstreams,
+	}
+
+	findingReviewers := make(map[review.FindingID]string, len(inputs.findingSessions))
+	for id, rowID := range inputs.findingSessions {
+		if agentID, ok := agentByRow[rowID]; ok {
+			findingReviewers[id] = agentID
+		}
+	}
+	return summary, findingReviewers
+}
+
+func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {
+	usage := draft.response.Usage
+	workstream := reviewplan.WorkstreamUsage{
+		Name:        name,
+		Model:       draft.model,
+		TokensIn:    usage.TokensIn,
+		TokensOut:   usage.TokensOut,
+		CacheRead:   usage.CacheRead,
+		CacheCreate: usage.CacheCreate,
+		CostUSD:     usage.CostUSD,
+	}
+	if draft.response.DurationMS > 0 {
+		duration := draft.response.DurationMS
+		workstream.DurationMS = &duration
+	}
+	return workstream
+}
+
+func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewplan.PostMode, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool, runInputs planRunInputs) (reviewplan.Plan, error) {
+	runSummary, findingReviewers := opts.buildRunSummary(req, runInputs)
 	return reviewplan.Build(reviewplan.Request{
 		PostMode:      postMode,
 		ProviderCaps:  caps,
@@ -1110,6 +1197,8 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 		HeadSHA:                 pr.Head.SHA,
 		AgentDefinitionsChanged: agentDefsChanged,
 		IncludeNits:             req.IncludeNits,
+		RunSummary:              runSummary,
+		FindingReviewers:        findingReviewers,
 		Now:                     opts.now,
 		NewActionID:             opts.newActionID,
 	})

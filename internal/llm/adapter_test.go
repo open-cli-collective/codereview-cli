@@ -231,7 +231,7 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"a":1} and {"a":2}`)}})
 
 		decodeCalls := 0
-		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func([]byte) (string, error) {
 			decodeCalls++
 			return "", errors.New("invalid")
 		})
