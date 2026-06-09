@@ -1990,6 +1990,44 @@ func TestSharedWorkstreamModel(t *testing.T) {
 	}
 }
 
+func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
+	agentID := "harness:alpha"
+	inputs := planRunInputs{
+		hasRun:    true,
+		selection: sessionDraft{adapter: "fake", model: "sonnet", response: llm.Response{DurationMS: 0}},
+		reviewers: []sessionDraft{{rowID: "row-1", agentID: &agentID, model: "sonnet", response: llm.Response{DurationMS: 25}}},
+		rollup:    sessionDraft{model: "sonnet"},
+		selectedAgents: []llm.SelectedAgent{
+			{AgentID: agentID},
+			{AgentID: "harness:missing-draft"},
+		},
+		findingSessions: map[review.FindingID]string{"f-1": "row-1", "f-2": "row-unknown"},
+		startedAt:       fixedNow(),
+	}
+	summary, findingReviewers := Options{Now: fixedNow}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
+
+	var names []string
+	for _, workstream := range summary.Workstreams {
+		names = append(names, workstream.Name)
+	}
+	want := []string{"orchestrator-selection", agentID, "orchestrator-rollup"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("workstreams = %#v, want missing-draft agent skipped: %#v", names, want)
+	}
+	if !reflect.DeepEqual(summary.SelectedReviewers, []string{agentID, "harness:missing-draft"}) {
+		t.Fatalf("selected reviewers = %#v, must keep the draft-less agent", summary.SelectedReviewers)
+	}
+	if summary.Workstreams[0].DurationMS != nil {
+		t.Fatalf("zero duration must render unavailable, got %v", *summary.Workstreams[0].DurationMS)
+	}
+	if summary.Workstreams[1].DurationMS == nil || *summary.Workstreams[1].DurationMS != 25 {
+		t.Fatalf("reported duration lost: %#v", summary.Workstreams[1])
+	}
+	if !reflect.DeepEqual(findingReviewers, map[review.FindingID]string{"f-1": agentID}) {
+		t.Fatalf("finding reviewers = %#v, want unknown session unattributed", findingReviewers)
+	}
+}
+
 func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T) {
 	tests := []struct {
 		name       string

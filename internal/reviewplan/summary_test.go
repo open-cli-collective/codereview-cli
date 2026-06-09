@@ -209,6 +209,27 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
+	t.Run("unattributed nit is filtered like attributed nits", func(t *testing.T) {
+		req := summaryRequest()
+		nit := finding("f-3", "main.go", review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 16})
+		nit.Severity = review.SeverityNits
+		req.Findings = append(req.Findings, nit)
+		req.Rollup.OrderedFindings = append(req.Rollup.OrderedFindings, "f-3")
+
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if strings.Contains(plan.RollupMarkdown, "unattributed") {
+			t.Fatalf("filtered unattributed nit still rendered:\n%s", plan.RollupMarkdown)
+		}
+		for _, reviewer := range plan.Summary.Reviewers {
+			if reviewer.Name == UnattributedReviewer {
+				t.Fatalf("filtered unattributed nit counted: %#v", plan.Summary.Reviewers)
+			}
+		}
+	})
+
 	t.Run("no attribution data falls back to severity table without footer", func(t *testing.T) {
 		plan, err := Build(baseRequest())
 		if err != nil {
