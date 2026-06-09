@@ -239,8 +239,9 @@ func executeBenchmarkSelectRun(ctx context.Context, suiteDir, resultsDir, runID 
 				stderrBody = append(stderrBody, []byte(parseErr.Error()+"\n")...)
 			} else {
 				result, runErr := runSelectionOnly(ctx, pipeline.Options{
-					Provider: state.runtime.Provider,
-					Adapter:  state.runtime.Adapter,
+					Provider:  state.runtime.Provider,
+					Adapter:   state.runtime.Adapter,
+					MaxAgents: candidate.MaxAgents,
 				}, pipeline.SelectionRequest{
 					PRRef:                       ref,
 					ProfileName:                 state.profileName,

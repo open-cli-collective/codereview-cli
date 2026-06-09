@@ -175,6 +175,55 @@ func TestSelectRecordsRuntimeFailuresWithoutInvokingSelection(t *testing.T) {
 	}
 }
 
+func TestSelectRecordsPerRunFailureWhenSelectorExceedsCandidateMaxAgents(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	body := strings.Replace(validBenchmarkSuite(t), "    max_agents: 5", "    max_agents: 1", 1)
+	suitePath := writeBenchmarkSuite(t, body)
+
+	withBenchmarkSelectSeams(t,
+		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
+			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		},
+		func(_ context.Context, opts pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			if opts.MaxAgents != 1 {
+				t.Fatalf("pipeline max agents = %d, want candidate max_agents 1", opts.MaxAgents)
+			}
+			artifacts := pipeline.ArtifactPathsFromDir(req.ArtifactDir)
+			return pipeline.SelectionResult{
+				Artifacts: artifacts,
+				SelectionSession: pipeline.SelectionSession{
+					ProviderSessionID: "selection-session-over-cap",
+					Response: llm.Response{
+						StructuredOutput: []byte(`{"schema_version":1,"selected_agents":[{"agent_id":"harness:alpha","rationale":"main","files":["main.go"]},{"agent_id":"harness:beta","rationale":"main","files":["main.go"]}],"thread_actions":[],"reasoning":"too many"}`),
+					},
+				},
+			}, fmt.Errorf("pipeline: selected agents 2 exceeds max 1")
+		},
+	)
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "select", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", filepath.Join(t.TempDir(), "results"),
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.RunCount != 1 || got.SuccessCount != 0 || got.FailureCount != 1 {
+		t.Fatalf("summary = %#v, want one recorded over-cap selector failure", got)
+	}
+	if got.Runs[0].FailureClassification != failureSelectionError {
+		t.Fatalf("run failure classification = %q, want generic selector failure", got.Runs[0].FailureClassification)
+	}
+	assertFileContains(t, got.Runs[0].Artifacts.SelectionJSON, `"harness:beta"`)
+	assertFileContains(t, got.Runs[0].Artifacts.Stderr, "selected agents 2 exceeds max 1")
+}
+
 func withBenchmarkSelectSeams(
 	t *testing.T,
 	runtimeOpener func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error),
