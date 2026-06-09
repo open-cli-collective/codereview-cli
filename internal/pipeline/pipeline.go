@@ -445,7 +445,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 
-	result := prepared.result()
+	result := prepared.reviewResult()
 
 	var sessionDrafts []sessionDraft
 	findingSession := map[review.FindingID]string{}
@@ -610,7 +610,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	return result, nil
 }
 
-func (c preparedSelectionContext) result() Result {
+func (c preparedSelectionContext) reviewResult() Result {
 	return Result{
 		PR:               c.pr,
 		PRKey:            c.prKey,
