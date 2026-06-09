@@ -235,6 +235,9 @@ func hasArrayWrapperAdjacentToObject(prefix []byte, suffix []byte) bool {
 
 func hasJSONFragmentBoundary(prefix []byte, suffix []byte) bool {
 	prefix = bytes.TrimSpace(prefix)
+	if startsJSONMemberFragment(prefix) {
+		return true
+	}
 	if len(prefix) > 0 && prefix[len(prefix)-1] == ',' && isJSONValueSequence(bytes.TrimSpace(prefix[:len(prefix)-1])) {
 		return true
 	}
@@ -243,7 +246,7 @@ func hasJSONFragmentBoundary(prefix []byte, suffix []byte) bool {
 		return false
 	}
 	rest := bytes.TrimSpace(suffix[1:])
-	return startsJSONMemberFragment(rest) || isJSONValueSequence(trimTrailingJSONClosers(rest))
+	return startsJSONMemberFragment(rest) || isJSONValueSequence(trimTrailingJSONClosers(rest)) || startsJSONValueThenStructural(rest)
 }
 
 func startsJSONMemberFragment(data []byte) bool {
@@ -280,6 +283,28 @@ func trimTrailingJSONClosers(data []byte) []byte {
 		}
 	}
 	return data
+}
+
+func startsJSONValueThenStructural(data []byte) bool {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return false
+	}
+	rest := bytes.TrimSpace(data[decoder.InputOffset():])
+	if len(rest) == 0 {
+		return false
+	}
+	switch rest[0] {
+	case ',', '}', ']':
+		return true
+	default:
+		return false
+	}
 }
 
 func isJSONValueSequence(data []byte) bool {
