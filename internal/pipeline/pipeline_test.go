@@ -1966,6 +1966,30 @@ func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
 	}
 }
 
+func TestSharedWorkstreamModel(t *testing.T) {
+	cases := []struct {
+		name   string
+		models []string
+		want   string
+	}{
+		{"all same", []string{"sonnet", "sonnet", "sonnet"}, "sonnet"},
+		{"mixed", []string{"opus", "sonnet", "sonnet"}, ""},
+		{"empty entries ignored", []string{"", "sonnet", "sonnet"}, "sonnet"},
+		{"none", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var workstreams []reviewplan.WorkstreamUsage
+			for _, model := range tc.models {
+				workstreams = append(workstreams, reviewplan.WorkstreamUsage{Model: model})
+			}
+			if got := sharedWorkstreamModel(workstreams); got != tc.want {
+				t.Fatalf("sharedWorkstreamModel(%v) = %q, want %q", tc.models, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T) {
 	tests := []struct {
 		name       string

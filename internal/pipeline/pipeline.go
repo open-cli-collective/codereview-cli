@@ -1143,7 +1143,7 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	summary := reviewplan.RunSummary{
 		ToolVersion:       req.ToolVersion,
 		Adapter:           inputs.selection.adapter,
-		Model:             inputs.selection.model,
+		Model:             sharedWorkstreamModel(workstreams),
 		PostingIdentity:   postingKey(req.PostingIdentity),
 		SelectedReviewers: selectedIDs,
 		WallDurationMS:    &wallMS,
@@ -1157,6 +1157,27 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		}
 	}
 	return summary, findingReviewers
+}
+
+// sharedWorkstreamModel reports the run's headline model only when every
+// workstream used the same one; mixed-model runs (e.g. --selection-model or
+// per-agent tiers) render the headline as unavailable and rely on the
+// per-workstream table for exact models.
+func sharedWorkstreamModel(workstreams []reviewplan.WorkstreamUsage) string {
+	model := ""
+	for _, workstream := range workstreams {
+		if workstream.Model == "" {
+			continue
+		}
+		if model == "" {
+			model = workstream.Model
+			continue
+		}
+		if workstream.Model != model {
+			return ""
+		}
+	}
+	return model
 }
 
 func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {

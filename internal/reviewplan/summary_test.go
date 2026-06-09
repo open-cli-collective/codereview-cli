@@ -247,6 +247,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 	t.Run("dynamic values are escaped in the public comment", func(t *testing.T) {
 		req := summaryRequest()
 		req.RunSummary.Model = "son|net"
+		req.RunSummary.ToolVersion = "0.3<x>"
 		req.RunSummary.Adapter = "cli\nv2"
 		req.RunSummary.PostingIdentity = "<script>alert(1)</script>"
 		req.RunSummary.SelectedReviewers = append(req.RunSummary.SelectedReviewers, "evil|agent")
@@ -267,6 +268,13 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 		if strings.Contains(md, "cli\nv2") {
 			t.Fatalf("newline not collapsed in table cell:\n%s", md)
+		}
+		// The <summary> headline must use the same escaping path as cells.
+		if strings.Contains(md, "son|net") || strings.Contains(md, "0.3<x>") {
+			t.Fatalf("summary headline carries raw dynamic values:\n%s", md)
+		}
+		if !strings.Contains(md, `<summary>Completed in 2m 07s | $1.00 | son\|net | cr 0.3&lt;x&gt;</summary>`) {
+			t.Fatalf("escaped headline missing:\n%s", md)
 		}
 	})
 

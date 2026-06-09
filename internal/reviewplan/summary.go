@@ -204,9 +204,9 @@ func writeRunFooter(out *strings.Builder, run RunSummary) {
 	out.WriteString(" | ")
 	out.WriteString(formatUSD(run.Totals.CostUSD))
 	out.WriteString(" | ")
-	out.WriteString(orUnavailable(run.Model))
+	out.WriteString(escapeCell(orUnavailable(run.Model)))
 	out.WriteString(" | cr ")
-	out.WriteString(orUnavailable(run.ToolVersion))
+	out.WriteString(escapeCell(orUnavailable(run.ToolVersion)))
 	out.WriteString("</summary>\n\n")
 
 	out.WriteString("| Field | Value |\n|---|---|\n")
