@@ -52,12 +52,44 @@ func TestValidateForRunRejectsStructuralOnlySelectionRecipe(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMissingSelectionStage(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), `      selection:
+        model: gpt-5.1
+        effort: high
+        prompt: prompts/selection-v1.md
+`, "", 1)
+	suite := loadSuite(t, body)
+
+	err := Validate(suite, testConfig())
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "stages.selection is required") {
+		t.Fatalf("Validate error = %v, want missing selection stage rejection", err)
+	}
+}
+
 func TestValidateForRunAcceptsEmptyReviewerAgentDirsField(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), "        agent_dirs:\n          - .codereview/agents", "        agent_dirs: []", 1)
 	suite := loadSuite(t, body)
 
 	if err := ValidateForRun(suite, testConfig()); err != nil {
 		t.Fatalf("ValidateForRun: %v", err)
+	}
+}
+
+func TestValidateForRunRejectsMissingReviewerStage(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), `      reviewers:
+        model: gpt-5.1
+        effort: high
+        agent_dirs:
+          - .codereview/agents
+`, "", 1)
+	suite := loadSuite(t, body)
+
+	if err := Validate(suite, testConfig()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	err := ValidateForRun(suite, testConfig())
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "stages.reviewers is required for benchmark run") {
+		t.Fatalf("ValidateForRun error = %v, want missing reviewer stage rejection", err)
 	}
 }
 
@@ -266,6 +298,10 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 		{name: "root", body: validSuiteYAML() + "\nextra: true\n", want: `suite root unknown field "extra"`},
 		{name: "suite", body: replaceSuiteLine(validSuiteYAML(), "  version: 1", "  version: 1\n  extra: true"), want: `suite unknown field "extra"`},
 		{name: "candidate", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    model: gpt-5.1\n    stages:"), want: `candidate[0] unknown field "model"`},
+		{name: "candidate effort", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    effort: high\n    stages:"), want: `candidate[0] unknown field "effort"`},
+		{name: "candidate agent dirs", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    agent_dirs:\n      - .codereview/agents\n    stages:"), want: `candidate[0] unknown field "agent_dirs"`},
+		{name: "candidate agents dir alias", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    agents_dir:\n      - .codereview/agents\n    stages:"), want: `candidate[0] unknown field "agents_dir"`},
+		{name: "candidate model tier", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    model_tier: medium\n    stages:"), want: `candidate[0] unknown field "model_tier"`},
 		{name: "nested selection", body: replaceSuiteLine(validSuiteYAML(), "        prompt: prompts/selection-v1.md", "        prompt_file: prompts/selection-v1.md"), want: `candidate[0] stages.selection unknown field "prompt_file"`},
 		{name: "case", body: replaceSuiteLine(validSuiteYAML(), "    pr: https://github.com/open-cli-collective/codereview-cli/pull/1", "    pull_request: https://github.com/open-cli-collective/codereview-cli/pull/1"), want: `case[0] unknown field "pull_request"`},
 		{name: "anchor", body: replaceSuiteLine(validSuiteYAML(), "        lines: [2, 4]", "        lines: [2, 4]\n        expected: true"), want: `case[0] anchor[0] unknown field "expected"`},

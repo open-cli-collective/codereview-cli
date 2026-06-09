@@ -353,6 +353,31 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	if got.Runs[1].RequestedReviewBaseSHA != "1111111" || got.Runs[1].RequestedReviewHeadSHA != "2222222" {
 		t.Fatalf("second run requested SHAs = %#v, want pinned case SHAs", got.Runs[1])
 	}
+	var persistedSummary benchmarkSuiteSummary
+	if data, err := os.ReadFile(got.Artifacts.SuiteSummary); err != nil {
+		t.Fatalf("ReadFile suite summary: %v", err)
+	} else if err := json.Unmarshal(data, &persistedSummary); err != nil {
+		t.Fatalf("Unmarshal suite summary: %v", err)
+	}
+	if persistedSummary.SchemaVersion != benchmarkArtifactSchemaVersion ||
+		len(persistedSummary.SelectedCandidates) != 2 ||
+		persistedSummary.SelectedCandidates[0].Stages.Selection.Model != "sonnet" ||
+		persistedSummary.SelectedCandidates[0].Stages.Reviewers.Model != "sonnet" ||
+		persistedSummary.SelectedCandidates[1].Stages.Reviewers.Model != "kimi" {
+		t.Fatalf("persisted suite summary = %#v, want nested candidate stages", persistedSummary.SelectedCandidates)
+	}
+	var persistedManifest benchmarkManifest
+	if data, err := os.ReadFile(got.Artifacts.Manifest); err != nil {
+		t.Fatalf("ReadFile manifest: %v", err)
+	} else if err := json.Unmarshal(data, &persistedManifest); err != nil {
+		t.Fatalf("Unmarshal manifest: %v", err)
+	}
+	if persistedManifest.SchemaVersion != benchmarkArtifactSchemaVersion ||
+		len(persistedManifest.SelectedCandidates) != 2 ||
+		persistedManifest.SelectedCandidates[0].Stages.Selection.Model != "sonnet" ||
+		persistedManifest.SelectedCandidates[1].Stages.Reviewers.Effort != "low" {
+		t.Fatalf("persisted manifest = %#v, want nested candidate stages", persistedManifest.SelectedCandidates)
+	}
 	if len(invocations) != 4 {
 		t.Fatalf("invocations = %d, want 4", len(invocations))
 	}
