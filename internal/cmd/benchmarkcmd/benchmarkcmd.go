@@ -39,13 +39,28 @@ type doctorReport struct {
 }
 
 type doctorCandidate struct {
-	ID               string           `json:"id"`
-	Profile          string           `json:"profile"`
-	ProfileAvailable bool             `json:"profile_available"`
-	GitHost          string           `json:"git_host,omitempty"`
-	Model            string           `json:"model,omitempty"`
-	Effort           string           `json:"effort,omitempty"`
-	AgentDirs        []doctorAgentDir `json:"agent_dirs"`
+	ID               string       `json:"id"`
+	Profile          string       `json:"profile"`
+	ProfileAvailable bool         `json:"profile_available"`
+	GitHost          string       `json:"git_host,omitempty"`
+	Stages           doctorStages `json:"stages"`
+}
+
+type doctorStages struct {
+	Selection doctorSelectionStage `json:"selection"`
+	Reviewers doctorReviewerStage  `json:"reviewers,omitempty"`
+}
+
+type doctorSelectionStage struct {
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+}
+
+type doctorReviewerStage struct {
+	Model     string           `json:"model,omitempty"`
+	Effort    string           `json:"effort,omitempty"`
+	AgentDirs []doctorAgentDir `json:"agent_dirs"`
 }
 
 type doctorAgentDir struct {
@@ -146,7 +161,7 @@ func loadConfigAndSuite(opts *root.Options, suitePath string) (benchmark.SuiteFi
 	if err != nil {
 		return benchmark.SuiteFile{}, config.File{}, cmderr.Config(err)
 	}
-	if err := benchmark.Validate(suite, cfg); err != nil {
+	if err := benchmark.ValidateForRun(suite, cfg); err != nil {
 		return benchmark.SuiteFile{}, config.File{}, mapBenchmarkError(err)
 	}
 	return suite, cfg, nil
@@ -178,19 +193,28 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 			ID:               candidate.ID,
 			Profile:          candidate.Profile,
 			ProfileAvailable: ok,
-			Model:            candidate.Model,
-			Effort:           candidate.Effort,
-			AgentDirs:        make([]doctorAgentDir, 0, len(candidate.AgentDirs)),
+			Stages: doctorStages{
+				Selection: doctorSelectionStage{
+					Model:  candidate.Stages.Selection.Model,
+					Effort: candidate.Stages.Selection.Effort,
+					Prompt: candidate.Stages.Selection.Prompt,
+				},
+				Reviewers: doctorReviewerStage{
+					Model:     candidate.Stages.Reviewers.Model,
+					Effort:    candidate.Stages.Reviewers.Effort,
+					AgentDirs: make([]doctorAgentDir, 0, len(candidate.Stages.Reviewers.AgentDirs)),
+				},
+			},
 		}
 		if ok {
 			out.GitHost = profile.Git.Host
 		}
-		for _, dir := range candidate.AgentDirs {
+		for _, dir := range candidate.Stages.Reviewers.AgentDirs {
 			agentDir := inspectAgentDir(suiteDir, dir)
 			if agentDir.Warning != "" {
 				report.Warnings = append(report.Warnings, fmt.Sprintf("candidate %s agent dir %s: %s", candidate.ID, dir, agentDir.Warning))
 			}
-			out.AgentDirs = append(out.AgentDirs, agentDir)
+			out.Stages.Reviewers.AgentDirs = append(out.Stages.Reviewers.AgentDirs, agentDir)
 		}
 		report.Candidates = append(report.Candidates, out)
 	}
@@ -220,7 +244,18 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 		return err
 	}
 	for _, candidate := range report.Candidates {
-		if _, err := fmt.Fprintf(opts.Stdout, "- candidate %s profile=%s available=%t model=%s effort=%s agent_dirs=%d\n", candidate.ID, candidate.Profile, candidate.ProfileAvailable, candidate.Model, candidate.Effort, len(candidate.AgentDirs)); err != nil {
+		if _, err := fmt.Fprintf(
+			opts.Stdout,
+			"- candidate %s profile=%s available=%t selection=%s/%s reviewers=%s/%s reviewer_agent_dirs=%d\n",
+			candidate.ID,
+			candidate.Profile,
+			candidate.ProfileAvailable,
+			candidate.Stages.Selection.Model,
+			candidate.Stages.Selection.Effort,
+			candidate.Stages.Reviewers.Model,
+			candidate.Stages.Reviewers.Effort,
+			len(candidate.Stages.Reviewers.AgentDirs),
+		); err != nil {
 			return err
 		}
 	}

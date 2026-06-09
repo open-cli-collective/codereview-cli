@@ -88,13 +88,37 @@ type benchmarkManifestRun struct {
 }
 
 type benchmarkCandidate struct {
-	ID             string              `json:"id"`
-	Profile        string              `json:"profile"`
-	Model          string              `json:"model,omitempty"`
-	Effort         string              `json:"effort,omitempty"`
-	AgentDirs      []benchmarkAgentDir `json:"agent_dirs,omitempty"`
-	MaxAgents      int                 `json:"max_agents,omitempty"`
-	MaxConcurrency int                 `json:"max_concurrency,omitempty"`
+	ID             string                   `json:"id"`
+	Profile        string                   `json:"profile"`
+	Stages         benchmarkCandidateStages `json:"stages"`
+	MaxAgents      int                      `json:"max_agents,omitempty"`
+	MaxConcurrency int                      `json:"max_concurrency,omitempty"`
+}
+
+type benchmarkCandidateStages struct {
+	Selection benchmarkSelectionStage `json:"selection"`
+	Reviewers benchmarkReviewerStage  `json:"reviewers,omitempty"`
+}
+
+type benchmarkSelectionStage struct {
+	Model  string               `json:"model,omitempty"`
+	Effort string               `json:"effort,omitempty"`
+	Prompt *benchmarkPromptFile `json:"prompt,omitempty"`
+}
+
+type benchmarkReviewerStage struct {
+	Model     string              `json:"model,omitempty"`
+	Effort    string              `json:"effort,omitempty"`
+	AgentDirs []benchmarkAgentDir `json:"agent_dirs,omitempty"`
+}
+
+type benchmarkPromptFile struct {
+	Configured    string `json:"configured"`
+	Resolved      string `json:"resolved"`
+	Exists        bool   `json:"exists"`
+	IsDir         bool   `json:"is_dir"`
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+	Warning       string `json:"warning,omitempty"`
 }
 
 type benchmarkAgentDir struct {
@@ -383,19 +407,26 @@ func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchm
 	if benchCase.ReviewHeadSHA != "" {
 		args = append(args, "--review-head-sha", benchCase.ReviewHeadSHA)
 	}
-	if candidate.Model != "" {
+	if candidate.Stages.Selection.Model != "" {
 		args = append(args,
-			"--selection-model", candidate.Model,
-			"--reviewer-model", candidate.Model,
+			"--selection-model", candidate.Stages.Selection.Model,
 		)
 	}
-	if candidate.Effort != "" {
+	if candidate.Stages.Selection.Effort != "" {
 		args = append(args,
-			"--selection-effort", candidate.Effort,
-			"--reviewer-effort", candidate.Effort,
+			"--selection-effort", candidate.Stages.Selection.Effort,
 		)
 	}
-	for _, dir := range candidate.AgentDirs {
+	if candidate.Stages.Selection.Prompt != "" {
+		args = append(args, "--selection-prompt", resolveStagePath(suiteDir, candidate.Stages.Selection.Prompt))
+	}
+	if candidate.Stages.Reviewers.Model != "" {
+		args = append(args, "--reviewer-model", candidate.Stages.Reviewers.Model)
+	}
+	if candidate.Stages.Reviewers.Effort != "" {
+		args = append(args, "--reviewer-effort", candidate.Stages.Reviewers.Effort)
+	}
+	for _, dir := range candidate.Stages.Reviewers.AgentDirs {
 		args = append(args, "--agents-dir", resolveAgentDir(suiteDir, dir))
 	}
 	if candidate.MaxAgents > 0 {
@@ -455,15 +486,55 @@ func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []be
 	out := make([]benchmarkCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		out = append(out, benchmarkCandidate{
-			ID:             candidate.ID,
-			Profile:        candidate.Profile,
-			Model:          candidate.Model,
-			Effort:         candidate.Effort,
-			AgentDirs:      summarizeAgentDirs(suiteDir, candidate.AgentDirs),
+			ID:      candidate.ID,
+			Profile: candidate.Profile,
+			Stages: benchmarkCandidateStages{
+				Selection: benchmarkSelectionStage{
+					Model:  candidate.Stages.Selection.Model,
+					Effort: candidate.Stages.Selection.Effort,
+					Prompt: summarizePromptFile(suiteDir, candidate.Stages.Selection.Prompt),
+				},
+				Reviewers: benchmarkReviewerStage{
+					Model:     candidate.Stages.Reviewers.Model,
+					Effort:    candidate.Stages.Reviewers.Effort,
+					AgentDirs: summarizeAgentDirs(suiteDir, candidate.Stages.Reviewers.AgentDirs),
+				},
+			},
 			MaxAgents:      candidate.MaxAgents,
 			MaxConcurrency: candidate.MaxConcurrency,
 		})
 	}
+	return out
+}
+
+func summarizePromptFile(suiteDir, configured string) *benchmarkPromptFile {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return nil
+	}
+	resolved := resolveStagePath(suiteDir, configured)
+	out := &benchmarkPromptFile{
+		Configured: configured,
+		Resolved:   resolved,
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		out.Warning = fmt.Sprintf("prompt file unavailable: %v", err)
+		return out
+	}
+	out.Exists = true
+	out.IsDir = info.IsDir()
+	if info.IsDir() {
+		out.Warning = "prompt path is a directory"
+		return out
+	}
+	data, err := os.ReadFile(resolved) // #nosec G304 -- benchmark prompt path is constrained by suite validation and results summarization.
+	if err != nil {
+		out.Warning = fmt.Sprintf("prompt file unreadable: %v", err)
+		return out
+	}
+	sum := sha256.Sum256(data)
+	out.ContentSHA256 = hex.EncodeToString(sum[:])
 	return out
 }
 
@@ -489,6 +560,14 @@ func summarizeAgentDirs(suiteDir string, dirs []string) []benchmarkAgentDir {
 		out = append(out, agentDir)
 	}
 	return out
+}
+
+func resolveStagePath(suiteDir, path string) string {
+	path = filepath.FromSlash(path)
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(suiteDir, path)
 }
 
 func summarizeCases(cases []benchmark.Case) []benchmarkCase {

@@ -26,14 +26,47 @@ func TestValidateAcceptsZeroNumericLimits(t *testing.T) {
 	}
 }
 
+func TestValidateForRunRejectsStructuralOnlySelectionRecipe(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), `      selection:
+        model: gpt-5.1
+        effort: high
+        prompt: prompts/selection-v1.md
+      reviewers:
+        model: gpt-5.1
+        effort: high
+        agent_dirs:
+          - .codereview/agents
+`, `      selection:
+        prompt: prompts/selection-v1.md
+`, 1)
+	suite := loadSuite(t, body)
+
+	if err := Validate(suite, testConfig()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	err := ValidateForRun(suite, testConfig())
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "stages.selection.model is required for benchmark run") {
+		t.Fatalf("ValidateForRun error = %v, want missing selection model", err)
+	}
+}
+
+func TestValidateForRunAcceptsEmptyReviewerAgentDirsField(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), "        agent_dirs:\n          - .codereview/agents", "        agent_dirs: []", 1)
+	suite := loadSuite(t, body)
+
+	if err := ValidateForRun(suite, testConfig()); err != nil {
+		t.Fatalf("ValidateForRun: %v", err)
+	}
+}
+
 func TestLoadNormalizesAgentsDirAlias(t *testing.T) {
 	suite := loadSuite(t, strings.Replace(validSuiteYAML(), "agent_dirs:", "agents_dir:", 1))
 
 	if err := Validate(suite, testConfig()); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if len(suite.Candidates[0].AgentDirs) != 1 || suite.Candidates[0].AgentDirs[0] != ".codereview/agents" {
-		t.Fatalf("agent dirs = %#v, want alias normalized", suite.Candidates[0].AgentDirs)
+	if len(suite.Candidates[0].Stages.Reviewers.AgentDirs) != 1 || suite.Candidates[0].Stages.Reviewers.AgentDirs[0] != ".codereview/agents" {
+		t.Fatalf("agent dirs = %#v, want alias normalized", suite.Candidates[0].Stages.Reviewers.AgentDirs)
 	}
 }
 
@@ -44,13 +77,20 @@ suite:
 candidates:
   - id: cand1
     profile: home
-    agent_dirs: [agents]
-    agents_dir: [other]
+    stages:
+      selection:
+        model: gpt-5.1
+        effort: high
+      reviewers:
+        model: gpt-5.1
+        effort: high
+        agent_dirs: [agents]
+        agents_dir: [other]
 cases:
   - id: case1
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1
 `))
-	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "cannot set both agent_dirs and agents_dir") {
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "reviewers stage cannot set both agent_dirs and agents_dir") {
 		t.Fatalf("Load error = %v, want alias conflict", err)
 	}
 }
@@ -62,7 +102,14 @@ suite:
 candidates:
   - id: cand1
     profile: home
-    agent_dirs: agents
+    stages:
+      selection:
+        model: gpt-5.1
+        effort: high
+      reviewers:
+        model: gpt-5.1
+        effort: high
+        agent_dirs: agents
 cases:
   - id: case1
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1
@@ -103,8 +150,16 @@ suite:
 candidates:
   - id: cand1
     profile: home
+    stages:
+      selection:
+        model: gpt-5.1
+        effort: high
   - id: " cand1 "
     profile: home
+    stages:
+      selection:
+        model: gpt-5.1
+        effort: high
 cases:
   - id: case1
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1
@@ -115,6 +170,10 @@ suite:
 candidates:
   - id: cand1
     profile: home
+    stages:
+      selection:
+        model: gpt-5.1
+        effort: high
 cases:
   - id: case1
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1
@@ -126,8 +185,9 @@ cases:
 		{name: "host mismatch", body: replaceSuiteLine(validSuiteYAML(), "    pr: https://github.com/open-cli-collective/codereview-cli/pull/1", "    pr: https://ghe.example/open-cli-collective/codereview-cli/pull/1"), want: "does not match"},
 		{name: "negative max agents", body: replaceSuiteLine(validSuiteYAML(), "    max_agents: 5", "    max_agents: -1"), want: "max_agents"},
 		{name: "negative max concurrency", body: replaceSuiteLine(validSuiteYAML(), "    max_concurrency: 3", "    max_concurrency: -1"), want: "max_concurrency"},
-		{name: "blank model when present", body: replaceSuiteLine(validSuiteYAML(), "    model: gpt-5.1", `    model: "  "`), want: "model must be non-empty"},
-		{name: "blank effort when present", body: replaceSuiteLine(validSuiteYAML(), "    effort: high", `    effort: "  "`), want: "effort must be non-empty"},
+		{name: "blank selection model when present", body: replaceSuiteLine(validSuiteYAML(), "        model: gpt-5.1", `        model: "  "`), want: "stages.selection.model must be non-empty"},
+		{name: "blank selection effort when present", body: replaceSuiteLine(validSuiteYAML(), "        effort: high", `        effort: "  "`), want: "stages.selection.effort must be non-empty"},
+		{name: "invalid reviewer effort", body: strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        effort: invalid\n        agent_dirs:", 1), want: "stages.reviewers.effort must be one of low, medium, high"},
 		{name: "invalid review base sha", body: replaceSuiteLine(validSuiteYAML(), "    review_base_sha: 1111111", "    review_base_sha: notsha"), want: "review_base_sha"},
 		{name: "blank review head sha", body: replaceSuiteLine(validSuiteYAML(), "    review_head_sha: 2222222", `    review_head_sha: "  "`), want: "review_head_sha must be non-empty"},
 		{name: "missing review head sha", body: replaceSuiteLine(validSuiteYAML(), "    review_head_sha: 2222222\n", ""), want: "must be set together"},
@@ -167,7 +227,8 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}{
 		{name: "root", body: validSuiteYAML() + "\nextra: true\n", want: `suite root unknown field "extra"`},
 		{name: "suite", body: replaceSuiteLine(validSuiteYAML(), "  version: 1", "  version: 1\n  extra: true"), want: `suite unknown field "extra"`},
-		{name: "candidate", body: replaceSuiteLine(validSuiteYAML(), "    model: gpt-5.1", "    model_name: gpt-5.1"), want: `candidate[0] unknown field "model_name"`},
+		{name: "candidate", body: replaceSuiteLine(validSuiteYAML(), "    stages:", "    model: gpt-5.1\n    stages:"), want: `candidate[0] unknown field "model"`},
+		{name: "nested selection", body: replaceSuiteLine(validSuiteYAML(), "        prompt: prompts/selection-v1.md", "        prompt_file: prompts/selection-v1.md"), want: `candidate[0] stages.selection unknown field "prompt_file"`},
 		{name: "case", body: replaceSuiteLine(validSuiteYAML(), "    pr: https://github.com/open-cli-collective/codereview-cli/pull/1", "    pull_request: https://github.com/open-cli-collective/codereview-cli/pull/1"), want: `case[0] unknown field "pull_request"`},
 		{name: "anchor", body: replaceSuiteLine(validSuiteYAML(), "        lines: [2, 4]", "        lines: [2, 4]\n        expected: true"), want: `case[0] anchor[0] unknown field "expected"`},
 	}
@@ -253,10 +314,16 @@ suite:
 candidates:
   - id: cand1
     profile: home
-    model: gpt-5.1
-    effort: high
-    agent_dirs:
-      - .codereview/agents
+    stages:
+      selection:
+        model: gpt-5.1
+        effort: high
+        prompt: prompts/selection-v1.md
+      reviewers:
+        model: gpt-5.1
+        effort: high
+        agent_dirs:
+          - .codereview/agents
     max_agents: 5
     max_concurrency: 3
 cases:
