@@ -97,16 +97,16 @@ candidates:
     profile: work-anthropic
     stages:
       selection:
-        model: claude-sonnet-4-5
+        model: claude-sonnet-4-6
         effort: medium
         prompt: prompts/selection-v1.md
       reviewers:
-        model: claude-sonnet-4-5
+        model: claude-sonnet-4-6
         effort: medium
         agent_dirs:
           - ../agents
       synthesis:
-        model: claude-sonnet-4-5
+        model: claude-sonnet-4-6
         effort: low
         prompt: prompts/synthesis-v1.md
     max_agents: 5

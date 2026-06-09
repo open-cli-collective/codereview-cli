@@ -51,7 +51,7 @@ func TestSelectExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 					},
 					SelectionSession: pipeline.SelectionSession{
 						ProviderSessionID: "selection-session-1",
-						Model:             "sonnet",
+						Model:             "claude-sonnet-4-6",
 						Effort:            "high",
 						Response: llm.Response{
 							StructuredOutput: []byte(`{"schema_version":1,"selected_agents":[{"agent_id":"harness:alpha","rationale":"main","files":["main.go"]}],"thread_actions":[],"reasoning":"ok"}`),
@@ -67,7 +67,7 @@ func TestSelectExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 				CurrentHeadSHA: "current-head-2",
 				SelectionSession: pipeline.SelectionSession{
 					ProviderSessionID: "selection-session-2",
-					Model:             "sonnet",
+					Model:             "claude-sonnet-4-6",
 					Effort:            "high",
 					Response: llm.Response{
 						StructuredOutput: []byte(`{"bad":true}`),
@@ -101,7 +101,7 @@ func TestSelectExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	if len(requests) != 2 {
 		t.Fatalf("selection requests = %#v, want two matrix executions", requests)
 	}
-	if requests[0].ProfileName != "home" || requests[0].SelectionModelOverride != "sonnet" || requests[0].SelectionEffortOverride != "high" {
+	if requests[0].ProfileName != "home" || requests[0].SelectionModelOverride != "claude-sonnet-4-6" || requests[0].SelectionEffortOverride != "high" {
 		t.Fatalf("first request = %#v, want first candidate selection overrides", requests[0])
 	}
 	if !strings.Contains(requests[0].SelectionPromptInstructions, "Use applies_when when selecting reviewers.") {
@@ -191,7 +191,7 @@ candidates:
     profile: home
     stages:
       selection:
-        model: sonnet
+        model: claude-sonnet-4-6
         effort: high
 cases:
   - id: case_one
@@ -345,7 +345,7 @@ candidates:
     profile: home
     stages:
       selection:
-        model: sonnet
+        model: claude-sonnet-4-6
         effort: high
         prompt: %s
 cases:

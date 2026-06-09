@@ -241,8 +241,8 @@ func BuiltInModelMap(provider LLMProvider, adapter LLMAdapter) ModelMap {
 		}
 	case provider == LLMProviderAnthropic && adapter == LLMAdapterClaudeCLI:
 		return ModelMap{
-			string(ModelTierMedium): "sonnet",
-			string(ModelTierLarge):  "opus",
+			string(ModelTierMedium): "claude-sonnet-4-6",
+			string(ModelTierLarge):  "claude-opus-4-8",
 		}
 	default:
 		return ModelMap{}

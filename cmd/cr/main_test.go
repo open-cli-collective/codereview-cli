@@ -104,10 +104,10 @@ candidates:
     profile: home
     stages:
       selection:
-        model: sonnet
+        model: claude-sonnet-4-6
         effort: high
       reviewers:
-        model: sonnet
+        model: claude-sonnet-4-6
         effort: high
         agent_dirs: []
 cases:

@@ -50,14 +50,14 @@ func TestLoadFilesystemSourceParsesProviderSpecificModelID(t *testing.T) {
 	root := t.TempDir()
 	writeAgentWithNames(t, root, "harness", "harness", "architecture", "architecture")
 	indexPath := filepath.Join(root, "harness", "architecture", "index.yaml")
-	writeFile(t, indexPath, "name: architecture\ndescription: Reviews architecture.\nmodel_id: claude-opus-4-1\neffort: high\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
+	writeFile(t, indexPath, "name: architecture\ndescription: Reviews architecture.\nmodel_id: claude-opus-4-8\neffort: high\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
 
 	catalog, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	agent := catalog.Agents[0]
-	if agent.ModelID != "claude-opus-4-1" || agent.ModelTier != "" || agent.Effort != "high" {
+	if agent.ModelID != "claude-opus-4-8" || agent.ModelTier != "" || agent.Effort != "high" {
 		t.Fatalf("agent metadata = %#v, want provider-specific model_id", agent)
 	}
 }

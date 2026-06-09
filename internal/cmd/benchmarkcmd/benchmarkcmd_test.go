@@ -294,7 +294,7 @@ func TestDoctorTextUsesDefaultResultsDir(t *testing.T) {
 		"Candidates: 2",
 		"Cases: 2",
 		"Results dir: " + wantResultsDir,
-		"candidate first profile=home available=true selection=sonnet/high reviewers=sonnet/high reviewer_agent_dirs=1",
+		"candidate first profile=home available=true selection=claude-sonnet-4-6/high reviewers=claude-sonnet-4-6/high reviewer_agent_dirs=1",
 		"case case_one pr=https://github.com/open-cli-collective/codereview-cli/pull/1",
 		"Warnings: 1",
 		"agent dir",
@@ -402,8 +402,8 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	}
 	if persistedSummary.SchemaVersion != benchmarkArtifactSchemaVersion ||
 		len(persistedSummary.SelectedCandidates) != 2 ||
-		persistedSummary.SelectedCandidates[0].Stages.Selection.Model != "sonnet" ||
-		persistedSummary.SelectedCandidates[0].Stages.Reviewers.Model != "sonnet" ||
+		persistedSummary.SelectedCandidates[0].Stages.Selection.Model != "claude-sonnet-4-6" ||
+		persistedSummary.SelectedCandidates[0].Stages.Reviewers.Model != "claude-sonnet-4-6" ||
 		persistedSummary.SelectedCandidates[1].Stages.Reviewers.Model != "kimi" {
 		t.Fatalf("persisted suite summary = %#v, want nested candidate stages", persistedSummary.SelectedCandidates)
 	}
@@ -415,7 +415,7 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	}
 	if persistedManifest.SchemaVersion != benchmarkArtifactSchemaVersion ||
 		len(persistedManifest.SelectedCandidates) != 2 ||
-		persistedManifest.SelectedCandidates[0].Stages.Selection.Model != "sonnet" ||
+		persistedManifest.SelectedCandidates[0].Stages.Selection.Model != "claude-sonnet-4-6" ||
 		persistedManifest.SelectedCandidates[1].Stages.Reviewers.Effort != "low" {
 		t.Fatalf("persisted manifest = %#v, want nested candidate stages", persistedManifest.SelectedCandidates)
 	}
@@ -426,10 +426,10 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--profile", "home",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/1",
 		"--dry-run", "--json",
-		"--selection-model", "sonnet",
+		"--selection-model", "claude-sonnet-4-6",
 		"--selection-effort", "high",
 		"--selection-prompt", got.SelectedCandidates[0].Stages.Selection.Prompt.Resolved,
-		"--reviewer-model", "sonnet",
+		"--reviewer-model", "claude-sonnet-4-6",
 		"--reviewer-effort", "high",
 		"--agents-dir", got.SelectedCandidates[0].Stages.Reviewers.AgentDirs[0].Resolved,
 		"--max-agents", "5",
@@ -444,10 +444,10 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--dry-run", "--json",
 		"--review-base-sha", "1111111",
 		"--review-head-sha", "2222222",
-		"--selection-model", "sonnet",
+		"--selection-model", "claude-sonnet-4-6",
 		"--selection-effort", "high",
 		"--selection-prompt", got.SelectedCandidates[0].Stages.Selection.Prompt.Resolved,
-		"--reviewer-model", "sonnet",
+		"--reviewer-model", "claude-sonnet-4-6",
 		"--reviewer-effort", "high",
 		"--agents-dir", got.SelectedCandidates[0].Stages.Reviewers.AgentDirs[0].Resolved,
 		"--max-agents", "5",
@@ -926,11 +926,11 @@ candidates:
     profile: home
     stages:
       selection:
-        model: sonnet
+        model: claude-sonnet-4-6
         effort: high
         prompt: PROMPT_PATH
       reviewers:
-        model: sonnet
+        model: claude-sonnet-4-6
         effort: high
         agent_dirs:
           - AGENT_DIR
@@ -1067,11 +1067,11 @@ func TestReviewArgsMapsExplicitStageRecipesToReviewFlags(t *testing.T) {
 			candidate: benchmark.Candidate{
 				Profile: "home",
 				Stages: benchmark.CandidateStages{
-					Selection: benchmark.SelectionStage{Model: "sonnet", Effort: "high", Prompt: "selection.md"},
+					Selection: benchmark.SelectionStage{Model: "claude-sonnet-4-6", Effort: "high", Prompt: "selection.md"},
 					Reviewers: benchmark.ReviewerStage{Model: "kimi", Effort: "low", AgentDirs: []string{"agents"}},
 				},
 			},
-			required:  []string{"--selection-model", "sonnet", "--selection-effort", "high", "--selection-prompt", filepath.Join(suiteDir, "selection.md"), "--reviewer-model", "kimi", "--reviewer-effort", "low", "--agents-dir", filepath.Join(suiteDir, "agents")},
+			required:  []string{"--selection-model", "claude-sonnet-4-6", "--selection-effort", "high", "--selection-prompt", filepath.Join(suiteDir, "selection.md"), "--reviewer-model", "kimi", "--reviewer-effort", "low", "--agents-dir", filepath.Join(suiteDir, "agents")},
 			forbidden: []string{"--llm-model", "--llm-effort"},
 		},
 		{
@@ -1079,11 +1079,11 @@ func TestReviewArgsMapsExplicitStageRecipesToReviewFlags(t *testing.T) {
 			candidate: benchmark.Candidate{
 				Profile: "home",
 				Stages: benchmark.CandidateStages{
-					Selection: benchmark.SelectionStage{Model: "sonnet", Effort: "high"},
-					Reviewers: benchmark.ReviewerStage{Model: "sonnet", Effort: "high", AgentDirs: []string{}},
+					Selection: benchmark.SelectionStage{Model: "claude-sonnet-4-6", Effort: "high"},
+					Reviewers: benchmark.ReviewerStage{Model: "claude-sonnet-4-6", Effort: "high", AgentDirs: []string{}},
 				},
 			},
-			required:  []string{"--selection-model", "sonnet", "--reviewer-model", "sonnet", "--selection-effort", "high", "--reviewer-effort", "high"},
+			required:  []string{"--selection-model", "claude-sonnet-4-6", "--reviewer-model", "claude-sonnet-4-6", "--selection-effort", "high", "--reviewer-effort", "high"},
 			forbidden: []string{"--selection-prompt", "--llm-model", "--llm-effort"},
 		},
 	}
