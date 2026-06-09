@@ -12,7 +12,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -223,6 +227,54 @@ func TestCompareSelectionModeShowsSelectedReviewers(t *testing.T) {
 	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "Selector Benchmark Comparison")
 	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "harness:alpha")
 	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "invalid_selection_json")
+}
+
+func TestCompareConsumesRealBenchmarkSelectArtifacts(t *testing.T) {
+	selectCmd, _ := newTestCommand(t)
+	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
+	resultsDir := filepath.Join(t.TempDir(), "results")
+
+	withBenchmarkSelectSeams(t,
+		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
+			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		},
+		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			return pipeline.SelectionResult{
+				Artifacts: pipeline.ArtifactPathsFromDir(req.ArtifactDir),
+				Selection: llm.Selection{
+					SelectedAgents: []llm.SelectedAgent{{AgentID: "harness:alpha", Files: []string{"main.go"}}},
+				},
+				SelectionSession: pipeline.SelectionSession{
+					Response: llm.Response{
+						StructuredOutput: []byte(`{"schema_version":1,"selected_agents":[{"agent_id":"harness:alpha","rationale":"main","files":["main.go"]}],"thread_actions":[],"reasoning":"ok"}`),
+					},
+				},
+			}, nil
+		},
+	)
+
+	if err := root.Execute(selectCmd, []string{
+		"benchmark", "select", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", resultsDir,
+	}); err != nil {
+		t.Fatalf("Execute select: %v", err)
+	}
+
+	compareCmd, out := newCompareOnlyTestCommand(filepath.Join(t.TempDir(), "missing-config.yml"))
+	if err := root.Execute(compareCmd, []string{"benchmark", "compare", resultsDir, "--json"}); err != nil {
+		t.Fatalf("Execute compare: %v", err)
+	}
+	var got comparisonReport
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal compare JSON: %v\n%s", err, out.String())
+	}
+	if got.Mode != benchmarkModeSelection || len(got.Runs) != 1 || got.Runs[0].SelectedAgents[0].AgentID != "harness:alpha" {
+		t.Fatalf("comparison = %#v, want real selector comparison output", got)
+	}
+	assertFileContains(t, got.Artifacts.ComparisonJSON, `"selected_agents"`)
+	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "Selector Benchmark Comparison")
 }
 
 func TestCompareClassifiesFailuresAndPathEscapes(t *testing.T) {

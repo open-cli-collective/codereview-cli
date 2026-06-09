@@ -110,6 +110,12 @@ func TestSelectExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	if len(requests[0].AgentDirs) != 1 || requests[0].AgentDirs[0] == "" {
 		t.Fatalf("first request agent dirs = %#v, want reviewer catalog dirs", requests[0].AgentDirs)
 	}
+	if !strings.HasPrefix(requests[0].ArtifactDir, resultsDir+string(os.PathSeparator)) || !strings.HasSuffix(requests[0].ArtifactDir, filepath.Join("0001-c01-k01-first-case_one")) {
+		t.Fatalf("first artifact dir = %q, want selector run rooted under explicit results dir", requests[0].ArtifactDir)
+	}
+	if !strings.HasPrefix(requests[1].ArtifactDir, resultsDir+string(os.PathSeparator)) || !strings.HasSuffix(requests[1].ArtifactDir, filepath.Join("0002-c01-k02-first-case_two")) {
+		t.Fatalf("second artifact dir = %q, want selector run rooted under explicit results dir", requests[1].ArtifactDir)
+	}
 	if requests[1].ReviewBaseSHA != "1111111" || requests[1].ReviewHeadSHA != "2222222" {
 		t.Fatalf("second request = %#v, want pinned review SHAs", requests[1])
 	}
@@ -175,6 +181,56 @@ func TestSelectRecordsRuntimeFailuresWithoutInvokingSelection(t *testing.T) {
 	}
 }
 
+func TestSelectSupportsCandidateWithoutReviewerStage(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	body := `
+suite:
+  id: suite1
+candidates:
+  - id: first
+    profile: home
+    stages:
+      selection:
+        model: sonnet
+        effort: high
+cases:
+  - id: case_one
+    pr: https://github.com/open-cli-collective/codereview-cli/pull/1
+`
+	suitePath := writeBenchmarkSuite(t, body)
+
+	withBenchmarkSelectSeams(t,
+		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
+			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		},
+		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			if len(req.AgentDirs) != 0 {
+				t.Fatalf("agent dirs = %#v, want none for selector-only candidate", req.AgentDirs)
+			}
+			return pipeline.SelectionResult{
+				Artifacts: pipeline.ArtifactPathsFromDir(req.ArtifactDir),
+			}, nil
+		},
+	)
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "select", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", filepath.Join(t.TempDir(), "results"),
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.RunCount != 1 || got.SuccessCount != 1 || got.FailureCount != 0 {
+		t.Fatalf("summary = %#v, want successful selector-only run without reviewer stage", got)
+	}
+}
+
 func TestSelectRecordsPerRunFailureWhenSelectorExceedsCandidateMaxAgents(t *testing.T) {
 	cmd, out := newTestCommand(t)
 	body := strings.Replace(validBenchmarkSuite(t), "    max_agents: 5", "    max_agents: 1", 1)
@@ -222,6 +278,66 @@ func TestSelectRecordsPerRunFailureWhenSelectorExceedsCandidateMaxAgents(t *test
 	}
 	assertFileContains(t, got.Runs[0].Artifacts.SelectionJSON, `"harness:beta"`)
 	assertFileContains(t, got.Runs[0].Artifacts.Stderr, "selected agents 2 exceeds max 1")
+}
+
+func TestSelectRecordsPromptReadFailuresPerRun(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	promptPath := filepath.Join(t.TempDir(), "selection.md")
+	if err := os.WriteFile(promptPath, []byte("Use applies_when when selecting reviewers."), 0o600); err != nil {
+		t.Fatalf("WriteFile prompt: %v", err)
+	}
+	body := fmt.Sprintf(`
+suite:
+  id: suite1
+candidates:
+  - id: first
+    profile: home
+    stages:
+      selection:
+        model: sonnet
+        effort: high
+        prompt: %s
+cases:
+  - id: case_one
+    pr: https://github.com/open-cli-collective/codereview-cli/pull/1
+`, promptPath)
+	suitePath := writeBenchmarkSuite(t, body)
+	var selectionCalls int
+
+	withBenchmarkSelectSeams(t,
+		func(_ context.Context, _ string, _ bool, _ config.File, profile config.Profile) (reviewcmd.SelectionRuntime, error) {
+			if len(profile.AgentSources) != 0 {
+				t.Fatalf("profile = %#v, expected test config profile", profile)
+			}
+			_ = os.Remove(promptPath)
+			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		},
+		func(context.Context, pipeline.Options, pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			selectionCalls++
+			return pipeline.SelectionResult{}, nil
+		},
+	)
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "select", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", filepath.Join(t.TempDir(), "results"),
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if selectionCalls != 0 {
+		t.Fatalf("selection calls = %d, want prompt read failure before selection execution", selectionCalls)
+	}
+	if got.RunCount != 1 || got.FailureCount != 1 || got.Runs[0].FailureClassification != failureSelectionError {
+		t.Fatalf("summary = %#v, want recorded prompt read failure", got)
+	}
+	assertFileContains(t, got.Runs[0].Artifacts.Stderr, "read selection prompt")
 }
 
 func withBenchmarkSelectSeams(
