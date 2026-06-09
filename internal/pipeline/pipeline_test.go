@@ -307,21 +307,39 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 	}}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	artifactDir := t.TempDir()
 
 	result, err := SelectionOnly(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
-	}, selectionRequestFromReview(req, t.TempDir()))
+	}, selectionRequestFromReview(req, artifactDir))
 	if err != nil {
 		t.Fatalf("SelectionOnly: %v", err)
 	}
 
+	expectedArtifacts := ArtifactPathsFromDir(artifactDir)
+	if !reflect.DeepEqual(result.Artifacts, expectedArtifacts) {
+		t.Fatalf("artifacts = %#v, want %#v", result.Artifacts, expectedArtifacts)
+	}
 	if len(adapter.Requests()) != 1 {
 		t.Fatalf("adapter requests = %d, want selection only", len(adapter.Requests()))
 	}
 	if len(adapter.Resumes()) != 0 {
 		t.Fatalf("adapter resumes = %#v, want none", adapter.Resumes())
+	}
+	expectedPRKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	if result.PRKey != expectedPRKey {
+		t.Fatalf("PRKey = %q, want %q", result.PRKey, expectedPRKey)
+	}
+	if !reflect.DeepEqual(result.PR, provider.pr) {
+		t.Fatalf("PR = %#v, want %#v", result.PR, provider.pr)
+	}
+	if len(result.Catalog.Agents) != 1 || result.Catalog.Agents[0].ID != "harness:reviewer" {
+		t.Fatalf("catalog agents = %#v, want harness:reviewer", result.Catalog.Agents)
 	}
 	if len(result.Selection.SelectedAgents) != 1 || result.Selection.SelectedAgents[0].AgentID != "harness:reviewer" {
 		t.Fatalf("selection = %#v, want harness:reviewer", result.Selection)
@@ -335,16 +353,30 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 	if len(result.Threads) != 1 || result.Threads[0].ID != "thread-1" {
 		t.Fatalf("threads = %#v, want thread-1", result.Threads)
 	}
+	wantCaps := reviewplan.ProviderCaps{NativeFileLevelComments: true, ThreadResolution: true}
+	if !reflect.DeepEqual(result.EffectiveCaps, wantCaps) {
+		t.Fatalf("EffectiveCaps = %#v, want %#v", result.EffectiveCaps, wantCaps)
+	}
+	if result.AgentDefsChanged {
+		t.Fatal("AgentDefsChanged = true, want false")
+	}
+	if result.CurrentBaseSHA != provider.pr.Base.SHA || result.CurrentHeadSHA != provider.pr.Head.SHA ||
+		result.ReviewBaseSHA != provider.pr.Base.SHA || result.ReviewHeadSHA != provider.pr.Head.SHA {
+		t.Fatalf("result SHAs = current %s/%s review %s/%s, want provider PR SHAs", result.CurrentBaseSHA, result.CurrentHeadSHA, result.ReviewBaseSHA, result.ReviewHeadSHA)
+	}
 	if result.SelectionSession.ProviderSessionID != "selection-session" || result.SelectionSession.Model != "sonnet" || result.SelectionSession.Effort != "medium" {
 		t.Fatalf("selection session = %#v, want selection-session sonnet/medium", result.SelectionSession)
 	}
-	expectedLog, err := result.Artifacts.AgentLog("orchestrator-selection")
+	expectedLog, err := expectedArtifacts.AgentLog("orchestrator-selection")
 	if err != nil {
 		t.Fatalf("AgentLog: %v", err)
 	}
 	request := adapter.Requests()[0]
 	if request.LogPath != expectedLog {
 		t.Fatalf("selection log path = %q, want %q", request.LogPath, expectedLog)
+	}
+	if info, err := os.Stat(expectedArtifacts.AgentLogsDir); err != nil || !info.IsDir() {
+		t.Fatalf("agent logs dir stat = (%v, %v), want existing dir", info, err)
 	}
 	if _, err := os.Stat(result.Artifacts.FindingsJSON); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("findings artifact stat error = %v, want not exist", err)
@@ -357,6 +389,14 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	provider.threads = []gitprovider.InlineThread{{
+		ID:          "thread-1",
+		Resolved:    false,
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        2,
+		SubjectType: review.AnchorKindLine,
+	}}
 	dir := t.TempDir()
 	writeAgent(t, dir, "harness", "alpha", "alpha desc", "Review alpha files.")
 	writeAgent(t, dir, "harness", "beta", "beta desc", "Review beta files.")
@@ -380,13 +420,49 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 		t.Fatalf("adapter requests = %d, want selection only", len(requests))
 	}
 	selectionPrompt := requests[0].Prompt
-	if !strings.Contains(selectionPrompt, `"selection_instructions": "Prefer applies_when over prompt wording when routing."`) {
-		t.Fatalf("selection prompt missing custom instruction field: %s", selectionPrompt)
+	var payload struct {
+		Task                  string                     `json:"task"`
+		Schema                string                     `json:"schema"`
+		SelectionInstructions string                     `json:"selection_instructions"`
+		OutputContract        map[string]any             `json:"output_contract"`
+		Agents                []selectionAgentPrompt     `json:"agents"`
+		ChangedFiles          []string                   `json:"changed_files"`
+		Threads               []gitprovider.InlineThread `json:"threads"`
 	}
-	for _, required := range []string{`"output_contract"`, `"schema": "selection"`, `"applies_when"`, `"task": "select reviewer agents and thread actions; return selection JSON only"`} {
-		if !strings.Contains(selectionPrompt, required) {
-			t.Fatalf("selection prompt missing %q: %s", required, selectionPrompt)
+	if err := json.Unmarshal([]byte(selectionPrompt), &payload); err != nil {
+		t.Fatalf("unmarshal selection prompt: %v", err)
+	}
+	if payload.SelectionInstructions != "Prefer applies_when over prompt wording when routing." {
+		t.Fatalf("selection instructions = %q, want custom instructions", payload.SelectionInstructions)
+	}
+	if payload.Task != defaultSelectionTask || payload.Schema != "selection" || payload.OutputContract == nil {
+		t.Fatalf("selection prompt envelope = %#v, want task/schema/output contract", payload)
+	}
+	if !reflect.DeepEqual(payload.ChangedFiles, []string{"main.go", "other.go"}) {
+		t.Fatalf("changed files = %#v, want main.go/other.go", payload.ChangedFiles)
+	}
+	if len(payload.Threads) != 1 || payload.Threads[0].ID != "thread-1" || payload.Threads[0].Path != "main.go" {
+		t.Fatalf("threads = %#v, want thread-1 on main.go", payload.Threads)
+	}
+	if len(payload.Agents) != 2 {
+		t.Fatalf("agents len = %d, want 2", len(payload.Agents))
+	}
+	wantAgents := map[string][]string{
+		"harness:alpha": {"Go files changed"},
+		"harness:beta":  {"Go files changed"},
+	}
+	for _, agent := range payload.Agents {
+		wantAppliesWhen, ok := wantAgents[agent.ID]
+		if !ok {
+			t.Fatalf("unexpected selection agent %#v", agent)
 		}
+		if !reflect.DeepEqual(agent.AppliesWhen, wantAppliesWhen) {
+			t.Fatalf("agent applies_when = %#v, want %#v", agent.AppliesWhen, wantAppliesWhen)
+		}
+		delete(wantAgents, agent.ID)
+	}
+	if len(wantAgents) != 0 {
+		t.Fatalf("missing selection agents = %#v", wantAgents)
 	}
 	for _, forbidden := range []string{"Review alpha files.", "Review beta files.", `"prompt"`, `"provenance"`, `"overridden"`} {
 		if strings.Contains(selectionPrompt, forbidden) {
@@ -407,8 +483,18 @@ func TestSelectionOnlyRejectsInvalidSelection(t *testing.T) {
 		Adapter:  adapter,
 		Now:      fixedNow,
 	}, selectionRequestFromReview(req, t.TempDir()))
-	if err == nil || !strings.Contains(err.Error(), "unknown selected agent") {
-		t.Fatalf("SelectionOnly error = %v, want unknown selected agent", err)
+	if err == nil || !strings.Contains(err.Error(), "structured output invalid after retry") || !strings.Contains(err.Error(), "unknown selected agent") {
+		t.Fatalf("SelectionOnly error = %v, want retry-wrapped unknown selected agent", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("adapter requests = %#v, want initial start plus retry", requests)
+	}
+	if !strings.Contains(requests[1].Prompt, "failed validation") || !strings.Contains(requests[1].Prompt, "unknown selected agent") {
+		t.Fatalf("retry prompt = %q, want validation retry details", requests[1].Prompt)
+	}
+	if len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter resumes = %#v, want none", adapter.Resumes())
 	}
 }
 
@@ -462,6 +548,38 @@ func TestSelectionOnlyContextBudgetFailure(t *testing.T) {
 	}
 	if len(adapter.Requests()) != 0 {
 		t.Fatalf("adapter requests = %#v, want no LLM call after budget failure", adapter.Requests())
+	}
+}
+
+func TestSelectionOnlyNoDiffSkipsLLMAndReturnsPreparedContext(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	provider.diff = gitprovider.UnifiedDiff{}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	artifactDir := t.TempDir()
+
+	result, err := SelectionOnly(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+	}, selectionRequestFromReview(req, artifactDir))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter was invoked: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+	}
+	if !reflect.DeepEqual(result.Artifacts, ArtifactPathsFromDir(artifactDir)) {
+		t.Fatalf("artifacts = %#v, want caller-owned dir %q", result.Artifacts, artifactDir)
+	}
+	if len(result.ParsedDiff.Patches) != 0 || len(result.ChangedFiles) != 0 {
+		t.Fatalf("parsed diff = %#v changed files = %#v, want empty", result.ParsedDiff.Patches, result.ChangedFiles)
+	}
+	if !reflect.DeepEqual(result.Selection, llm.Selection{}) || !reflect.DeepEqual(result.SelectionSession, SelectionSession{}) {
+		t.Fatalf("selection result = %#v session = %#v, want zero values", result.Selection, result.SelectionSession)
+	}
+	if len(result.Catalog.Agents) != 1 || result.Catalog.Agents[0].ID != "harness:reviewer" {
+		t.Fatalf("catalog agents = %#v, want harness:reviewer", result.Catalog.Agents)
 	}
 }
 
