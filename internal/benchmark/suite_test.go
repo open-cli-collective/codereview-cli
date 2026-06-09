@@ -167,6 +167,30 @@ func TestValidateForRunRejectsEmptySelectionPromptFile(t *testing.T) {
 	}
 }
 
+func TestValidateForRunAllowsSynthesisPromptWithoutReadableFile(t *testing.T) {
+	dir := t.TempDir()
+	suitePath := filepath.Join(dir, "suite.yml")
+	selectionPromptPath := filepath.Join(dir, "prompts", "selection-v1.md")
+	if err := os.MkdirAll(filepath.Dir(selectionPromptPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll prompts: %v", err)
+	}
+	if err := os.WriteFile(selectionPromptPath, []byte("selection prompt"), 0o600); err != nil {
+		t.Fatalf("WriteFile selection prompt: %v", err)
+	}
+	body := withSynthesisStage(validSuiteYAML(), "prompts/synthesis-v1.md")
+	if err := os.WriteFile(suitePath, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile suite: %v", err)
+	}
+	suite, err := LoadFile(suitePath)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+
+	if err := ValidateForRun(suite, testConfig()); err != nil {
+		t.Fatalf("ValidateForRun: %v", err)
+	}
+}
+
 func TestLoadNormalizesAgentsDirAlias(t *testing.T) {
 	suite := loadSuite(t, strings.Replace(validSuiteYAML(), "agent_dirs:", "agents_dir:", 1))
 
@@ -295,6 +319,9 @@ cases:
 		{name: "negative max concurrency", body: replaceSuiteLine(validSuiteYAML(), "    max_concurrency: 3", "    max_concurrency: -1"), want: "max_concurrency"},
 		{name: "blank selection model when present", body: replaceSuiteLine(validSuiteYAML(), "        model: gpt-5.1", `        model: "  "`), want: "stages.selection.model must be non-empty"},
 		{name: "blank selection effort when present", body: replaceSuiteLine(validSuiteYAML(), "        effort: high", `        effort: "  "`), want: "stages.selection.effort must be non-empty"},
+		{name: "missing synthesis model", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        effort: low\n"), want: "stages.synthesis.model is required when stages.synthesis is set"},
+		{name: "invalid synthesis effort", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.1\n        effort: invalid\n"), want: "stages.synthesis.effort must be one of low, medium, high"},
+		{name: "blank synthesis prompt", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.1\n        effort: low\n        prompt: \"  \"\n"), want: "stages.synthesis.prompt must be non-empty when present"},
 		{name: "invalid reviewer effort", body: strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        effort: invalid\n        agent_dirs:", 1), want: "stages.reviewers.effort must be one of low, medium, high"},
 		{name: "invalid review base sha", body: replaceSuiteLine(validSuiteYAML(), "    review_base_sha: 1111111", "    review_base_sha: notsha"), want: "review_base_sha"},
 		{name: "blank review head sha", body: replaceSuiteLine(validSuiteYAML(), "    review_head_sha: 2222222", `    review_head_sha: "  "`), want: "review_head_sha must be non-empty"},
@@ -455,6 +482,18 @@ cases:
 
 func replaceSuiteLine(body, old, replacement string) string {
 	return strings.Replace(body, old, replacement, 1)
+}
+
+func withSynthesisStage(body, prompt string) string {
+	stage := "      synthesis:\n        model: gpt-5.1\n        effort: low\n"
+	if prompt != "" {
+		stage += "        prompt: " + prompt + "\n"
+	}
+	return withRawSynthesisStage(body, stage)
+}
+
+func withRawSynthesisStage(body, stage string) string {
+	return strings.Replace(body, "    max_agents: 5\n", stage+"    max_agents: 5\n", 1)
 }
 
 func testConfig() config.File {

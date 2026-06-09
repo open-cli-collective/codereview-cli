@@ -47,8 +47,9 @@ type doctorCandidate struct {
 }
 
 type doctorStages struct {
-	Selection doctorSelectionStage `json:"selection"`
-	Reviewers doctorReviewerStage  `json:"reviewers,omitempty"`
+	Selection doctorSelectionStage  `json:"selection"`
+	Reviewers doctorReviewerStage   `json:"reviewers,omitempty"`
+	Synthesis *doctorSelectionStage `json:"synthesis,omitempty"`
 }
 
 type doctorSelectionStage struct {
@@ -208,6 +209,7 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 					Effort:    candidate.Stages.Reviewers.Effort,
 					AgentDirs: make([]doctorAgentDir, 0, len(candidate.Stages.Reviewers.AgentDirs)),
 				},
+				Synthesis: summarizeDoctorOptionalStage(candidate.Stages.Synthesis),
 			},
 		}
 		if ok {
@@ -219,6 +221,11 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 				report.Warnings = append(report.Warnings, fmt.Sprintf("candidate %s agent dir %s: %s", candidate.ID, dir, agentDir.Warning))
 			}
 			out.Stages.Reviewers.AgentDirs = append(out.Stages.Reviewers.AgentDirs, agentDir)
+		}
+		if out.Stages.Synthesis != nil && out.Stages.Synthesis.Prompt != "" {
+			if promptSummary := summarizePromptFile(suiteDir, out.Stages.Synthesis.Prompt); promptSummary != nil && promptSummary.Warning != "" {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("candidate %s synthesis prompt %s: %s", candidate.ID, out.Stages.Synthesis.Prompt, promptSummary.Warning))
+			}
 		}
 		report.Candidates = append(report.Candidates, out)
 	}
@@ -248,9 +255,13 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 		return err
 	}
 	for _, candidate := range report.Candidates {
+		synthesisText := ""
+		if candidate.Stages.Synthesis != nil {
+			synthesisText = fmt.Sprintf(" synthesis=%s/%s", candidate.Stages.Synthesis.Model, candidate.Stages.Synthesis.Effort)
+		}
 		if _, err := fmt.Fprintf(
 			opts.Stdout,
-			"- candidate %s profile=%s available=%t selection=%s/%s reviewers=%s/%s reviewer_agent_dirs=%d\n",
+			"- candidate %s profile=%s available=%t selection=%s/%s reviewers=%s/%s reviewer_agent_dirs=%d%s\n",
 			candidate.ID,
 			candidate.Profile,
 			candidate.ProfileAvailable,
@@ -259,6 +270,7 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 			candidate.Stages.Reviewers.Model,
 			candidate.Stages.Reviewers.Effort,
 			len(candidate.Stages.Reviewers.AgentDirs),
+			synthesisText,
 		); err != nil {
 			return err
 		}
@@ -281,6 +293,17 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 		}
 	}
 	return nil
+}
+
+func summarizeDoctorOptionalStage(stage benchmark.SelectionStage) *doctorSelectionStage {
+	if !isOptionalStageConfigured(stage) {
+		return nil
+	}
+	return &doctorSelectionStage{
+		Model:  stage.Model,
+		Effort: stage.Effort,
+		Prompt: stage.Prompt,
+	}
 }
 
 func resolveResultsDir(suiteID, configured string) (string, error) {

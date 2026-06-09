@@ -54,9 +54,11 @@ type Candidate struct {
 type CandidateStages struct {
 	Selection SelectionStage `yaml:"selection" json:"selection"`
 	Reviewers ReviewerStage  `yaml:"reviewers,omitempty" json:"reviewers,omitempty"`
+	Synthesis SelectionStage `yaml:"synthesis,omitempty" json:"synthesis,omitempty"`
 
 	selectionSet bool
 	reviewersSet bool
+	synthesisSet bool
 }
 
 // SelectionStage configures the benchmark selection/orchestration phase.
@@ -110,6 +112,7 @@ func (s *CandidateStages) UnmarshalYAML(value *yaml.Node) error {
 	type rawStages struct {
 		Selection SelectionStage `yaml:"selection"`
 		Reviewers ReviewerStage  `yaml:"reviewers"`
+		Synthesis SelectionStage `yaml:"synthesis"`
 	}
 	var raw rawStages
 	if err := value.Decode(&raw); err != nil {
@@ -118,8 +121,10 @@ func (s *CandidateStages) UnmarshalYAML(value *yaml.Node) error {
 	*s = CandidateStages{
 		Selection:    raw.Selection,
 		Reviewers:    raw.Reviewers,
+		Synthesis:    raw.Synthesis,
 		selectionSet: mappingHasKey(value, "selection"),
 		reviewersSet: mappingHasKey(value, "reviewers"),
+		synthesisSet: mappingHasKey(value, "synthesis"),
 	}
 	return nil
 }
@@ -281,6 +286,9 @@ func Normalize(suite *SuiteFile) {
 		c.Stages.Selection.Model = strings.TrimSpace(c.Stages.Selection.Model)
 		c.Stages.Selection.Effort = strings.TrimSpace(c.Stages.Selection.Effort)
 		c.Stages.Selection.Prompt = strings.TrimSpace(c.Stages.Selection.Prompt)
+		c.Stages.Synthesis.Model = strings.TrimSpace(c.Stages.Synthesis.Model)
+		c.Stages.Synthesis.Effort = strings.TrimSpace(c.Stages.Synthesis.Effort)
+		c.Stages.Synthesis.Prompt = strings.TrimSpace(c.Stages.Synthesis.Prompt)
 		c.Stages.Reviewers.Model = strings.TrimSpace(c.Stages.Reviewers.Model)
 		c.Stages.Reviewers.Effort = strings.TrimSpace(c.Stages.Reviewers.Effort)
 		for j := range c.Stages.Reviewers.AgentDirs {
@@ -414,6 +422,9 @@ func validateCandidates(candidates []Candidate, cfg config.File) error {
 		if err := validateReviewerStageStructural(candidate.ID, candidate.Stages); err != nil {
 			return err
 		}
+		if err := validateSynthesisStageStructural(candidate.ID, candidate.Stages); err != nil {
+			return err
+		}
 		if candidate.MaxAgents < 0 {
 			return fmt.Errorf("%w: candidate %q max_agents must be non-negative", ErrInvalid, candidate.ID)
 		}
@@ -463,6 +474,25 @@ func validateReviewerStageStructural(candidateID string, stages CandidateStages)
 		if dir == "" {
 			return fmt.Errorf("%w: candidate %q stages.reviewers.agent_dirs[%d] must be non-empty", ErrInvalid, candidateID, i)
 		}
+	}
+	return nil
+}
+
+func validateSynthesisStageStructural(candidateID string, stages CandidateStages) error {
+	if !stages.synthesisSet {
+		return nil
+	}
+	if stages.Synthesis.Model == "" {
+		return fmt.Errorf("%w: candidate %q stages.synthesis.model is required when stages.synthesis is set", ErrInvalid, candidateID)
+	}
+	if stages.Synthesis.Effort == "" {
+		return fmt.Errorf("%w: candidate %q stages.synthesis.effort is required when stages.synthesis is set", ErrInvalid, candidateID)
+	}
+	if stages.Synthesis.promptSet && stages.Synthesis.Prompt == "" {
+		return fmt.Errorf("%w: candidate %q stages.synthesis.prompt must be non-empty when present", ErrInvalid, candidateID)
+	}
+	if !modelprefs.Effort(stages.Synthesis.Effort).Valid() {
+		return fmt.Errorf("%w: candidate %q stages.synthesis.effort must be one of low, medium, high", ErrInvalid, candidateID)
 	}
 	return nil
 }
@@ -689,7 +719,7 @@ func validateKnownFields(doc *yaml.Node) error {
 			stages := mappingValue(candidate, "stages")
 			if stages != nil {
 				if err := validateMappingKeys(stages, fmt.Sprintf("candidate[%d] stages", i), map[string]bool{
-					"selection": true, "reviewers": true,
+					"selection": true, "reviewers": true, "synthesis": true,
 				}); err != nil {
 					return err
 				}
@@ -706,6 +736,14 @@ func validateKnownFields(doc *yaml.Node) error {
 			if reviewers != nil {
 				if err := validateMappingKeys(reviewers, fmt.Sprintf("candidate[%d] stages.reviewers", i), map[string]bool{
 					"model": true, "effort": true, "agent_dirs": true, "agents_dir": true,
+				}); err != nil {
+					return err
+				}
+			}
+			synthesis := mappingValue(stages, "synthesis")
+			if synthesis != nil {
+				if err := validateMappingKeys(synthesis, fmt.Sprintf("candidate[%d] stages.synthesis", i), map[string]bool{
+					"model": true, "effort": true, "prompt": true,
 				}); err != nil {
 					return err
 				}

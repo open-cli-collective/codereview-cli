@@ -779,8 +779,8 @@ cr benchmark doctor <suite.yml> [--candidate <id> ...] [--case <id> ...] [--resu
 
 Inspects benchmark readiness without running reviews. It reports the selected
 candidates and cases, resolved results directory, selected `cr` binary, profile
-availability, selection/reviewer stage recipes, reviewer agent directories, and
-warnings.
+availability, selection/reviewer/synthesis stage recipes, reviewer agent
+directories, and warnings.
 
 ### `cr benchmark run`
 
@@ -802,7 +802,9 @@ and `stages.selection.effort` map to `--selection-model` and
 `stages.reviewers.agent_dirs[]` map to `--reviewer-model`,
 `--reviewer-effort`, and repeated `--agents-dir` flags. Case YAML fields
 `review_base_sha` and `review_head_sha` pin the exact base/head commit pair
-reviewed by the dry-run child command.
+reviewed by the dry-run child command. Optional `stages.synthesis` metadata is
+reserved for future benchmark support and does not change `benchmark run`
+execution yet.
 
 ### `cr benchmark select`
 
@@ -823,6 +825,10 @@ disk into selection instructions, and optional
 candidate reviewer packs still influence routing. Case YAML
 `review_base_sha` and `review_head_sha` still pin the exact base/head commit
 pair used to build the selector diff view.
+
+Optional `stages.synthesis` metadata is preserved in summaries and selector
+`recipe.json` artifacts, but selector-only benchmarking still stops after
+selection. Dedicated synthesis benchmarking is future work.
 
 Selector benchmarks write selector-specific per-run artifacts such as
 `selection.json`, `recipe.json`, `metrics.json`, and selection log metadata.

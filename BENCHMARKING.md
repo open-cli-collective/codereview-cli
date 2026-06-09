@@ -105,6 +105,10 @@ candidates:
         effort: medium
         agent_dirs:
           - ../agents
+      synthesis:
+        model: claude-sonnet-4-5
+        effort: low
+        prompt: prompts/synthesis-v1.md
     max_agents: 5
     max_concurrency: 5
 
@@ -158,6 +162,15 @@ sources. Selector-only benchmarks pass `stages.reviewers.agent_dirs` through to
 the selection catalog when configured, but do not require it. `max_agents` and
 `max_concurrency` are optional; omit them or set them to `0` to use the
 corresponding `cr review` default. Negative max values are invalid.
+
+`stages.synthesis` is an optional reserved public recipe for the second
+orchestrator phase. Current benchmark commands preserve it in doctor output,
+suite summaries, comparison artifacts, and selector `recipe.json` snapshots,
+but they do not execute it. If `stages.synthesis` is present, `model` and
+`effort` must be explicit non-empty values and `prompt` must not be an
+explicitly blank string. Current commands do not fail on missing or unreadable
+`stages.synthesis.prompt` files because synthesis benchmarking is still future
+work.
 
 `effort` is the suite field for effort or reasoning-effort configuration. The
 selected adapter decides how to apply or translate it. Model IDs are
@@ -273,6 +286,10 @@ Selector-only benchmarks do not run reviewer agents, do not run synthesis, do
 not write `review.json`, and do not create reviewer findings or rollup
 artifacts.
 
+Optional `stages.synthesis` metadata is preserved in summaries and selector
+`recipe.json` artifacts, but it is not executed. Dedicated synthesis
+benchmarking remains out of scope for the current selector benchmark work.
+
 `compare` reads the benchmark-owned artifacts in an existing results directory
 and writes `comparison.json` and `comparison.md`. It is local-only: it does not
 invoke models, re-read live PR state, mutate Git provider state, or require
@@ -373,6 +390,8 @@ The MVP measures rather than grades. Current benchmark summary artifacts include
 - retry count, currently `0` because benchmark candidate/case executions are
   not retried by the runner;
 - coarse failure classification derived from local run facts and exit codes;
+- selected candidate stage metadata, including optional reserved synthesis
+  recipes when configured;
 - finding count and severity counts parsed from dry-run review JSON when the
   benchmark mode is full-review;
 - selected reviewers/files and thread-action counts when the benchmark mode is
