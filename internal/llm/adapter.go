@@ -174,8 +174,29 @@ func decodeResponse[T any](response Response, decode Decoder[T]) (decodedValue[T
 
 func extractSingleJSONObject(data []byte) ([]byte, bool) {
 	var candidates [][]byte
+	inString := false
+	escaped := false
 	for i := 0; i < len(data); i++ {
-		if data[i] != '{' {
+		ch := data[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+			continue
+		case '{':
+		default:
 			continue
 		}
 		end, ok := objectEnd(data, i)
@@ -188,7 +209,8 @@ func extractSingleJSONObject(data []byte) ([]byte, bool) {
 			i = end
 			continue
 		}
-		if isJSONValueSequence(prefix) || isJSONValueSequence(suffix) {
+		if isJSONValueSequence(prefix) || isJSONValueSequence(suffix) ||
+			hasJSONContainerFragment(prefix, true) || hasJSONContainerFragment(suffix, false) {
 			i = end
 			continue
 		}
@@ -209,6 +231,23 @@ func hasArrayWrapperAdjacentToObject(prefix []byte, suffix []byte) bool {
 	suffix = bytes.TrimSpace(suffix)
 	return len(prefix) > 0 && prefix[len(prefix)-1] == '[' ||
 		len(suffix) > 0 && suffix[0] == ']'
+}
+
+func hasJSONContainerFragment(data []byte, beforeObject bool) bool {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return false
+	}
+	if beforeObject {
+		return data[0] == '{' && bytes.Contains(data, []byte{':'}) ||
+			data[0] == '[' && bytes.Contains(data, []byte{','})
+	}
+	switch data[0] {
+	case ',', '}', ']':
+		return true
+	default:
+		return false
+	}
 }
 
 func isJSONValueSequence(data []byte) bool {

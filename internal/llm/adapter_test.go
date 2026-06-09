@@ -130,6 +130,34 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 	})
 
+	t.Run("does not recover object embedded in json container fragments", func(t *testing.T) {
+		tests := []string{
+			`[1, {"ok":true}, 2]`,
+			`{"a": {"ok":true}`,
+			`{"a": {"ok":true}, "b": 1}`,
+			`prefix [1, {"ok":true}, 2] suffix`,
+		}
+		for _, output := range tests {
+			t.Run(output, func(t *testing.T) {
+				adapter := &FakeAdapter{}
+				adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(output)}})
+				adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad2`)}})
+				_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+					if string(data) != `{"ok":true}` {
+						return "", errors.New("bad json")
+					}
+					return "ok", nil
+				})
+				if err == nil {
+					t.Fatal("RunStructured error = nil, want validation failure")
+				}
+				if got := len(adapter.Requests()); got != 2 {
+					t.Fatalf("requests = %d, want retry after embedded json object", got)
+				}
+			})
+		}
+	})
+
 	t.Run("does not recover object adjacent to top-level json values", func(t *testing.T) {
 		tests := []string{
 			`[] {"ok":true}`,
@@ -156,6 +184,24 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 					t.Fatalf("requests = %d, want retry after extra top-level json values", got)
 				}
 			})
+		}
+	})
+
+	t.Run("does not recover object literal inside quoted output", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`"literal {\"ok\":true}"`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad2`)}})
+		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+			if string(data) != `{"ok":true}` {
+				return "", errors.New("bad json")
+			}
+			return "ok", nil
+		})
+		if err == nil {
+			t.Fatal("RunStructured error = nil, want validation failure")
+		}
+		if got := len(adapter.Requests()); got != 2 {
+			t.Fatalf("requests = %d, want retry after quoted object literal", got)
 		}
 	})
 
