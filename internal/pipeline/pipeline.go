@@ -1160,22 +1160,15 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 }
 
 // sharedWorkstreamModel reports the run's headline model only when every
-// workstream used the same one; mixed-model runs (e.g. --selection-model or
-// per-agent tiers) render the headline as unavailable and rely on the
-// per-workstream table for exact models.
+// workstream reported the same one; mixed or partially-reported models render
+// the headline as unavailable and rely on the per-workstream table.
 func sharedWorkstreamModel(workstreams []reviewplan.WorkstreamUsage) string {
 	model := ""
-	for _, workstream := range workstreams {
-		if workstream.Model == "" {
-			continue
-		}
-		if model == "" {
-			model = workstream.Model
-			continue
-		}
-		if workstream.Model != model {
+	for i, workstream := range workstreams {
+		if workstream.Model == "" || (i > 0 && workstream.Model != model) {
 			return ""
 		}
+		model = workstream.Model
 	}
 	return model
 }

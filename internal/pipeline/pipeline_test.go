@@ -1974,7 +1974,7 @@ func TestSharedWorkstreamModel(t *testing.T) {
 	}{
 		{"all same", []string{"sonnet", "sonnet", "sonnet"}, "sonnet"},
 		{"mixed", []string{"opus", "sonnet", "sonnet"}, ""},
-		{"empty entries ignored", []string{"", "sonnet", "sonnet"}, "sonnet"},
+		{"unreported model makes headline unavailable", []string{"", "sonnet", "sonnet"}, ""},
 		{"none", nil, ""},
 	}
 	for _, tc := range cases {
