@@ -209,7 +209,8 @@ func extractSingleJSONObject(data []byte) ([]byte, bool) {
 			i = end
 			continue
 		}
-		if isJSONValueSequence(prefix) || isJSONValueSequence(suffix) || hasUnclosedJSONContainer(prefix) {
+		if isJSONValueSequence(prefix) || isJSONValueSequence(suffix) || hasUnclosedJSONContainer(prefix) ||
+			hasJSONFragmentBoundary(prefix, suffix) {
 			i = end
 			continue
 		}
@@ -230,6 +231,55 @@ func hasArrayWrapperAdjacentToObject(prefix []byte, suffix []byte) bool {
 	suffix = bytes.TrimSpace(suffix)
 	return len(prefix) > 0 && prefix[len(prefix)-1] == '[' ||
 		len(suffix) > 0 && suffix[0] == ']'
+}
+
+func hasJSONFragmentBoundary(prefix []byte, suffix []byte) bool {
+	prefix = bytes.TrimSpace(prefix)
+	if len(prefix) > 0 && prefix[len(prefix)-1] == ',' && isJSONValueSequence(bytes.TrimSpace(prefix[:len(prefix)-1])) {
+		return true
+	}
+	suffix = bytes.TrimSpace(suffix)
+	if len(suffix) == 0 || suffix[0] != ',' {
+		return false
+	}
+	rest := bytes.TrimSpace(suffix[1:])
+	return startsJSONMemberFragment(rest) || isJSONValueSequence(trimTrailingJSONClosers(rest))
+}
+
+func startsJSONMemberFragment(data []byte) bool {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || data[0] != '"' {
+		return false
+	}
+	escaped := false
+	for i := 1; i < len(data); i++ {
+		ch := data[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch ch {
+		case '\\':
+			escaped = true
+		case '"':
+			rest := bytes.TrimSpace(data[i+1:])
+			return len(rest) > 0 && rest[0] == ':'
+		}
+	}
+	return false
+}
+
+func trimTrailingJSONClosers(data []byte) []byte {
+	data = bytes.TrimSpace(data)
+	for len(data) > 0 {
+		switch data[len(data)-1] {
+		case '}', ']':
+			data = bytes.TrimSpace(data[:len(data)-1])
+		default:
+			return data
+		}
+	}
+	return data
 }
 
 func isJSONValueSequence(data []byte) bool {

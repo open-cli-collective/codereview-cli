@@ -192,7 +192,10 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		tests := []string{
 			`[] {"ok":true}`,
 			`null {"ok":true}`,
+			`1, {"ok":true}`,
 			`{"ok":true} 123`,
+			`{"ok":true}, "b": 1}`,
+			`{"ok":true}, 2]`,
 			`[] null {"ok":true}`,
 			`{"ok":true} "extra" false`,
 		}
