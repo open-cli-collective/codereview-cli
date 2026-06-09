@@ -28,6 +28,37 @@ func TestValidateAcceptsZeroNumericLimits(t *testing.T) {
 	}
 }
 
+func TestValidatePreservesGpt53ModelReference(t *testing.T) {
+	suite := loadSuite(t, `
+suite:
+  id: suite1
+candidates:
+  - id: first
+    profile: home
+    stages:
+      selection:
+        model: gpt-5.3
+        effort: high
+      reviewers:
+        model: gpt-5.3
+        effort: high
+        agent_dirs: []
+cases:
+  - id: case_one
+    pr: https://github.com/open-cli-collective/codereview-cli/pull/1
+`)
+
+	if err := Validate(suite, testConfig()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if got := suite.Candidates[0].Stages.Selection.Model; got != "gpt-5.3" {
+		t.Fatalf("selection model = %q, want gpt-5.3", got)
+	}
+	if got := suite.Candidates[0].Stages.Reviewers.Model; got != "gpt-5.3" {
+		t.Fatalf("reviewer model = %q, want gpt-5.3", got)
+	}
+}
+
 func TestValidateForRunRejectsStructuralOnlySelectionRecipe(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), `      selection:
         model: gpt-5.4
