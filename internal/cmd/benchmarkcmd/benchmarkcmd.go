@@ -82,7 +82,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 		Use:   "benchmark",
 		Short: "Validate, inspect, and run benchmark suites",
 	}
-	cmd.AddCommand(newValidateCommand(opts), newDoctorCommand(opts), newRunCommand(opts), newCompareCommand(opts))
+	cmd.AddCommand(newValidateCommand(opts), newDoctorCommand(opts), newRunCommand(opts), newSelectCommand(opts), newCompareCommand(opts))
 	rootCmd.AddCommand(cmd)
 }
 
@@ -149,6 +149,10 @@ func loadAndValidateSuite(opts *root.Options, suitePath string) (benchmark.Suite
 }
 
 func loadConfigAndSuite(opts *root.Options, suitePath string) (benchmark.SuiteFile, config.File, error) {
+	return loadConfigAndSuiteWithValidator(opts, suitePath, benchmark.ValidateForRun)
+}
+
+func loadConfigAndSuiteWithValidator(opts *root.Options, suitePath string, validate func(benchmark.SuiteFile, config.File) error) (benchmark.SuiteFile, config.File, error) {
 	suite, err := benchmark.LoadFile(suitePath)
 	if err != nil {
 		return benchmark.SuiteFile{}, config.File{}, mapBenchmarkError(err)
@@ -161,7 +165,7 @@ func loadConfigAndSuite(opts *root.Options, suitePath string) (benchmark.SuiteFi
 	if err != nil {
 		return benchmark.SuiteFile{}, config.File{}, cmderr.Config(err)
 	}
-	if err := benchmark.ValidateForRun(suite, cfg); err != nil {
+	if err := validate(suite, cfg); err != nil {
 		return benchmark.SuiteFile{}, config.File{}, mapBenchmarkError(err)
 	}
 	return suite, cfg, nil

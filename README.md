@@ -479,6 +479,9 @@ Validate and run a benchmark suite:
 ```bash
 cr benchmark validate .codereview/benchmarks/reviewer.yml
 cr benchmark doctor .codereview/benchmarks/reviewer.yml --json
+cr benchmark select .codereview/benchmarks/reviewer.yml \
+  --candidate claude-sonnet-medium \
+  --case merged-security-pr
 cr benchmark run .codereview/benchmarks/reviewer.yml \
   --candidate claude-sonnet-medium \
   --case merged-security-pr
@@ -801,6 +804,32 @@ and `stages.selection.effort` map to `--selection-model` and
 `review_base_sha` and `review_head_sha` pin the exact base/head commit pair
 reviewed by the dry-run child command.
 
+### `cr benchmark select`
+
+```text
+cr benchmark select <suite.yml> [--candidate <id> ...] [--case <id> ...] [--results-dir <path>] [--json]
+```
+
+Runs the selected candidate x case matrix through the extracted in-process
+selection phase only. It reuses the same profile, provider, adapter, and agent
+catalog loading semantics as `cr review`, but stops after selector execution.
+It does not spawn a child `cr review`, does not run reviewer agents, and does
+not run synthesis.
+
+Candidate `stages.selection.model` and `stages.selection.effort` map to
+selection overrides directly. Optional `stages.selection.prompt` is loaded from
+disk into selection instructions, and optional
+`stages.reviewers.agent_dirs[]` are passed into the selector catalog so
+candidate reviewer packs still influence routing. Case YAML
+`review_base_sha` and `review_head_sha` still pin the exact base/head commit
+pair used to build the selector diff view.
+
+Selector benchmarks write selector-specific per-run artifacts such as
+`selection.json`, `recipe.json`, `metrics.json`, and selection log metadata.
+When one selector run fails after partial execution, `benchmark select` records
+that run as failed and continues the remaining matrix when it can still write
+trustworthy suite artifacts.
+
 ### `cr benchmark compare`
 
 ```text
@@ -810,8 +839,8 @@ cr benchmark compare <results-dir> [--json]
 Reads an existing benchmark results directory and writes deterministic
 `comparison.json` and `comparison.md` artifacts. Comparison is local-only: it
 does not invoke models, read live PR state, mutate Git provider state, or
-require provider credentials. `cr benchmark run` writes the same comparison
-artifacts automatically.
+require provider credentials. `cr benchmark run` and `cr benchmark select`
+write the same comparison artifacts automatically.
 
 ### `cr sessions list`
 

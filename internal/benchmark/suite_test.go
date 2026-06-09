@@ -52,6 +52,44 @@ func TestValidateForRunRejectsStructuralOnlySelectionRecipe(t *testing.T) {
 	}
 }
 
+func TestValidateForSelectionAcceptsMissingReviewerStage(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), `      reviewers:
+        model: gpt-5.1
+        effort: high
+        agent_dirs:
+          - .codereview/agents
+`, "", 1)
+	suite := loadSuite(t, body)
+
+	if err := ValidateForSelection(suite, testConfig()); err != nil {
+		t.Fatalf("ValidateForSelection: %v", err)
+	}
+}
+
+func TestValidateForSelectionRejectsStructuralOnlySelectionRecipe(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), `      selection:
+        model: gpt-5.1
+        effort: high
+        prompt: prompts/selection-v1.md
+      reviewers:
+        model: gpt-5.1
+        effort: high
+        agent_dirs:
+          - .codereview/agents
+`, `      selection:
+        prompt: prompts/selection-v1.md
+`, 1)
+	suite := loadSuite(t, body)
+
+	if err := Validate(suite, testConfig()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	err := ValidateForSelection(suite, testConfig())
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "stages.selection.model is required for benchmark select") {
+		t.Fatalf("ValidateForSelection error = %v, want missing selection model", err)
+	}
+}
+
 func TestValidateRejectsMissingSelectionStage(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), `      selection:
         model: gpt-5.1

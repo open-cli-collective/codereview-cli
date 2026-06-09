@@ -1,0 +1,44 @@
+package reviewcmd
+
+import (
+	"context"
+
+	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
+)
+
+// SelectionRuntime contains the dependencies needed for selection-only
+// execution paths that must match review-command runtime semantics.
+type SelectionRuntime struct {
+	Provider gitprovider.GitProvider
+	Adapter  llm.Adapter
+	Cleanup  func()
+}
+
+// OpenSelectionRuntime resolves provider and adapter setup using the same
+// semantics as the real review command.
+func OpenSelectionRuntime(_ context.Context, backend string, backendFlagChanged bool, cfg config.File, profile config.Profile) (SelectionRuntime, error) {
+	store, err := credentials.OpenStore(backend, backendFlagChanged, cfg)
+	if err != nil {
+		return SelectionRuntime{}, err
+	}
+	cleanup := func() { _ = store.Close() }
+	provider, _, err := newGitProvider(profile.Git, store, githubprovider.Options{})
+	if err != nil {
+		cleanup()
+		return SelectionRuntime{}, mapRunError(err)
+	}
+	adapter, err := newAdapterForRuntime(profile.LLM, store)
+	if err != nil {
+		cleanup()
+		return SelectionRuntime{}, mapRunError(err)
+	}
+	return SelectionRuntime{
+		Provider: provider,
+		Adapter:  adapter,
+		Cleanup:  cleanup,
+	}, nil
+}

@@ -46,7 +46,7 @@ analysis:
 Generated results should be ignored by default in repositories that run
 benchmarks. They can contain private diffs, model output, stderr, local paths,
 artifact paths, profile names, model/provider metadata, and usage details.
-`cr benchmark run` does not create or update `.gitignore`; add the rule
+`cr benchmark run` and `cr benchmark select` do not create or update `.gitignore`; add the rule
 manually when the repository should keep benchmark results private. A typical
 repository ignore rule is:
 
@@ -58,6 +58,12 @@ The default `run` output path is:
 
 ```text
 .cr-bench/results/<suite-id>/<timestamp>/
+```
+
+The default `select` output path keeps selector-only runs separate:
+
+```text
+.cr-bench/results/<suite-id>/select/<timestamp>/
 ```
 
 Path timestamps are UTC, sortable, and Windows-safe. They do not contain colons:
@@ -142,13 +148,16 @@ Candidate `profile` must reference a configured profile. Candidate PR hosts must
 match the candidate profile's Git host. For the current full-pipeline
 `validate`, `doctor`, and `run` commands, candidates must declare exact
 provider model IDs and effort values for both `stages.selection` and
-`stages.reviewers`. `stages.selection.prompt` is optional, but when set it must
-reference a readable non-empty file relative to the suite. The
+`stages.reviewers`. Selector-only `benchmark select` still requires explicit
+`stages.selection.model` and `stages.selection.effort`, but it allows the
+reviewer stage to be omitted. `stages.selection.prompt` is optional, but when
+set it must reference a readable non-empty file relative to the suite. The
 `stages.reviewers.agent_dirs` field must be present for full-pipeline
 benchmarks, but it may be `[]` to rely only on profile and repo-local agent
-sources. `max_agents` and `max_concurrency` are optional; omit them or set them
-to `0` to use the corresponding `cr review` default. Negative max values are
-invalid.
+sources. Selector-only benchmarks pass `stages.reviewers.agent_dirs` through to
+the selection catalog when configured, but do not require it. `max_agents` and
+`max_concurrency` are optional; omit them or set them to `0` to use the
+corresponding `cr review` default. Negative max values are invalid.
 
 `effort` is the suite field for effort or reasoning-effort configuration. The
 selected adapter decides how to apply or translate it. Model IDs are
@@ -189,6 +198,18 @@ cr benchmark run .codereview/benchmarks/oss-model-cost-check.yml \
   --candidate claude-sonnet-medium \
   --case merged-security-pr \
   --results-dir .cr-bench/results/debug-run \
+  --json
+```
+
+Run the selected candidate x case matrix through the extracted selection phase
+only:
+
+```bash
+cr benchmark select .codereview/benchmarks/oss-model-cost-check.yml
+cr benchmark select .codereview/benchmarks/oss-model-cost-check.yml \
+  --candidate claude-sonnet-medium \
+  --case merged-security-pr \
+  --results-dir .cr-bench/results/debug-select \
   --json
 ```
 
@@ -236,6 +257,22 @@ and live-review flags are never taken from the suite.
 `--cr-bin <path>` selects the binary used for child review runs. If omitted,
 `run` uses the current `cr` binary. `doctor` reports the binary it would use.
 
+`select` does not use `--cr-bin`. It reuses the real in-process selection phase
+instead of spawning a child `cr review` command. Each selected run maps suite
+recipes directly into `pipeline.SelectionOnly`:
+
+| Candidate field | Selection request field |
+|-----------------|-------------------------|
+| `stages.selection.model` | `SelectionModelOverride` |
+| `stages.selection.effort` | `SelectionEffortOverride` |
+| `stages.selection.prompt` | file contents loaded into `SelectionPromptInstructions` |
+| `stages.reviewers.agent_dirs[]` | `AgentDirs` |
+| `review_base_sha` / `review_head_sha` | pinned review SHAs |
+
+Selector-only benchmarks do not run reviewer agents, do not run synthesis, do
+not write `review.json`, and do not create reviewer findings or rollup
+artifacts.
+
 `compare` reads the benchmark-owned artifacts in an existing results directory
 and writes `comparison.json` and `comparison.md`. It is local-only: it does not
 invoke models, re-read live PR state, mutate Git provider state, or require
@@ -244,7 +281,8 @@ after the suite artifacts are written.
 
 ## Artifacts
 
-Each run writes benchmark-owned artifacts under the selected results directory:
+Full-review `run` writes benchmark-owned artifacts under the selected results
+directory:
 
 ```text
 .cr-bench/results/<suite-id>/<timestamp>/
@@ -256,6 +294,24 @@ Each run writes benchmark-owned artifacts under the selected results directory:
   comparison.md
   0001-c01-k01-<candidate-id>-<case-id>/
     review.json
+    stderr.txt
+    metrics.json
+```
+
+Selector-only `select` writes the same suite-level summary files, but each run
+directory contains selector-specific artifacts:
+
+```text
+.cr-bench/results/<suite-id>/select/<timestamp>/
+  manifest.json
+  summary.jsonl
+  suite-summary.json
+  report.md
+  comparison.json
+  comparison.md
+  0001-c01-k01-<candidate-id>-<case-id>/
+    selection.json
+    recipe.json
     stderr.txt
     metrics.json
 ```
@@ -276,7 +332,7 @@ Suite-level artifacts:
 | `summary.jsonl` | One compact JSON run summary per line. |
 | `suite-summary.json` | Full benchmark summary including selected inputs, counts, run summaries, and artifact paths. |
 | `report.md` | Compact human-readable run table. |
-| `comparison.json` | Deterministic candidate x case comparison, failure classification, usage fields, artifact paths, and anchor placement metadata when anchors exist. |
+| `comparison.json` | Deterministic candidate x case comparison, failure classification, usage fields, artifact paths, and either selected reviewers or anchor placement metadata depending on benchmark mode. |
 | `comparison.md` | Compact human-readable comparison report emphasizing per-case results before aggregate totals. |
 
 Per-run artifacts:
@@ -286,6 +342,15 @@ Per-run artifacts:
 | `review.json` | Raw stdout from `cr review --dry-run --json`. |
 | `stderr.txt` | Stderr from the child `cr review` process. |
 | `metrics.json` | Benchmark run summary for that candidate/case execution, including provider usage when available. This is not a raw provider metrics file. |
+
+Selector-only per-run artifacts:
+
+| Artifact | Contents |
+|----------|----------|
+| `selection.json` | Raw selector structured-output bytes when a selector turn occurred. On selector failures before a valid decode, this preserves the last available provider JSON bytes when possible. |
+| `recipe.json` | Candidate and case recipe snapshot for that run, including prompt provenance metadata without prompt bodies. |
+| `stderr.txt` | Selector runtime or validation failure text when the selector run failed. Successful selector runs usually leave this empty. |
+| `metrics.json` | Benchmark run summary for that candidate/case selector execution, including selected reviewers/files and provider usage when available. |
 
 Benchmark artifacts are written with owner-only file permissions where the
 operating system supports them. Directories are owner-only as well.
@@ -304,20 +369,29 @@ The MVP measures rather than grades. Current benchmark summary artifacts include
 - run ID, candidate ID, case ID, and PR URL;
 - requested pinned review base/head SHAs when a case sets them, plus expected
   baseline SHAs when provided;
-- child review exit code and duration in milliseconds;
+- child review or selector run exit code and duration in milliseconds;
 - retry count, currently `0` because benchmark candidate/case executions are
   not retried by the runner;
 - coarse failure classification derived from local run facts and exit codes;
-- finding count and severity counts parsed from dry-run review JSON;
-- provider-reported usage from child review agent logs when available,
+- finding count and severity counts parsed from dry-run review JSON when the
+  benchmark mode is full-review;
+- selected reviewers/files and thread-action counts when the benchmark mode is
+  selector-only;
+- provider-reported usage from child review or selector agent logs when available,
   including LLM call count, turns, tool activity, tokens, cost, and per-phase
   agent log summaries;
-- warning strings when child review output cannot be parsed;
+- warning strings when child review output cannot be parsed or selector runs
+  fail after partial execution;
 - benchmark artifact paths.
 
 `review.json` is preserved so analysis tools can inspect the underlying dry-run
 review output. Other local review artifacts referenced by that JSON may contain
 more detail, depending on adapter and review behavior.
+
+`selection.json` is preserved so analysis tools can inspect the selector output
+or invalid selector payloads without rerunning the benchmark. Selector summaries
+record selected reviewer IDs and files directly, so comparison output can show
+selector choices per candidate and case without opening raw artifacts.
 
 Treat these metric families as nullable unless the producing adapter or
 artifact actually reports them. Generated reports render unavailable run-level
@@ -334,7 +408,7 @@ missing telemetry.
 | Cache read | Provider or adapter reported cache-read tokens, when present in child review agent logs. |
 | Cache create | Provider or adapter reported cache-write/create tokens, when present in child review agent logs. |
 | Cost | Provider or adapter reported cost only. Do not use baked-in benchmark price tables for v1. |
-| Selected agents | Use raw review artifacts or agent logs when available. The benchmark summary records selected candidate inputs, resolved agent directories, and usage phase names, not a stable selected-agent table today. |
+| Selected agents | Selector-only benchmarks record selected reviewer IDs and files directly in suite summaries, JSONL, and comparison artifacts. Full-review benchmarks still rely on review artifacts and logs for downstream selection analysis. |
 | Observed SHAs | Record when available from review artifacts or downstream analysis. Expected SHAs in cases are comparison metadata. |
 | Anchor metrics | Computed by `comparison.json` and `comparison.md` when cases define anchors. They are placement-only. |
 

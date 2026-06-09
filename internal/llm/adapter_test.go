@@ -75,6 +75,9 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		if err == nil {
 			t.Fatal("RunStructured error = nil, want validation failure")
 		}
+		if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+			t.Fatalf("RunStructured error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
+		}
 		if got := len(adapter.Requests()); got != 2 {
 			t.Fatalf("requests = %d, want one retry", got)
 		}

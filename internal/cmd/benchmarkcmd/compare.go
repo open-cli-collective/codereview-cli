@@ -21,16 +21,18 @@ const (
 	runStatusFailed    = "failed"
 	runStatusPartial   = "partial"
 
-	failureNone              = "none"
-	failureMissingArtifact   = "missing_artifact"
-	failureMissingReviewJSON = "missing_review_json"
-	failureInvalidReviewJSON = "invalid_review_json"
-	failureUsageError        = "usage_error"
-	failureAuthConfigError   = "auth_config_error"
-	failureUpstreamError     = "upstream_error"
-	failureChildProcessError = "child_process_error"
-	failureChildExitNonzero  = "child_exit_nonzero"
-	failureUnavailable       = "unavailable"
+	failureNone                 = "none"
+	failureMissingArtifact      = "missing_artifact"
+	failureMissingReviewJSON    = "missing_review_json"
+	failureInvalidReviewJSON    = "invalid_review_json"
+	failureInvalidSelectionJSON = "invalid_selection_json"
+	failureUsageError           = "usage_error"
+	failureAuthConfigError      = "auth_config_error"
+	failureUpstreamError        = "upstream_error"
+	failureChildProcessError    = "child_process_error"
+	failureChildExitNonzero     = "child_exit_nonzero"
+	failureUnavailable          = "unavailable"
+	failureSelectionError       = "selection_error"
 
 	placementAnchorHit       = "anchor_overlap_hit"
 	placementAnchorMiss      = "anchor_overlap_miss"
@@ -48,6 +50,7 @@ type compareFlags struct {
 
 type comparisonReport struct {
 	SchemaVersion   int                        `json:"schema_version"`
+	Mode            string                     `json:"mode,omitempty"`
 	SuiteID         string                     `json:"suite_id"`
 	ResultsDir      string                     `json:"results_dir"`
 	SourceArtifacts comparisonSourceArtifacts  `json:"source_artifacts"`
@@ -73,35 +76,40 @@ type comparisonArtifacts struct {
 }
 
 type comparisonRun struct {
-	RunID                  string                 `json:"run_id"`
-	CandidateID            string                 `json:"candidate_id"`
-	CaseID                 string                 `json:"case_id"`
-	PRURL                  string                 `json:"pr_url"`
-	RequestedReviewBaseSHA string                 `json:"requested_review_base_sha,omitempty"`
-	RequestedReviewHeadSHA string                 `json:"requested_review_head_sha,omitempty"`
-	ExpectedBaseSHA        string                 `json:"expected_base_sha,omitempty"`
-	ExpectedHeadSHA        string                 `json:"expected_head_sha,omitempty"`
-	ReviewBaseSHA          string                 `json:"review_base_sha,omitempty"`
-	ReviewHeadSHA          string                 `json:"review_head_sha,omitempty"`
-	CurrentBaseSHA         string                 `json:"current_base_sha,omitempty"`
-	CurrentHeadSHA         string                 `json:"current_head_sha,omitempty"`
-	Status                 string                 `json:"status"`
-	ExitCode               int                    `json:"exit_code"`
-	RetryCount             int                    `json:"retry_count"`
-	FailureClassification  string                 `json:"failure_classification"`
-	FindingCount           int                    `json:"finding_count"`
-	SeverityCounts         map[string]int         `json:"severity_counts"`
-	DurationMS             int64                  `json:"duration_ms"`
-	Usage                  *benchmark.RunMetrics  `json:"usage,omitempty"`
-	Artifacts              comparisonRunArtifacts `json:"artifacts"`
-	AnchorSummary          *anchorSummary         `json:"anchor_summary,omitempty"`
-	AnchorResults          []anchorResult         `json:"anchor_results,omitempty"`
-	UnmatchedFindings      []unmatchedFinding     `json:"unmatched_findings,omitempty"`
-	Warnings               []string               `json:"warnings"`
+	RunID                  string                   `json:"run_id"`
+	CandidateID            string                   `json:"candidate_id"`
+	CaseID                 string                   `json:"case_id"`
+	PRURL                  string                   `json:"pr_url"`
+	RequestedReviewBaseSHA string                   `json:"requested_review_base_sha,omitempty"`
+	RequestedReviewHeadSHA string                   `json:"requested_review_head_sha,omitempty"`
+	ExpectedBaseSHA        string                   `json:"expected_base_sha,omitempty"`
+	ExpectedHeadSHA        string                   `json:"expected_head_sha,omitempty"`
+	ReviewBaseSHA          string                   `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA          string                   `json:"review_head_sha,omitempty"`
+	CurrentBaseSHA         string                   `json:"current_base_sha,omitempty"`
+	CurrentHeadSHA         string                   `json:"current_head_sha,omitempty"`
+	Status                 string                   `json:"status"`
+	ExitCode               int                      `json:"exit_code"`
+	RetryCount             int                      `json:"retry_count"`
+	FailureClassification  string                   `json:"failure_classification"`
+	FindingCount           int                      `json:"finding_count"`
+	SeverityCounts         map[string]int           `json:"severity_counts"`
+	SelectedAgents         []benchmarkSelectedAgent `json:"selected_agents,omitempty"`
+	ThreadActionCount      int                      `json:"thread_action_count,omitempty"`
+	DurationMS             int64                    `json:"duration_ms"`
+	Usage                  *benchmark.RunMetrics    `json:"usage,omitempty"`
+	Artifacts              comparisonRunArtifacts   `json:"artifacts"`
+	AnchorSummary          *anchorSummary           `json:"anchor_summary,omitempty"`
+	AnchorResults          []anchorResult           `json:"anchor_results,omitempty"`
+	UnmatchedFindings      []unmatchedFinding       `json:"unmatched_findings,omitempty"`
+	Warnings               []string                 `json:"warnings"`
 }
 
 type comparisonRunArtifacts struct {
-	ReviewJSON         string `json:"review_json"`
+	ReviewJSON         string `json:"review_json,omitempty"`
+	SelectionJSON      string `json:"selection_json,omitempty"`
+	SelectionLog       string `json:"selection_log,omitempty"`
+	RecipeJSON         string `json:"recipe_json,omitempty"`
 	Stderr             string `json:"stderr"`
 	MetricsJSON        string `json:"metrics_json"`
 	ReviewArtifactPath string `json:"review_artifact_path,omitempty"`
@@ -239,8 +247,12 @@ func resolveCompareResultsDir(configured string) (string, error) {
 }
 
 func buildComparison(summary benchmarkSuiteSummary, resultsDir string) comparisonReport {
+	if summaryMode(summary) == benchmarkModeSelection {
+		return buildSelectionComparison(summary, resultsDir)
+	}
 	comparison := comparisonReport{
 		SchemaVersion: benchmarkArtifactSchemaVersion,
+		Mode:          benchmarkModeReview,
 		SuiteID:       summary.SuiteID,
 		ResultsDir:    resultsDir,
 		SourceArtifacts: comparisonSourceArtifacts{
@@ -297,6 +309,9 @@ func buildComparison(summary benchmarkSuiteSummary, resultsDir string) compariso
 			Usage:                  run.Usage,
 			Artifacts: comparisonRunArtifacts{
 				ReviewJSON:         run.Artifacts.ReviewJSON,
+				SelectionJSON:      run.Artifacts.SelectionJSON,
+				SelectionLog:       run.Artifacts.SelectionLog,
+				RecipeJSON:         run.Artifacts.RecipeJSON,
 				Stderr:             run.Artifacts.Stderr,
 				MetricsJSON:        run.Artifacts.MetricsJSON,
 				ReviewArtifactPath: run.ReviewArtifactPath,
@@ -316,6 +331,84 @@ func buildComparison(summary benchmarkSuiteSummary, resultsDir string) compariso
 		accumulateCandidateTotal(candidateTotals[run.CandidateID], row)
 	}
 
+	for _, benchCase := range summary.SelectedCases {
+		if total := caseTotals[benchCase.ID]; total != nil {
+			comparison.CaseTotals = append(comparison.CaseTotals, *total)
+		}
+	}
+	for _, candidate := range summary.SelectedCandidates {
+		if total := candidateTotals[candidate.ID]; total != nil {
+			comparison.CandidateTotals = append(comparison.CandidateTotals, *total)
+		}
+	}
+	return comparison
+}
+
+func buildSelectionComparison(summary benchmarkSuiteSummary, resultsDir string) comparisonReport {
+	comparison := comparisonReport{
+		SchemaVersion: benchmarkArtifactSchemaVersion,
+		Mode:          benchmarkModeSelection,
+		SuiteID:       summary.SuiteID,
+		ResultsDir:    resultsDir,
+		SourceArtifacts: comparisonSourceArtifacts{
+			SuiteSummary: filepath.Join(resultsDir, "suite-summary.json"),
+			Manifest:     filepath.Join(resultsDir, "manifest.json"),
+			SummaryJSONL: filepath.Join(resultsDir, "summary.jsonl"),
+		},
+		Artifacts: comparisonArtifacts{
+			ComparisonJSON:     filepath.Join(resultsDir, "comparison.json"),
+			ComparisonMarkdown: filepath.Join(resultsDir, "comparison.md"),
+		},
+		Candidates: append([]benchmarkCandidate(nil), summary.SelectedCandidates...),
+		Cases:      append([]benchmarkCase(nil), summary.SelectedCases...),
+		Warnings:   []string{},
+	}
+
+	caseTotals := make(map[string]*comparisonCaseTotal, len(summary.SelectedCases))
+	for _, benchCase := range summary.SelectedCases {
+		caseTotals[benchCase.ID] = &comparisonCaseTotal{CaseID: benchCase.ID, SeverityCounts: map[string]int{}}
+	}
+	candidateTotals := make(map[string]*comparisonCandidateTotal, len(summary.SelectedCandidates))
+	for _, candidate := range summary.SelectedCandidates {
+		candidateTotals[candidate.ID] = &comparisonCandidateTotal{CandidateID: candidate.ID, SeverityCounts: map[string]int{}}
+	}
+	for _, run := range summary.Runs {
+		row := comparisonRun{
+			RunID:                  run.RunID,
+			CandidateID:            run.CandidateID,
+			CaseID:                 run.CaseID,
+			PRURL:                  run.PRURL,
+			RequestedReviewBaseSHA: run.RequestedReviewBaseSHA,
+			RequestedReviewHeadSHA: run.RequestedReviewHeadSHA,
+			ExpectedBaseSHA:        run.ExpectedBaseSHA,
+			ExpectedHeadSHA:        run.ExpectedHeadSHA,
+			ReviewBaseSHA:          run.ReviewBaseSHA,
+			ReviewHeadSHA:          run.ReviewHeadSHA,
+			CurrentBaseSHA:         run.CurrentBaseSHA,
+			CurrentHeadSHA:         run.CurrentHeadSHA,
+			Status:                 selectionRunStatus(run),
+			ExitCode:               run.ExitCode,
+			RetryCount:             run.RetryCount,
+			FailureClassification:  selectionFailureClassification(run),
+			SelectedAgents:         append([]benchmarkSelectedAgent(nil), run.SelectedAgents...),
+			ThreadActionCount:      run.ThreadActionCount,
+			DurationMS:             run.DurationMS,
+			Usage:                  run.Usage,
+			Artifacts: comparisonRunArtifacts{
+				ReviewJSON:         run.Artifacts.ReviewJSON,
+				SelectionJSON:      run.Artifacts.SelectionJSON,
+				SelectionLog:       run.Artifacts.SelectionLog,
+				RecipeJSON:         run.Artifacts.RecipeJSON,
+				Stderr:             run.Artifacts.Stderr,
+				MetricsJSON:        run.Artifacts.MetricsJSON,
+				ReviewArtifactPath: run.ReviewArtifactPath,
+			},
+			Warnings: appendUniqueWarnings(nil, run.Warnings...),
+		}
+		comparison.Runs = append(comparison.Runs, row)
+		accumulateCaseTotal(caseTotals[run.CaseID], row)
+		accumulateCandidateTotal(candidateTotals[run.CandidateID], row)
+	}
 	for _, benchCase := range summary.SelectedCases {
 		if total := caseTotals[benchCase.ID]; total != nil {
 			comparison.CaseTotals = append(comparison.CaseTotals, *total)
@@ -596,7 +689,127 @@ func copySeverityCounts(counts map[string]int) map[string]int {
 	return out
 }
 
+func selectionRunStatus(run benchmarkRun) string {
+	if run.ExitCode == exitcode.Success {
+		return runStatusCompleted
+	}
+	return runStatusFailed
+}
+
+func selectionFailureClassification(run benchmarkRun) string {
+	if strings.TrimSpace(run.FailureClassification) != "" {
+		return run.FailureClassification
+	}
+	if run.ExitCode == exitcode.Success {
+		return failureNone
+	}
+	return failureSelectionError
+}
+
+func renderSelectionCompareText(opts *root.Options, comparison comparisonReport) error {
+	if _, err := fmt.Fprintf(opts.Stdout, "Selector benchmark comparison: %s\n", comparison.SuiteID); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(opts.Stdout, "Results dir: %s\n", comparison.ResultsDir); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(opts.Stdout, "Runs: %d\n", len(comparison.Runs)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(opts.Stdout, "Artifacts:"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(opts.Stdout, "  Comparison JSON: %s\n", comparison.Artifacts.ComparisonJSON); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(opts.Stdout, "  Comparison Markdown: %s\n", comparison.Artifacts.ComparisonMarkdown)
+	return err
+}
+
+func renderSelectionComparisonMarkdown(comparison comparisonReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Selector Benchmark Comparison: %s\n\n", comparison.SuiteID)
+	fmt.Fprintf(&b, "- Results dir: `%s`\n\n", comparison.ResultsDir)
+	b.WriteString("## Candidate x Case Status\n\n")
+	b.WriteString("| Candidate | Case | Status | Exit | Failure | Selected Reviewers | Thread Actions | Duration ms | Tokens | Cost |\n")
+	b.WriteString("| --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: |\n")
+	for _, run := range comparison.Runs {
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %d | %s | %s | %d | %d | %s | %s |\n",
+			markdownCell(run.CandidateID),
+			markdownCell(run.CaseID),
+			run.Status,
+			run.ExitCode,
+			markdownCell(run.FailureClassification),
+			selectedAgentsMarkdownCell(run.SelectedAgents),
+			run.ThreadActionCount,
+			run.DurationMS,
+			usageTokensCell(run.Usage),
+			usageCostCell(run.Usage),
+		)
+	}
+	b.WriteString("\n## Cases\n\n")
+	for _, benchCase := range comparison.Cases {
+		fmt.Fprintf(&b, "### `%s`\n\n", markdownCode(benchCase.ID))
+		fmt.Fprintf(&b, "- PR: `%s`\n", markdownCode(benchCase.PR))
+		writeOptionalMarkdownKV(&b, "Requested base SHA", benchCase.ReviewBaseSHA)
+		writeOptionalMarkdownKV(&b, "Requested head SHA", benchCase.ReviewHeadSHA)
+		writeOptionalMarkdownKV(&b, "Expected base SHA", benchCase.ExpectedBaseSHA)
+		writeOptionalMarkdownKV(&b, "Expected head SHA", benchCase.ExpectedHeadSHA)
+		b.WriteString("\n")
+		b.WriteString("| Candidate | Status | Failure | Selected Reviewers | Thread Actions |\n")
+		b.WriteString("| --- | --- | --- | --- | ---: |\n")
+		for _, run := range comparison.Runs {
+			if run.CaseID != benchCase.ID {
+				continue
+			}
+			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %d |\n",
+				markdownCode(run.CandidateID),
+				run.Status,
+				markdownCell(run.FailureClassification),
+				selectedAgentsMarkdownCell(run.SelectedAgents),
+				run.ThreadActionCount,
+			)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("## Case Totals\n\n")
+	b.WriteString("| Case | Runs | Completed | Failed | Partial |\n")
+	b.WriteString("| --- | ---: | ---: | ---: | ---: |\n")
+	for _, total := range comparison.CaseTotals {
+		fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d |\n", markdownCode(total.CaseID), total.RunCount, total.CompletedCount, total.FailedCount, total.PartialCount)
+	}
+	b.WriteString("\n## Candidate Totals\n\n")
+	b.WriteString("| Candidate | Runs | Completed | Failed | Partial | Duration ms | Tokens | Cost |\n")
+	b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+	for _, total := range comparison.CandidateTotals {
+		fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d | %d | %s | %s |\n",
+			markdownCell(total.CandidateID),
+			total.RunCount,
+			total.CompletedCount,
+			total.FailedCount,
+			total.PartialCount,
+			total.DurationMS,
+			usageTokensCell(total.Usage),
+			usageCostCell(total.Usage),
+		)
+	}
+	b.WriteString("\n## Raw Artifacts\n\n")
+	for _, run := range comparison.Runs {
+		fmt.Fprintf(&b, "- `%s`: selection `%s`, log `%s`, metrics `%s`, stderr `%s`\n",
+			markdownCode(run.RunID),
+			markdownCode(run.Artifacts.SelectionJSON),
+			markdownCode(run.Artifacts.SelectionLog),
+			markdownCode(run.Artifacts.MetricsJSON),
+			markdownCode(run.Artifacts.Stderr),
+		)
+	}
+	return b.String()
+}
+
 func renderCompareText(opts *root.Options, comparison comparisonReport) error {
+	if comparison.Mode == benchmarkModeSelection {
+		return renderSelectionCompareText(opts, comparison)
+	}
 	if _, err := fmt.Fprintf(opts.Stdout, "Benchmark comparison: %s\n", comparison.SuiteID); err != nil {
 		return err
 	}
@@ -617,6 +830,9 @@ func renderCompareText(opts *root.Options, comparison comparisonReport) error {
 }
 
 func renderComparisonMarkdown(comparison comparisonReport) string {
+	if comparison.Mode == benchmarkModeSelection {
+		return renderSelectionComparisonMarkdown(comparison)
+	}
 	var b strings.Builder
 	severityColumns := comparisonSeverityColumns(comparison)
 	fmt.Fprintf(&b, "# Benchmark Comparison: %s\n\n", comparison.SuiteID)

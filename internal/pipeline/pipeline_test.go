@@ -477,14 +477,30 @@ func TestSelectionOnlyRejectsInvalidSelection(t *testing.T) {
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("missing:agent", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("selection-session-retry", selectionJSON("missing:agent", "main.go"), 10, 2))
+	artifactDir := t.TempDir()
 
-	_, err := SelectionOnly(ctx, Options{
+	result, err := SelectionOnly(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
-	}, selectionRequestFromReview(req, t.TempDir()))
+	}, selectionRequestFromReview(req, artifactDir))
 	if err == nil || !strings.Contains(err.Error(), "structured output invalid after retry") || !strings.Contains(err.Error(), "unknown selected agent") {
 		t.Fatalf("SelectionOnly error = %v, want retry-wrapped unknown selected agent", err)
+	}
+	if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+		t.Fatalf("SelectionOnly error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
+	}
+	if !reflect.DeepEqual(result.Artifacts, ArtifactPathsFromDir(artifactDir)) {
+		t.Fatalf("artifacts = %#v, want caller-owned dir %q", result.Artifacts, artifactDir)
+	}
+	if result.SelectionSession.ProviderSessionID != "selection-session-retry" {
+		t.Fatalf("selection session = %#v, want retry session id", result.SelectionSession)
+	}
+	if got := string(result.SelectionSession.Response.StructuredOutput); !strings.Contains(got, `"missing:agent"`) {
+		t.Fatalf("selection response = %q, want raw invalid retry payload", got)
+	}
+	if !reflect.DeepEqual(result.Selection, llm.Selection{}) {
+		t.Fatalf("selection = %#v, want zero value on invalid output", result.Selection)
 	}
 	requests := adapter.Requests()
 	if len(requests) != 2 {

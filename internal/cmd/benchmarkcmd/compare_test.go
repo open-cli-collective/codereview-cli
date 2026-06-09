@@ -12,7 +12,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -63,6 +67,7 @@ func TestCompareCommandWritesArtifactsAndJSONWithoutConfig(t *testing.T) {
 	}
 	assertExactJSONKeys(t, out.Bytes(), []string{
 		"schema_version",
+		"mode",
 		"suite_id",
 		"results_dir",
 		"source_artifacts",
@@ -139,6 +144,137 @@ func TestComparePreservesMatrixOrderAndAggregatesTotals(t *testing.T) {
 	if got.CandidateTotals[1].RunCount != 2 || got.CandidateTotals[1].CompletedCount != 1 || got.CandidateTotals[1].FailedCount != 1 || got.CandidateTotals[1].SeverityCounts["advice"] != 1 {
 		t.Fatalf("second candidate total = %#v, want failure and unknown severity aggregate", got.CandidateTotals[1])
 	}
+}
+
+func TestCompareSelectionModeShowsSelectedReviewers(t *testing.T) {
+	resultsDir := t.TempDir()
+	runDir := filepath.Join(resultsDir, "0001-c01-k01-first-case_one")
+	summary := benchmarkSuiteSummary{
+		SchemaVersion: benchmarkArtifactSchemaVersion,
+		Mode:          benchmarkModeSelection,
+		SuiteID:       "suite1",
+		ResultsDir:    resultsDir,
+		SelectedCandidates: []benchmarkCandidate{{
+			ID:      "first",
+			Profile: "home",
+			Stages: benchmarkCandidateStages{
+				Selection: benchmarkSelectionStage{Model: "sonnet", Effort: "high"},
+			},
+		}},
+		SelectedCases: []benchmarkCase{{
+			ID: "case_one",
+			PR: "https://github.com/open-cli-collective/codereview-cli/pull/1",
+		}},
+		Runs: []benchmarkRun{
+			{
+				RunID:                 "0001-c01-k01-first-case_one",
+				CandidateID:           "first",
+				CaseID:                "case_one",
+				PRURL:                 "https://github.com/open-cli-collective/codereview-cli/pull/1",
+				ExitCode:              0,
+				FailureClassification: failureNone,
+				SelectedAgents:        []benchmarkSelectedAgent{{AgentID: "harness:alpha", Files: []string{"main.go"}}},
+				ThreadActionCount:     1,
+				Artifacts: runArtifacts{
+					Dir:           runDir,
+					SelectionJSON: filepath.Join(runDir, "selection.json"),
+					SelectionLog:  filepath.Join(runDir, "agent-logs", "orchestrator-selection.jsonl"),
+					RecipeJSON:    filepath.Join(runDir, "recipe.json"),
+					Stderr:        filepath.Join(runDir, "stderr.txt"),
+					MetricsJSON:   filepath.Join(runDir, "metrics.json"),
+				},
+			},
+			{
+				RunID:                 "0002-c01-k02-first-case_two",
+				CandidateID:           "first",
+				CaseID:                "case_one",
+				PRURL:                 "https://github.com/open-cli-collective/codereview-cli/pull/1",
+				ExitCode:              1,
+				FailureClassification: failureInvalidSelectionJSON,
+				Artifacts: runArtifacts{
+					Dir:           filepath.Join(resultsDir, "0002-c01-k02-first-case_two"),
+					SelectionJSON: filepath.Join(resultsDir, "0002-c01-k02-first-case_two", "selection.json"),
+					SelectionLog:  filepath.Join(resultsDir, "0002-c01-k02-first-case_two", "agent-logs", "orchestrator-selection.jsonl"),
+					RecipeJSON:    filepath.Join(resultsDir, "0002-c01-k02-first-case_two", "recipe.json"),
+					Stderr:        filepath.Join(resultsDir, "0002-c01-k02-first-case_two", "stderr.txt"),
+					MetricsJSON:   filepath.Join(resultsDir, "0002-c01-k02-first-case_two", "metrics.json"),
+				},
+				Warnings: []string{"structured output invalid after retry"},
+			},
+		},
+		Artifacts: suiteArtifacts{
+			Manifest:           filepath.Join(resultsDir, "manifest.json"),
+			SummaryJSONL:       filepath.Join(resultsDir, "summary.jsonl"),
+			SuiteSummary:       filepath.Join(resultsDir, "suite-summary.json"),
+			Report:             filepath.Join(resultsDir, "report.md"),
+			ComparisonJSON:     filepath.Join(resultsDir, "comparison.json"),
+			ComparisonMarkdown: filepath.Join(resultsDir, "comparison.md"),
+		},
+	}
+	writeComparisonFixture(t, summary)
+
+	got, err := writeComparisonArtifactsForResultsDir(resultsDir)
+	if err != nil {
+		t.Fatalf("writeComparisonArtifactsForResultsDir: %v", err)
+	}
+	if got.Mode != benchmarkModeSelection || got.Runs[0].Status != runStatusCompleted || got.Runs[0].SelectedAgents[0].AgentID != "harness:alpha" {
+		t.Fatalf("comparison = %#v, want selector-mode completed run with selected reviewer", got)
+	}
+	if got.Runs[1].Status != runStatusFailed || got.Runs[1].FailureClassification != failureInvalidSelectionJSON {
+		t.Fatalf("failed selector run = %#v, want failed invalid-selection classification", got.Runs[1])
+	}
+	assertFileContains(t, got.Artifacts.ComparisonJSON, `"mode": "selection"`)
+	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "Selector Benchmark Comparison")
+	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "harness:alpha")
+	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "invalid_selection_json")
+}
+
+func TestCompareConsumesRealBenchmarkSelectArtifacts(t *testing.T) {
+	selectCmd, _ := newTestCommand(t)
+	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
+	resultsDir := filepath.Join(t.TempDir(), "results")
+
+	withBenchmarkSelectSeams(t,
+		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
+			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		},
+		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			return pipeline.SelectionResult{
+				Artifacts: pipeline.ArtifactPathsFromDir(req.ArtifactDir),
+				Selection: llm.Selection{
+					SelectedAgents: []llm.SelectedAgent{{AgentID: "harness:alpha", Files: []string{"main.go"}}},
+				},
+				SelectionSession: pipeline.SelectionSession{
+					Response: llm.Response{
+						StructuredOutput: []byte(`{"schema_version":1,"selected_agents":[{"agent_id":"harness:alpha","rationale":"main","files":["main.go"]}],"thread_actions":[],"reasoning":"ok"}`),
+					},
+				},
+			}, nil
+		},
+	)
+
+	if err := root.Execute(selectCmd, []string{
+		"benchmark", "select", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", resultsDir,
+	}); err != nil {
+		t.Fatalf("Execute select: %v", err)
+	}
+
+	compareCmd, out := newCompareOnlyTestCommand(filepath.Join(t.TempDir(), "missing-config.yml"))
+	if err := root.Execute(compareCmd, []string{"benchmark", "compare", resultsDir, "--json"}); err != nil {
+		t.Fatalf("Execute compare: %v", err)
+	}
+	var got comparisonReport
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal compare JSON: %v\n%s", err, out.String())
+	}
+	if got.Mode != benchmarkModeSelection || len(got.Runs) != 1 || got.Runs[0].SelectedAgents[0].AgentID != "harness:alpha" {
+		t.Fatalf("comparison = %#v, want real selector comparison output", got)
+	}
+	assertFileContains(t, got.Artifacts.ComparisonJSON, `"selected_agents"`)
+	assertFileContains(t, got.Artifacts.ComparisonMarkdown, "Selector Benchmark Comparison")
 }
 
 func TestCompareClassifiesFailuresAndPathEscapes(t *testing.T) {
@@ -560,8 +696,19 @@ func writeComparisonFixture(t *testing.T, summary benchmarkSuiteSummary) {
 	if err := os.MkdirAll(summary.ResultsDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll results: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(summary.Runs[0].Artifacts.ReviewJSON), 0o700); err != nil {
-		t.Fatalf("MkdirAll run: %v", err)
+	if len(summary.Runs) > 0 {
+		artifactDir := summary.Runs[0].Artifacts.Dir
+		switch {
+		case summary.Runs[0].Artifacts.ReviewJSON != "":
+			artifactDir = filepath.Dir(summary.Runs[0].Artifacts.ReviewJSON)
+		case summary.Runs[0].Artifacts.SelectionJSON != "":
+			artifactDir = filepath.Dir(summary.Runs[0].Artifacts.SelectionJSON)
+		}
+		if artifactDir != "" {
+			if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+				t.Fatalf("MkdirAll run: %v", err)
+			}
+		}
 	}
 	data, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {

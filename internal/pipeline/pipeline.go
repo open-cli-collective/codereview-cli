@@ -37,6 +37,10 @@ const (
 	defaultMaxPromptBytes = 512 * 1024
 )
 
+// ErrStructuredOutputInvalidAfterRetry marks a selector or rollup response that
+// stayed invalid after the LLM retry path.
+var ErrStructuredOutputInvalidAfterRetry = llm.ErrStructuredOutputInvalidAfterRetry
+
 // ReadProvider is the PR read boundary needed by dry-run review.
 type ReadProvider interface {
 	GetPR(context.Context, gitprovider.PRRef) (gitprovider.PR, error)
@@ -389,11 +393,11 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		Artifacts:                   prepared.artifacts,
 		MaxAgents:                   opts.maxAgents(),
 	})
+	result.SelectionSession = selectionSessionFromDraft(session)
 	if err != nil {
-		return SelectionResult{}, err
+		return result, err
 	}
 	result.Selection = selection
-	result.SelectionSession = selectionSessionFromDraft(session)
 	return result, nil
 }
 
@@ -792,10 +796,10 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 		})
 	})
 	if err != nil {
-		return llm.Selection{}, sessionDraft{}, err
+		return llm.Selection{}, selectionSession, err
 	}
 	if len(selection.SelectedAgents) > req.MaxAgents {
-		return llm.Selection{}, sessionDraft{}, fmt.Errorf("pipeline: selected agents %d exceeds max %d", len(selection.SelectedAgents), req.MaxAgents)
+		return llm.Selection{}, selectionSession, fmt.Errorf("pipeline: selected agents %d exceeds max %d", len(selection.SelectedAgents), req.MaxAgents)
 	}
 	return selection, selectionSession, nil
 }
