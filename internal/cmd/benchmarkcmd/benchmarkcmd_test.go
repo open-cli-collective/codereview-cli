@@ -125,6 +125,31 @@ func TestDoctorJSONUsesDefaultExecutable(t *testing.T) {
 	}
 }
 
+func TestDoctorJSONReportsOptionalSynthesisStage(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	synthesisPrompt := filepath.Join(t.TempDir(), "synthesis-v1.md")
+	if err := os.WriteFile(synthesisPrompt, []byte("Summarize reviewer findings."), 0o600); err != nil {
+		t.Fatalf("WriteFile synthesis prompt: %v", err)
+	}
+	suitePath := writeBenchmarkSuite(t, withBenchmarkSynthesisStage(validBenchmarkSuite(t), synthesisPrompt))
+
+	if err := root.Execute(cmd, []string{"benchmark", "doctor", suitePath, "--candidate", "first", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got doctorReport
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if len(got.Candidates) != 1 || got.Candidates[0].Stages.Synthesis == nil {
+		t.Fatalf("candidates = %#v, want candidate with synthesis stage", got.Candidates)
+	}
+	if got.Candidates[0].Stages.Synthesis.Model != "claude-opus-4-8" ||
+		got.Candidates[0].Stages.Synthesis.Effort != "low" ||
+		got.Candidates[0].Stages.Synthesis.Prompt != synthesisPrompt {
+		t.Fatalf("synthesis stage = %#v, want preserved synthesis recipe", got.Candidates[0].Stages.Synthesis)
+	}
+}
+
 func TestDoctorJSONResolvesCRBinFromPATH(t *testing.T) {
 	cmd, out := newTestCommand(t)
 	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
@@ -475,6 +500,57 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	assertFileContains(t, got.Runs[1].Artifacts.Stderr, "second stderr")
 	assertFileContains(t, got.Runs[0].Artifacts.MetricsJSON, `"finding_count": 1`)
 	assertBenchmarkArtifactJSON(t, got)
+}
+
+func TestRunSummaryAndComparePreserveOptionalSynthesisStage(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	synthesisPrompt := filepath.Join(t.TempDir(), "synthesis-v1.md")
+	if err := os.WriteFile(synthesisPrompt, []byte("Summarize reviewer findings."), 0o600); err != nil {
+		t.Fatalf("WriteFile synthesis prompt: %v", err)
+	}
+	suitePath := writeBenchmarkSuite(t, withBenchmarkSynthesisStage(validBenchmarkSuite(t), synthesisPrompt))
+	crBin := writeExecutableCRBin(t)
+	resultsDir := filepath.Join(t.TempDir(), "results")
+
+	withBenchmarkRunSeams(t, fixedBenchmarkTime(), func(_ context.Context, _ string, _ []string) reviewCommandResult {
+		return reviewCommandResult{
+			Stdout:   reviewDryRunJSON(t, "child-run-1"),
+			ExitCode: 0,
+			Duration: 1500 * time.Millisecond,
+		}
+	})
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "run", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", resultsDir,
+		"--cr-bin", crBin,
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if len(got.SelectedCandidates) != 1 || got.SelectedCandidates[0].Stages.Synthesis == nil {
+		t.Fatalf("selected candidates = %#v, want synthesis stage in summary", got.SelectedCandidates)
+	}
+	if got.SelectedCandidates[0].Stages.Synthesis.Model != "claude-opus-4-8" ||
+		got.SelectedCandidates[0].Stages.Synthesis.Prompt == nil ||
+		got.SelectedCandidates[0].Stages.Synthesis.Prompt.ContentSHA256 == "" {
+		t.Fatalf("summary synthesis stage = %#v, want prompt provenance hash", got.SelectedCandidates[0].Stages.Synthesis)
+	}
+	var comparison comparisonReport
+	if data, err := os.ReadFile(got.Artifacts.ComparisonJSON); err != nil {
+		t.Fatalf("ReadFile comparison json: %v", err)
+	} else if err := json.Unmarshal(data, &comparison); err != nil {
+		t.Fatalf("Unmarshal comparison json: %v", err)
+	}
+	if len(comparison.Candidates) != 1 || comparison.Candidates[0].Stages.Synthesis == nil || comparison.Candidates[0].Stages.Synthesis.Model != "claude-opus-4-8" {
+		t.Fatalf("comparison candidates = %#v, want preserved synthesis stage", comparison.Candidates)
+	}
 }
 
 func TestRunExtractsUsageMetricsFromReviewArtifacts(t *testing.T) {
@@ -844,6 +920,14 @@ cases:
 	body = strings.ReplaceAll(body, "MISSING_AGENT_DIR", missingAgentDir)
 	body = strings.ReplaceAll(body, "AGENT_DIR", agentDir)
 	return strings.ReplaceAll(body, "PROMPT_PATH", promptPath)
+}
+
+func withBenchmarkSynthesisStage(body, promptPath string) string {
+	stage := "      synthesis:\n        model: claude-opus-4-8\n        effort: low\n"
+	if promptPath != "" {
+		stage += "        prompt: " + promptPath + "\n"
+	}
+	return strings.Replace(body, "    max_agents: 5\n", stage+"    max_agents: 5\n", 1)
 }
 
 func testConfig() config.File {

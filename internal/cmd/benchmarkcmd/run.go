@@ -100,8 +100,9 @@ type benchmarkCandidate struct {
 }
 
 type benchmarkCandidateStages struct {
-	Selection benchmarkSelectionStage `json:"selection"`
-	Reviewers benchmarkReviewerStage  `json:"reviewers,omitempty"`
+	Selection benchmarkSelectionStage  `json:"selection"`
+	Reviewers benchmarkReviewerStage   `json:"reviewers,omitempty"`
+	Synthesis *benchmarkSynthesisStage `json:"synthesis,omitempty"`
 }
 
 type benchmarkSelectionStage struct {
@@ -109,6 +110,8 @@ type benchmarkSelectionStage struct {
 	Effort string               `json:"effort,omitempty"`
 	Prompt *benchmarkPromptFile `json:"prompt,omitempty"`
 }
+
+type benchmarkSynthesisStage = benchmarkSelectionStage
 
 type benchmarkReviewerStage struct {
 	Model     string              `json:"model,omitempty"`
@@ -525,12 +528,24 @@ func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []be
 					Effort:    candidate.Stages.Reviewers.Effort,
 					AgentDirs: summarizeAgentDirs(suiteDir, candidate.Stages.Reviewers.AgentDirs),
 				},
+				Synthesis: summarizeOptionalSynthesisStage(suiteDir, candidate.Stages.Synthesis),
 			},
 			MaxAgents:      candidate.MaxAgents,
 			MaxConcurrency: candidate.MaxConcurrency,
 		})
 	}
 	return out
+}
+
+func summarizeOptionalSynthesisStage(suiteDir string, stage benchmark.SelectionStage) *benchmarkSynthesisStage {
+	if strings.TrimSpace(stage.Model) == "" && strings.TrimSpace(stage.Effort) == "" && strings.TrimSpace(stage.Prompt) == "" {
+		return nil
+	}
+	return &benchmarkSynthesisStage{
+		Model:  stage.Model,
+		Effort: stage.Effort,
+		Prompt: summarizePromptFile(suiteDir, stage.Prompt),
+	}
 }
 
 func summarizePromptFile(suiteDir, configured string) *benchmarkPromptFile {

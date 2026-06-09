@@ -231,6 +231,57 @@ cases:
 	}
 }
 
+func TestSelectRecipePreservesOptionalSynthesisStage(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	synthesisPrompt := filepath.Join(t.TempDir(), "synthesis-v1.md")
+	if err := os.WriteFile(synthesisPrompt, []byte("Summarize reviewer findings."), 0o600); err != nil {
+		t.Fatalf("WriteFile synthesis prompt: %v", err)
+	}
+	suitePath := writeBenchmarkSuite(t, withBenchmarkSynthesisStage(validBenchmarkSuite(t), synthesisPrompt))
+
+	withBenchmarkSelectSeams(t,
+		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
+			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		},
+		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			return pipeline.SelectionResult{
+				Artifacts: pipeline.ArtifactPathsFromDir(req.ArtifactDir),
+				SelectionSession: pipeline.SelectionSession{
+					Response: llm.Response{
+						StructuredOutput: []byte(`{"schema_version":1,"selected_agents":[],"thread_actions":[],"reasoning":"ok"}`),
+					},
+				},
+			}, nil
+		},
+	)
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "select", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", filepath.Join(t.TempDir(), "results"),
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	var recipe benchmarkRunRecipe
+	if data, err := os.ReadFile(got.Runs[0].Artifacts.RecipeJSON); err != nil {
+		t.Fatalf("ReadFile recipe: %v", err)
+	} else if err := json.Unmarshal(data, &recipe); err != nil {
+		t.Fatalf("Unmarshal recipe: %v", err)
+	}
+	if recipe.Candidate.Stages.Synthesis == nil ||
+		recipe.Candidate.Stages.Synthesis.Model != "claude-opus-4-8" ||
+		recipe.Candidate.Stages.Synthesis.Prompt == nil ||
+		recipe.Candidate.Stages.Synthesis.Prompt.ContentSHA256 == "" {
+		t.Fatalf("recipe synthesis stage = %#v, want preserved synthesis prompt metadata", recipe.Candidate.Stages.Synthesis)
+	}
+}
+
 func TestSelectRecordsPerRunFailureWhenSelectorExceedsCandidateMaxAgents(t *testing.T) {
 	cmd, out := newTestCommand(t)
 	body := strings.Replace(validBenchmarkSuite(t), "    max_agents: 5", "    max_agents: 1", 1)
