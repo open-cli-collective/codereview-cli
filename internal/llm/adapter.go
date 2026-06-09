@@ -209,8 +209,7 @@ func extractSingleJSONObject(data []byte) ([]byte, bool) {
 			i = end
 			continue
 		}
-		if isJSONValueSequence(prefix) || isJSONValueSequence(suffix) ||
-			hasJSONContainerFragment(prefix, true) || hasJSONContainerFragment(suffix, false) {
+		if isJSONValueSequence(prefix) || isJSONValueSequence(suffix) || hasUnclosedJSONContainer(prefix) {
 			i = end
 			continue
 		}
@@ -233,23 +232,6 @@ func hasArrayWrapperAdjacentToObject(prefix []byte, suffix []byte) bool {
 		len(suffix) > 0 && suffix[0] == ']'
 }
 
-func hasJSONContainerFragment(data []byte, beforeObject bool) bool {
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 {
-		return false
-	}
-	if beforeObject {
-		return data[0] == '{' && bytes.Contains(data, []byte{':'}) ||
-			data[0] == '[' && bytes.Contains(data, []byte{','})
-	}
-	switch data[0] {
-	case ',', '}', ']':
-		return true
-	default:
-		return false
-	}
-}
-
 func isJSONValueSequence(data []byte) bool {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
@@ -262,6 +244,42 @@ func isJSONValueSequence(data []byte) bool {
 			return errors.Is(err, io.EOF)
 		}
 	}
+}
+
+func hasUnclosedJSONContainer(data []byte) bool {
+	var stack []byte
+	inString := false
+	escaped := false
+	for _, ch := range data {
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{', '[':
+			stack = append(stack, ch)
+		case '}':
+			if len(stack) > 0 && stack[len(stack)-1] == '{' {
+				stack = stack[:len(stack)-1]
+			}
+		case ']':
+			if len(stack) > 0 && stack[len(stack)-1] == '[' {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	return len(stack) > 0
 }
 
 func objectEnd(data []byte, start int) (int, bool) {

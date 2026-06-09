@@ -94,6 +94,35 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 	})
 
+	t.Run("recovers single json object with punctuated prose", func(t *testing.T) {
+		tests := []string{
+			`Here is JSON: {"ok":true}, thanks`,
+			`[note, retry-safe] {"ok":true}`,
+		}
+		for _, output := range tests {
+			t.Run(output, func(t *testing.T) {
+				adapter := &FakeAdapter{}
+				adapter.Queue(FakeResult{SessionID: "s1", Response: Response{StructuredOutput: []byte(output)}})
+
+				got, response, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+					if string(data) != `{"ok":true}` {
+						return "", errors.New("bad json")
+					}
+					return "ok", nil
+				})
+				if err != nil {
+					t.Fatalf("RunStructured: %v", err)
+				}
+				if got != "ok" || string(response.StructuredOutput) != output {
+					t.Fatalf("RunStructured = %q %#v, want raw punctuated prose response preserved", got, response)
+				}
+				if got := len(adapter.Requests()); got != 1 {
+					t.Fatalf("requests = %d, want no retry", got)
+				}
+			})
+		}
+	})
+
 	t.Run("does not recover ambiguous json objects", func(t *testing.T) {
 		adapter := &FakeAdapter{}
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`first {"ok":true} second {"ok":true}`)}})
@@ -136,6 +165,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 			`{"a": {"ok":true}`,
 			`{"a": {"ok":true}, "b": 1}`,
 			`prefix [1, {"ok":true}, 2] suffix`,
+			`prefix {"a": {"ok":true} suffix`,
 		}
 		for _, output := range tests {
 			t.Run(output, func(t *testing.T) {
