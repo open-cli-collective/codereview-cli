@@ -2,6 +2,8 @@ package benchmark
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -56,6 +58,29 @@ func TestValidateForRunAcceptsEmptyReviewerAgentDirsField(t *testing.T) {
 
 	if err := ValidateForRun(suite, testConfig()); err != nil {
 		t.Fatalf("ValidateForRun: %v", err)
+	}
+}
+
+func TestValidateForRunRejectsEmptySelectionPromptFile(t *testing.T) {
+	dir := t.TempDir()
+	suitePath := filepath.Join(dir, "suite.yml")
+	promptPath := filepath.Join(dir, "selection.md")
+	body := replaceSuiteLine(validSuiteYAML(), "        prompt: prompts/selection-v1.md", "        prompt: selection.md")
+
+	if err := os.WriteFile(promptPath, []byte(" \n\t "), 0o600); err != nil {
+		t.Fatalf("WriteFile prompt: %v", err)
+	}
+	if err := os.WriteFile(suitePath, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile suite: %v", err)
+	}
+	suite, err := LoadFile(suitePath)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+
+	err = ValidateForRun(suite, testConfig())
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "must contain non-empty prompt text") {
+		t.Fatalf("ValidateForRun error = %v, want empty selection prompt rejection", err)
 	}
 }
 

@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	benchmarkArtifactSchemaVersion = 1
+	benchmarkArtifactSchemaVersion = 2
 	runTimestampLayout             = "2006-01-02T150405Z"
 	artifactDirPerm                = 0o700
 	artifactFilePerm               = 0o600

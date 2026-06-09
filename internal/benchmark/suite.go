@@ -480,13 +480,8 @@ func validateRunCandidates(suite SuiteFile) error {
 			return fmt.Errorf("%w: candidate %q stages.reviewers.agent_dirs is required for benchmark run", ErrInvalid, candidate.ID)
 		}
 		if prompt := candidate.Stages.Selection.Prompt; prompt != "" && suite.Path != "" {
-			resolved := resolveSuiteRelativePath(suiteDir, prompt)
-			info, err := os.Stat(resolved)
-			if err != nil {
-				return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must reference a readable file relative to the suite", ErrInvalid, candidate.ID, prompt)
-			}
-			if info.IsDir() {
-				return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must reference a file, not a directory", ErrInvalid, candidate.ID, prompt)
+			if err := validateSelectionPromptFile(candidate.ID, suiteDir, prompt); err != nil {
+				return err
 			}
 		}
 	}
@@ -499,6 +494,25 @@ func resolveSuiteRelativePath(baseDir, path string) string {
 		return path
 	}
 	return filepath.Join(baseDir, path)
+}
+
+func validateSelectionPromptFile(candidateID, suiteDir, prompt string) error {
+	resolved := resolveSuiteRelativePath(suiteDir, prompt)
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must reference a readable file relative to the suite", ErrInvalid, candidateID, prompt)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must reference a file, not a directory", ErrInvalid, candidateID, prompt)
+	}
+	data, err := os.ReadFile(resolved) // #nosec G304 -- suite-selected prompt path is explicit benchmark input.
+	if err != nil {
+		return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must reference a readable file relative to the suite", ErrInvalid, candidateID, prompt)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must contain non-empty prompt text", ErrInvalid, candidateID, prompt)
+	}
+	return nil
 }
 
 func validateCases(cases []Case) error {

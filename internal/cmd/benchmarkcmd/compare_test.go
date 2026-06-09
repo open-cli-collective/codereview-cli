@@ -385,7 +385,7 @@ func TestComparisonMarkdownEscapesTableCells(t *testing.T) {
 func TestCompareRejectsUnsupportedSchema(t *testing.T) {
 	resultsDir := t.TempDir()
 	summary := comparisonFixtureSummary(resultsDir)
-	summary.SchemaVersion = 0
+	summary.SchemaVersion = benchmarkArtifactSchemaVersion - 1
 	writeComparisonFixture(t, summary)
 
 	_, err := writeComparisonArtifactsForResultsDir(resultsDir)
