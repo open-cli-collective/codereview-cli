@@ -121,6 +121,21 @@ type Request struct {
 	MajorRequestChanges bool
 }
 
+// SelectionRequest runs only the selection phase without review persistence or posting.
+type SelectionRequest struct {
+	PRRef         gitprovider.PRRef
+	ProfileName   string
+	Profile       config.Profile
+	AgentDirs     []string
+	ArtifactDir   string
+	ReviewBaseSHA string
+	ReviewHeadSHA string
+
+	SelectionModelOverride      string
+	SelectionEffortOverride     string
+	SelectionPromptInstructions string
+}
+
 // ArtifactPaths contains per-run artifact paths.
 type ArtifactPaths struct {
 	Dir              string `json:"dir"`
@@ -177,6 +192,40 @@ type Result struct {
 	ReviewHeadSHA         string
 }
 
+// SelectionSession describes the single LLM turn used for selection-only execution.
+type SelectionSession struct {
+	ProviderReportedSessionID string
+	ProviderSessionID         string
+	Adapter                   string
+	Model                     string
+	Effort                    string
+	StartedAt                 time.Time
+	CompletedAt               time.Time
+	Response                  llm.Response
+}
+
+// SelectionResult is the selection-only pipeline output.
+type SelectionResult struct {
+	PR               gitprovider.PR
+	PRKey            string
+	Artifacts        ArtifactPaths
+	Quota            llm.Quota
+	QuotaSupported   bool
+	QuotaLow         bool
+	Catalog          agents.Catalog
+	ParsedDiff       ParsedDiff
+	ChangedFiles     []string
+	Threads          []gitprovider.InlineThread
+	Selection        llm.Selection
+	SelectionSession SelectionSession
+	EffectiveCaps    reviewplan.ProviderCaps
+	AgentDefsChanged bool
+	CurrentBaseSHA   string
+	CurrentHeadSHA   string
+	ReviewBaseSHA    string
+	ReviewHeadSHA    string
+}
+
 type sessionDraft struct {
 	rowID                     string
 	providerReportedSessionID string
@@ -205,6 +254,60 @@ type namedSessionState struct {
 	supportsResume           bool
 	currentProviderSessionID string
 	createdAt                time.Time
+}
+
+type selectionSetupRequest struct {
+	PRRef            gitprovider.PRRef
+	Profile          config.Profile
+	AgentDirs        []string
+	ReviewBaseSHA    string
+	ReviewHeadSHA    string
+	NoResolveThreads bool
+	ResolvedPR       *reviewPRContext
+	ResolveArtifacts func(gitprovider.PR) (ArtifactPaths, error)
+}
+
+type preparedSelectionContext struct {
+	pr               gitprovider.PR
+	reviewPR         gitprovider.PR
+	prKey            string
+	artifacts        ArtifactPaths
+	rawDiff          string
+	quota            llm.Quota
+	quotaSupported   bool
+	quotaLow         bool
+	parsed           ParsedDiff
+	changedFiles     []string
+	threads          []gitprovider.InlineThread
+	catalog          agents.Catalog
+	effectiveCaps    reviewplan.ProviderCaps
+	agentDefsChanged bool
+	currentBaseSHA   string
+	currentHeadSHA   string
+	reviewBaseSHA    string
+	reviewHeadSHA    string
+}
+
+type selectionPhaseRequest struct {
+	Profile                     config.Profile
+	SelectionModelOverride      string
+	SelectionEffortOverride     string
+	SelectionPromptInstructions string
+	ReviewPR                    gitprovider.PR
+	Catalog                     agents.Catalog
+	ParsedDiff                  ParsedDiff
+	Threads                     []gitprovider.InlineThread
+	Artifacts                   ArtifactPaths
+	ResumeSessionID             string
+	MaxAgents                   int
+}
+
+type reviewPRContext struct {
+	pr             gitprovider.PR
+	reviewPR       gitprovider.PR
+	pinnedReview   bool
+	currentBaseSHA string
+	currentHeadSHA string
 }
 
 // DryRun executes the dry-run review pipeline.
@@ -245,6 +348,55 @@ func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Resul
 	})
 }
 
+// SelectionOnly executes only the selection phase using caller-owned artifacts.
+func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (SelectionResult, error) {
+	if err := validateSelectionOnly(opts, req); err != nil {
+		return SelectionResult{}, err
+	}
+	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources); err != nil {
+		return SelectionResult{}, err
+	}
+
+	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
+		PRRef:            req.PRRef,
+		Profile:          req.Profile,
+		AgentDirs:        req.AgentDirs,
+		ReviewBaseSHA:    req.ReviewBaseSHA,
+		ReviewHeadSHA:    req.ReviewHeadSHA,
+		NoResolveThreads: false,
+		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
+			return ArtifactPathsFromDir(req.ArtifactDir), nil
+		},
+	})
+	if err != nil {
+		return SelectionResult{}, err
+	}
+
+	result := prepared.selectionResult()
+	if len(prepared.parsed.Patches) == 0 {
+		return result, nil
+	}
+
+	selection, session, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
+		Profile:                     req.Profile,
+		SelectionModelOverride:      req.SelectionModelOverride,
+		SelectionEffortOverride:     req.SelectionEffortOverride,
+		SelectionPromptInstructions: req.SelectionPromptInstructions,
+		ReviewPR:                    prepared.reviewPR,
+		Catalog:                     prepared.catalog,
+		ParsedDiff:                  prepared.parsed,
+		Threads:                     prepared.threads,
+		Artifacts:                   prepared.artifacts,
+		MaxAgents:                   opts.maxAgents(),
+	})
+	if err != nil {
+		return SelectionResult{}, err
+	}
+	result.Selection = selection
+	result.SelectionSession = selectionSessionFromDraft(session)
+	return result, nil
+}
+
 func execute(ctx context.Context, opts Options, req Request, mode executionMode) (out Result, err error) {
 	if err := validate(opts, req); err != nil {
 		return Result{}, err
@@ -263,146 +415,85 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	now := opts.now()
 	maxAgents := opts.maxAgents()
 	maxConcurrency := opts.maxConcurrency(maxAgents)
-
-	pr, err := opts.Provider.GetPR(ctx, req.PRRef)
-	if err != nil {
-		return Result{}, err
-	}
-	currentBaseSHA := pr.Base.SHA
-	currentHeadSHA := pr.Head.SHA
-	reviewBaseSHA := strings.TrimSpace(req.ReviewBaseSHA)
-	reviewHeadSHA := strings.TrimSpace(req.ReviewHeadSHA)
-	pinnedReview := reviewBaseSHA != "" || reviewHeadSHA != ""
-	reviewPR := pr
-	if pinnedReview {
-		if err := validatePinnedReviewPR(req.PRRef, pr); err != nil {
-			return Result{}, err
-		}
-		reviewPR.Base.SHA = reviewBaseSHA
-		reviewPR.Head.SHA = reviewHeadSHA
-	}
-	if sameIdentity(pr.Author, req.PostingIdentity) && req.Profile.ReviewerCredentials != nil && !req.AllowSelfReview {
-		return Result{}, fmt.Errorf("pipeline: reviewer credentials resolve to PR author %q; pass --allow-self-review to continue", req.PostingIdentity.Login)
-	}
-	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
-	if err != nil {
-		return Result{}, err
-	}
 	runID := opts.newRunID()
-	var artifacts ArtifactPaths
 	if mode.live {
 		runID = mode.run.RunID
-		artifacts = ArtifactPathsFromDir(mode.run.ArtifactPath)
-	} else {
-		artifacts, err = ArtifactPathsForRun(opts.Layout, req.PRRef, reviewPR, req.ProfileName, postingKey(req.PostingIdentity), runID)
-		if err != nil {
-			return Result{}, err
-		}
 	}
-	if err := os.MkdirAll(artifacts.AgentLogsDir, 0o700); err != nil {
-		return Result{}, fmt.Errorf("pipeline: create agent log dir: %w", err)
-	}
-
-	quota, quotaSupported, err := opts.Adapter.Quota(ctx)
+	reviewCtx, err := resolveReviewPRContext(ctx, opts.Provider, req.PRRef, req.ReviewBaseSHA, req.ReviewHeadSHA)
 	if err != nil {
 		return Result{}, err
 	}
-	diff, err := getReviewDiff(ctx, opts.Provider, req.PRRef, reviewPR.Base.SHA, reviewPR.Head.SHA, pinnedReview)
-	if err != nil {
-		return Result{}, err
+	if sameIdentity(reviewCtx.pr.Author, req.PostingIdentity) && req.Profile.ReviewerCredentials != nil && !req.AllowSelfReview {
+		return Result{}, fmt.Errorf("pipeline: reviewer credentials resolve to PR author %q; pass --allow-self-review to continue", req.PostingIdentity.Login)
 	}
-	parsed, err := parseUnifiedDiff(diff.Raw)
-	if err != nil {
-		return Result{}, err
-	}
-	var threads []gitprovider.InlineThread
-	if !pinnedReview {
-		threads, err = opts.Provider.ListInlineThreads(ctx, req.PRRef)
-		if err != nil {
-			return Result{}, err
-		}
-	}
-	catalog, err := agents.Load(ctx, agents.LoadOptions{
-		ProfileDirs:               append([]string(nil), req.Profile.AgentSources...),
-		Repo:                      &agents.RepoSource{Reader: opts.Provider, Ref: req.PRRef, PR: pr},
-		FlagDirs:                  append([]string(nil), req.AgentDirs...),
-		RequireSafeProfileSources: true,
+	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
+		PRRef:            req.PRRef,
+		Profile:          req.Profile,
+		AgentDirs:        req.AgentDirs,
+		ReviewBaseSHA:    req.ReviewBaseSHA,
+		ReviewHeadSHA:    req.ReviewHeadSHA,
+		NoResolveThreads: req.NoResolveThreads,
+		ResolvedPR:       &reviewCtx,
+		ResolveArtifacts: func(reviewPR gitprovider.PR) (ArtifactPaths, error) {
+			if mode.live {
+				return ArtifactPathsFromDir(mode.run.ArtifactPath), nil
+			}
+			return ArtifactPathsForRun(opts.Layout, req.PRRef, reviewPR, req.ProfileName, postingKey(req.PostingIdentity), runID)
+		},
 	})
 	if err != nil {
 		return Result{}, err
 	}
 
-	result := Result{
-		PR:               pr,
-		PRKey:            prKey,
-		Artifacts:        artifacts,
-		Quota:            quota,
-		QuotaSupported:   quotaSupported,
-		QuotaLow:         quotaSupported && (quota.BlockRemainingPct >= 0 && quota.BlockRemainingPct < 5 || quota.WeeklyRemainingPct >= 0 && quota.WeeklyRemainingPct < 5),
-		Catalog:          catalog,
-		EffectiveCaps:    effectiveCaps(opts.Provider.Capabilities(), req.NoResolveThreads),
-		AgentDefsChanged: agentDefinitionsChanged(parsed.Patches),
-		CurrentBaseSHA:   currentBaseSHA,
-		CurrentHeadSHA:   currentHeadSHA,
-		ReviewBaseSHA:    reviewPR.Base.SHA,
-		ReviewHeadSHA:    reviewPR.Head.SHA,
-	}
+	result := prepared.reviewResult()
 
 	var sessionDrafts []sessionDraft
 	findingSession := map[review.FindingID]string{}
 
-	if len(parsed.Patches) == 0 {
+	if len(prepared.parsed.Patches) == 0 {
 		if sessionName := strings.TrimSpace(req.SessionName); sessionName != "" {
 			if !mode.live {
 				return Result{}, fmt.Errorf("pipeline: named session %q requires live review", sessionName)
 			}
 			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", sessionName))
 		}
-		plan, err := opts.buildPlan(req, pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged)
+		plan, err := opts.buildPlan(req, prepared.pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged)
 		if err != nil {
 			return Result{}, err
 		}
 		result.Plan = plan
 	} else {
-		runtimeConfig, err := resolveSelectionRuntimeConfig(req)
+		runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
 		if err != nil {
 			return Result{}, err
 		}
-		model, effort := runtimeConfig.model, runtimeConfig.effort
+		model := runtimeConfig.model
 		namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, model, now)
 		if err != nil {
 			return Result{}, err
 		}
 
-		selectionPrompt, err := buildSelectionPrompt(reviewPR, catalog, parsed.Patches, threads, req.SelectionPromptInstructions)
-		if err != nil {
-			return Result{}, err
-		}
-		if err := opts.checkPromptBudget("selection", "", model, "", selectionPrompt); err != nil {
-			return Result{}, err
-		}
-		selectionLog, err := artifacts.AgentLog("orchestrator-selection")
-		if err != nil {
-			return Result{}, err
-		}
-		selection, selectionSession, err := runStructuredResume(ctx, opts, ledger.SessionRoleOrchestrator, nil, model, effort, selectionLog, selectionPrompt, namedSession.resumeID(), func(data []byte) (llm.Selection, error) {
-			return llm.DecodeSelection(data, llm.SelectionOptions{
-				KnownAgents:  knownAgents(catalog),
-				ChangedFiles: changedFiles(parsed.Patches),
-				KnownThreads: knownThreads(threads),
-			})
+		selection, selectionSession, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
+			Profile:                     req.Profile,
+			SelectionModelOverride:      req.SelectionModelOverride,
+			SelectionEffortOverride:     req.SelectionEffortOverride,
+			SelectionPromptInstructions: req.SelectionPromptInstructions,
+			ReviewPR:                    prepared.reviewPR,
+			Catalog:                     prepared.catalog,
+			ParsedDiff:                  prepared.parsed,
+			Threads:                     prepared.threads,
+			Artifacts:                   prepared.artifacts,
+			ResumeSessionID:             namedSession.resumeID(),
+			MaxAgents:                   maxAgents,
 		})
 		if err != nil {
 			return Result{}, err
-		}
-		if len(selection.SelectedAgents) > maxAgents {
-			return Result{}, fmt.Errorf("pipeline: selected agents %d exceeds max %d", len(selection.SelectedAgents), maxAgents)
 		}
 		result.Selection = selection
 		sessionDrafts = append(sessionDrafts, selectionSession)
 		namedSession.recordSessionID(selectionSession)
 
-		findings, reviewerSessions, reviewerFindingSessions, err := runReviewers(ctx, opts, req, reviewPR, catalog, parsed, artifacts, selection, maxConcurrency)
+		findings, reviewerSessions, reviewerFindingSessions, err := runReviewers(ctx, opts, req, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, maxConcurrency)
 		if err != nil {
 			return Result{}, err
 		}
@@ -418,14 +509,14 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
 
-		rollupPrompt, err := buildRollupPrompt(reviewPR, findings)
+		rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, findings)
 		if err != nil {
 			return Result{}, err
 		}
 		if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
 			return Result{}, err
 		}
-		rollupLog, err := artifacts.AgentLog("orchestrator-rollup")
+		rollupLog, err := prepared.artifacts.AgentLog("orchestrator-rollup")
 		if err != nil {
 			return Result{}, err
 		}
@@ -445,7 +536,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
 		}
 
-		plan, err := opts.buildPlan(req, reviewPR, mode.planPostMode, result.EffectiveCaps, parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged)
+		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged)
 		if err != nil {
 			return Result{}, err
 		}
@@ -455,16 +546,16 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	run := mode.run
 	if !mode.live {
 		run, err = opts.Store.AllocateRun(ctx, ledger.AllocateRunParams{
-			PRKey:           prKey,
+			PRKey:           prepared.prKey,
 			PRURL:           req.PRURL,
 			RunID:           runID,
-			SHA:             reviewPR.Head.SHA,
-			BaseSHA:         reviewPR.Base.SHA,
+			SHA:             prepared.reviewPR.Head.SHA,
+			BaseSHA:         prepared.reviewPR.Base.SHA,
 			Profile:         req.ProfileName,
 			PostingIdentity: postingKey(req.PostingIdentity),
 			PostMode:        ledger.PostModeDryRun,
 			StartedAt:       now,
-			ArtifactPath:    artifacts.Dir,
+			ArtifactPath:    prepared.artifacts.Dir,
 		})
 		if err != nil {
 			return Result{}, err
@@ -506,7 +597,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.PlannedActions = append(result.PlannedActions, planned)
 	}
-	if err := writeArtifacts(artifacts, diff.Raw, parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown); err != nil {
+	if err := writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown); err != nil {
 		return Result{}, err
 	}
 	if !mode.live {
@@ -517,6 +608,196 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	completed = true
 	result.FailOnTriggered = failOnTriggered(result.Findings, req.FailOn)
 	return result, nil
+}
+
+func (c preparedSelectionContext) reviewResult() Result {
+	return Result{
+		PR:               c.pr,
+		PRKey:            c.prKey,
+		Artifacts:        c.artifacts,
+		Quota:            c.quota,
+		QuotaSupported:   c.quotaSupported,
+		QuotaLow:         c.quotaLow,
+		Catalog:          c.catalog,
+		EffectiveCaps:    c.effectiveCaps,
+		AgentDefsChanged: c.agentDefsChanged,
+		CurrentBaseSHA:   c.currentBaseSHA,
+		CurrentHeadSHA:   c.currentHeadSHA,
+		ReviewBaseSHA:    c.reviewBaseSHA,
+		ReviewHeadSHA:    c.reviewHeadSHA,
+	}
+}
+
+func (c preparedSelectionContext) selectionResult() SelectionResult {
+	return SelectionResult{
+		PR:               c.pr,
+		PRKey:            c.prKey,
+		Artifacts:        c.artifacts,
+		Quota:            c.quota,
+		QuotaSupported:   c.quotaSupported,
+		QuotaLow:         c.quotaLow,
+		Catalog:          c.catalog,
+		ParsedDiff:       c.parsed,
+		ChangedFiles:     append([]string(nil), c.changedFiles...),
+		Threads:          append([]gitprovider.InlineThread(nil), c.threads...),
+		EffectiveCaps:    c.effectiveCaps,
+		AgentDefsChanged: c.agentDefsChanged,
+		CurrentBaseSHA:   c.currentBaseSHA,
+		CurrentHeadSHA:   c.currentHeadSHA,
+		ReviewBaseSHA:    c.reviewBaseSHA,
+		ReviewHeadSHA:    c.reviewHeadSHA,
+	}
+}
+
+func selectionSessionFromDraft(draft sessionDraft) SelectionSession {
+	return SelectionSession{
+		ProviderReportedSessionID: draft.providerReportedSessionID,
+		ProviderSessionID:         draft.providerSessionID,
+		Adapter:                   draft.adapter,
+		Model:                     draft.model,
+		Effort:                    draft.effort,
+		StartedAt:                 draft.startedAt,
+		CompletedAt:               draft.completedAt,
+		Response:                  draft.response,
+	}
+}
+
+func prepareSelectionContext(ctx context.Context, opts Options, req selectionSetupRequest) (preparedSelectionContext, error) {
+	reviewCtx := req.ResolvedPR
+	if reviewCtx == nil {
+		resolved, err := resolveReviewPRContext(ctx, opts.Provider, req.PRRef, req.ReviewBaseSHA, req.ReviewHeadSHA)
+		if err != nil {
+			return preparedSelectionContext{}, err
+		}
+		reviewCtx = &resolved
+	}
+	pr := reviewCtx.pr
+	reviewPR := reviewCtx.reviewPR
+	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		return preparedSelectionContext{}, err
+	}
+	if req.ResolveArtifacts == nil {
+		return preparedSelectionContext{}, fmt.Errorf("pipeline: artifact resolver is required")
+	}
+	artifacts, err := req.ResolveArtifacts(reviewPR)
+	if err != nil {
+		return preparedSelectionContext{}, err
+	}
+	if err := os.MkdirAll(artifacts.AgentLogsDir, 0o700); err != nil {
+		return preparedSelectionContext{}, fmt.Errorf("pipeline: create agent log dir: %w", err)
+	}
+
+	quota, quotaSupported, err := opts.Adapter.Quota(ctx)
+	if err != nil {
+		return preparedSelectionContext{}, err
+	}
+	diff, err := getReviewDiff(ctx, opts.Provider, req.PRRef, reviewPR.Base.SHA, reviewPR.Head.SHA, reviewCtx.pinnedReview)
+	if err != nil {
+		return preparedSelectionContext{}, err
+	}
+	parsed, err := parseUnifiedDiff(diff.Raw)
+	if err != nil {
+		return preparedSelectionContext{}, err
+	}
+	var threads []gitprovider.InlineThread
+	if !reviewCtx.pinnedReview {
+		threads, err = opts.Provider.ListInlineThreads(ctx, req.PRRef)
+		if err != nil {
+			return preparedSelectionContext{}, err
+		}
+	}
+	catalog, err := agents.Load(ctx, agents.LoadOptions{
+		ProfileDirs:               append([]string(nil), req.Profile.AgentSources...),
+		Repo:                      &agents.RepoSource{Reader: opts.Provider, Ref: req.PRRef, PR: pr},
+		FlagDirs:                  append([]string(nil), req.AgentDirs...),
+		RequireSafeProfileSources: true,
+	})
+	if err != nil {
+		return preparedSelectionContext{}, err
+	}
+
+	return preparedSelectionContext{
+		pr:               pr,
+		reviewPR:         reviewPR,
+		prKey:            prKey,
+		artifacts:        artifacts,
+		rawDiff:          diff.Raw,
+		quota:            quota,
+		quotaSupported:   quotaSupported,
+		quotaLow:         quotaSupported && (quota.BlockRemainingPct >= 0 && quota.BlockRemainingPct < 5 || quota.WeeklyRemainingPct >= 0 && quota.WeeklyRemainingPct < 5),
+		parsed:           parsed,
+		changedFiles:     patchPaths(parsed.Patches),
+		threads:          threads,
+		catalog:          catalog,
+		effectiveCaps:    effectiveCaps(opts.Provider.Capabilities(), req.NoResolveThreads),
+		agentDefsChanged: agentDefinitionsChanged(parsed.Patches),
+		currentBaseSHA:   reviewCtx.currentBaseSHA,
+		currentHeadSHA:   reviewCtx.currentHeadSHA,
+		reviewBaseSHA:    reviewPR.Base.SHA,
+		reviewHeadSHA:    reviewPR.Head.SHA,
+	}, nil
+}
+
+func resolveReviewPRContext(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, reviewBaseSHA, reviewHeadSHA string) (reviewPRContext, error) {
+	pr, err := provider.GetPR(ctx, ref)
+	if err != nil {
+		return reviewPRContext{}, err
+	}
+	currentBaseSHA := pr.Base.SHA
+	currentHeadSHA := pr.Head.SHA
+	reviewBaseSHA = strings.TrimSpace(reviewBaseSHA)
+	reviewHeadSHA = strings.TrimSpace(reviewHeadSHA)
+	pinnedReview := reviewBaseSHA != "" || reviewHeadSHA != ""
+	reviewPR := pr
+	if pinnedReview {
+		if err := validatePinnedReviewPR(ref, pr); err != nil {
+			return reviewPRContext{}, err
+		}
+		reviewPR.Base.SHA = reviewBaseSHA
+		reviewPR.Head.SHA = reviewHeadSHA
+	}
+	return reviewPRContext{
+		pr:             pr,
+		reviewPR:       reviewPR,
+		pinnedReview:   pinnedReview,
+		currentBaseSHA: currentBaseSHA,
+		currentHeadSHA: currentHeadSHA,
+	}, nil
+}
+
+func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequest) (llm.Selection, sessionDraft, error) {
+	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
+	if err != nil {
+		return llm.Selection{}, sessionDraft{}, err
+	}
+	model, effort := runtimeConfig.model, runtimeConfig.effort
+
+	selectionPrompt, err := buildSelectionPrompt(req.ReviewPR, req.Catalog, req.ParsedDiff.Patches, req.Threads, req.SelectionPromptInstructions)
+	if err != nil {
+		return llm.Selection{}, sessionDraft{}, err
+	}
+	if err := opts.checkPromptBudget("selection", "", model, "", selectionPrompt); err != nil {
+		return llm.Selection{}, sessionDraft{}, err
+	}
+	selectionLog, err := req.Artifacts.AgentLog("orchestrator-selection")
+	if err != nil {
+		return llm.Selection{}, sessionDraft{}, err
+	}
+	selection, selectionSession, err := runStructuredResume(ctx, opts, ledger.SessionRoleOrchestrator, nil, model, effort, selectionLog, selectionPrompt, req.ResumeSessionID, func(data []byte) (llm.Selection, error) {
+		return llm.DecodeSelection(data, llm.SelectionOptions{
+			KnownAgents:  knownAgents(req.Catalog),
+			ChangedFiles: changedFiles(req.ParsedDiff.Patches),
+			KnownThreads: knownThreads(req.Threads),
+		})
+	})
+	if err != nil {
+		return llm.Selection{}, sessionDraft{}, err
+	}
+	if len(selection.SelectedAgents) > req.MaxAgents {
+		return llm.Selection{}, sessionDraft{}, fmt.Errorf("pipeline: selected agents %d exceeds max %d", len(selection.SelectedAgents), req.MaxAgents)
+	}
+	return selection, selectionSession, nil
 }
 
 func getReviewDiff(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, baseSHA, headSHA string, pinned bool) (gitprovider.UnifiedDiff, error) {
@@ -1412,11 +1693,8 @@ func ledgerFinding(runID, sessionRowID string, finding reviewplan.AnchoredFindin
 }
 
 func validate(opts Options, req Request) error {
-	if opts.Provider == nil {
-		return fmt.Errorf("pipeline: provider is required")
-	}
-	if opts.Adapter == nil {
-		return fmt.Errorf("pipeline: adapter is required")
+	if err := validateCommonOptions(opts); err != nil {
+		return err
 	}
 	if opts.Store == nil {
 		return fmt.Errorf("pipeline: store is required")
@@ -1424,19 +1702,49 @@ func validate(opts Options, req Request) error {
 	if strings.TrimSpace(opts.Layout.DataRoot) == "" {
 		return fmt.Errorf("pipeline: data root is required")
 	}
-	if err := req.PRRef.Validate(); err != nil {
+	if err := validateRequestCore(req.PRRef, req.ProfileName, req.ReviewBaseSHA, req.ReviewHeadSHA); err != nil {
 		return err
 	}
 	if strings.TrimSpace(req.PRURL) == "" {
 		return fmt.Errorf("pipeline: PR URL is required")
 	}
-	if strings.TrimSpace(req.ProfileName) == "" {
-		return fmt.Errorf("pipeline: profile is required")
-	}
 	if strings.TrimSpace(postingKey(req.PostingIdentity)) == "" {
 		return fmt.Errorf("pipeline: posting identity is required")
 	}
-	if err := validateReviewSHAs(req.ReviewBaseSHA, req.ReviewHeadSHA); err != nil {
+	return nil
+}
+
+func validateSelectionOnly(opts Options, req SelectionRequest) error {
+	if err := validateCommonOptions(opts); err != nil {
+		return err
+	}
+	if err := validateRequestCore(req.PRRef, req.ProfileName, req.ReviewBaseSHA, req.ReviewHeadSHA); err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.ArtifactDir) == "" {
+		return fmt.Errorf("pipeline: selection artifact dir is required")
+	}
+	return nil
+}
+
+func validateCommonOptions(opts Options) error {
+	if opts.Provider == nil {
+		return fmt.Errorf("pipeline: provider is required")
+	}
+	if opts.Adapter == nil {
+		return fmt.Errorf("pipeline: adapter is required")
+	}
+	return nil
+}
+
+func validateRequestCore(ref gitprovider.PRRef, profileName, reviewBaseSHA, reviewHeadSHA string) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(profileName) == "" {
+		return fmt.Errorf("pipeline: profile is required")
+	}
+	if err := validateReviewSHAs(reviewBaseSHA, reviewHeadSHA); err != nil {
 		return err
 	}
 	return nil
@@ -1666,19 +1974,19 @@ func hasDryRunStageOverrides(req Request) bool {
 		strings.TrimSpace(req.ReviewerEffortOverride) != ""
 }
 
-func resolveSelectionRuntimeConfig(req Request) (llmRuntimeConfig, error) {
-	if strings.TrimSpace(req.SelectionModelOverride) != "" {
-		return applyStageRuntimeOverrides(req.SelectionModelOverride, req.SelectionEffortOverride, "", string(modelprefs.EffortMedium)), nil
+func resolveSelectionRuntimeConfig(profile config.Profile, modelOverride, effortOverride string) (llmRuntimeConfig, error) {
+	if strings.TrimSpace(modelOverride) != "" {
+		return applyStageRuntimeOverrides(modelOverride, effortOverride, "", string(modelprefs.EffortMedium)), nil
 	}
-	model, err := resolveModelTier(req, config.ModelTierMedium)
+	model, err := resolveModelTier(profile, config.ModelTierMedium)
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return applyStageRuntimeOverrides(req.SelectionModelOverride, req.SelectionEffortOverride, model, string(modelprefs.EffortMedium)), nil
+	return applyStageRuntimeOverrides(modelOverride, effortOverride, model, string(modelprefs.EffortMedium)), nil
 }
 
 func resolveSynthesisRuntimeConfig(req Request) (llmRuntimeConfig, error) {
-	model, err := resolveModelTier(req, config.ModelTierMedium)
+	model, err := resolveModelTier(req.Profile, config.ModelTierMedium)
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
@@ -1689,14 +1997,14 @@ func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeCo
 	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
 		return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, "", agent.Effort), nil
 	}
-	model, err := resolveAgentModel(req, agent)
+	model, err := resolveAgentModel(req.Profile, agent)
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
 	return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, model, agent.Effort), nil
 }
 
-func resolveAgentModel(req Request, agent agents.Agent) (string, error) {
+func resolveAgentModel(profile config.Profile, agent agents.Agent) (string, error) {
 	if modelID := strings.TrimSpace(agent.ModelID); modelID != "" {
 		return modelID, nil
 	}
@@ -1704,17 +2012,17 @@ func resolveAgentModel(req Request, agent agents.Agent) (string, error) {
 	if !tier.Valid() {
 		return "", fmt.Errorf("pipeline: agent %s model_tier %q is invalid", agent.ID, agent.ModelTier)
 	}
-	model, err := resolveModelTier(req, tier)
+	model, err := resolveModelTier(profile, tier)
 	if err != nil {
 		return "", fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
 	}
 	return model, nil
 }
 
-func resolveModelTier(req Request, tier config.ModelTier) (string, error) {
-	resolved, ok := config.ResolveModelTier(req.Profile.LLM, tier)
+func resolveModelTier(profile config.Profile, tier config.ModelTier) (string, error) {
+	resolved, ok := config.ResolveModelTier(profile.LLM, tier)
 	if !ok {
-		llmConfig := req.Profile.LLM
+		llmConfig := profile.LLM
 		return "", fmt.Errorf("model_tier %q is not mapped for provider %q adapter %q", tier, llmConfig.Provider, llmConfig.Adapter)
 	}
 	return resolved.Model, nil
