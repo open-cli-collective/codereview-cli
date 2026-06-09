@@ -63,8 +63,8 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunStructured: %v", err)
 		}
-		if got != "ok" || string(response.StructuredOutput) != `{"ok":true}` {
-			t.Fatalf("RunStructured = %q %#v, want recovered json response", got, response)
+		if got != "ok" || string(response.StructuredOutput) != "I'll return the selection now.\n{\"ok\":true}" {
+			t.Fatalf("RunStructured = %q %#v, want raw provider response preserved", got, response)
 		}
 		if got := len(adapter.Requests()); got != 1 {
 			t.Fatalf("requests = %d, want no retry", got)
@@ -86,8 +86,8 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunStructured: %v", err)
 		}
-		if got != "ok" || string(response.StructuredOutput) != `{"ok":true}` {
-			t.Fatalf("RunStructured = %q %#v, want recovered json response", got, response)
+		if got != "ok" || string(response.StructuredOutput) != `[note] Here is [the JSON]: {"ok":true} [done]` {
+			t.Fatalf("RunStructured = %q %#v, want raw provider response preserved", got, response)
 		}
 		if got := len(adapter.Requests()); got != 1 {
 			t.Fatalf("requests = %d, want no retry", got)
@@ -127,6 +127,35 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 		if got := len(adapter.Requests()); got != 2 {
 			t.Fatalf("requests = %d, want retry after array-wrapped output", got)
+		}
+	})
+
+	t.Run("does not recover object adjacent to top-level json values", func(t *testing.T) {
+		tests := []string{
+			`[] {"ok":true}`,
+			`null {"ok":true}`,
+			`{"ok":true} 123`,
+			`[] null {"ok":true}`,
+			`{"ok":true} "extra" false`,
+		}
+		for _, output := range tests {
+			t.Run(output, func(t *testing.T) {
+				adapter := &FakeAdapter{}
+				adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(output)}})
+				adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad2`)}})
+				_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+					if string(data) != `{"ok":true}` {
+						return "", errors.New("bad json")
+					}
+					return "ok", nil
+				})
+				if err == nil {
+					t.Fatal("RunStructured error = nil, want validation failure")
+				}
+				if got := len(adapter.Requests()); got != 2 {
+					t.Fatalf("requests = %d, want retry after extra top-level json values", got)
+				}
+			})
 		}
 	})
 
@@ -170,8 +199,8 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunStructured: %v", err)
 		}
-		if got != "ok" || string(response.StructuredOutput) != `{"ok":true}` {
-			t.Fatalf("RunStructured = %q %#v, want recovered retry response", got, response)
+		if got != "ok" || string(response.StructuredOutput) != "Corrected JSON:\n{\"ok\":true}" {
+			t.Fatalf("RunStructured = %q %#v, want raw retry response preserved", got, response)
 		}
 	})
 

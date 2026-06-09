@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -168,7 +169,6 @@ func decodeResponse[T any](response Response, decode Decoder[T]) (decodedValue[T
 		var zero T
 		return decodedValue[T]{Value: zero, Response: response}, recoveredErr
 	}
-	response.StructuredOutput = recovered
 	return decodedValue[T]{Value: recoveredValue, Response: response}, nil
 }
 
@@ -182,7 +182,13 @@ func extractSingleJSONObject(data []byte) ([]byte, bool) {
 		if !ok {
 			continue
 		}
+		prefix := data[:i]
+		suffix := data[end+1:]
 		if hasArrayWrapperAdjacentToObject(data[:i], data[end+1:]) {
+			i = end
+			continue
+		}
+		if isJSONValueSequence(prefix) || isJSONValueSequence(suffix) {
 			i = end
 			continue
 		}
@@ -203,6 +209,20 @@ func hasArrayWrapperAdjacentToObject(prefix []byte, suffix []byte) bool {
 	suffix = bytes.TrimSpace(suffix)
 	return len(prefix) > 0 && prefix[len(prefix)-1] == '[' ||
 		len(suffix) > 0 && suffix[0] == ']'
+}
+
+func isJSONValueSequence(data []byte) bool {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return errors.Is(err, io.EOF)
+		}
+	}
 }
 
 func objectEnd(data []byte, start int) (int, bool) {
