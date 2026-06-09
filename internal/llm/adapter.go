@@ -3,12 +3,10 @@
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -172,225 +170,38 @@ func decodeResponse[T any](response Response, decode Decoder[T]) (decodedValue[T
 	return decodedValue[T]{Value: recoveredValue, Response: response}, nil
 }
 
+// extractSingleJSONObject recovers the structured payload from output that
+// fails strict decoding, such as a JSON object wrapped in prose. It returns
+// the candidate only when the input contains exactly one balanced, valid JSON
+// object; anything more ambiguous falls back to the retry path.
+//
+// Contract: the schema decoder in decodeResponse is the safety gate, not this
+// scan. Surrounding bytes are deliberately not classified as prose versus
+// malformed JSON fragments — if exactly one valid object exists and it passes
+// schema validation, it is accepted even when the surrounding bytes look like
+// broken JSON (e.g. `[1, {...}, 2]` or `"a": {...}`). Attempting to classify
+// the surrounding bytes is an open-ended heuristic game with no winning
+// state; ambiguity (zero or multiple valid objects) is the only rejection.
 func extractSingleJSONObject(data []byte) ([]byte, bool) {
 	var candidates [][]byte
-	inString := false
-	escaped := false
 	for i := 0; i < len(data); i++ {
-		ch := data[i]
-		if inString {
-			if escaped {
-				escaped = false
-				continue
-			}
-			switch ch {
-			case '\\':
-				escaped = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch ch {
-		case '"':
-			inString = true
-			continue
-		case '{':
-		default:
+		if data[i] != '{' {
 			continue
 		}
 		end, ok := objectEnd(data, i)
 		if !ok {
 			continue
 		}
-		prefix := data[:i]
-		suffix := data[end+1:]
-		if hasArrayWrapperAdjacentToObject(data[:i], data[end+1:]) {
-			i = end
-			continue
-		}
-		if isJSONValueSequence(prefix) || isJSONValueSequence(suffix) || hasUnclosedJSONContainer(prefix) ||
-			hasJSONFragmentBoundary(prefix, suffix) {
-			i = end
-			continue
-		}
-		candidate := bytes.TrimSpace(data[i : end+1])
+		candidate := data[i : end+1]
 		if json.Valid(candidate) {
 			candidates = append(candidates, candidate)
+			i = end
 		}
-		i = end
 	}
 	if len(candidates) != 1 {
 		return nil, false
 	}
 	return append([]byte(nil), candidates[0]...), true
-}
-
-func hasArrayWrapperAdjacentToObject(prefix []byte, suffix []byte) bool {
-	prefix = bytes.TrimSpace(prefix)
-	suffix = bytes.TrimSpace(suffix)
-	return len(prefix) > 0 && prefix[len(prefix)-1] == '[' ||
-		len(suffix) > 0 && suffix[0] == ']'
-}
-
-func hasJSONFragmentBoundary(prefix []byte, suffix []byte) bool {
-	prefix = bytes.TrimSpace(prefix)
-	if hasTrailingJSONMemberFragment(prefix) {
-		return true
-	}
-	if len(prefix) > 0 && prefix[len(prefix)-1] == ',' && isJSONValueSequence(bytes.TrimSpace(prefix[:len(prefix)-1])) {
-		return true
-	}
-	suffix = bytes.TrimSpace(suffix)
-	if len(suffix) == 0 {
-		return false
-	}
-	if suffix[0] == '}' || suffix[0] == ']' {
-		return true
-	}
-	if suffix[0] != ',' {
-		return false
-	}
-	rest := bytes.TrimSpace(suffix[1:])
-	return startsJSONMemberFragment(rest) || isJSONValueSequence(trimTrailingJSONClosers(rest)) || startsJSONValueThenStructural(rest)
-}
-
-func startsJSONMemberFragment(data []byte) bool {
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 || data[0] != '"' {
-		return false
-	}
-	escaped := false
-	for i := 1; i < len(data); i++ {
-		ch := data[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		switch ch {
-		case '\\':
-			escaped = true
-		case '"':
-			rest := bytes.TrimSpace(data[i+1:])
-			return len(rest) > 0 && rest[0] == ':'
-		}
-	}
-	return false
-}
-
-func hasTrailingJSONMemberFragment(data []byte) bool {
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 {
-		return false
-	}
-	escaped := false
-	inString := false
-	for i := 0; i < len(data); i++ {
-		ch := data[i]
-		if inString {
-			if escaped {
-				escaped = false
-				continue
-			}
-			switch ch {
-			case '\\':
-				escaped = true
-			case '"':
-				rest := bytes.TrimSpace(data[i+1:])
-				return len(rest) > 0 && rest[0] == ':' && !bytes.ContainsAny(rest[1:], "}]")
-			}
-			continue
-		}
-		if ch == '"' {
-			inString = true
-		}
-	}
-	return false
-}
-
-func trimTrailingJSONClosers(data []byte) []byte {
-	data = bytes.TrimSpace(data)
-	for len(data) > 0 {
-		switch data[len(data)-1] {
-		case '}', ']':
-			data = bytes.TrimSpace(data[:len(data)-1])
-		default:
-			return data
-		}
-	}
-	return data
-}
-
-func startsJSONValueThenStructural(data []byte) bool {
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 {
-		return false
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	var raw json.RawMessage
-	if err := decoder.Decode(&raw); err != nil {
-		return false
-	}
-	rest := bytes.TrimSpace(data[decoder.InputOffset():])
-	if len(rest) == 0 {
-		return false
-	}
-	switch rest[0] {
-	case ',', '}', ']':
-		return true
-	default:
-		return false
-	}
-}
-
-func isJSONValueSequence(data []byte) bool {
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 {
-		return false
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	for {
-		var raw json.RawMessage
-		if err := decoder.Decode(&raw); err != nil {
-			return errors.Is(err, io.EOF)
-		}
-	}
-}
-
-func hasUnclosedJSONContainer(data []byte) bool {
-	var stack []byte
-	inString := false
-	escaped := false
-	for _, ch := range data {
-		if inString {
-			if escaped {
-				escaped = false
-				continue
-			}
-			switch ch {
-			case '\\':
-				escaped = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch ch {
-		case '"':
-			inString = true
-		case '{', '[':
-			stack = append(stack, ch)
-		case '}':
-			if len(stack) > 0 && stack[len(stack)-1] == '{' {
-				stack = stack[:len(stack)-1]
-			}
-		case ']':
-			if len(stack) > 0 && stack[len(stack)-1] == '[' {
-				stack = stack[:len(stack)-1]
-			}
-		}
-	}
-	return len(stack) > 0
 }
 
 func objectEnd(data []byte, start int) (int, bool) {

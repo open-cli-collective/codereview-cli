@@ -141,55 +141,16 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 	})
 
-	t.Run("does not recover object embedded in json array", func(t *testing.T) {
-		adapter := &FakeAdapter{}
-		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`[{"ok":true}]`)}})
-		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad2`)}})
-		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
-			if string(data) != `{"ok":true}` {
-				return "", errors.New("bad json")
-			}
-			return "ok", nil
-		})
-		if err == nil {
-			t.Fatal("RunStructured error = nil, want validation failure")
-		}
-		if got := len(adapter.Requests()); got != 2 {
-			t.Fatalf("requests = %d, want retry after array-wrapped output", got)
-		}
-	})
-
-	t.Run("does not recover object embedded in json container fragments", func(t *testing.T) {
+	t.Run("recovers the sole valid object regardless of surrounding fragments", func(t *testing.T) {
+		// Schema validation is the safety gate: when exactly one valid JSON
+		// object exists, it is recovered even if the surrounding bytes look
+		// like malformed JSON rather than prose.
 		tests := []string{
+			`[{"ok":true}]`,
 			`[1, {"ok":true}, 2]`,
 			`{"a": {"ok":true}`,
-			`{"a": {"ok":true}, "b": 1}`,
 			`prefix [1, {"ok":true}, 2] suffix`,
 			`prefix {"a": {"ok":true} suffix`,
-		}
-		for _, output := range tests {
-			t.Run(output, func(t *testing.T) {
-				adapter := &FakeAdapter{}
-				adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(output)}})
-				adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad2`)}})
-				_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
-					if string(data) != `{"ok":true}` {
-						return "", errors.New("bad json")
-					}
-					return "ok", nil
-				})
-				if err == nil {
-					t.Fatal("RunStructured error = nil, want validation failure")
-				}
-				if got := len(adapter.Requests()); got != 2 {
-					t.Fatalf("requests = %d, want retry after embedded json object", got)
-				}
-			})
-		}
-	})
-
-	t.Run("does not recover object adjacent to top-level json values", func(t *testing.T) {
-		tests := []string{
 			`[] {"ok":true}`,
 			`null {"ok":true}`,
 			`1, {"ok":true}`,
@@ -203,6 +164,62 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 			`{"ok":true} } trailing`,
 			`[] null {"ok":true}`,
 			`{"ok":true} "extra" false`,
+			"```json\n{\"ok\":true}\n```",
+		}
+		for _, output := range tests {
+			t.Run(output, func(t *testing.T) {
+				adapter := &FakeAdapter{}
+				adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(output)}})
+
+				got, response, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+					if string(data) != `{"ok":true}` {
+						return "", errors.New("bad json")
+					}
+					return "ok", nil
+				})
+				if err != nil {
+					t.Fatalf("RunStructured: %v", err)
+				}
+				if got != "ok" || string(response.StructuredOutput) != output {
+					t.Fatalf("RunStructured = %q %#v, want recovered value with raw response preserved", got, response)
+				}
+				if got := len(adapter.Requests()); got != 1 {
+					t.Fatalf("requests = %d, want no retry", got)
+				}
+			})
+		}
+	})
+
+	t.Run("recovered object failing schema falls back to retry", func(t *testing.T) {
+		// The sole valid object here is the outer one, which fails the
+		// schema decoder, so the run must take the retry path.
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"a": {"ok":true}, "b": 1}`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"ok":true}`)}})
+		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+			if string(data) != `{"ok":true}` {
+				return "", errors.New("bad json")
+			}
+			return "ok", nil
+		})
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if got != "ok" {
+			t.Fatalf("RunStructured = %q, want ok from retry", got)
+		}
+		if got := len(adapter.Requests()); got != 2 {
+			t.Fatalf("requests = %d, want retry after schema-invalid recovery", got)
+		}
+	})
+
+	t.Run("does not recover when no balanced object exists", func(t *testing.T) {
+		tests := []string{
+			`no json here`,
+			`{"ok":true`,
+			`"ok":true}`,
+			`"literal {\"ok\":true}"`,
+			``,
 		}
 		for _, output := range tests {
 			t.Run(output, func(t *testing.T) {
@@ -219,27 +236,9 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 					t.Fatal("RunStructured error = nil, want validation failure")
 				}
 				if got := len(adapter.Requests()); got != 2 {
-					t.Fatalf("requests = %d, want retry after extra top-level json values", got)
+					t.Fatalf("requests = %d, want retry when nothing is recoverable", got)
 				}
 			})
-		}
-	})
-
-	t.Run("does not recover object literal inside quoted output", func(t *testing.T) {
-		adapter := &FakeAdapter{}
-		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`"literal {\"ok\":true}"`)}})
-		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad2`)}})
-		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (string, error) {
-			if string(data) != `{"ok":true}` {
-				return "", errors.New("bad json")
-			}
-			return "ok", nil
-		})
-		if err == nil {
-			t.Fatal("RunStructured error = nil, want validation failure")
-		}
-		if got := len(adapter.Requests()); got != 2 {
-			t.Fatalf("requests = %d, want retry after quoted object literal", got)
 		}
 	})
 
@@ -340,6 +339,49 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 			t.Fatalf("wait error = %v, want %v", err, waitErr)
 		}
 	})
+}
+
+func TestExtractSingleJSONObject(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		ok    bool
+	}{
+		{name: "bare object", input: `{"ok":true}`, want: `{"ok":true}`, ok: true},
+		{name: "leading prose", input: "Sure, here it is:\n{\"ok\":true}", want: `{"ok":true}`, ok: true},
+		{name: "trailing prose", input: `{"ok":true} Let me know if you need more.`, want: `{"ok":true}`, ok: true},
+		{name: "markdown fence", input: "```json\n{\"ok\":true}\n```", want: `{"ok":true}`, ok: true},
+		{name: "prose with unmatched quote", input: `Here"s the JSON: {"ok":true}`, want: `{"ok":true}`, ok: true},
+		{name: "prose with stray braces handled by balance check", input: `oops { not json. {"ok":true}`, want: `{"ok":true}`, ok: true},
+		{name: "nested object counts once", input: `prose {"a":{"b":1}} prose`, want: `{"a":{"b":1}}`, ok: true},
+		{name: "object with brace in string value", input: `note: {"a":"}{"} done`, want: `{"a":"}{"}`, ok: true},
+		{name: "object with escaped quote in string", input: `x {"a":"q\"v"} y`, want: `{"a":"q\"v"}`, ok: true},
+		{name: "array wrapped object", input: `[{"ok":true}]`, want: `{"ok":true}`, ok: true},
+		{name: "object inside malformed container", input: `{"a": {"ok":true}`, want: `{"ok":true}`, ok: true},
+		{name: "unicode prose", input: `résultat → {"ok":true} ✓`, want: `{"ok":true}`, ok: true},
+		{name: "valid object inside invalid balanced outer", input: `{oops {"ok":true} oops}`, want: `{"ok":true}`, ok: true},
+		{name: "two objects ambiguous", input: `{"ok":true} {"ok":true}`, ok: false},
+		{name: "two different objects ambiguous", input: `{"a":1} prose {"b":2}`, ok: false},
+		{name: "array of two objects ambiguous", input: `[{"a":1},{"b":2}]`, ok: false},
+		{name: "no object", input: `just prose`, ok: false},
+		{name: "unterminated object", input: `{"ok":true`, ok: false},
+		{name: "close before open", input: `} {"ok":true`, ok: false},
+		{name: "object literal inside quoted json string", input: `"literal {\"ok\":true}"`, ok: false},
+		{name: "empty input", input: ``, ok: false},
+		{name: "whitespace only", input: " \n\t", ok: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractSingleJSONObject([]byte(tc.input))
+			if ok != tc.ok {
+				t.Fatalf("extractSingleJSONObject(%q) ok = %v, want %v", tc.input, ok, tc.ok)
+			}
+			if tc.ok && string(got) != tc.want {
+				t.Fatalf("extractSingleJSONObject(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestRunStructuredWithSessionResume(t *testing.T) {
