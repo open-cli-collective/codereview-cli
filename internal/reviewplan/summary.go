@@ -20,6 +20,10 @@ type Summary struct {
 	Reviewers []ReviewerSummary
 	Threads   ThreadCounts
 	Run       RunSummary
+	// Totals is derived from Run.Workstreams by Build; it lives here rather
+	// than on the caller-supplied RunSummary so callers cannot populate a
+	// value that Build would silently overwrite.
+	Totals AggregateUsage
 }
 
 // ReviewerSummary is one reviewer row in the rollup summary table.
@@ -47,9 +51,6 @@ type RunSummary struct {
 	SelectedReviewers []string
 	WallDurationMS    *int64
 	Workstreams       []WorkstreamUsage
-	// Totals is derived by Build from Workstreams; caller-set values are
-	// overwritten.
-	Totals AggregateUsage
 }
 
 // WorkstreamUsage is adapter-reported usage for one workstream: the reserved
@@ -85,10 +86,10 @@ func (r RunSummary) hasData() bool {
 
 func (b *builder) deriveSummary(rendered []review.Finding) Summary {
 	run := b.req.RunSummary
-	run.Totals = aggregateUsage(run.Workstreams)
 	summary := Summary{
 		Threads: threadSummaryCounts(b.req.ThreadActions, b.req.ProviderCaps),
 		Run:     run,
+		Totals:  aggregateUsage(run.Workstreams),
 	}
 	// Without any attribution data the rollup keeps its severity-table
 	// shape; an all-"unattributed" reviewer table would be noise.
@@ -195,14 +196,14 @@ func writeReviewerTable(out *strings.Builder, reviewers []ReviewerSummary) {
 	out.WriteString("\n")
 }
 
-func writeRunFooter(out *strings.Builder, run RunSummary) {
+func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage) {
 	if !run.hasData() {
 		return
 	}
 	out.WriteString("\n---\n<details>\n<summary>Completed in ")
 	out.WriteString(formatDurationMS(run.WallDurationMS))
 	out.WriteString(" | ")
-	out.WriteString(formatUSD(run.Totals.CostUSD))
+	out.WriteString(formatUSD(totals.CostUSD))
 	out.WriteString(" | ")
 	out.WriteString(escapeCell(orUnavailable(run.Model)))
 	out.WriteString(" | cr ")
@@ -223,14 +224,14 @@ func writeRunFooter(out *strings.Builder, run RunSummary) {
 	}
 	writeFooterRow(out, "Reviewed by", reviewedBy)
 	duration := formatDurationMS(run.WallDurationMS)
-	if run.Totals.ComputeDurationMS != nil {
-		duration += " wall · " + formatDurationMS(run.Totals.ComputeDurationMS) + " compute"
+	if totals.ComputeDurationMS != nil {
+		duration += " wall · " + formatDurationMS(totals.ComputeDurationMS) + " compute"
 	}
 	writeFooterRow(out, "Duration", duration)
-	writeFooterRow(out, "Cost", formatUSD(run.Totals.CostUSD))
+	writeFooterRow(out, "Cost", formatUSD(totals.CostUSD))
 	tokens := unavailableValue
-	if run.Totals.TokensIn != nil || run.Totals.TokensOut != nil {
-		tokens = formatTokens(run.Totals.TokensIn) + " in / " + formatTokens(run.Totals.TokensOut) + " out"
+	if totals.TokensIn != nil || totals.TokensOut != nil {
+		tokens = formatTokens(totals.TokensIn) + " in / " + formatTokens(totals.TokensOut) + " out"
 	}
 	writeFooterRow(out, "Tokens", tokens)
 

@@ -101,14 +101,14 @@ func TestRollupSummaryRendering(t *testing.T) {
 			s.Reviewers[1].Name != "policies:conventions" || s.Reviewers[1].Findings != 0 {
 			t.Fatalf("summary reviewers = %#v", s.Reviewers)
 		}
-		if s.Run.Totals.TokensIn == nil || *s.Run.Totals.TokensIn != 126_300 {
-			t.Fatalf("totals tokens in = %v", s.Run.Totals.TokensIn)
+		if s.Totals.TokensIn == nil || *s.Totals.TokensIn != 126_300 {
+			t.Fatalf("totals tokens in = %v", s.Totals.TokensIn)
 		}
-		if s.Run.Totals.CostUSD == nil || *s.Run.Totals.CostUSD != 1.0 {
-			t.Fatalf("totals cost = %v", s.Run.Totals.CostUSD)
+		if s.Totals.CostUSD == nil || *s.Totals.CostUSD != 1.0 {
+			t.Fatalf("totals cost = %v", s.Totals.CostUSD)
 		}
-		if s.Run.Totals.ComputeDurationMS == nil || *s.Run.Totals.ComputeDurationMS != 120_000 {
-			t.Fatalf("totals compute = %v", s.Run.Totals.ComputeDurationMS)
+		if s.Totals.ComputeDurationMS == nil || *s.Totals.ComputeDurationMS != 120_000 {
+			t.Fatalf("totals compute = %v", s.Totals.ComputeDurationMS)
 		}
 	})
 
@@ -131,11 +131,11 @@ func TestRollupSummaryRendering(t *testing.T) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
 			}
 		}
-		if plan.Summary.Run.Totals.CostUSD != nil || plan.Summary.Run.Totals.TokensIn != nil {
-			t.Fatalf("partial totals must be nil: %#v", plan.Summary.Run.Totals)
+		if plan.Summary.Totals.CostUSD != nil || plan.Summary.Totals.TokensIn != nil {
+			t.Fatalf("partial totals must be nil: %#v", plan.Summary.Totals)
 		}
-		if plan.Summary.Run.Totals.TokensOut == nil {
-			t.Fatalf("fully-reported field must aggregate: %#v", plan.Summary.Run.Totals)
+		if plan.Summary.Totals.TokensOut == nil {
+			t.Fatalf("fully-reported field must aggregate: %#v", plan.Summary.Totals)
 		}
 	})
 

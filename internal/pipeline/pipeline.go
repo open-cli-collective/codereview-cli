@@ -1184,6 +1184,8 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 		CacheCreate: usage.CacheCreate,
 		CostUSD:     usage.CostUSD,
 	}
+	// Zero means the adapter never reported a duration; it renders as
+	// unavailable, not 0s. A real sub-millisecond LLM call does not happen.
 	if draft.response.DurationMS > 0 {
 		duration := draft.response.DurationMS
 		workstream.DurationMS = &duration

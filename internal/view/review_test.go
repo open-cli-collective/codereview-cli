@@ -82,8 +82,8 @@ func TestRenderReviewDryRunJSONSummaryPreservesNulls(t *testing.T) {
 			Reviewers []ReviewReviewerSummary `json:"reviewers"`
 			Run       struct {
 				Workstreams []map[string]json.RawMessage `json:"workstreams"`
-				Totals      map[string]json.RawMessage   `json:"totals"`
 			} `json:"run"`
+			Totals map[string]json.RawMessage `json:"totals"`
 		} `json:"summary"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
@@ -101,8 +101,8 @@ func TestRenderReviewDryRunJSONSummaryPreservesNulls(t *testing.T) {
 			t.Fatalf("workstream %s = %s, want null (never zero)", field, workstream[field])
 		}
 	}
-	if string(decoded.Summary.Run.Totals["cost_usd"]) != "null" {
-		t.Fatalf("totals cost_usd = %s, want null", decoded.Summary.Run.Totals["cost_usd"])
+	if string(decoded.Summary.Totals["cost_usd"]) != "null" {
+		t.Fatalf("totals cost_usd = %s, want null", decoded.Summary.Totals["cost_usd"])
 	}
 }
 

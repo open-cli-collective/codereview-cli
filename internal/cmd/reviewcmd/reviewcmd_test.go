@@ -1286,8 +1286,8 @@ func TestNewReviewDryRunMapsPlanSummary(t *testing.T) {
 			SelectedReviewers: []string{"go:tests"},
 			WallDurationMS:    &wall,
 			Workstreams:       []reviewplan.WorkstreamUsage{{Name: "go:tests", Model: "sonnet", TokensIn: &tokensIn}},
-			Totals:            reviewplan.AggregateUsage{TokensIn: &tokensIn},
 		},
+		Totals: reviewplan.AggregateUsage{TokensIn: &tokensIn},
 	}
 
 	rendered, err := newReviewDryRun(result)
@@ -1312,8 +1312,8 @@ func TestNewReviewDryRunMapsPlanSummary(t *testing.T) {
 		run.Workstreams[0].CostUSD != nil {
 		t.Fatalf("summary workstreams = %#v", run.Workstreams)
 	}
-	if run.Totals.TokensIn == nil || *run.Totals.TokensIn != tokensIn || run.Totals.CostUSD != nil {
-		t.Fatalf("summary totals = %#v", run.Totals)
+	if rendered.Summary.Totals.TokensIn == nil || *rendered.Summary.Totals.TokensIn != tokensIn || rendered.Summary.Totals.CostUSD != nil {
+		t.Fatalf("summary totals = %#v", rendered.Summary.Totals)
 	}
 }
 

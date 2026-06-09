@@ -24,6 +24,7 @@ type ReviewSummary struct {
 	Reviewers []ReviewReviewerSummary `json:"reviewers"`
 	Threads   ReviewThreadCounts      `json:"threads"`
 	Run       ReviewRunSummary        `json:"run"`
+	Totals    ReviewWorkstreamTotals  `json:"totals"`
 }
 
 // ReviewReviewerSummary is one reviewer row with its rendered finding count.
@@ -41,14 +42,13 @@ type ReviewThreadCounts struct {
 
 // ReviewRunSummary is the execution metadata rendered in the rollup footer.
 type ReviewRunSummary struct {
-	ToolVersion       string                 `json:"tool_version,omitempty"`
-	Adapter           string                 `json:"adapter,omitempty"`
-	Model             string                 `json:"model,omitempty"`
-	PostingIdentity   string                 `json:"posting_identity,omitempty"`
-	SelectedReviewers []string               `json:"selected_reviewers,omitempty"`
-	WallDurationMS    *int64                 `json:"wall_duration_ms"`
-	Workstreams       []ReviewWorkstream     `json:"workstreams,omitempty"`
-	Totals            ReviewWorkstreamTotals `json:"totals"`
+	ToolVersion       string             `json:"tool_version,omitempty"`
+	Adapter           string             `json:"adapter,omitempty"`
+	Model             string             `json:"model,omitempty"`
+	PostingIdentity   string             `json:"posting_identity,omitempty"`
+	SelectedReviewers []string           `json:"selected_reviewers,omitempty"`
+	WallDurationMS    *int64             `json:"wall_duration_ms"`
+	Workstreams       []ReviewWorkstream `json:"workstreams,omitempty"`
 }
 
 // ReviewWorkstream is adapter-reported usage for one workstream.

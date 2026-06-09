@@ -757,7 +757,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		out.WriteString("\n---\n\n")
 		out.WriteString("> Note: This PR modifies reviewer definitions under `.codereview/agents/`. The review was conducted using base-branch versions; changes will affect future reviews after merge.\n")
 	}
-	writeRunFooter(&out, summary.Run)
+	writeRunFooter(&out, summary.Run, summary.Totals)
 	return strings.TrimSpace(out.String())
 }
 

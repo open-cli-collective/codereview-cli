@@ -415,14 +415,14 @@ func newReviewSummary(summary reviewplan.Summary) view.ReviewSummary {
 			PostingIdentity:   summary.Run.PostingIdentity,
 			SelectedReviewers: summary.Run.SelectedReviewers,
 			WallDurationMS:    summary.Run.WallDurationMS,
-			Totals: view.ReviewWorkstreamTotals{
-				TokensIn:          summary.Run.Totals.TokensIn,
-				TokensOut:         summary.Run.Totals.TokensOut,
-				CacheRead:         summary.Run.Totals.CacheRead,
-				CacheCreate:       summary.Run.Totals.CacheCreate,
-				CostUSD:           summary.Run.Totals.CostUSD,
-				ComputeDurationMS: summary.Run.Totals.ComputeDurationMS,
-			},
+		},
+		Totals: view.ReviewWorkstreamTotals{
+			TokensIn:          summary.Totals.TokensIn,
+			TokensOut:         summary.Totals.TokensOut,
+			CacheRead:         summary.Totals.CacheRead,
+			CacheCreate:       summary.Totals.CacheCreate,
+			CostUSD:           summary.Totals.CostUSD,
+			ComputeDurationMS: summary.Totals.ComputeDurationMS,
 		},
 	}
 	for _, reviewer := range summary.Reviewers {
