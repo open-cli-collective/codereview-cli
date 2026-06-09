@@ -73,7 +73,7 @@ func TestSelectExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 						StructuredOutput: []byte(`{"bad":true}`),
 					},
 				},
-			}, fmt.Errorf("structured output invalid after retry: first: unknown selected agent; second: unknown selected agent")
+			}, fmt.Errorf("%w: first: unknown selected agent; second: %w", pipeline.ErrStructuredOutputInvalidAfterRetry, fmt.Errorf("unknown selected agent"))
 		},
 	)
 

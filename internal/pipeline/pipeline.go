@@ -37,6 +37,10 @@ const (
 	defaultMaxPromptBytes = 512 * 1024
 )
 
+// ErrStructuredOutputInvalidAfterRetry marks a selector or rollup response that
+// stayed invalid after the LLM retry path.
+var ErrStructuredOutputInvalidAfterRetry = llm.ErrStructuredOutputInvalidAfterRetry
+
 // ReadProvider is the PR read boundary needed by dry-run review.
 type ReadProvider interface {
 	GetPR(context.Context, gitprovider.PRRef) (gitprovider.PR, error)

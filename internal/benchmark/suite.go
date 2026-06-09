@@ -499,12 +499,12 @@ func validateSelectionCandidates(suite SuiteFile) error {
 	return nil
 }
 
-func validateRequiredSelectionRecipe(candidateID string, selection SelectionStage, suiteDir, suitePath, mode string) error {
+func validateRequiredSelectionRecipe(candidateID string, selection SelectionStage, suiteDir, suitePath, commandName string) error {
 	if selection.Model == "" {
-		return fmt.Errorf("%w: candidate %q stages.selection.model is required for %s", ErrInvalid, candidateID, mode)
+		return fmt.Errorf("%w: candidate %q stages.selection.model is required for %s", ErrInvalid, candidateID, commandName)
 	}
 	if selection.Effort == "" {
-		return fmt.Errorf("%w: candidate %q stages.selection.effort is required for %s", ErrInvalid, candidateID, mode)
+		return fmt.Errorf("%w: candidate %q stages.selection.effort is required for %s", ErrInvalid, candidateID, commandName)
 	}
 	if prompt := selection.Prompt; prompt != "" && suitePath != "" {
 		if err := validateSelectionPromptFile(candidateID, suiteDir, prompt); err != nil {

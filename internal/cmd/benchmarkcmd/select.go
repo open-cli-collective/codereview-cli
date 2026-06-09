@@ -3,6 +3,7 @@ package benchmarkcmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -219,69 +220,66 @@ func executeBenchmarkSelectRun(ctx context.Context, suiteDir, resultsDir, runID 
 		rawSelectionJSON []byte
 	)
 	if state.err != nil {
-		runSummary.ExitCode = exitcode.Failure
-		runSummary.FailureClassification = classifySelectionFailure(state.err)
-		runSummary.Warnings = append(runSummary.Warnings, state.err.Error())
-		stderrBody = append(stderrBody, []byte(state.err.Error()+"\n")...)
-	} else {
-		selectionPromptInstructions, promptErr := loadSelectionPromptInstructions(suiteDir, candidate.Stages.Selection.Prompt)
-		if promptErr != nil {
-			runSummary.ExitCode = exitcode.Failure
-			runSummary.FailureClassification = classifySelectionFailure(promptErr)
-			runSummary.Warnings = append(runSummary.Warnings, promptErr.Error())
-			stderrBody = append(stderrBody, []byte(promptErr.Error()+"\n")...)
-		} else {
-			ref, parseErr := prref.ParseGitHubPullURL(benchCase.PR)
-			if parseErr != nil {
-				runSummary.ExitCode = exitcode.Failure
-				runSummary.FailureClassification = classifySelectionFailure(parseErr)
-				runSummary.Warnings = append(runSummary.Warnings, parseErr.Error())
-				stderrBody = append(stderrBody, []byte(parseErr.Error()+"\n")...)
-			} else {
-				result, runErr := runSelectionOnly(ctx, pipeline.Options{
-					Provider:  state.runtime.Provider,
-					Adapter:   state.runtime.Adapter,
-					MaxAgents: candidate.MaxAgents,
-				}, pipeline.SelectionRequest{
-					PRRef:                       ref,
-					ProfileName:                 state.profileName,
-					Profile:                     state.profile,
-					AgentDirs:                   append([]string(nil), candidate.Stages.Reviewers.AgentDirs...),
-					ArtifactDir:                 runDir,
-					ReviewBaseSHA:               benchCase.ReviewBaseSHA,
-					ReviewHeadSHA:               benchCase.ReviewHeadSHA,
-					SelectionModelOverride:      candidate.Stages.Selection.Model,
-					SelectionEffortOverride:     candidate.Stages.Selection.Effort,
-					SelectionPromptInstructions: selectionPromptInstructions,
-				})
-				rawSelectionJSON = append([]byte(nil), result.SelectionSession.Response.StructuredOutput...)
-				if result.ReviewBaseSHA != "" {
-					runSummary.ReviewBaseSHA = result.ReviewBaseSHA
-				}
-				if result.ReviewHeadSHA != "" {
-					runSummary.ReviewHeadSHA = result.ReviewHeadSHA
-				}
-				if result.CurrentBaseSHA != "" {
-					runSummary.CurrentBaseSHA = result.CurrentBaseSHA
-				}
-				if result.CurrentHeadSHA != "" {
-					runSummary.CurrentHeadSHA = result.CurrentHeadSHA
-				}
-				if runErr != nil {
-					runSummary.ExitCode = exitcode.Failure
-					runSummary.FailureClassification = classifySelectionFailure(runErr)
-					runSummary.Warnings = append(runSummary.Warnings, runErr.Error())
-					stderrBody = append(stderrBody, []byte(runErr.Error()+"\n")...)
-				} else {
-					runSummary.FailureClassification = failureNone
-					runSummary.SelectedAgents = summarizeSelectedAgents(result.Selection.SelectedAgents)
-					runSummary.ThreadActionCount = len(result.Selection.ThreadActions)
-				}
-			}
-		}
+		recordSelectionRunFailure(&runSummary, &stderrBody, state.err)
+		return finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
 	}
-	runSummary.DurationMS = durationMS(benchmarkNow().UTC().Sub(start))
-	if usage, usageErr := benchmark.ExtractRunMetrics(runDir); usageErr != nil {
+
+	selectionPromptInstructions, err := loadSelectionPromptInstructions(suiteDir, candidate.Stages.Selection.Prompt)
+	if err != nil {
+		recordSelectionRunFailure(&runSummary, &stderrBody, err)
+		return finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
+	}
+
+	ref, err := prref.ParseGitHubPullURL(benchCase.PR)
+	if err != nil {
+		recordSelectionRunFailure(&runSummary, &stderrBody, err)
+		return finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
+	}
+
+	result, err := runSelectionOnly(ctx, pipeline.Options{
+		Provider:  state.runtime.Provider,
+		Adapter:   state.runtime.Adapter,
+		MaxAgents: candidate.MaxAgents,
+	}, pipeline.SelectionRequest{
+		PRRef:                       ref,
+		ProfileName:                 state.profileName,
+		Profile:                     state.profile,
+		AgentDirs:                   append([]string(nil), candidate.Stages.Reviewers.AgentDirs...),
+		ArtifactDir:                 runDir,
+		ReviewBaseSHA:               benchCase.ReviewBaseSHA,
+		ReviewHeadSHA:               benchCase.ReviewHeadSHA,
+		SelectionModelOverride:      candidate.Stages.Selection.Model,
+		SelectionEffortOverride:     candidate.Stages.Selection.Effort,
+		SelectionPromptInstructions: selectionPromptInstructions,
+	})
+	rawSelectionJSON = append([]byte(nil), result.SelectionSession.Response.StructuredOutput...)
+	if result.ReviewBaseSHA != "" {
+		runSummary.ReviewBaseSHA = result.ReviewBaseSHA
+	}
+	if result.ReviewHeadSHA != "" {
+		runSummary.ReviewHeadSHA = result.ReviewHeadSHA
+	}
+	if result.CurrentBaseSHA != "" {
+		runSummary.CurrentBaseSHA = result.CurrentBaseSHA
+	}
+	if result.CurrentHeadSHA != "" {
+		runSummary.CurrentHeadSHA = result.CurrentHeadSHA
+	}
+	if err != nil {
+		recordSelectionRunFailure(&runSummary, &stderrBody, err)
+		return finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
+	}
+
+	runSummary.FailureClassification = failureNone
+	runSummary.SelectedAgents = summarizeSelectedAgents(result.Selection.SelectedAgents)
+	runSummary.ThreadActionCount = len(result.Selection.ThreadActions)
+	return finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
+}
+
+func finalizeSelectionRun(runSummary benchmarkRun, started time.Time, rawSelectionJSON, stderrBody []byte) (benchmarkRun, error) {
+	runSummary.DurationMS = durationMS(benchmarkNow().UTC().Sub(started))
+	artifacts := runSummary.Artifacts
+	if usage, usageErr := benchmark.ExtractRunMetrics(artifacts.Dir); usageErr != nil {
 		runSummary.Warnings = append(runSummary.Warnings, fmt.Sprintf("usage metrics unavailable: %s", usageErr.Error()))
 	} else if usage.HasData() {
 		runSummary.Usage = &usage
@@ -296,6 +294,13 @@ func executeBenchmarkSelectRun(ctx context.Context, suiteDir, resultsDir, runID 
 		return benchmarkRun{}, err
 	}
 	return runSummary, nil
+}
+
+func recordSelectionRunFailure(runSummary *benchmarkRun, stderrBody *[]byte, err error) {
+	runSummary.ExitCode = exitcode.Failure
+	runSummary.FailureClassification = classifySelectionFailure(err)
+	runSummary.Warnings = append(runSummary.Warnings, err.Error())
+	*stderrBody = append(*stderrBody, []byte(err.Error()+"\n")...)
 }
 
 func resolveSelectResultsDir(suiteID, configured string, started time.Time) (string, error) {
@@ -353,7 +358,7 @@ func classifySelectionFailure(err error) string {
 	if err == nil {
 		return failureNone
 	}
-	if strings.Contains(err.Error(), "structured output invalid after retry") {
+	if errors.Is(err, pipeline.ErrStructuredOutputInvalidAfterRetry) {
 		return failureInvalidSelectionJSON
 	}
 	return failureSelectionError

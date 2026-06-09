@@ -487,6 +487,9 @@ func TestSelectionOnlyRejectsInvalidSelection(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "structured output invalid after retry") || !strings.Contains(err.Error(), "unknown selected agent") {
 		t.Fatalf("SelectionOnly error = %v, want retry-wrapped unknown selected agent", err)
 	}
+	if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+		t.Fatalf("SelectionOnly error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
+	}
 	if !reflect.DeepEqual(result.Artifacts, ArtifactPathsFromDir(artifactDir)) {
 		t.Fatalf("artifacts = %#v, want caller-owned dir %q", result.Artifacts, artifactDir)
 	}
