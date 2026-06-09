@@ -150,9 +150,11 @@ when present.
 
 Candidate `profile` must reference a configured profile. Candidate PR hosts must
 match the candidate profile's Git host. For the current full-pipeline
-`validate`, `doctor`, and `run` commands, candidates must declare exact
-provider model IDs and effort values for both `stages.selection` and
-`stages.reviewers`. Selector-only `benchmark select` still requires explicit
+`validate`, `doctor`, and `run` commands, candidates must declare explicit
+selection `model` and `effort`. Reviewer candidates must declare reviewer
+`effort`, `agent_dirs`, and one reviewer model selector: either exact
+`stages.reviewers.model` or floor-based `stages.reviewers.model_tier`.
+Selector-only `benchmark select` still requires explicit
 `stages.selection.model` and `stages.selection.effort`, but it allows the
 reviewer stage to be omitted. `stages.selection.prompt` is optional, but when
 set it must reference a readable non-empty file relative to the suite. The
@@ -252,6 +254,7 @@ When set on the candidate, `run` also passes:
 | `stages.selection.effort` | `--selection-effort <effort>` |
 | `stages.selection.prompt` | `--selection-prompt <path>` |
 | `stages.reviewers.model` | `--reviewer-model <model>` |
+| `stages.reviewers.model_tier` | `--reviewer-model-tier <tier>` |
 | `stages.reviewers.effort` | `--reviewer-effort <effort>` |
 | `stages.reviewers.agent_dirs[]` | `--agents-dir <path>` |
 | `max_agents` | `--max-agents <n>` |

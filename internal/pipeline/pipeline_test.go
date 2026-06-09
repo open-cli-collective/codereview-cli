@@ -678,6 +678,50 @@ func TestDryRunAgentModelTierUsesProfileModelMapOverride(t *testing.T) {
 	}
 }
 
+func TestDryRunReviewerBaselineTierRaisesReviewerModelFloor(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.Profile.LLM.ModelMap = config.ModelMap{"large": "profile-large-model"}
+	req.Profile.LLM.ReviewerModelTier = config.ModelTierLarge
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-reviewer-baseline-large" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	wantModels := []string{"claude-sonnet-4-6", "profile-large-model", "claude-sonnet-4-6"}
+	for i, request := range adapter.Requests() {
+		if request.Model != wantModels[i] {
+			t.Fatalf("request[%d].Model = %q, want %q", i, request.Model, wantModels[i])
+		}
+	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:           "tier_floor",
+		FloorTier:      "medium",
+		BaselineTier:   "large",
+		EffectiveTier:  "large",
+		ResolvedModel:  "profile-large-model",
+		ModelMapSource: config.ModelMapSourceConfig,
+	})
+}
+
 func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -815,6 +859,50 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 	}
 }
 
+func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.Profile.LLM.ModelMap = config.ModelMap{"large": "profile-large-model"}
+	req.ReviewerModelTierOverride = "large"
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-reviewer-tier-override" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	wantModels := []string{"claude-sonnet-4-6", "profile-large-model", "claude-sonnet-4-6"}
+	for i, request := range adapter.Requests() {
+		if request.Model != wantModels[i] {
+			t.Fatalf("request[%d].Model = %q, want %q", i, request.Model, wantModels[i])
+		}
+	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:           "tier_floor",
+		FloorTier:      "medium",
+		BaselineTier:   "large",
+		EffectiveTier:  "large",
+		ResolvedModel:  "profile-large-model",
+		ModelMapSource: config.ModelMapSourceConfig,
+	})
+}
+
 func TestDryRunAgentModelIDBypassesModelMapForReviewer(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -860,6 +948,92 @@ func TestDryRunAgentModelIDBypassesModelMapForReviewer(t *testing.T) {
 		if session.Model != wantModels[i] {
 			t.Fatalf("session[%d].Model = %q, want %q", i, session.Model, wantModels[i])
 		}
+	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:          "exact_model",
+		ResolvedModel: "agent-provider-model",
+	})
+}
+
+func TestDryRunReviewerBaselineDoesNotAffectAgentModelID(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	writeAgentModelID(t, req.Profile.AgentSources[0], "harness", "reviewer", "agent-provider-model")
+	req.Profile.LLM.ReviewerModelTier = config.ModelTierLarge
+	req.Profile.LLM.ModelMap = config.ModelMap{"large": "profile-large-model"}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-model-id-baseline" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	wantModels := []string{"claude-sonnet-4-6", "agent-provider-model", "claude-sonnet-4-6"}
+	for i, request := range adapter.Requests() {
+		if request.Model != wantModels[i] {
+			t.Fatalf("request[%d].Model = %q, want %q", i, request.Model, wantModels[i])
+		}
+	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:          "exact_model",
+		ResolvedModel: "agent-provider-model",
+	})
+}
+
+func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
+	provider, req := dryRunHarness(t)
+	_ = provider
+	writeAgentWithModelTier(t, req.Profile.AgentSources[0], "harness", "senior", "large")
+	catalog, err := agents.Load(context.Background(), agents.LoadOptions{
+		ProfileDirs: req.Profile.AgentSources,
+	})
+	if err != nil {
+		t.Fatalf("agents.Load: %v", err)
+	}
+	got := reviewerRuntimeArtifact(req, catalog, llm.Selection{
+		SelectedAgents: []llm.SelectedAgent{
+			{AgentID: "harness:reviewer", Files: []string{"main.go"}},
+			{AgentID: "harness:senior", Files: []string{"main.go"}},
+		},
+	})
+	if got == nil {
+		t.Fatal("reviewerRuntimeArtifact = nil, want selected reviewer runtime metadata")
+	}
+	if runtime := got["harness:reviewer"]; runtime != (reviewerRuntimeResolution{
+		Mode:           "tier_floor",
+		FloorTier:      "medium",
+		BaselineTier:   "small",
+		EffectiveTier:  "medium",
+		ResolvedModel:  "claude-sonnet-4-6",
+		ModelMapSource: config.ModelMapSourceBuiltIn,
+	}) {
+		t.Fatalf("reviewer runtime = %#v", runtime)
+	}
+	if runtime := got["harness:senior"]; runtime != (reviewerRuntimeResolution{
+		Mode:           "tier_floor",
+		FloorTier:      "large",
+		BaselineTier:   "small",
+		EffectiveTier:  "large",
+		ResolvedModel:  "claude-opus-4-8",
+		ModelMapSource: config.ModelMapSourceBuiltIn,
+	}) {
+		t.Fatalf("senior runtime = %#v", runtime)
 	}
 }
 
@@ -2577,6 +2751,12 @@ func writeAgentModelID(t *testing.T, rootDir, category, agent, modelID string) {
 	writeFile(t, filepath.Join(rootDir, category, agent, "index.yaml"), fmt.Sprintf("name: %s\ndescription: %s desc\nmodel_id: %s\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n", agent, agent, modelID))
 }
 
+func writeAgentWithModelTier(t *testing.T, rootDir, category, agent, modelTier string) {
+	t.Helper()
+	writeFile(t, filepath.Join(rootDir, category, agent, "index.yaml"), fmt.Sprintf("name: %s\ndescription: %s desc\nmodel_tier: %s\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n", agent, agent, modelTier))
+	writeFile(t, filepath.Join(rootDir, category, agent, "prompt.md"), "Review carefully.")
+}
+
 func agentYAML(name, description string, needsFullContent bool) string {
 	return fmt.Sprintf("name: %s\ndescription: %s\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: %t\n", name, description, needsFullContent)
 }
@@ -2635,6 +2815,31 @@ func assertAgentSourcesArtifact(t *testing.T, path, wantAgent string) {
 		}
 	}
 	t.Fatalf("artifact agents = %#v, want %s with exact profile source provenance", artifact.Agents, wantAgent)
+}
+
+func assertReviewerRuntimeArtifact(t *testing.T, path, wantAgent string, want reviewerRuntimeResolution) {
+	t.Helper()
+	data, err := os.ReadFile(path) // #nosec G304 -- test helper reads caller-provided artifact paths under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	var artifact agentSourcesArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatalf("Unmarshal agent sources artifact: %v\n%s", err, data)
+	}
+	for _, agent := range artifact.Agents {
+		if agent.ID != wantAgent {
+			continue
+		}
+		if agent.ReviewerRuntime == nil {
+			t.Fatalf("agent %s reviewer runtime = nil, want %#v", wantAgent, want)
+		}
+		if *agent.ReviewerRuntime != want {
+			t.Fatalf("agent %s reviewer runtime = %#v, want %#v", wantAgent, *agent.ReviewerRuntime, want)
+		}
+		return
+	}
+	t.Fatalf("artifact agents = %#v, want reviewer runtime for %s", artifact.Agents, wantAgent)
 }
 
 func findArtifactSource(sources []agents.SourceInfo, kind agents.SourceKind) (agents.SourceInfo, bool) {

@@ -113,6 +113,7 @@ type Request struct {
 	SelectionEffortOverride     string
 	SelectionPromptInstructions string
 	ReviewerModelOverride       string
+	ReviewerModelTierOverride   string
 	ReviewerEffortOverride      string
 	ReviewBaseSHA               string
 	ReviewHeadSHA               string
@@ -601,7 +602,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.PlannedActions = append(result.PlannedActions, planned)
 	}
-	if err := writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown); err != nil {
+	if err := writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection)); err != nil {
 		return Result{}, err
 	}
 	if !mode.live {
@@ -1346,9 +1347,19 @@ type agentSourcesArtifact struct {
 }
 
 type agentProvenanceArtifact struct {
-	ID         string            `json:"id"`
-	Provenance string            `json:"provenance"`
-	Source     agents.SourceInfo `json:"source"`
+	ID              string                     `json:"id"`
+	Provenance      string                     `json:"provenance"`
+	Source          agents.SourceInfo          `json:"source"`
+	ReviewerRuntime *reviewerRuntimeResolution `json:"reviewer_runtime,omitempty"`
+}
+
+type reviewerRuntimeResolution struct {
+	Mode           string                `json:"mode"`
+	FloorTier      string                `json:"floor_tier,omitempty"`
+	BaselineTier   string                `json:"baseline_tier,omitempty"`
+	EffectiveTier  string                `json:"effective_tier,omitempty"`
+	ResolvedModel  string                `json:"resolved_model"`
+	ModelMapSource config.ModelMapSource `json:"model_map_source,omitempty"`
 }
 
 type outputContract struct {
@@ -1511,7 +1522,7 @@ func firstNOrPlaceholder(values []string, placeholder string, count int) []strin
 	return append([]string(nil), values[:count]...)
 }
 
-func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string) error {
+func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string, reviewerRuntime map[string]reviewerRuntimeResolution) error {
 	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
 		return fmt.Errorf("pipeline: create artifact dir: %w", err)
 	}
@@ -1521,7 +1532,7 @@ func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, ca
 	if err := os.WriteFile(paths.DiffPatch, []byte(rawDiff), 0o600); err != nil {
 		return fmt.Errorf("pipeline: write diff: %w", err)
 	}
-	sourceJSON, err := json.MarshalIndent(agentSourcesArtifactFromCatalog(catalog), "", "  ")
+	sourceJSON, err := json.MarshalIndent(agentSourcesArtifactFromCatalog(catalog, reviewerRuntime), "", "  ")
 	if err != nil {
 		return err
 	}
@@ -1559,7 +1570,7 @@ func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, ca
 	return nil
 }
 
-func agentSourcesArtifactFromCatalog(catalog agents.Catalog) agentSourcesArtifact {
+func agentSourcesArtifactFromCatalog(catalog agents.Catalog, reviewerRuntime map[string]reviewerRuntimeResolution) agentSourcesArtifact {
 	artifact := agentSourcesArtifact{
 		Sources: append([]agents.SourceInfo(nil), catalog.Sources...),
 		Agents:  make([]agentProvenanceArtifact, 0, len(catalog.Agents)),
@@ -1568,13 +1579,49 @@ func agentSourcesArtifactFromCatalog(catalog agents.Catalog) agentSourcesArtifac
 		artifact.Sources[i].Warnings = append([]string(nil), catalog.Sources[i].Warnings...)
 	}
 	for _, agent := range catalog.Agents {
+		runtime, ok := reviewerRuntime[agent.ID]
+		var runtimePtr *reviewerRuntimeResolution
+		if ok {
+			runtimeCopy := runtime
+			runtimePtr = &runtimeCopy
+		}
 		artifact.Agents = append(artifact.Agents, agentProvenanceArtifact{
-			ID:         agent.ID,
-			Provenance: agent.Provenance.String(),
-			Source:     agent.Provenance.SourceInfo(),
+			ID:              agent.ID,
+			Provenance:      agent.Provenance.String(),
+			Source:          agent.Provenance.SourceInfo(),
+			ReviewerRuntime: runtimePtr,
 		})
 	}
 	return artifact
+}
+
+func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.Selection) map[string]reviewerRuntimeResolution {
+	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
+		return nil
+	}
+	if len(selection.SelectedAgents) == 0 {
+		return nil
+	}
+	agentsByID := make(map[string]agents.Agent, len(catalog.Agents))
+	for _, agent := range catalog.Agents {
+		agentsByID[agent.ID] = agent
+	}
+	out := make(map[string]reviewerRuntimeResolution, len(selection.SelectedAgents))
+	for _, selected := range selection.SelectedAgents {
+		agent, ok := agentsByID[selected.AgentID]
+		if !ok {
+			continue
+		}
+		resolution, err := resolveAgentModel(req.Profile, req.ReviewerModelTierOverride, agent)
+		if err != nil {
+			continue
+		}
+		out[selected.AgentID] = resolution
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func plannedAction(runID string, action reviewplan.Action) (ledger.PlannedAction, error) {
@@ -1975,6 +2022,7 @@ func hasDryRunStageOverrides(req Request) bool {
 		strings.TrimSpace(req.SelectionEffortOverride) != "" ||
 		strings.TrimSpace(req.SelectionPromptInstructions) != "" ||
 		strings.TrimSpace(req.ReviewerModelOverride) != "" ||
+		strings.TrimSpace(req.ReviewerModelTierOverride) != "" ||
 		strings.TrimSpace(req.ReviewerEffortOverride) != ""
 }
 
@@ -2001,35 +2049,96 @@ func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeCo
 	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
 		return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, "", agent.Effort), nil
 	}
-	model, err := resolveAgentModel(req.Profile, agent)
+	resolved, err := resolveAgentModel(req.Profile, req.ReviewerModelTierOverride, agent)
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, model, agent.Effort), nil
+	return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, resolved.ResolvedModel, agent.Effort), nil
 }
 
-func resolveAgentModel(profile config.Profile, agent agents.Agent) (string, error) {
+func resolveAgentModel(profile config.Profile, baselineOverride string, agent agents.Agent) (reviewerRuntimeResolution, error) {
 	if modelID := strings.TrimSpace(agent.ModelID); modelID != "" {
-		return modelID, nil
+		return reviewerRuntimeResolution{
+			Mode:          "exact_model",
+			ResolvedModel: modelID,
+		}, nil
 	}
-	tier := config.ModelTier(strings.TrimSpace(agent.ModelTier))
-	if !tier.Valid() {
-		return "", fmt.Errorf("pipeline: agent %s model_tier %q is invalid", agent.ID, agent.ModelTier)
+	floorTier := config.ModelTier(strings.TrimSpace(agent.ModelTier))
+	if !floorTier.Valid() {
+		return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s model_tier %q is invalid", agent.ID, agent.ModelTier)
 	}
-	model, err := resolveModelTier(profile, tier)
+	baselineTier, err := resolveReviewerBaselineTier(profile, baselineOverride)
 	if err != nil {
-		return "", fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
+		return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
 	}
-	return model, nil
+	effectiveTier := maxModelTier(baselineTier, floorTier)
+	resolved, err := resolveModelTierResolution(profile, effectiveTier)
+	if err != nil {
+		return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
+	}
+	return reviewerRuntimeResolution{
+		Mode:           "tier_floor",
+		FloorTier:      string(floorTier),
+		BaselineTier:   string(baselineTier),
+		EffectiveTier:  string(effectiveTier),
+		ResolvedModel:  resolved.Model,
+		ModelMapSource: resolved.Source,
+	}, nil
 }
 
 func resolveModelTier(profile config.Profile, tier config.ModelTier) (string, error) {
+	resolved, err := resolveModelTierResolution(profile, tier)
+	if err != nil {
+		return "", err
+	}
+	return resolved.Model, nil
+}
+
+func resolveModelTierResolution(profile config.Profile, tier config.ModelTier) (config.ModelMapResolution, error) {
 	resolved, ok := config.ResolveModelTier(profile.LLM, tier)
 	if !ok {
 		llmConfig := profile.LLM
-		return "", fmt.Errorf("model_tier %q is not mapped for provider %q adapter %q", tier, llmConfig.Provider, llmConfig.Adapter)
+		return config.ModelMapResolution{}, fmt.Errorf("model_tier %q is not mapped for provider %q adapter %q", tier, llmConfig.Provider, llmConfig.Adapter)
 	}
-	return resolved.Model, nil
+	return resolved, nil
+}
+
+func resolveReviewerBaselineTier(profile config.Profile, override string) (config.ModelTier, error) {
+	if trimmed := strings.TrimSpace(override); trimmed != "" {
+		tier := config.ModelTier(trimmed)
+		if !tier.Valid() {
+			return "", fmt.Errorf("reviewer baseline model_tier %q is invalid; must be one of small, medium, large", override)
+		}
+		return tier, nil
+	}
+	tier := profile.LLM.ReviewerModelTier
+	if tier == "" {
+		return config.ModelTierSmall, nil
+	}
+	if !tier.Valid() {
+		return "", fmt.Errorf("reviewer baseline model_tier %q is invalid; must be one of small, medium, large", tier)
+	}
+	return tier, nil
+}
+
+func maxModelTier(left, right config.ModelTier) config.ModelTier {
+	if modelTierRank(left) >= modelTierRank(right) {
+		return left
+	}
+	return right
+}
+
+func modelTierRank(tier config.ModelTier) int {
+	switch tier {
+	case config.ModelTierSmall:
+		return 1
+	case config.ModelTierMedium:
+		return 2
+	case config.ModelTierLarge:
+		return 3
+	default:
+		return 0
+	}
 }
 
 func applyStageRuntimeOverrides(modelOverride, effortOverride, model, effort string) llmRuntimeConfig {

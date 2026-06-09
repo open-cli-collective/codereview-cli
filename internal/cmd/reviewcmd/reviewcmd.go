@@ -76,27 +76,28 @@ var (
 )
 
 type commandFlags struct {
-	dryRun           bool
-	noPost           bool
-	rerun            bool
-	retryPosts       bool
-	agentsDirs       []string
-	failOn           string
-	sessionName      string
-	jsonOutput       bool
-	verbose          bool
-	selectionModel   string
-	selectionEffort  string
-	selectionPrompt  string
-	reviewerModel    string
-	reviewerEffort   string
-	reviewBaseSHA    string
-	reviewHeadSHA    string
-	maxAgents        int
-	maxConcurrency   int
-	allowSelfReview  bool
-	allowSelfApprove bool
-	noResolveThreads bool
+	dryRun            bool
+	noPost            bool
+	rerun             bool
+	retryPosts        bool
+	agentsDirs        []string
+	failOn            string
+	sessionName       string
+	jsonOutput        bool
+	verbose           bool
+	selectionModel    string
+	selectionEffort   string
+	selectionPrompt   string
+	reviewerModel     string
+	reviewerModelTier string
+	reviewerEffort    string
+	reviewBaseSHA     string
+	reviewHeadSHA     string
+	maxAgents         int
+	maxConcurrency    int
+	allowSelfReview   bool
+	allowSelfApprove  bool
+	noResolveThreads  bool
 }
 
 // Register attaches the review command to rootCmd.
@@ -133,6 +134,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().StringVar(&flags.selectionEffort, "selection-effort", "", "Override selection effort for dry-run review")
 	cmd.Flags().StringVar(&flags.selectionPrompt, "selection-prompt", "", "Override selection instructions from a file for dry-run review")
 	cmd.Flags().StringVar(&flags.reviewerModel, "reviewer-model", "", "Override reviewer models for dry-run review")
+	cmd.Flags().StringVar(&flags.reviewerModelTier, "reviewer-model-tier", "", "Override reviewer baseline model tier for dry-run review")
 	cmd.Flags().StringVar(&flags.reviewerEffort, "reviewer-effort", "", "Override reviewer effort for dry-run review")
 	cmd.Flags().StringVar(&flags.reviewBaseSHA, "review-base-sha", "", "Review this base commit SHA instead of the PR's current base SHA; requires --dry-run and --review-head-sha")
 	cmd.Flags().StringVar(&flags.reviewHeadSHA, "review-head-sha", "", "Review this head commit SHA instead of the PR's current head SHA; requires --dry-run and --review-base-sha")
@@ -152,6 +154,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	selectionEffortChanged := cmd.Flags().Changed("selection-effort")
 	selectionPromptChanged := cmd.Flags().Changed("selection-prompt")
 	reviewerModelChanged := cmd.Flags().Changed("reviewer-model")
+	reviewerModelTierChanged := cmd.Flags().Changed("reviewer-model-tier")
 	reviewerEffortChanged := cmd.Flags().Changed("reviewer-effort")
 	reviewBaseChanged := cmd.Flags().Changed("review-base-sha")
 	reviewHeadChanged := cmd.Flags().Changed("review-head-sha")
@@ -159,6 +162,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	selectionEffort := strings.TrimSpace(flags.selectionEffort)
 	selectionPromptPath := strings.TrimSpace(flags.selectionPrompt)
 	reviewerModel := strings.TrimSpace(flags.reviewerModel)
+	reviewerModelTier := strings.TrimSpace(flags.reviewerModelTier)
 	reviewerEffort := strings.TrimSpace(flags.reviewerEffort)
 	reviewBaseSHA := strings.TrimSpace(flags.reviewBaseSHA)
 	reviewHeadSHA := strings.TrimSpace(flags.reviewHeadSHA)
@@ -177,15 +181,24 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if reviewerModelChanged && reviewerModel == "" {
 		return exitcode.Usage(fmt.Errorf("--reviewer-model must be non-empty"))
 	}
+	if reviewerModelTierChanged && reviewerModelTier == "" {
+		return exitcode.Usage(fmt.Errorf("--reviewer-model-tier must be non-empty"))
+	}
+	if reviewerModelChanged && reviewerModelTierChanged {
+		return exitcode.Usage(fmt.Errorf("--reviewer-model and --reviewer-model-tier cannot be used together"))
+	}
+	if reviewerModelTierChanged && !config.ModelTier(reviewerModelTier).Valid() {
+		return exitcode.Usage(fmt.Errorf("--reviewer-model-tier must be one of small, medium, large"))
+	}
 	if reviewerEffortChanged && reviewerEffort == "" {
 		return exitcode.Usage(fmt.Errorf("--reviewer-effort must be non-empty"))
 	}
 	if reviewerEffortChanged && !validModelEffort(reviewerEffort) {
 		return exitcode.Usage(fmt.Errorf("--reviewer-effort must be one of low, medium, high"))
 	}
-	stageOverrideChanged := selectionModelChanged || selectionEffortChanged || selectionPromptChanged || reviewerModelChanged || reviewerEffortChanged
+	stageOverrideChanged := selectionModelChanged || selectionEffortChanged || selectionPromptChanged || reviewerModelChanged || reviewerModelTierChanged || reviewerEffortChanged
 	if stageOverrideChanged && !flags.dryRun {
-		return exitcode.Usage(fmt.Errorf("--selection-model, --selection-effort, --selection-prompt, --reviewer-model, and --reviewer-effort require --dry-run or --no-post"))
+		return exitcode.Usage(fmt.Errorf("--selection-model, --selection-effort, --selection-prompt, --reviewer-model, --reviewer-model-tier, and --reviewer-effort require --dry-run or --no-post"))
 	}
 	if reviewBaseChanged != reviewHeadChanged {
 		return exitcode.Usage(fmt.Errorf("--review-base-sha and --review-head-sha must be set together"))
@@ -289,6 +302,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		SelectionEffortOverride:     selectionEffort,
 		SelectionPromptInstructions: selectionPromptInstructions,
 		ReviewerModelOverride:       reviewerModel,
+		ReviewerModelTierOverride:   reviewerModelTier,
 		ReviewerEffortOverride:      reviewerEffort,
 		ReviewBaseSHA:               reviewBaseSHA,
 		ReviewHeadSHA:               reviewHeadSHA,

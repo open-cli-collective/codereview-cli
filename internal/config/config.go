@@ -73,11 +73,12 @@ type ReviewerCredentials struct {
 
 // LLMConfig identifies the LLM provider and adapter.
 type LLMConfig struct {
-	Provider      LLMProvider `yaml:"provider" json:"provider"`
-	Auth          LLMAuth     `yaml:"auth" json:"auth"`
-	Adapter       LLMAdapter  `yaml:"adapter" json:"adapter"`
-	CredentialRef string      `yaml:"credential_ref,omitempty" json:"credential_ref,omitempty"`
-	ModelMap      ModelMap    `yaml:"model_map,omitempty" json:"model_map,omitempty"`
+	Provider          LLMProvider `yaml:"provider" json:"provider"`
+	Auth              LLMAuth     `yaml:"auth" json:"auth"`
+	Adapter           LLMAdapter  `yaml:"adapter" json:"adapter"`
+	CredentialRef     string      `yaml:"credential_ref,omitempty" json:"credential_ref,omitempty"`
+	ModelMap          ModelMap    `yaml:"model_map,omitempty" json:"model_map,omitempty"`
+	ReviewerModelTier ModelTier   `yaml:"reviewer_model_tier,omitempty" json:"reviewer_model_tier,omitempty"`
 }
 
 // ModelMap maps portable model tiers to provider-specific model identifiers.
@@ -606,6 +607,9 @@ func validateProfile(name string, profile Profile) error {
 			return invalid("profiles.%s.llm.model_map.%s is required", name, tier)
 		}
 	}
+	if profile.LLM.ReviewerModelTier != "" && !profile.LLM.ReviewerModelTier.Valid() {
+		return invalid("profiles.%s.llm.reviewer_model_tier %q is invalid; must be one of small, medium, large", name, profile.LLM.ReviewerModelTier)
+	}
 	for index, source := range profile.AgentSources {
 		if strings.TrimSpace(source) == "" {
 			return invalid("profiles.%s.agent_sources[%d] is required", name, index)
@@ -678,6 +682,7 @@ func (p Profile) normalized() Profile {
 
 func (l LLMConfig) normalized() LLMConfig {
 	l.CredentialRef = strings.TrimSpace(l.CredentialRef)
+	l.ReviewerModelTier = ModelTier(strings.TrimSpace(string(l.ReviewerModelTier)))
 	if len(l.ModelMap) > 0 {
 		modelMap := make(ModelMap, len(l.ModelMap))
 		for tier, model := range l.ModelMap {

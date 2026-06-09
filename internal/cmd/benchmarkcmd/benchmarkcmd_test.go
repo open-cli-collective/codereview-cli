@@ -518,6 +518,57 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	assertBenchmarkArtifactJSON(t, got)
 }
 
+func TestRunPassesReviewerModelTierThroughChildInvocationsAndSummaries(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	body := strings.Replace(validBenchmarkSuite(t), "      reviewers:\n        model: kimi\n        effort: low\n", "      reviewers:\n        model_tier: large\n        effort: low\n", 1)
+	suitePath := writeBenchmarkSuite(t, body)
+	crBin := writeExecutableCRBin(t)
+	resultsDir := filepath.Join(t.TempDir(), "results")
+	var invocations []reviewInvocation
+	withBenchmarkRunSeams(t, fixedBenchmarkTime(), func(_ context.Context, gotCRBin string, args []string) reviewCommandResult {
+		invocations = append(invocations, reviewInvocation{crBin: gotCRBin, args: append([]string(nil), args...)})
+		return reviewCommandResult{
+			Stdout:   reviewDryRunJSON(t, "child-run-tier"),
+			Stderr:   []byte("tier stderr\n"),
+			ExitCode: 0,
+			Duration: time.Second,
+		}
+	})
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "run", suitePath,
+		"--candidate", "second",
+		"--case", "case_one",
+		"--results-dir", resultsDir,
+		"--cr-bin", crBin,
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if len(invocations) != 1 {
+		t.Fatalf("invocations = %d, want 1", len(invocations))
+	}
+	if !stringSliceContains(invocations[0].args, "--reviewer-model-tier") || !stringSliceContains(invocations[0].args, "large") {
+		t.Fatalf("args = %#v, want reviewer model tier override", invocations[0].args)
+	}
+	if stringSliceContains(invocations[0].args, "--reviewer-model") {
+		t.Fatalf("args = %#v, want no exact reviewer model override", invocations[0].args)
+	}
+	if len(got.SelectedCandidates) != 1 || got.SelectedCandidates[0].Stages.Reviewers.ModelTier != "large" {
+		t.Fatalf("selected candidates = %#v, want reviewer model tier in summary", got.SelectedCandidates)
+	}
+	if data, err := os.ReadFile(got.Artifacts.SuiteSummary); err != nil {
+		t.Fatalf("ReadFile suite summary: %v", err)
+	} else if !strings.Contains(string(data), "\"model_tier\": \"large\"") {
+		t.Fatalf("suite summary = %s, want reviewer model tier", data)
+	}
+}
+
 func TestRunSummaryAndComparePreserveOptionalSynthesisStage(t *testing.T) {
 	cmd, out := newTestCommand(t)
 	synthesisPrompt := filepath.Join(t.TempDir(), "synthesis-v1.md")
@@ -1073,6 +1124,18 @@ func TestReviewArgsMapsExplicitStageRecipesToReviewFlags(t *testing.T) {
 			},
 			required:  []string{"--selection-model", "claude-sonnet-4-6", "--selection-effort", "high", "--selection-prompt", filepath.Join(suiteDir, "selection.md"), "--reviewer-model", "kimi", "--reviewer-effort", "low", "--agents-dir", filepath.Join(suiteDir, "agents")},
 			forbidden: []string{"--llm-model", "--llm-effort"},
+		},
+		{
+			name: "reviewer tier baseline override",
+			candidate: benchmark.Candidate{
+				Profile: "home",
+				Stages: benchmark.CandidateStages{
+					Selection: benchmark.SelectionStage{Model: "claude-sonnet-4-6", Effort: "high"},
+					Reviewers: benchmark.ReviewerStage{ModelTier: "large", Effort: "low", AgentDirs: []string{"agents"}},
+				},
+			},
+			required:  []string{"--selection-model", "claude-sonnet-4-6", "--selection-effort", "high", "--reviewer-model-tier", "large", "--reviewer-effort", "low", "--agents-dir", filepath.Join(suiteDir, "agents")},
+			forbidden: []string{"--reviewer-model"},
 		},
 		{
 			name: "review shas",

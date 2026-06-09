@@ -291,6 +291,26 @@ func TestReviewDryRunPassesStageOverrides(t *testing.T) {
 	}
 }
 
+func TestReviewDryRunPassesReviewerModelTierOverride(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--reviewer-model-tier", " medium ",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	if got := runner.requests[0].ReviewerModelTierOverride; got != "medium" {
+		t.Fatalf("reviewer model tier override = %q, want medium", got)
+	}
+}
+
 func TestReviewNoPostPassesReviewerEffortOverride(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -307,8 +327,29 @@ func TestReviewNoPostPassesReviewerEffortOverride(t *testing.T) {
 		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
 	}
 	req := runner.requests[0]
-	if req.SelectionModelOverride != "" || req.SelectionEffortOverride != "" || req.ReviewerModelOverride != "" || req.ReviewerEffortOverride != "medium" {
+	if req.SelectionModelOverride != "" || req.SelectionEffortOverride != "" || req.ReviewerModelOverride != "" || req.ReviewerModelTierOverride != "" || req.ReviewerEffortOverride != "medium" {
 		t.Fatalf("stage overrides = %#v, want reviewer effort only", req)
+	}
+}
+
+func TestReviewNoPostPassesReviewerModelTierOverride(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--no-post",
+		"--reviewer-model-tier", "large",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	req := runner.requests[0]
+	if req.ReviewerModelTierOverride != "large" || req.ReviewerModelOverride != "" {
+		t.Fatalf("reviewer overrides = %#v, want reviewer model tier only", req)
 	}
 }
 
@@ -377,6 +418,7 @@ func TestReviewLiveRejectsStageOverridesBeforeRuntimeFactory(t *testing.T) {
 		{name: "selection effort", args: []string{"--selection-effort", "high"}},
 		{name: "selection prompt", args: []string{"--selection-prompt", "selection.md"}},
 		{name: "reviewer model", args: []string{"--reviewer-model", "bench-model"}},
+		{name: "reviewer model tier", args: []string{"--reviewer-model-tier", "medium"}},
 		{name: "reviewer effort", args: []string{"--reviewer-effort", "high"}},
 	}
 	for _, tt := range tests {
@@ -411,6 +453,7 @@ func TestReviewRejectsEmptyStageOverridesBeforeRuntimeFactory(t *testing.T) {
 		{name: "selection effort", args: []string{"--dry-run", "--selection-effort", " \t "}},
 		{name: "selection prompt", args: []string{"--dry-run", "--selection-prompt", " \t "}},
 		{name: "reviewer model", args: []string{"--dry-run", "--reviewer-model", " \t "}},
+		{name: "reviewer model tier", args: []string{"--dry-run", "--reviewer-model-tier", " \t "}},
 		{name: "reviewer effort", args: []string{"--dry-run", "--reviewer-effort", " \t "}},
 	}
 	for _, tt := range tests {
@@ -463,6 +506,49 @@ func TestReviewRejectsInvalidModelEffortBeforeRuntimeFactory(t *testing.T) {
 				t.Fatal("runtime factory was called for invalid effort")
 			}
 		})
+	}
+}
+
+func TestReviewRejectsInvalidReviewerModelTierBeforeRuntimeFactory(t *testing.T) {
+	var factoryCalled bool
+	cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+		factoryCalled = true
+		return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+	})
+
+	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--reviewer-model-tier", "flagship"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want usage", got)
+	}
+	if factoryCalled {
+		t.Fatal("runtime factory was called for invalid reviewer model tier")
+	}
+}
+
+func TestReviewRejectsReviewerModelAndReviewerModelTierTogether(t *testing.T) {
+	var factoryCalled bool
+	cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+		factoryCalled = true
+		return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+	})
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--reviewer-model", "bench-model",
+		"--reviewer-model-tier", "medium",
+	})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want usage", got)
+	}
+	if factoryCalled {
+		t.Fatal("runtime factory was called for conflicting reviewer model flags")
 	}
 }
 
