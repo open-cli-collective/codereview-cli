@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
 	"github.com/open-cli-collective/codereview-cli/internal/gate"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -30,9 +32,12 @@ const (
 	StatusDryRunFresh        Status = "dry_run_fresh"
 	StatusRepairExecuted     Status = "repair_executed"
 	StatusRetryPostsExecuted Status = "retry_posts_executed"
+	StatusApprovalOverride   Status = "approval_override_executed"
 	StatusError              Status = "error"
 	StatusBaseMovedAbort     Status = "base_moved_abort"
 )
+
+const approvalOverrideDecisionKind gate.DecisionKind = "approval_override"
 
 // Store is the ledger behavior required by gate IO.
 type Store interface {
@@ -64,6 +69,7 @@ type Options struct {
 	Now                     func() time.Time
 	StaleHeartbeatThreshold time.Duration
 	Warnings                io.Writer
+	ApprovalOverride        approvaloverride.Classifier
 }
 
 // Request identifies one gate evaluation.
@@ -119,9 +125,45 @@ type retryExecution struct {
 	outboxInvoked  bool
 }
 
+type approvalOverrideExecution struct {
+	postResult    outbox.Result
+	run           ledger.Run
+	baseDecision  gate.Decision
+	baseMoved     bool
+	outboxInvoked bool
+}
+
+type gateHostState struct {
+	comments []gitprovider.IssueComment
+	reviews  []gitprovider.Review
+	threads  []gitprovider.InlineThread
+}
+
+type precheckedReviewState struct {
+	reviews []gitprovider.Review
+	loaded  bool
+}
+
+func (s *precheckedReviewState) set(reviews []gitprovider.Review) {
+	s.reviews = reviews
+	s.loaded = true
+}
+
+func (s *precheckedReviewState) take() ([]gitprovider.Review, bool) {
+	if !s.loaded {
+		return nil, false
+	}
+	reviews := s.reviews
+	s.reviews = nil
+	s.loaded = false
+	return reviews, true
+}
+
 const (
-	repairSubmitReviewActionID = "repair-submit-review"
-	repairSubmitReviewBody     = "Completing previously posted codereview rollup."
+	repairSubmitReviewActionID           = "repair-submit-review"
+	repairSubmitReviewBody               = "Completing previously posted codereview rollup."
+	approvalOverrideSubmitReviewActionID = "approval-override-submit-review"
+	approvalOverrideSubmitReviewBody     = "Approving after an explicit PR author override request following a prior codereview pass."
 )
 
 // Evaluate acquires live gate state, calls the pure kernel, and executes
@@ -144,6 +186,24 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{Status: StatusDryRunFresh, Decision: decision}, nil
 	}
 
+	var precheckedReviews precheckedReviewState
+	if normalLiveFastPathEnabled(req.Flags) {
+		reviews, err := opts.Provider.ListReviews(ctx, req.PRRef)
+		if err != nil {
+			return Result{}, err
+		}
+		if activeApprovalByPostingIdentity(reviews, req.PostingIdentity) {
+			return Result{
+				Status: StatusEarlyExit,
+				Decision: gate.Decision{
+					Kind:    gate.DecisionEarlyExit,
+					Message: "review already approved",
+				},
+			}, nil
+		}
+		precheckedReviews.set(reviews)
+	}
+
 	lockPath, err := currentLockPath(opts.Layout, req)
 	if err != nil {
 		return Result{}, err
@@ -163,6 +223,37 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
+		var host *gateHostState
+		if normalLiveFastPathEnabled(req.Flags) {
+			reviews, ok := precheckedReviews.take()
+			if !ok {
+				var err error
+				reviews, err = opts.Provider.ListReviews(ctx, req.PRRef)
+				if err != nil {
+					return Result{}, err
+				}
+				if activeApprovalByPostingIdentity(reviews, req.PostingIdentity) {
+					return Result{
+						Status: StatusEarlyExit,
+						Decision: gate.Decision{
+							Kind:    gate.DecisionEarlyExit,
+							Message: "review already approved",
+						},
+					}, nil
+				}
+			}
+			loaded, err := readGateHostStateWithReviews(ctx, opts.Provider, req.PRRef, reviews)
+			if err != nil {
+				return Result{}, err
+			}
+			host = &loaded
+			if result, ok, err := maybeExecuteApprovalOverride(ctx, opts, req, host); err != nil {
+				return result, err
+			} else if ok {
+				return result, nil
+			}
+		}
+
 		state, err := buildLocalState(ctx, opts, req)
 		if err != nil {
 			return Result{}, err
@@ -173,7 +264,7 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 
 		decision := gate.Decide(state.kernel)
 		if !localDecisionApplies(req.Flags, decision) {
-			state, err = attachExternalState(ctx, opts, req, state)
+			state, err = attachExternalState(ctx, opts, req, state, host)
 			if err != nil {
 				return Result{}, err
 			}
@@ -292,7 +383,7 @@ func buildLocalState(ctx context.Context, opts Options, req Request) (gateState,
 	return state, nil
 }
 
-func attachExternalState(ctx context.Context, opts Options, req Request, state gateState) (gateState, error) {
+func attachExternalState(ctx context.Context, opts Options, req Request, state gateState, cached *gateHostState) (gateState, error) {
 	for _, stale := range state.staleRuns {
 		summary, err := summarizeRun(ctx, opts.Store, stale.run)
 		if err != nil {
@@ -310,11 +401,16 @@ func attachExternalState(ctx context.Context, opts Options, req Request, state g
 		}
 	}
 
-	prSummary, err := summarizePR(ctx, opts.Provider, req)
-	if err != nil {
-		state.releaseStaleLocks()
-		return gateState{}, err
+	host := cached
+	if host == nil {
+		loaded, err := readGateHostState(ctx, opts.Provider, req.PRRef)
+		if err != nil {
+			state.releaseStaleLocks()
+			return gateState{}, err
+		}
+		host = &loaded
 	}
+	prSummary := summarizePRFromHost(*host, req)
 	state.kernel.PR = prSummary
 	if prSummary.State == gate.PRStatePartial {
 		partialRun, mismatched, err := lookupScopedPartialRun(ctx, opts, req, prSummary.RunID)
@@ -524,6 +620,43 @@ func executeRepair(ctx context.Context, opts Options, req Request, decision gate
 	return repairExecution{postResult: postResult, run: run, outboxInvoked: true}, nil
 }
 
+func executeApprovalOverride(ctx context.Context, opts Options, req Request) (approvalOverrideExecution, error) {
+	if baseDecision, moved, err := reviewPremisesMovedDecision(ctx, opts, req, req.PR.Head.SHA, req.PR.Base.SHA); err != nil {
+		return approvalOverrideExecution{}, err
+	} else if moved {
+		return approvalOverrideExecution{baseDecision: baseDecision, baseMoved: true}, nil
+	}
+	if err := requireOutboxLimiter(opts); err != nil {
+		return approvalOverrideExecution{}, err
+	}
+
+	run, err := allocateFresh(ctx, opts, req)
+	if err != nil {
+		return approvalOverrideExecution{}, err
+	}
+	if err := insertApprovalOverrideSubmitReview(ctx, opts, run.RunID); err != nil {
+		if deleteErr := opts.Store.DeleteRun(ctx, run.RunID); deleteErr != nil && !errors.Is(deleteErr, ledger.ErrNotFound) {
+			return approvalOverrideExecution{}, fmt.Errorf("gateio: insert approval override submit_review: %w; cleanup override run: %w", err, deleteErr)
+		}
+		return approvalOverrideExecution{}, err
+	}
+	postResult, err := outbox.Post(ctx, outbox.Options{
+		Store:    opts.Store,
+		Provider: opts.Provider,
+		Limiter:  opts.Limiter,
+		Now:      opts.Now,
+	}, outbox.Request{
+		Run:             run,
+		PRRef:           req.PRRef,
+		PostingIdentity: req.PostingIdentity,
+		DesiredOutcome:  ledger.OutcomeApproved,
+	})
+	if err != nil {
+		return approvalOverrideExecution{postResult: postResult, run: run, outboxInvoked: true}, err
+	}
+	return approvalOverrideExecution{postResult: postResult, run: run, outboxInvoked: true}, nil
+}
+
 func executeRetryPosts(ctx context.Context, opts Options, req Request, run ledger.Run) (retryExecution, error) {
 	if baseDecision, moved, err := reviewPremisesMovedDecision(ctx, opts, req, run.SHA, run.BaseSHA); err != nil {
 		return retryExecution{}, err
@@ -597,6 +730,25 @@ func insertRepairSubmitReview(ctx context.Context, opts Options, runID string, e
 	}
 	return opts.Store.InsertPlannedAction(ctx, ledger.PlannedAction{
 		ActionID:    repairSubmitReviewActionID,
+		RunID:       runID,
+		Kind:        ledger.PlannedActionSubmitReview,
+		PlannedAt:   opts.now(),
+		PayloadJSON: string(payload),
+		Status:      ledger.PlannedActionPending,
+		Required:    true,
+	})
+}
+
+func insertApprovalOverrideSubmitReview(ctx context.Context, opts Options, runID string) error {
+	payload, err := json.Marshal(outbox.SubmitReviewPayload{
+		Body:  approvalOverrideSubmitReviewBody,
+		Event: review.ReviewEventApprove,
+	})
+	if err != nil {
+		return err
+	}
+	return opts.Store.InsertPlannedAction(ctx, ledger.PlannedAction{
+		ActionID:    approvalOverrideSubmitReviewActionID,
 		RunID:       runID,
 		Kind:        ledger.PlannedActionSubmitReview,
 		PlannedAt:   opts.now(),
@@ -790,20 +942,40 @@ func summarizeStaleCandidate(opts Options, req Request, run ledger.Run, summary 
 	}, staleProbe{}, nil
 }
 
-func summarizePR(ctx context.Context, provider gitprovider.GitProvider, req Request) (gate.PRSummary, error) {
-	comments, err := provider.ListIssueComments(ctx, req.PRRef)
+func readGateHostState(ctx context.Context, provider gitprovider.GitProvider, ref gitprovider.PRRef) (gateHostState, error) {
+	reviews, err := provider.ListReviews(ctx, ref)
 	if err != nil {
-		return gate.PRSummary{}, err
+		return gateHostState{}, err
 	}
-	reviews, err := provider.ListReviews(ctx, req.PRRef)
-	if err != nil {
-		return gate.PRSummary{}, err
-	}
+	return readGateHostStateWithReviews(ctx, provider, ref, reviews)
+}
 
-	records := make([]markerRecord, 0, len(comments)+len(reviews))
+func readGateHostStateWithReviews(ctx context.Context, provider gitprovider.GitProvider, ref gitprovider.PRRef, reviews []gitprovider.Review) (gateHostState, error) {
+	comments, err := provider.ListIssueComments(ctx, ref)
+	if err != nil {
+		return gateHostState{}, err
+	}
+	threads, err := provider.ListInlineThreads(ctx, ref)
+	if err != nil {
+		return gateHostState{}, err
+	}
+	return gateHostState{
+		comments: comments,
+		reviews:  reviews,
+		threads:  threads,
+	}, nil
+}
+
+func summarizePRFromHost(host gateHostState, req Request) gate.PRSummary {
+	records := markerActionRecords(host, req.PostingIdentity)
+	return classifyMarkers(records, req.PR.Head.SHA, req.PR.Base.SHA)
+}
+
+func markerActionRecords(host gateHostState, posting gitprovider.Identity) []markerRecord {
+	records := make([]markerRecord, 0, len(host.comments)+len(host.reviews))
 	order := 0
-	for _, comment := range comments {
-		if !sameIdentity(comment.Author, req.PostingIdentity) {
+	for _, comment := range host.comments {
+		if !sameIdentity(comment.Author, posting) {
 			continue
 		}
 		for _, found := range marker.FindActions(comment.Body) {
@@ -811,8 +983,8 @@ func summarizePR(ctx context.Context, provider gitprovider.GitProvider, req Requ
 			order++
 		}
 	}
-	for _, review := range reviews {
-		if !sameIdentity(review.Author, req.PostingIdentity) {
+	for _, review := range host.reviews {
+		if !sameIdentity(review.Author, posting) {
 			continue
 		}
 		for _, found := range marker.FindActions(review.Body) {
@@ -820,7 +992,207 @@ func summarizePR(ctx context.Context, provider gitprovider.GitProvider, req Requ
 			order++
 		}
 	}
-	return classifyMarkers(records, req.PR.Head.SHA, req.PR.Base.SHA), nil
+	for _, thread := range host.threads {
+		for _, comment := range thread.Comments {
+			if !sameIdentity(comment.Author, posting) {
+				continue
+			}
+			for _, found := range marker.FindActions(comment.Body) {
+				records = append(records, markerRecord{marker: found, when: comment.CreatedAt, order: order})
+				order++
+			}
+		}
+	}
+	return records
+}
+
+func latestCodereviewMarkerAt(host gateHostState, posting gitprovider.Identity) (time.Time, bool) {
+	var (
+		latest time.Time
+		found  bool
+	)
+	// Thread summaries are body-bearing codereview outputs with run/action
+	// identity. They can anchor override eligibility even though only action
+	// markers participate in PR completion-state classification.
+	consider := func(author gitprovider.Identity, body string, when time.Time) {
+		if !sameIdentity(author, posting) || when.IsZero() {
+			return
+		}
+		if len(marker.FindActions(body)) == 0 && len(marker.FindThreadSummaries(body)) == 0 {
+			return
+		}
+		if !found || when.After(latest) {
+			latest = when
+			found = true
+		}
+	}
+	for _, comment := range host.comments {
+		consider(comment.Author, comment.Body, comment.CreatedAt)
+	}
+	for _, review := range host.reviews {
+		consider(review.Author, review.Body, review.SubmittedAt)
+	}
+	for _, thread := range host.threads {
+		for _, comment := range thread.Comments {
+			consider(comment.Author, comment.Body, comment.CreatedAt)
+		}
+	}
+	return latest, found
+}
+
+func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity) bool {
+	var (
+		selected gitprovider.Review
+		found    bool
+	)
+	for _, review := range reviews {
+		if !sameIdentity(review.Author, posting) {
+			continue
+		}
+		switch review.State {
+		case gitprovider.ReviewStateApproved, gitprovider.ReviewStateChangesRequested:
+		case gitprovider.ReviewStateCommented, gitprovider.ReviewStateDismissed, gitprovider.ReviewStatePending:
+			continue
+		default:
+			continue
+		}
+		if !found || review.SubmittedAt.After(selected.SubmittedAt) ||
+			(review.SubmittedAt.Equal(selected.SubmittedAt) &&
+				selected.State == gitprovider.ReviewStateApproved &&
+				review.State == gitprovider.ReviewStateChangesRequested) {
+			selected = review
+			found = true
+		}
+	}
+	return found && selected.State == gitprovider.ReviewStateApproved
+}
+
+func maybeExecuteApprovalOverride(ctx context.Context, opts Options, req Request, host *gateHostState) (Result, bool, error) {
+	if host == nil || opts.ApprovalOverride == nil {
+		return Result{}, false, nil
+	}
+	latest, ok := latestCodereviewMarkerAt(*host, req.PostingIdentity)
+	if !ok {
+		return Result{}, false, nil
+	}
+	candidates := approvalOverrideCandidates(*host, req, latest)
+	if len(candidates) == 0 {
+		return Result{}, false, nil
+	}
+	classified, err := opts.ApprovalOverride.ClassifyApprovalOverride(ctx, approvaloverride.Request{
+		PR:              req.PR,
+		PostingIdentity: req.PostingIdentity,
+		LatestMarkerAt:  latest,
+		Candidates:      candidates,
+		LogPath:         filepath.Join(req.ArtifactPath, "agent-logs", "approval-override.jsonl"),
+	})
+	if err != nil {
+		emitWarnings(opts.Warnings, []string{fmt.Sprintf("approval override classifier failed; continuing with full review: %v", err)})
+		return Result{}, false, nil
+	}
+	if !classified.Approve {
+		return Result{}, false, nil
+	}
+	execution, err := executeApprovalOverride(ctx, opts, req)
+	result := Result{
+		Status: StatusApprovalOverride,
+		Decision: gate.Decision{
+			Kind:    approvalOverrideDecisionKind,
+			Outcome: gate.PROutcomeApproved,
+			Message: "PR author requested approval override",
+		},
+		Run:          execution.run,
+		OutboxResult: execution.postResult,
+	}
+	if err != nil {
+		if execution.outboxInvoked {
+			return result, true, err
+		}
+		return Result{}, false, err
+	}
+	if execution.baseMoved {
+		result.Status = StatusBaseMovedAbort
+		result.Decision = execution.baseDecision
+		return result, true, nil
+	}
+	return result, true, nil
+}
+
+func approvalOverrideCandidates(host gateHostState, req Request, latestMarkerAt time.Time) []approvaloverride.Candidate {
+	var candidates []approvaloverride.Candidate
+	add := func(id, source string, author gitprovider.Identity, body, url string, createdAt, updatedAt time.Time) {
+		if !sameIdentity(author, req.PR.Author) {
+			return
+		}
+		effectiveAt := effectiveCommentTime(createdAt, updatedAt)
+		if !effectiveAt.After(latestMarkerAt) {
+			return
+		}
+		stripped := strings.TrimSpace(stripCodereviewComments(body))
+		if stripped == "" {
+			return
+		}
+		candidates = append(candidates, approvaloverride.Candidate{
+			ID:          id,
+			Source:      source,
+			Author:      author,
+			Body:        stripped,
+			URL:         url,
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+			EffectiveAt: effectiveAt,
+		})
+	}
+	for _, comment := range host.comments {
+		add(string(comment.ID), "issue_comment", comment.Author, comment.Body, comment.URL, comment.CreatedAt, comment.UpdatedAt)
+	}
+	for _, review := range host.reviews {
+		add(string(review.ID), "review", review.Author, review.Body, review.URL, review.SubmittedAt, time.Time{})
+	}
+	for _, thread := range host.threads {
+		for i, comment := range thread.Comments {
+			id := string(comment.ID)
+			if id == "" {
+				id = string(comment.ThreadID)
+				if id != "" {
+					id = fmt.Sprintf("%s:%d", id, i)
+				}
+			}
+			add(id, "thread_comment", comment.Author, comment.Body, comment.URL, comment.CreatedAt, comment.UpdatedAt)
+		}
+	}
+	return candidates
+}
+
+func effectiveCommentTime(createdAt, updatedAt time.Time) time.Time {
+	if updatedAt.After(createdAt) {
+		return updatedAt
+	}
+	return createdAt
+}
+
+func stripCodereviewComments(body string) string {
+	const prefix = "<!-- codereview:"
+	var b strings.Builder
+	for {
+		start := strings.Index(body, prefix)
+		if start < 0 {
+			b.WriteString(body)
+			return b.String()
+		}
+		b.WriteString(body[:start])
+		rest := body[start:]
+		end := strings.Index(rest, "-->")
+		if end < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		body = rest[end+len("-->"):]
+	}
+}
+
+func normalLiveFastPathEnabled(flags gate.Flags) bool {
+	return !flags.Rerun && !flags.RetryPosts
 }
 
 func classifyMarkers(records []markerRecord, headSHA, baseSHA string) gate.PRSummary {

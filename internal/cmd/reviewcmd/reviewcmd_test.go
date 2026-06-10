@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
+	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -91,6 +92,28 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	}
 	if text := out.String(); !strings.Contains(text, "Post mode: dry_run") || !strings.Contains(text, "Planned actions:") {
 		t.Fatalf("stdout = %q, want dry-run render", text)
+	}
+}
+
+func TestReviewHelpDocumentsApprovalFastPaths(t *testing.T) {
+	cmd, out := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+		t.Fatal("runtime factory should not be called for help")
+		return Runtime{}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", "--help"}); err != nil {
+		t.Fatalf("Execute help: %v", err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"already approved the PR",
+		"--rerun to bypass this",
+		"approval override request newer than that marker",
+		"--retry-posts is recovery-only",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("help = %q, want substring %q", text, want)
+		}
 	}
 }
 
@@ -243,6 +266,70 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	}
 	if runner.pipeline.Adapter == nil || runner.pipeline.Adapter.Name() != "codex_cli" {
 		t.Fatalf("pipeline adapter = %#v, want codex_cli", runner.pipeline.Adapter)
+	}
+}
+
+func TestNewRuntimeLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
+	statedirtest.Hermetic(t)
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	if err := provider.SetReviews(ref, []gitprovider.Review{{
+		ID:          "review-approved",
+		Author:      identity,
+		State:       gitprovider.ReviewStateApproved,
+		SubmittedAt: time.Now().UTC(),
+	}}); err != nil {
+		t.Fatalf("SetReviews: %v", err)
+	}
+	adapterCalls := 0
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			adapterCalls++
+			return nil, errors.New("adapter should not initialize for approved fast path")
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	opts := &root.Options{Stderr: io.Discard}
+	runtime, err := newRuntime(cmd, opts, cfg, profile, RuntimeOptions{})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		defer runtime.Cleanup()
+	}
+	if adapterCalls != 0 {
+		t.Fatalf("adapter calls after newRuntime = %d, want 0", adapterCalls)
+	}
+
+	result, err := runtime.Runner.Live(context.Background(), pipeline.Request{
+		PRRef:           ref,
+		PRURL:           pr.URL,
+		ProfileName:     "home",
+		Profile:         profile,
+		PostingIdentity: identity,
+	}, reviewrun.Flags{})
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if result.Status != gateio.StatusEarlyExit || result.Message != "review already approved" {
+		t.Fatalf("Live result = %#v, want approved early exit", result)
+	}
+	if adapterCalls != 0 {
+		t.Fatalf("adapter calls after approved fast path = %d, want 0", adapterCalls)
 	}
 }
 
@@ -723,6 +810,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 		store,
 		provider,
 		adapter,
+		testConfig().Profiles["home"],
 		noopLimiter{},
 		statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		&warnings,
@@ -753,6 +841,83 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 	}
 	if planner.opts.Retention != retention || !planner.opts.RetentionManualOnly {
 		t.Fatalf("planner retention = %#v manual %v, want configured manual policy", planner.opts.Retention, planner.opts.RetentionManualOnly)
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("warnings after buildReviewRunner = %q, want none before override classifier invocation", warnings.String())
+	}
+}
+
+func TestBuildApprovalOverrideClassifierModelResolution(t *testing.T) {
+	tests := []struct {
+		name         string
+		llmConfig    config.LLMConfig
+		wantModel    string
+		wantWarning  string
+		wantDisabled bool
+	}{
+		{
+			name: "small tier preferred",
+			llmConfig: config.LLMConfig{
+				Provider: config.LLMProviderOpenAI,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterCodexCLI,
+			},
+			wantModel: "gpt-5.4-mini",
+		},
+		{
+			name: "medium fallback",
+			llmConfig: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+			wantModel:   "claude-sonnet-4-6",
+			wantWarning: "falling back to medium tier",
+		},
+		{
+			name: "disabled without small or medium",
+			llmConfig: config.LLMConfig{
+				Provider: config.LLMProviderPi,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterPiRPC,
+			},
+			wantDisabled: true,
+			wantWarning:  "disabled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &llm.FakeAdapter{}
+			adapter.Queue(llm.FakeResult{Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"approval_override_requested":false}`)}})
+			var warnings bytes.Buffer
+
+			classifier := buildApprovalOverrideClassifier(config.Profile{LLM: tt.llmConfig}, adapter, &warnings)
+			if classifier == nil {
+				t.Fatal("classifier = nil, want lazy classifier")
+			}
+			if warnings.Len() != 0 {
+				t.Fatalf("warnings after build = %q, want deferred warnings", warnings.String())
+			}
+			result, err := classifier.ClassifyApprovalOverride(context.Background(), approvalOverrideClassifierTestRequest())
+			if err != nil {
+				t.Fatalf("ClassifyApprovalOverride: %v", err)
+			}
+			requests := adapter.Requests()
+			if tt.wantDisabled {
+				if result.Approve || len(requests) != 0 {
+					t.Fatalf("disabled classifier result = %#v requests=%#v, want no approval or LLM request", result, requests)
+				}
+			} else if len(requests) != 1 || requests[0].Model != tt.wantModel || requests[0].Effort != "low" {
+				t.Fatalf("requests = %#v, want model %q effort low", requests, tt.wantModel)
+			}
+			if tt.wantWarning != "" && !strings.Contains(warnings.String(), tt.wantWarning) {
+				t.Fatalf("warnings = %q, want substring %q", warnings.String(), tt.wantWarning)
+			}
+			if tt.wantWarning == "" && warnings.Len() != 0 {
+				t.Fatalf("warnings = %q, want none", warnings.String())
+			}
+		})
 	}
 }
 
@@ -797,11 +962,12 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			layout,
 			opts.Stderr,
@@ -878,11 +1044,12 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("approve", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
@@ -949,11 +1116,12 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			layout,
 			opts.Stderr,
@@ -1017,11 +1185,12 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			layout,
 			opts.Stderr,
@@ -1078,11 +1247,12 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			layout,
 			opts.Stderr,
@@ -1563,6 +1733,24 @@ func assertReviewTestFile(t *testing.T, path, want string) {
 	}
 	if string(got) != want {
 		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
+func approvalOverrideClassifierTestRequest() approvaloverride.Request {
+	return approvaloverride.Request{
+		PR: gitprovider.PR{
+			Title:  "Override",
+			URL:    "https://example.test/pr/1",
+			Author: gitprovider.Identity{Login: "author"},
+		},
+		PostingIdentity: gitprovider.Identity{Login: "review-bot"},
+		LatestMarkerAt:  time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC),
+		Candidates: []approvaloverride.Candidate{{
+			ID:          "1",
+			Source:      "issue_comment",
+			Body:        "please approve",
+			EffectiveAt: time.Date(2026, 6, 10, 12, 1, 0, 0, time.UTC),
+		}},
 	}
 }
 

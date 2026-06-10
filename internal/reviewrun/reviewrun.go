@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
+	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gate"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
@@ -60,6 +61,7 @@ type Options struct {
 	NewRunID                func() string
 	StaleHeartbeatThreshold time.Duration
 	Warnings                io.Writer
+	ApprovalOverride        approvaloverride.Classifier
 	Retention               datalifecycle.RetentionPolicy
 	RetentionManualOnly     bool
 }
@@ -136,7 +138,7 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 	switch gateResult.Status {
 	case gateio.StatusContinue:
 		return continueRun(ctx, opts, req, result)
-	case gateio.StatusRepairExecuted, gateio.StatusRetryPostsExecuted:
+	case gateio.StatusRepairExecuted, gateio.StatusRetryPostsExecuted, gateio.StatusApprovalOverride:
 		result.Outbox = gateResult.OutboxResult
 		result.ExitCode = gateResult.OutboxResult.ExitCode
 		run, err := opts.Store.GetRun(ctx, gateResult.Run.RunID)
@@ -151,7 +153,10 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 		result.FailOnTriggered = failOn
 		return result, nil
 	case gateio.StatusEarlyExit:
-		result.Message = "review already complete"
+		result.Message = gateResult.Decision.Message
+		if strings.TrimSpace(result.Message) == "" {
+			result.Message = "review already complete"
+		}
 		return result, nil
 	case gateio.StatusBaseMovedAbort:
 		result.ExitCode = exitUpstream
@@ -193,6 +198,7 @@ func evaluateGate(ctx context.Context, opts Options, req Request, pr gitprovider
 			Now:                     opts.Now,
 			StaleHeartbeatThreshold: opts.staleHeartbeatThreshold(),
 			Warnings:                opts.Warnings,
+			ApprovalOverride:        opts.ApprovalOverride,
 		}, gateio.Request{
 			PRRef:              req.Pipeline.PRRef,
 			PR:                 pr,
