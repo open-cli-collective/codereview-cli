@@ -19,6 +19,7 @@ const (
 	defaultHost             = "github.com"
 	credentialTypePAT       = "pat"
 	credentialTypeGitHubApp = "github_app" // #nosec G101 -- credential type label, not a secret.
+	gitHubAppInitTimeout    = 30 * time.Second
 	gitHubAppRefreshSkew    = 5 * time.Minute
 	gitHubAppJWTBackdate    = 60 * time.Second
 	gitHubAppJWTLifetime    = 9 * time.Minute
@@ -109,7 +110,9 @@ func NewFromGitConfig(git config.GitConfig, store TokenStore, opts Options) (*Cl
 		return client, credential, nil
 	case config.GitAuthModeGitHubApp:
 		opts.Host = host
-		return newGitHubAppFromConfig(context.Background(), parsed.Profile, store, opts)
+		ctx, cancel := context.WithTimeout(context.Background(), gitHubAppInitTimeout)
+		defer cancel()
+		return newGitHubAppFromConfig(ctx, parsed.Profile, store, opts)
 	case config.GitAuthModeOAuthDevice:
 		return nil, gitprovider.Credential{}, fmt.Errorf("%w: git auth_mode %q", config.ErrUnsupported, git.AuthMode)
 	default:
