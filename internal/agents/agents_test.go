@@ -16,7 +16,7 @@ import (
 
 func TestLoadFilesystemSourceParsesAgent(t *testing.T) {
 	root := t.TempDir()
-	writeAgent(t, root, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, root, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 
 	catalog, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
 	if err != nil {
@@ -32,7 +32,7 @@ func TestLoadFilesystemSourceParsesAgent(t *testing.T) {
 	if agent.Category.Description != "harness category" || agent.Category.Owner != "owner" {
 		t.Fatalf("category = %#v, want parsed metadata", agent.Category)
 	}
-	if agent.Description != "Reviews architecture." || agent.Model != "sonnet" || agent.Effort != "medium" {
+	if agent.Description != "Reviews architecture." || agent.ModelTier != "medium" || agent.Effort != "medium" {
 		t.Fatalf("agent metadata = %#v, want parsed fields", agent)
 	}
 	if strings.TrimSpace(agent.Prompt) != "Prompt text." {
@@ -43,6 +43,76 @@ func TestLoadFilesystemSourceParsesAgent(t *testing.T) {
 	}
 	if len(catalog.Sources) != 1 || catalog.Sources[0].Fingerprint == "" || catalog.Sources[0].CanonicalPath == "" {
 		t.Fatalf("sources = %#v, want source provenance with fingerprint and canonical path", catalog.Sources)
+	}
+}
+
+func TestLoadFilesystemSourceParsesProviderSpecificModelID(t *testing.T) {
+	root := t.TempDir()
+	writeAgentWithNames(t, root, "harness", "harness", "architecture", "architecture")
+	indexPath := filepath.Join(root, "harness", "architecture", "index.yaml")
+	writeFile(t, indexPath, "name: architecture\ndescription: Reviews architecture.\nmodel_id: claude-opus-4-8\neffort: high\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
+
+	catalog, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	agent := catalog.Agents[0]
+	if agent.ModelID != "claude-opus-4-8" || agent.ModelTier != "" || agent.Effort != "high" {
+		t.Fatalf("agent metadata = %#v, want provider-specific model_id", agent)
+	}
+}
+
+func TestLoadRejectsInvalidAgentModelMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		index string
+		want  string
+	}{
+		{
+			name:  "missing selector",
+			index: "name: reviewer\ndescription: desc\neffort: medium\n",
+			want:  "requires model_tier or model_id",
+		},
+		{
+			name:  "both selectors",
+			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\nmodel_id: gpt-5.5\neffort: medium\n",
+			want:  "cannot set both model_tier and model_id",
+		},
+		{
+			name:  "invalid tier",
+			index: "name: reviewer\ndescription: desc\nmodel_tier: flagship\neffort: medium\n",
+			want:  `model_tier "flagship" is invalid`,
+		},
+		{
+			name:  "missing effort",
+			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\n",
+			want:  "effort is required",
+		},
+		{
+			name:  "invalid effort",
+			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\neffort: xhigh\n",
+			want:  `effort "xhigh" is invalid`,
+		},
+		{
+			name:  "legacy model field",
+			index: "name: reviewer\ndescription: desc\nmodel: sonnet\neffort: medium\n",
+			want:  "field model not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeAgentWithNames(t, root, "harness", "harness", "reviewer", "reviewer")
+			writeFile(t, filepath.Join(root, "harness", "reviewer", "index.yaml"), tt.index)
+			_, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load error = %v, want ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -101,7 +171,7 @@ func TestUnreadableFilesystemSourceFailsLoadAndInspectsUnreadable(t *testing.T) 
 
 func TestFilesystemSourceSymlinkRecordsCanonicalPathAndFingerprint(t *testing.T) {
 	realRoot := t.TempDir()
-	writeAgent(t, realRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, realRoot, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 	linkRoot := filepath.Join(t.TempDir(), "agents-link")
 	if err := os.Symlink(realRoot, linkRoot); err != nil {
 		t.Skipf("Symlink unsupported: %v", err)
@@ -133,7 +203,7 @@ func TestFilesystemSourceSymlinkRecordsCanonicalPathAndFingerprint(t *testing.T)
 
 func TestFilesystemSourceFingerprintChangesWithPromptContent(t *testing.T) {
 	root := t.TempDir()
-	writeAgent(t, root, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, root, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 
 	first, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
 	if err != nil {
@@ -154,7 +224,7 @@ func TestFilesystemSourceFingerprintChangesWithPromptContent(t *testing.T) {
 
 func TestFilesystemSourceFingerprintIgnoresNonLoadedNestedFiles(t *testing.T) {
 	root := t.TempDir()
-	writeAgent(t, root, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, root, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 
 	first, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
 	if err != nil {
@@ -179,7 +249,7 @@ func TestFilesystemSourceFingerprintIgnoresNonLoadedNestedFiles(t *testing.T) {
 func TestFilesystemSourceWarningsForRelativeTempAndGitWorktreePaths(t *testing.T) {
 	cwd := t.TempDir()
 	relativeRoot := filepath.Join(cwd, "agents")
-	writeAgent(t, relativeRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, relativeRoot, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 	t.Chdir(cwd)
 
 	relativeCatalog, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{"agents"}})
@@ -196,7 +266,7 @@ func TestFilesystemSourceWarningsForRelativeTempAndGitWorktreePaths(t *testing.T
 		t.Fatalf("Mkdir .git: %v", err)
 	}
 	gitSource := filepath.Join(repoRoot, "agents")
-	writeAgent(t, gitSource, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, gitSource, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 	gitCatalog, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{gitSource}})
 	if err != nil {
 		t.Fatalf("Load git source: %v", err)
@@ -209,7 +279,7 @@ func TestFilesystemSourceWarningsForRelativeTempAndGitWorktreePaths(t *testing.T
 func TestRequireSafeProfileSourcesRejectsRelativeTempAndGitWorktreePaths(t *testing.T) {
 	cwd := t.TempDir()
 	relativeRoot := filepath.Join(cwd, "agents")
-	writeAgent(t, relativeRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, relativeRoot, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 	t.Chdir(cwd)
 	err := RequireSafeProfileSources([]string{"agents"})
 	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "relative") {
@@ -217,7 +287,7 @@ func TestRequireSafeProfileSourcesRejectsRelativeTempAndGitWorktreePaths(t *test
 	}
 
 	tempRoot := t.TempDir()
-	writeAgent(t, tempRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, tempRoot, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 	err = RequireSafeProfileSources([]string{tempRoot})
 	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "OS temp") {
 		t.Fatalf("temp error = %v, want ErrUnsafeSource with temp warning", err)
@@ -228,7 +298,7 @@ func TestRequireSafeProfileSourcesRejectsRelativeTempAndGitWorktreePaths(t *test
 		t.Fatalf("Mkdir .git: %v", err)
 	}
 	gitSource := filepath.Join(repoRoot, "agents")
-	writeAgent(t, gitSource, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, gitSource, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 	err = RequireSafeProfileSources([]string{gitSource})
 	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "Git worktree") {
 		t.Fatalf("git error = %v, want ErrUnsafeSource with Git worktree warning", err)
@@ -237,7 +307,7 @@ func TestRequireSafeProfileSourcesRejectsRelativeTempAndGitWorktreePaths(t *test
 
 func TestLoadRequireSafeProfileSourcesRejectsUnsafeSource(t *testing.T) {
 	tempRoot := t.TempDir()
-	writeAgent(t, tempRoot, "harness", "architecture", "Reviews architecture.", "sonnet", "medium", "Prompt text.\n")
+	writeAgent(t, tempRoot, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 
 	_, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{tempRoot}, RequireSafeProfileSources: true})
 	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "OS temp") {
@@ -249,8 +319,8 @@ func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {
 	ctx := context.Background()
 	profileDir := t.TempDir()
 	flagDir := t.TempDir()
-	writeAgent(t, profileDir, "shared", "reviewer", "profile desc", "sonnet", "low", "profile prompt")
-	writeAgent(t, flagDir, "shared", "reviewer", "flag desc", "opus", "high", "flag prompt")
+	writeAgent(t, profileDir, "shared", "reviewer", "profile desc", "medium", "low", "profile prompt")
+	writeAgent(t, flagDir, "shared", "reviewer", "flag desc", "large", "high", "flag prompt")
 
 	ref := testPRRef()
 	reader := newRepoReader()
@@ -358,7 +428,7 @@ func TestLoadRejectsUnsafeAndMismatchedNames(t *testing.T) {
 		{
 			name: "unsafe category path",
 			mutate: func(t *testing.T, root string) {
-				writeAgent(t, root, "bad:name", "reviewer", "desc", "sonnet", "low", "prompt")
+				writeAgent(t, root, "bad:name", "reviewer", "desc", "medium", "low", "prompt")
 			},
 		},
 		{
@@ -400,13 +470,13 @@ func TestLoadRejectsUnsafeAndMismatchedNames(t *testing.T) {
 		{
 			name: "dotdot category path",
 			mutate: func(t *testing.T, root string) {
-				writeAgent(t, root, "bad..category", "agent", "desc", "sonnet", "low", "prompt")
+				writeAgent(t, root, "bad..category", "agent", "desc", "medium", "low", "prompt")
 			},
 		},
 		{
 			name: "unknown yaml field",
 			mutate: func(t *testing.T, root string) {
-				writeAgent(t, root, "cat", "agent", "desc", "sonnet", "low", "prompt")
+				writeAgent(t, root, "cat", "agent", "desc", "medium", "low", "prompt")
 				indexPath := filepath.Join(root, "cat", "agent", "index.yaml")
 				appendFile(t, indexPath, "unexpected: true\n")
 			},
@@ -481,7 +551,7 @@ func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
 				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
 				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
 				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
-				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("bad/name", "desc", "sonnet", "medium")))
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("bad/name", "desc", "medium", "medium")))
 				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
 			},
 		},
@@ -493,7 +563,7 @@ func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
 				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
 				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
 				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
-				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("", "desc", "sonnet", "medium")))
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("", "desc", "medium", "medium")))
 				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
 			},
 		},
@@ -505,7 +575,7 @@ func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
 				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
 				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
 				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
-				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML(`bad\name`, "desc", "sonnet", "medium")))
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML(`bad\name`, "desc", "medium", "medium")))
 				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
 			},
 		},
@@ -517,7 +587,19 @@ func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
 				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
 				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
 				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
-				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("agent", "desc", "sonnet", "medium")+"unexpected: true\n"))
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte(agentIndexYAML("agent", "desc", "medium", "medium")+"unexpected: true\n"))
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
+			},
+		},
+		{
+			name: "legacy model field",
+			setup: func(reader *repoReader, ref gitprovider.PRRef, pr gitprovider.PR) {
+				categoryPath := repoAgentsRoot + "/cat"
+				agentPath := categoryPath + "/agent"
+				reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
+				reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: agentPath, Type: "tree"})
+				reader.addFile(ref, pr.Base.SHA, agentPath+"/index.yaml", []byte("name: agent\ndescription: desc\nmodel: sonnet\neffort: medium\n"))
 				reader.addFile(ref, pr.Base.SHA, agentPath+"/prompt.md", []byte("prompt"))
 			},
 		},
@@ -591,12 +673,12 @@ func writeAgent(t *testing.T, root, category, agent, description, model, effort,
 func writeAgentWithNames(t *testing.T, root, categoryPath, categoryName, agentPath, agentName string) {
 	t.Helper()
 	writeFile(t, filepath.Join(root, categoryPath, "index.yaml"), "name: "+categoryName+"\ndescription: "+categoryPath+" category\nowner: owner\n")
-	writeFile(t, filepath.Join(root, categoryPath, agentPath, "index.yaml"), agentIndexYAML(agentName, "desc", "sonnet", "low"))
+	writeFile(t, filepath.Join(root, categoryPath, agentPath, "index.yaml"), agentIndexYAML(agentName, "desc", "medium", "low"))
 	writeFile(t, filepath.Join(root, categoryPath, agentPath, "prompt.md"), "prompt")
 }
 
-func agentIndexYAML(name, description, model, effort string) string {
-	return "name: " + name + "\ndescription: " + description + "\nmodel: " + model + "\neffort: " + effort + "\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n"
+func agentIndexYAML(name, description, modelTier, effort string) string {
+	return "name: " + name + "\ndescription: " + description + "\nmodel_tier: " + modelTier + "\neffort: " + effort + "\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n"
 }
 
 func writeFile(t *testing.T, path, body string) {
@@ -654,7 +736,7 @@ func (r *repoReader) addAgent(t *testing.T, ref gitprovider.PRRef, gitRef, categ
 	r.addFile(ref, gitRef, categoryPath+"/index.yaml", []byte("name: "+category+"\ndescription: "+category+" category\nowner: repo-owner\n"))
 	r.addTree(ref, gitRef, categoryPath, gitprovider.TreeEntry{Path: categoryPath + "/" + agent, Type: "tree"})
 	agentPath := categoryPath + "/" + agent
-	r.addFile(ref, gitRef, agentPath+"/index.yaml", []byte(agentIndexYAML(agent, description, "sonnet", "medium")))
+	r.addFile(ref, gitRef, agentPath+"/index.yaml", []byte(agentIndexYAML(agent, description, "medium", "medium")))
 	r.addFile(ref, gitRef, agentPath+"/prompt.md", []byte(prompt))
 }
 

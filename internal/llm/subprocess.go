@@ -933,7 +933,7 @@ func (a *SubprocessAdapter) waitForClaudeBGResult(ctx context.Context, jobID str
 	if err != nil {
 		return Response{}, sessionID, err
 	}
-	return Response{StructuredOutput: output}, sessionID, nil
+	return Response{StructuredOutput: output, Usage: claudeBGTranscriptUsage(state)}, sessionID, nil
 }
 
 func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID string, resultPaths []string) (map[string]any, error) {

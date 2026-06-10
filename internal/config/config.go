@@ -73,10 +73,56 @@ type ReviewerCredentials struct {
 
 // LLMConfig identifies the LLM provider and adapter.
 type LLMConfig struct {
-	Provider      LLMProvider `yaml:"provider" json:"provider"`
-	Auth          LLMAuth     `yaml:"auth" json:"auth"`
-	Adapter       LLMAdapter  `yaml:"adapter" json:"adapter"`
-	CredentialRef string      `yaml:"credential_ref,omitempty" json:"credential_ref,omitempty"`
+	Provider          LLMProvider `yaml:"provider" json:"provider"`
+	Auth              LLMAuth     `yaml:"auth" json:"auth"`
+	Adapter           LLMAdapter  `yaml:"adapter" json:"adapter"`
+	CredentialRef     string      `yaml:"credential_ref,omitempty" json:"credential_ref,omitempty"`
+	ModelMap          ModelMap    `yaml:"model_map,omitempty" json:"model_map,omitempty"`
+	ReviewerModelTier ModelTier   `yaml:"reviewer_model_tier,omitempty" json:"reviewer_model_tier,omitempty"`
+}
+
+// ModelMap maps portable model tiers to provider-specific model identifiers.
+type ModelMap map[string]string
+
+// ModelTier is a provider-neutral model slot.
+type ModelTier string
+
+// Model tiers.
+const (
+	ModelTierSmall  ModelTier = "small"
+	ModelTierMedium ModelTier = "medium"
+	ModelTierLarge  ModelTier = "large"
+)
+
+// ModelMapSource identifies where a resolved model map value came from.
+type ModelMapSource string
+
+// Model map sources.
+const (
+	ModelMapSourceConfig  ModelMapSource = "config"
+	ModelMapSourceBuiltIn ModelMapSource = "built_in"
+)
+
+// ModelMapResolution is one effective tier mapping.
+type ModelMapResolution struct {
+	Tier   ModelTier      `json:"tier"`
+	Model  string         `json:"model"`
+	Source ModelMapSource `json:"source"`
+}
+
+// Valid reports whether t is a known model tier.
+func (t ModelTier) Valid() bool {
+	switch t {
+	case ModelTierSmall, ModelTierMedium, ModelTierLarge:
+		return true
+	default:
+		return false
+	}
+}
+
+// ModelTiers returns model tiers in stable display order.
+func ModelTiers() []ModelTier {
+	return []ModelTier{ModelTierSmall, ModelTierMedium, ModelTierLarge}
 }
 
 // ReviewPolicy carries profile-level review policy toggles.
@@ -182,6 +228,57 @@ func (a LLMAdapter) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// BuiltInModelMap returns this CLI's provider+adapter model-tier defaults.
+func BuiltInModelMap(provider LLMProvider, adapter LLMAdapter) ModelMap {
+	switch {
+	case provider == LLMProviderOpenAI && adapter == LLMAdapterCodexCLI,
+		provider == LLMProviderOpenAI && adapter == LLMAdapterOpenAIAPI:
+		return ModelMap{
+			string(ModelTierSmall):  "gpt-5.4-mini",
+			string(ModelTierMedium): "gpt-5.4",
+			string(ModelTierLarge):  "gpt-5.5",
+		}
+	case provider == LLMProviderAnthropic && adapter == LLMAdapterClaudeCLI:
+		return ModelMap{
+			string(ModelTierMedium): "claude-sonnet-4-6",
+			string(ModelTierLarge):  "claude-opus-4-8",
+		}
+	default:
+		return ModelMap{}
+	}
+}
+
+// EffectiveModelMap merges built-in defaults with profile model_map overrides.
+func EffectiveModelMap(llm LLMConfig) map[ModelTier]ModelMapResolution {
+	llm = llm.normalized()
+	out := map[ModelTier]ModelMapResolution{}
+	for tier, model := range BuiltInModelMap(llm.Provider, llm.Adapter) {
+		model = strings.TrimSpace(model)
+		parsed := ModelTier(strings.TrimSpace(tier))
+		if parsed.Valid() && model != "" {
+			out[parsed] = ModelMapResolution{Tier: parsed, Model: model, Source: ModelMapSourceBuiltIn}
+		}
+	}
+	for tier, model := range llm.ModelMap {
+		model = strings.TrimSpace(model)
+		parsed := ModelTier(strings.TrimSpace(tier))
+		if parsed.Valid() && model != "" {
+			out[parsed] = ModelMapResolution{Tier: parsed, Model: model, Source: ModelMapSourceConfig}
+		}
+	}
+	return out
+}
+
+// ResolveModelTier resolves one portable tier under the active LLM config.
+func ResolveModelTier(llm LLMConfig, tier ModelTier) (ModelMapResolution, bool) {
+	tier = ModelTier(strings.TrimSpace(string(tier)))
+	if !tier.Valid() {
+		return ModelMapResolution{}, false
+	}
+	resolved, ok := EffectiveModelMap(llm)[tier]
+	return resolved, ok
 }
 
 // ReviewMajorEvent identifies how major findings affect the review event.
@@ -501,6 +598,18 @@ func validateProfile(name string, profile Profile) error {
 			return invalid("profiles.%s.llm.credential_ref must differ from reviewer_credentials.credential_ref", name)
 		}
 	}
+	for tier, model := range profile.LLM.ModelMap {
+		modelTier := ModelTier(tier)
+		if !modelTier.Valid() {
+			return invalid("profiles.%s.llm.model_map tier %q is invalid", name, tier)
+		}
+		if strings.TrimSpace(model) == "" {
+			return invalid("profiles.%s.llm.model_map.%s is required", name, tier)
+		}
+	}
+	if profile.LLM.ReviewerModelTier != "" && !profile.LLM.ReviewerModelTier.Valid() {
+		return invalid("profiles.%s.llm.reviewer_model_tier %q is invalid; must be one of small, medium, large", name, profile.LLM.ReviewerModelTier)
+	}
 	for index, source := range profile.AgentSources {
 		if strings.TrimSpace(source) == "" {
 			return invalid("profiles.%s.agent_sources[%d] is required", name, index)
@@ -566,8 +675,22 @@ func (cfg File) normalized() File {
 }
 
 func (p Profile) normalized() Profile {
+	p.LLM = p.LLM.normalized()
 	p.ReviewPolicy = p.ReviewPolicy.normalized()
 	return p
+}
+
+func (l LLMConfig) normalized() LLMConfig {
+	l.CredentialRef = strings.TrimSpace(l.CredentialRef)
+	l.ReviewerModelTier = ModelTier(strings.TrimSpace(string(l.ReviewerModelTier)))
+	if len(l.ModelMap) > 0 {
+		modelMap := make(ModelMap, len(l.ModelMap))
+		for tier, model := range l.ModelMap {
+			modelMap[strings.TrimSpace(tier)] = strings.TrimSpace(model)
+		}
+		l.ModelMap = modelMap
+	}
+	return l
 }
 
 func (p ReviewPolicy) normalized() ReviewPolicy {

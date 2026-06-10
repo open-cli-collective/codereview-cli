@@ -37,6 +37,7 @@ func TestRun(t *testing.T) {
 		{name: "sessions command wired", args: []string{"sessions", "--help"}, wantCode: 0, wantStdout: "Manage named LLM sessions", wantStdoutSubstring: true},
 		{name: "data command wired", args: []string{"data", "--help"}, wantCode: 0, wantStdout: "Manage local review data", wantStdoutSubstring: true},
 		{name: "benchmark command wired", args: []string{"benchmark", "--help"}, wantCode: 0, wantStdout: "Validate, inspect, and run benchmark suites", wantStdoutSubstring: true},
+		{name: "benchmark select command wired", args: []string{"benchmark", "select", "--help"}, wantCode: 0, wantStdout: "Run selector-only benchmark suites", wantStdoutSubstring: true},
 		{name: "benchmark run command wired", args: []string{"benchmark", "run", "--help"}, wantCode: 0, wantStdout: "Run a benchmark suite", wantStdoutSubstring: true},
 		{name: "benchmark compare command wired", args: []string{"benchmark", "compare", "--help"}, wantCode: 0, wantStdout: "Compare benchmark results", wantStdoutSubstring: true},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: 2, wantStderr: "unknown command", wantEmptyStdout: true},
@@ -101,7 +102,14 @@ suite:
 candidates:
   - id: cand1
     profile: home
-    model: sonnet
+    stages:
+      selection:
+        model: claude-sonnet-4-6
+        effort: high
+      reviewers:
+        model: claude-sonnet-4-6
+        effort: high
+        agent_dirs: []
 cases:
   - id: case1
     pr: https://github.com/open-cli-collective/codereview-cli/pull/1

@@ -309,6 +309,148 @@ func TestValidateRejectsInvalidCodexCLICombinations(t *testing.T) {
 	}
 }
 
+func TestModelMapValidationAndResolution(t *testing.T) {
+	cfg := validFile()
+	profile := cfg.Profiles["home"]
+	profile.LLM.Provider = LLMProviderOpenAI
+	profile.LLM.Auth = LLMAuthSubscription
+	profile.LLM.Adapter = LLMAdapterCodexCLI
+	profile.LLM.ModelMap = ModelMap{
+		" medium ": " gpt-custom ",
+	}
+	cfg.Profiles["home"] = profile
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	_, resolved, err := ResolveProfile(cfg, "home")
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	effective := EffectiveModelMap(resolved.LLM)
+	if effective[ModelTierSmall].Model != "gpt-5.4-mini" || effective[ModelTierSmall].Source != ModelMapSourceBuiltIn {
+		t.Fatalf("small resolution = %#v, want built-in gpt-5.4-mini", effective[ModelTierSmall])
+	}
+	if effective[ModelTierMedium].Model != "gpt-custom" || effective[ModelTierMedium].Source != ModelMapSourceConfig {
+		t.Fatalf("medium resolution = %#v, want config override", effective[ModelTierMedium])
+	}
+	if got, ok := ResolveModelTier(resolved.LLM, ModelTierLarge); !ok || got.Model != "gpt-5.5" || got.Source != ModelMapSourceBuiltIn {
+		t.Fatalf("ResolveModelTier large = %#v ok=%t, want built-in gpt-5.5", got, ok)
+	}
+	if resolved.LLM.ReviewerModelTier != "" {
+		t.Fatalf("ReviewerModelTier = %q, want empty by default", resolved.LLM.ReviewerModelTier)
+	}
+}
+
+func TestReviewerModelTierValidationAndNormalization(t *testing.T) {
+	cfg := validFile()
+	profile := cfg.Profiles["home"]
+	profile.LLM.ReviewerModelTier = " medium "
+	cfg.Profiles["home"] = profile
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	_, resolved, err := ResolveProfile(cfg, "home")
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if resolved.LLM.ReviewerModelTier != ModelTierMedium {
+		t.Fatalf("ReviewerModelTier = %q, want %q", resolved.LLM.ReviewerModelTier, ModelTierMedium)
+	}
+}
+
+func TestValidateRejectsInvalidReviewerModelTier(t *testing.T) {
+	cfg := validFile()
+	profile := cfg.Profiles["home"]
+	profile.LLM.ReviewerModelTier = "flagship"
+	cfg.Profiles["home"] = profile
+
+	err := Validate(cfg)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Validate error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "reviewer_model_tier") {
+		t.Fatalf("Validate error = %v, want reviewer_model_tier guidance", err)
+	}
+}
+
+func TestBuiltInModelMapIsProviderAdapterSpecific(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider LLMProvider
+		adapter  LLMAdapter
+		want     ModelMap
+	}{
+		{
+			name:     "codex cli",
+			provider: LLMProviderOpenAI,
+			adapter:  LLMAdapterCodexCLI,
+			want: ModelMap{
+				"small":  "gpt-5.4-mini",
+				"medium": "gpt-5.4",
+				"large":  "gpt-5.5",
+			},
+		},
+		{
+			name:     "openai api",
+			provider: LLMProviderOpenAI,
+			adapter:  LLMAdapterOpenAIAPI,
+			want: ModelMap{
+				"small":  "gpt-5.4-mini",
+				"medium": "gpt-5.4",
+				"large":  "gpt-5.5",
+			},
+		},
+		{
+			name:     "claude cli",
+			provider: LLMProviderAnthropic,
+			adapter:  LLMAdapterClaudeCLI,
+			want: ModelMap{
+				"medium": "claude-sonnet-4-6",
+				"large":  "claude-opus-4-8",
+			},
+		},
+		{name: "anthropic api", provider: LLMProviderAnthropic, adapter: LLMAdapterAnthropicAPI, want: ModelMap{}},
+		{name: "pi rpc", provider: LLMProviderPi, adapter: LLMAdapterPiRPC, want: ModelMap{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BuiltInModelMap(tt.provider, tt.adapter); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("BuiltInModelMap = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsInvalidModelMap(t *testing.T) {
+	tests := []struct {
+		name     string
+		modelMap ModelMap
+		want     string
+	}{
+		{name: "invalid tier", modelMap: ModelMap{"flagship": "gpt"}, want: `tier "flagship" is invalid`},
+		{name: "blank model", modelMap: ModelMap{"medium": " \t "}, want: "model_map.medium is required"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			profile := cfg.Profiles["home"]
+			profile.LLM.ModelMap = tt.modelMap
+			cfg.Profiles["home"] = profile
+			err := Validate(cfg)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Validate error = %v, want ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveProfile(t *testing.T) {
 	cfg := validFile().normalized()
 

@@ -78,8 +78,10 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	if len(req.AgentDirs) != 1 || req.AgentDirs[0] != "/tmp/agents" || !req.AllowSelfReview || !req.AllowSelfApprove || !req.NoResolveThreads || !req.MajorRequestChanges || !req.IncludeNits {
 		t.Fatalf("request flags = %#v", req)
 	}
-	if req.LLMModelOverride != "" || req.LLMEffortOverride != "" {
-		t.Fatalf("LLM overrides = model:%q effort:%q, want empty when flags omitted", req.LLMModelOverride, req.LLMEffortOverride)
+	if req.SelectionModelOverride != "" || req.SelectionEffortOverride != "" ||
+		req.SelectionPromptInstructions != "" ||
+		req.ReviewerModelOverride != "" || req.ReviewerEffortOverride != "" {
+		t.Fatalf("stage overrides = %#v, want empty when flags omitted", req)
 	}
 	if gotRuntime.MaxAgents != 3 || gotRuntime.MaxConcurrency != 2 {
 		t.Fatalf("runtime opts = %#v, want max agents/concurrency", gotRuntime)
@@ -256,15 +258,47 @@ func TestReviewNoPostIsDryRunAlias(t *testing.T) {
 	}
 }
 
-func TestReviewDryRunPassesLLMOverrides(t *testing.T) {
+func TestReviewDryRunPassesStageOverrides(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+	promptPath := filepath.Join(t.TempDir(), "selection.md")
+	writeReviewFile(t, promptPath, "Use applies_when as the routing contract.")
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--selection-model", " bench-selection-model ",
+		"--selection-effort", " high ",
+		"--selection-prompt", promptPath,
+		"--reviewer-model", " bench-reviewer-model ",
+		"--reviewer-effort", " low ",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	req := runner.requests[0]
+	if req.SelectionModelOverride != "bench-selection-model" || req.SelectionEffortOverride != "high" {
+		t.Fatalf("selection overrides = model:%q effort:%q, want bench-selection-model/high", req.SelectionModelOverride, req.SelectionEffortOverride)
+	}
+	if req.ReviewerModelOverride != "bench-reviewer-model" || req.ReviewerEffortOverride != "low" {
+		t.Fatalf("reviewer overrides = model:%q effort:%q, want bench-reviewer-model/low", req.ReviewerModelOverride, req.ReviewerEffortOverride)
+	}
+	if req.SelectionPromptInstructions != "Use applies_when as the routing contract." {
+		t.Fatalf("selection prompt override instructions = %q", req.SelectionPromptInstructions)
+	}
+}
+
+func TestReviewDryRunPassesReviewerModelTierOverride(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
 
 	err := root.Execute(cmd, []string{
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
 		"--dry-run",
-		"--llm-model", " bench-model ",
-		"--llm-effort", " high ",
+		"--reviewer-model-tier", " medium ",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -272,21 +306,19 @@ func TestReviewDryRunPassesLLMOverrides(t *testing.T) {
 	if len(runner.requests) != 1 {
 		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
 	}
-	req := runner.requests[0]
-	if req.LLMModelOverride != "bench-model" || req.LLMEffortOverride != "high" {
-		t.Fatalf("LLM overrides = model:%q effort:%q, want bench-model/high", req.LLMModelOverride, req.LLMEffortOverride)
+	if got := runner.requests[0].ReviewerModelTierOverride; got != "medium" {
+		t.Fatalf("reviewer model tier override = %q, want medium", got)
 	}
 }
 
-func TestReviewNoPostPassesLLMOverrides(t *testing.T) {
+func TestReviewNoPostPassesReviewerEffortOverride(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
 
 	err := root.Execute(cmd, []string{
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
 		"--no-post",
-		"--llm-model", "bench-model",
-		"--llm-effort", "medium",
+		"--reviewer-effort", "medium",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -295,8 +327,29 @@ func TestReviewNoPostPassesLLMOverrides(t *testing.T) {
 		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
 	}
 	req := runner.requests[0]
-	if req.LLMModelOverride != "bench-model" || req.LLMEffortOverride != "medium" {
-		t.Fatalf("LLM overrides = model:%q effort:%q, want bench-model/medium", req.LLMModelOverride, req.LLMEffortOverride)
+	if req.SelectionModelOverride != "" || req.SelectionEffortOverride != "" || req.ReviewerModelOverride != "" || req.ReviewerModelTierOverride != "" || req.ReviewerEffortOverride != "medium" {
+		t.Fatalf("stage overrides = %#v, want reviewer effort only", req)
+	}
+}
+
+func TestReviewNoPostPassesReviewerModelTierOverride(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--no-post",
+		"--reviewer-model-tier", "large",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	req := runner.requests[0]
+	if req.ReviewerModelTierOverride != "large" || req.ReviewerModelOverride != "" {
+		t.Fatalf("reviewer overrides = %#v, want reviewer model tier only", req)
 	}
 }
 
@@ -356,14 +409,17 @@ func TestReviewRejectsInvalidReviewSHAOverrides(t *testing.T) {
 	}
 }
 
-func TestReviewLiveRejectsLLMOverridesBeforeRuntimeFactory(t *testing.T) {
+func TestReviewLiveRejectsStageOverridesBeforeRuntimeFactory(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{name: "model", args: []string{"--llm-model", "bench-model"}},
-		{name: "effort", args: []string{"--llm-effort", "high"}},
-		{name: "both", args: []string{"--llm-model", "bench-model", "--llm-effort", "high"}},
+		{name: "selection model", args: []string{"--selection-model", "bench-model"}},
+		{name: "selection effort", args: []string{"--selection-effort", "high"}},
+		{name: "selection prompt", args: []string{"--selection-prompt", "selection.md"}},
+		{name: "reviewer model", args: []string{"--reviewer-model", "bench-model"}},
+		{name: "reviewer model tier", args: []string{"--reviewer-model-tier", "medium"}},
+		{name: "reviewer effort", args: []string{"--reviewer-effort", "high"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -382,19 +438,23 @@ func TestReviewLiveRejectsLLMOverridesBeforeRuntimeFactory(t *testing.T) {
 				t.Fatalf("exit code = %d, want usage", got)
 			}
 			if factoryCalled {
-				t.Fatal("runtime factory was called for invalid live LLM override")
+				t.Fatal("runtime factory was called for invalid live stage override")
 			}
 		})
 	}
 }
 
-func TestReviewRejectsEmptyLLMOverridesBeforeRuntimeFactory(t *testing.T) {
+func TestReviewRejectsEmptyStageOverridesBeforeRuntimeFactory(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{name: "model", args: []string{"--dry-run", "--llm-model", " \t "}},
-		{name: "effort", args: []string{"--dry-run", "--llm-effort", " \t "}},
+		{name: "selection model", args: []string{"--dry-run", "--selection-model", " \t "}},
+		{name: "selection effort", args: []string{"--dry-run", "--selection-effort", " \t "}},
+		{name: "selection prompt", args: []string{"--dry-run", "--selection-prompt", " \t "}},
+		{name: "reviewer model", args: []string{"--dry-run", "--reviewer-model", " \t "}},
+		{name: "reviewer model tier", args: []string{"--dry-run", "--reviewer-model-tier", " \t "}},
+		{name: "reviewer effort", args: []string{"--dry-run", "--reviewer-effort", " \t "}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -413,9 +473,156 @@ func TestReviewRejectsEmptyLLMOverridesBeforeRuntimeFactory(t *testing.T) {
 				t.Fatalf("exit code = %d, want usage", got)
 			}
 			if factoryCalled {
-				t.Fatal("runtime factory was called for empty LLM override")
+				t.Fatal("runtime factory was called for empty stage override")
 			}
 		})
+	}
+}
+
+func TestReviewRejectsInvalidModelEffortBeforeRuntimeFactory(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "selection", args: []string{"--dry-run", "--selection-effort", "xhigh"}},
+		{name: "reviewer", args: []string{"--dry-run", "--reviewer-effort", "xhigh"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var factoryCalled bool
+			cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+				factoryCalled = true
+				return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+			})
+
+			err := root.Execute(cmd, append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, tt.args...))
+			if err == nil {
+				t.Fatal("Execute error = nil, want usage error")
+			}
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want usage", got)
+			}
+			if factoryCalled {
+				t.Fatal("runtime factory was called for invalid effort")
+			}
+		})
+	}
+}
+
+func TestReviewRejectsInvalidReviewerModelTierBeforeRuntimeFactory(t *testing.T) {
+	var factoryCalled bool
+	cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+		factoryCalled = true
+		return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+	})
+
+	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--reviewer-model-tier", "flagship"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want usage", got)
+	}
+	if factoryCalled {
+		t.Fatal("runtime factory was called for invalid reviewer model tier")
+	}
+}
+
+func TestReviewRejectsReviewerModelAndReviewerModelTierTogether(t *testing.T) {
+	var factoryCalled bool
+	cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+		factoryCalled = true
+		return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+	})
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--reviewer-model", "bench-model",
+		"--reviewer-model-tier", "medium",
+	})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want usage", got)
+	}
+	if factoryCalled {
+		t.Fatal("runtime factory was called for conflicting reviewer model flags")
+	}
+}
+
+func TestReviewRejectsRemovedLLMFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--dry-run", "--llm-model", "bench-model"},
+		{"--dry-run", "--llm-effort", "high"},
+	} {
+		cmd, _ := newTestCommand(t, testConfig(), fakeFactory(&fakeRunner{result: testPipelineResult(false)}))
+		err := root.Execute(cmd, append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, args...))
+		if err == nil {
+			t.Fatal("Execute error = nil, want usage error")
+		}
+		if got := exitcode.FromError(err); got != exitcode.UsageError {
+			t.Fatalf("exit code = %d, want usage", got)
+		}
+	}
+}
+
+func TestReviewRejectsInvalidSelectionPromptFileBeforeRuntimeFactory(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "missing", path: filepath.Join(t.TempDir(), "missing.md")},
+		{name: "directory", path: t.TempDir()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var factoryCalled bool
+			cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+				factoryCalled = true
+				return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+			})
+			err := root.Execute(cmd, []string{
+				"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+				"--dry-run",
+				"--selection-prompt", tt.path,
+			})
+			if err == nil {
+				t.Fatal("Execute error = nil, want usage error")
+			}
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want usage", got)
+			}
+			if factoryCalled {
+				t.Fatal("runtime factory was called for invalid selection prompt path")
+			}
+		})
+	}
+}
+
+func TestReviewRejectsEmptySelectionPromptFileBeforeRuntimeFactory(t *testing.T) {
+	promptPath := filepath.Join(t.TempDir(), "selection.md")
+	writeReviewFile(t, promptPath, "  \n\t  ")
+	var factoryCalled bool
+	cmd, _ := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+		factoryCalled = true
+		return Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+	})
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--selection-prompt", promptPath,
+	})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want usage", got)
+	}
+	if factoryCalled {
+		t.Fatal("runtime factory was called for empty selection prompt file")
 	}
 }
 
@@ -691,7 +898,7 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetNamedSession: %v", err)
 	}
-	if session.ProviderSessionID != "rollup-session" || session.Profile != "home" || session.Model != "sonnet" {
+	if session.ProviderSessionID != "rollup-session" || session.Profile != "home" || session.Model != "claude-sonnet-4-6" {
 		t.Fatalf("named session = %#v, want live runner persisted rollup scoped to profile/model", session)
 	}
 	resumes := adapter.Resumes()
@@ -1064,6 +1271,52 @@ func TestNewReviewDryRunRejectsInvalidPlannedPayload(t *testing.T) {
 	}
 }
 
+func TestNewReviewDryRunMapsPlanSummary(t *testing.T) {
+	tokensIn := 1200
+	wall := int64(5000)
+	result := testPipelineResult(false)
+	result.Plan.Summary = reviewplan.Summary{
+		Reviewers: []reviewplan.ReviewerSummary{{Name: "go:tests", Findings: 2}},
+		Threads:   reviewplan.ThreadCounts{Considered: 3, Summarized: 2, Resolved: 1},
+		Run: reviewplan.RunSummary{
+			ToolVersion:       "0.0.0-test",
+			Adapter:           "claude_cli",
+			Model:             "sonnet",
+			PostingIdentity:   "review-bot",
+			SelectedReviewers: []string{"go:tests"},
+			WallDurationMS:    &wall,
+			Workstreams:       []reviewplan.WorkstreamUsage{{Name: "go:tests", Model: "sonnet", TokensIn: &tokensIn}},
+		},
+		Totals: reviewplan.AggregateUsage{TokensIn: &tokensIn},
+	}
+
+	rendered, err := newReviewDryRun(result)
+	if err != nil {
+		t.Fatalf("newReviewDryRun: %v", err)
+	}
+	summary := rendered.Summary
+	if len(summary.Reviewers) != 1 || summary.Reviewers[0].Name != "go:tests" || summary.Reviewers[0].Findings != 2 {
+		t.Fatalf("summary reviewers = %#v", summary.Reviewers)
+	}
+	if summary.Threads != (view.ReviewThreadCounts{Considered: 3, Summarized: 2, Resolved: 1}) {
+		t.Fatalf("summary threads = %#v", summary.Threads)
+	}
+	run := summary.Run
+	if run.ToolVersion != "0.0.0-test" || run.Adapter != "claude_cli" || run.Model != "sonnet" ||
+		run.PostingIdentity != "review-bot" || len(run.SelectedReviewers) != 1 ||
+		run.WallDurationMS == nil || *run.WallDurationMS != wall {
+		t.Fatalf("summary run = %#v", run)
+	}
+	if len(run.Workstreams) != 1 || run.Workstreams[0].Name != "go:tests" ||
+		run.Workstreams[0].TokensIn == nil || *run.Workstreams[0].TokensIn != tokensIn ||
+		run.Workstreams[0].CostUSD != nil {
+		t.Fatalf("summary workstreams = %#v", run.Workstreams)
+	}
+	if rendered.Summary.Totals.TokensIn == nil || *rendered.Summary.Totals.TokensIn != tokensIn || rendered.Summary.Totals.CostUSD != nil {
+		t.Fatalf("summary totals = %#v", rendered.Summary.Totals)
+	}
+}
+
 func TestReviewMapsRunnerError(t *testing.T) {
 	runner := &fakeRunner{err: gitprovider.ErrRetryable}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -1286,7 +1539,7 @@ func stringPtr(value string) *string {
 func writeReviewAgent(t *testing.T, rootDir string) {
 	t.Helper()
 	writeReviewFile(t, filepath.Join(rootDir, "harness", "index.yaml"), "name: harness\ndescription: harness category\nowner: owner\n")
-	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "index.yaml"), "name: reviewer\ndescription: reviewer\nmodel: sonnet\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
+	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "index.yaml"), "name: reviewer\ndescription: reviewer\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '**/*.go'\napplies_when:\n  - Go files changed\nneeds_full_file_content: false\n")
 	writeReviewFile(t, filepath.Join(rootDir, "harness", "reviewer", "prompt.md"), "Review carefully.")
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 }

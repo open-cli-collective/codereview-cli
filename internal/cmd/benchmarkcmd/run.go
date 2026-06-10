@@ -24,7 +24,9 @@ import (
 )
 
 const (
-	benchmarkArtifactSchemaVersion = 1
+	benchmarkArtifactSchemaVersion = 2
+	benchmarkModeReview            = "review"
+	benchmarkModeSelection         = "selection"
 	runTimestampLayout             = "2006-01-02T150405Z"
 	artifactDirPerm                = 0o700
 	artifactFilePerm               = 0o600
@@ -47,6 +49,7 @@ var (
 
 type benchmarkSuiteSummary struct {
 	SchemaVersion      int                   `json:"schema_version"`
+	Mode               string                `json:"mode,omitempty"`
 	SuiteID            string                `json:"suite_id"`
 	SuitePath          string                `json:"suite_path"`
 	SuiteSHA256        string                `json:"suite_sha256"`
@@ -68,6 +71,7 @@ type benchmarkSuiteSummary struct {
 
 type benchmarkManifest struct {
 	SchemaVersion      int                    `json:"schema_version"`
+	Mode               string                 `json:"mode,omitempty"`
 	SuiteID            string                 `json:"suite_id"`
 	SuitePath          string                 `json:"suite_path"`
 	SuiteSHA256        string                 `json:"suite_sha256"`
@@ -88,13 +92,41 @@ type benchmarkManifestRun struct {
 }
 
 type benchmarkCandidate struct {
-	ID             string              `json:"id"`
-	Profile        string              `json:"profile"`
-	Model          string              `json:"model,omitempty"`
-	Effort         string              `json:"effort,omitempty"`
-	AgentDirs      []benchmarkAgentDir `json:"agent_dirs,omitempty"`
-	MaxAgents      int                 `json:"max_agents,omitempty"`
-	MaxConcurrency int                 `json:"max_concurrency,omitempty"`
+	ID             string                   `json:"id"`
+	Profile        string                   `json:"profile"`
+	Stages         benchmarkCandidateStages `json:"stages"`
+	MaxAgents      int                      `json:"max_agents,omitempty"`
+	MaxConcurrency int                      `json:"max_concurrency,omitempty"`
+}
+
+type benchmarkCandidateStages struct {
+	Selection benchmarkSelectionStage  `json:"selection"`
+	Reviewers benchmarkReviewerStage   `json:"reviewers,omitempty"`
+	Synthesis *benchmarkSynthesisStage `json:"synthesis,omitempty"`
+}
+
+type benchmarkSelectionStage struct {
+	Model  string               `json:"model,omitempty"`
+	Effort string               `json:"effort,omitempty"`
+	Prompt *benchmarkPromptFile `json:"prompt,omitempty"`
+}
+
+type benchmarkSynthesisStage = benchmarkSelectionStage
+
+type benchmarkReviewerStage struct {
+	Model     string              `json:"model,omitempty"`
+	ModelTier string              `json:"model_tier,omitempty"`
+	Effort    string              `json:"effort,omitempty"`
+	AgentDirs []benchmarkAgentDir `json:"agent_dirs,omitempty"`
+}
+
+type benchmarkPromptFile struct {
+	Configured    string `json:"configured"`
+	Resolved      string `json:"resolved"`
+	Exists        bool   `json:"exists"`
+	IsDir         bool   `json:"is_dir"`
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+	Warning       string `json:"warning,omitempty"`
 }
 
 type benchmarkAgentDir struct {
@@ -117,36 +149,46 @@ type benchmarkCase struct {
 }
 
 type benchmarkRun struct {
-	RunID                  string                `json:"run_id"`
-	CandidateID            string                `json:"candidate_id"`
-	CaseID                 string                `json:"case_id"`
-	PRURL                  string                `json:"pr_url"`
-	RequestedReviewBaseSHA string                `json:"requested_review_base_sha,omitempty"`
-	RequestedReviewHeadSHA string                `json:"requested_review_head_sha,omitempty"`
-	ExpectedBaseSHA        string                `json:"expected_base_sha,omitempty"`
-	ExpectedHeadSHA        string                `json:"expected_head_sha,omitempty"`
-	ReviewRunID            string                `json:"review_run_id,omitempty"`
-	ReviewArtifactPath     string                `json:"review_artifact_path,omitempty"`
-	ReviewBaseSHA          string                `json:"review_base_sha,omitempty"`
-	ReviewHeadSHA          string                `json:"review_head_sha,omitempty"`
-	CurrentBaseSHA         string                `json:"current_base_sha,omitempty"`
-	CurrentHeadSHA         string                `json:"current_head_sha,omitempty"`
-	ExitCode               int                   `json:"exit_code"`
-	RetryCount             int                   `json:"retry_count"`
-	FailureClassification  string                `json:"failure_classification"`
-	DurationMS             int64                 `json:"duration_ms"`
-	FindingCount           int                   `json:"finding_count"`
-	SeverityCounts         map[string]int        `json:"severity_counts"`
-	Usage                  *benchmark.RunMetrics `json:"usage,omitempty"`
-	Warnings               []string              `json:"warnings"`
-	Artifacts              runArtifacts          `json:"artifacts"`
+	RunID                  string                   `json:"run_id"`
+	CandidateID            string                   `json:"candidate_id"`
+	CaseID                 string                   `json:"case_id"`
+	PRURL                  string                   `json:"pr_url"`
+	RequestedReviewBaseSHA string                   `json:"requested_review_base_sha,omitempty"`
+	RequestedReviewHeadSHA string                   `json:"requested_review_head_sha,omitempty"`
+	ExpectedBaseSHA        string                   `json:"expected_base_sha,omitempty"`
+	ExpectedHeadSHA        string                   `json:"expected_head_sha,omitempty"`
+	ReviewRunID            string                   `json:"review_run_id,omitempty"`
+	ReviewArtifactPath     string                   `json:"review_artifact_path,omitempty"`
+	ReviewBaseSHA          string                   `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA          string                   `json:"review_head_sha,omitempty"`
+	CurrentBaseSHA         string                   `json:"current_base_sha,omitempty"`
+	CurrentHeadSHA         string                   `json:"current_head_sha,omitempty"`
+	ExitCode               int                      `json:"exit_code"`
+	RetryCount             int                      `json:"retry_count"`
+	FailureClassification  string                   `json:"failure_classification"`
+	DurationMS             int64                    `json:"duration_ms"`
+	FindingCount           int                      `json:"finding_count"`
+	SeverityCounts         map[string]int           `json:"severity_counts"`
+	SelectedAgents         []benchmarkSelectedAgent `json:"selected_agents,omitempty"`
+	ThreadActionCount      int                      `json:"thread_action_count,omitempty"`
+	Usage                  *benchmark.RunMetrics    `json:"usage,omitempty"`
+	Warnings               []string                 `json:"warnings"`
+	Artifacts              runArtifacts             `json:"artifacts"`
 }
 
 type runArtifacts struct {
-	Dir         string `json:"dir"`
-	ReviewJSON  string `json:"review_json"`
-	Stderr      string `json:"stderr"`
-	MetricsJSON string `json:"metrics_json"`
+	Dir           string `json:"dir"`
+	ReviewJSON    string `json:"review_json,omitempty"`
+	SelectionJSON string `json:"selection_json,omitempty"`
+	SelectionLog  string `json:"selection_log,omitempty"`
+	RecipeJSON    string `json:"recipe_json,omitempty"`
+	Stderr        string `json:"stderr"`
+	MetricsJSON   string `json:"metrics_json"`
+}
+
+type benchmarkSelectedAgent struct {
+	AgentID string   `json:"agent_id"`
+	Files   []string `json:"files,omitempty"`
 }
 
 type suiteArtifacts struct {
@@ -227,6 +269,7 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 	suiteDir := filepath.Dir(suite.Path)
 	summary := benchmarkSuiteSummary{
 		SchemaVersion:      benchmarkArtifactSchemaVersion,
+		Mode:               benchmarkModeReview,
 		SuiteID:            suite.Suite.ID,
 		SuitePath:          suite.Path,
 		SuiteSHA256:        suiteHash,
@@ -383,13 +426,29 @@ func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchm
 	if benchCase.ReviewHeadSHA != "" {
 		args = append(args, "--review-head-sha", benchCase.ReviewHeadSHA)
 	}
-	if candidate.Model != "" {
-		args = append(args, "--llm-model", candidate.Model)
+	if candidate.Stages.Selection.Model != "" {
+		args = append(args,
+			"--selection-model", candidate.Stages.Selection.Model,
+		)
 	}
-	if candidate.Effort != "" {
-		args = append(args, "--llm-effort", candidate.Effort)
+	if candidate.Stages.Selection.Effort != "" {
+		args = append(args,
+			"--selection-effort", candidate.Stages.Selection.Effort,
+		)
 	}
-	for _, dir := range candidate.AgentDirs {
+	if candidate.Stages.Selection.Prompt != "" {
+		args = append(args, "--selection-prompt", resolveStagePath(suiteDir, candidate.Stages.Selection.Prompt))
+	}
+	if candidate.Stages.Reviewers.Model != "" {
+		args = append(args, "--reviewer-model", candidate.Stages.Reviewers.Model)
+	}
+	if candidate.Stages.Reviewers.ModelTier != "" {
+		args = append(args, "--reviewer-model-tier", candidate.Stages.Reviewers.ModelTier)
+	}
+	if candidate.Stages.Reviewers.Effort != "" {
+		args = append(args, "--reviewer-effort", candidate.Stages.Reviewers.Effort)
+	}
+	for _, dir := range candidate.Stages.Reviewers.AgentDirs {
 		args = append(args, "--agents-dir", resolveAgentDir(suiteDir, dir))
 	}
 	if candidate.MaxAgents > 0 {
@@ -445,19 +504,89 @@ func benchmarkRunID(matrixIndex, candidateIndex, caseIndex int, candidate benchm
 	return fmt.Sprintf("%04d-c%02d-k%02d-%s-%s", matrixIndex, candidateIndex+1, caseIndex+1, candidate.ID, benchCase.ID)
 }
 
+func summaryMode(summary benchmarkSuiteSummary) string {
+	switch strings.TrimSpace(summary.Mode) {
+	case "", benchmarkModeReview:
+		return benchmarkModeReview
+	case benchmarkModeSelection:
+		return benchmarkModeSelection
+	default:
+		return strings.TrimSpace(summary.Mode)
+	}
+}
+
 func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []benchmarkCandidate {
 	out := make([]benchmarkCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		out = append(out, benchmarkCandidate{
-			ID:             candidate.ID,
-			Profile:        candidate.Profile,
-			Model:          candidate.Model,
-			Effort:         candidate.Effort,
-			AgentDirs:      summarizeAgentDirs(suiteDir, candidate.AgentDirs),
+			ID:      candidate.ID,
+			Profile: candidate.Profile,
+			Stages: benchmarkCandidateStages{
+				Selection: benchmarkSelectionStage{
+					Model:  candidate.Stages.Selection.Model,
+					Effort: candidate.Stages.Selection.Effort,
+					Prompt: summarizePromptFile(suiteDir, candidate.Stages.Selection.Prompt),
+				},
+				Reviewers: benchmarkReviewerStage{
+					Model:     candidate.Stages.Reviewers.Model,
+					ModelTier: candidate.Stages.Reviewers.ModelTier,
+					Effort:    candidate.Stages.Reviewers.Effort,
+					AgentDirs: summarizeAgentDirs(suiteDir, candidate.Stages.Reviewers.AgentDirs),
+				},
+				Synthesis: summarizeOptionalSynthesisStage(suiteDir, candidate.Stages.Synthesis),
+			},
 			MaxAgents:      candidate.MaxAgents,
 			MaxConcurrency: candidate.MaxConcurrency,
 		})
 	}
+	return out
+}
+
+func summarizeOptionalSynthesisStage(suiteDir string, stage benchmark.SelectionStage) *benchmarkSynthesisStage {
+	if !isOptionalStageConfigured(stage) {
+		return nil
+	}
+	return &benchmarkSynthesisStage{
+		Model:  stage.Model,
+		Effort: stage.Effort,
+		Prompt: summarizePromptFile(suiteDir, stage.Prompt),
+	}
+}
+
+func isOptionalStageConfigured(stage benchmark.SelectionStage) bool {
+	return strings.TrimSpace(stage.Model) != "" ||
+		strings.TrimSpace(stage.Effort) != "" ||
+		strings.TrimSpace(stage.Prompt) != ""
+}
+
+func summarizePromptFile(suiteDir, configured string) *benchmarkPromptFile {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return nil
+	}
+	resolved := resolveStagePath(suiteDir, configured)
+	out := &benchmarkPromptFile{
+		Configured: configured,
+		Resolved:   resolved,
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		out.Warning = fmt.Sprintf("prompt file unavailable: %v", err)
+		return out
+	}
+	out.Exists = true
+	out.IsDir = info.IsDir()
+	if info.IsDir() {
+		out.Warning = "prompt path is a directory"
+		return out
+	}
+	data, err := os.ReadFile(resolved) // #nosec G304 -- benchmark prompt path is constrained by suite validation and results summarization.
+	if err != nil {
+		out.Warning = fmt.Sprintf("prompt file unreadable: %v", err)
+		return out
+	}
+	sum := sha256.Sum256(data)
+	out.ContentSHA256 = hex.EncodeToString(sum[:])
 	return out
 }
 
@@ -485,6 +614,14 @@ func summarizeAgentDirs(suiteDir string, dirs []string) []benchmarkAgentDir {
 	return out
 }
 
+func resolveStagePath(suiteDir, path string) string {
+	path = filepath.FromSlash(path)
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(suiteDir, path)
+}
+
 func summarizeCases(cases []benchmark.Case) []benchmarkCase {
 	out := make([]benchmarkCase, 0, len(cases))
 	for _, benchCase := range cases {
@@ -499,6 +636,11 @@ func summarizeCases(cases []benchmark.Case) []benchmarkCase {
 		})
 	}
 	return out
+}
+
+type benchmarkRunRecipe struct {
+	Candidate benchmarkCandidate `json:"candidate"`
+	Case      benchmarkCase      `json:"case"`
 }
 
 func parseReviewDryRun(stdout []byte, exitCode int) (*view.ReviewDryRun, []string) {
@@ -634,6 +776,7 @@ func suiteFileSHA256(path string) (string, error) {
 func writeSuiteArtifacts(summary benchmarkSuiteSummary) error {
 	manifest := benchmarkManifest{
 		SchemaVersion:      benchmarkArtifactSchemaVersion,
+		Mode:               summaryMode(summary),
 		SuiteID:            summary.SuiteID,
 		SuitePath:          summary.SuitePath,
 		SuiteSHA256:        summary.SuiteSHA256,
@@ -729,6 +872,9 @@ func renderRunText(opts *root.Options, summary benchmarkSuiteSummary) error {
 }
 
 func renderReportMarkdown(summary benchmarkSuiteSummary) string {
+	if summaryMode(summary) == benchmarkModeSelection {
+		return renderSelectionReportMarkdown(summary)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Benchmark Report: %s\n\n", summary.SuiteID)
 	fmt.Fprintf(&b, "- Results dir: `%s`\n", summary.ResultsDir)
