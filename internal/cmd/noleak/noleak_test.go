@@ -571,7 +571,7 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 		return reviewcmd.Runtime{}, err
 	}
 	cleanup := func() { _ = store.Close() }
-	providerGit := runtimeProviderGit(profile)
+	providerGit := gitConfigForReviewerAuth(profile)
 	provider, credential, err := h.newGitHubProvider(providerGit, store, installationLookup(runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
@@ -639,7 +639,7 @@ func (h *auditHarness) newGitHubProvider(git config.GitConfig, store githubprovi
 	})
 }
 
-func runtimeProviderGit(profile config.Profile) config.GitConfig {
+func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 	if profile.ReviewerCredentials == nil {
 		return profile.Git
 	}

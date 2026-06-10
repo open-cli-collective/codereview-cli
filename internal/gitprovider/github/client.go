@@ -20,6 +20,8 @@ const (
 	credentialTypePAT       = "pat"
 	credentialTypeGitHubApp = "github_app" // #nosec G101 -- credential type label, not a secret.
 	gitHubAppRefreshSkew    = 5 * time.Minute
+	gitHubAppJWTBackdate    = 60 * time.Second
+	gitHubAppJWTLifetime    = 9 * time.Minute
 )
 
 var (

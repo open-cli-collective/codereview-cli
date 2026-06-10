@@ -91,7 +91,7 @@ func newGitHubAppFromConfig(ctx context.Context, profile string, store TokenStor
 	if err != nil {
 		return nil, gitprovider.Credential{}, err
 	}
-	if strings.TrimSpace(installationID) == "" && (opts.InstallationLookup == nil || strings.TrimSpace(opts.InstallationLookup.Owner) == "" || strings.TrimSpace(opts.InstallationLookup.Repo) == "") {
+	if !canResolveInstallation(installationID, opts.InstallationLookup) {
 		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("github app credential %s/%s is required without repository context", profile, credentials.GitHubAppInstallationIDKey))
 	}
 	auth := &githubAppAuth{
@@ -240,8 +240,8 @@ func (a *githubAppAuth) jwt() (string, error) {
 	now := a.now()
 	header := map[string]string{"typ": "JWT", "alg": "RS256"}
 	payload := map[string]any{
-		"iat": now.Add(-60 * time.Second).Unix(),
-		"exp": now.Add(9 * time.Minute).Unix(),
+		"iat": now.Add(-gitHubAppJWTBackdate).Unix(),
+		"exp": now.Add(gitHubAppJWTLifetime).Unix(),
 		"iss": a.issuer,
 	}
 	headerJSON, err := json.Marshal(header)
@@ -270,6 +270,13 @@ func readRequiredCredential(store TokenStore, profile, key string) (string, erro
 		return "", gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("github app credential %s/%s is required", profile, key))
 	}
 	return value, nil
+}
+
+func canResolveInstallation(installationID string, lookup *InstallationLookup) bool {
+	if strings.TrimSpace(installationID) != "" {
+		return true
+	}
+	return lookup != nil && strings.TrimSpace(lookup.Owner) != "" && strings.TrimSpace(lookup.Repo) != ""
 }
 
 func readOptionalCredential(store TokenStore, profile, key string) (string, error) {

@@ -23,14 +23,15 @@ const (
 	acceptRaw  = "application/vnd.github.raw"
 )
 
-func (c *Client) doREST(ctx context.Context, op gitprovider.Operation, method, endpoint, token, accept string, out any) ([]byte, http.Header, error) {
-	if strings.TrimSpace(token) == "" {
-		var err error
-		token, err = c.bearerToken(ctx, op)
-		if err != nil {
-			return nil, nil, err
-		}
+func (c *Client) doREST(ctx context.Context, op gitprovider.Operation, method, endpoint, accept string, out any) ([]byte, http.Header, error) {
+	token, err := c.bearerToken(ctx, op)
+	if err != nil {
+		return nil, nil, err
 	}
+	return c.doRESTWithToken(ctx, op, method, endpoint, token, accept, out)
+}
+
+func (c *Client) doRESTWithToken(ctx context.Context, op gitprovider.Operation, method, endpoint, token, accept string, out any) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
 	if err != nil {
 		return nil, nil, err
@@ -96,7 +97,7 @@ func doRESTPages[T any](ctx context.Context, c *Client, op gitprovider.Operation
 	next := endpoint
 	for next != "" {
 		var page []T
-		_, header, err := c.doREST(ctx, op, http.MethodGet, next, "", accept, &page)
+		_, header, err := c.doREST(ctx, op, http.MethodGet, next, accept, &page)
 		if err != nil {
 			return nil, err
 		}

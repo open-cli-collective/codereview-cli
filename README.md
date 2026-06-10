@@ -340,6 +340,10 @@ and fingerprints the resolved files.
 
 Pre-stage each secret with `set-credential`:
 
+`github_app_installation_id` is optional for `cr review`, which can discover
+the installation from the PR repository. Stage it when you want `cr me` and
+other commands without repository context to work.
+
 ```bash
 printf '%s' "$USER_GITHUB_TOKEN" | cr set-credential \
   --ref codereview/work \
@@ -359,6 +363,7 @@ printf '%s' "$GITHUB_APP_PRIVATE_KEY" | cr set-credential \
   --stdin \
   --overwrite
 
+# Optional: needed for cr me and other commands without repository context.
 printf '%s' "$GITHUB_APP_INSTALLATION_ID" | cr set-credential \
   --ref codereview/work-reviewer-app \
   --key github_app_installation_id \
@@ -378,10 +383,6 @@ Then verify the deployed profile without running `init`:
 cr config show --json
 cr me --all --json
 ```
-
-`github_app_installation_id` is optional for `cr review`, which can discover
-the installation from the PR repository. It is useful for `cr me` and other
-commands that do not have repository context.
 
 Do not run `cr init` after pre-staging; the profile and credentials are already
 deployed.

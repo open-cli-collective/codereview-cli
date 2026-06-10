@@ -685,7 +685,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		return Runtime{}, cmderr.Credential(err)
 	}
 	cleanup := func() { _ = store.Close() }
-	providerGit := runtimeProviderGit(profile)
+	providerGit := gitConfigForReviewerAuth(profile)
 	provider, credential, err := newGitProvider(providerGit, store, gitProviderOptions(runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
@@ -730,7 +730,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 	}, nil
 }
 
-func runtimeProviderGit(profile config.Profile) config.GitConfig {
+func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 	if profile.ReviewerCredentials == nil {
 		return profile.Git
 	}
