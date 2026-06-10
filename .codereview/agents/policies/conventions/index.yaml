@@ -1,6 +1,6 @@
 name: conventions
 description: Reviews CLI and repository changes against Open CLI Collective shared standards and repo-local conventions.
-model: sonnet
+model_tier: medium
 effort: medium
 file_globs:
   - "AGENTS.md"

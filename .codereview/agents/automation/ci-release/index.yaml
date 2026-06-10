@@ -1,6 +1,6 @@
 name: ci-release
 description: Reviews CI, release, packaging, and build-support changes against shared automation contracts.
-model: sonnet
+model_tier: medium
 effort: medium
 file_globs:
   - ".github/workflows/**"

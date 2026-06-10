@@ -1,6 +1,6 @@
 name: implementation-tests
 description: Reviews Go changes for idiomatic implementation choices and tests that prove the changed behavior.
-model: sonnet
+model_tier: medium
 effort: medium
 file_globs:
   - "**/*.go"

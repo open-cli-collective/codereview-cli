@@ -1,6 +1,6 @@
 name: docs
 description: Reviews documentation-only changes for accuracy, useful examples, and durable repo knowledge.
-model: sonnet
+model_tier: medium
 effort: medium
 file_globs:
   - "*.md"

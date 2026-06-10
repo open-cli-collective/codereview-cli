@@ -1,6 +1,6 @@
 name: repo-health
 description: Reviews diffs for structural risks that can compound across future agent and human work.
-model: sonnet
+model_tier: medium
 effort: medium
 file_globs:
   - "AGENTS.md"
