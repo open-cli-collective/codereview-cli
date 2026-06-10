@@ -482,6 +482,211 @@ func TestResolveProfile(t *testing.T) {
 	}
 }
 
+func TestRepositoryProfileRoutesRoundTripAndResolve(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := validFile()
+	cfg.RepositoryProfiles = []RepositoryProfile{
+		{
+			Profile: "work",
+			Match: RepositoryProfileMatch{
+				Host:      "https://GITHUB.com/",
+				Namespace: "rianjs",
+				Repos:     []string{"bar", "baz"},
+			},
+		},
+		{
+			Profile: "home",
+			Match: RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.RepositoryProfiles[0].Match.Host; got != "github.com" {
+		t.Fatalf("route host = %q, want normalized github.com", got)
+	}
+
+	tests := []struct {
+		name        string
+		requested   string
+		explicit    bool
+		target      RepositoryTarget
+		wantProfile string
+		wantCredRef string
+	}{
+		{
+			name:        "repo-specific route",
+			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "baz"},
+			wantProfile: "work",
+			wantCredRef: "codereview/work",
+		},
+		{
+			name:        "namespace route fallback",
+			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "zeta"},
+			wantProfile: "home",
+			wantCredRef: "codereview/home",
+		},
+		{
+			name:        "default fallback",
+			target:      RepositoryTarget{Host: "github.com", Namespace: "open-cli-collective", Repo: "codereview-cli"},
+			wantProfile: "home",
+			wantCredRef: "codereview/home",
+		},
+		{
+			name:        "explicit profile bypasses route",
+			requested:   "work",
+			explicit:    true,
+			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "zeta"},
+			wantProfile: "work",
+			wantCredRef: "codereview/work",
+		},
+		{
+			name:        "repo case-sensitive",
+			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "Baz"},
+			wantProfile: "home",
+			wantCredRef: "codereview/home",
+		},
+		{
+			name:        "namespace case-sensitive",
+			target:      RepositoryTarget{Host: "github.com", Namespace: "Rianjs", Repo: "baz"},
+			wantProfile: "home",
+			wantCredRef: "codereview/home",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name, profile, err := ResolveProfileForRepository(loaded, tt.requested, tt.explicit, tt.target)
+			if err != nil {
+				t.Fatalf("ResolveProfileForRepository: %v", err)
+			}
+			if name != tt.wantProfile || profile.Git.CredentialRef != tt.wantCredRef {
+				t.Fatalf("resolved (%q,%q), want (%q,%q)", name, profile.Git.CredentialRef, tt.wantProfile, tt.wantCredRef)
+			}
+		})
+	}
+}
+
+func TestSaveOmitsEmptyRepositoryProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := Save(path, validFile()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// #nosec G304 -- test path is controlled by t.TempDir.
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(body), "repository_profiles") {
+		t.Fatalf("saved config contains empty repository_profiles:\n%s", string(body))
+	}
+}
+
+func TestValidateRejectsInvalidRepositoryProfiles(t *testing.T) {
+	validRoute := RepositoryProfile{
+		Profile: "home",
+		Match: RepositoryProfileMatch{
+			Host:      "github.com",
+			Namespace: "rianjs",
+		},
+	}
+	tests := []struct {
+		name   string
+		routes []RepositoryProfile
+		want   error
+	}{
+		{
+			name:   "blank profile",
+			routes: []RepositoryProfile{{Profile: " ", Match: validRoute.Match}},
+			want:   ErrInvalid,
+		},
+		{
+			name:   "missing profile",
+			routes: []RepositoryProfile{{Profile: "missing", Match: validRoute.Match}},
+			want:   ErrProfileNotFound,
+		},
+		{
+			name: "blank host",
+			routes: []RepositoryProfile{{
+				Profile: "home",
+				Match:   RepositoryProfileMatch{Host: " ", Namespace: "rianjs"},
+			}},
+			want: ErrInvalid,
+		},
+		{
+			name: "blank namespace",
+			routes: []RepositoryProfile{{
+				Profile: "home",
+				Match:   RepositoryProfileMatch{Host: "github.com", Namespace: " "},
+			}},
+			want: ErrInvalid,
+		},
+		{
+			name: "empty repos",
+			routes: []RepositoryProfile{{
+				Profile: "home",
+				Match:   RepositoryProfileMatch{Host: "github.com", Namespace: "rianjs", Repos: []string{}},
+			}},
+			want: ErrInvalid,
+		},
+		{
+			name: "blank repo",
+			routes: []RepositoryProfile{{
+				Profile: "home",
+				Match:   RepositoryProfileMatch{Host: "github.com", Namespace: "rianjs", Repos: []string{"bar", " "}},
+			}},
+			want: ErrInvalid,
+		},
+		{
+			name: "duplicate repo in route after trim",
+			routes: []RepositoryProfile{{
+				Profile: "home",
+				Match:   RepositoryProfileMatch{Host: "github.com", Namespace: "rianjs", Repos: []string{"bar", " bar "}},
+			}},
+			want: ErrInvalid,
+		},
+		{
+			name: "duplicate namespace route",
+			routes: []RepositoryProfile{
+				validRoute,
+				validRoute,
+			},
+			want: ErrInvalid,
+		},
+		{
+			name: "duplicate repo route",
+			routes: []RepositoryProfile{
+				{Profile: "home", Match: RepositoryProfileMatch{Host: "github.com", Namespace: "rianjs", Repos: []string{"bar"}}},
+				{Profile: "home", Match: RepositoryProfileMatch{Host: "github.com", Namespace: "rianjs", Repos: []string{"bar"}}},
+			},
+			want: ErrInvalid,
+		},
+		{
+			name: "route host must match profile host",
+			routes: []RepositoryProfile{{
+				Profile: "home",
+				Match:   RepositoryProfileMatch{Host: "gitlab.com", Namespace: "rianjs"},
+			}},
+			want: ErrInvalid,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			cfg.RepositoryProfiles = tt.routes
+			if err := Validate(cfg); !errors.Is(err, tt.want) {
+				t.Fatalf("Validate error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestCredentialRefs(t *testing.T) {
 	cfg := validFile().normalized()
 	_, profile, err := ResolveProfile(cfg, "work")

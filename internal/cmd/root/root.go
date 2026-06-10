@@ -26,6 +26,8 @@ type Options struct {
 	Stderr     io.Writer
 }
 
+const profileFlagName = "profile"
+
 // DefaultOptions returns root options wired to the process stdio streams.
 func DefaultOptions() *Options {
 	return &Options{
@@ -70,11 +72,17 @@ func NewCommandWithOptions(opts *Options) (*cobra.Command, *Options) {
 		return exitcode.Usage(err)
 	})
 	cmd.Flags().BoolVar(&showVersion, "version", false, "Print the build version")
-	cmd.PersistentFlags().StringVar(&opts.Profile, "profile", "", "Profile name")
+	cmd.PersistentFlags().StringVar(&opts.Profile, profileFlagName, "", "Profile name")
 	cmd.PersistentFlags().StringVar(&opts.Backend, credstore.BackendFlagName, "", credstore.BackendFlagUsage())
 	cmd.AddCommand(newVersionCommand(opts))
 
 	return cmd, opts
+}
+
+// ProfileFlagChanged reports whether the inherited --profile flag was supplied.
+func ProfileFlagChanged(cmd *cobra.Command) bool {
+	flag := cmd.Flag(profileFlagName)
+	return flag != nil && flag.Changed
 }
 
 const rootLong = `cr is the Open CLI Collective code-review CLI.

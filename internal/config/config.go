@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,10 +37,11 @@ var (
 
 // File is the root config.yml schema.
 type File struct {
-	DefaultProfile string             `yaml:"default_profile" json:"default_profile"`
-	Keyring        KeyringConfig      `yaml:"keyring,omitempty" json:"keyring"`
-	Profiles       map[string]Profile `yaml:"profiles" json:"profiles"`
-	Data           DataConfig         `yaml:"data,omitempty" json:"data"`
+	DefaultProfile     string              `yaml:"default_profile" json:"default_profile"`
+	Keyring            KeyringConfig       `yaml:"keyring,omitempty" json:"keyring"`
+	RepositoryProfiles []RepositoryProfile `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
+	Profiles           map[string]Profile  `yaml:"profiles" json:"profiles"`
+	Data               DataConfig          `yaml:"data,omitempty" json:"data"`
 }
 
 // KeyringConfig carries non-secret keyring backend preferences.
@@ -69,6 +71,19 @@ type ReviewerCredentials struct {
 	AuthMode      GitAuthMode `yaml:"auth_mode" json:"auth_mode"`
 	CredentialRef string      `yaml:"credential_ref" json:"credential_ref"`
 	IdentityCache string      `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
+}
+
+// RepositoryProfile routes repositories to profiles when --profile is omitted.
+type RepositoryProfile struct {
+	Profile string                 `yaml:"profile" json:"profile"`
+	Match   RepositoryProfileMatch `yaml:"match" json:"match"`
+}
+
+// RepositoryProfileMatch identifies a provider namespace and optional repos.
+type RepositoryProfileMatch struct {
+	Host      string   `yaml:"host" json:"host"`
+	Namespace string   `yaml:"namespace" json:"namespace"`
+	Repos     []string `yaml:"repos,omitempty" json:"repos,omitempty"`
 }
 
 // LLMConfig identifies the LLM provider and adapter.
@@ -346,6 +361,13 @@ type CredentialRef struct {
 	Provider string `json:"provider,omitempty"`
 }
 
+// RepositoryTarget identifies the pull-request repository used for route lookup.
+type RepositoryTarget struct {
+	Host      string
+	Namespace string
+	Repo      string
+}
+
 // Path resolves the default cr config.yml path without creating it.
 func Path() (string, error) {
 	dir, err := (statedir.Scope{Name: serviceName}).ConfigDir()
@@ -460,6 +482,9 @@ func Validate(cfg File) error {
 	if _, ok := cfg.Profiles[cfg.DefaultProfile]; !ok {
 		return fmt.Errorf("%w: %s", ErrProfileNotFound, cfg.DefaultProfile)
 	}
+	if err := validateRepositoryProfiles(cfg); err != nil {
+		return err
+	}
 	if err := validateKeyring(cfg.Keyring); err != nil {
 		return err
 	}
@@ -482,6 +507,47 @@ func ResolveProfile(cfg File, requestedName string) (string, Profile, error) {
 		return "", Profile{}, fmt.Errorf("%w: %s", ErrProfileNotFound, name)
 	}
 	return name, profile.normalized(), nil
+}
+
+// ResolveProfileForRepository resolves the active profile for a repository.
+// Explicit profile selection bypasses repository routing.
+func ResolveProfileForRepository(cfg File, requestedName string, explicitProfile bool, target RepositoryTarget) (string, Profile, error) {
+	if explicitProfile {
+		return ResolveProfile(cfg, requestedName)
+	}
+	cfg = cfg.normalized()
+	targetHost := normalizeConfigHost(target.Host)
+	targetNamespace := strings.TrimSpace(target.Namespace)
+	targetRepo := strings.TrimSpace(target.Repo)
+	if targetHost == "" {
+		return "", Profile{}, invalid("repository host is required")
+	}
+	if targetNamespace == "" {
+		return "", Profile{}, invalid("repository namespace is required")
+	}
+	if targetRepo == "" {
+		return "", Profile{}, invalid("repository repo is required")
+	}
+
+	namespaceProfile := ""
+	for _, route := range cfg.RepositoryProfiles {
+		if route.Match.Host != targetHost || route.Match.Namespace != targetNamespace {
+			continue
+		}
+		if route.Match.Repos == nil {
+			namespaceProfile = route.Profile
+			continue
+		}
+		for _, repo := range route.Match.Repos {
+			if repo == targetRepo {
+				return ResolveProfile(cfg, route.Profile)
+			}
+		}
+	}
+	if namespaceProfile != "" {
+		return ResolveProfile(cfg, namespaceProfile)
+	}
+	return ResolveProfile(cfg, "")
 }
 
 // CredentialRefs returns all credential-store refs declared by profile.
@@ -629,6 +695,63 @@ func validateProfile(name string, profile Profile) error {
 	return nil
 }
 
+func validateRepositoryProfiles(cfg File) error {
+	namespaceRoutes := map[string]int{}
+	repoRoutes := map[string]int{}
+	for index, route := range cfg.RepositoryProfiles {
+		field := fmt.Sprintf("repository_profiles[%d]", index)
+		if strings.TrimSpace(route.Profile) == "" {
+			return invalid("%s.profile is required", field)
+		}
+		profile, ok := cfg.Profiles[route.Profile]
+		if !ok {
+			return fmt.Errorf("%w: %s.profile %q", ErrProfileNotFound, field, route.Profile)
+		}
+		if strings.TrimSpace(route.Match.Host) == "" {
+			return invalid("%s.match.host is required", field)
+		}
+		host := normalizeConfigHost(route.Match.Host)
+		if host == "" {
+			return invalid("%s.match.host is required", field)
+		}
+		if host != normalizeConfigHost(profile.Git.Host) {
+			return invalid("%s.match.host %q must match profile %q git.host %q", field, route.Match.Host, route.Profile, profile.Git.Host)
+		}
+		namespace := strings.TrimSpace(route.Match.Namespace)
+		if namespace == "" {
+			return invalid("%s.match.namespace is required", field)
+		}
+		if route.Match.Repos != nil && len(route.Match.Repos) == 0 {
+			return invalid("%s.match.repos must be omitted or contain at least one repo", field)
+		}
+		namespaceKey := routeKey(host, namespace, "")
+		if route.Match.Repos == nil {
+			if previous, ok := namespaceRoutes[namespaceKey]; ok {
+				return invalid("%s duplicates repository_profiles[%d] namespace route for %s/%s", field, previous, host, namespace)
+			}
+			namespaceRoutes[namespaceKey] = index
+			continue
+		}
+		seenRepos := map[string]struct{}{}
+		for repoIndex, repo := range route.Match.Repos {
+			repo = strings.TrimSpace(repo)
+			if repo == "" {
+				return invalid("%s.match.repos[%d] is required", field, repoIndex)
+			}
+			if _, ok := seenRepos[repo]; ok {
+				return invalid("%s.match.repos[%d] duplicates repo %q", field, repoIndex, repo)
+			}
+			seenRepos[repo] = struct{}{}
+			repoKey := routeKey(host, namespace, repo)
+			if previous, ok := repoRoutes[repoKey]; ok {
+				return invalid("%s duplicates repository_profiles[%d] repo route for %s/%s/%s", field, previous, host, namespace, repo)
+			}
+			repoRoutes[repoKey] = index
+		}
+	}
+	return nil
+}
+
 func validateKeyring(keyring KeyringConfig) error {
 	backend := strings.TrimSpace(keyring.Backend)
 	if backend == "" {
@@ -670,6 +793,23 @@ func (cfg File) normalized() File {
 		profiles[name] = profile.normalized()
 	}
 	cfg.Profiles = profiles
+	if len(cfg.RepositoryProfiles) > 0 {
+		routes := make([]RepositoryProfile, len(cfg.RepositoryProfiles))
+		for index, route := range cfg.RepositoryProfiles {
+			route.Profile = strings.TrimSpace(route.Profile)
+			route.Match.Host = normalizeConfigHost(route.Match.Host)
+			route.Match.Namespace = strings.TrimSpace(route.Match.Namespace)
+			if len(route.Match.Repos) > 0 {
+				repos := make([]string, len(route.Match.Repos))
+				for repoIndex, repo := range route.Match.Repos {
+					repos[repoIndex] = strings.TrimSpace(repo)
+				}
+				route.Match.Repos = repos
+			}
+			routes[index] = route
+		}
+		cfg.RepositoryProfiles = routes
+	}
 	cfg.Data.Retention = cfg.Data.Retention.normalized()
 	return cfg
 }
@@ -722,4 +862,16 @@ func (r RetentionConfig) MaxAgeDaysValue() int {
 
 func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
+}
+
+func normalizeConfigHost(raw string) string {
+	host := strings.TrimSpace(raw)
+	if parsed, err := url.Parse(host); err == nil && parsed.Host != "" {
+		host = parsed.Host
+	}
+	return strings.ToLower(strings.TrimSuffix(host, "/"))
+}
+
+func routeKey(host, namespace, repo string) string {
+	return host + "\x00" + namespace + "\x00" + repo
 }

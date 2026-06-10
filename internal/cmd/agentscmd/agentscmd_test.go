@@ -97,6 +97,100 @@ func TestAgentsListWithPRLoadsRepoBaseAndTrustNote(t *testing.T) {
 	}
 }
 
+func TestAgentsListWithPRUsesRepositoryProfileRoute(t *testing.T) {
+	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
+	cfg := testConfig("")
+	work := cfg.Profiles["home"]
+	work.Git.CredentialRef = "codereview/work"
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      ref.Host,
+			Namespace: ref.Owner,
+			Repos:     []string{ref.Repo},
+		},
+	}}
+	cmd, out := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
+		if profile.Git.CredentialRef != "codereview/work" {
+			t.Fatalf("provider profile credential ref = %q, want work route", profile.Git.CredentialRef)
+		}
+		return fake, nil, nil
+	})
+
+	if err := root.Execute(cmd, []string{"agents", "list", prURL(ref), "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.AgentsList
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if got.Repo == nil || got.Repo.Provenance == "" {
+		t.Fatalf("repo = %#v, want repository source", got.Repo)
+	}
+}
+
+func TestAgentsListExplicitProfileBypassesRepositoryRoute(t *testing.T) {
+	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
+	cfg := testConfig("")
+	work := cfg.Profiles["home"]
+	work.Git.CredentialRef = "codereview/work"
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      ref.Host,
+			Namespace: ref.Owner,
+			Repos:     []string{ref.Repo},
+		},
+	}}
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
+		if profile.Git.CredentialRef != "codereview/home" {
+			t.Fatalf("provider profile credential ref = %q, want explicit home", profile.Git.CredentialRef)
+		}
+		return fake, nil, nil
+	})
+
+	if err := root.Execute(cmd, []string{"--profile", "home", "agents", "list", prURL(ref), "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+}
+
+func TestAgentsListImplicitDefaultProfileHostMismatch(t *testing.T) {
+	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
+	cfg := testConfig("")
+	home := cfg.Profiles["home"]
+	home.Git.Host = "gitlab.com"
+	cfg.Profiles["home"] = home
+	work := home
+	work.Git.Host = "github.com"
+	work.Git.CredentialRef = "codereview/work"
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "github.com",
+			Namespace: "rianjs",
+			Repos:     []string{"bar"},
+		},
+	}}
+	cmd, _ := newTestCommand(t, cfg, func(*cobra.Command, *root.Options, config.File, config.Profile) (gitprovider.GitProvider, func(), error) {
+		t.Fatal("provider factory should not be called when fallback profile host mismatches")
+		return fake, nil, nil
+	})
+
+	err := root.Execute(cmd, []string{"agents", "list", prURL(ref)})
+	if err == nil {
+		t.Fatal("Execute error = nil, want host mismatch")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want usage", got)
+	}
+	if !strings.Contains(err.Error(), `PR host "github.com" must match configured git host "gitlab.com"`) {
+		t.Fatalf("error = %v, want host mismatch detail", err)
+	}
+}
+
 func TestAgentsListWithPRRejectsUnsafeProfileSource(t *testing.T) {
 	tests := []struct {
 		name       string
