@@ -141,6 +141,48 @@ cr --profile work init --non-interactive \
   --agent-source ~/.config/codereview/agents
 ```
 
+Repo-aware profile routing can select a profile from the PR repository when
+`--profile` is omitted. Use this when org, personal, or repo-specific reviewer
+credentials should differ without changing commands:
+
+```yaml
+default_profile: personal
+repository_profiles:
+  - profile: personal-reviewer-a
+    match:
+      host: github.com
+      namespace: rianjs
+      repos: [bar, baz]
+  - profile: personal-reviewer-b
+    match:
+      host: github.com
+      namespace: rianjs
+      repos: [qux]
+  - profile: work
+    match:
+      host: github.com
+      namespace: open-cli-collective
+  - profile: personal
+    match:
+      host: github.com
+      namespace: rianjs
+profiles:
+  personal: ...
+  personal-reviewer-a: ...
+  personal-reviewer-b: ...
+  work: ...
+```
+
+Route matching is deterministic: `host + namespace + repo` routes beat
+`host + namespace` routes, omitted `repos` means all repos in that namespace,
+and no match falls back to `default_profile`. Host matching is case-insensitive
+after normalization, while namespace and repo matching are case-sensitive after
+trimming whitespace. An explicit `--profile` bypasses repository routing. Route
+targets still use the profile's configured auth mode. Passing `--profile ""`
+also counts as explicit and resolves `default_profile` without route lookup.
+GitHub App auth remains future work in
+[issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76).
+
 Add or replace one credential later:
 
 ```bash
@@ -537,7 +579,7 @@ All commands accept the global flags:
 
 | Flag | Semantics |
 |------|-----------|
-| `--profile <name>` | Select a configured profile. Empty means `default_profile` from config, or `default` during `init` before config exists. |
+| `--profile <name>` | Select a configured profile and bypass repo-aware routing. When omitted, PR-aware commands may use `repository_profiles`, then fall back to `default_profile`; during `init`, empty means `default`. |
 | `--backend <name>` | Select the credential backend for this invocation. One of `keychain`, `wincred`, `secret-service`, `file`, `pass`, `memory`. |
 
 ### `cr`

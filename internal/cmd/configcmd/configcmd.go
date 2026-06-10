@@ -572,6 +572,7 @@ func removeProfileFromConfig(path string, cfg config.File, profileName string) (
 		change.configPathRemoved = path
 		return change, nil
 	}
+	cfg.RepositoryProfiles = pruneRepositoryProfileRoutes(cfg.RepositoryProfiles, profileName)
 	if cfg.DefaultProfile == profileName {
 		cfg.DefaultProfile = firstProfileName(cfg.Profiles)
 		change.defaultProfile = cfg.DefaultProfile
@@ -580,6 +581,19 @@ func removeProfileFromConfig(path string, cfg config.File, profileName string) (
 		return configClearChange{}, err
 	}
 	return change, nil
+}
+
+func pruneRepositoryProfileRoutes(routes []config.RepositoryProfile, profileName string) []config.RepositoryProfile {
+	if len(routes) == 0 {
+		return routes
+	}
+	pruned := routes[:0]
+	for _, route := range routes {
+		if route.Profile != profileName {
+			pruned = append(pruned, route)
+		}
+	}
+	return pruned
 }
 
 func firstProfileName(profiles map[string]config.Profile) string {

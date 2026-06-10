@@ -275,13 +275,17 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if err != nil {
 		return cmderr.Config(err)
 	}
-	profileName, profile, err := config.ResolveProfile(cfg, opts.Profile)
-	if err != nil {
-		return cmderr.Config(err)
-	}
 	ref, err := prref.ParseGitHubPullURL(prArg)
 	if err != nil {
 		return exitcode.Usage(err)
+	}
+	profileName, profile, err := config.ResolveProfileForRepository(cfg, opts.Profile, root.ProfileFlagChanged(cmd), config.RepositoryTarget{
+		Host:      ref.Host,
+		Namespace: ref.Owner,
+		Repo:      ref.Repo,
+	})
+	if err != nil {
+		return cmderr.Config(err)
 	}
 	if !prref.SameHost(ref.Host, profile.Git.Host) {
 		return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))

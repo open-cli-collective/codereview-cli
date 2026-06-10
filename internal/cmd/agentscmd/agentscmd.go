@@ -126,21 +126,36 @@ func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, f
 	if err != nil {
 		return agents.Catalog{}, cmderr.Config(err)
 	}
-	_, profile, err := config.ResolveProfile(cfg, opts.Profile)
-	if err != nil {
-		return agents.Catalog{}, cmderr.Config(err)
+	var ref gitprovider.PRRef
+	profile := config.Profile{}
+	hasPR := strings.TrimSpace(prArg) != ""
+	if hasPR {
+		var err error
+		ref, err = prref.ParseGitHubPullURL(prArg)
+		if err != nil {
+			return agents.Catalog{}, exitcode.Usage(err)
+		}
+		_, profile, err = config.ResolveProfileForRepository(cfg, opts.Profile, root.ProfileFlagChanged(cmd), config.RepositoryTarget{
+			Host:      ref.Host,
+			Namespace: ref.Owner,
+			Repo:      ref.Repo,
+		})
+		if err != nil {
+			return agents.Catalog{}, cmderr.Config(err)
+		}
+	} else {
+		var err error
+		_, profile, err = config.ResolveProfile(cfg, opts.Profile)
+		if err != nil {
+			return agents.Catalog{}, cmderr.Config(err)
+		}
 	}
-
 	loadOptions := agents.LoadOptions{
 		ProfileDirs: append([]string(nil), profile.AgentSources...),
 		FlagDirs:    append([]string(nil), flags.agentsDirs...),
 	}
-	if strings.TrimSpace(prArg) != "" {
+	if hasPR {
 		loadOptions.RequireSafeProfileSources = true
-		ref, err := prref.ParseGitHubPullURL(prArg)
-		if err != nil {
-			return agents.Catalog{}, exitcode.Usage(err)
-		}
 		if !prref.SameHost(ref.Host, profile.Git.Host) {
 			return agents.Catalog{}, exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
 		}
