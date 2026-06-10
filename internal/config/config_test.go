@@ -528,6 +528,12 @@ func TestRepositoryProfileRoutesRoundTripAndResolve(t *testing.T) {
 			wantCredRef: "codereview/work",
 		},
 		{
+			name:        "target trims namespace and repo",
+			target:      RepositoryTarget{Host: "github.com", Namespace: " rianjs ", Repo: " baz "},
+			wantProfile: "work",
+			wantCredRef: "codereview/work",
+		},
+		{
 			name:        "namespace route fallback",
 			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "zeta"},
 			wantProfile: "home",
@@ -570,6 +576,31 @@ func TestRepositoryProfileRoutesRoundTripAndResolve(t *testing.T) {
 				t.Fatalf("resolved (%q,%q), want (%q,%q)", name, profile.Git.CredentialRef, tt.wantProfile, tt.wantCredRef)
 			}
 		})
+	}
+
+	cfg.RepositoryProfiles = []RepositoryProfile{
+		{
+			Profile: "home",
+			Match: RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"baz"},
+			},
+		},
+	}
+	name, profile, err := ResolveProfileForRepository(cfg, "", false, RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "baz"})
+	if err != nil {
+		t.Fatalf("ResolveProfileForRepository inverse order: %v", err)
+	}
+	if name != "work" || profile.Git.CredentialRef != "codereview/work" {
+		t.Fatalf("inverse-order resolved (%q,%q), want work route", name, profile.Git.CredentialRef)
 	}
 }
 

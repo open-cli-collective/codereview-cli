@@ -939,6 +939,30 @@ func TestConfigClearProfileAllReselectsDefaultWhenSelectedProfileIsDefault(t *te
 	alpha.Git.CredentialRef = "codereview/alpha"
 	cfg.Profiles["alpha"] = alpha
 	cfg.DefaultProfile = "work"
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar"},
+			},
+		},
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		},
+		{
+			Profile: "alpha",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "example",
+			},
+		},
+	}
 	path := saveTestConfig(t, cfg)
 	seedFileBackend(t, "alpha", map[string]string{credentials.GitTokenKey: "alpha-token"})
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
@@ -964,6 +988,14 @@ func TestConfigClearProfileAllReselectsDefaultWhenSelectedProfileIsDefault(t *te
 	}
 	if cfg.DefaultProfile != "alpha" || len(cfg.Profiles) != 2 {
 		t.Fatalf("remaining config = %#v, want alpha default with alpha/home only", cfg)
+	}
+	if len(cfg.RepositoryProfiles) != 2 {
+		t.Fatalf("repository_profiles = %#v, want two routes after pruning work", cfg.RepositoryProfiles)
+	}
+	for _, route := range cfg.RepositoryProfiles {
+		if route.Profile == "work" {
+			t.Fatalf("repository_profiles = %#v, want work route pruned", cfg.RepositoryProfiles)
+		}
 	}
 	if _, ok := cfg.Profiles["work"]; ok {
 		t.Fatalf("work profile still present after --all: %#v", cfg.Profiles)

@@ -156,6 +156,65 @@ func TestAgentsListExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 	}
 }
 
+func TestAgentsShowWithPRUsesRepositoryProfileRoute(t *testing.T) {
+	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
+	cfg := testConfig("")
+	work := cfg.Profiles["home"]
+	work.Git.CredentialRef = "codereview/work"
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      ref.Host,
+			Namespace: ref.Owner,
+			Repos:     []string{ref.Repo},
+		},
+	}}
+	cmd, out := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
+		if profile.Git.CredentialRef != "codereview/work" {
+			t.Fatalf("provider profile credential ref = %q, want work route", profile.Git.CredentialRef)
+		}
+		return fake, nil, nil
+	})
+
+	if err := root.Execute(cmd, []string{"agents", "show", "repo:reviewer", prURL(ref), "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.AgentsShow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if got.Agent.ID != "repo:reviewer" {
+		t.Fatalf("agent = %#v, want repo:reviewer", got.Agent)
+	}
+}
+
+func TestAgentsListExplicitEmptyProfileBypassesRepositoryRoute(t *testing.T) {
+	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
+	cfg := testConfig("")
+	work := cfg.Profiles["home"]
+	work.Git.CredentialRef = "codereview/work"
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      ref.Host,
+			Namespace: ref.Owner,
+			Repos:     []string{ref.Repo},
+		},
+	}}
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
+		if profile.Git.CredentialRef != "codereview/home" {
+			t.Fatalf("provider profile credential ref = %q, want default home", profile.Git.CredentialRef)
+		}
+		return fake, nil, nil
+	})
+
+	if err := root.Execute(cmd, []string{"--profile", "", "agents", "list", prURL(ref), "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+}
+
 func TestAgentsListImplicitDefaultProfileHostMismatch(t *testing.T) {
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig("")
