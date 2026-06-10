@@ -2,11 +2,13 @@
 package github
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
@@ -14,8 +16,10 @@ import (
 )
 
 const (
-	defaultHost       = "github.com"
-	credentialTypePAT = "pat"
+	defaultHost             = "github.com"
+	credentialTypePAT       = "pat"
+	credentialTypeGitHubApp = "github_app" // #nosec G101 -- credential type label, not a secret.
+	gitHubAppRefreshSkew    = 5 * time.Minute
 )
 
 var (
@@ -27,16 +31,19 @@ var (
 
 // TokenStore is the minimal credential-store dependency needed by the adapter factory.
 type TokenStore interface {
+	Exists(profile, key string) (bool, error)
 	Get(profile, key string) (string, error)
 }
 
 // Options configures a GitHub client.
 type Options struct {
-	Host       string
-	Token      string
-	HTTPClient *http.Client
-	BaseURL    string
-	GraphQLURL string
+	Host               string
+	Token              string
+	HTTPClient         *http.Client
+	BaseURL            string
+	GraphQLURL         string
+	Now                func() time.Time
+	InstallationLookup *InstallationLookup
 }
 
 // Client is a GitHub read adapter. CR-10 adds write methods and full
@@ -47,13 +54,11 @@ type Client struct {
 	httpClient *http.Client
 	baseURL    *url.URL
 	graphQLURL *url.URL
+	appAuth    *githubAppAuth
 }
 
 // NewFromGitConfig builds a GitHub client and credential from config plus a token store.
 func NewFromGitConfig(git config.GitConfig, store TokenStore, opts Options) (*Client, gitprovider.Credential, error) {
-	if git.AuthMode != config.GitAuthModePAT {
-		return nil, gitprovider.Credential{}, fmt.Errorf("%w: git auth_mode %q", config.ErrUnsupported, git.AuthMode)
-	}
 	host, err := normalizeHost(git.Host)
 	if err != nil {
 		return nil, gitprovider.Credential{}, err
@@ -74,29 +79,40 @@ func NewFromGitConfig(git config.GitConfig, store TokenStore, opts Options) (*Cl
 	if err != nil {
 		return nil, gitprovider.Credential{}, err
 	}
-	key, err := credentials.KeyForPurpose(config.CredentialRef{
-		Purpose: "git",
-		Ref:     git.CredentialRef,
-		Mode:    string(git.AuthMode),
-	})
-	if err != nil {
-		return nil, gitprovider.Credential{}, err
+
+	switch git.AuthMode {
+	case config.GitAuthModePAT:
+		key, err := credentials.KeyForPurpose(config.CredentialRef{
+			Purpose: "git",
+			Ref:     git.CredentialRef,
+			Mode:    string(git.AuthMode),
+		})
+		if err != nil {
+			return nil, gitprovider.Credential{}, err
+		}
+		token, err := store.Get(parsed.Profile, key)
+		if err != nil {
+			return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("read git credential: %w", err))
+		}
+		credential := gitprovider.Credential{Type: credentialTypePAT, Token: token}
+		if err := validateCredential("", credential); err != nil {
+			return nil, gitprovider.Credential{}, err
+		}
+		opts.Host = host
+		opts.Token = token
+		client, err := New(opts)
+		if err != nil {
+			return nil, gitprovider.Credential{}, err
+		}
+		return client, credential, nil
+	case config.GitAuthModeGitHubApp:
+		opts.Host = host
+		return newGitHubAppFromConfig(context.Background(), parsed.Profile, store, opts)
+	case config.GitAuthModeOAuthDevice:
+		return nil, gitprovider.Credential{}, fmt.Errorf("%w: git auth_mode %q", config.ErrUnsupported, git.AuthMode)
+	default:
+		return nil, gitprovider.Credential{}, fmt.Errorf("%w: git auth_mode %q", config.ErrUnsupported, git.AuthMode)
 	}
-	token, err := store.Get(parsed.Profile, key)
-	if err != nil {
-		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("read git credential: %w", err))
-	}
-	credential := gitprovider.Credential{Type: credentialTypePAT, Token: token}
-	if err := validateCredential("", credential); err != nil {
-		return nil, gitprovider.Credential{}, err
-	}
-	opts.Host = host
-	opts.Token = token
-	client, err := New(opts)
-	if err != nil {
-		return nil, gitprovider.Credential{}, err
-	}
-	return client, credential, nil
 }
 
 // New builds a GitHub client from explicit options.
@@ -143,13 +159,23 @@ func (c *Client) Capabilities() gitprovider.ProviderCaps {
 }
 
 func validateCredential(op gitprovider.Operation, creds gitprovider.Credential) error {
-	if creds.Type != credentialTypePAT {
+	if creds.Type != credentialTypePAT && creds.Type != credentialTypeGitHubApp {
 		return gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("unsupported credential type %q", creds.Type))
 	}
 	if strings.TrimSpace(creds.Token) == "" {
 		return gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("credential token is required"))
 	}
+	if creds.Type == credentialTypeGitHubApp && strings.TrimSpace(creds.Login) == "" {
+		return gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("github app identity is required"))
+	}
 	return nil
+}
+
+func (c *Client) bearerToken(ctx context.Context, op gitprovider.Operation) (string, error) {
+	if c.appAuth == nil {
+		return c.token, nil
+	}
+	return c.appAuth.token(ctx, op)
 }
 
 func (c *Client) validatePRRef(ref gitprovider.PRRef) error {

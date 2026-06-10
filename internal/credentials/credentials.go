@@ -20,6 +20,15 @@ const (
 
 	// GitTokenKey stores the Git host access token for PAT auth.
 	GitTokenKey = "git_token"
+	// GitHubAppIDKey stores the GitHub App JWT issuer, usually the app ID.
+	// #nosec G101 -- this is a keyring item name, not a secret value.
+	GitHubAppIDKey = "github_app_id"
+	// GitHubAppPrivateKeyKey stores the GitHub App PEM private key.
+	// #nosec G101 -- this is a keyring item name, not a secret value.
+	GitHubAppPrivateKeyKey = "github_app_private_key"
+	// GitHubAppInstallationIDKey stores an optional explicit GitHub App installation ID.
+	// #nosec G101 -- this is a keyring item name, not a secret value.
+	GitHubAppInstallationIDKey = "github_app_installation_id"
 	// AnthropicAPIKeyKey stores the key name for Anthropic direct API adapters.
 	// #nosec G101 -- this is a keyring item name, not a secret value.
 	AnthropicAPIKeyKey = "anthropic_api_key"
@@ -41,7 +50,7 @@ var (
 
 // AllowedKeys is cr's keyring write allowlist.
 func AllowedKeys() []string {
-	return []string{GitTokenKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
+	return []string{GitTokenKey, GitHubAppIDKey, GitHubAppPrivateKeyKey, GitHubAppInstallationIDKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
 }
 
 // Ref is a parsed cr credential ref.
@@ -139,10 +148,20 @@ func KeySpecsForPurpose(ref config.CredentialRef) ([]KeySpec, error) {
 		if !mode.Valid() {
 			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrInvalid, ref.Purpose, mode)
 		}
-		if !mode.Supported() {
+		switch mode {
+		case config.GitAuthModePAT:
+			return []KeySpec{{Key: GitTokenKey, Required: true}}, nil
+		case config.GitAuthModeGitHubApp:
+			return []KeySpec{
+				{Key: GitHubAppIDKey, Required: true},
+				{Key: GitHubAppPrivateKeyKey, Required: true},
+				{Key: GitHubAppInstallationIDKey, Required: false},
+			}, nil
+		case config.GitAuthModeOAuthDevice:
+			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrUnsupported, ref.Purpose, mode)
+		default:
 			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrUnsupported, ref.Purpose, mode)
 		}
-		return []KeySpec{{Key: GitTokenKey, Required: true}}, nil
 	case "llm":
 		if config.LLMAuth(ref.Mode) != config.LLMAuthAPIKey {
 			return nil, fmt.Errorf("%w: llm auth %q", config.ErrUnsupported, ref.Mode)

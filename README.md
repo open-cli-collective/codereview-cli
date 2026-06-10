@@ -180,8 +180,8 @@ after normalization, while namespace and repo matching are case-sensitive after
 trimming whitespace. An explicit `--profile` bypasses repository routing. Route
 targets still use the profile's configured auth mode. Passing `--profile ""`
 also counts as explicit and resolves `default_profile` without route lookup.
-GitHub App auth remains future work in
-[issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76).
+For GitHub App auth, `cr review` can use the PR owner/repo to look up the app
+installation when `github_app_installation_id` is not staged.
 
 Add or replace one credential later:
 
@@ -206,14 +206,14 @@ target user's credential store. The staging commands must run as the target OS
 user who will run `cr`, not as root, SYSTEM, or an administrator account whose
 keyring is different from the target user's keyring.
 
-`reviewer_credentials` is PAT-only in v1. It posts through the GitHub account
-that owns the staged reviewer PAT, so a shared reviewer or bot PAT is an access
-secret even when it is distributed org-wide. Pre-stage it into each target
-user's credential store, rotate or revoke it with the same
-`set-credential --overwrite` flow, and do not store it in config files, agent
-sources, installers, logs, or shell profiles. GitHub App reviewer credentials
-are tracked in [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76)
-for org-controlled reviewer identity and installation-scoped auth.
+`reviewer_credentials` may use a PAT or GitHub App auth. A shared reviewer PAT
+is an access secret even when distributed org-wide. A GitHub App private key is
+also a deployment secret; `cr` signs short-lived JWTs locally, mints
+installation tokens as needed, and never stores those minted tokens in
+`config.yml`. Pre-stage reviewer credentials into each target user's credential
+store, rotate or revoke them with the same `set-credential --overwrite` flow,
+and do not store them in config files, agent sources, installers, logs, or
+shell profiles.
 
 Either omit `keyring.backend` to use the platform default, or set it
 per-platform and run `set-credential` with the same backend selection.
@@ -229,8 +229,8 @@ profiles:
       auth_mode: pat
       credential_ref: codereview/work
     reviewer_credentials:
-      auth_mode: pat
-      credential_ref: codereview/work-reviewer
+      auth_mode: github_app
+      credential_ref: codereview/work-reviewer-app
     llm:
       provider: anthropic
       auth: api_key
@@ -334,9 +334,21 @@ printf '%s' "$USER_GITHUB_TOKEN" | cr set-credential \
   --stdin \
   --overwrite
 
-printf '%s' "$REVIEW_BOT_GITHUB_TOKEN" | cr set-credential \
-  --ref codereview/work-reviewer \
-  --key git_token \
+printf '%s' "$GITHUB_APP_ID" | cr set-credential \
+  --ref codereview/work-reviewer-app \
+  --key github_app_id \
+  --stdin \
+  --overwrite
+
+printf '%s' "$GITHUB_APP_PRIVATE_KEY" | cr set-credential \
+  --ref codereview/work-reviewer-app \
+  --key github_app_private_key \
+  --stdin \
+  --overwrite
+
+printf '%s' "$GITHUB_APP_INSTALLATION_ID" | cr set-credential \
+  --ref codereview/work-reviewer-app \
+  --key github_app_installation_id \
   --stdin \
   --overwrite
 
@@ -353,6 +365,10 @@ Then verify the deployed profile without running `init`:
 cr config show --json
 cr me --all --json
 ```
+
+`github_app_installation_id` is optional for `cr review`, which can discover
+the installation from the PR repository. It is useful for `cr me` and other
+commands that do not have repository context.
 
 Do not run `cr init` after pre-staging; the profile and credentials are already
 deployed.
@@ -397,7 +413,7 @@ Supported values:
 
 | Field | Values |
 |-------|--------|
-| `git.auth_mode` | `pat` is implemented in v1. `oauth_device` and `github_app` are recognized by the config schema but not implemented; validation rejects them in v1. GitHub App support is tracked in [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76). |
+| `git.auth_mode` | `pat` and `github_app` are implemented for GitHub. `oauth_device` is reserved; config recognizes the mode but validation rejects it in v1. |
 | `llm.provider` | `anthropic`, `openai`, `pi` |
 | `llm.auth` | `subscription`, `api_key` |
 | `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc`, and `codex_cli` are usable for review. `codex_cli` requires `provider: openai` and `auth: subscription`, and is currently best-effort/beta because Codex does not yet expose an explicit all-tools-disabled flag. |
@@ -481,7 +497,7 @@ Credential key matrix:
 |---------------|---------|---------------|---------------|---------------|-------------|
 | `git.credential_ref` | User Git host auth | `pat` | `git_token` | None | Supported |
 | `reviewer_credentials.credential_ref` | Reviewer Git host auth | `pat` | `git_token` | None | Supported; must use a distinct ref from `git.credential_ref` in the same profile |
-| `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `github_app` | None | None | Reserved for [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76); config recognizes the mode but v1 rejects it and does not accept future keys such as `git_app_private_key` |
+| `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `github_app` | `github_app_id`, `github_app_private_key` | `github_app_installation_id` | Supported for GitHub. `cr review` can discover the installation from the PR repository when the optional installation ID is omitted; commands without repository context require it |
 | `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
 | `llm.credential_ref` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
 | `llm.credential_ref` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
@@ -620,9 +636,9 @@ Flags:
 | `--git-token-stdin` | Read the Git token from stdin and write key `git_token`. |
 | `--git-token-from-env <env>` | Read the Git token from an environment variable and write key `git_token`. |
 | `--reviewer-credential-ref <ref>` | Credential ref for reviewer Git auth. Defaults to `codereview/<profile>-reviewer` when reviewer credentials are requested. |
-| `--reviewer-auth-mode <mode>` | Reviewer Git auth mode, default `pat`. Reserved modes are recognized by config but not implemented in v1. |
-| `--reviewer-token-stdin` | Read the reviewer Git token from stdin and write key `git_token`. |
-| `--reviewer-token-from-env <env>` | Read the reviewer Git token from an environment variable and write key `git_token`. |
+| `--reviewer-auth-mode <mode>` | Reviewer Git auth mode, default `pat`. `github_app` writes config and prints follow-up credential commands. |
+| `--reviewer-token-stdin` | Read the reviewer Git token from stdin and write key `git_token`; PAT reviewer auth only. |
+| `--reviewer-token-from-env <env>` | Read the reviewer Git token from an environment variable and write key `git_token`; PAT reviewer auth only. |
 | `--llm-provider <provider>` | LLM provider, default `anthropic`; also selects whether API-key ingress writes `anthropic_api_key` or `openai_api_key`. `pi` is adapter-managed and does not accept API-key ingress. |
 | `--llm-auth <mode>` | LLM auth mode, default `subscription`. Use `api_key` for keyring-managed direct API keys. |
 | `--llm-adapter <adapter>` | LLM adapter, default `claude_cli`. |
@@ -637,13 +653,15 @@ Flags:
 | `--overwrite` | Replace existing keyring entries written by this command. |
 | `--replace-profile` | Replace an existing profile config. |
 
-Only one stdin secret ingress flag may be used at a time. Reviewer credentials
-use key `git_token` under their own credential ref, so
-`--reviewer-credential-ref` must differ from `--git-credential-ref`. LLM
-API-key ingress requires `--llm-auth api_key`. `--overwrite` with API-key auth
-requires an LLM key ingress flag. `--allow-self-review` is intentionally
-runtime-only on `cr review`; `init` only stores the profile-level self-approval
-policy.
+Only one stdin secret ingress flag may be used at a time. PAT reviewer
+credentials use key `git_token` under their own credential ref, so
+`--reviewer-credential-ref` must differ from `--git-credential-ref`. GitHub App
+reviewer credentials use `github_app_id` and `github_app_private_key`, plus
+optional `github_app_installation_id`; `init` does not accept reviewer token
+ingress for `--reviewer-auth-mode github_app`. LLM API-key ingress requires
+`--llm-auth api_key`. `--overwrite` with API-key auth requires an LLM key
+ingress flag. `--allow-self-review` is intentionally runtime-only on
+`cr review`; `init` only stores the profile-level self-approval policy.
 
 ### `cr set-credential`
 
@@ -652,18 +670,21 @@ cr set-credential --ref <ref> --key <key> (--stdin | --from-env <env>) [flags]
 ```
 
 Writes one secret value to the credential store. Globally allowed keys are
-`git_token`, `anthropic_api_key`, and `openai_api_key`. When `config.yml`
-declares the target ref, `set-credential` narrows that global allowlist to the
-exact key set expected for that ref. User Git refs and reviewer refs both use
-`git_token`; Anthropic LLM API-key refs use `anthropic_api_key`; OpenAI LLM
-API-key refs use `openai_api_key`.
+`git_token`, `github_app_id`, `github_app_private_key`,
+`github_app_installation_id`, `anthropic_api_key`, and `openai_api_key`. When
+`config.yml` declares the target ref, `set-credential` narrows that global
+allowlist to the exact key set expected for that ref. PAT user Git refs and PAT
+reviewer refs use `git_token`; GitHub App refs use `github_app_id`,
+`github_app_private_key`, and optional `github_app_installation_id`; Anthropic
+LLM API-key refs use `anthropic_api_key`; OpenAI LLM API-key refs use
+`openai_api_key`.
 
 Flags:
 
 | Flag | Semantics |
 |------|-----------|
 | `--ref <ref>` | Required credential ref, such as `codereview/default`. |
-| `--key <key>` | Required key name: `git_token`, `anthropic_api_key`, or `openai_api_key`. |
+| `--key <key>` | Required key name. Git refs accept the keys described in the credential key matrix; LLM API-key refs accept `anthropic_api_key` or `openai_api_key`. |
 | `--stdin` | Read the secret from stdin. |
 | `--from-env <env>` | Read the secret from an environment variable. |
 | `--overwrite` | Replace an existing key. Without it, existing keys are not overwritten. |
@@ -679,7 +700,8 @@ cr config show [--json]
 
 Shows the resolved active profile, selected credential backend and source,
 credential refs, non-secret profile config, review policy, and data retention.
-For each declared credential ref, it reports whether expected keys are present.
+For each declared credential ref, it reports whether expected keys are present
+and labels optional keys as optional.
 For each configured agent source, it reports deployment-material status,
 canonical path, warnings, and SHA-256 fingerprint prefix without inlining agent
 definition contents.

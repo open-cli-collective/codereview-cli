@@ -115,6 +115,42 @@ func TestConfigShowJSON(t *testing.T) {
 	}
 }
 
+func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["work"]
+	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "show", "--profile", "work", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigShow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	var reviewer view.CredentialStatus
+	for _, ref := range got.CredentialRefs {
+		if ref.Purpose == "reviewer_credentials" {
+			reviewer = ref
+			break
+		}
+	}
+	missing := false
+	want := []view.KeyStatus{
+		{Key: credentials.GitHubAppIDKey, Required: true, Present: &missing, Status: "missing"},
+		{Key: credentials.GitHubAppPrivateKeyKey, Required: true, Present: &missing, Status: "missing"},
+		{Key: credentials.GitHubAppInstallationIDKey, Required: false, Present: &missing, Status: "missing"},
+	}
+	if reviewer.Ref != "codereview/work-reviewer" || reviewer.Mode != "github_app" || !reflect.DeepEqual(reviewer.Keys, want) {
+		t.Fatalf("reviewer credential status = %#v, want app keys %#v", reviewer, want)
+	}
+	if strings.Contains(out.String(), "private-key-value") || strings.Contains(out.String(), "installation-token") {
+		t.Fatalf("config show leaked app secret material: %s", out.String())
+	}
+}
+
 func TestConfigShowJSONReportsAgentSourceDeploymentStatus(t *testing.T) {
 	available := t.TempDir()
 	writeConfigTestAgentSource(t, available, "Do not inline this prompt.\n")

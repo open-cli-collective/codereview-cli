@@ -739,6 +739,25 @@ func TestCredentialRefs(t *testing.T) {
 	}
 }
 
+func TestCredentialRefsIncludesGitHubAppModes(t *testing.T) {
+	profile := validFile().normalized().Profiles["work"]
+	profile.Git.AuthMode = GitAuthModeGitHubApp
+	profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
+
+	refs, err := CredentialRefs(profile)
+	if err != nil {
+		t.Fatalf("CredentialRefs: %v", err)
+	}
+	want := []CredentialRef{
+		{Purpose: "git", Ref: "codereview/work", Mode: "github_app"},
+		{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "github_app"},
+		{Purpose: "llm", Ref: "codereview/work-llm", Mode: "api_key", Provider: "anthropic"},
+	}
+	if !reflect.DeepEqual(refs, want) {
+		t.Fatalf("CredentialRefs = %#v, want %#v", refs, want)
+	}
+}
+
 func TestValidateRejectsMissingDefaultProfile(t *testing.T) {
 	cfg := validFile()
 	cfg.DefaultProfile = "missing"
@@ -779,19 +798,9 @@ func TestValidateRejectsReservedGitAuthModes(t *testing.T) {
 			profile.Git.AuthMode = GitAuthModeOAuthDevice
 			cfg.Profiles["home"] = profile
 		}},
-		{name: "git github_app", mutate: func(cfg *File) {
-			profile := cfg.Profiles["home"]
-			profile.Git.AuthMode = GitAuthModeGitHubApp
-			cfg.Profiles["home"] = profile
-		}},
 		{name: "reviewer oauth_device", mutate: func(cfg *File) {
 			profile := cfg.Profiles["work"]
 			profile.ReviewerCredentials.AuthMode = GitAuthModeOAuthDevice
-			cfg.Profiles["work"] = profile
-		}},
-		{name: "reviewer github_app", mutate: func(cfg *File) {
-			profile := cfg.Profiles["work"]
-			profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
 			cfg.Profiles["work"] = profile
 		}},
 	}
@@ -807,6 +816,34 @@ func TestValidateRejectsReservedGitAuthModes(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsGitHubAppAuthModes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*File)
+	}{
+		{name: "git github_app", mutate: func(cfg *File) {
+			profile := cfg.Profiles["home"]
+			profile.Git.AuthMode = GitAuthModeGitHubApp
+			cfg.Profiles["home"] = profile
+		}},
+		{name: "reviewer github_app", mutate: func(cfg *File) {
+			profile := cfg.Profiles["work"]
+			profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
+			cfg.Profiles["work"] = profile
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			tt.mutate(&cfg)
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("Validate error = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestSaveRejectsReservedGitAuthModes(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -817,19 +854,9 @@ func TestSaveRejectsReservedGitAuthModes(t *testing.T) {
 			profile.Git.AuthMode = GitAuthModeOAuthDevice
 			cfg.Profiles["home"] = profile
 		}},
-		{name: "git github_app", mutate: func(cfg *File) {
-			profile := cfg.Profiles["home"]
-			profile.Git.AuthMode = GitAuthModeGitHubApp
-			cfg.Profiles["home"] = profile
-		}},
 		{name: "reviewer oauth_device", mutate: func(cfg *File) {
 			profile := cfg.Profiles["work"]
 			profile.ReviewerCredentials.AuthMode = GitAuthModeOAuthDevice
-			cfg.Profiles["work"] = profile
-		}},
-		{name: "reviewer github_app", mutate: func(cfg *File) {
-			profile := cfg.Profiles["work"]
-			profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
 			cfg.Profiles["work"] = profile
 		}},
 	}
@@ -867,7 +894,7 @@ profiles:
       auth: subscription
       adapter: claude_cli
 `},
-		{name: "reviewer github_app", body: `default_profile: work
+		{name: "reviewer oauth_device", body: `default_profile: work
 keyring: {}
 profiles:
   work:
@@ -876,7 +903,7 @@ profiles:
       auth_mode: pat
       credential_ref: codereview/work
     reviewer_credentials:
-      auth_mode: github_app
+      auth_mode: oauth_device
       credential_ref: codereview/work-reviewer
     llm:
       provider: anthropic
@@ -897,6 +924,34 @@ profiles:
 	}
 }
 
+func TestLoadAcceptsGitHubAppAuthMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeFile(t, path, `default_profile: work
+keyring: {}
+profiles:
+  work:
+    git:
+      host: github.com
+      auth_mode: github_app
+      credential_ref: codereview/work
+    reviewer_credentials:
+      auth_mode: github_app
+      credential_ref: codereview/work-reviewer
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	profile := cfg.Profiles["work"]
+	if profile.Git.AuthMode != GitAuthModeGitHubApp || profile.ReviewerCredentials.AuthMode != GitAuthModeGitHubApp {
+		t.Fatalf("auth modes = git:%s reviewer:%s, want github_app", profile.Git.AuthMode, profile.ReviewerCredentials.AuthMode)
+	}
+}
+
 func TestCredentialRefsRejectReservedGitAuthModes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -907,19 +962,9 @@ func TestCredentialRefsRejectReservedGitAuthModes(t *testing.T) {
 			profile.Git.AuthMode = GitAuthModeOAuthDevice
 			return profile
 		}},
-		{name: "git github_app", profile: func() Profile {
-			profile := validFile().normalized().Profiles["home"]
-			profile.Git.AuthMode = GitAuthModeGitHubApp
-			return profile
-		}},
 		{name: "reviewer oauth_device", profile: func() Profile {
 			profile := validFile().normalized().Profiles["work"]
 			profile.ReviewerCredentials.AuthMode = GitAuthModeOAuthDevice
-			return profile
-		}},
-		{name: "reviewer github_app", profile: func() Profile {
-			profile := validFile().normalized().Profiles["work"]
-			profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
 			return profile
 		}},
 	}
