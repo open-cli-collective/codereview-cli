@@ -153,6 +153,35 @@ func TestReviewExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 	}
 }
 
+func TestReviewExplicitEmptyProfileBypassesRepositoryRoute(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["home"]
+	work.Git.CredentialRef = "codereview/work"
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "github.com",
+			Namespace: "rianjs",
+			Repos:     []string{"bar"},
+		},
+	}}
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile, _ RuntimeOptions) (Runtime, error) {
+		if profile.Git.CredentialRef != "codereview/home" {
+			t.Fatalf("runtime profile credential ref = %q, want default home", profile.Git.CredentialRef)
+		}
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"--profile", "", "review", "https://github.com/rianjs/bar/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 || runner.requests[0].ProfileName != "home" {
+		t.Fatalf("request profile = %#v, want default home", runner.requests)
+	}
+}
+
 func TestReviewUnmatchedRepositoryFallsBackToDefaultProfile(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]

@@ -175,9 +175,10 @@ profiles:
 
 Route matching is deterministic: `host + namespace + repo` routes beat
 `host + namespace` routes, omitted `repos` means all repos in that namespace,
-and no match falls back to `default_profile`. An explicit `--profile` bypasses
-repository routing. Route targets still use the profile's configured auth mode;
-GitHub App auth remains future work in
+and no match falls back to `default_profile`. Host matching is case-insensitive
+after normalization, while namespace and repo matching are case-sensitive after
+trimming whitespace. An explicit `--profile` bypasses repository routing. Route
+targets still use the profile's configured auth mode; GitHub App auth remains future work in
 [issue #76](https://github.com/open-cli-collective/codereview-cli/issues/76).
 
 Add or replace one credential later:
