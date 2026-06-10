@@ -276,6 +276,41 @@ func TestEvaluateActivePostingIdentityApprovalExitsBeforeOverrideReads(t *testin
 	}
 }
 
+func TestEvaluateRetryPostsIgnoresActiveApprovalAndOverride(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+	insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+	if err := fixture.store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, testNow); err != nil {
+		t.Fatalf("CompleteRun failed: %v", err)
+	}
+	setReviews(t, fixture, []gitprovider.Review{{
+		ID:          "review-approved",
+		Author:      fixture.req.PostingIdentity,
+		State:       gitprovider.ReviewStateApproved,
+		SubmittedAt: testNow,
+	}})
+	classifier := &fakeApprovalOverrideClassifier{approve: true}
+	fixture.req.Flags.RetryPosts = true
+	opts := fixture.opts()
+	provider := &countingProvider{GitProvider: fixture.provider}
+	opts.Provider = provider
+	opts.ApprovalOverride = classifier
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate retry-posts: %v", err)
+	}
+	if result.Status != StatusRetryPostsExecuted || result.Decision.Kind != gate.DecisionRetryPosts || result.Decision.RunID != run.RunID {
+		t.Fatalf("Evaluate = %#v, want retry-posts execution for %s", result, run.RunID)
+	}
+	if classifier.calls != 0 {
+		t.Fatalf("classifier calls = %d, want retry-posts to skip approval override checks", classifier.calls)
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 1 || got[0].Event != review.ReviewEventComment {
+		t.Fatalf("recorded reviews = %#v, want retried comment review", got)
+	}
+}
+
 func TestEvaluateLaterChangesRequestedPreventsActiveApprovalExit(t *testing.T) {
 	fixture := newFixture(t)
 	setReviews(t, fixture, []gitprovider.Review{
@@ -334,6 +369,37 @@ func TestEvaluateAuthorOverrideAfterLatestMarkerApproves(t *testing.T) {
 	}
 }
 
+func TestEvaluateAuthorOverridePreemptsLocalResume(t *testing.T) {
+	fixture := newFixture(t)
+	resumable := fixture.allocateRun(t, "run-resume", testBaseSHA, ledger.PostModeLive)
+	rollup := mustRenderAction(t, marker.ActionMarker{
+		RunID:    "prior-run",
+		ActionID: "rollup-1",
+		Kind:     marker.ActionKindRollupComment,
+		SHA:      testHeadSHA,
+		BaseSHA:  testOldBase,
+		Outcome:  marker.RollupOutcomeRequestChanges,
+	})
+	setIssueComments(t, fixture, []gitprovider.IssueComment{
+		{ID: "marker", Author: fixture.req.PostingIdentity, Body: rollup, CreatedAt: testNow.Add(-time.Minute)},
+		{ID: "override", Author: fixture.req.PR.Author, Body: "These are low-value; please approve.", CreatedAt: testNow},
+	})
+	classifier := &fakeApprovalOverrideClassifier{approve: true}
+	opts := fixture.opts()
+	opts.ApprovalOverride = classifier
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Status != StatusApprovalOverride || result.Decision.Kind != approvalOverrideDecisionKind || result.Run.RunID == resumable.RunID {
+		t.Fatalf("Evaluate = %#v, want override approval with fresh override run instead of resuming %s", result, resumable.RunID)
+	}
+	if classifier.calls != 1 {
+		t.Fatalf("classifier calls = %d, want 1", classifier.calls)
+	}
+}
+
 func TestEvaluateAuthorOverrideAllowsPostingIdentityAuthor(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.req.PR.Author = fixture.req.PostingIdentity
@@ -369,6 +435,29 @@ func TestEvaluateAuthorOverrideAllowsPostingIdentityAuthor(t *testing.T) {
 	reviews := fixture.provider.RecordedReviews(fixture.req.PRRef)
 	if len(reviews) != 1 || reviews[0].Event != review.ReviewEventApprove {
 		t.Fatalf("recorded reviews = %#v, want self-author approve review", reviews)
+	}
+}
+
+func TestEvaluateSkipsOverrideClassifierForSkipOnlyMarker(t *testing.T) {
+	fixture := newFixture(t)
+	setIssueComments(t, fixture, []gitprovider.IssueComment{
+		{ID: "skip-marker", Author: fixture.req.PostingIdentity, Body: marker.RenderSkip(), CreatedAt: testNow.Add(-time.Minute)},
+		{ID: "override", Author: fixture.req.PR.Author, Body: "please approve", CreatedAt: testNow},
+	})
+	classifier := &fakeApprovalOverrideClassifier{approve: true}
+	opts := fixture.opts()
+	opts.ApprovalOverride = classifier
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review without action/thread-summary marker", result)
+	}
+	if classifier.calls != 0 {
+		t.Fatalf("classifier calls = %d, want none for skip-only marker", classifier.calls)
 	}
 }
 

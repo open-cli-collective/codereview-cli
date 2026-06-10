@@ -771,19 +771,58 @@ func buildApprovalOverrideClassifier(profile config.Profile, adapter llm.Adapter
 	if adapter == nil {
 		return nil
 	}
-	if resolved, ok := config.ResolveModelTier(profile.LLM, config.ModelTierSmall); ok {
-		return approvaloverride.NewLLMClassifier(adapter, resolved.Model, "low")
+	return &lazyApprovalOverrideClassifier{
+		profile:  profile,
+		adapter:  adapter,
+		warnings: warnings,
 	}
-	if resolved, ok := config.ResolveModelTier(profile.LLM, config.ModelTierMedium); ok {
-		if warnings != nil {
-			_, _ = fmt.Fprintf(warnings, "warning: approval override classifier small model is not configured; falling back to medium tier model %s\n", resolved.Model)
+}
+
+type lazyApprovalOverrideClassifier struct {
+	mu         sync.Mutex
+	profile    config.Profile
+	adapter    llm.Adapter
+	warnings   io.Writer
+	classifier approvaloverride.Classifier
+	disabled   bool
+	loaded     bool
+}
+
+func (c *lazyApprovalOverrideClassifier) ClassifyApprovalOverride(ctx context.Context, req approvaloverride.Request) (approvaloverride.Result, error) {
+	classifier, ok := c.get()
+	if !ok {
+		return approvaloverride.Result{}, nil
+	}
+	return classifier.ClassifyApprovalOverride(ctx, req)
+}
+
+func (c *lazyApprovalOverrideClassifier) get() (approvaloverride.Classifier, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.loaded {
+		return c.classifier, !c.disabled
+	}
+	c.loaded = true
+	if c.adapter == nil {
+		c.disabled = true
+		return nil, false
+	}
+	if resolved, ok := config.ResolveModelTier(c.profile.LLM, config.ModelTierSmall); ok {
+		c.classifier = approvaloverride.NewLLMClassifier(c.adapter, resolved.Model, "low")
+		return c.classifier, true
+	}
+	if resolved, ok := config.ResolveModelTier(c.profile.LLM, config.ModelTierMedium); ok {
+		if c.warnings != nil {
+			_, _ = fmt.Fprintf(c.warnings, "warning: approval override classifier small model is not configured; falling back to medium tier model %s\n", resolved.Model)
 		}
-		return approvaloverride.NewLLMClassifier(adapter, resolved.Model, "low")
+		c.classifier = approvaloverride.NewLLMClassifier(c.adapter, resolved.Model, "low")
+		return c.classifier, true
 	}
-	if warnings != nil {
-		_, _ = fmt.Fprintln(warnings, "warning: approval override classifier disabled because no small or medium model tier is configured")
+	if c.warnings != nil {
+		_, _ = fmt.Fprintln(c.warnings, "warning: approval override classifier disabled because no small or medium model tier is configured")
 	}
-	return nil
+	c.disabled = true
+	return nil, false
 }
 
 type lazyAdapter struct {

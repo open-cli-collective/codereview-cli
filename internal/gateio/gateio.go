@@ -1002,7 +1002,7 @@ func latestCodereviewMarkerAt(host gateHostState, posting gitprovider.Identity) 
 		if !sameIdentity(author, posting) || when.IsZero() {
 			return
 		}
-		if len(marker.FindActions(body)) == 0 && len(marker.FindThreadSummaries(body)) == 0 && !marker.HasSkip(body) {
+		if len(marker.FindActions(body)) == 0 && len(marker.FindThreadSummaries(body)) == 0 {
 			return
 		}
 		if !found || when.After(latest) {

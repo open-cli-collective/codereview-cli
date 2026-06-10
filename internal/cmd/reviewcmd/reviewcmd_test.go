@@ -842,15 +842,18 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 	if planner.opts.Retention != retention || !planner.opts.RetentionManualOnly {
 		t.Fatalf("planner retention = %#v manual %v, want configured manual policy", planner.opts.Retention, planner.opts.RetentionManualOnly)
 	}
+	if warnings.Len() != 0 {
+		t.Fatalf("warnings after buildReviewRunner = %q, want none before override classifier invocation", warnings.String())
+	}
 }
 
 func TestBuildApprovalOverrideClassifierModelResolution(t *testing.T) {
 	tests := []struct {
-		name        string
-		llmConfig   config.LLMConfig
-		wantModel   string
-		wantWarning string
-		wantNil     bool
+		name         string
+		llmConfig    config.LLMConfig
+		wantModel    string
+		wantWarning  string
+		wantDisabled bool
 	}{
 		{
 			name: "small tier preferred",
@@ -878,8 +881,8 @@ func TestBuildApprovalOverrideClassifierModelResolution(t *testing.T) {
 				Auth:     config.LLMAuthSubscription,
 				Adapter:  config.LLMAdapterPiRPC,
 			},
-			wantNil:     true,
-			wantWarning: "disabled",
+			wantDisabled: true,
+			wantWarning:  "disabled",
 		},
 	}
 
@@ -890,24 +893,29 @@ func TestBuildApprovalOverrideClassifierModelResolution(t *testing.T) {
 			var warnings bytes.Buffer
 
 			classifier := buildApprovalOverrideClassifier(config.Profile{LLM: tt.llmConfig}, adapter, &warnings)
-			if tt.wantNil {
-				if classifier != nil {
-					t.Fatalf("classifier = %#v, want nil", classifier)
+			if classifier == nil {
+				t.Fatal("classifier = nil, want lazy classifier")
+			}
+			if warnings.Len() != 0 {
+				t.Fatalf("warnings after build = %q, want deferred warnings", warnings.String())
+			}
+			result, err := classifier.ClassifyApprovalOverride(context.Background(), approvalOverrideClassifierTestRequest())
+			if err != nil {
+				t.Fatalf("ClassifyApprovalOverride: %v", err)
+			}
+			requests := adapter.Requests()
+			if tt.wantDisabled {
+				if result.Approve || len(requests) != 0 {
+					t.Fatalf("disabled classifier result = %#v requests=%#v, want no approval or LLM request", result, requests)
 				}
-			} else {
-				if classifier == nil {
-					t.Fatal("classifier = nil, want configured classifier")
-				}
-				if _, err := classifier.ClassifyApprovalOverride(context.Background(), approvalOverrideClassifierTestRequest()); err != nil {
-					t.Fatalf("ClassifyApprovalOverride: %v", err)
-				}
-				requests := adapter.Requests()
-				if len(requests) != 1 || requests[0].Model != tt.wantModel || requests[0].Effort != "low" {
-					t.Fatalf("requests = %#v, want model %q effort low", requests, tt.wantModel)
-				}
+			} else if len(requests) != 1 || requests[0].Model != tt.wantModel || requests[0].Effort != "low" {
+				t.Fatalf("requests = %#v, want model %q effort low", requests, tt.wantModel)
 			}
 			if tt.wantWarning != "" && !strings.Contains(warnings.String(), tt.wantWarning) {
 				t.Fatalf("warnings = %q, want substring %q", warnings.String(), tt.wantWarning)
+			}
+			if tt.wantWarning == "" && warnings.Len() != 0 {
+				t.Fatalf("warnings = %q, want none", warnings.String())
 			}
 		})
 	}
