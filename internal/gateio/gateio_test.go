@@ -369,19 +369,39 @@ func TestEvaluateLaterChangesRequestedPreventsActiveApprovalExit(t *testing.T) {
 }
 
 func TestEvaluateSameTimestampChangesRequestedPreventsActiveApprovalExit(t *testing.T) {
-	fixture := newFixture(t)
-	setReviews(t, fixture, []gitprovider.Review{
-		{ID: "review-changes", Author: fixture.req.PostingIdentity, State: gitprovider.ReviewStateChangesRequested, SubmittedAt: testNow},
-		{ID: "review-approved", Author: fixture.req.PostingIdentity, State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
-	})
-
-	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+	tests := []struct {
+		name    string
+		reviews []gitprovider.Review
+	}{
+		{
+			name: "changes first",
+			reviews: []gitprovider.Review{
+				{ID: "review-changes", Author: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}, State: gitprovider.ReviewStateChangesRequested, SubmittedAt: testNow},
+				{ID: "review-approved", Author: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}, State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
+			},
+		},
+		{
+			name: "approval first",
+			reviews: []gitprovider.Review{
+				{ID: "review-approved", Author: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}, State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
+				{ID: "review-changes", Author: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}, State: gitprovider.ReviewStateChangesRequested, SubmittedAt: testNow},
+			},
+		},
 	}
-	defer releaseResultLock(t, result)
-	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
-		t.Fatalf("Evaluate = %#v, want fresh review when tied active verdict requests changes first", result)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			setReviews(t, fixture, tt.reviews)
+
+			result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			defer releaseResultLock(t, result)
+			if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+				t.Fatalf("Evaluate = %#v, want fresh review when tied active verdict requests changes", result)
+			}
+		})
 	}
 }
 
@@ -501,6 +521,45 @@ func TestEvaluateAuthorOverrideClassifierFalseContinuesReview(t *testing.T) {
 	}
 }
 
+func TestEvaluateAuthorOverrideClassifierErrorWarnsAndContinuesReview(t *testing.T) {
+	fixture := newFixture(t)
+	rollup := mustRenderAction(t, marker.ActionMarker{
+		RunID:    "prior-run",
+		ActionID: "rollup-1",
+		Kind:     marker.ActionKindRollupComment,
+		SHA:      testHeadSHA,
+		BaseSHA:  testOldBase,
+		Outcome:  marker.RollupOutcomeRequestChanges,
+	})
+	setIssueComments(t, fixture, []gitprovider.IssueComment{
+		{ID: "marker", Author: fixture.req.PostingIdentity, Body: rollup, CreatedAt: testNow.Add(-time.Minute)},
+		{ID: "override", Author: fixture.req.PR.Author, Body: "please approve", CreatedAt: testNow},
+	})
+	var warnings bytes.Buffer
+	classifier := &fakeApprovalOverrideClassifier{err: errors.New("classifier down")}
+	opts := fixture.opts()
+	opts.ApprovalOverride = classifier
+	opts.Warnings = &warnings
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want full review after classifier error", result)
+	}
+	if classifier.calls != 1 || len(classifier.last.Candidates) != 1 || classifier.last.Candidates[0].ID != "override" {
+		t.Fatalf("classifier = calls:%d last:%#v, want one candidate", classifier.calls, classifier.last)
+	}
+	if got := warnings.String(); !strings.Contains(got, "approval override classifier failed; continuing with full review: classifier down") {
+		t.Fatalf("warnings = %q, want classifier failure warning", got)
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("recorded reviews = %#v, want no approval post", got)
+	}
+}
+
 func TestEvaluateAuthorOverrideDoesNotRequireMarkerForCurrentHead(t *testing.T) {
 	fixture := newFixture(t)
 	rollup := mustRenderAction(t, marker.ActionMarker{
@@ -571,6 +630,32 @@ func TestEvaluateAuthorOverrideCandidateSources(t *testing.T) {
 			wantID:     "thread-override",
 			wantSource: "thread_comment",
 		},
+		{
+			name: "thread comment without comment IDs",
+			seed: func(t *testing.T, f *fixture) {
+				if err := f.provider.SetInlineThreads(f.req.PRRef, []gitprovider.InlineThread{{
+					ID: "thread-1",
+					Comments: []gitprovider.ThreadComment{
+						{
+							ThreadID:  "thread-1",
+							Author:    f.req.PR.Author,
+							Body:      "These are low-value, please approve.",
+							CreatedAt: testNow,
+						},
+						{
+							ThreadID:  "thread-1",
+							Author:    f.req.PR.Author,
+							Body:      "Also please approve this.",
+							CreatedAt: testNow,
+						},
+					},
+				}}); err != nil {
+					t.Fatalf("SetInlineThreads: %v", err)
+				}
+			},
+			wantID:     "thread-1:0",
+			wantSource: "thread_comment",
+		},
 	}
 
 	for _, tt := range tests {
@@ -597,12 +682,19 @@ func TestEvaluateAuthorOverrideCandidateSources(t *testing.T) {
 			if result.Status != StatusApprovalOverride {
 				t.Fatalf("Evaluate = %#v, want approval override", result)
 			}
-			if classifier.calls != 1 || len(classifier.last.Candidates) != 1 {
-				t.Fatalf("classifier = calls:%d last:%#v, want one candidate", classifier.calls, classifier.last)
+			wantCandidates := 1
+			if tt.name == "thread comment without comment IDs" {
+				wantCandidates = 2
+			}
+			if classifier.calls != 1 || len(classifier.last.Candidates) != wantCandidates {
+				t.Fatalf("classifier = calls:%d last:%#v, want %d candidate(s)", classifier.calls, classifier.last, wantCandidates)
 			}
 			candidate := classifier.last.Candidates[0]
 			if candidate.ID != tt.wantID || candidate.Source != tt.wantSource {
 				t.Fatalf("candidate = %#v, want id %q source %q", candidate, tt.wantID, tt.wantSource)
+			}
+			if tt.name == "thread comment without comment IDs" && classifier.last.Candidates[1].ID != "thread-1:1" {
+				t.Fatalf("second candidate ID = %q, want thread-1:1", classifier.last.Candidates[1].ID)
 			}
 		})
 	}

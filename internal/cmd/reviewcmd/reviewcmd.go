@@ -800,6 +800,8 @@ func (c *lazyApprovalOverrideClassifier) get() (approvaloverride.Classifier, boo
 		return c.classifier, !c.disabled
 	}
 	c.loaded = true
+	// Production passes a lazy adapter; keep direct callers/tests from
+	// constructing an unusable classifier when no adapter is available.
 	if c.adapter == nil {
 		c.disabled = true
 		return nil, false

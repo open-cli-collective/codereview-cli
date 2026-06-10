@@ -1056,7 +1056,10 @@ func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitpr
 		default:
 			continue
 		}
-		if !found || review.SubmittedAt.After(selected.SubmittedAt) {
+		if !found || review.SubmittedAt.After(selected.SubmittedAt) ||
+			(review.SubmittedAt.Equal(selected.SubmittedAt) &&
+				selected.State == gitprovider.ReviewStateApproved &&
+				review.State == gitprovider.ReviewStateChangesRequested) {
 			selected = review
 			found = true
 		}
@@ -1147,10 +1150,13 @@ func approvalOverrideCandidates(host gateHostState, req Request, latestMarkerAt 
 		add(string(review.ID), "review", review.Author, review.Body, review.URL, review.SubmittedAt, time.Time{})
 	}
 	for _, thread := range host.threads {
-		for _, comment := range thread.Comments {
+		for i, comment := range thread.Comments {
 			id := string(comment.ID)
 			if id == "" {
 				id = string(comment.ThreadID)
+				if id != "" {
+					id = fmt.Sprintf("%s:%d", id, i)
+				}
 			}
 			add(id, "thread_comment", comment.Author, comment.Body, comment.URL, comment.CreatedAt, comment.UpdatedAt)
 		}
