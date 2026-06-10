@@ -9,20 +9,19 @@ type DecisionKind string
 
 // Decision kind values.
 const (
-	DecisionResume           DecisionKind = "resume"
-	DecisionEarlyExit        DecisionKind = "early_exit"
-	DecisionRepair           DecisionKind = "repair"
-	DecisionRetryPosts       DecisionKind = "retry_posts"
-	DecisionApprovalOverride DecisionKind = "approval_override"
-	DecisionAbortStale       DecisionKind = "abort_stale"
-	DecisionFresh            DecisionKind = "fresh"
-	DecisionError            DecisionKind = "error"
+	DecisionResume     DecisionKind = "resume"
+	DecisionEarlyExit  DecisionKind = "early_exit"
+	DecisionRepair     DecisionKind = "repair"
+	DecisionRetryPosts DecisionKind = "retry_posts"
+	DecisionAbortStale DecisionKind = "abort_stale"
+	DecisionFresh      DecisionKind = "fresh"
+	DecisionError      DecisionKind = "error"
 )
 
 // Valid reports whether k is a known decision kind.
 func (k DecisionKind) Valid() bool {
 	switch k {
-	case DecisionResume, DecisionEarlyExit, DecisionRepair, DecisionRetryPosts, DecisionApprovalOverride, DecisionAbortStale, DecisionFresh, DecisionError:
+	case DecisionResume, DecisionEarlyExit, DecisionRepair, DecisionRetryPosts, DecisionAbortStale, DecisionFresh, DecisionError:
 		return true
 	default:
 		return false

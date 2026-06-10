@@ -95,6 +95,28 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	}
 }
 
+func TestReviewHelpDocumentsApprovalFastPaths(t *testing.T) {
+	cmd, out := newTestCommand(t, testConfig(), func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
+		t.Fatal("runtime factory should not be called for help")
+		return Runtime{}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", "--help"}); err != nil {
+		t.Fatalf("Execute help: %v", err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"already approved the PR",
+		"--rerun to bypass this",
+		"approval override request newer than that marker",
+		"--retry-posts is recovery-only",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("help = %q, want substring %q", text, want)
+		}
+	}
+}
+
 func TestRuntimeLayoutMigratesLegacyDataAndCache(t *testing.T) {
 	statedirtest.Hermetic(t)
 	layout, err := statepaths.DefaultLayoutEnsured()
@@ -244,6 +266,70 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	}
 	if runner.pipeline.Adapter == nil || runner.pipeline.Adapter.Name() != "codex_cli" {
 		t.Fatalf("pipeline adapter = %#v, want codex_cli", runner.pipeline.Adapter)
+	}
+}
+
+func TestNewRuntimeLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
+	statedirtest.Hermetic(t)
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	if err := provider.SetReviews(ref, []gitprovider.Review{{
+		ID:          "review-approved",
+		Author:      identity,
+		State:       gitprovider.ReviewStateApproved,
+		SubmittedAt: time.Now().UTC(),
+	}}); err != nil {
+		t.Fatalf("SetReviews: %v", err)
+	}
+	adapterCalls := 0
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			adapterCalls++
+			return nil, errors.New("adapter should not initialize for approved fast path")
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	opts := &root.Options{Stderr: io.Discard}
+	runtime, err := newRuntime(cmd, opts, cfg, profile, RuntimeOptions{})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		defer runtime.Cleanup()
+	}
+	if adapterCalls != 0 {
+		t.Fatalf("adapter calls after newRuntime = %d, want 0", adapterCalls)
+	}
+
+	result, err := runtime.Runner.Live(context.Background(), pipeline.Request{
+		PRRef:           ref,
+		PRURL:           pr.URL,
+		ProfileName:     "home",
+		Profile:         profile,
+		PostingIdentity: identity,
+	}, reviewrun.Flags{})
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if result.Status != gateio.StatusEarlyExit || result.Message != "review already approved" {
+		t.Fatalf("Live result = %#v, want approved early exit", result)
+	}
+	if adapterCalls != 0 {
+		t.Fatalf("adapter calls after approved fast path = %d, want 0", adapterCalls)
 	}
 }
 

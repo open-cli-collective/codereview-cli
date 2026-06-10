@@ -37,6 +37,8 @@ const (
 	StatusBaseMovedAbort     Status = "base_moved_abort"
 )
 
+const approvalOverrideDecisionKind gate.DecisionKind = "approval_override"
+
 // Store is the ledger behavior required by gate IO.
 type Store interface {
 	ListRunsForHeadScope(context.Context, ledger.ListRunsForHeadScopeParams) ([]ledger.Run, error)
@@ -164,6 +166,28 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{Status: StatusDryRunFresh, Decision: decision}, nil
 	}
 
+	var (
+		precheckedReviews       []gitprovider.Review
+		precheckedReviewsLoaded bool
+	)
+	if normalLiveFastPathEnabled(req.Flags) {
+		reviews, err := opts.Provider.ListReviews(ctx, req.PRRef)
+		if err != nil {
+			return Result{}, err
+		}
+		if activeApprovalByPostingIdentity(reviews, req.PostingIdentity) {
+			return Result{
+				Status: StatusEarlyExit,
+				Decision: gate.Decision{
+					Kind:    gate.DecisionEarlyExit,
+					Message: "review already approved",
+				},
+			}, nil
+		}
+		precheckedReviews = reviews
+		precheckedReviewsLoaded = true
+	}
+
 	lockPath, err := currentLockPath(opts.Layout, req)
 	if err != nil {
 		return Result{}, err
@@ -183,28 +207,27 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
-		state, err := buildLocalState(ctx, opts, req)
-		if err != nil {
-			return Result{}, err
-		}
-		if attempts > len(state.staleRuns)+2 {
-			return Result{}, fmt.Errorf("gateio: stale-base cleanup exceeded retry limit")
-		}
-
 		var host *gateHostState
 		if normalLiveFastPathEnabled(req.Flags) {
-			reviews, err := opts.Provider.ListReviews(ctx, req.PRRef)
-			if err != nil {
-				return Result{}, err
-			}
-			if activeApprovalByPostingIdentity(reviews, req.PostingIdentity) {
-				return Result{
-					Status: StatusEarlyExit,
-					Decision: gate.Decision{
-						Kind:    gate.DecisionEarlyExit,
-						Message: "review already approved",
-					},
-				}, nil
+			reviews := precheckedReviews
+			precheckedReviews = nil
+			reviewsLoaded := precheckedReviewsLoaded
+			precheckedReviewsLoaded = false
+			if !reviewsLoaded {
+				var err error
+				reviews, err = opts.Provider.ListReviews(ctx, req.PRRef)
+				if err != nil {
+					return Result{}, err
+				}
+				if activeApprovalByPostingIdentity(reviews, req.PostingIdentity) {
+					return Result{
+						Status: StatusEarlyExit,
+						Decision: gate.Decision{
+							Kind:    gate.DecisionEarlyExit,
+							Message: "review already approved",
+						},
+					}, nil
+				}
 			}
 			loaded, err := readGateHostStateWithReviews(ctx, opts.Provider, req.PRRef, reviews)
 			if err != nil {
@@ -216,6 +239,14 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 			} else if ok {
 				return result, nil
 			}
+		}
+
+		state, err := buildLocalState(ctx, opts, req)
+		if err != nil {
+			return Result{}, err
+		}
+		if attempts > len(state.staleRuns)+2 {
+			return Result{}, fmt.Errorf("gateio: stale-base cleanup exceeded retry limit")
 		}
 
 		decision := gate.Decide(state.kernel)
@@ -388,7 +419,7 @@ func localDecisionApplies(flags gate.Flags, decision gate.Decision) bool {
 		return true
 	case gate.DecisionFresh:
 		return flags.Rerun
-	case gate.DecisionEarlyExit, gate.DecisionRepair, gate.DecisionApprovalOverride, gate.DecisionAbortStale:
+	case gate.DecisionEarlyExit, gate.DecisionRepair, gate.DecisionAbortStale:
 		return false
 	default:
 		return false
@@ -524,9 +555,6 @@ func executeDecision(ctx context.Context, opts Options, req Request, state gateS
 		result.Status = StatusError
 		emitWarnings(opts.Warnings, result.Warnings)
 		return result, false, nil
-	case gate.DecisionApprovalOverride:
-		state.releaseStaleLocks()
-		return Result{}, false, fmt.Errorf("gateio: approval override decision is IO-only")
 	default:
 		state.releaseStaleLocks()
 		return Result{}, false, fmt.Errorf("gateio: unsupported gate decision %q", decision.Kind)
@@ -1050,7 +1078,7 @@ func maybeExecuteApprovalOverride(ctx context.Context, opts Options, req Request
 	result := Result{
 		Status: StatusApprovalOverride,
 		Decision: gate.Decision{
-			Kind:    gate.DecisionApprovalOverride,
+			Kind:    approvalOverrideDecisionKind,
 			Outcome: gate.PROutcomeApproved,
 			Message: "PR author requested approval override",
 		},

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
@@ -44,6 +45,22 @@ const (
 	livePostLimiterInterval = 500 * time.Millisecond
 	livePostLimiterBurst    = 2
 )
+
+const reviewLong = `Run an automated pull-request review.
+
+Live review checks local and host state before starting the reviewer loop. By
+default, if the posting identity has already approved the PR, cr exits before
+any LLM classifier or reviewer work, even if newer commits made that approval
+stale. Use --rerun to bypass this and force a fresh live review.
+
+If no existing approval is present and a prior codereview marker exists from
+the posting identity, cr can fast-path approval when the PR author posts an
+approval override request newer than that marker. Candidate comments are
+filtered in Go; the small-tier classifier only decides whether the filtered
+comments ask for override approval.
+
+--retry-posts is recovery-only: it retries missing or failed required posts for
+an existing run and does not check existing approvals or approval overrides.`
 
 // Runner executes the configured review pipeline.
 type Runner interface {
@@ -113,6 +130,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd := &cobra.Command{
 		Use:   "review <PR>",
 		Short: "Run an automated pull-request review",
+		Long:  reviewLong,
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return exitcode.Usage(fmt.Errorf("review requires one PR URL"))
@@ -125,7 +143,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	}
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Plan review actions without posting")
 	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Alias for --dry-run")
-	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass approval/override fast paths and run a fresh live review")
+	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass approval/override, resume, and marker gates and run a fresh live review")
 	cmd.Flags().BoolVar(&flags.retryPosts, "retry-posts", false, "Retry missing or failed required posts without rerunning review or checking approval overrides")
 	cmd.Flags().StringArrayVar(&flags.agentsDirs, "agents-dir", nil, "Additional trusted agents directory")
 	cmd.Flags().StringVar(&flags.failOn, "fail-on", "", "Exit 1 when a finding at or above severity exists")
@@ -671,11 +689,6 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	adapter, err := newAdapterForRuntime(profile.LLM, store)
-	if err != nil {
-		cleanup()
-		return Runtime{}, mapRunError(err)
-	}
 	layout, err := runtimeLayout()
 	if err != nil {
 		cleanup()
@@ -695,6 +708,13 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, err
 	}
+	adapter := newLazyAdapter(func() (llm.Adapter, error) {
+		adapter, err := newAdapterForRuntime(profile.LLM, store)
+		if err != nil {
+			return nil, err
+		}
+		return adapter, nil
+	})
 	runner := buildReviewRunner(ledgerStore, provider, adapter, profile, limiter, layout, opts.Stderr, runtimeOpts)
 	return Runtime{
 		Runner:          runner,
@@ -764,6 +784,92 @@ func buildApprovalOverrideClassifier(profile config.Profile, adapter llm.Adapter
 		_, _ = fmt.Fprintln(warnings, "warning: approval override classifier disabled because no small or medium model tier is configured")
 	}
 	return nil
+}
+
+type lazyAdapter struct {
+	mu      sync.Mutex
+	factory func() (llm.Adapter, error)
+	adapter llm.Adapter
+	err     error
+	loaded  bool
+}
+
+func newLazyAdapter(factory func() (llm.Adapter, error)) *lazyAdapter {
+	return &lazyAdapter{factory: factory}
+}
+
+func (a *lazyAdapter) get() (llm.Adapter, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.loaded {
+		return a.adapter, a.err
+	}
+	a.loaded = true
+	if a.factory == nil {
+		a.err = fmt.Errorf("review: LLM adapter factory is required")
+		return nil, a.err
+	}
+	a.adapter, a.err = a.factory()
+	if a.err != nil {
+		a.err = fmt.Errorf("review: initialize LLM adapter: %w", a.err)
+	}
+	return a.adapter, a.err
+}
+
+func (a *lazyAdapter) Name() string {
+	adapter, err := a.get()
+	if err != nil {
+		return "unavailable"
+	}
+	return adapter.Name()
+}
+
+func (a *lazyAdapter) SupportsResume() bool {
+	adapter, err := a.get()
+	if err != nil {
+		return false
+	}
+	return adapter.SupportsResume()
+}
+
+func (a *lazyAdapter) SupportsCacheAccounting() bool {
+	adapter, err := a.get()
+	if err != nil {
+		return false
+	}
+	return adapter.SupportsCacheAccounting()
+}
+
+func (a *lazyAdapter) SupportsCostReporting() bool {
+	adapter, err := a.get()
+	if err != nil {
+		return false
+	}
+	return adapter.SupportsCostReporting()
+}
+
+func (a *lazyAdapter) Quota(ctx context.Context) (llm.Quota, bool, error) {
+	adapter, err := a.get()
+	if err != nil {
+		return llm.Quota{}, false, err
+	}
+	return adapter.Quota(ctx)
+}
+
+func (a *lazyAdapter) Start(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	adapter, err := a.get()
+	if err != nil {
+		return nil, err
+	}
+	return adapter.Start(ctx, req)
+}
+
+func (a *lazyAdapter) Resume(ctx context.Context, sessionID string, req llm.Request) (llm.Stream, error) {
+	adapter, err := a.get()
+	if err != nil {
+		return nil, err
+	}
+	return adapter.Resume(ctx, sessionID, req)
 }
 
 func retentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.RetentionPolicy {

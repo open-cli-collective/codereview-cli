@@ -248,6 +248,9 @@ func TestEvaluateActivePostingIdentityApprovalExitsBeforeOverrideReads(t *testin
 	provider := &countingProvider{GitProvider: fixture.provider}
 	opts.Provider = provider
 	opts.ApprovalOverride = &fakeApprovalOverrideClassifier{approve: true}
+	opts.Acquire = func(string) (Lock, error) {
+		return nil, errors.New("lock should not be acquired for active approval")
+	}
 	setReviews(t, fixture, []gitprovider.Review{{
 		ID:          "review-approved",
 		Author:      fixture.req.PostingIdentity,
@@ -269,7 +272,7 @@ func TestEvaluateActivePostingIdentityApprovalExitsBeforeOverrideReads(t *testin
 		t.Fatalf("Evaluate = %#v, want approved early exit", result)
 	}
 	if provider.reviews != 1 || provider.issueComments != 0 || provider.threads != 0 {
-		t.Fatalf("reads = reviews:%d issueComments:%d threads:%d, want reviews only", provider.reviews, provider.issueComments, provider.threads)
+		t.Fatalf("reads = reviews:%d issueComments:%d threads:%d, want reviews only before lock/local state", provider.reviews, provider.issueComments, provider.threads)
 	}
 }
 
@@ -312,7 +315,7 @@ func TestEvaluateAuthorOverrideAfterLatestMarkerApproves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if result.Status != StatusApprovalOverride || result.Decision.Kind != gate.DecisionApprovalOverride {
+	if result.Status != StatusApprovalOverride || result.Decision.Kind != approvalOverrideDecisionKind {
 		t.Fatalf("Evaluate = %#v, want approval override execution", result)
 	}
 	if classifier.calls != 1 || len(classifier.last.Candidates) != 1 || classifier.last.Candidates[0].ID != "override" {
@@ -328,6 +331,44 @@ func TestEvaluateAuthorOverrideAfterLatestMarkerApproves(t *testing.T) {
 	action := actionByID(t, fixture.store, result.Run.RunID, approvalOverrideSubmitReviewActionID)
 	if action.Status != ledger.PlannedActionPosted || !action.Required {
 		t.Fatalf("override action = %#v, want posted required submit_review", action)
+	}
+}
+
+func TestEvaluateAuthorOverrideAllowsPostingIdentityAuthor(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.req.PR.Author = fixture.req.PostingIdentity
+	if err := fixture.provider.SetPR(fixture.req.PRRef, fixture.req.PR); err != nil {
+		t.Fatalf("SetPR self-author: %v", err)
+	}
+	rollup := mustRenderAction(t, marker.ActionMarker{
+		RunID:    "prior-run",
+		ActionID: "rollup-1",
+		Kind:     marker.ActionKindRollupComment,
+		SHA:      testHeadSHA,
+		BaseSHA:  testOldBase,
+		Outcome:  marker.RollupOutcomeRequestChanges,
+	})
+	setIssueComments(t, fixture, []gitprovider.IssueComment{
+		{ID: "marker", Author: fixture.req.PostingIdentity, Body: rollup, CreatedAt: testNow.Add(-time.Minute)},
+		{ID: "override", Author: fixture.req.PostingIdentity, Body: "please approve", CreatedAt: testNow},
+	})
+	classifier := &fakeApprovalOverrideClassifier{approve: true}
+	opts := fixture.opts()
+	opts.ApprovalOverride = classifier
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Status != StatusApprovalOverride || result.Decision.Kind != approvalOverrideDecisionKind {
+		t.Fatalf("Evaluate = %#v, want author override approval", result)
+	}
+	if classifier.calls != 1 {
+		t.Fatalf("classifier calls = %d, want 1", classifier.calls)
+	}
+	reviews := fixture.provider.RecordedReviews(fixture.req.PRRef)
+	if len(reviews) != 1 || reviews[0].Event != review.ReviewEventApprove {
+		t.Fatalf("recorded reviews = %#v, want self-author approve review", reviews)
 	}
 }
 

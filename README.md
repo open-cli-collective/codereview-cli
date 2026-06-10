@@ -792,8 +792,9 @@ exists. Candidate comments are filtered in Go to PR-author issue comments,
 review bodies, and inline-thread comments newer than that marker; a small-tier
 LLM classifier only decides whether those comments ask for approval override. A
 positive classification skips the reviewer loop and posts an approving review
-through the normal ledger/outbox path. If commits were pushed after the marker,
-request approval after pushing so the intent is unambiguous.
+through the normal ledger/outbox path. Only ordering relative to the latest
+codereview marker is enforced; the tool intentionally does not require the
+request to be newer than a later head update.
 
 If matching complete markers already exist for the current
 head/base/profile/posting identity, `cr review` exits early. If a prior
