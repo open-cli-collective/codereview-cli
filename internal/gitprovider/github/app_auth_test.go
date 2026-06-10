@@ -2,8 +2,10 @@ package github
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -23,12 +25,13 @@ import (
 
 func TestNewFromGitConfigBuildsGitHubAppClientAndRefreshesToken(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	privateKey, privateKeyPEM := testPrivateKey(t)
 	tokenRequests := 0
 	var apiAuths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.EscapedPath() {
 		case "/app/installations/42":
-			assertJWTAuth(t, r, "12345")
+			assertJWTAuth(t, r, "12345", &privateKey.PublicKey)
 			writeJSON(t, w, map[string]any{
 				"id":       42,
 				"app_id":   12345,
@@ -38,7 +41,7 @@ func TestNewFromGitConfigBuildsGitHubAppClientAndRefreshesToken(t *testing.T) {
 			if r.Method != http.MethodPost {
 				t.Fatalf("method = %s, want POST", r.Method)
 			}
-			assertJWTAuth(t, r, "12345")
+			assertJWTAuth(t, r, "12345", &privateKey.PublicKey)
 			tokenRequests++
 			writeJSON(t, w, map[string]any{
 				"token":      fmt.Sprintf("installation-token-%d", tokenRequests),
@@ -59,7 +62,7 @@ func TestNewFromGitConfigBuildsGitHubAppClientAndRefreshesToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, credential, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t), "42"), Options{
+	client, credential, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", privateKeyPEM, "42"), Options{
 		BaseURL:    server.URL,
 		GraphQLURL: server.URL + "/graphql",
 		Now:        func() time.Time { return now },
@@ -250,17 +253,23 @@ func githubAppStore(_ *testing.T, profile, appID, privateKey, installationID str
 	return tokenStore{profile: values}
 }
 
-func testPrivateKeyPEM(t *testing.T) string {
+func testPrivateKey(t *testing.T) (*rsa.PrivateKey, string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
-	return string(pem.EncodeToMemory(block))
+	return key, string(pem.EncodeToMemory(block))
 }
 
-func assertJWTAuth(t *testing.T, r *http.Request, wantIssuer string) {
+func testPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+	_, pem := testPrivateKey(t)
+	return pem
+}
+
+func assertJWTAuth(t *testing.T, r *http.Request, wantIssuer string, publicKeys ...*rsa.PublicKey) {
 	t.Helper()
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
@@ -299,5 +308,16 @@ func assertJWTAuth(t *testing.T, r *http.Request, wantIssuer string) {
 	}
 	if payload.Iat == 0 || payload.Exp == 0 || payload.Exp-payload.Iat > 10*60 {
 		t.Fatalf("JWT times = iat:%d exp:%d, want <=10m window", payload.Iat, payload.Exp)
+	}
+	if len(publicKeys) == 0 || publicKeys[0] == nil {
+		return
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("decode JWT signature: %v", err)
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if err := rsa.VerifyPKCS1v15(publicKeys[0], crypto.SHA256, digest[:], signature); err != nil {
+		t.Fatalf("verify JWT signature: %v", err)
 	}
 }

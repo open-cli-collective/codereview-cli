@@ -612,6 +612,53 @@ func TestConfigClearDryRunReportsActiveProfileAndPreservesState(t *testing.T) {
 	}
 }
 
+func TestConfigClearGitHubAppCredentialMatrix(t *testing.T) {
+	cfg := fileBackendConfig(t)
+	home := cfg.Profiles["home"]
+	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.Git.CredentialRef = "codereview/home-app"
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+	appKeys := []string{
+		credentials.GitHubAppIDKey,
+		credentials.GitHubAppInstallationIDKey,
+		credentials.GitHubAppPrivateKeyKey,
+	}
+	seedFileBackend(t, "home-app", map[string]string{
+		credentials.GitHubAppIDKey:             "12345",
+		credentials.GitHubAppPrivateKeyKey:     "private-key",
+		credentials.GitHubAppInstallationIDKey: "42",
+	})
+
+	dryRunCmd, dryRunOut := newTestCommand(path)
+	if err := root.Execute(dryRunCmd, []string{"config", "clear", "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute dry-run: %v", err)
+	}
+	var dryRun view.ConfigClear
+	if err := json.Unmarshal(dryRunOut.Bytes(), &dryRun); err != nil {
+		t.Fatalf("Unmarshal dry-run JSON: %v\n%s", err, dryRunOut.String())
+	}
+	if len(dryRun.Cleared) != 1 || dryRun.Cleared[0].Ref != "codereview/home-app" || !reflect.DeepEqual(dryRun.Cleared[0].Keys, appKeys) {
+		t.Fatalf("dry-run cleared = %#v, want github app keys", dryRun.Cleared)
+	}
+	assertFileBackendKeys(t, "home-app", appKeys)
+
+	clearCmd, clearOut := newTestCommand(path)
+	if err := root.Execute(clearCmd, []string{"config", "clear", "--json"}); err != nil {
+		t.Fatalf("Execute clear: %v", err)
+	}
+	var cleared view.ConfigClear
+	if err := json.Unmarshal(clearOut.Bytes(), &cleared); err != nil {
+		t.Fatalf("Unmarshal clear JSON: %v\n%s", err, clearOut.String())
+	}
+	if len(cleared.Cleared) != 1 || cleared.Cleared[0].Ref != "codereview/home-app" || !reflect.DeepEqual(cleared.Cleared[0].Keys, appKeys) {
+		t.Fatalf("cleared = %#v, want github app keys", cleared.Cleared)
+	}
+	for _, key := range appKeys {
+		assertFileBackendMissing(t, "home-app", key)
+	}
+}
+
 func TestConfigClearDryRunTextReportsDryRun(t *testing.T) {
 	path := saveTestConfig(t, fileBackendConfig(t))
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
