@@ -205,6 +205,13 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			},
 		},
 		{
+			name:    "review github app git live",
+			prepare: seedGitHubAppGitLookupCredentials,
+			args: func(h *auditHarness) []string {
+				return []string{"review", h.prURL}
+			},
+		},
+		{
 			name:    "review usage failure",
 			prepare: seedConfiguredCredentials,
 			args:    staticArgs("review", "not-a-url"),
@@ -493,6 +500,16 @@ func (h *auditHarness) seedGitHubAppGitCredentials(t *testing.T) {
 		{ref: "codereview/default-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
 		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
 		{ref: "codereview/default-app", key: credentials.GitHubAppInstallationIDKey, secret: h.githubAppInstallationIDSecret},
+		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
+	})
+}
+
+func (h *auditHarness) seedGitHubAppGitLookupCredentials(t *testing.T) {
+	t.Helper()
+	cfg := h.githubAppGitConfig()
+	h.seedCredentialWrites(t, cfg, []credentialSeed{
+		{ref: "codereview/default-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
+		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
 }
@@ -1058,6 +1075,11 @@ func seedGitHubAppConfigShowCredentials(t *testing.T, h *auditHarness) {
 func seedGitHubAppGitCredentials(t *testing.T, h *auditHarness) {
 	t.Helper()
 	h.seedGitHubAppGitCredentials(t)
+}
+
+func seedGitHubAppGitLookupCredentials(t *testing.T, h *auditHarness) {
+	t.Helper()
+	h.seedGitHubAppGitLookupCredentials(t)
 }
 
 func seedGitHubAppReviewerCredentials(t *testing.T, h *auditHarness) {

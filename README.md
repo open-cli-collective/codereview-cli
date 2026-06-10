@@ -215,6 +215,19 @@ store, rotate or revoke them with the same `set-credential --overwrite` flow,
 and do not store them in config files, agent sources, installers, logs, or
 shell profiles.
 
+For GitHub App reviewer credentials, grant the app only the repository
+permissions needed by the enabled review workflow:
+
+| GitHub App permission | Access | Used for |
+|-----------------------|--------|----------|
+| Metadata | Read | Required by GitHub for repository access and installation lookup. |
+| Contents | Read | Reading diffs, files, and tree entries during review. |
+| Pull requests | Read and write | Reading PR metadata/reviews/threads and posting PR reviews or inline comments. |
+| Issues | Read and write | Reading and posting issue comments on PR conversations. |
+
+Thread resolution uses the pull request review-thread GraphQL surface, so keep
+Pull requests write access when `review_policy.resolve_threads` is enabled.
+
 Either omit `keyring.backend` to use the platform default, or set it
 per-platform and run `set-credential` with the same backend selection.
 

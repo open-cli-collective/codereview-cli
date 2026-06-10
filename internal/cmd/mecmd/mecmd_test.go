@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -368,6 +369,75 @@ func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T)
 	}
 	if strings.Contains(err.Error()+out.String(), privateKey) {
 		t.Fatalf("output leaked private key: err=%v out=%q", err, out.String())
+	}
+}
+
+func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
+	const installationToken = "me-github-app-installation-token" // #nosec G101 -- distinctive test canary, not a real token.
+	store := openFileStore(t)
+	privateKey := testPrivateKeyPEM(t)
+	if _, err := store.SetBundle("home", map[string]string{
+		credentials.GitHubAppIDKey:             "12345",
+		credentials.GitHubAppPrivateKeyKey:     privateKey,
+		credentials.GitHubAppInstallationIDKey: "42",
+	}, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle home: %v", err)
+	}
+	cfg := testConfig()
+	cfg.Keyring.Backend = "file"
+	home := cfg.Profiles["home"]
+	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.ReviewerCredentials = nil
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+
+	var appJWTs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.EscapedPath() {
+		case "/app/installations/42":
+			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
+			writeJSON(t, w, map[string]any{"id": 42, "app_id": 12345, "app_slug": "cr-reviewer"})
+		case "/app/installations/42/access_tokens":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
+			writeJSON(t, w, map[string]any{
+				"token":      installationToken,
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		return &githubResolver{
+			store: store,
+			options: githubprovider.Options{
+				BaseURL:    server.URL,
+				GraphQLURL: server.URL + "/graphql",
+			},
+		}, nil, nil
+	})
+
+	if err := root.Execute(cmd, []string{"me", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(appJWTs) != 2 || !strings.HasPrefix(appJWTs[0], "Bearer ") || !strings.HasPrefix(appJWTs[1], "Bearer ") {
+		t.Fatalf("app JWT auths = %#v, want app JWTs for installation and token requests", appJWTs)
+	}
+	for _, secret := range []string{privateKey, installationToken, "12345", "42"} {
+		if strings.Contains(out.String(), secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, out.String())
+		}
+	}
+	var got view.MeResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if len(got.Profiles) != 1 || got.Profiles[0].CredentialSource != "git" || got.Profiles[0].Login != "cr-reviewer[bot]" {
+		t.Fatalf("JSON = %#v, want app-backed git identity", got)
 	}
 }
 
