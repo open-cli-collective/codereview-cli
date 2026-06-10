@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
 	"github.com/open-cli-collective/codereview-cli/internal/gate"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -64,9 +65,9 @@ func TestEvaluateResumesLocalRunBeforePRState(t *testing.T) {
 	}
 }
 
-func TestEvaluateLocalResumeSkipsExternalFailures(t *testing.T) {
+func TestEvaluateNormalLiveChecksExternalBeforeLocalResume(t *testing.T) {
 	fixture := newFixture(t)
-	run := fixture.allocateRun(t, "run-resume", testBaseSHA, ledger.PostModeLive)
+	fixture.allocateRun(t, "run-resume", testBaseSHA, ledger.PostModeLive)
 	stale := fixture.allocateRun(t, "run-stale", testOldBase, ledger.PostModeLive)
 	stalePath := fixture.lockPathForRun(t, stale)
 	opts := fixture.opts()
@@ -86,16 +87,11 @@ func TestEvaluateLocalResumeSkipsExternalFailures(t *testing.T) {
 	fixture.provider.SetError(gitprovider.OperationListIssueComments, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListIssueComments, errors.New("comments unavailable")))
 	fixture.provider.SetError(gitprovider.OperationListReviews, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListReviews, errors.New("reviews unavailable")))
 
-	result, err := Evaluate(context.Background(), opts, fixture.req)
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+	if _, err := Evaluate(context.Background(), opts, fixture.req); err == nil {
+		t.Fatal("Evaluate error = nil, want external review read error before local resume")
 	}
-	defer releaseResultLock(t, result)
-	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionResume || result.Run.RunID != run.RunID {
-		t.Fatalf("Evaluate = %#v, want local resume of %s", result, run.RunID)
-	}
-	if provider.issueComments != 0 || provider.reviews != 0 {
-		t.Fatalf("marker reads = issueComments:%d reviews:%d, want none", provider.issueComments, provider.reviews)
+	if provider.issueComments != 0 || provider.reviews != 1 || provider.threads != 0 {
+		t.Fatalf("marker reads = issueComments:%d reviews:%d threads:%d, want reviews only", provider.issueComments, provider.reviews, provider.threads)
 	}
 }
 
@@ -243,6 +239,151 @@ func TestEvaluateIgnoresForgedOtherAuthorMarkers(t *testing.T) {
 	defer releaseResultLock(t, result)
 	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
 		t.Fatalf("Evaluate = %#v, want fresh allocation", result)
+	}
+}
+
+func TestEvaluateActivePostingIdentityApprovalExitsBeforeOverrideReads(t *testing.T) {
+	fixture := newFixture(t)
+	opts := fixture.opts()
+	provider := &countingProvider{GitProvider: fixture.provider}
+	opts.Provider = provider
+	opts.ApprovalOverride = &fakeApprovalOverrideClassifier{approve: true}
+	setReviews(t, fixture, []gitprovider.Review{{
+		ID:          "review-approved",
+		Author:      fixture.req.PostingIdentity,
+		State:       gitprovider.ReviewStateApproved,
+		SubmittedAt: testNow.Add(-time.Hour),
+	}})
+	setIssueComments(t, fixture, []gitprovider.IssueComment{{
+		ID:        "comment-override",
+		Author:    fixture.req.PR.Author,
+		Body:      "please approve",
+		CreatedAt: testNow,
+	}})
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Status != StatusEarlyExit || result.Decision.Kind != gate.DecisionEarlyExit {
+		t.Fatalf("Evaluate = %#v, want approved early exit", result)
+	}
+	if provider.reviews != 1 || provider.issueComments != 0 || provider.threads != 0 {
+		t.Fatalf("reads = reviews:%d issueComments:%d threads:%d, want reviews only", provider.reviews, provider.issueComments, provider.threads)
+	}
+}
+
+func TestEvaluateLaterChangesRequestedPreventsActiveApprovalExit(t *testing.T) {
+	fixture := newFixture(t)
+	setReviews(t, fixture, []gitprovider.Review{
+		{ID: "review-approved", Author: fixture.req.PostingIdentity, State: gitprovider.ReviewStateApproved, SubmittedAt: testNow.Add(-time.Hour)},
+		{ID: "review-changes", Author: fixture.req.PostingIdentity, State: gitprovider.ReviewStateChangesRequested, SubmittedAt: testNow},
+	})
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review when latest active verdict requests changes", result)
+	}
+}
+
+func TestEvaluateAuthorOverrideAfterLatestMarkerApproves(t *testing.T) {
+	fixture := newFixture(t)
+	rollup := mustRenderAction(t, marker.ActionMarker{
+		RunID:    "prior-run",
+		ActionID: "rollup-1",
+		Kind:     marker.ActionKindRollupComment,
+		SHA:      testHeadSHA,
+		BaseSHA:  testOldBase,
+		Outcome:  marker.RollupOutcomeRequestChanges,
+	})
+	setIssueComments(t, fixture, []gitprovider.IssueComment{
+		{ID: "marker", Author: fixture.req.PostingIdentity, Body: rollup, CreatedAt: testNow.Add(-time.Minute)},
+		{ID: "override", Author: fixture.req.PR.Author, Body: "These comments are low-value, please approve the pull request.", CreatedAt: testNow},
+	})
+	classifier := &fakeApprovalOverrideClassifier{approve: true}
+	opts := fixture.opts()
+	opts.ApprovalOverride = classifier
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Status != StatusApprovalOverride || result.Decision.Kind != gate.DecisionApprovalOverride {
+		t.Fatalf("Evaluate = %#v, want approval override execution", result)
+	}
+	if classifier.calls != 1 || len(classifier.last.Candidates) != 1 || classifier.last.Candidates[0].ID != "override" {
+		t.Fatalf("classifier = calls:%d last:%#v, want one override candidate", classifier.calls, classifier.last)
+	}
+	if result.OutboxResult.Outcome != ledger.OutcomeApproved || result.OutboxResult.Posted != 1 {
+		t.Fatalf("OutboxResult = %#v, want one approval post", result.OutboxResult)
+	}
+	reviews := fixture.provider.RecordedReviews(fixture.req.PRRef)
+	if len(reviews) != 1 || reviews[0].Event != review.ReviewEventApprove {
+		t.Fatalf("recorded reviews = %#v, want one approve review", reviews)
+	}
+	action := actionByID(t, fixture.store, result.Run.RunID, approvalOverrideSubmitReviewActionID)
+	if action.Status != ledger.PlannedActionPosted || !action.Required {
+		t.Fatalf("override action = %#v, want posted required submit_review", action)
+	}
+}
+
+func TestEvaluateSkipsOverrideClassifierWithoutPriorMarker(t *testing.T) {
+	fixture := newFixture(t)
+	setIssueComments(t, fixture, []gitprovider.IssueComment{{
+		ID:        "override",
+		Author:    fixture.req.PR.Author,
+		Body:      "please approve",
+		CreatedAt: testNow,
+	}})
+	classifier := &fakeApprovalOverrideClassifier{approve: true}
+	opts := fixture.opts()
+	opts.ApprovalOverride = classifier
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review", result)
+	}
+	if classifier.calls != 0 {
+		t.Fatalf("classifier calls = %d, want none without prior marker", classifier.calls)
+	}
+}
+
+func TestEvaluateSkipsOverrideClassifierWhenRequestIsNotNewerThanMarker(t *testing.T) {
+	fixture := newFixture(t)
+	rollup := mustRenderAction(t, marker.ActionMarker{
+		RunID:    "prior-run",
+		ActionID: "rollup-1",
+		Kind:     marker.ActionKindRollupComment,
+		SHA:      testHeadSHA,
+		BaseSHA:  testOldBase,
+		Outcome:  marker.RollupOutcomeRequestChanges,
+	})
+	setIssueComments(t, fixture, []gitprovider.IssueComment{
+		{ID: "old-override", Author: fixture.req.PR.Author, Body: "please approve", CreatedAt: testNow.Add(-time.Minute)},
+		{ID: "marker", Author: fixture.req.PostingIdentity, Body: rollup, CreatedAt: testNow},
+	})
+	classifier := &fakeApprovalOverrideClassifier{approve: true}
+	opts := fixture.opts()
+	opts.ApprovalOverride = classifier
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review for stale override request", result)
+	}
+	if classifier.calls != 0 {
+		t.Fatalf("classifier calls = %d, want none for stale override request", classifier.calls)
 	}
 }
 
@@ -853,9 +994,14 @@ func TestEvaluateOutboxErrorsReturnExecutionResultAndDurableState(t *testing.T) 
 	t.Run("repair", func(t *testing.T) {
 		fixture := newFixture(t)
 		setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeComment)
-		fixture.provider.SetError(gitprovider.OperationListInlineThreads, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListInlineThreads, errors.New("threads unavailable")))
+		opts := fixture.opts()
+		opts.Provider = &inlineThreadsErrorAfterProvider{
+			GitProvider: fixture.provider,
+			after:       1,
+			err:         gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationListInlineThreads, errors.New("threads unavailable")),
+		}
 
-		result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+		result, err := Evaluate(context.Background(), opts, fixture.req)
 		if err == nil {
 			t.Fatal("Evaluate repair outbox read error = nil, want error")
 		}
@@ -1318,11 +1464,12 @@ func newFixture(t *testing.T) *fixture {
 	}
 	bot := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
 	pr := gitprovider.PR{
-		Ref:   ref,
-		URL:   "https://example.test/pr/22",
-		State: gitprovider.PRStateOpen,
-		Head:  gitprovider.PRBranchRef{SHA: testHeadSHA},
-		Base:  gitprovider.PRBranchRef{SHA: testBaseSHA},
+		Ref:    ref,
+		URL:    "https://example.test/pr/22",
+		State:  gitprovider.PRStateOpen,
+		Author: gitprovider.Identity{Login: "pr-author", ID: "author-id"},
+		Head:   gitprovider.PRBranchRef{SHA: testHeadSHA},
+		Base:   gitprovider.PRBranchRef{SHA: testBaseSHA},
 	}
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
@@ -1340,6 +1487,7 @@ func newFixture(t *testing.T) *fixture {
 			Profile:            "default",
 			PostingIdentity:    bot,
 			PostingIdentityKey: bot.Login,
+			FreshRunID:         "fresh-run",
 			ArtifactPath:       "/tmp/fresh-run",
 		},
 	}
@@ -1414,6 +1562,14 @@ type countingProvider struct {
 	gitprovider.GitProvider
 	issueComments int
 	reviews       int
+	threads       int
+}
+
+type inlineThreadsErrorAfterProvider struct {
+	gitprovider.GitProvider
+	after int
+	calls int
+	err   error
 }
 
 type plannedActionErrorStore struct {
@@ -1454,6 +1610,35 @@ func (p *countingProvider) ListIssueComments(ctx context.Context, ref gitprovide
 func (p *countingProvider) ListReviews(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.Review, error) {
 	p.reviews++
 	return p.GitProvider.ListReviews(ctx, ref)
+}
+
+func (p *countingProvider) ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.InlineThread, error) {
+	p.threads++
+	return p.GitProvider.ListInlineThreads(ctx, ref)
+}
+
+func (p *inlineThreadsErrorAfterProvider) ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.InlineThread, error) {
+	p.calls++
+	if p.calls > p.after {
+		return nil, p.err
+	}
+	return p.GitProvider.ListInlineThreads(ctx, ref)
+}
+
+type fakeApprovalOverrideClassifier struct {
+	approve bool
+	err     error
+	calls   int
+	last    approvaloverride.Request
+}
+
+func (f *fakeApprovalOverrideClassifier) ClassifyApprovalOverride(_ context.Context, req approvaloverride.Request) (approvaloverride.Result, error) {
+	f.calls++
+	f.last = req
+	if f.err != nil {
+		return approvaloverride.Result{}, f.err
+	}
+	return approvaloverride.Result{Approve: f.approve}, nil
 }
 
 func (noopLimiter) Wait(context.Context, string) error {

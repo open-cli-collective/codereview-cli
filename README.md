@@ -470,7 +470,8 @@ Run a live review and fail the command when a major or blocking finding exists:
 cr review --fail-on major https://github.com/OWNER/REPO/pull/123
 ```
 
-Force a fresh live review instead of resuming or exiting from prior markers:
+Force a fresh live review instead of using existing approval, override,
+resume, or marker gates:
 
 ```bash
 cr review --rerun https://github.com/OWNER/REPO/pull/123
@@ -480,6 +481,15 @@ Retry missing or failed required posts without rerunning the LLM review:
 
 ```bash
 cr review --retry-posts https://github.com/OWNER/REPO/pull/123
+```
+
+Approve after a prior agentic pass when the PR author explicitly asks to skip a
+low-value rerun:
+
+```bash
+# Comment on the PR after the latest codereview marker, for example:
+# "These findings are low-value; please approve the pull request."
+cr review https://github.com/OWNER/REPO/pull/123
 ```
 
 Reuse a named LLM session for a series of related live reviews:
@@ -739,8 +749,8 @@ Modes:
 |------|-----------|
 | `--dry-run` | Plan review actions, write local artifacts, and print the plan without posting. |
 | `--no-post` | Alias for `--dry-run`. |
-| `--rerun` | Bypass gate resume/early-exit behavior and start a fresh live review. Mutually exclusive with `--retry-posts`. |
-| `--retry-posts` | Retry missing or failed required posts for an existing run without rerunning LLM planning. Mutually exclusive with `--rerun` and incompatible with `--session`. |
+| `--rerun` | Bypass existing approval, approval-override, resume, and marker gates and start a fresh live review. Mutually exclusive with `--retry-posts`. |
+| `--retry-posts` | Retry missing or failed required posts for an existing run without rerunning LLM planning or checking approval overrides. Mutually exclusive with `--rerun` and incompatible with `--session`. |
 
 Review selection and execution flags:
 
@@ -770,12 +780,28 @@ Policy and output flags:
 | `--no-resolve-threads` | Do not plan thread-resolution actions. Also implied by profile `resolve_threads: never`. |
 | `--json` | Emit JSON. |
 
-Live review uses a gate before planning or posting. If matching complete markers
-already exist for the current head/base/profile/posting identity, `cr review`
-exits early. If a prior compatible partial run exists, it resumes or repairs
-posting from durable local state. If the PR base moved, live review aborts with
-an upstream exit. `--rerun` starts fresh. `--retry-posts` replays required posts
-that are missing or failed without rerunning the LLM review.
+Live review uses a gate before planning or posting. If the posting identity has
+already approved the PR, `cr review` exits immediately in Go code before any
+LLM classifier or reviewer loop runs; this is true even if newer commits made
+the approval stale. Use `--rerun` to force a fresh review anyway.
+
+If there is no existing approval, `cr review` looks for an explicit PR-author
+approval override request newer than the latest codereview marker from the
+posting identity. This check only runs after at least one prior codereview marker
+exists. Candidate comments are filtered in Go to PR-author issue comments,
+review bodies, and inline-thread comments newer than that marker; a small-tier
+LLM classifier only decides whether those comments ask for approval override. A
+positive classification skips the reviewer loop and posts an approving review
+through the normal ledger/outbox path. If commits were pushed after the marker,
+request approval after pushing so the intent is unambiguous.
+
+If matching complete markers already exist for the current
+head/base/profile/posting identity, `cr review` exits early. If a prior
+compatible partial run exists, it resumes or repairs posting from durable local
+state. If the PR base moved, live review aborts with an upstream exit. `--rerun`
+starts fresh and bypasses the approval/override fast paths. `--retry-posts`
+replays required posts that are missing or failed without rerunning the LLM
+review or checking approval overrides.
 
 Dry-run output contains planned actions and artifact paths. Dry-run action
 markers are reported as omitted because nothing is posted.

@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
+	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
@@ -124,8 +125,8 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	}
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Plan review actions without posting")
 	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Alias for --dry-run")
-	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass the gate and run a fresh live review")
-	cmd.Flags().BoolVar(&flags.retryPosts, "retry-posts", false, "Retry missing or failed required posts without rerunning review")
+	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass approval/override fast paths and run a fresh live review")
+	cmd.Flags().BoolVar(&flags.retryPosts, "retry-posts", false, "Retry missing or failed required posts without rerunning review or checking approval overrides")
 	cmd.Flags().StringArrayVar(&flags.agentsDirs, "agents-dir", nil, "Additional trusted agents directory")
 	cmd.Flags().StringVar(&flags.failOn, "fail-on", "", "Exit 1 when a finding at or above severity exists")
 	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Named LLM session to reuse for live reviews")
@@ -694,7 +695,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, err
 	}
-	runner := buildReviewRunner(ledgerStore, provider, adapter, limiter, layout, opts.Stderr, runtimeOpts)
+	runner := buildReviewRunner(ledgerStore, provider, adapter, profile, limiter, layout, opts.Stderr, runtimeOpts)
 	return Runtime{
 		Runner:          runner,
 		PostingIdentity: postingIdentity,
@@ -716,7 +717,7 @@ func runtimeLayout() (statepaths.Layout, error) {
 	return layout, nil
 }
 
-func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, runtimeOpts RuntimeOptions) reviewRunner {
+func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, runtimeOpts RuntimeOptions) reviewRunner {
 	pipelineOpts := pipeline.Options{
 		Provider:            provider,
 		Adapter:             adapter,
@@ -739,10 +740,30 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 			Layout:                  layout,
 			StaleHeartbeatThreshold: 10 * time.Minute,
 			Warnings:                warnings,
+			ApprovalOverride:        buildApprovalOverrideClassifier(profile, adapter, warnings),
 			Retention:               runtimeOpts.Retention,
 			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
 		},
 	}
+}
+
+func buildApprovalOverrideClassifier(profile config.Profile, adapter llm.Adapter, warnings io.Writer) approvaloverride.Classifier {
+	if adapter == nil {
+		return nil
+	}
+	if resolved, ok := config.ResolveModelTier(profile.LLM, config.ModelTierSmall); ok {
+		return approvaloverride.NewLLMClassifier(adapter, resolved.Model, "low")
+	}
+	if resolved, ok := config.ResolveModelTier(profile.LLM, config.ModelTierMedium); ok {
+		if warnings != nil {
+			_, _ = fmt.Fprintf(warnings, "warning: approval override classifier small model is not configured; falling back to medium tier model %s\n", resolved.Model)
+		}
+		return approvaloverride.NewLLMClassifier(adapter, resolved.Model, "low")
+	}
+	if warnings != nil {
+		_, _ = fmt.Fprintln(warnings, "warning: approval override classifier disabled because no small or medium model tier is configured")
+	}
+	return nil
 }
 
 func retentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.RetentionPolicy {

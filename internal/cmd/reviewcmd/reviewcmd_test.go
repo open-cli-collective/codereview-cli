@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
+	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -723,6 +724,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 		store,
 		provider,
 		adapter,
+		testConfig().Profiles["home"],
 		noopLimiter{},
 		statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		&warnings,
@@ -753,6 +755,75 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 	}
 	if planner.opts.Retention != retention || !planner.opts.RetentionManualOnly {
 		t.Fatalf("planner retention = %#v manual %v, want configured manual policy", planner.opts.Retention, planner.opts.RetentionManualOnly)
+	}
+}
+
+func TestBuildApprovalOverrideClassifierModelResolution(t *testing.T) {
+	tests := []struct {
+		name        string
+		llmConfig   config.LLMConfig
+		wantModel   string
+		wantWarning string
+		wantNil     bool
+	}{
+		{
+			name: "small tier preferred",
+			llmConfig: config.LLMConfig{
+				Provider: config.LLMProviderOpenAI,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterCodexCLI,
+			},
+			wantModel: "gpt-5.4-mini",
+		},
+		{
+			name: "medium fallback",
+			llmConfig: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+			wantModel:   "claude-sonnet-4-6",
+			wantWarning: "falling back to medium tier",
+		},
+		{
+			name: "disabled without small or medium",
+			llmConfig: config.LLMConfig{
+				Provider: config.LLMProviderPi,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterPiRPC,
+			},
+			wantNil:     true,
+			wantWarning: "disabled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &llm.FakeAdapter{}
+			adapter.Queue(llm.FakeResult{Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"approval_override_requested":false}`)}})
+			var warnings bytes.Buffer
+
+			classifier := buildApprovalOverrideClassifier(config.Profile{LLM: tt.llmConfig}, adapter, &warnings)
+			if tt.wantNil {
+				if classifier != nil {
+					t.Fatalf("classifier = %#v, want nil", classifier)
+				}
+			} else {
+				if classifier == nil {
+					t.Fatal("classifier = nil, want configured classifier")
+				}
+				if _, err := classifier.ClassifyApprovalOverride(context.Background(), approvalOverrideClassifierTestRequest()); err != nil {
+					t.Fatalf("ClassifyApprovalOverride: %v", err)
+				}
+				requests := adapter.Requests()
+				if len(requests) != 1 || requests[0].Model != tt.wantModel || requests[0].Effort != "low" {
+					t.Fatalf("requests = %#v, want model %q effort low", requests, tt.wantModel)
+				}
+			}
+			if tt.wantWarning != "" && !strings.Contains(warnings.String(), tt.wantWarning) {
+				t.Fatalf("warnings = %q, want substring %q", warnings.String(), tt.wantWarning)
+			}
+		})
 	}
 }
 
@@ -797,11 +868,12 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			layout,
 			opts.Stderr,
@@ -878,11 +950,12 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("approve", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
@@ -949,11 +1022,12 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			layout,
 			opts.Stderr,
@@ -1017,11 +1091,12 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			layout,
 			opts.Stderr,
@@ -1078,11 +1153,12 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 		"reasoning": "no specialist needed"
 	}`))
 	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, _ config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
 			provider,
 			adapter,
+			profile,
 			noopLimiter{},
 			layout,
 			opts.Stderr,
@@ -1563,6 +1639,24 @@ func assertReviewTestFile(t *testing.T, path, want string) {
 	}
 	if string(got) != want {
 		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
+func approvalOverrideClassifierTestRequest() approvaloverride.Request {
+	return approvaloverride.Request{
+		PR: gitprovider.PR{
+			Title:  "Override",
+			URL:    "https://example.test/pr/1",
+			Author: gitprovider.Identity{Login: "author"},
+		},
+		PostingIdentity: gitprovider.Identity{Login: "review-bot"},
+		LatestMarkerAt:  time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC),
+		Candidates: []approvaloverride.Candidate{{
+			ID:          "1",
+			Source:      "issue_comment",
+			Body:        "please approve",
+			EffectiveAt: time.Date(2026, 6, 10, 12, 1, 0, 0, time.UTC),
+		}},
 	}
 }
 
