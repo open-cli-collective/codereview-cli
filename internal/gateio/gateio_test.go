@@ -368,6 +368,23 @@ func TestEvaluateLaterChangesRequestedPreventsActiveApprovalExit(t *testing.T) {
 	}
 }
 
+func TestEvaluateSameTimestampChangesRequestedPreventsActiveApprovalExit(t *testing.T) {
+	fixture := newFixture(t)
+	setReviews(t, fixture, []gitprovider.Review{
+		{ID: "review-changes", Author: fixture.req.PostingIdentity, State: gitprovider.ReviewStateChangesRequested, SubmittedAt: testNow},
+		{ID: "review-approved", Author: fixture.req.PostingIdentity, State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
+	})
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review when tied active verdict requests changes first", result)
+	}
+}
+
 func TestEvaluateAuthorOverrideAfterLatestMarkerApproves(t *testing.T) {
 	fixture := newFixture(t)
 	rollup := mustRenderAction(t, marker.ActionMarker{
@@ -406,6 +423,47 @@ func TestEvaluateAuthorOverrideAfterLatestMarkerApproves(t *testing.T) {
 	action := actionByID(t, fixture.store, result.Run.RunID, approvalOverrideSubmitReviewActionID)
 	if action.Status != ledger.PlannedActionPosted || !action.Required {
 		t.Fatalf("override action = %#v, want posted required submit_review", action)
+	}
+}
+
+func TestEvaluateAuthorOverrideAbortsWhenBaseMoved(t *testing.T) {
+	fixture := newFixture(t)
+	rollup := mustRenderAction(t, marker.ActionMarker{
+		RunID:    "prior-run",
+		ActionID: "rollup-1",
+		Kind:     marker.ActionKindRollupComment,
+		SHA:      testHeadSHA,
+		BaseSHA:  testOldBase,
+		Outcome:  marker.RollupOutcomeRequestChanges,
+	})
+	setIssueComments(t, fixture, []gitprovider.IssueComment{
+		{ID: "marker", Author: fixture.req.PostingIdentity, Body: rollup, CreatedAt: testNow.Add(-time.Minute)},
+		{ID: "override", Author: fixture.req.PR.Author, Body: "These are low-value, please approve.", CreatedAt: testNow},
+	})
+	moved := fixture.req.PR
+	moved.Base.SHA = testOldBase
+	if err := fixture.provider.SetPR(fixture.req.PRRef, moved); err != nil {
+		t.Fatalf("SetPR moved: %v", err)
+	}
+	classifier := &fakeApprovalOverrideClassifier{approve: true}
+	opts := fixture.opts()
+	opts.ApprovalOverride = classifier
+
+	result, err := Evaluate(context.Background(), opts, fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Status != StatusBaseMovedAbort || result.Decision.Kind != gate.DecisionError {
+		t.Fatalf("Evaluate = %#v, want base moved abort", result)
+	}
+	if classifier.calls != 1 {
+		t.Fatalf("classifier calls = %d, want 1 before moved-base abort", classifier.calls)
+	}
+	if runs := fixture.listRuns(t); len(runs) != 0 {
+		t.Fatalf("runs = %d, want no override run after moved base", len(runs))
+	}
+	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
+		t.Fatalf("recorded reviews = %#v, want none after moved base", got)
 	}
 }
 
@@ -547,6 +605,13 @@ func TestEvaluateAuthorOverrideCandidateSources(t *testing.T) {
 				t.Fatalf("candidate = %#v, want id %q source %q", candidate, tt.wantID, tt.wantSource)
 			}
 		})
+	}
+}
+
+func TestStripCodereviewCommentsKeepsUnclosedMarkerText(t *testing.T) {
+	body := "please approve\n<!-- codereview: pasted but unfinished"
+	if got := stripCodereviewComments(body); got != body {
+		t.Fatalf("stripCodereviewComments() = %q, want original body", got)
 	}
 }
 

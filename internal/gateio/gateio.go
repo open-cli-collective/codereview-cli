@@ -139,6 +139,26 @@ type gateHostState struct {
 	threads  []gitprovider.InlineThread
 }
 
+type precheckedReviewState struct {
+	reviews []gitprovider.Review
+	loaded  bool
+}
+
+func (s *precheckedReviewState) set(reviews []gitprovider.Review) {
+	s.reviews = reviews
+	s.loaded = true
+}
+
+func (s *precheckedReviewState) take() ([]gitprovider.Review, bool) {
+	if !s.loaded {
+		return nil, false
+	}
+	reviews := s.reviews
+	s.reviews = nil
+	s.loaded = false
+	return reviews, true
+}
+
 const (
 	repairSubmitReviewActionID           = "repair-submit-review"
 	repairSubmitReviewBody               = "Completing previously posted codereview rollup."
@@ -166,10 +186,7 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{Status: StatusDryRunFresh, Decision: decision}, nil
 	}
 
-	var (
-		precheckedReviews       []gitprovider.Review
-		precheckedReviewsLoaded bool
-	)
+	var precheckedReviews precheckedReviewState
 	if normalLiveFastPathEnabled(req.Flags) {
 		reviews, err := opts.Provider.ListReviews(ctx, req.PRRef)
 		if err != nil {
@@ -184,8 +201,7 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 				},
 			}, nil
 		}
-		precheckedReviews = reviews
-		precheckedReviewsLoaded = true
+		precheckedReviews.set(reviews)
 	}
 
 	lockPath, err := currentLockPath(opts.Layout, req)
@@ -209,11 +225,8 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 		var host *gateHostState
 		if normalLiveFastPathEnabled(req.Flags) {
-			reviews := precheckedReviews
-			precheckedReviews = nil
-			reviewsLoaded := precheckedReviewsLoaded
-			precheckedReviewsLoaded = false
-			if !reviewsLoaded {
+			reviews, ok := precheckedReviews.take()
+			if !ok {
 				var err error
 				reviews, err = opts.Provider.ListReviews(ctx, req.PRRef)
 				if err != nil {
@@ -998,6 +1011,9 @@ func latestCodereviewMarkerAt(host gateHostState, posting gitprovider.Identity) 
 		latest time.Time
 		found  bool
 	)
+	// Thread summaries are body-bearing codereview outputs with run/action
+	// identity. They can anchor override eligibility even though only action
+	// markers participate in PR completion-state classification.
 	consider := func(author gitprovider.Identity, body string, when time.Time) {
 		if !sameIdentity(author, posting) || when.IsZero() {
 			return
@@ -1040,7 +1056,7 @@ func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitpr
 		default:
 			continue
 		}
-		if !found || review.SubmittedAt.After(selected.SubmittedAt) || review.SubmittedAt.Equal(selected.SubmittedAt) {
+		if !found || review.SubmittedAt.After(selected.SubmittedAt) {
 			selected = review
 			found = true
 		}
@@ -1162,6 +1178,7 @@ func stripCodereviewComments(body string) string {
 		rest := body[start:]
 		end := strings.Index(rest, "-->")
 		if end < 0 {
+			b.WriteString(rest)
 			return b.String()
 		}
 		body = rest[end+len("-->"):]

@@ -23,6 +23,7 @@ func TestDecodeResponseStrictSchema(t *testing.T) {
 		`{"schema_version":2,"approval_override_requested":true}`,
 		`{"schema_version":1,"approval_override_requested":true,"why":"because"}`,
 		`{"schema_version":1}`,
+		`{"approval_override_requested":true}`,
 	} {
 		if _, err := DecodeResponse([]byte(raw)); err == nil {
 			t.Fatalf("DecodeResponse(%s) error = nil, want error", raw)

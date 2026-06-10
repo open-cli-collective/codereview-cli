@@ -768,9 +768,6 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 }
 
 func buildApprovalOverrideClassifier(profile config.Profile, adapter llm.Adapter, warnings io.Writer) approvaloverride.Classifier {
-	if adapter == nil {
-		return nil
-	}
 	return &lazyApprovalOverrideClassifier{
 		profile:  profile,
 		adapter:  adapter,
