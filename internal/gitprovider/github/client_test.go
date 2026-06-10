@@ -15,6 +15,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
+var errTokenNotFound = errors.New("token not found")
+
 func TestClientImplementsGitProvider(_ *testing.T) {
 	var _ gitprovider.GitProvider = (*Client)(nil)
 }
@@ -60,18 +62,16 @@ func TestNewRequiresExplicitHost(t *testing.T) {
 
 func TestNewFromGitConfigRejectsReservedAuthModesAndHostConflict(t *testing.T) {
 	store := tokenStore{"work": {credentials.GitTokenKey: "token"}}
-	for _, mode := range []config.GitAuthMode{config.GitAuthModeOAuthDevice, config.GitAuthModeGitHubApp} {
-		_, _, err := NewFromGitConfig(config.GitConfig{
-			Host:          "github.com",
-			AuthMode:      mode,
-			CredentialRef: "codereview/work",
-		}, store, Options{})
-		if !errors.Is(err, config.ErrUnsupported) {
-			t.Fatalf("NewFromGitConfig(%s) error = %v, want ErrUnsupported", mode, err)
-		}
+	_, _, err := NewFromGitConfig(config.GitConfig{
+		Host:          "github.com",
+		AuthMode:      config.GitAuthModeOAuthDevice,
+		CredentialRef: "codereview/work",
+	}, store, Options{})
+	if !errors.Is(err, config.ErrUnsupported) {
+		t.Fatalf("NewFromGitConfig(oauth_device) error = %v, want ErrUnsupported", err)
 	}
 
-	_, _, err := NewFromGitConfig(config.GitConfig{
+	_, _, err = NewFromGitConfig(config.GitConfig{
 		Host:          "github.com",
 		AuthMode:      config.GitAuthModePAT,
 		CredentialRef: "codereview/work",
@@ -222,14 +222,23 @@ func TestPRScopedReadsRejectSlashInOwnerRepoBeforeRequest(t *testing.T) {
 
 type tokenStore map[string]map[string]string
 
+func (s tokenStore) Exists(profile, key string) (bool, error) {
+	keys, ok := s[profile]
+	if !ok {
+		return false, nil
+	}
+	_, ok = keys[key]
+	return ok, nil
+}
+
 func (s tokenStore) Get(profile, key string) (string, error) {
 	keys, ok := s[profile]
 	if !ok {
-		return "", errors.New("missing profile")
+		return "", errTokenNotFound
 	}
 	value, ok := keys[key]
 	if !ok {
-		return "", errors.New("missing key")
+		return "", errTokenNotFound
 	}
 	return value, nil
 }

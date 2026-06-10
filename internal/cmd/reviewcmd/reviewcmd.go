@@ -79,6 +79,7 @@ type Runtime struct {
 type RuntimeOptions struct {
 	MaxAgents           int
 	MaxConcurrency      int
+	PRRef               gitprovider.PRRef
 	Retention           datalifecycle.RetentionPolicy
 	RetentionManualOnly bool
 }
@@ -294,6 +295,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	runtimeOpts := RuntimeOptions{
 		MaxAgents:           flags.maxAgents,
 		MaxConcurrency:      flags.maxConcurrency,
+		PRRef:               ref,
 		Retention:           retentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 	}
@@ -683,7 +685,8 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		return Runtime{}, cmderr.Credential(err)
 	}
 	cleanup := func() { _ = store.Close() }
-	provider, credential, err := newGitProvider(profile.Git, store, githubprovider.Options{})
+	providerGit := gitConfigForReviewerAuth(profile)
+	provider, credential, err := newGitProvider(providerGit, store, gitProviderOptions(runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
@@ -725,6 +728,28 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		PostingIdentity: postingIdentity,
 		Cleanup:         cleanup,
 	}, nil
+}
+
+func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
+	if profile.ReviewerCredentials == nil {
+		return profile.Git
+	}
+	return config.GitConfig{
+		Host:          profile.Git.Host,
+		AuthMode:      profile.ReviewerCredentials.AuthMode,
+		CredentialRef: profile.ReviewerCredentials.CredentialRef,
+		IdentityCache: profile.ReviewerCredentials.IdentityCache,
+	}
+}
+
+func gitProviderOptions(ref gitprovider.PRRef) githubprovider.Options {
+	if strings.TrimSpace(ref.Owner) == "" || strings.TrimSpace(ref.Repo) == "" {
+		return githubprovider.Options{}
+	}
+	return githubprovider.Options{InstallationLookup: &githubprovider.InstallationLookup{
+		Owner: ref.Owner,
+		Repo:  ref.Repo,
+	}}
 }
 
 func runtimeLayout() (statepaths.Layout, error) {
@@ -946,21 +971,8 @@ func (p livePlanner) Live(ctx context.Context, req pipeline.Request, run ledger.
 	return pipeline.Live(ctx, p.opts, req, run)
 }
 
-func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, store githubprovider.TokenStore, profile config.Profile) (gitprovider.Identity, error) {
-	if profile.ReviewerCredentials == nil {
-		return provider.WhoAmI(ctx, credential)
-	}
-	reviewerGit := config.GitConfig{
-		Host:          profile.Git.Host,
-		AuthMode:      profile.ReviewerCredentials.AuthMode,
-		CredentialRef: profile.ReviewerCredentials.CredentialRef,
-		IdentityCache: profile.ReviewerCredentials.IdentityCache,
-	}
-	reviewerProvider, reviewerCredential, err := githubprovider.NewFromGitConfig(reviewerGit, store, githubprovider.Options{})
-	if err != nil {
-		return gitprovider.Identity{}, err
-	}
-	return reviewerProvider.WhoAmI(ctx, reviewerCredential)
+func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ githubprovider.TokenStore, _ config.Profile) (gitprovider.Identity, error) {
+	return provider.WhoAmI(ctx, credential)
 }
 
 func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter, error) {

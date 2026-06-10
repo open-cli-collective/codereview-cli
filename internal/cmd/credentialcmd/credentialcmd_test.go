@@ -155,6 +155,67 @@ func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
 	assertStored(t, "work-llm", credentials.AnthropicAPIKeyKey, "anthropic-token")
 }
 
+func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Keyring:        config.KeyringConfig{Backend: "file"},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	}
+	work := cfg.Profiles["work"]
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	cfg.Profiles["work"] = work
+	saveCredentialTestConfig(t, path, cfg)
+
+	cmd, _, _ := newTestCommand(path, failReader{})
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"set-credential",
+		"--ref", "codereview/work-reviewer",
+		"--key", credentials.GitTokenKey,
+		"--stdin",
+	})
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("git_token exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if strings.Contains(err.Error(), "secret ingress was read") {
+		t.Fatalf("set-credential read secret ingress before rejecting wrong app key: %v", err)
+	}
+
+	for _, write := range []struct {
+		key   string
+		value string
+	}{
+		{key: credentials.GitHubAppIDKey, value: "12345"},
+		{key: credentials.GitHubAppPrivateKeyKey, value: "private-key-value"},
+		{key: credentials.GitHubAppInstallationIDKey, value: "67890"},
+	} {
+		cmd, _, _ = newTestCommand(path, strings.NewReader(write.value))
+		err = root.Execute(cmd, []string{
+			"--backend", "file",
+			"set-credential",
+			"--ref", "codereview/work-reviewer",
+			"--key", write.key,
+			"--stdin",
+		})
+		if err != nil {
+			t.Fatalf("set %s Execute: %v", write.key, err)
+		}
+		assertStored(t, "work-reviewer", write.key, write.value)
+	}
+	assertFileBundleKeys(t, "work-reviewer", []string{
+		credentials.GitHubAppIDKey,
+		credentials.GitHubAppInstallationIDKey,
+		credentials.GitHubAppPrivateKeyKey,
+	})
+}
+
 func TestSetCredentialRejectsUnsupportedConfigBeforeIngress(t *testing.T) {
 	hermeticFileBackend(t)
 	t.Setenv("CR_FUTURE_TOKEN", "")
@@ -385,6 +446,70 @@ func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
 	}
 	assertStored(t, "default", credentials.GitTokenKey, "git-token")
 	assertStored(t, "default-reviewer", credentials.GitTokenKey, "reviewer-token")
+}
+
+func TestInitNonInteractiveWritesGitHubAppReviewerConfigOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd, out, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "memory",
+		"init",
+		"--non-interactive",
+		"--reviewer-auth-mode", string(config.GitAuthModeGitHubApp),
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	reviewer := cfg.Profiles["default"].ReviewerCredentials
+	if reviewer == nil || reviewer.AuthMode != config.GitAuthModeGitHubApp || reviewer.CredentialRef != "codereview/default-reviewer" {
+		t.Fatalf("reviewer credentials = %#v, want github_app codereview/default-reviewer", reviewer)
+	}
+	for _, key := range []string{credentials.GitHubAppIDKey, credentials.GitHubAppPrivateKeyKey, credentials.GitHubAppInstallationIDKey} {
+		if !strings.Contains(errOut.String(), "--key "+key+" --stdin") {
+			t.Fatalf("stderr = %q, want setup hint for %s", errOut.String(), key)
+		}
+	}
+	if strings.Contains(out.String()+errOut.String(), "private-key-value") {
+		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
+func TestInitGitHubAppReviewerRejectsTokenIngressBeforeRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	for _, tt := range []struct {
+		name string
+		args []string
+		env  map[string]string
+	}{
+		{
+			name: "stdin",
+			args: []string{"init", "--non-interactive", "--reviewer-auth-mode", string(config.GitAuthModeGitHubApp), "--reviewer-token-stdin"},
+		},
+		{
+			name: "env",
+			args: []string{"init", "--non-interactive", "--reviewer-auth-mode", string(config.GitAuthModeGitHubApp), "--reviewer-token-from-env", "CR_REVIEWER_TOKEN"},
+			env:  map[string]string{"CR_REVIEWER_TOKEN": "reviewer-token"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			cmd, _, _ := newTestCommand(path, failReader{})
+			err := root.Execute(cmd, tt.args)
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+			}
+			if strings.Contains(err.Error(), "secret ingress was read") || strings.Contains(err.Error(), "reviewer-token") {
+				t.Fatalf("init read or leaked reviewer token before rejecting app token ingress: %v", err)
+			}
+		})
+	}
 }
 
 func TestInitNonInteractiveWritesCustomReviewerCredentialFromStdin(t *testing.T) {

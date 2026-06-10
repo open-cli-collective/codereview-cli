@@ -294,9 +294,10 @@ func credentialStatus(purpose, ref, mode, key string, present bool) CredentialSt
 		Ref:     ref,
 		Mode:    mode,
 		Keys: []KeyStatus{{
-			Key:     key,
-			Present: &present,
-			Status:  status,
+			Key:      key,
+			Required: true,
+			Present:  &present,
+			Status:   status,
 		}},
 	}
 }

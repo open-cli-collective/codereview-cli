@@ -69,14 +69,13 @@ func TestStoreOptionsInvalidBackendFlag(t *testing.T) {
 }
 
 func TestAllowedKeysExactCredentialMatrix(t *testing.T) {
-	want := []string{GitTokenKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
+	want := []string{GitTokenKey, GitHubAppIDKey, GitHubAppPrivateKeyKey, GitHubAppInstallationIDKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
 	if got := AllowedKeys(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("AllowedKeys = %#v, want %#v", got, want)
 	}
 
 	for _, key := range []string{
 		LegacyLLMAPIKeyKey,
-		"git_app_private_key",
 		"git_oauth_access_token",
 		"git_oauth_refresh_token",
 	} {
@@ -101,6 +100,24 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 			name: "reviewer pat",
 			ref:  config.CredentialRef{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "pat"},
 			want: []KeySpec{{Key: GitTokenKey, Required: true}},
+		},
+		{
+			name: "user git github app",
+			ref:  config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: "github_app"},
+			want: []KeySpec{
+				{Key: GitHubAppIDKey, Required: true},
+				{Key: GitHubAppPrivateKeyKey, Required: true},
+				{Key: GitHubAppInstallationIDKey, Required: false},
+			},
+		},
+		{
+			name: "reviewer github app",
+			ref:  config.CredentialRef{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "github_app"},
+			want: []KeySpec{
+				{Key: GitHubAppIDKey, Required: true},
+				{Key: GitHubAppPrivateKeyKey, Required: true},
+				{Key: GitHubAppInstallationIDKey, Required: false},
+			},
 		},
 		{
 			name: "anthropic api key",
@@ -128,7 +145,7 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 
 	for _, ref := range []config.CredentialRef{
 		{Purpose: "git", Ref: "codereview/work", Mode: "oauth_device"},
-		{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "github_app"},
+		{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "oauth_device"},
 	} {
 		if _, err := KeySpecsForPurpose(ref); !errors.Is(err, config.ErrUnsupported) {
 			t.Fatalf("KeySpecsForPurpose(%#v) error = %v, want ErrUnsupported", ref, err)
@@ -142,6 +159,7 @@ func TestValidateAllowedKeyForConfigNarrowsDeclaredRefs(t *testing.T) {
 		Profiles: map[string]config.Profile{
 			"anthropic": matrixProfile("codereview/git-a", "codereview/shared-llm", config.LLMProviderAnthropic),
 			"openai":    matrixProfile("codereview/git-b", "codereview/shared-llm", config.LLMProviderOpenAI),
+			"app":       githubAppMatrixProfile("codereview/app"),
 		},
 	}
 	if err := config.Validate(cfg); err != nil {
@@ -167,6 +185,22 @@ func TestValidateAllowedKeyForConfigNarrowsDeclaredRefs(t *testing.T) {
 	if err := ValidateAllowedKeyForConfig(cfg, "codereview/git-a", AnthropicAPIKeyKey); !errors.Is(err, credstore.ErrKeyNotAllowed) {
 		t.Fatalf("ValidateAllowedKeyForConfig git llm key error = %v, want ErrKeyNotAllowed", err)
 	}
+	wantAppKeys := []string{GitHubAppIDKey, GitHubAppInstallationIDKey, GitHubAppPrivateKeyKey}
+	gotAppKeys, err := ExpectedKeysForConfigRef(cfg, "codereview/app")
+	if err != nil {
+		t.Fatalf("ExpectedKeysForConfigRef github_app: %v", err)
+	}
+	if !reflect.DeepEqual(gotAppKeys, wantAppKeys) {
+		t.Fatalf("github_app expected keys = %#v, want %#v", gotAppKeys, wantAppKeys)
+	}
+	for _, key := range wantAppKeys {
+		if err := ValidateAllowedKeyForConfig(cfg, "codereview/app", key); err != nil {
+			t.Fatalf("ValidateAllowedKeyForConfig app %s: %v", key, err)
+		}
+	}
+	if err := ValidateAllowedKeyForConfig(cfg, "codereview/app", GitTokenKey); !errors.Is(err, credstore.ErrKeyNotAllowed) {
+		t.Fatalf("ValidateAllowedKeyForConfig app git token error = %v, want ErrKeyNotAllowed", err)
+	}
 
 	if err := ValidateAllowedKeyForConfig(cfg, "codereview/undeclared", OpenAIAPIKeyKey); err != nil {
 		t.Fatalf("ValidateAllowedKeyForConfig undeclared global key: %v", err)
@@ -174,6 +208,15 @@ func TestValidateAllowedKeyForConfigNarrowsDeclaredRefs(t *testing.T) {
 	if err := ValidateAllowedKeyForConfig(cfg, "codereview/undeclared", LegacyLLMAPIKeyKey); !errors.Is(err, credstore.ErrKeyNotAllowed) {
 		t.Fatalf("ValidateAllowedKeyForConfig undeclared legacy key error = %v, want ErrKeyNotAllowed", err)
 	}
+}
+
+func githubAppMatrixProfile(ref string) config.Profile {
+	p := matrixProfile(ref, "codereview/app-llm", config.LLMProviderAnthropic)
+	p.Git.AuthMode = config.GitAuthModeGitHubApp
+	p.LLM.Auth = config.LLMAuthSubscription
+	p.LLM.Adapter = config.LLMAdapterClaudeCLI
+	p.LLM.CredentialRef = ""
+	return p
 }
 
 func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.T) {

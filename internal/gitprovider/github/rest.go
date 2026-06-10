@@ -62,8 +62,15 @@ func (c *Client) WhoAmI(ctx context.Context, creds gitprovider.Credential) (gitp
 	if err := validateCredential(gitprovider.OperationWhoAmI, creds); err != nil {
 		return gitprovider.Identity{}, err
 	}
+	if creds.Type == credentialTypeGitHubApp {
+		return gitprovider.Identity{
+			Login:       creds.Login,
+			ID:          creds.ID,
+			DisplayName: creds.DisplayName,
+		}, nil
+	}
 	var user userResponse
-	_, _, err := c.doREST(ctx, gitprovider.OperationWhoAmI, http.MethodGet, restURL(c.baseURL, "user"), creds.Token, acceptJSON, &user)
+	_, _, err := c.doRESTWithToken(ctx, gitprovider.OperationWhoAmI, http.MethodGet, restURL(c.baseURL, "user"), creds.Token, acceptJSON, &user)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}
@@ -77,7 +84,7 @@ func (c *Client) GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.
 	}
 	var payload prResponse
 	endpoint := restURL(c.baseURL, "repos", ref.Owner, ref.Repo, "pulls", fmt.Sprint(ref.Number))
-	_, _, err := c.doREST(ctx, gitprovider.OperationGetPR, http.MethodGet, endpoint, c.token, acceptJSON, &payload)
+	_, _, err := c.doREST(ctx, gitprovider.OperationGetPR, http.MethodGet, endpoint, acceptJSON, &payload)
 	if err != nil {
 		return gitprovider.PR{}, err
 	}
@@ -102,7 +109,7 @@ func (c *Client) GetDiff(ctx context.Context, ref gitprovider.PRRef) (gitprovide
 		return gitprovider.UnifiedDiff{}, err
 	}
 	endpoint := restURL(c.baseURL, "repos", ref.Owner, ref.Repo, "pulls", fmt.Sprint(ref.Number))
-	body, _, err := c.doREST(ctx, gitprovider.OperationGetDiff, http.MethodGet, endpoint, c.token, acceptDiff, nil)
+	body, _, err := c.doREST(ctx, gitprovider.OperationGetDiff, http.MethodGet, endpoint, acceptDiff, nil)
 	if err != nil {
 		return gitprovider.UnifiedDiff{}, err
 	}
@@ -124,7 +131,7 @@ func (c *Client) GetDiffBetweenRefs(ctx context.Context, ref gitprovider.PRRef, 
 		return gitprovider.UnifiedDiff{}, fmt.Errorf("%w: head SHA is required", ErrValidation)
 	}
 	endpoint := restURL(c.baseURL, "repos", ref.Owner, ref.Repo, "compare", baseSHA+"..."+headSHA)
-	body, _, err := c.doREST(ctx, gitprovider.OperationGetDiffBetweenRefs, http.MethodGet, endpoint, c.token, acceptDiff, nil)
+	body, _, err := c.doREST(ctx, gitprovider.OperationGetDiffBetweenRefs, http.MethodGet, endpoint, acceptDiff, nil)
 	if err != nil {
 		return gitprovider.UnifiedDiff{}, err
 	}
@@ -143,7 +150,7 @@ func (c *Client) GetFileAtRef(ctx context.Context, ref gitprovider.PRRef, gitRef
 	if err != nil {
 		return nil, err
 	}
-	body, _, err := c.doREST(ctx, gitprovider.OperationGetFileAtRef, http.MethodGet, endpoint, c.token, acceptRaw, nil)
+	body, _, err := c.doREST(ctx, gitprovider.OperationGetFileAtRef, http.MethodGet, endpoint, acceptRaw, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -23,7 +23,15 @@ const (
 	acceptRaw  = "application/vnd.github.raw"
 )
 
-func (c *Client) doREST(ctx context.Context, op gitprovider.Operation, method, endpoint, token, accept string, out any) ([]byte, http.Header, error) {
+func (c *Client) doREST(ctx context.Context, op gitprovider.Operation, method, endpoint, accept string, out any) ([]byte, http.Header, error) {
+	token, err := c.bearerToken(ctx, op)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c.doRESTWithToken(ctx, op, method, endpoint, token, accept, out)
+}
+
+func (c *Client) doRESTWithToken(ctx context.Context, op gitprovider.Operation, method, endpoint, token, accept string, out any) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
 	if err != nil {
 		return nil, nil, err
@@ -58,7 +66,11 @@ func (c *Client) doRESTJSON(ctx context.Context, op gitprovider.Operation, metho
 	if err != nil {
 		return err
 	}
-	setHeaders(req, c.token, acceptJSON)
+	token, err := c.bearerToken(ctx, op)
+	if err != nil {
+		return err
+	}
+	setHeaders(req, token, acceptJSON)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -85,7 +97,7 @@ func doRESTPages[T any](ctx context.Context, c *Client, op gitprovider.Operation
 	next := endpoint
 	for next != "" {
 		var page []T
-		_, header, err := c.doREST(ctx, op, http.MethodGet, next, c.token, accept, &page)
+		_, header, err := c.doREST(ctx, op, http.MethodGet, next, accept, &page)
 		if err != nil {
 			return nil, err
 		}
@@ -111,7 +123,11 @@ func (c *Client) doGraphQLWithErrorMapper(ctx context.Context, op gitprovider.Op
 	if err != nil {
 		return err
 	}
-	setHeaders(req, c.token, acceptJSON)
+	token, err := c.bearerToken(ctx, op)
+	if err != nil {
+		return err
+	}
+	setHeaders(req, token, acceptJSON)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

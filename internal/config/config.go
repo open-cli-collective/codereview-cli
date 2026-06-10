@@ -181,7 +181,7 @@ func (m GitAuthMode) Valid() bool {
 
 // Supported reports whether m is implemented in v1.
 func (m GitAuthMode) Supported() bool {
-	return m == GitAuthModePAT
+	return m == GitAuthModePAT || m == GitAuthModeGitHubApp
 }
 
 // LLMProvider identifies the model provider family.

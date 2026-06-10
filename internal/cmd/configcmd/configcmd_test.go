@@ -115,6 +115,42 @@ func TestConfigShowJSON(t *testing.T) {
 	}
 }
 
+func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["work"]
+	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "show", "--profile", "work", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigShow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	var reviewer view.CredentialStatus
+	for _, ref := range got.CredentialRefs {
+		if ref.Purpose == "reviewer_credentials" {
+			reviewer = ref
+			break
+		}
+	}
+	missing := false
+	want := []view.KeyStatus{
+		{Key: credentials.GitHubAppIDKey, Required: true, Present: &missing, Status: "missing"},
+		{Key: credentials.GitHubAppPrivateKeyKey, Required: true, Present: &missing, Status: "missing"},
+		{Key: credentials.GitHubAppInstallationIDKey, Required: false, Present: &missing, Status: "missing"},
+	}
+	if reviewer.Ref != "codereview/work-reviewer" || reviewer.Mode != "github_app" || !reflect.DeepEqual(reviewer.Keys, want) {
+		t.Fatalf("reviewer credential status = %#v, want app keys %#v", reviewer, want)
+	}
+	if strings.Contains(out.String(), "private-key-value") || strings.Contains(out.String(), "installation-token") {
+		t.Fatalf("config show leaked app secret material: %s", out.String())
+	}
+}
+
 func TestConfigShowJSONReportsAgentSourceDeploymentStatus(t *testing.T) {
 	available := t.TempDir()
 	writeConfigTestAgentSource(t, available, "Do not inline this prompt.\n")
@@ -573,6 +609,53 @@ func TestConfigClearDryRunReportsActiveProfileAndPreservesState(t *testing.T) {
 	// #nosec G304,G703 -- test path is controlled by t.TempDir via XDG_DATA_HOME.
 	if got, err := os.ReadFile(dataFile); err != nil || string(got) != "keep" {
 		t.Fatalf("data sentinel = (%q,%v), want kept", got, err)
+	}
+}
+
+func TestConfigClearGitHubAppCredentialMatrix(t *testing.T) {
+	cfg := fileBackendConfig(t)
+	home := cfg.Profiles["home"]
+	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.Git.CredentialRef = "codereview/home-app"
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+	appKeys := []string{
+		credentials.GitHubAppIDKey,
+		credentials.GitHubAppInstallationIDKey,
+		credentials.GitHubAppPrivateKeyKey,
+	}
+	seedFileBackend(t, "home-app", map[string]string{
+		credentials.GitHubAppIDKey:             "12345",
+		credentials.GitHubAppPrivateKeyKey:     "private-key",
+		credentials.GitHubAppInstallationIDKey: "42",
+	})
+
+	dryRunCmd, dryRunOut := newTestCommand(path)
+	if err := root.Execute(dryRunCmd, []string{"config", "clear", "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute dry-run: %v", err)
+	}
+	var dryRun view.ConfigClear
+	if err := json.Unmarshal(dryRunOut.Bytes(), &dryRun); err != nil {
+		t.Fatalf("Unmarshal dry-run JSON: %v\n%s", err, dryRunOut.String())
+	}
+	if len(dryRun.Cleared) != 1 || dryRun.Cleared[0].Ref != "codereview/home-app" || !reflect.DeepEqual(dryRun.Cleared[0].Keys, appKeys) {
+		t.Fatalf("dry-run cleared = %#v, want github app keys", dryRun.Cleared)
+	}
+	assertFileBackendKeys(t, "home-app", appKeys)
+
+	clearCmd, clearOut := newTestCommand(path)
+	if err := root.Execute(clearCmd, []string{"config", "clear", "--json"}); err != nil {
+		t.Fatalf("Execute clear: %v", err)
+	}
+	var cleared view.ConfigClear
+	if err := json.Unmarshal(clearOut.Bytes(), &cleared); err != nil {
+		t.Fatalf("Unmarshal clear JSON: %v\n%s", err, clearOut.String())
+	}
+	if len(cleared.Cleared) != 1 || cleared.Cleared[0].Ref != "codereview/home-app" || !reflect.DeepEqual(cleared.Cleared[0].Keys, appKeys) {
+		t.Fatalf("cleared = %#v, want github app keys", cleared.Cleared)
+	}
+	for _, key := range appKeys {
+		assertFileBackendMissing(t, "home-app", key)
 	}
 }
 

@@ -11,8 +11,11 @@ import (
 // Credential carries already-resolved credential material. This package never
 // reads config, keyrings, environment variables, or files.
 type Credential struct {
-	Type  string
-	Token string
+	Type        string
+	Token       string
+	Login       string
+	ID          string
+	DisplayName string
 }
 
 // PRRef identifies one pull request on one host.

@@ -528,34 +528,38 @@ func credentialStatuses(store *credstore.Store, refs []config.CredentialRef, sto
 		if err != nil {
 			return nil, err
 		}
-		key, err := credentials.KeyForPurpose(ref)
+		specs, err := credentials.KeySpecsForPurpose(ref)
 		if err != nil {
 			return nil, err
 		}
-		var present bool
-		statusErr := storeErr
-		if store != nil {
-			present, statusErr = store.Exists(parsed.Profile, key)
+		keys := make([]view.KeyStatus, 0, len(specs))
+		for _, spec := range specs {
+			var present bool
+			statusErr := storeErr
+			if store != nil {
+				present, statusErr = store.Exists(parsed.Profile, spec.Key)
+			}
+			keys = append(keys, keyStatus(spec.Key, spec.Required, present, statusErr))
 		}
 		statuses = append(statuses, view.CredentialStatus{
 			Purpose: ref.Purpose,
 			Ref:     ref.Ref,
 			Mode:    ref.Mode,
-			Keys:    []view.KeyStatus{keyStatus(key, present, statusErr)},
+			Keys:    keys,
 		})
 	}
 	return statuses, nil
 }
 
-func keyStatus(key string, present bool, err error) view.KeyStatus {
+func keyStatus(key string, required bool, present bool, err error) view.KeyStatus {
 	if err != nil {
-		return view.KeyStatus{Key: key, Status: "unknown", Error: err.Error()}
+		return view.KeyStatus{Key: key, Required: required, Status: "unknown", Error: err.Error()}
 	}
 	status := "missing"
 	if present {
 		status = "present"
 	}
-	return view.KeyStatus{Key: key, Present: &present, Status: status}
+	return view.KeyStatus{Key: key, Required: required, Present: &present, Status: status}
 }
 
 func removeProfileFromConfig(path string, cfg config.File, profileName string) (configClearChange, error) {

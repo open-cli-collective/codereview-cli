@@ -3,7 +3,11 @@ package mecmd
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -107,6 +112,74 @@ func TestMeProfileUsesReviewerCredentials(t *testing.T) {
 	}
 	if len(resolver.calls) != 1 || resolver.calls[0].CredentialRef != "codereview/work-reviewer" {
 		t.Fatalf("resolver calls = %#v, want reviewer ref", resolver.calls)
+	}
+}
+
+func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
+	const installationToken = "me-reviewer-github-app-installation-token" // #nosec G101 -- distinctive test canary, not a real token.
+	store := openFileStore(t)
+	privateKey := testPrivateKeyPEM(t)
+	if _, err := store.SetBundle("work-reviewer", map[string]string{
+		credentials.GitHubAppIDKey:             "12345",
+		credentials.GitHubAppPrivateKeyKey:     privateKey,
+		credentials.GitHubAppInstallationIDKey: "42",
+	}, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle reviewer: %v", err)
+	}
+	cfg := testConfig()
+	cfg.Keyring.Backend = "file"
+	work := cfg.Profiles["work"]
+	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+
+	var appJWTs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.EscapedPath() {
+		case "/app/installations/42":
+			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
+			writeJSON(t, w, map[string]any{"id": 42, "app_id": 12345, "app_slug": "reviewer-app"})
+		case "/app/installations/42/access_tokens":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
+			writeJSON(t, w, map[string]any{
+				"token":      installationToken,
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		return &githubResolver{
+			store: store,
+			options: githubprovider.Options{
+				BaseURL:    server.URL,
+				GraphQLURL: server.URL + "/graphql",
+			},
+		}, nil, nil
+	})
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "me", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(appJWTs) != 2 || !strings.HasPrefix(appJWTs[0], "Bearer ") || !strings.HasPrefix(appJWTs[1], "Bearer ") {
+		t.Fatalf("app JWT auths = %#v, want app JWTs for installation and token requests", appJWTs)
+	}
+	for _, secret := range []string{privateKey, installationToken, "12345", "42"} {
+		if strings.Contains(out.String(), secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, out.String())
+		}
+	}
+	var got view.MeResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if len(got.Profiles) != 1 || got.Profiles[0].CredentialSource != "reviewer_credentials" || got.Profiles[0].Login != "reviewer-app[bot]" {
+		t.Fatalf("JSON = %#v, want reviewer app identity", got)
 	}
 }
 
@@ -331,6 +404,111 @@ func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
 	}
 }
 
+func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T) {
+	store := openFileStore(t)
+	privateKey := testPrivateKeyPEM(t)
+	if _, err := store.SetBundle("home", map[string]string{
+		credentials.GitHubAppIDKey:         "12345",
+		credentials.GitHubAppPrivateKeyKey: privateKey,
+	}, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle home: %v", err)
+	}
+	cfg := testConfig()
+	cfg.Keyring.Backend = "file"
+	home := cfg.Profiles["home"]
+	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+	var out bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: path,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &out,
+		Stderr:     &out,
+	})
+	Register(cmd, opts)
+
+	err := root.Execute(cmd, []string{"--profile", "home", "me"})
+	if !errors.Is(err, gitprovider.ErrAuth) {
+		t.Fatalf("Execute error = %v, want ErrAuth", err)
+	}
+	if !strings.Contains(err.Error(), credentials.GitHubAppInstallationIDKey) {
+		t.Fatalf("Execute error = %v, want missing installation id detail", err)
+	}
+	if strings.Contains(err.Error()+out.String(), privateKey) {
+		t.Fatalf("output leaked private key: err=%v out=%q", err, out.String())
+	}
+}
+
+func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
+	const installationToken = "me-github-app-installation-token" // #nosec G101 -- distinctive test canary, not a real token.
+	store := openFileStore(t)
+	privateKey := testPrivateKeyPEM(t)
+	if _, err := store.SetBundle("home", map[string]string{
+		credentials.GitHubAppIDKey:             "12345",
+		credentials.GitHubAppPrivateKeyKey:     privateKey,
+		credentials.GitHubAppInstallationIDKey: "42",
+	}, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle home: %v", err)
+	}
+	cfg := testConfig()
+	cfg.Keyring.Backend = "file"
+	home := cfg.Profiles["home"]
+	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.ReviewerCredentials = nil
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+
+	var appJWTs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.EscapedPath() {
+		case "/app/installations/42":
+			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
+			writeJSON(t, w, map[string]any{"id": 42, "app_id": 12345, "app_slug": "cr-reviewer"})
+		case "/app/installations/42/access_tokens":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
+			writeJSON(t, w, map[string]any{
+				"token":      installationToken,
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		return &githubResolver{
+			store: store,
+			options: githubprovider.Options{
+				BaseURL:    server.URL,
+				GraphQLURL: server.URL + "/graphql",
+			},
+		}, nil, nil
+	})
+
+	if err := root.Execute(cmd, []string{"me", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(appJWTs) != 2 || !strings.HasPrefix(appJWTs[0], "Bearer ") || !strings.HasPrefix(appJWTs[1], "Bearer ") {
+		t.Fatalf("app JWT auths = %#v, want app JWTs for installation and token requests", appJWTs)
+	}
+	for _, secret := range []string{privateKey, installationToken, "12345", "42"} {
+		if strings.Contains(out.String(), secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, out.String())
+		}
+	}
+	var got view.MeResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if len(got.Profiles) != 1 || got.Profiles[0].CredentialSource != "git" || got.Profiles[0].Login != "cr-reviewer[bot]" {
+		t.Fatalf("JSON = %#v, want app-backed git identity", got)
+	}
+}
+
 func TestMeReservedAuthModeExitCode(t *testing.T) {
 	path := writeRawTestConfig(t, `default_profile: home
 keyring:
@@ -364,7 +542,7 @@ profiles:
 	}
 }
 
-func TestMeReviewerReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
+func TestMeReviewerGitHubAppAuthModeUsesResolver(t *testing.T) {
 	path := writeRawTestConfig(t, `default_profile: work
 keyring:
   backend: memory
@@ -382,21 +560,22 @@ profiles:
       auth: subscription
       adapter: claude_cli
 `)
-	factoryOpened := false
+	resolver := &fakeResolver{
+		identities: map[string]gitprovider.Identity{"codereview/work-reviewer": {Login: "cr-reviewer[bot]", ID: "12345"}},
+		errs:       map[string]error{},
+	}
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
-		factoryOpened = true
-		return &fakeResolver{}, nil, nil
+		return resolver, nil, nil
 	})
 
 	err := root.Execute(cmd, []string{"--profile", "work", "me"})
-	if !errors.Is(err, config.ErrUnsupported) {
-		t.Fatalf("Execute error = %v, want ErrUnsupported", err)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
-		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
-	}
-	if factoryOpened {
-		t.Fatal("resolver factory opened for unsupported reviewer auth mode")
+	if len(resolver.calls) != 1 ||
+		resolver.calls[0].AuthMode != config.GitAuthModeGitHubApp ||
+		resolver.calls[0].CredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("resolver calls = %#v, want reviewer github_app config", resolver.calls)
 	}
 }
 
@@ -813,6 +992,16 @@ func openFileStore(t *testing.T) *credstore.Store {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func testPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
+	return string(pem.EncodeToMemory(block))
 }
 
 func testConfig() config.File {

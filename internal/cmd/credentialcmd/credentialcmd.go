@@ -228,6 +228,9 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 		if !reviewerMode.Supported() {
 			return exitcode.Usage(fmt.Errorf("--reviewer-auth-mode %s is not supported in v1", flags.reviewerAuth))
 		}
+		if reviewerMode != config.GitAuthModePAT && (flags.reviewerTokenStdin || flags.reviewerTokenEnv != "") {
+			return exitcode.Usage(fmt.Errorf("reviewer token ingress requires --reviewer-auth-mode %s", config.GitAuthModePAT))
+		}
 		if reviewerRef == "" {
 			reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
 			if err != nil {
@@ -238,7 +241,7 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 			return exitcode.Usage(err)
 		}
 		if reviewerRef == gitRef {
-			return exitcode.Usage(fmt.Errorf("--reviewer-credential-ref %q must differ from --git-credential-ref because both store %s", reviewerRef, credentials.GitTokenKey))
+			return exitcode.Usage(fmt.Errorf("--reviewer-credential-ref %q must differ from --git-credential-ref", reviewerRef))
 		}
 	}
 	llmRef := flags.llmRef
@@ -406,15 +409,36 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 		backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
 	}
 	if !hasGitSecret {
-		_, err = fmt.Fprintf(opts.Stderr, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, gitRef, credentials.GitTokenKey)
+		err = writeCredentialHints(opts.Stderr, backendArg, config.CredentialRef{
+			Purpose: "git",
+			Ref:     gitRef,
+			Mode:    string(config.GitAuthModePAT),
+		})
 	}
 	if reviewerRequested && !hasReviewerSecret {
-		_, reviewerHintErr := fmt.Fprintf(opts.Stderr, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, reviewerRef, credentials.GitTokenKey)
+		reviewerHintErr := writeCredentialHints(opts.Stderr, backendArg, config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     reviewerRef,
+			Mode:    string(reviewerMode),
+		})
 		if err == nil {
 			err = reviewerHintErr
 		}
 	}
 	return err
+}
+
+func writeCredentialHints(w io.Writer, backendArg string, ref config.CredentialRef) error {
+	specs, err := credentials.KeySpecsForPurpose(ref)
+	if err != nil {
+		return err
+	}
+	for _, spec := range specs {
+		if _, err := fmt.Fprintf(w, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, ref.Ref, spec.Key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func readSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag string) (string, error) {

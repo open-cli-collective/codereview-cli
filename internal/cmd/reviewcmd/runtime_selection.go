@@ -26,6 +26,9 @@ func OpenSelectionRuntime(_ context.Context, backend string, backendFlagChanged 
 		return SelectionRuntime{}, err
 	}
 	cleanup := func() { _ = store.Close() }
+	// Selection-only paths read with the profile git credential. Reviewer
+	// credentials are applied by the review runtime where posting identity and
+	// PR-scoped GitHub App installation lookup are available.
 	provider, _, err := newGitProvider(profile.Git, store, githubprovider.Options{})
 	if err != nil {
 		cleanup()

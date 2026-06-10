@@ -419,6 +419,92 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	}
 }
 
+func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
+	statedirtest.Hermetic(t)
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	profile := cfg.Profiles["work"]
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	cfg.Profiles["work"] = profile
+
+	var providerCalls []config.GitConfig
+	reviewerProvider := &gitprovider.Fake{}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(git config.GitConfig, _ githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			providerCalls = append(providerCalls, git)
+			return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
+		},
+		func(_ context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ githubprovider.TokenStore, _ config.Profile) (gitprovider.Identity, error) {
+			if provider != reviewerProvider || credential.Token != "reviewer-token" {
+				t.Fatalf("identity resolver got provider=%p credential=%#v, want reviewer provider/token", provider, credential)
+			}
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	runtime, err := newRuntime(cmd, &root.Options{Stderr: io.Discard}, cfg, profile, RuntimeOptions{})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+	if len(providerCalls) != 1 || providerCalls[0].CredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("provider calls = %#v, want reviewer credential ref only", providerCalls)
+	}
+	runner, ok := runtime.Runner.(reviewRunner)
+	if !ok {
+		t.Fatalf("Runner type = %T, want reviewRunner", runtime.Runner)
+	}
+	if runner.pipeline.Provider != reviewerProvider || runner.live.Provider != reviewerProvider {
+		t.Fatalf("runtime providers = pipeline:%p live:%p, want reviewer provider %p", runner.pipeline.Provider, runner.live.Provider, reviewerProvider)
+	}
+}
+
+func TestNewRuntimePassesPRRefForGitHubAppInstallationLookup(t *testing.T) {
+	statedirtest.Hermetic(t)
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	profile := cfg.Profiles["home"]
+	profile.Git.AuthMode = config.GitAuthModeGitHubApp
+	cfg.Profiles["home"] = profile
+	prRef := gitprovider.PRRef{Host: "github.com", Owner: "open-cli", Repo: "codereview-cli", Number: 76}
+
+	var gotLookup *githubprovider.InstallationLookup
+	withReviewRuntimeSeams(t,
+		func(_ config.GitConfig, _ githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			gotLookup = opts.InstallationLookup
+			return &gitprovider.Fake{}, gitprovider.Credential{Type: "github_app", Token: "installation-token", Login: "cr-reviewer[bot]"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return gitprovider.Identity{Login: "cr-reviewer[bot]", ID: "12345"}, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	runtime, err := newRuntime(cmd, &root.Options{Stderr: io.Discard}, cfg, profile, RuntimeOptions{PRRef: prRef})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+	if gotLookup == nil || gotLookup.Owner != "open-cli" || gotLookup.Repo != "codereview-cli" {
+		t.Fatalf("InstallationLookup = %#v, want PR owner/repo", gotLookup)
+	}
+}
+
 func TestNewRuntimeLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
 	statedirtest.Hermetic(t)
 	cfg := testConfig()

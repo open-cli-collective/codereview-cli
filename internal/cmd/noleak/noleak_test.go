@@ -3,7 +3,11 @@ package noleak
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,6 +87,22 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			env: secretEnv,
 		},
 		{
+			name:    "set github app private key json",
+			prepare: saveGitHubAppReviewerConfigOnly,
+			args: func(*auditHarness) []string {
+				return []string{"set-credential", "--ref", "codereview/default-reviewer-app", "--key", credentials.GitHubAppPrivateKeyKey, "--from-env", "CR_NOLEAK_APP_PRIVATE_KEY", "--overwrite", "--json"}
+			},
+			env: secretEnv,
+		},
+		{
+			name:    "set github app installation id text",
+			prepare: saveGitHubAppReviewerConfigOnly,
+			args: func(*auditHarness) []string {
+				return []string{"set-credential", "--ref", "codereview/default-reviewer-app", "--key", credentials.GitHubAppInstallationIDKey, "--from-env", "CR_NOLEAK_APP_INSTALLATION_ID", "--overwrite"}
+			},
+			env: secretEnv,
+		},
+		{
 			name:    "set credential duplicate failure",
 			prepare: seedConfiguredCredentials,
 			args: func(*auditHarness) []string {
@@ -101,6 +122,11 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args:    staticArgs("config", "show", "--json"),
 		},
 		{
+			name:    "config show github app json",
+			prepare: seedGitHubAppConfigShowCredentials,
+			args:    staticArgs("config", "show", "--json"),
+		},
+		{
 			name:    "config clear json",
 			prepare: seedConfiguredCredentials,
 			args:    staticArgs("config", "clear", "--json"),
@@ -113,6 +139,11 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 		{
 			name:    "me json",
 			prepare: seedConfiguredCredentials,
+			args:    staticArgs("me", "--json"),
+		},
+		{
+			name:    "me github app json",
+			prepare: seedGitHubAppGitCredentials,
 			args:    staticArgs("me", "--json"),
 		},
 		{
@@ -164,6 +195,20 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			prepare: seedConfiguredCredentials,
 			args: func(h *auditHarness) []string {
 				return []string{"review", "--json", h.prURL}
+			},
+		},
+		{
+			name:    "review github app reviewer live",
+			prepare: seedGitHubAppReviewerCredentials,
+			args: func(h *auditHarness) []string {
+				return []string{"review", h.prURL}
+			},
+		},
+		{
+			name:    "review github app git live",
+			prepare: seedGitHubAppGitLookupCredentials,
+			args: func(h *auditHarness) []string {
+				return []string{"review", h.prURL}
 			},
 		},
 		{
@@ -251,11 +296,17 @@ type auditHarness struct {
 	now        time.Time
 	llmCalls   atomic.Int32
 
-	gitSecret      string
-	reviewerSecret string
-	llmSecret      string
-	keyringSecret  string
-	secrets        []string
+	gitSecret                     string
+	reviewerSecret                string
+	llmSecret                     string
+	keyringSecret                 string
+	githubAppIDSecret             string
+	githubAppPrivateKey           string
+	githubAppInstallationIDSecret string
+	githubAppInstallationToken    string
+	githubAppSlug                 string
+	secretMu                      sync.Mutex
+	secrets                       []string
 }
 
 func newAuditHarness(t *testing.T) *auditHarness {
@@ -263,6 +314,7 @@ func newAuditHarness(t *testing.T) *auditHarness {
 	rootDir := statedirtest.Hermetic(t)
 	keyringSecret := "noleak-file-keyring-passphrase" // #nosec G101 -- distinctive test canary, not a real passphrase.
 	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", keyringSecret)
+	appPrivateKey := noLeakPrivateKeyPEM(t)
 
 	configPath, err := config.Path()
 	if err != nil {
@@ -273,18 +325,23 @@ func newAuditHarness(t *testing.T) *auditHarness {
 		t.Fatalf("DefaultLayoutEnsured: %v", err)
 	}
 	h := &auditHarness{ // #nosec G101 -- these are distinctive test canaries, not real credentials.
-		t:              t,
-		configPath:     configPath,
-		configRoot:     filepath.Dir(configPath),
-		layout:         layout,
-		agentDir:       filepath.Join(rootDir, "agents"),
-		headSHA:        strings.Repeat("a", 40),
-		baseSHA:        strings.Repeat("b", 40),
-		now:            time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
-		gitSecret:      "cr-noleak-git-token-0001",
-		reviewerSecret: "cr-noleak-reviewer-token-0002",
-		llmSecret:      "cr-noleak-llm-key-0003",
-		keyringSecret:  keyringSecret,
+		t:                             t,
+		configPath:                    configPath,
+		configRoot:                    filepath.Dir(configPath),
+		layout:                        layout,
+		agentDir:                      filepath.Join(rootDir, "agents"),
+		headSHA:                       strings.Repeat("a", 40),
+		baseSHA:                       strings.Repeat("b", 40),
+		now:                           time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+		gitSecret:                     "cr-noleak-git-token-0001",
+		reviewerSecret:                "cr-noleak-reviewer-token-0002",
+		llmSecret:                     "cr-noleak-llm-key-0003",
+		keyringSecret:                 keyringSecret,
+		githubAppIDSecret:             "1004005006",
+		githubAppPrivateKey:           appPrivateKey,
+		githubAppInstallationIDSecret: "42424242",
+		githubAppInstallationToken:    "cr-noleak-installation-token-0004",
+		githubAppSlug:                 "codereview-noleak",
 	}
 	githubServer := httptest.NewServer(http.HandlerFunc(h.handleGitHub))
 	t.Cleanup(githubServer.Close)
@@ -302,7 +359,16 @@ func newAuditHarness(t *testing.T) *auditHarness {
 		t.Fatalf("PRKey: %v", err)
 	}
 	h.prKey = prKey
-	h.secrets = []string{h.gitSecret, h.reviewerSecret, h.llmSecret, h.keyringSecret}
+	h.secrets = []string{
+		h.gitSecret,
+		h.reviewerSecret,
+		h.llmSecret,
+		h.keyringSecret,
+		h.githubAppIDSecret,
+		h.githubAppPrivateKey,
+		h.githubAppInstallationIDSecret,
+		h.githubAppInstallationToken,
+	}
 	writeAgent(t, h.agentDir, "harness", "reviewer", "No-leak harness reviewer.", "Review changed Go files without mentioning credentials.\n")
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 	return h
@@ -366,30 +432,107 @@ func (h *auditHarness) config() config.File {
 	}
 }
 
+func (h *auditHarness) githubAppReviewerConfig() config.File {
+	cfg := h.config()
+	profile := cfg.Profiles["default"]
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/default-reviewer-app",
+	}
+	cfg.Profiles["default"] = profile
+	return cfg
+}
+
+func (h *auditHarness) githubAppGitConfig() config.File {
+	cfg := h.config()
+	profile := cfg.Profiles["default"]
+	profile.Git.AuthMode = config.GitAuthModeGitHubApp
+	profile.Git.CredentialRef = "codereview/default-app"
+	profile.ReviewerCredentials = nil
+	cfg.Profiles["default"] = profile
+	return cfg
+}
+
 func (h *auditHarness) saveConfig(t *testing.T) {
 	t.Helper()
-	if err := config.Save(h.configPath, h.config()); err != nil {
+	h.saveConfigFile(t, h.config())
+}
+
+func (h *auditHarness) saveConfigFile(t *testing.T, cfg config.File) {
+	t.Helper()
+	if err := config.Save(h.configPath, cfg); err != nil {
 		t.Fatalf("Save config: %v", err)
 	}
+}
+
+type credentialSeed struct {
+	ref    string
+	key    string
+	secret string
 }
 
 func (h *auditHarness) seedCredentials(t *testing.T) {
 	t.Helper()
 	cfg := h.config()
+	h.seedCredentialWrites(t, cfg, []credentialSeed{
+		{ref: "codereview/default", key: credentials.GitTokenKey, secret: h.gitSecret},
+		{ref: "codereview/default-reviewer", key: credentials.GitTokenKey, secret: h.reviewerSecret},
+		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
+	})
+}
+
+func (h *auditHarness) seedGitHubAppConfigShowCredentials(t *testing.T) {
+	t.Helper()
+	cfg := h.githubAppReviewerConfig()
+	h.seedCredentialWrites(t, cfg, []credentialSeed{
+		{ref: "codereview/default", key: credentials.GitTokenKey, secret: h.gitSecret},
+		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
+		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppInstallationIDKey, secret: h.githubAppInstallationIDSecret},
+		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
+	})
+}
+
+func (h *auditHarness) seedGitHubAppGitCredentials(t *testing.T) {
+	t.Helper()
+	cfg := h.githubAppGitConfig()
+	h.seedCredentialWrites(t, cfg, []credentialSeed{
+		{ref: "codereview/default-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
+		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-app", key: credentials.GitHubAppInstallationIDKey, secret: h.githubAppInstallationIDSecret},
+		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
+	})
+}
+
+func (h *auditHarness) seedGitHubAppGitLookupCredentials(t *testing.T) {
+	t.Helper()
+	cfg := h.githubAppGitConfig()
+	h.seedCredentialWrites(t, cfg, []credentialSeed{
+		{ref: "codereview/default-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
+		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
+	})
+}
+
+func (h *auditHarness) seedGitHubAppReviewerCredentials(t *testing.T) {
+	t.Helper()
+	cfg := h.githubAppReviewerConfig()
+	h.seedCredentialWrites(t, cfg, []credentialSeed{
+		{ref: "codereview/default", key: credentials.GitTokenKey, secret: h.gitSecret},
+		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
+		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
+	})
+}
+
+func (h *auditHarness) seedCredentialWrites(t *testing.T, cfg config.File, writes []credentialSeed) {
+	t.Helper()
+	h.saveConfigFile(t, cfg)
 	store, err := credentials.OpenStore(string(credstore.BackendFile), true, cfg)
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer store.Close()
-	writes := []struct {
-		ref    string
-		key    string
-		secret string
-	}{
-		{ref: "codereview/default", key: credentials.GitTokenKey, secret: h.gitSecret},
-		{ref: "codereview/default-reviewer", key: credentials.GitTokenKey, secret: h.reviewerSecret},
-		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
-	}
 	for _, write := range writes {
 		ref, err := credentials.ParseRef(write.ref)
 		if err != nil {
@@ -414,7 +557,7 @@ func (h *auditHarness) providerFactory(_ *cobra.Command, _ *root.Options, cfg co
 	if err != nil {
 		return nil, nil, err
 	}
-	provider, _, err := h.newGitHubProvider(profile.Git, store)
+	provider, _, err := h.newGitHubProvider(profile.Git, store, nil)
 	if err != nil {
 		_ = store.Close()
 		return nil, nil, err
@@ -428,12 +571,13 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 		return reviewcmd.Runtime{}, err
 	}
 	cleanup := func() { _ = store.Close() }
-	provider, credential, err := h.newGitHubProvider(profile.Git, store)
+	providerGit := gitConfigForReviewerAuth(profile)
+	provider, credential, err := h.newGitHubProvider(providerGit, store, installationLookup(runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
 		return reviewcmd.Runtime{}, err
 	}
-	postingIdentity, err := h.resolvePostingIdentity(cmd.Context(), provider, credential, store, profile)
+	postingIdentity, err := provider.WhoAmI(cmd.Context(), credential)
 	if err != nil {
 		cleanup()
 		return reviewcmd.Runtime{}, err
@@ -487,28 +631,31 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 	}, nil
 }
 
-func (h *auditHarness) newGitHubProvider(git config.GitConfig, store githubprovider.TokenStore) (*githubprovider.Client, gitprovider.Credential, error) {
+func (h *auditHarness) newGitHubProvider(git config.GitConfig, store githubprovider.TokenStore, lookup *githubprovider.InstallationLookup) (*githubprovider.Client, gitprovider.Credential, error) {
 	return githubprovider.NewFromGitConfig(git, store, githubprovider.Options{
-		BaseURL:    h.githubURL,
-		GraphQLURL: h.graphQLURL,
+		BaseURL:            h.githubURL,
+		GraphQLURL:         h.graphQLURL,
+		InstallationLookup: lookup,
 	})
 }
 
-func (h *auditHarness) resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, store githubprovider.TokenStore, profile config.Profile) (gitprovider.Identity, error) {
+func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 	if profile.ReviewerCredentials == nil {
-		return provider.WhoAmI(ctx, credential)
+		return profile.Git
 	}
-	reviewerGit := config.GitConfig{
+	return config.GitConfig{
 		Host:          profile.Git.Host,
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
 		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}
-	reviewerProvider, reviewerCredential, err := h.newGitHubProvider(reviewerGit, store)
-	if err != nil {
-		return gitprovider.Identity{}, err
+}
+
+func installationLookup(ref gitprovider.PRRef) *githubprovider.InstallationLookup {
+	if strings.TrimSpace(ref.Owner) == "" || strings.TrimSpace(ref.Repo) == "" {
+		return nil
 	}
-	return reviewerProvider.WhoAmI(ctx, reviewerCredential)
+	return &githubprovider.InstallationLookup{Owner: ref.Owner, Repo: ref.Repo}
 }
 
 func (h *auditHarness) seedNamedSession(t *testing.T) {
@@ -575,9 +722,29 @@ func (h *auditHarness) handleGitHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pullPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", h.prRef.Owner, h.prRef.Repo, h.prRef.Number)
+	appInstallationPath := "/app/installations/" + h.githubAppInstallationIDSecret
+	repoInstallationPath := fmt.Sprintf("/repos/%s/%s/installation", h.prRef.Owner, h.prRef.Repo)
 	switch {
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == appInstallationPath:
+		if !h.requireGitHubAppJWT(w, r) {
+			return
+		}
+		h.writeGitHubAppInstallation(w)
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == repoInstallationPath:
+		if !h.requireGitHubAppJWT(w, r) {
+			return
+		}
+		h.writeGitHubAppInstallation(w)
+	case r.Method == http.MethodPost && r.URL.EscapedPath() == appInstallationPath+"/access_tokens":
+		if !h.requireGitHubAppJWT(w, r) {
+			return
+		}
+		writeHTTPJSON(h.t, w, map[string]any{
+			"token":      h.githubAppInstallationToken,
+			"expires_at": h.now.Add(time.Hour).Format(time.RFC3339),
+		})
 	case r.Method == http.MethodGet && r.URL.EscapedPath() == "/user":
-		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret) {
+		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
 			return
 		}
 		login := "git-user"
@@ -585,15 +752,18 @@ func (h *auditHarness) handleGitHub(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "Bearer "+h.reviewerSecret {
 			login = "reviewer-user"
 			id = 1002
+		} else if r.Header.Get("Authorization") == "Bearer "+h.githubAppInstallationToken {
+			login = h.githubAppSlug + "[bot]"
+			id = 1005
 		}
 		writeHTTPJSON(h.t, w, map[string]any{"login": login, "id": id, "name": login})
 	case r.Method == http.MethodGet && r.URL.EscapedPath() == pullPath && r.Header.Get("Accept") == "application/vnd.github.v3.diff":
-		if !h.requireBearer(w, r, h.gitSecret) {
+		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
 			return
 		}
 		_, _ = w.Write([]byte(h.diff()))
 	case r.Method == http.MethodGet && r.URL.EscapedPath() == pullPath:
-		if !h.requireBearer(w, r, h.gitSecret) {
+		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
 			return
 		}
 		writeHTTPJSON(h.t, w, map[string]any{
@@ -620,22 +790,22 @@ func (h *auditHarness) handleGitHub(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 	case r.Method == http.MethodGet && r.URL.EscapedPath() == pullPath+"/reviews":
-		if !h.requireBearer(w, r, h.gitSecret) {
+		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
 			return
 		}
 		writeHTTPJSON(h.t, w, []map[string]any{})
 	case r.Method == http.MethodGet && r.URL.EscapedPath() == fmt.Sprintf("/repos/%s/%s/issues/%d/comments", h.prRef.Owner, h.prRef.Repo, h.prRef.Number):
-		if !h.requireBearer(w, r, h.gitSecret) {
+		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
 			return
 		}
 		writeHTTPJSON(h.t, w, []map[string]any{})
 	case r.Method == http.MethodPost && r.URL.EscapedPath() == fmt.Sprintf("/repos/%s/%s/issues/%d/comments", h.prRef.Owner, h.prRef.Repo, h.prRef.Number):
-		if !h.requireBearer(w, r, h.gitSecret) {
+		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
 			return
 		}
 		writeHTTPJSON(h.t, w, map[string]any{"id": 201})
 	case r.Method == http.MethodPost && r.URL.EscapedPath() == pullPath+"/reviews":
-		if !h.requireBearer(w, r, h.gitSecret) {
+		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
 			return
 		}
 		writeHTTPJSON(h.t, w, map[string]any{"id": 301})
@@ -650,7 +820,7 @@ func (h *auditHarness) handleGitHubGraphQL(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !h.requireBearer(w, r, h.gitSecret) {
+	if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
 		return
 	}
 	var req struct {
@@ -704,6 +874,31 @@ func (h *auditHarness) handleLLM(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *auditHarness) writeGitHubAppInstallation(w http.ResponseWriter) {
+	writeHTTPJSON(h.t, w, map[string]any{
+		"id":       42424242,
+		"app_id":   1004005006,
+		"app_slug": h.githubAppSlug,
+	})
+}
+
+func (h *auditHarness) requireGitHubAppJWT(w http.ResponseWriter, r *http.Request) bool {
+	got := r.Header.Get("Authorization")
+	if !strings.HasPrefix(got, "Bearer ") {
+		h.t.Errorf("request %s %s did not use GitHub App JWT authorization", r.Method, r.URL.String())
+		http.Error(w, "bad github app jwt", http.StatusUnauthorized)
+		return false
+	}
+	token := strings.TrimPrefix(got, "Bearer ")
+	if len(strings.Split(token, ".")) != 3 {
+		h.t.Errorf("request %s %s did not use a JWT-shaped GitHub App token", r.Method, r.URL.String())
+		http.Error(w, "bad github app jwt", http.StatusUnauthorized)
+		return false
+	}
+	h.noteSecret(token)
+	return true
+}
+
 func (h *auditHarness) requireBearer(w http.ResponseWriter, r *http.Request, allowed ...string) bool {
 	got := r.Header.Get("Authorization")
 	for _, secret := range allowed {
@@ -714,6 +909,21 @@ func (h *auditHarness) requireBearer(w http.ResponseWriter, r *http.Request, all
 	h.t.Errorf("request %s %s did not use an expected bearer credential", r.Method, r.URL.String())
 	http.Error(w, "bad bearer credential", http.StatusUnauthorized)
 	return false
+}
+
+func (h *auditHarness) noteSecret(secret string) {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return
+	}
+	h.secretMu.Lock()
+	defer h.secretMu.Unlock()
+	for _, existing := range h.secrets {
+		if existing == secret {
+			return
+		}
+	}
+	h.secrets = append(h.secrets, secret)
 }
 
 func (h *auditHarness) diff() string {
@@ -740,7 +950,10 @@ func writeHTTPJSON(t *testing.T, w http.ResponseWriter, value any) {
 
 func (h *auditHarness) assertNoLeaks(t *testing.T, label string, data []byte) {
 	t.Helper()
-	if err := credstore.NoLeakAssertion(data, h.secrets...); err != nil {
+	h.secretMu.Lock()
+	secrets := append([]string(nil), h.secrets...)
+	h.secretMu.Unlock()
+	if err := credstore.NoLeakAssertion(data, secrets...); err != nil {
 		t.Fatalf("%s leaked a seeded secret: %v", label, err)
 	}
 }
@@ -802,7 +1015,7 @@ type realIdentityResolver struct {
 }
 
 func (r realIdentityResolver) ResolveIdentity(ctx context.Context, git config.GitConfig) (gitprovider.Identity, error) {
-	provider, credential, err := r.h.newGitHubProvider(git, r.store)
+	provider, credential, err := r.h.newGitHubProvider(git, r.store, nil)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}
@@ -843,10 +1056,35 @@ func saveConfigOnly(t *testing.T, h *auditHarness) {
 	h.saveConfig(t)
 }
 
+func saveGitHubAppReviewerConfigOnly(t *testing.T, h *auditHarness) {
+	t.Helper()
+	h.saveConfigFile(t, h.githubAppReviewerConfig())
+}
+
 func seedConfiguredCredentials(t *testing.T, h *auditHarness) {
 	t.Helper()
 	h.saveConfig(t)
 	h.seedCredentials(t)
+}
+
+func seedGitHubAppConfigShowCredentials(t *testing.T, h *auditHarness) {
+	t.Helper()
+	h.seedGitHubAppConfigShowCredentials(t)
+}
+
+func seedGitHubAppGitCredentials(t *testing.T, h *auditHarness) {
+	t.Helper()
+	h.seedGitHubAppGitCredentials(t)
+}
+
+func seedGitHubAppGitLookupCredentials(t *testing.T, h *auditHarness) {
+	t.Helper()
+	h.seedGitHubAppGitLookupCredentials(t)
+}
+
+func seedGitHubAppReviewerCredentials(t *testing.T, h *auditHarness) {
+	t.Helper()
+	h.seedGitHubAppReviewerCredentials(t)
 }
 
 func prepareNamedSession(t *testing.T, h *auditHarness) {
@@ -869,9 +1107,12 @@ func staticArgs(args ...string) func(*auditHarness) []string {
 
 func secretEnv(h *auditHarness) map[string]string {
 	return map[string]string{
-		"CR_NOLEAK_GIT":      h.gitSecret,
-		"CR_NOLEAK_REVIEWER": h.reviewerSecret,
-		"CR_NOLEAK_LLM":      h.llmSecret,
+		"CR_NOLEAK_GIT":                 h.gitSecret,
+		"CR_NOLEAK_REVIEWER":            h.reviewerSecret,
+		"CR_NOLEAK_LLM":                 h.llmSecret,
+		"CR_NOLEAK_APP_ID":              h.githubAppIDSecret,
+		"CR_NOLEAK_APP_PRIVATE_KEY":     h.githubAppPrivateKey,
+		"CR_NOLEAK_APP_INSTALLATION_ID": h.githubAppInstallationIDSecret,
 	}
 }
 
@@ -890,4 +1131,14 @@ func writeFile(t *testing.T, path, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s): %v", path, err)
 	}
+}
+
+func noLeakPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
+	return string(pem.EncodeToMemory(block))
 }
