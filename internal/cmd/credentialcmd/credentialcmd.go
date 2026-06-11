@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -141,28 +144,40 @@ type initOptions struct {
 }
 
 type initPrompter interface {
-	Run(initPromptContext) (initPlan, error)
+	Run(initPromptContext) (initDraft, error)
 }
 
-type terminalSecretReader interface {
-	ReadSecret(prompt string) (string, error)
+type initPromptContext struct {
+	RequestedProfileName string
+	ExistingProfileName  string
+	ExistingProfile      *config.Profile
+	ExistingProfileNames []string
+	DefaultProfileName   string
+	ExistingConfig       config.File
 }
 
-type clipboardReader interface {
-	ReadText() (string, error)
+type initDraft struct {
+	OriginalProfileName   string
+	ProfileName           string
+	MakeDefault           bool
+	GitHost               string
+	GitCredentialRef      string
+	ReviewerEnabled       bool
+	ReviewerAuth          string
+	ReviewerCredentialRef string
+	LLMProvider           string
+	LLMAuth               string
+	LLMAdapter            string
+	LLMCredentialRef      string
 }
-
-type initPromptContext struct{}
 
 type initDeps struct {
-	prompter        initPrompter
-	terminalSecrets terminalSecretReader
-	clipboard       clipboardReader
-	configPath      func(*root.Options) (string, error)
-	loadConfig      func(string) (config.File, bool, error)
-	saveConfig      func(string, config.File) error
-	openStore       func(string, bool, config.File) (*credstore.Store, error)
-	readSecret      func(io.Reader, bool, string, string, string) (string, bool, error)
+	prompter   initPrompter
+	configPath func(*root.Options) (string, error)
+	loadConfig func(string) (config.File, bool, error)
+	saveConfig func(string, config.File) error
+	openStore  func(string, bool, config.File) (*credstore.Store, error)
+	readSecret func(io.Reader, bool, string, string, string) (string, bool, error)
 }
 
 type initPlan struct {
@@ -175,6 +190,8 @@ type initPlan struct {
 	backendFlagSet    bool
 	backendArg        string
 	llmSecretProvided bool
+	allowDeferredLLM  bool
+	writeLLMHint      bool
 }
 
 type initCredentialPlanState string
@@ -291,14 +308,261 @@ func runInitWithDeps(cmd *cobra.Command, opts *root.Options, flags initOptions, 
 	return applyInitPlan(opts, flags, deps, plan)
 }
 
-func runInteractiveInit(_ *cobra.Command, _ *root.Options, _ initOptions, deps initDeps) error {
-	// Future interactive dependencies are intentionally inert while v1 remains gated.
-	_ = deps.hasInteractiveDeps()
-	return exitcode.Usage(fmt.Errorf("init requires --non-interactive in v1"))
+func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) error {
+	profileName := opts.Profile
+	if profileName == "" {
+		profileName = credstore.DefaultProfile
+	}
+	path, err := deps.configPath(opts)
+	if err != nil {
+		return exitcode.AuthConfig(err)
+	}
+	cfg, _, err := deps.loadConfig(path)
+	if err != nil {
+		return cmderr.Config(err)
+	}
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]config.Profile{}
+	}
+	existingProfileName := ""
+	var existingProfile *config.Profile
+	if profile, ok := cfg.Profiles[profileName]; ok {
+		existingProfileName = profileName
+		profileCopy := profile
+		existingProfile = &profileCopy
+	} else if opts.Profile == "" && cfg.DefaultProfile != "" {
+		if profile, ok := cfg.Profiles[cfg.DefaultProfile]; ok {
+			existingProfileName = cfg.DefaultProfile
+			profileCopy := profile
+			existingProfile = &profileCopy
+			profileName = cfg.DefaultProfile
+		}
+	}
+	prompter := deps.prompter
+	if prompter == nil {
+		prompter = newHuhInitPrompter(opts)
+	}
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: profileName,
+		ExistingProfileName:  existingProfileName,
+		ExistingProfile:      existingProfile,
+		ExistingProfileNames: sortedProfileNames(cfg.Profiles),
+		DefaultProfileName:   cfg.DefaultProfile,
+		ExistingConfig:       cfg,
+	})
+	if err != nil {
+		return err
+	}
+	plan, err := buildInteractiveInitPlan(cmd, opts, flags, deps, path, cfg, draft)
+	if err != nil {
+		return err
+	}
+	return applyInitPlan(opts, flags, deps, plan)
 }
 
-func (deps initDeps) hasInteractiveDeps() bool {
-	return deps.prompter != nil || deps.terminalSecrets != nil || deps.clipboard != nil
+type huhInitPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
+func newHuhInitPrompter(opts *root.Options) initPrompter {
+	return huhInitPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
+	selectedProfileName := ctx.ExistingProfileName
+	selectedExistingProfile := ctx.ExistingProfile
+	if len(ctx.ExistingProfileNames) > 0 {
+		choice := "__create__"
+		options := make([]huh.Option[string], 0, len(ctx.ExistingProfileNames)+1)
+		for _, name := range ctx.ExistingProfileNames {
+			options = append(options, huh.NewOption("Edit "+name, name))
+			if name == ctx.ExistingProfileName {
+				choice = name
+			}
+		}
+		if ctx.ExistingProfile == nil {
+			choice = "__create__"
+		}
+		options = append(options, huh.NewOption("Create new profile", "__create__"))
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Choose a profile to edit or create").
+					Options(options...).
+					Value(&choice),
+			),
+		).WithInput(p.stdin).WithOutput(p.stderr)
+		if err := form.Run(); err != nil {
+			return initDraft{}, err
+		}
+		if choice == "__create__" {
+			selectedProfileName = ""
+			selectedExistingProfile = nil
+		} else {
+			selectedProfileName = choice
+			profile := ctx.ExistingConfig.Profiles[choice]
+			profileCopy := profile
+			selectedExistingProfile = &profileCopy
+		}
+	}
+
+	draft := seedInteractiveInitDraft(ctx.RequestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
+	reviewerGroup := huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Reviewer credential auth mode").
+			Options(
+				huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
+				huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
+			).
+			Value(&draft.ReviewerAuth),
+		huh.NewInput().
+			Title("Reviewer credential ref").
+			Description("Leave blank to use the standard profile-based ref.").
+			Value(&draft.ReviewerCredentialRef).
+			Validate(validateOptionalCredentialRef),
+	).WithHideFunc(func() bool {
+		return !draft.ReviewerEnabled
+	})
+	llmRefGroup := huh.NewGroup(
+		huh.NewInput().
+			Title("LLM credential ref").
+			Description("Leave blank to use the standard profile-based ref. The secret itself is configured later.").
+			Value(&draft.LLMCredentialRef).
+			Validate(validateOptionalCredentialRef),
+	).WithHideFunc(func() bool {
+		return draft.LLMAuth != string(config.LLMAuthAPIKey)
+	})
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Profile name").
+				Value(&draft.ProfileName).
+				Validate(validateProfileName),
+			huh.NewConfirm().
+				Title("Make this the default profile").
+				Value(&draft.MakeDefault),
+		).Title("Profile"),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Git host").
+				Value(&draft.GitHost).
+				Validate(validateRequiredText("git host is required")),
+			huh.NewInput().
+				Title("Git credential ref").
+				Description("Leave blank to use the standard profile-based ref.").
+				Value(&draft.GitCredentialRef).
+				Validate(validateOptionalCredentialRef),
+			huh.NewConfirm().
+				Title("Configure separate reviewer credentials").
+				Value(&draft.ReviewerEnabled),
+		).Title("Git"),
+		reviewerGroup.Title("Reviewer"),
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("LLM provider").
+				Options(
+					huh.NewOption("Anthropic", string(config.LLMProviderAnthropic)),
+					huh.NewOption("OpenAI", string(config.LLMProviderOpenAI)),
+					huh.NewOption("Pi", string(config.LLMProviderPi)),
+				).
+				Value(&draft.LLMProvider),
+			huh.NewSelect[string]().
+				Title("LLM auth mode").
+				Options(
+					huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
+					huh.NewOption("API key", string(config.LLMAuthAPIKey)),
+				).
+				Value(&draft.LLMAuth),
+			huh.NewSelect[string]().
+				Title("LLM adapter").
+				Options(
+					huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
+					huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
+					huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
+					huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
+					huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
+				).
+				Value(&draft.LLMAdapter),
+		).Title("LLM"),
+		llmRefGroup.Title("LLM Credential Ref"),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initDraft{}, err
+	}
+	return draft, nil
+}
+
+func validateRequiredText(message string) func(string) error {
+	return func(value string) error {
+		if strings.TrimSpace(value) == "" {
+			return errors.New(message)
+		}
+		return nil
+	}
+}
+
+func validateProfileName(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("profile name is required")
+	}
+	return nil
+}
+
+func validateOptionalCredentialRef(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	_, err := credentials.ParseRef(trimmed)
+	return err
+}
+
+func seedInteractiveInitDraft(requestedProfileName string, existingProfileName string, defaultProfileName string, existingProfile *config.Profile) initDraft {
+	profileName := requestedProfileName
+	if existingProfileName != "" {
+		profileName = existingProfileName
+	}
+	if strings.TrimSpace(profileName) == "" {
+		profileName = credstore.DefaultProfile
+	}
+	draft := initDraft{
+		OriginalProfileName: existingProfileName,
+		ProfileName:         profileName,
+		MakeDefault:         existingProfileName == "" && defaultProfileName == "",
+		GitHost:             "github.com",
+		ReviewerAuth:        string(config.GitAuthModePAT),
+		LLMProvider:         string(config.LLMProviderAnthropic),
+		LLMAuth:             string(config.LLMAuthSubscription),
+		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+	}
+	if existingProfile != nil {
+		draft.MakeDefault = defaultProfileName == existingProfileName
+		draft.GitHost = existingProfile.Git.Host
+		draft.GitCredentialRef = existingProfile.Git.CredentialRef
+		draft.LLMProvider = string(existingProfile.LLM.Provider)
+		draft.LLMAuth = string(existingProfile.LLM.Auth)
+		draft.LLMAdapter = string(existingProfile.LLM.Adapter)
+		draft.LLMCredentialRef = existingProfile.LLM.CredentialRef
+		if existingProfile.ReviewerCredentials != nil {
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(existingProfile.ReviewerCredentials.AuthMode)
+			draft.ReviewerCredentialRef = existingProfile.ReviewerCredentials.CredentialRef
+		}
+	}
+	return draft
+}
+
+func sortedProfileNames(profiles map[string]config.Profile) []string {
+	if len(profiles) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) (initPlan, error) {
@@ -501,9 +765,173 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}, nil
 }
 
+func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags initOptions, _ initDeps, path string, cfg config.File, draft initDraft) (initPlan, error) {
+	profileName := strings.TrimSpace(draft.ProfileName)
+	if profileName == "" {
+		return initPlan{}, exitcode.Usage(fmt.Errorf("profile name is required"))
+	}
+	working := cfg
+	if working.Profiles == nil {
+		working.Profiles = map[string]config.Profile{}
+	}
+	originalName := strings.TrimSpace(draft.OriginalProfileName)
+	var previousProfile *config.Profile
+	if originalName != "" {
+		profile, ok := working.Profiles[originalName]
+		if !ok {
+			return initPlan{}, cmderr.Config(fmt.Errorf("%w: %s", config.ErrProfileNotFound, originalName))
+		}
+		profileCopy := profile
+		previousProfile = &profileCopy
+	}
+	if originalName == "" {
+		if _, exists := working.Profiles[profileName]; exists {
+			return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q already exists; select it to edit or choose a different name", profileName))
+		}
+	} else if profileName != originalName {
+		if err := validateInteractiveRouteHostChange(working, originalName, previousProfile.Git.Host, draft.GitHost); err != nil {
+			return initPlan{}, exitcode.Usage(err)
+		}
+		renamed, _, err := configedit.RenameProfile(working, originalName, profileName)
+		if err != nil {
+			if errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, configedit.ErrProfileExists) || errors.Is(err, configedit.ErrProfileNameRequired) {
+				return initPlan{}, exitcode.Usage(err)
+			}
+			return initPlan{}, cmderr.Config(err)
+		}
+		working = renamed
+	} else if previousProfile != nil {
+		if err := validateInteractiveRouteHostChange(working, originalName, previousProfile.Git.Host, draft.GitHost); err != nil {
+			return initPlan{}, exitcode.Usage(err)
+		}
+	}
+
+	profile, err := synthesizeInteractiveProfile(flags, profileName, previousProfile, draft)
+	if err != nil {
+		return initPlan{}, err
+	}
+	working.Profiles[profileName] = profile
+	if draft.MakeDefault || working.DefaultProfile == "" {
+		var changed bool
+		working, changed, err = configedit.SetDefaultProfile(working, profileName)
+		_ = changed
+		if err != nil {
+			if errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, configedit.ErrProfileNameRequired) {
+				return initPlan{}, exitcode.Usage(err)
+			}
+			return initPlan{}, cmderr.Config(err)
+		}
+	}
+	if err := config.Validate(working); err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+
+	credentialPlan, err := planInitCredentials(previousProfile, profile, nil)
+	if err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	backendArg := ""
+	if cmderr.BackendFlagChanged(cmd) {
+		if _, err := credentials.StoreOptions(opts.Backend, true, working); err != nil {
+			return initPlan{}, cmderr.Credential(err)
+		}
+		backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
+	}
+	return initPlan{
+		path:             path,
+		cfg:              working,
+		profileName:      profileName,
+		profile:          profile,
+		credentialPlan:   credentialPlan,
+		backendFlagSet:   false,
+		backendArg:       backendArg,
+		allowDeferredLLM: profile.LLM.Auth == config.LLMAuthAPIKey,
+		writeLLMHint:     profile.LLM.Auth == config.LLMAuthAPIKey,
+	}, nil
+}
+
+func synthesizeInteractiveProfile(flags initOptions, profileName string, previousProfile *config.Profile, draft initDraft) (config.Profile, error) {
+	profile := config.Profile{
+		Git: config.GitConfig{
+			Host:     flags.gitHost,
+			AuthMode: config.GitAuthModePAT,
+		},
+		LLM: config.LLMConfig{
+			Provider: config.LLMProvider(flags.llmProvider),
+			Auth:     config.LLMAuth(flags.llmAuth),
+			Adapter:  config.LLMAdapter(flags.llmAdapter),
+		},
+	}
+	if previousProfile != nil {
+		profile = *previousProfile
+		if previousProfile.ReviewerCredentials != nil {
+			creds := *previousProfile.ReviewerCredentials
+			profile.ReviewerCredentials = &creds
+		}
+	}
+	defaultGitRef, err := credentials.FormatRef(profileName)
+	if err != nil {
+		return config.Profile{}, exitcode.Usage(fmt.Errorf("profile %q cannot be used as a credential ref segment: %w", profileName, err))
+	}
+	profile.Git.Host = strings.TrimSpace(draft.GitHost)
+	profile.Git.AuthMode = config.GitAuthModePAT
+	profile.Git.CredentialRef = strings.TrimSpace(draft.GitCredentialRef)
+	if profile.Git.CredentialRef == "" {
+		profile.Git.CredentialRef = defaultGitRef
+	}
+	if draft.ReviewerEnabled {
+		reviewerRef := strings.TrimSpace(draft.ReviewerCredentialRef)
+		if reviewerRef == "" {
+			reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
+			if err != nil {
+				return config.Profile{}, exitcode.Usage(err)
+			}
+		}
+		reviewer := config.ReviewerCredentials{
+			AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
+			CredentialRef: reviewerRef,
+		}
+		if previousProfile != nil && previousProfile.ReviewerCredentials != nil && previousProfile.ReviewerCredentials.AuthMode == reviewer.AuthMode {
+			reviewer.IdentityCache = previousProfile.ReviewerCredentials.IdentityCache
+		}
+		profile.ReviewerCredentials = &reviewer
+	} else {
+		profile.ReviewerCredentials = nil
+	}
+	profile.LLM.Provider = config.LLMProvider(draft.LLMProvider)
+	profile.LLM.Auth = config.LLMAuth(draft.LLMAuth)
+	profile.LLM.Adapter = config.LLMAdapter(draft.LLMAdapter)
+	if profile.LLM.Auth == config.LLMAuthAPIKey {
+		llmRef := strings.TrimSpace(draft.LLMCredentialRef)
+		if llmRef == "" {
+			llmRef, err = credentials.FormatRef(profileName + "-llm")
+			if err != nil {
+				return config.Profile{}, exitcode.Usage(err)
+			}
+		}
+		profile.LLM.CredentialRef = llmRef
+	} else {
+		profile.LLM.CredentialRef = ""
+	}
+	return profile, nil
+}
+
+func validateInteractiveRouteHostChange(cfg config.File, profileName string, previousHost string, nextHost string) error {
+	if config.NormalizeHost(previousHost) == config.NormalizeHost(nextHost) {
+		return nil
+	}
+	for _, route := range cfg.RepositoryProfiles {
+		if route.Profile != profileName {
+			continue
+		}
+		return fmt.Errorf("profile %q has repository routes; changing git.host from %q to %q requires route reconciliation that init does not support yet", profileName, previousHost, nextHost)
+	}
+	return nil
+}
+
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
 	var store *credstore.Store
-	if len(plan.writes) > 0 || plan.profile.LLM.Auth == config.LLMAuthAPIKey {
+	if len(plan.writes) > 0 || (plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.allowDeferredLLM) {
 		var err error
 		store, err = deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
 		if err != nil {
@@ -511,7 +939,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 		}
 		defer store.Close()
 	}
-	if plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.llmSecretProvided {
+	if plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.llmSecretProvided && !plan.allowDeferredLLM {
 		if flags.overwrite {
 			return exitcode.Usage(fmt.Errorf("--overwrite with api_key LLM auth requires --llm-api-key-stdin or --llm-api-key-from-env"))
 		}
@@ -559,7 +987,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 	}
 	var err error
 	for _, entry := range plan.credentialPlan {
-		if !shouldWriteInitCredentialHint(entry) {
+		if !shouldWriteInitCredentialHint(entry, plan.writeLLMHint) {
 			continue
 		}
 		hintErr := writeInitCredentialPlanHints(opts.Stderr, plan.backendArg, entry)
@@ -706,8 +1134,8 @@ func classifyInitCredentialPlanEntry(entry initCredentialPlanEntry) initCredenti
 	return initCredentialPlanStateOverwriteRef
 }
 
-func shouldWriteInitCredentialHint(entry initCredentialPlanEntry) bool {
-	if entry.Ref.Purpose == "llm" {
+func shouldWriteInitCredentialHint(entry initCredentialPlanEntry, includeLLM bool) bool {
+	if entry.Ref.Purpose == "llm" && !includeLLM {
 		return false
 	}
 	switch entry.State {
