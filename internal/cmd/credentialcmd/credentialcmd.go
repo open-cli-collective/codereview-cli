@@ -866,12 +866,21 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 		return initPlan{}, cmderr.Config(err)
 	}
 	deferLLMSecret := profile.LLM.Auth == config.LLMAuthAPIKey
+	backendFlagSet := cmderr.BackendFlagChanged(cmd)
 	backendArg := ""
-	if cmderr.BackendFlagChanged(cmd) {
+	if backendFlagSet {
 		if _, err := credentials.StoreOptions(opts.Backend, true, working); err != nil {
 			return initPlan{}, cmderr.Credential(err)
 		}
-		backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
+		persistExplicitBackend := deferLLMSecret
+		if persistExplicitBackend {
+			if working.Keyring.Backend != "" && working.Keyring.Backend != opts.Backend {
+				return initPlan{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with existing keyring.backend %q", opts.Backend, working.Keyring.Backend))
+			}
+			working.Keyring.Backend = opts.Backend
+		} else {
+			backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
+		}
 	}
 	return initPlan{
 		path:             path,

@@ -1668,6 +1668,70 @@ func TestInitInteractiveRejectsSecretIngressFlagsBeforePrompt(t *testing.T) {
 	}
 }
 
+func TestInitInteractivePersistsExplicitBackendForDeferredLLM(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd := &cobra.Command{}
+	cmd.Flags().String(credstore.BackendFlagName, "", "")
+	if err := cmd.Flags().Set(credstore.BackendFlagName, "file"); err != nil {
+		t.Fatalf("set backend flag: %v", err)
+	}
+	opts := &root.Options{
+		Backend:    "file",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	var stderr bytes.Buffer
+	opts.Stderr = &stderr
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName:          "default",
+				MakeDefault:          true,
+				GitHost:              "github.com",
+				GitAuth:              string(config.GitAuthModePAT),
+				GitCredentialRef:     "codereview/default",
+				LLMProvider:          string(config.LLMProviderOpenAI),
+				LLMAuth:              string(config.LLMAuthAPIKey),
+				LLMAdapter:           string(config.LLMAdapterOpenAIAPI),
+				LLMReviewerModelTier: string(config.ModelTierMedium),
+				LLMCredentialRef:     "codereview/default-llm",
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+		openStore: func(string, bool, config.File) (*credstore.Store, error) {
+			t.Fatal("interactive deferred llm init should not open the keyring")
+			return nil, nil
+		},
+		readSecret: func(io.Reader, bool, string, string, string) (string, bool, error) {
+			t.Fatal("interactive deferred llm init should not read secret ingress")
+			return "", false, nil
+		},
+	}
+
+	err := runInitWithDeps(cmd, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Keyring.Backend != "file" {
+		t.Fatalf("keyring.backend = %q, want file", cfg.Keyring.Backend)
+	}
+	if strings.Contains(stderr.String(), "cr --backend file set-credential") {
+		t.Fatalf("stderr = %q, want persisted backend to drop explicit backend hint", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cr set-credential --ref codereview/default-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
+		t.Fatalf("stderr = %q, want deferred llm follow-up hint without backend flag", stderr.String())
+	}
+}
+
 func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 	tests := []struct {
 		name string
