@@ -463,6 +463,57 @@ func TestConfigRouteSetMovesReposAcrossProfiles(t *testing.T) {
 	}
 }
 
+func TestConfigRouteSetPreservesSiblingNamespaceAndRepoRoutes(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "set", "--host", "github.com", "--namespace", "rianjs", "--repo", "baz"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar", "baz"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, want) {
+		t.Fatalf("repository_profiles = %#v, want %#v", loaded.RepositoryProfiles, want)
+	}
+}
+
 func TestConfigRouteSetRejectsHostMismatch(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)
@@ -566,8 +617,73 @@ func TestConfigRouteUnsetRepoRoutesPrunesEmptyEntry(t *testing.T) {
 	}
 }
 
+func TestConfigRouteUnsetPreservesSiblingNamespaceAndRepoRoutes(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar", "baz"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "route", "unset", "--host", "github.com", "--namespace", "rianjs", "--repo", "baz"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, want) {
+		t.Fatalf("repository_profiles = %#v, want %#v", loaded.RepositoryProfiles, want)
+	}
+}
+
 func TestConfigRouteUnsetAlreadyAbsentIsIdempotent(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile before: %v", err)
+	}
 	cmd, out := newTestCommand(path)
 
 	if err := root.Execute(cmd, []string{"config", "route", "unset", "--host", "github.com", "--namespace", "rianjs", "--repo", "bar"}); err != nil {
@@ -575,6 +691,20 @@ func TestConfigRouteUnsetAlreadyAbsentIsIdempotent(t *testing.T) {
 	}
 	if got := out.String(); got != "Route already absent: github.com/rianjs [bar]\n" {
 		t.Fatalf("stdout = %q, want idempotent absence confirmation", got)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("config changed during idempotent unset\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, cfg.RepositoryProfiles) {
+		t.Fatalf("repository_profiles = %#v, want unchanged %#v", loaded.RepositoryProfiles, cfg.RepositoryProfiles)
 	}
 }
 
