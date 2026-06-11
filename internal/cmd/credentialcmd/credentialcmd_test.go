@@ -836,6 +836,123 @@ func TestInitMergeReplaceAndBackendConflictSemantics(t *testing.T) {
 	}
 }
 
+func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	keepForever := 0
+	home := basicProfile("home")
+	home.AgentSources = []string{"/tmp/home-agents"}
+	home.LLM.ModelMap = config.ModelMap{"medium": "custom-medium-model"}
+	home.LLM.ReviewerModelTier = config.ModelTierMedium
+	home.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+		ResolveAfter:     "24h",
+	}
+	existing := config.File{
+		DefaultProfile: "home",
+		Keyring:        config.KeyringConfig{Backend: "file"},
+		RepositoryProfiles: []config.RepositoryProfile{
+			{
+				Profile: "home",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "open-cli-collective",
+					Repos:     []string{"codereview-cli"},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"home": home,
+		},
+		Data: config.DataConfig{
+			Retention: config.RetentionConfig{
+				MaxAgeDays:  &keepForever,
+				Enforcement: config.RetentionManualOnly,
+			},
+		},
+	}
+	if err := config.Save(path, existing); err != nil {
+		t.Fatalf("Save existing config: %v", err)
+	}
+	before, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load existing config: %v", err)
+	}
+	cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+
+	err = root.Execute(cmd, []string{
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	after, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config after init: %v", err)
+	}
+	if after.DefaultProfile != before.DefaultProfile {
+		t.Fatalf("default_profile = %q, want preserved %q", after.DefaultProfile, before.DefaultProfile)
+	}
+	if !reflect.DeepEqual(after.Keyring, before.Keyring) {
+		t.Fatalf("keyring = %#v, want preserved %#v", after.Keyring, before.Keyring)
+	}
+	if !reflect.DeepEqual(after.RepositoryProfiles, before.RepositoryProfiles) {
+		t.Fatalf("repository_profiles = %#v, want preserved %#v", after.RepositoryProfiles, before.RepositoryProfiles)
+	}
+	if !reflect.DeepEqual(after.Data, before.Data) {
+		t.Fatalf("data = %#v, want preserved %#v", after.Data, before.Data)
+	}
+	if !reflect.DeepEqual(after.Profiles["home"], before.Profiles["home"]) {
+		t.Fatalf("home profile = %#v, want preserved %#v", after.Profiles["home"], before.Profiles["home"])
+	}
+	if _, ok := after.Profiles["work"]; !ok {
+		t.Fatalf("work profile missing after init: %#v", after.Profiles)
+	}
+}
+
+func TestInitInteractiveRequiresNonInteractiveBeforeDeps(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:  failReader{},
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}
+	deps := initDeps{
+		configPath: func(*root.Options) (string, error) {
+			t.Fatal("config path dependency called before interactive gate")
+			return "", nil
+		},
+		loadConfig: func(string) (config.File, bool, error) {
+			t.Fatal("config load dependency called before interactive gate")
+			return config.File{}, false, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("config save dependency called before interactive gate")
+			return nil
+		},
+		openStore: func(string, bool, config.File) (*credstore.Store, error) {
+			t.Fatal("keyring dependency called before interactive gate")
+			return nil, nil
+		},
+		readSecret: func(io.Reader, bool, string, string, string) (string, bool, error) {
+			t.Fatal("secret-read dependency called before interactive gate")
+			return "", false, nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if !strings.Contains(err.Error(), "init requires --non-interactive in v1") {
+		t.Fatalf("error = %v, want non-interactive requirement", err)
+	}
+}
+
 func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 	tests := []struct {
 		name string
