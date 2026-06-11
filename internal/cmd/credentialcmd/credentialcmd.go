@@ -171,10 +171,32 @@ type initPlan struct {
 	profileName       string
 	profile           config.Profile
 	writes            map[string]map[string]string
+	credentialPlan    []initCredentialPlanEntry
 	backendFlagSet    bool
 	backendArg        string
 	llmSecretProvided bool
 	credentialHints   []config.CredentialRef
+}
+
+type initCredentialPlanState string
+
+const (
+	initCredentialPlanStateKeepExisting initCredentialPlanState = "keep_existing"
+	initCredentialPlanStateDefer        initCredentialPlanState = "defer"
+	// #nosec G101 -- init planner state label, not secret material.
+	initCredentialPlanStateOverwriteRef    initCredentialPlanState = "overwrite_ref"
+	initCredentialPlanStateWrite           initCredentialPlanState = "write"
+	initCredentialPlanStateClearRef        initCredentialPlanState = "clear_ref"
+	initCredentialPlanStateMissingRequired initCredentialPlanState = "missing_required"
+)
+
+type initCredentialPlanEntry struct {
+	Ref                 config.CredentialRef
+	PreviousRef         *config.CredentialRef
+	KeySpecs            []credentials.KeySpec
+	PlannedWriteKeys    []string
+	MissingRequiredKeys []string
+	State               initCredentialPlanState
 }
 
 func defaultInitDeps() initDeps {
@@ -373,7 +395,12 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
 	}
-	if _, ok := cfg.Profiles[profileName]; ok && !flags.replaceProfile {
+	var previousProfile *config.Profile
+	if existing, ok := cfg.Profiles[profileName]; ok {
+		existingCopy := existing
+		previousProfile = &existingCopy
+	}
+	if previousProfile != nil && !flags.replaceProfile {
 		return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q already exists; use --replace-profile to replace config only", profileName))
 	}
 	profile := config.Profile{
@@ -421,6 +448,11 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		}
 		addWrite(writes, llmRef, llmKey, llmSecret)
 	}
+	plannedWriteKeys := projectInitPlannedWriteKeys(writes)
+	credentialPlan, err := planInitCredentials(previousProfile, profile, plannedWriteKeys)
+	if err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
 
 	backendFlagSet := cmderr.BackendFlagChanged(cmd)
 	if backendFlagSet {
@@ -445,19 +477,10 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
 	}
 	credentialHints := []config.CredentialRef{}
-	if !hasGitSecret {
-		credentialHints = append(credentialHints, config.CredentialRef{
-			Purpose: "git",
-			Ref:     gitRef,
-			Mode:    string(config.GitAuthModePAT),
-		})
-	}
-	if reviewerRequested && !hasReviewerSecret {
-		credentialHints = append(credentialHints, config.CredentialRef{
-			Purpose: "reviewer_credentials",
-			Ref:     reviewerRef,
-			Mode:    string(reviewerMode),
-		})
+	for _, entry := range credentialPlan {
+		if shouldWriteInitCredentialHint(entry) {
+			credentialHints = append(credentialHints, entry.Ref)
+		}
 	}
 
 	return initPlan{
@@ -466,6 +489,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		profileName:       profileName,
 		profile:           profile,
 		writes:            writes,
+		credentialPlan:    credentialPlan,
 		backendFlagSet:    backendFlagSet,
 		backendArg:        backendArg,
 		llmSecretProvided: hasLLMSecret,
@@ -550,6 +574,136 @@ func writeCredentialHints(w io.Writer, backendArg string, ref config.CredentialR
 		}
 	}
 	return nil
+}
+
+func projectInitPlannedWriteKeys(writes map[string]map[string]string) map[string][]string {
+	projected := make(map[string][]string, len(writes))
+	for ref, bundle := range writes {
+		keys := sortedKeys(bundle)
+		projected[ref] = append([]string(nil), keys...)
+	}
+	return projected
+}
+
+func planInitCredentials(previousProfile *config.Profile, desiredProfile config.Profile, plannedWriteKeys map[string][]string) ([]initCredentialPlanEntry, error) {
+	desiredRefs, err := config.CredentialRefs(desiredProfile)
+	if err != nil {
+		return nil, err
+	}
+	var previousRefs []config.CredentialRef
+	if previousProfile != nil {
+		previousRefs, err = config.CredentialRefs(*previousProfile)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	previousByPurpose := make(map[string]config.CredentialRef, len(previousRefs))
+	for _, ref := range previousRefs {
+		previousByPurpose[ref.Purpose] = ref
+	}
+
+	entries := make([]initCredentialPlanEntry, 0, len(desiredRefs)+len(previousRefs))
+	for _, ref := range desiredRefs {
+		specs, err := credentials.KeySpecsForPurpose(ref)
+		if err != nil {
+			return nil, err
+		}
+		writeKeys := append([]string(nil), plannedWriteKeys[ref.Ref]...)
+		if err := validateInitPlannedWriteKeys(ref, specs, writeKeys); err != nil {
+			return nil, err
+		}
+		entry := initCredentialPlanEntry{
+			Ref:              ref,
+			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
+			PlannedWriteKeys: writeKeys,
+		}
+		if previousRef, ok := previousByPurpose[ref.Purpose]; ok {
+			previousCopy := previousRef
+			entry.PreviousRef = &previousCopy
+			delete(previousByPurpose, ref.Purpose)
+		}
+		entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
+		entry.State = classifyInitCredentialPlanEntry(entry)
+		entries = append(entries, entry)
+	}
+	for _, ref := range previousByPurpose {
+		entries = append(entries, initCredentialPlanEntry{
+			Ref:   ref,
+			State: initCredentialPlanStateClearRef,
+		})
+	}
+	return entries, nil
+}
+
+func validateInitPlannedWriteKeys(ref config.CredentialRef, specs []credentials.KeySpec, plannedWriteKeys []string) error {
+	if len(plannedWriteKeys) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		allowed[spec.Key] = struct{}{}
+	}
+	for _, key := range plannedWriteKeys {
+		if _, ok := allowed[key]; ok {
+			continue
+		}
+		return fmt.Errorf("init credential planner: unexpected planned write key %q for %s ref %q", key, ref.Purpose, ref.Ref)
+	}
+	return nil
+}
+
+func missingRequiredInitCredentialKeys(specs []credentials.KeySpec, plannedWriteKeys []string) []string {
+	if len(plannedWriteKeys) == 0 {
+		return nil
+	}
+	present := make(map[string]struct{}, len(plannedWriteKeys))
+	for _, key := range plannedWriteKeys {
+		present[key] = struct{}{}
+	}
+	var missing []string
+	for _, spec := range specs {
+		if !spec.Required {
+			continue
+		}
+		if _, ok := present[spec.Key]; ok {
+			continue
+		}
+		missing = append(missing, spec.Key)
+	}
+	return missing
+}
+
+func classifyInitCredentialPlanEntry(entry initCredentialPlanEntry) initCredentialPlanState {
+	if len(entry.MissingRequiredKeys) > 0 {
+		return initCredentialPlanStateMissingRequired
+	}
+	if len(entry.PlannedWriteKeys) > 0 {
+		return initCredentialPlanStateWrite
+	}
+	if entry.PreviousRef == nil {
+		return initCredentialPlanStateDefer
+	}
+	if entry.PreviousRef.Purpose == entry.Ref.Purpose &&
+		entry.PreviousRef.Ref == entry.Ref.Ref &&
+		entry.PreviousRef.Mode == entry.Ref.Mode &&
+		entry.PreviousRef.Provider == entry.Ref.Provider {
+		return initCredentialPlanStateKeepExisting
+	}
+	return initCredentialPlanStateOverwriteRef
+}
+
+func shouldWriteInitCredentialHint(entry initCredentialPlanEntry) bool {
+	if entry.Ref.Purpose == "llm" {
+		return false
+	}
+	switch entry.State {
+	case initCredentialPlanStateDefer, initCredentialPlanStateOverwriteRef, initCredentialPlanStateMissingRequired:
+		return true
+	case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
+		return false
+	}
+	return false
 }
 
 func readSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag string) (string, error) {
