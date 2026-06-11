@@ -161,6 +161,7 @@ type initDraft struct {
 	ProfileName           string
 	MakeDefault           bool
 	GitHost               string
+	GitAuth               string
 	GitCredentialRef      string
 	ReviewerEnabled       bool
 	ReviewerAuth          string
@@ -168,6 +169,7 @@ type initDraft struct {
 	LLMProvider           string
 	LLMAuth               string
 	LLMAdapter            string
+	LLMReviewerModelTier  string
 	LLMCredentialRef      string
 }
 
@@ -310,6 +312,9 @@ func runInitWithDeps(cmd *cobra.Command, opts *root.Options, flags initOptions, 
 }
 
 func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) error {
+	if err := validateInteractiveInitFlags(flags); err != nil {
+		return exitcode.Usage(err)
+	}
 	profileName := opts.Profile
 	if profileName == "" {
 		profileName = credstore.DefaultProfile
@@ -449,6 +454,13 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				Title("Git host").
 				Value(&draft.GitHost).
 				Validate(validateRequiredText("git host is required")),
+			huh.NewSelect[string]().
+				Title("Git auth mode").
+				Options(
+					huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
+					huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
+				).
+				Value(&draft.GitAuth),
 			huh.NewInput().
 				Title("Git credential ref").
 				Description("Leave blank to use the standard profile-based ref.").
@@ -485,6 +497,15 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
 				).
 				Value(&draft.LLMAdapter),
+			huh.NewSelect[string]().
+				Title("Reviewer model tier").
+				Options(
+					huh.NewOption("Built-in default", ""),
+					huh.NewOption("Small", string(config.ModelTierSmall)),
+					huh.NewOption("Medium", string(config.ModelTierMedium)),
+					huh.NewOption("Large", string(config.ModelTierLarge)),
+				).
+				Value(&draft.LLMReviewerModelTier),
 		).Title("LLM"),
 		llmRefGroup.Title("LLM Credential Ref"),
 	).WithInput(p.stdin).WithOutput(p.stderr)
@@ -519,6 +540,16 @@ func validateOptionalCredentialRef(value string) error {
 	return err
 }
 
+func validateInteractiveInitFlags(flags initOptions) error {
+	if flags.overwrite {
+		return fmt.Errorf("--overwrite is only supported with --non-interactive")
+	}
+	if flags.gitTokenStdin || flags.gitTokenEnv != "" || flags.reviewerTokenStdin || flags.reviewerTokenEnv != "" || flags.llmKeyStdin || flags.llmKeyEnv != "" {
+		return fmt.Errorf("secret ingress flags are only supported with --non-interactive")
+	}
+	return nil
+}
+
 func seedInteractiveInitDraft(requestedProfileName string, existingProfileName string, defaultProfileName string, existingProfile *config.Profile) initDraft {
 	profileName := requestedProfileName
 	if existingProfileName != "" {
@@ -532,6 +563,7 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		ProfileName:         profileName,
 		MakeDefault:         existingProfileName == "" && defaultProfileName == "",
 		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
 		ReviewerAuth:        string(config.GitAuthModePAT),
 		LLMProvider:         string(config.LLMProviderAnthropic),
 		LLMAuth:             string(config.LLMAuthSubscription),
@@ -540,10 +572,12 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 	if existingProfile != nil {
 		draft.MakeDefault = defaultProfileName == existingProfileName
 		draft.GitHost = existingProfile.Git.Host
+		draft.GitAuth = string(existingProfile.Git.AuthMode)
 		draft.GitCredentialRef = existingProfile.Git.CredentialRef
 		draft.LLMProvider = string(existingProfile.LLM.Provider)
 		draft.LLMAuth = string(existingProfile.LLM.Auth)
 		draft.LLMAdapter = string(existingProfile.LLM.Adapter)
+		draft.LLMReviewerModelTier = string(existingProfile.LLM.ReviewerModelTier)
 		draft.LLMCredentialRef = existingProfile.LLM.CredentialRef
 		if existingProfile.ReviewerCredentials != nil {
 			draft.ReviewerEnabled = true
@@ -872,7 +906,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 		return config.Profile{}, exitcode.Usage(fmt.Errorf("profile %q cannot be used as a credential ref segment: %w", profileName, err))
 	}
 	profile.Git.Host = strings.TrimSpace(draft.GitHost)
-	profile.Git.AuthMode = config.GitAuthModePAT
+	profile.Git.AuthMode = config.GitAuthMode(draft.GitAuth)
 	profile.Git.CredentialRef = strings.TrimSpace(draft.GitCredentialRef)
 	if profile.Git.CredentialRef == "" {
 		profile.Git.CredentialRef = defaultGitRef
@@ -889,7 +923,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 			AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
 			CredentialRef: reviewerRef,
 		}
-		if previousProfile != nil && previousProfile.ReviewerCredentials != nil && previousProfile.ReviewerCredentials.AuthMode == reviewer.AuthMode {
+		if previousProfile != nil && previousProfile.ReviewerCredentials != nil {
 			reviewer.IdentityCache = previousProfile.ReviewerCredentials.IdentityCache
 		}
 		profile.ReviewerCredentials = &reviewer
@@ -899,6 +933,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	profile.LLM.Provider = config.LLMProvider(draft.LLMProvider)
 	profile.LLM.Auth = config.LLMAuth(draft.LLMAuth)
 	profile.LLM.Adapter = config.LLMAdapter(draft.LLMAdapter)
+	profile.LLM.ReviewerModelTier = config.ModelTier(strings.TrimSpace(draft.LLMReviewerModelTier))
 	if profile.LLM.Auth == config.LLMAuthAPIKey {
 		llmRef := strings.TrimSpace(draft.LLMCredentialRef)
 		if llmRef == "" {

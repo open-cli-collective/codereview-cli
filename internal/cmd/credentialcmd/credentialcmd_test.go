@@ -1333,7 +1333,9 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
 	existing.Git.Host = "gitlab.com"
+	existing.Git.AuthMode = config.GitAuthModeGitHubApp
 	existing.Git.CredentialRef = "codereview/custom-git"
+	existing.LLM.ReviewerModelTier = config.ModelTierMedium
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
 		CredentialRef: "codereview/custom-reviewer",
@@ -1345,6 +1347,7 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 			"",  // Profile name
 			"",  // Make default
 			"",  // Git host
+			"",  // Git auth
 			"",  // Git ref
 			"",  // Configure reviewer creds
 			"",  // Reviewer auth
@@ -1352,6 +1355,7 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 			"",  // LLM provider
 			"",  // LLM auth
 			"",  // LLM adapter
+			"",  // Reviewer model tier
 			"",  // LLM ref
 			"",
 		}, "\n")),
@@ -1378,13 +1382,13 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if !draft.MakeDefault {
 		t.Fatal("draft.MakeDefault = false, want existing default true")
 	}
-	if draft.GitHost != "gitlab.com" || draft.GitCredentialRef != "codereview/custom-git" {
-		t.Fatalf("git draft = (%q,%q), want existing values", draft.GitHost, draft.GitCredentialRef)
+	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModeGitHubApp) || draft.GitCredentialRef != "codereview/custom-git" {
+		t.Fatalf("git draft = %#v, want existing values", draft)
 	}
 	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModeGitHubApp) || draft.ReviewerCredentialRef != "codereview/custom-reviewer" {
 		t.Fatalf("reviewer draft = %#v, want existing reviewer settings", draft)
 	}
-	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMCredentialRef != "codereview/work-llm" {
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMReviewerModelTier != string(config.ModelTierMedium) || draft.LLMCredentialRef != "codereview/work-llm" {
 		t.Fatalf("llm draft = %#v, want existing api-key openai values", draft)
 	}
 	out := stderr.String()
@@ -1408,6 +1412,7 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	}
 	existing.LLM.ModelMap = config.ModelMap{"medium": "gpt-custom"}
 	existing.LLM.ReviewerModelTier = config.ModelTierLarge
+	existing.Git.AuthMode = config.GitAuthModeGitHubApp
 	existing.Git.IdentityCache = "git-cache"
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
@@ -1442,6 +1447,7 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 				ProfileName:           "office",
 				MakeDefault:           true,
 				GitHost:               "github.com",
+				GitAuth:               string(config.GitAuthModeGitHubApp),
 				GitCredentialRef:      "codereview/office-git",
 				ReviewerEnabled:       true,
 				ReviewerAuth:          string(config.GitAuthModeGitHubApp),
@@ -1449,6 +1455,7 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 				LLMProvider:           string(config.LLMProviderOpenAI),
 				LLMAuth:               string(config.LLMAuthAPIKey),
 				LLMAdapter:            string(config.LLMAdapterOpenAIAPI),
+				LLMReviewerModelTier:  string(config.ModelTierSmall),
 				LLMCredentialRef:      "codereview/custom-office-llm",
 			}, nil
 		}),
@@ -1491,6 +1498,9 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	if profile.Git.CredentialRef != "codereview/office-git" {
 		t.Fatalf("git ref = %q, want office-git", profile.Git.CredentialRef)
 	}
+	if profile.Git.AuthMode != config.GitAuthModeGitHubApp {
+		t.Fatalf("git auth_mode = %q, want github_app", profile.Git.AuthMode)
+	}
 	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/custom-office-reviewer" {
 		t.Fatalf("reviewer ref = %#v, want preserved custom-office-reviewer", profile.ReviewerCredentials)
 	}
@@ -1500,8 +1510,8 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	if profile.Git.IdentityCache != "git-cache" {
 		t.Fatalf("git identity cache = %q, want preserved git-cache", profile.Git.IdentityCache)
 	}
-	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp || profile.ReviewerCredentials.IdentityCache != "" {
-		t.Fatalf("reviewer credentials = %#v, want github_app with reset cache", profile.ReviewerCredentials)
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp || profile.ReviewerCredentials.IdentityCache != "reviewer-cache" {
+		t.Fatalf("reviewer credentials = %#v, want github_app with preserved cache", profile.ReviewerCredentials)
 	}
 	if !reflect.DeepEqual(profile.AgentSources, []string{"/tmp/agents"}) {
 		t.Fatalf("agent_sources = %#v, want preserved", profile.AgentSources)
@@ -1509,11 +1519,14 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	if !reflect.DeepEqual(profile.LLM.ModelMap, config.ModelMap{"medium": "gpt-custom"}) {
 		t.Fatalf("model_map = %#v, want preserved", profile.LLM.ModelMap)
 	}
-	if profile.LLM.ReviewerModelTier != config.ModelTierLarge {
-		t.Fatalf("reviewer_model_tier = %q, want large", profile.LLM.ReviewerModelTier)
+	if profile.LLM.ReviewerModelTier != config.ModelTierSmall {
+		t.Fatalf("reviewer_model_tier = %q, want small", profile.LLM.ReviewerModelTier)
 	}
 	if !strings.Contains(stderr.String(), "set-credential --ref codereview/custom-office-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
 		t.Fatalf("stderr = %q, want deferred llm follow-up hint", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "set-credential --ref codereview/office-git --key "+credentials.GitHubAppIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want github app git follow-up hint", stderr.String())
 	}
 	if route := cfg.RepositoryProfiles[0]; route.Profile != "office" {
 		t.Fatalf("repository route profile = %q, want office", route.Profile)
@@ -1622,6 +1635,36 @@ func TestInitInteractiveBlocksRouteHostChangeDuringRenameBeforeSave(t *testing.T
 	}
 	if !strings.Contains(err.Error(), "route reconciliation") {
 		t.Fatalf("error = %v, want route reconciliation block", err)
+	}
+}
+
+func TestInitInteractiveRejectsSecretIngressFlagsBeforePrompt(t *testing.T) {
+	opts := &root.Options{
+		Stdin:      failReader{},
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			t.Fatal("prompter called despite interactive secret-flag rejection")
+			return initDraft{}, nil
+		}),
+		configPath: func(*root.Options) (string, error) {
+			t.Fatal("configPath called despite interactive secret-flag rejection")
+			return "", nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{
+		// #nosec G101 -- test-only env var name; no credential value is embedded.
+		gitTokenEnv: "CR_GIT_TOKEN",
+	}, deps)
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if !strings.Contains(err.Error(), "only supported with --non-interactive") {
+		t.Fatalf("error = %v, want interactive secret flag rejection", err)
 	}
 }
 
