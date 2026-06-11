@@ -893,23 +893,73 @@ func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load config after init: %v", err)
 	}
-	if after.DefaultProfile != before.DefaultProfile {
-		t.Fatalf("default_profile = %q, want preserved %q", after.DefaultProfile, before.DefaultProfile)
-	}
-	if !reflect.DeepEqual(after.Keyring, before.Keyring) {
-		t.Fatalf("keyring = %#v, want preserved %#v", after.Keyring, before.Keyring)
-	}
-	if !reflect.DeepEqual(after.RepositoryProfiles, before.RepositoryProfiles) {
-		t.Fatalf("repository_profiles = %#v, want preserved %#v", after.RepositoryProfiles, before.RepositoryProfiles)
-	}
-	if !reflect.DeepEqual(after.Data, before.Data) {
-		t.Fatalf("data = %#v, want preserved %#v", after.Data, before.Data)
-	}
-	if !reflect.DeepEqual(after.Profiles["home"], before.Profiles["home"]) {
-		t.Fatalf("home profile = %#v, want preserved %#v", after.Profiles["home"], before.Profiles["home"])
-	}
 	if _, ok := after.Profiles["work"]; !ok {
 		t.Fatalf("work profile missing after init: %#v", after.Profiles)
+	}
+	want := before
+	want.Profiles = make(map[string]config.Profile, len(before.Profiles)+1)
+	for name, profile := range before.Profiles {
+		want.Profiles[name] = profile
+	}
+	want.Profiles["work"] = after.Profiles["work"]
+	if !reflect.DeepEqual(after, want) {
+		t.Fatalf("config after init = %#v, want only work profile added to %#v", after, before)
+	}
+}
+
+func TestBuildNonInteractiveInitPlanDoesNotApplySideEffects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	configPathCalled := false
+	loadConfigCalled := false
+	opts := &root.Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	deps := initDeps{
+		configPath: func(*root.Options) (string, error) {
+			configPathCalled = true
+			return path, nil
+		},
+		loadConfig: func(gotPath string) (config.File, bool, error) {
+			loadConfigCalled = true
+			if gotPath != path {
+				t.Fatalf("load path = %q, want %q", gotPath, path)
+			}
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("config save called during plan build")
+			return nil
+		},
+		openStore: func(string, bool, config.File) (*credstore.Store, error) {
+			t.Fatal("keyring opened during plan build")
+			return nil, nil
+		},
+		readSecret: readOptionalSecretIngress,
+	}
+	flags := initOptions{
+		nonInteractive: true,
+		gitHost:        "github.com",
+		reviewerAuth:   string(config.GitAuthModePAT),
+		llmProvider:    string(config.LLMProviderAnthropic),
+		llmAuth:        string(config.LLMAuthSubscription),
+		llmAdapter:     string(config.LLMAdapterClaudeCLI),
+		majorEvent:     string(config.ReviewMajorEventComment),
+	}
+
+	plan, err := buildNonInteractiveInitPlan(&cobra.Command{}, opts, flags, deps)
+	if err != nil {
+		t.Fatalf("buildNonInteractiveInitPlan: %v", err)
+	}
+	if !configPathCalled || !loadConfigCalled {
+		t.Fatalf("plan build called configPath=%v loadConfig=%v, want both", configPathCalled, loadConfigCalled)
+	}
+	if plan.path != path {
+		t.Fatalf("plan path = %q, want %q", plan.path, path)
+	}
+	if _, ok := plan.cfg.Profiles["default"]; !ok {
+		t.Fatalf("plan config profiles = %#v, want default profile", plan.cfg.Profiles)
 	}
 }
 
@@ -950,6 +1000,22 @@ func TestInitInteractiveRequiresNonInteractiveBeforeDeps(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "init requires --non-interactive in v1") {
 		t.Fatalf("error = %v, want non-interactive requirement", err)
+	}
+}
+
+func TestInitInteractiveCommandRequiresNonInteractiveBeforeSideEffects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd, _, _ := newTestCommand(path, failReader{})
+
+	err := root.Execute(cmd, []string{"init"})
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if strings.Contains(err.Error(), "secret ingress was read") {
+		t.Fatalf("interactive init read stdin before non-interactive gate: %v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("config stat err = %v, want not created", statErr)
 	}
 }
 
