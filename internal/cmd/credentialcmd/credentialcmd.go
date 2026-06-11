@@ -204,6 +204,7 @@ const (
 	initCredentialPlanStateWrite           initCredentialPlanState = "write"
 	initCredentialPlanStateClearRef        initCredentialPlanState = "clear_ref"
 	initCredentialPlanStateMissingRequired initCredentialPlanState = "missing_required"
+	initCreateProfileSentinel                                      = "__create__"
 )
 
 type initCredentialPlanEntry struct {
@@ -373,7 +374,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	selectedProfileName := ctx.ExistingProfileName
 	selectedExistingProfile := ctx.ExistingProfile
 	if len(ctx.ExistingProfileNames) > 0 {
-		choice := "__create__"
+		choice := initCreateProfileSentinel
 		options := make([]huh.Option[string], 0, len(ctx.ExistingProfileNames)+1)
 		for _, name := range ctx.ExistingProfileNames {
 			options = append(options, huh.NewOption("Edit "+name, name))
@@ -382,9 +383,9 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 		}
 		if ctx.ExistingProfile == nil {
-			choice = "__create__"
+			choice = initCreateProfileSentinel
 		}
-		options = append(options, huh.NewOption("Create new profile", "__create__"))
+		options = append(options, huh.NewOption("Create new profile", initCreateProfileSentinel))
 		form := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
@@ -396,7 +397,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		if err := form.Run(); err != nil {
 			return initDraft{}, err
 		}
-		if choice == "__create__" {
+		if choice == initCreateProfileSentinel {
 			selectedProfileName = ""
 			selectedExistingProfile = nil
 		} else {
@@ -830,6 +831,7 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 	if err != nil {
 		return initPlan{}, cmderr.Config(err)
 	}
+	deferLLMSecret := profile.LLM.Auth == config.LLMAuthAPIKey
 	backendArg := ""
 	if cmderr.BackendFlagChanged(cmd) {
 		if _, err := credentials.StoreOptions(opts.Backend, true, working); err != nil {
@@ -845,29 +847,25 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 		credentialPlan:   credentialPlan,
 		backendFlagSet:   false,
 		backendArg:       backendArg,
-		allowDeferredLLM: profile.LLM.Auth == config.LLMAuthAPIKey,
-		writeLLMHint:     profile.LLM.Auth == config.LLMAuthAPIKey,
+		allowDeferredLLM: deferLLMSecret,
+		writeLLMHint:     deferLLMSecret,
 	}, nil
 }
 
 func synthesizeInteractiveProfile(flags initOptions, profileName string, previousProfile *config.Profile, draft initDraft) (config.Profile, error) {
-	profile := config.Profile{
-		Git: config.GitConfig{
-			Host:     flags.gitHost,
-			AuthMode: config.GitAuthModePAT,
-		},
-		LLM: config.LLMConfig{
-			Provider: config.LLMProvider(flags.llmProvider),
-			Auth:     config.LLMAuth(flags.llmAuth),
-			Adapter:  config.LLMAdapter(flags.llmAdapter),
-		},
-	}
+	profile := config.Profile{}
 	if previousProfile != nil {
 		profile = *previousProfile
 		if previousProfile.ReviewerCredentials != nil {
 			creds := *previousProfile.ReviewerCredentials
 			profile.ReviewerCredentials = &creds
 		}
+	} else {
+		profile.Git.Host = flags.gitHost
+		profile.Git.AuthMode = config.GitAuthModePAT
+		profile.LLM.Provider = config.LLMProvider(flags.llmProvider)
+		profile.LLM.Auth = config.LLMAuth(flags.llmAuth)
+		profile.LLM.Adapter = config.LLMAdapter(flags.llmAdapter)
 	}
 	defaultGitRef, err := credentials.FormatRef(profileName)
 	if err != nil {
