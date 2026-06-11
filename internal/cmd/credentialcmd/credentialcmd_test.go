@@ -1886,7 +1886,10 @@ func TestInitInteractiveSetNowOverwritesExistingTargetRef(t *testing.T) {
 			}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionSetNow,
+			},
 			sources: []initSecretSource{initSecretSourcePaste},
 			pastes:  []string{"new-token"},
 		},
@@ -1909,6 +1912,60 @@ func TestInitInteractiveSetNowOverwritesExistingTargetRef(t *testing.T) {
 	}
 	if got := store.bundles["default"][credentials.GitTokenKey]; got != "new-token" {
 		t.Fatalf("stored git token = %q, want new-token", got)
+	}
+}
+
+func TestInitInteractiveCanKeepExistingSecretsAfterInspectingTargetRef(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{
+		"default": {credentials.GitTokenKey: "existing-token"},
+	})
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &stderr,
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionKeep,
+			},
+		},
+		clipboardSupported: func() bool { return false },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read when keeping existing secrets")
+			return "", nil
+		},
+		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error { return nil },
+		openStore:  func(string, bool, config.File) (initStore, error) { return store, nil },
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if got := store.bundles["default"][credentials.GitTokenKey]; got != "existing-token" {
+		t.Fatalf("stored git token = %q, want existing-token", got)
+	}
+	if strings.Contains(stderr.String(), "set-credential --ref codereview/default --key "+credentials.GitTokenKey) {
+		t.Fatalf("stderr = %q, want no follow-up hint after keeping existing secret", stderr.String())
 	}
 }
 
@@ -2244,6 +2301,7 @@ func (s *fakeInitStore) SetBundle(profile string, kv map[string]string, opts ...
 	if s.bundles[profile] == nil {
 		s.bundles[profile] = map[string]string{}
 	}
+	// Tests only pass credstore.WithOverwrite when they intend replacement.
 	overwrite := len(opts) > 0
 	for key := range kv {
 		if _, ok := s.bundles[profile][key]; ok && !overwrite {

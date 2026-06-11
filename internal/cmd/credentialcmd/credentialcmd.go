@@ -607,6 +607,9 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 	if prompt.Entry.Ref.Ref != "" {
 		title = fmt.Sprintf("%s (%s)", title, prompt.Entry.Ref.Ref)
 	}
+	if prompt.TargetHasAnyKeys && !prompt.TargetHasRequired {
+		title = fmt.Sprintf("%s Existing values were found; choose set-now to review them key by key.", title)
+	}
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[initCredentialSecretAction]().
@@ -1202,17 +1205,29 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			return initPlan{}, cmderr.Credential(err)
 		}
 		targetHasRequired := initCredentialKeysSatisfySpecs(targetKeys, entry.KeySpecs)
-		switch action {
-		case initCredentialSecretActionKeep:
+		targetHasAnyKeys := len(targetKeys) > 0
+		if action == initCredentialSecretActionSetNow && targetHasAnyKeys {
+			action, err = prompter.ChooseCredentialAction(initCredentialSecretPrompt{
+				Entry:              entry,
+				TargetHasRequired:  targetHasRequired,
+				TargetHasAnyKeys:   targetHasAnyKeys,
+				ClipboardSupported: deps.clipboardSupported(),
+			})
+			if err != nil {
+				return initPlan{}, err
+			}
+		}
+		if action == initCredentialSecretActionKeep {
 			if !targetHasRequired {
 				return initPlan{}, exitcode.Usage(fmt.Errorf("%s credential ref %q does not have all required keys", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
 			}
 			plan.satisfiedRefs[entry.Ref.Ref] = true
 			continue
-		case initCredentialSecretActionSetNow:
-		case initCredentialSecretActionDefer:
+		}
+		if action == initCredentialSecretActionDefer {
 			continue
-		default:
+		}
+		if action != initCredentialSecretActionSetNow {
 			return initPlan{}, fmt.Errorf("unsupported interactive secret action %q", action)
 		}
 
@@ -1344,7 +1359,8 @@ func refreshInteractiveCredentialPlan(entries []initCredentialPlanEntry, planned
 		case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateDefer, initCredentialPlanStateOverwriteRef, initCredentialPlanStateMissingRequired:
 		}
 		next.PlannedWriteKeys = append([]string(nil), plannedWriteKeys[entry.Ref.Ref]...)
-		if satisfiedRefs[entry.Ref.Ref] && len(next.PlannedWriteKeys) == 0 {
+		keptWithoutNewWrites := satisfiedRefs[entry.Ref.Ref] && len(next.PlannedWriteKeys) == 0
+		if keptWithoutNewWrites {
 			next.MissingRequiredKeys = nil
 			next.State = initCredentialPlanStateKeepExisting
 			refreshed = append(refreshed, next)
