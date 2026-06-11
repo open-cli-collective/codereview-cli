@@ -144,6 +144,29 @@ Required semantics:
 - normalize stored route values deterministically
 - preserve unrelated routes and profiles
 
+Route identity and mutation contract:
+
+- a namespace-wide route is identified by `host + namespace` with omitted
+  `repos`
+- a repo-specific mapping is identified by `host + namespace + repo`
+- `route set` with no `--repo` manages only the namespace-wide route for that
+  `host + namespace`
+- `route set` with one or more `--repo` values manages the listed repo-specific
+  mappings for that `host + namespace`, assigning those repos to the requested
+  profile
+- repeated `--repo` inputs converge by trim, dedupe, and deterministic sort
+- CLI-owned persistence should collapse repo-specific mappings into a
+  deterministic shape: one repo-route entry per `profile + host + namespace`
+  with sorted unique `repos`
+- `route unset` with no `--repo` removes only the namespace-wide route for that
+  `host + namespace`
+- `route unset` with one or more `--repo` values removes only those
+  repo-specific mappings; if the backing repo-route entry becomes empty, remove
+  the route entry entirely
+
+These semantics give `#166` a stable mutation contract without changing the
+runtime precedence rules already used by review/agents.
+
 ### `#169`: route preview
 
 Owns:
@@ -163,6 +186,10 @@ Required semantics:
 - report whether resolution came from explicit `--profile`, matched route, or
   fallback to `default_profile`
 - remain a local preview command, not an execution path
+- if the existing runtime resolution path does not expose enough metadata for
+  preview output, `#169` may add a shared resolution-result wrapper/helper that
+  preserves the same matching logic while surfacing source and matched-route
+  details
 
 The key contract is that `#169` reuses route-resolution semantics rather than
 redefining them. If preview-specific formatting is needed, that formatting can
@@ -189,6 +216,19 @@ Required semantics:
 - compare configured path strings in a predictable normalized form
 - avoid filesystem canonicalization as mutation semantics
 - preserve unrelated profile fields
+
+Path normalization contract:
+
+- normalize configured path strings by:
+  - trimming surrounding whitespace
+  - applying `filepath.Clean(...)`
+- do not expand `~`
+- do not resolve symlinks
+- do not case-fold paths
+- do not require the target path to exist
+
+This keeps mutation semantics deterministic and local-string-based rather than
+filesystem-state-based.
 
 ## `init` Boundary
 
