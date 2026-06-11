@@ -170,6 +170,23 @@ func TestConfigPathUsesDefaultResolvedPath(t *testing.T) {
 	}
 }
 
+func TestConfigPathTextUsesDefaultResolvedPathOffline(t *testing.T) {
+	statedirtest.Hermetic(t)
+	expectedPath, err := config.Path()
+	if err != nil {
+		t.Fatalf("config.Path: %v", err)
+	}
+	cmd, out := newTestCommandWithOptions(&root.Options{})
+
+	if err := root.Execute(cmd, []string{"config", "path"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := "Config path: " + expectedPath + "\nConfig dir: " + filepath.Dir(expectedPath) + "\n"
+	if out.String() != want {
+		t.Fatalf("stdout = %q, want %q", out.String(), want)
+	}
+}
+
 func TestConfigDefaultGetText(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, out := newTestCommand(path)
@@ -240,6 +257,13 @@ func TestConfigDefaultSetUpdatesOnlyDefaultProfile(t *testing.T) {
 func TestConfigDefaultSetRejectsMissingProfile(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)
+	oldSave := saveConfigFile
+	calledSave := false
+	saveConfigFile = func(string, config.File) error {
+		calledSave = true
+		return nil
+	}
+	t.Cleanup(func() { saveConfigFile = oldSave })
 
 	err := root.Execute(cmd, []string{"config", "default", "set", "missing"})
 	if !errors.Is(err, config.ErrProfileNotFound) {
@@ -247,6 +271,9 @@ func TestConfigDefaultSetRejectsMissingProfile(t *testing.T) {
 	}
 	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
 		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
+	}
+	if calledSave {
+		t.Fatal("saveConfigFile called for missing profile, want pre-save validation")
 	}
 }
 
