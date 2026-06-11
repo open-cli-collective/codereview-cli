@@ -1123,6 +1123,7 @@ func TestBuildNonInteractiveInitPlanDoesNotApplySideEffects(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	configPathCalled := false
 	loadConfigCalled := false
+	readSecretCalls := 0
 	opts := &root.Options{
 		Stdin:  strings.NewReader(""),
 		Stdout: &bytes.Buffer{},
@@ -1148,7 +1149,10 @@ func TestBuildNonInteractiveInitPlanDoesNotApplySideEffects(t *testing.T) {
 			t.Fatal("keyring opened during plan build")
 			return nil, nil
 		},
-		readSecret: readOptionalSecretIngress,
+		readSecret: func(io.Reader, bool, string, string, string) (string, bool, error) {
+			readSecretCalls++
+			return "", false, nil
+		},
 	}
 	flags := initOptions{
 		nonInteractive: true,
@@ -1167,11 +1171,38 @@ func TestBuildNonInteractiveInitPlanDoesNotApplySideEffects(t *testing.T) {
 	if !configPathCalled || !loadConfigCalled {
 		t.Fatalf("plan build called configPath=%v loadConfig=%v, want both", configPathCalled, loadConfigCalled)
 	}
+	if readSecretCalls != 0 {
+		t.Fatalf("readSecret calls = %d, want 0 without secret ingress flags", readSecretCalls)
+	}
 	if plan.path != path {
 		t.Fatalf("plan path = %q, want %q", plan.path, path)
 	}
 	if _, ok := plan.cfg.Profiles["default"]; !ok {
 		t.Fatalf("plan config profiles = %#v, want default profile", plan.cfg.Profiles)
+	}
+}
+
+func TestPlanInitCredentialsClearsOptionalRefsInStableOrder(t *testing.T) {
+	previous := apiKeyProfile("work", config.LLMProviderAnthropic)
+	previous.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	desired := basicProfile("work")
+
+	entries, err := planInitCredentials(&previous, desired, nil)
+	if err != nil {
+		t.Fatalf("planInitCredentials: %v", err)
+	}
+
+	var cleared []string
+	for _, entry := range entries {
+		if entry.State == initCredentialPlanStateClearRef {
+			cleared = append(cleared, entry.Ref.Purpose)
+		}
+	}
+	if !reflect.DeepEqual(cleared, []string{"reviewer_credentials", "llm"}) {
+		t.Fatalf("cleared purposes = %#v, want reviewer then llm", cleared)
 	}
 }
 

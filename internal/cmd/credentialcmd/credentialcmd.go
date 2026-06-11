@@ -368,15 +368,15 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			return initPlan{}, exitcode.Usage(err)
 		}
 	}
-	gitSecret, hasGitSecret, err := deps.readSecret(opts.Stdin, flags.gitTokenStdin, flags.gitTokenEnv, "--git-token-stdin", "--git-token-from-env")
+	gitSecret, hasGitSecret, err := readInitSecret(deps, opts.Stdin, flags.gitTokenStdin, flags.gitTokenEnv, "--git-token-stdin", "--git-token-from-env")
 	if err != nil {
 		return initPlan{}, exitcode.Usage(err)
 	}
-	reviewerSecret, hasReviewerSecret, err := deps.readSecret(opts.Stdin, flags.reviewerTokenStdin, flags.reviewerTokenEnv, "--reviewer-token-stdin", "--reviewer-token-from-env")
+	reviewerSecret, hasReviewerSecret, err := readInitSecret(deps, opts.Stdin, flags.reviewerTokenStdin, flags.reviewerTokenEnv, "--reviewer-token-stdin", "--reviewer-token-from-env")
 	if err != nil {
 		return initPlan{}, exitcode.Usage(err)
 	}
-	llmSecret, hasLLMSecret, err := deps.readSecret(opts.Stdin, flags.llmKeyStdin, flags.llmKeyEnv, "--llm-api-key-stdin", "--llm-api-key-from-env")
+	llmSecret, hasLLMSecret, err := readInitSecret(deps, opts.Stdin, flags.llmKeyStdin, flags.llmKeyEnv, "--llm-api-key-stdin", "--llm-api-key-from-env")
 	if err != nil {
 		return initPlan{}, exitcode.Usage(err)
 	}
@@ -627,7 +627,10 @@ func planInitCredentials(previousProfile *config.Profile, desiredProfile config.
 		entry.State = classifyInitCredentialPlanEntry(entry)
 		entries = append(entries, entry)
 	}
-	for _, ref := range previousByPurpose {
+	for _, ref := range previousRefs {
+		if _, ok := previousByPurpose[ref.Purpose]; !ok {
+			continue
+		}
 		entries = append(entries, initCredentialPlanEntry{
 			Ref:   ref,
 			State: initCredentialPlanStateClearRef,
@@ -704,6 +707,13 @@ func shouldWriteInitCredentialHint(entry initCredentialPlanEntry) bool {
 		return false
 	}
 	return false
+}
+
+func readInitSecret(deps initDeps, stdin io.Reader, useStdin bool, envVar string, stdinFlag string, envFlag string) (string, bool, error) {
+	if !useStdin && envVar == "" {
+		return "", false, nil
+	}
+	return deps.readSecret(stdin, useStdin, envVar, stdinFlag, envFlag)
 }
 
 func readSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag string) (string, error) {
