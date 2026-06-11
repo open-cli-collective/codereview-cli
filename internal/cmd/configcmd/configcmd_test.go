@@ -1331,6 +1331,26 @@ func TestConfigRetentionGetTextAndJSON(t *testing.T) {
 	}
 }
 
+func TestConfigRetentionGetReadsSavedMutation(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "retention", "set", "--max-age-days", "12", "--enforcement", "manual_only"}); err != nil {
+		t.Fatalf("Execute set: %v", err)
+	}
+	cmd, out := newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "retention", "get", "--json"}); err != nil {
+		t.Fatalf("Execute get: %v", err)
+	}
+	var got view.ConfigRetention
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.MaxAgeDays != 12 || got.Enforcement != "manual_only" {
+		t.Fatalf("retention JSON = %#v, want saved mutation", got)
+	}
+}
+
 func TestConfigRetentionSetMutatesAndPreservesUnrelatedConfig(t *testing.T) {
 	cfg := testConfig()
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
@@ -1441,8 +1461,13 @@ func TestConfigRetentionSetRejectsInvalidInputs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// #nosec G304 -- test path is controlled by t.TempDir via saveTestConfig.
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile before: %v", err)
+			}
 			cmd, _ := newTestCommand(path)
-			err := root.Execute(cmd, tt.args)
+			err = root.Execute(cmd, tt.args)
 			if err == nil {
 				t.Fatal("Execute error = nil, want usage error")
 			}
@@ -1452,12 +1477,27 @@ func TestConfigRetentionSetRejectsInvalidInputs(t *testing.T) {
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %q, want %q", err, tt.want)
 			}
+			// #nosec G304 -- test path is controlled by t.TempDir via saveTestConfig.
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile after: %v", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("config changed after invalid input\nbefore:\n%s\nafter:\n%s", before, after)
+			}
 		})
 	}
 }
 
 func TestConfigRetentionResetRestoresDefaultsAndPreservesConfig(t *testing.T) {
 	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+		},
+	}}
 	cfg.Data.Retention = config.RetentionConfig{
 		MaxAgeDays:  intPtr(0),
 		Enforcement: config.RetentionManualOnly,
@@ -1480,6 +1520,9 @@ func TestConfigRetentionResetRestoresDefaultsAndPreservesConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) {
 		t.Fatalf("profiles = %#v, want preserved", saved.Profiles)
+	}
+	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
+		t.Fatalf("repository_profiles = %#v, want preserved", saved.RepositoryProfiles)
 	}
 	if !reflect.DeepEqual(saved.Keyring, cfg.Keyring) {
 		t.Fatalf("keyring = %#v, want preserved", saved.Keyring)
