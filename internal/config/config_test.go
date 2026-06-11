@@ -1252,6 +1252,27 @@ data:
 	})
 }
 
+func TestValidateRetentionAppliesDefaultsAndPreservesExplicitZero(t *testing.T) {
+	if err := ValidateRetention(RetentionConfig{}); err != nil {
+		t.Fatalf("ValidateRetention omitted defaults: %v", err)
+	}
+	zero := 0
+	if err := ValidateRetention(RetentionConfig{MaxAgeDays: &zero}); err != nil {
+		t.Fatalf("ValidateRetention explicit zero: %v", err)
+	}
+	negative := -1
+	if err := ValidateRetention(RetentionConfig{MaxAgeDays: &negative}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ValidateRetention negative error = %v, want ErrInvalid", err)
+	}
+	if err := ValidateRetention(RetentionConfig{Enforcement: RetentionEnforcement("sometimes")}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ValidateRetention bad enforcement error = %v, want ErrInvalid", err)
+	}
+	defaults := DefaultRetentionConfig()
+	if defaults.MaxAgeDaysValue() != 90 || defaults.Enforcement != RetentionAtWrite {
+		t.Fatalf("DefaultRetentionConfig = %#v, want 90 days at_write", defaults)
+	}
+}
+
 func validFile() File {
 	return File{
 		DefaultProfile: "home",
