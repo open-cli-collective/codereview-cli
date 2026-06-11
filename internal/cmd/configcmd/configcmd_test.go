@@ -254,6 +254,22 @@ func TestConfigDefaultSetUpdatesOnlyDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestConfigDefaultSetTrimsProfileArgument(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "default", "set", " work "}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.DefaultProfile != "work" {
+		t.Fatalf("default_profile = %q, want work", saved.DefaultProfile)
+	}
+}
+
 func TestConfigDefaultSetRejectsMissingProfile(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)

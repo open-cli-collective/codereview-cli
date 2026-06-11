@@ -68,11 +68,14 @@ func TestRepositoryRouteHelpersSetMoveUnsetAndCanonicalize(t *testing.T) {
 		},
 	}
 
-	moved := configedit.SetRepositoryRoutes(routes, "work", configedit.RepositoryRouteSpec{
-		Host:      "github.com",
-		Namespace: "rianjs",
-		Repos:     []string{"baz"},
+	moved, err := configedit.SetRepositoryRoutes(routes, "work", configedit.RepositoryRouteSpec{
+		Host:      "https://github.com/",
+		Namespace: " rianjs ",
+		Repos:     []string{" baz "},
 	})
+	if err != nil {
+		t.Fatalf("SetRepositoryRoutes: %v", err)
+	}
 	wantMoved := []config.RepositoryProfile{
 		{
 			Profile: "home",
@@ -102,11 +105,14 @@ func TestRepositoryRouteHelpersSetMoveUnsetAndCanonicalize(t *testing.T) {
 		t.Fatalf("SetRepositoryRoutes = %#v, want %#v", moved, wantMoved)
 	}
 
-	pruned, changed := configedit.UnsetRepositoryRoutes(moved, configedit.RepositoryRouteSpec{
+	pruned, changed, err := configedit.UnsetRepositoryRoutes(moved, configedit.RepositoryRouteSpec{
 		Host:      "github.com",
 		Namespace: "rianjs",
 		Repos:     []string{"baz"},
 	})
+	if err != nil {
+		t.Fatalf("UnsetRepositoryRoutes: %v", err)
+	}
 	if !changed {
 		t.Fatal("UnsetRepositoryRoutes changed = false, want true")
 	}
@@ -131,16 +137,35 @@ func TestRepositoryRouteHelpersSetMoveUnsetAndCanonicalize(t *testing.T) {
 		t.Fatalf("UnsetRepositoryRoutes = %#v, want %#v", pruned, wantPruned)
 	}
 
-	again, changed := configedit.UnsetRepositoryRoutes(pruned, configedit.RepositoryRouteSpec{
+	again, changed, err := configedit.UnsetRepositoryRoutes(pruned, configedit.RepositoryRouteSpec{
 		Host:      "github.com",
 		Namespace: "rianjs",
 		Repos:     []string{"missing"},
 	})
+	if err != nil {
+		t.Fatalf("UnsetRepositoryRoutes idempotent: %v", err)
+	}
 	if changed {
 		t.Fatal("UnsetRepositoryRoutes changed = true, want false")
 	}
 	if !reflect.DeepEqual(again, pruned) {
 		t.Fatalf("idempotent unset = %#v, want %#v", again, pruned)
+	}
+}
+
+func TestRepositoryRouteMutatorsValidateDirectSpecs(t *testing.T) {
+	if _, err := configedit.SetRepositoryRoutes(nil, "work", configedit.RepositoryRouteSpec{
+		Host:      "github.com",
+		Namespace: "rianjs",
+		Repos:     []string{" "},
+	}); !errors.Is(err, configedit.ErrRouteRepoRequired) {
+		t.Fatalf("SetRepositoryRoutes error = %v, want ErrRouteRepoRequired", err)
+	}
+	if _, _, err := configedit.UnsetRepositoryRoutes(nil, configedit.RepositoryRouteSpec{
+		Host:      " ",
+		Namespace: "rianjs",
+	}); !errors.Is(err, configedit.ErrRouteHostRequired) {
+		t.Fatalf("UnsetRepositoryRoutes error = %v, want ErrRouteHostRequired", err)
 	}
 }
 

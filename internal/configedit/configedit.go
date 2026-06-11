@@ -42,15 +42,28 @@ type repositoryRouteState struct {
 
 // ParseRepositoryRouteSpec normalizes and validates repository route fields.
 func ParseRepositoryRouteSpec(rawHost string, rawNamespace string, rawRepos []string) (RepositoryRouteSpec, error) {
-	host := config.NormalizeHost(rawHost)
+	return normalizeRepositoryRouteSpec(RepositoryRouteSpec{
+		Host:      rawHost,
+		Namespace: rawNamespace,
+		Repos:     rawRepos,
+	})
+}
+
+// NormalizeRepositoryRouteSpec returns a normalized copy of spec.
+func NormalizeRepositoryRouteSpec(spec RepositoryRouteSpec) (RepositoryRouteSpec, error) {
+	return normalizeRepositoryRouteSpec(spec)
+}
+
+func normalizeRepositoryRouteSpec(spec RepositoryRouteSpec) (RepositoryRouteSpec, error) {
+	host := config.NormalizeHost(spec.Host)
 	if host == "" {
 		return RepositoryRouteSpec{}, ErrRouteHostRequired
 	}
-	namespace := strings.TrimSpace(rawNamespace)
+	namespace := strings.TrimSpace(spec.Namespace)
 	if namespace == "" {
 		return RepositoryRouteSpec{}, ErrRouteNamespaceRequired
 	}
-	repos, err := NormalizeRepositoryRouteRepos(rawRepos)
+	repos, err := NormalizeRepositoryRouteRepos(spec.Repos)
 	if err != nil {
 		return RepositoryRouteSpec{}, err
 	}
@@ -95,20 +108,28 @@ func CanonicalRepositoryRoutes(routes []config.RepositoryProfile) []config.Repos
 }
 
 // SetRepositoryRoutes assigns the specified routes to profileName.
-func SetRepositoryRoutes(routes []config.RepositoryProfile, profileName string, spec RepositoryRouteSpec) []config.RepositoryProfile {
+func SetRepositoryRoutes(routes []config.RepositoryProfile, profileName string, spec RepositoryRouteSpec) ([]config.RepositoryProfile, error) {
+	spec, err := normalizeRepositoryRouteSpec(spec)
+	if err != nil {
+		return nil, err
+	}
 	state := newRepositoryRouteState(routes)
 	if len(spec.Repos) == 0 {
 		state.namespace[routeKey(spec.Host, spec.Namespace, "")] = profileName
-		return state.routes()
+		return state.routes(), nil
 	}
 	for _, repo := range spec.Repos {
 		state.repos[routeKey(spec.Host, spec.Namespace, repo)] = profileName
 	}
-	return state.routes()
+	return state.routes(), nil
 }
 
 // UnsetRepositoryRoutes removes the specified routes.
-func UnsetRepositoryRoutes(routes []config.RepositoryProfile, spec RepositoryRouteSpec) ([]config.RepositoryProfile, bool) {
+func UnsetRepositoryRoutes(routes []config.RepositoryProfile, spec RepositoryRouteSpec) ([]config.RepositoryProfile, bool, error) {
+	spec, err := normalizeRepositoryRouteSpec(spec)
+	if err != nil {
+		return nil, false, err
+	}
 	state := newRepositoryRouteState(routes)
 	changed := false
 	if len(spec.Repos) == 0 {
@@ -117,7 +138,7 @@ func UnsetRepositoryRoutes(routes []config.RepositoryProfile, spec RepositoryRou
 			delete(state.namespace, key)
 			changed = true
 		}
-		return state.routes(), changed
+		return state.routes(), changed, nil
 	}
 	for _, repo := range spec.Repos {
 		key := routeKey(spec.Host, spec.Namespace, repo)
@@ -126,7 +147,7 @@ func UnsetRepositoryRoutes(routes []config.RepositoryProfile, spec RepositoryRou
 			changed = true
 		}
 	}
-	return state.routes(), changed
+	return state.routes(), changed, nil
 }
 
 // PruneRepositoryProfileRoutes removes all repository routes pointing at profileName.

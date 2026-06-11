@@ -259,7 +259,10 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if spec.Host != config.NormalizeHost(profile.Git.Host) {
 				return exitcode.Usage(fmt.Errorf("--host %q does not match selected profile host %q", spec.Host, profile.Git.Host))
 			}
-			cfg.RepositoryProfiles = configedit.SetRepositoryRoutes(cfg.RepositoryProfiles, profileName, spec)
+			cfg.RepositoryProfiles, err = configedit.SetRepositoryRoutes(cfg.RepositoryProfiles, profileName, spec)
+			if err != nil {
+				return usageRouteError(err)
+			}
 			if err := saveConfigFile(path, cfg); err != nil {
 				return cmderr.Config(err)
 			}
@@ -298,7 +301,10 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return err
 			}
-			routes, changed := configedit.UnsetRepositoryRoutes(cfg.RepositoryProfiles, spec)
+			routes, changed, err := configedit.UnsetRepositoryRoutes(cfg.RepositoryProfiles, spec)
+			if err != nil {
+				return usageRouteError(err)
+			}
 			if !changed {
 				_, err := fmt.Fprintf(opts.Stdout, "Route already absent: %s\n", configedit.FormatRepositoryRouteSpec(spec))
 				return err
