@@ -351,6 +351,39 @@ func RenderConfigResolveProfileJSON(w io.Writer, result ConfigResolveProfile) er
 	return encoder.Encode(result)
 }
 
+// ConfigAgentSources is the presentation model for `cr config agent-source`.
+type ConfigAgentSources struct {
+	ActiveProfile string   `json:"active_profile"`
+	AgentSources  []string `json:"agent_sources"`
+}
+
+// RenderConfigAgentSourcesText writes a stable human-readable agent-source list.
+func RenderConfigAgentSourcesText(w io.Writer, result ConfigAgentSources) error {
+	if err := writeKV(w, "Profile", result.ActiveProfile); err != nil {
+		return err
+	}
+	if len(result.AgentSources) == 0 {
+		_, err := fmt.Fprintln(w, "Agent sources: none")
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Agent sources:"); err != nil {
+		return err
+	}
+	for _, source := range result.AgentSources {
+		if _, err := fmt.Fprintf(w, "  - %s\n", source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RenderConfigAgentSourcesJSON writes the agent-source list as indented JSON.
+func RenderConfigAgentSourcesJSON(w io.Writer, result ConfigAgentSources) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
 // ConfigClear is the presentation model for `cr config clear`.
 type ConfigClear struct {
 	Backend              string                 `json:"backend"`
