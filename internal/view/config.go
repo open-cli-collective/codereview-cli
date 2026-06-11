@@ -233,6 +233,44 @@ func RenderConfigJSON(w io.Writer, show ConfigShow) error {
 	return encoder.Encode(show)
 }
 
+// ConfigPath is the presentation model for `cr config path`.
+type ConfigPath struct {
+	ConfigPath string `json:"config_path"`
+	ConfigDir  string `json:"config_dir"`
+}
+
+// RenderConfigPathText writes a stable human-readable config-path summary.
+func RenderConfigPathText(w io.Writer, result ConfigPath) error {
+	if err := writeKV(w, "Config path", result.ConfigPath); err != nil {
+		return err
+	}
+	return writeKV(w, "Config dir", result.ConfigDir)
+}
+
+// RenderConfigPathJSON writes the config-path summary as indented JSON.
+func RenderConfigPathJSON(w io.Writer, result ConfigPath) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
+// ConfigDefault is the presentation model for `cr config default get/set`.
+type ConfigDefault struct {
+	DefaultProfile string `json:"default_profile"`
+}
+
+// RenderConfigDefaultText writes a stable human-readable default-profile summary.
+func RenderConfigDefaultText(w io.Writer, result ConfigDefault) error {
+	return writeKV(w, "Default profile", result.DefaultProfile)
+}
+
+// RenderConfigDefaultJSON writes the default-profile summary as indented JSON.
+func RenderConfigDefaultJSON(w io.Writer, result ConfigDefault) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
 // ConfigClear is the presentation model for `cr config clear`.
 type ConfigClear struct {
 	Backend              string                 `json:"backend"`

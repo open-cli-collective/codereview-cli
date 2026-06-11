@@ -115,6 +115,181 @@ func TestConfigShowJSON(t *testing.T) {
 	}
 }
 
+func TestConfigPathText(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "path"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	wantPath := filepath.Clean(path)
+	wantDir := filepath.Dir(wantPath)
+	got := out.String()
+	if !strings.Contains(got, "Config path: "+wantPath) {
+		t.Fatalf("stdout = %q, want config path %q", got, wantPath)
+	}
+	if !strings.Contains(got, "Config dir: "+wantDir) {
+		t.Fatalf("stdout = %q, want config dir %q", got, wantDir)
+	}
+}
+
+func TestConfigPathJSON(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "path", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigPath
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	wantPath := filepath.Clean(path)
+	if got.ConfigPath != wantPath || got.ConfigDir != filepath.Dir(wantPath) {
+		t.Fatalf("config path JSON = %#v, want path %q dir %q", got, wantPath, filepath.Dir(wantPath))
+	}
+}
+
+func TestConfigPathUsesDefaultResolvedPath(t *testing.T) {
+	statedirtest.Hermetic(t)
+	expectedPath, err := config.Path()
+	if err != nil {
+		t.Fatalf("config.Path: %v", err)
+	}
+	cmd, out := newTestCommandWithOptions(&root.Options{})
+
+	if err := root.Execute(cmd, []string{"config", "path", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigPath
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.ConfigPath != expectedPath || got.ConfigDir != filepath.Dir(expectedPath) {
+		t.Fatalf("config path JSON = %#v, want path %q dir %q", got, expectedPath, filepath.Dir(expectedPath))
+	}
+}
+
+func TestConfigPathTextUsesDefaultResolvedPathOffline(t *testing.T) {
+	statedirtest.Hermetic(t)
+	expectedPath, err := config.Path()
+	if err != nil {
+		t.Fatalf("config.Path: %v", err)
+	}
+	cmd, out := newTestCommandWithOptions(&root.Options{})
+
+	if err := root.Execute(cmd, []string{"config", "path"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := "Config path: " + expectedPath + "\nConfig dir: " + filepath.Dir(expectedPath) + "\n"
+	if out.String() != want {
+		t.Fatalf("stdout = %q, want %q", out.String(), want)
+	}
+}
+
+func TestConfigDefaultGetText(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "default", "get"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Default profile: home\n" {
+		t.Fatalf("stdout = %q, want default profile text", got)
+	}
+}
+
+func TestConfigDefaultGetJSON(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "default", "get", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigDefault
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.DefaultProfile != "home" {
+		t.Fatalf("default_profile = %q, want home", got.DefaultProfile)
+	}
+}
+
+func TestConfigDefaultSetUpdatesOnlyDefaultProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+		},
+	}}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "default", "set", "work"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Default profile: work\n" {
+		t.Fatalf("stdout = %q, want updated default profile text", got)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.DefaultProfile != "work" {
+		t.Fatalf("default_profile = %q, want work", saved.DefaultProfile)
+	}
+	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) {
+		t.Fatalf("profiles = %#v, want %#v", saved.Profiles, cfg.Profiles)
+	}
+	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
+		t.Fatalf("repository_profiles = %#v, want %#v", saved.RepositoryProfiles, cfg.RepositoryProfiles)
+	}
+	if !reflect.DeepEqual(saved.Keyring, cfg.Keyring) {
+		t.Fatalf("keyring = %#v, want %#v", saved.Keyring, cfg.Keyring)
+	}
+	if !reflect.DeepEqual(saved.Data, cfg.Data) {
+		t.Fatalf("data = %#v, want %#v", saved.Data, cfg.Data)
+	}
+}
+
+func TestConfigDefaultSetRejectsMissingProfile(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+	oldSave := saveConfigFile
+	calledSave := false
+	saveConfigFile = func(string, config.File) error {
+		calledSave = true
+		return nil
+	}
+	t.Cleanup(func() { saveConfigFile = oldSave })
+
+	err := root.Execute(cmd, []string{"config", "default", "set", "missing"})
+	if !errors.Is(err, config.ErrProfileNotFound) {
+		t.Fatalf("Execute error = %v, want ErrProfileNotFound", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
+	}
+	if calledSave {
+		t.Fatal("saveConfigFile called for missing profile, want pre-save validation")
+	}
+}
+
+func TestConfigDefaultSetRejectsBlankProfile(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "default", "set", "   "})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
 func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["work"]
@@ -1251,13 +1426,21 @@ func TestConfigClearAllReportsConfigMutationFailureAfterCredentialDelete(t *test
 }
 
 func newTestCommand(path string) (*cobra.Command, *bytes.Buffer) {
-	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	return newTestCommandWithOptions(&root.Options{
 		ConfigPath: path,
 		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &out,
 	})
+}
+
+func newTestCommandWithOptions(opts *root.Options) (*cobra.Command, *bytes.Buffer) {
+	var out bytes.Buffer
+	if opts == nil {
+		opts = &root.Options{}
+	}
+	opts.Stdin = strings.NewReader("")
+	opts.Stdout = &out
+	opts.Stderr = &out
+	cmd, opts := root.NewCommandWithOptions(opts)
 	Register(cmd, opts)
 	return cmd, &out
 }

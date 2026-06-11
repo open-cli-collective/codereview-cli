@@ -187,6 +187,70 @@ func TestRenderConfigJSON(t *testing.T) {
 	}
 }
 
+func TestRenderConfigPathText(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigPath{
+		ConfigPath: "/tmp/codereview/config.yml",
+		ConfigDir:  "/tmp/codereview",
+	}
+
+	if err := RenderConfigPathText(&out, result); err != nil {
+		t.Fatalf("RenderConfigPathText: %v", err)
+	}
+	want := "Config path: /tmp/codereview/config.yml\nConfig dir: /tmp/codereview\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigPathJSON(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigPath{
+		ConfigPath: "/tmp/codereview/config.yml",
+		ConfigDir:  "/tmp/codereview",
+	}
+
+	if err := RenderConfigPathJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigPathJSON: %v", err)
+	}
+	var decoded ConfigPath
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if decoded != result {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
+func TestRenderConfigDefaultText(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigDefault{DefaultProfile: "work"}
+
+	if err := RenderConfigDefaultText(&out, result); err != nil {
+		t.Fatalf("RenderConfigDefaultText: %v", err)
+	}
+	want := "Default profile: work\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigDefaultJSON(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigDefault{DefaultProfile: "work"}
+
+	if err := RenderConfigDefaultJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigDefaultJSON: %v", err)
+	}
+	var decoded ConfigDefault
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if decoded != result {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
 func TestRenderConfigClearTextIncludesResetFields(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigClear{
