@@ -19,6 +19,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -186,10 +187,10 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return cmderr.Config(err)
 			}
-			if _, ok := cfg.Profiles[profileName]; !ok {
-				return cmderr.Config(fmt.Errorf("%w: %s", config.ErrProfileNotFound, profileName))
+			cfg, _, err = configedit.SetDefaultProfile(cfg, profileName)
+			if err != nil {
+				return cmderr.Config(err)
 			}
-			cfg.DefaultProfile = profileName
 			if err := saveConfigFile(path, cfg); err != nil {
 				return cmderr.Config(err)
 			}
@@ -225,7 +226,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return cmderr.Config(err)
 			}
-			result := view.ConfigRoutes{Routes: configRoutesView(canonicalRepositoryRoutes(cfg.RepositoryProfiles))}
+			result := view.ConfigRoutes{Routes: configRoutesView(configedit.CanonicalRepositoryRoutes(cfg.RepositoryProfiles))}
 			if routeListJSON {
 				return view.RenderConfigRoutesJSON(opts.Stdout, result)
 			}
@@ -251,18 +252,21 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return err
 			}
-			spec, err := parseRouteSpec(routeSetHost, routeSetNamespace, routeSetRepos)
+			spec, err := parseConfigRouteSpec(routeSetHost, routeSetNamespace, routeSetRepos)
 			if err != nil {
 				return err
 			}
 			if spec.Host != config.NormalizeHost(profile.Git.Host) {
 				return exitcode.Usage(fmt.Errorf("--host %q does not match selected profile host %q", spec.Host, profile.Git.Host))
 			}
-			cfg.RepositoryProfiles = setRepositoryRoutes(cfg.RepositoryProfiles, profileName, spec)
+			cfg.RepositoryProfiles, err = configedit.SetRepositoryRoutes(cfg.RepositoryProfiles, profileName, spec)
+			if err != nil {
+				return usageRouteError(err)
+			}
 			if err := saveConfigFile(path, cfg); err != nil {
 				return cmderr.Config(err)
 			}
-			_, err = fmt.Fprintf(opts.Stdout, "Set route for profile %s: %s\n", profileName, formatRouteSpec(spec))
+			_, err = fmt.Fprintf(opts.Stdout, "Set route for profile %s: %s\n", profileName, configedit.FormatRepositoryRouteSpec(spec))
 			return err
 		},
 	}
@@ -293,20 +297,23 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return cmderr.Config(err)
 			}
-			spec, err := parseRouteSpec(routeUnsetHost, routeUnsetNamespace, routeUnsetRepos)
+			spec, err := parseConfigRouteSpec(routeUnsetHost, routeUnsetNamespace, routeUnsetRepos)
 			if err != nil {
 				return err
 			}
-			routes, changed := unsetRepositoryRoutes(cfg.RepositoryProfiles, spec)
+			routes, changed, err := configedit.UnsetRepositoryRoutes(cfg.RepositoryProfiles, spec)
+			if err != nil {
+				return usageRouteError(err)
+			}
 			if !changed {
-				_, err := fmt.Fprintf(opts.Stdout, "Route already absent: %s\n", formatRouteSpec(spec))
+				_, err := fmt.Fprintf(opts.Stdout, "Route already absent: %s\n", configedit.FormatRepositoryRouteSpec(spec))
 				return err
 			}
 			cfg.RepositoryProfiles = routes
 			if err := saveConfigFile(path, cfg); err != nil {
 				return cmderr.Config(err)
 			}
-			_, err = fmt.Fprintf(opts.Stdout, "Removed route: %s\n", formatRouteSpec(spec))
+			_, err = fmt.Fprintf(opts.Stdout, "Removed route: %s\n", configedit.FormatRepositoryRouteSpec(spec))
 			return err
 		},
 	}
@@ -407,9 +414,9 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return err
 			}
-			sources, changed, err := addAgentSource(profile.AgentSources, args[0])
+			sources, changed, err := configedit.AddAgentSource(profile.AgentSources, args[0])
 			if err != nil {
-				return err
+				return usageAgentSourceError(err)
 			}
 			if changed {
 				profile.AgentSources = sources
@@ -436,9 +443,9 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return err
 			}
-			sources, changed, err := removeAgentSource(profile.AgentSources, args[0])
+			sources, changed, err := configedit.RemoveAgentSource(profile.AgentSources, args[0])
 			if err != nil {
-				return err
+				return usageAgentSourceError(err)
 			}
 			if changed {
 				profile.AgentSources = sources
@@ -792,17 +799,6 @@ func configAgentSourcesView(profileName string, sources []string) view.ConfigAge
 	return result
 }
 
-type routeSpec struct {
-	Host      string
-	Namespace string
-	Repos     []string
-}
-
-type repositoryRouteState struct {
-	namespace map[string]string
-	repos     map[string]string
-}
-
 func loadActiveProfile(opts *root.Options) (string, config.File, string, config.Profile, error) {
 	path, err := configPath(opts)
 	if err != nil {
@@ -827,108 +823,36 @@ func parseModelTierArg(raw string) (config.ModelTier, error) {
 	return tier, nil
 }
 
-func parseRouteSpec(rawHost string, rawNamespace string, rawRepos []string) (routeSpec, error) {
-	host := config.NormalizeHost(rawHost)
-	if host == "" {
-		return routeSpec{}, exitcode.Usage(fmt.Errorf("--host is required"))
-	}
-	namespace := strings.TrimSpace(rawNamespace)
-	if namespace == "" {
-		return routeSpec{}, exitcode.Usage(fmt.Errorf("--namespace is required"))
-	}
-	repos, err := parseRouteRepos(rawRepos)
+func parseConfigRouteSpec(rawHost string, rawNamespace string, rawRepos []string) (configedit.RepositoryRouteSpec, error) {
+	spec, err := configedit.NormalizeRepositoryRouteSpec(configedit.RepositoryRouteSpec{
+		Host:      rawHost,
+		Namespace: rawNamespace,
+		Repos:     rawRepos,
+	})
 	if err != nil {
-		return routeSpec{}, err
+		return configedit.RepositoryRouteSpec{}, usageRouteError(err)
 	}
-	return routeSpec{Host: host, Namespace: namespace, Repos: repos}, nil
+	return spec, nil
 }
 
-func parseRouteRepos(raw []string) ([]string, error) {
-	if len(raw) == 0 {
-		return nil, nil
+func usageRouteError(err error) error {
+	switch {
+	case errors.Is(err, configedit.ErrRouteHostRequired):
+		return exitcode.Usage(fmt.Errorf("--host is required"))
+	case errors.Is(err, configedit.ErrRouteNamespaceRequired):
+		return exitcode.Usage(fmt.Errorf("--namespace is required"))
+	case errors.Is(err, configedit.ErrRouteRepoRequired):
+		return exitcode.Usage(fmt.Errorf("--repo must be non-empty"))
+	default:
+		return exitcode.Usage(err)
 	}
-	seen := make(map[string]struct{}, len(raw))
-	repos := make([]string, 0, len(raw))
-	for _, repo := range raw {
-		trimmed := strings.TrimSpace(repo)
-		if trimmed == "" {
-			return nil, exitcode.Usage(fmt.Errorf("--repo must be non-empty"))
-		}
-		if _, ok := seen[trimmed]; ok {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		repos = append(repos, trimmed)
-	}
-	sort.Strings(repos)
-	return repos, nil
 }
 
-func normalizeAgentSourcePath(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", exitcode.Usage(fmt.Errorf("path must be non-empty"))
+func usageAgentSourceError(err error) error {
+	if errors.Is(err, configedit.ErrAgentSourcePathRequired) {
+		return exitcode.Usage(fmt.Errorf("path must be non-empty"))
 	}
-	return filepath.Clean(trimmed), nil
-}
-
-func addAgentSource(existing []string, raw string) ([]string, bool, error) {
-	target, err := normalizeAgentSourcePath(raw)
-	if err != nil {
-		return nil, false, err
-	}
-	out := append([]string(nil), existing...)
-	for _, source := range existing {
-		normalized, err := normalizeAgentSourcePath(source)
-		if err != nil {
-			continue
-		}
-		if normalized == target {
-			return out, false, nil
-		}
-	}
-	out = append(out, target)
-	return out, true, nil
-}
-
-func removeAgentSource(existing []string, raw string) ([]string, bool, error) {
-	target, err := normalizeAgentSourcePath(raw)
-	if err != nil {
-		return nil, false, err
-	}
-	out := make([]string, 0, len(existing))
-	changed := false
-	for _, source := range existing {
-		normalized, err := normalizeAgentSourcePath(source)
-		if err == nil && normalized == target {
-			changed = true
-			continue
-		}
-		out = append(out, source)
-	}
-	if !changed {
-		return append([]string(nil), existing...), false, nil
-	}
-	if len(out) == 0 {
-		return nil, true, nil
-	}
-	return out, true, nil
-}
-
-func normalizeRouteRepos(raw []string) []string {
-	repos, err := parseRouteRepos(raw)
-	if err != nil {
-		return nil
-	}
-	return repos
-}
-
-func formatRouteSpec(spec routeSpec) string {
-	target := spec.Host + "/" + spec.Namespace
-	if len(spec.Repos) == 0 {
-		return target
-	}
-	return target + " [" + strings.Join(spec.Repos, ", ") + "]"
+	return exitcode.Usage(err)
 }
 
 func configRoutesView(routes []config.RepositoryProfile) []view.ConfigRoute {
@@ -945,150 +869,6 @@ func configRoutesView(routes []config.RepositoryProfile) []view.ConfigRoute {
 		out = append(out, item)
 	}
 	return out
-}
-
-func canonicalRepositoryRoutes(routes []config.RepositoryProfile) []config.RepositoryProfile {
-	state := newRepositoryRouteState(routes)
-	return state.routes()
-}
-
-func setRepositoryRoutes(routes []config.RepositoryProfile, profileName string, spec routeSpec) []config.RepositoryProfile {
-	state := newRepositoryRouteState(routes)
-	if len(spec.Repos) == 0 {
-		state.namespace[configRouteKey(spec.Host, spec.Namespace, "")] = profileName
-		return state.routes()
-	}
-	for _, repo := range spec.Repos {
-		state.repos[configRouteKey(spec.Host, spec.Namespace, repo)] = profileName
-	}
-	return state.routes()
-}
-
-func unsetRepositoryRoutes(routes []config.RepositoryProfile, spec routeSpec) ([]config.RepositoryProfile, bool) {
-	state := newRepositoryRouteState(routes)
-	changed := false
-	if len(spec.Repos) == 0 {
-		key := configRouteKey(spec.Host, spec.Namespace, "")
-		if _, ok := state.namespace[key]; ok {
-			delete(state.namespace, key)
-			changed = true
-		}
-		return state.routes(), changed
-	}
-	for _, repo := range spec.Repos {
-		key := configRouteKey(spec.Host, spec.Namespace, repo)
-		if _, ok := state.repos[key]; ok {
-			delete(state.repos, key)
-			changed = true
-		}
-	}
-	return state.routes(), changed
-}
-
-func newRepositoryRouteState(routes []config.RepositoryProfile) repositoryRouteState {
-	state := repositoryRouteState{
-		namespace: map[string]string{},
-		repos:     map[string]string{},
-	}
-	for _, route := range canonicalRepositoryRoutesFromConfig(routes) {
-		if len(route.Match.Repos) == 0 {
-			state.namespace[configRouteKey(route.Match.Host, route.Match.Namespace, "")] = route.Profile
-			continue
-		}
-		for _, repo := range route.Match.Repos {
-			state.repos[configRouteKey(route.Match.Host, route.Match.Namespace, repo)] = route.Profile
-		}
-	}
-	return state
-}
-
-func canonicalRepositoryRoutesFromConfig(routes []config.RepositoryProfile) []config.RepositoryProfile {
-	if len(routes) == 0 {
-		return nil
-	}
-	canonical := make([]config.RepositoryProfile, len(routes))
-	for i, route := range routes {
-		canonical[i] = route
-		canonical[i].Profile = strings.TrimSpace(route.Profile)
-		canonical[i].Match.Host = config.NormalizeHost(route.Match.Host)
-		canonical[i].Match.Namespace = strings.TrimSpace(route.Match.Namespace)
-		if len(route.Match.Repos) > 0 {
-			canonical[i].Match.Repos = normalizeRouteRepos(route.Match.Repos)
-		}
-	}
-	return canonical
-}
-
-func (s repositoryRouteState) routes() []config.RepositoryProfile {
-	namespaceKeys := make([]string, 0, len(s.namespace))
-	for key := range s.namespace {
-		namespaceKeys = append(namespaceKeys, key)
-	}
-	sort.Strings(namespaceKeys)
-
-	type repoGroup struct {
-		profile   string
-		host      string
-		namespace string
-		repos     []string
-	}
-	repoGroupsByKey := map[string]*repoGroup{}
-	for key, profile := range s.repos {
-		host, namespace, repo := splitConfigRouteKey(key)
-		profileGroupKey := configRouteKey(host, namespace, profile)
-		group := repoGroupsByKey[profileGroupKey]
-		if group == nil {
-			group = &repoGroup{profile: profile, host: host, namespace: namespace}
-			repoGroupsByKey[profileGroupKey] = group
-		}
-		group.repos = append(group.repos, repo)
-	}
-	repoGroupKeys := make([]string, 0, len(repoGroupsByKey))
-	for key := range repoGroupsByKey {
-		repoGroupKeys = append(repoGroupKeys, key)
-	}
-	sort.Strings(repoGroupKeys)
-
-	routes := make([]config.RepositoryProfile, 0, len(namespaceKeys)+len(repoGroupKeys))
-	for _, key := range namespaceKeys {
-		host, namespace, _ := splitConfigRouteKey(key)
-		routes = append(routes, config.RepositoryProfile{
-			Profile: s.namespace[key],
-			Match: config.RepositoryProfileMatch{
-				Host:      host,
-				Namespace: namespace,
-			},
-		})
-	}
-	for _, key := range repoGroupKeys {
-		group := repoGroupsByKey[key]
-		sort.Strings(group.repos)
-		routes = append(routes, config.RepositoryProfile{
-			Profile: group.profile,
-			Match: config.RepositoryProfileMatch{
-				Host:      group.host,
-				Namespace: group.namespace,
-				Repos:     group.repos,
-			},
-		})
-	}
-	return routes
-}
-
-const configRouteKeySeparator = "\x00"
-
-func configRouteKey(host, namespace, repo string) string {
-	// NUL is collision-safe here because normalized config strings cannot
-	// contain embedded NUL bytes.
-	return host + configRouteKeySeparator + namespace + configRouteKeySeparator + repo
-}
-
-func splitConfigRouteKey(key string) (string, string, string) {
-	parts := strings.SplitN(key, configRouteKeySeparator, 3)
-	if len(parts) != 3 {
-		return "", "", ""
-	}
-	return parts[0], parts[1], parts[2]
 }
 
 func mustMarkFlagRequired(cmd *cobra.Command, name string) {
@@ -1242,40 +1022,15 @@ func removeProfileFromConfig(path string, cfg config.File, profileName string) (
 		change.configPathRemoved = path
 		return change, nil
 	}
-	cfg.RepositoryProfiles = pruneRepositoryProfileRoutes(cfg.RepositoryProfiles, profileName)
+	cfg.RepositoryProfiles = configedit.PruneRepositoryProfileRoutes(cfg.RepositoryProfiles, profileName)
 	if cfg.DefaultProfile == profileName {
-		cfg.DefaultProfile = firstProfileName(cfg.Profiles)
+		cfg.DefaultProfile = configedit.FirstProfileName(cfg.Profiles)
 		change.defaultProfile = cfg.DefaultProfile
 	}
 	if err := saveConfigFile(path, cfg); err != nil {
 		return configClearChange{}, err
 	}
 	return change, nil
-}
-
-func pruneRepositoryProfileRoutes(routes []config.RepositoryProfile, profileName string) []config.RepositoryProfile {
-	if len(routes) == 0 {
-		return routes
-	}
-	pruned := routes[:0]
-	for _, route := range routes {
-		if route.Profile != profileName {
-			pruned = append(pruned, route)
-		}
-	}
-	return pruned
-}
-
-func firstProfileName(profiles map[string]config.Profile) string {
-	if len(profiles) == 0 {
-		return ""
-	}
-	names := make([]string, 0, len(profiles))
-	for name := range profiles {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names[0]
 }
 
 func removeEmptyConfigDir(dir string) {
@@ -1319,7 +1074,7 @@ func previewProfileFromConfig(path string, cfg config.File, profileName string) 
 				remaining[name] = profile
 			}
 		}
-		change.defaultProfile = firstProfileName(remaining)
+		change.defaultProfile = configedit.FirstProfileName(remaining)
 	}
 	return change, nil
 }

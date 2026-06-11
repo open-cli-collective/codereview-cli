@@ -513,7 +513,7 @@ func Validate(cfg File) error {
 	if err := validateKeyring(cfg.Keyring); err != nil {
 		return err
 	}
-	if err := validateRetention(cfg.Data.Retention.normalized()); err != nil {
+	if err := ValidateRetention(cfg.Data.Retention); err != nil {
 		return err
 	}
 	return nil
@@ -845,7 +845,14 @@ func validateCredentialRef(field, ref string) error {
 	return nil
 }
 
-func validateRetention(retention RetentionConfig) error {
+// DefaultRetentionConfig returns the normalized durable retention defaults.
+func DefaultRetentionConfig() RetentionConfig {
+	return RetentionConfig{}.normalized()
+}
+
+// ValidateRetention checks retention after applying omitted-field defaults.
+func ValidateRetention(retention RetentionConfig) error {
+	retention = retention.normalized()
 	if retention.MaxAgeDaysValue() < 0 {
 		return invalid("data.retention.max_age_days %d is invalid", retention.MaxAgeDaysValue())
 	}
