@@ -290,6 +290,313 @@ func TestConfigDefaultSetRejectsBlankProfile(t *testing.T) {
 	}
 }
 
+func TestConfigRouteListText(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "https://GITHUB.com/",
+				Namespace: "rianjs",
+				Repos:     []string{"baz", "bar"},
+			},
+		},
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "route", "list"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := "Routes:\n  - home: github.com/open-cli-collective\n  - work: github.com/rianjs [bar, baz]\n"
+	if out.String() != want {
+		t.Fatalf("stdout = %q, want %q", out.String(), want)
+	}
+}
+
+func TestConfigRouteListJSON(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar", "baz"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "route", "list", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigRoutes
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	want := view.ConfigRoutes{
+		Routes: []view.ConfigRoute{
+			{Profile: "home", Host: "github.com", Namespace: "open-cli-collective"},
+			{Profile: "work", Host: "github.com", Namespace: "rianjs", Repos: []string{"bar", "baz"}},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("routes = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfigRouteSetNamespaceRouteUsesDefaultProfile(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "route", "set", "--host", "https://github.com/", "--namespace", "open-cli-collective"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Set route for profile home: github.com/open-cli-collective\n" {
+		t.Fatalf("stdout = %q, want namespace route confirmation", got)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		},
+	}
+	if !reflect.DeepEqual(cfg.RepositoryProfiles, want) {
+		t.Fatalf("repository_profiles = %#v, want %#v", cfg.RepositoryProfiles, want)
+	}
+}
+
+func TestConfigRouteSetRepoRoutesConvergesDeterministically(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "set", "--host", "github.com", "--namespace", "rianjs", "--repo", "baz", "--repo", "bar", "--repo", " bar "}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Set route for profile work: github.com/rianjs [bar, baz]\n" {
+		t.Fatalf("stdout = %q, want repo route confirmation", got)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar", "baz"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(cfg.RepositoryProfiles, want) {
+		t.Fatalf("repository_profiles = %#v, want %#v", cfg.RepositoryProfiles, want)
+	}
+}
+
+func TestConfigRouteSetMovesReposAcrossProfiles(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar", "baz"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "set", "--host", "github.com", "--namespace", "rianjs", "--repo", "baz"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar"},
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"baz"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, want) {
+		t.Fatalf("repository_profiles = %#v, want %#v", loaded.RepositoryProfiles, want)
+	}
+}
+
+func TestConfigRouteSetRejectsHostMismatch(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "route", "set", "--host", "gitlab.com", "--namespace", "open-cli-collective"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestConfigRouteSetRejectsBlankRepo(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "route", "set", "--host", "github.com", "--namespace", "rianjs", "--repo", " "})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestConfigRouteUnsetNamespaceRoute(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "route", "unset", "--host", "github.com", "--namespace", "open-cli-collective"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Removed route: github.com/open-cli-collective\n" {
+		t.Fatalf("stdout = %q, want removal confirmation", got)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, want) {
+		t.Fatalf("repository_profiles = %#v, want %#v", loaded.RepositoryProfiles, want)
+	}
+}
+
+func TestConfigRouteUnsetRepoRoutesPrunesEmptyEntry(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar", "baz"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "route", "unset", "--host", "github.com", "--namespace", "rianjs", "--repo", "bar", "--repo", "baz"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Removed route: github.com/rianjs [bar, baz]\n" {
+		t.Fatalf("stdout = %q, want repo removal confirmation", got)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.RepositoryProfiles) != 0 {
+		t.Fatalf("repository_profiles = %#v, want empty after pruning", loaded.RepositoryProfiles)
+	}
+}
+
+func TestConfigRouteUnsetAlreadyAbsentIsIdempotent(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "route", "unset", "--host", "github.com", "--namespace", "rianjs", "--repo", "bar"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Route already absent: github.com/rianjs [bar]\n" {
+		t.Fatalf("stdout = %q, want idempotent absence confirmation", got)
+	}
+}
+
+func TestConfigRouteUnsetRejectsBlankInputs(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	tests := [][]string{
+		{"config", "route", "unset", "--host", " ", "--namespace", "rianjs"},
+		{"config", "route", "unset", "--host", "github.com", "--namespace", " "},
+		{"config", "route", "unset", "--host", "github.com", "--namespace", "rianjs", "--repo", " "},
+	}
+	for _, args := range tests {
+		cmd, _ := newTestCommand(path)
+		err := root.Execute(cmd, args)
+		if err == nil {
+			t.Fatalf("Execute(%v) error = nil, want usage error", args)
+		}
+		if got := exitcode.FromError(err); got != exitcode.UsageError {
+			t.Fatalf("Execute(%v) exit code = %d, want %d", args, got, exitcode.UsageError)
+		}
+	}
+}
+
 func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["work"]

@@ -271,6 +271,47 @@ func RenderConfigDefaultJSON(w io.Writer, result ConfigDefault) error {
 	return encoder.Encode(result)
 }
 
+// ConfigRoutes is the presentation model for `cr config route list`.
+type ConfigRoutes struct {
+	Routes []ConfigRoute `json:"routes"`
+}
+
+// ConfigRoute is one repository-profile route.
+type ConfigRoute struct {
+	Profile   string   `json:"profile"`
+	Host      string   `json:"host"`
+	Namespace string   `json:"namespace"`
+	Repos     []string `json:"repos,omitempty"`
+}
+
+// RenderConfigRoutesText writes a stable human-readable route listing.
+func RenderConfigRoutesText(w io.Writer, result ConfigRoutes) error {
+	if len(result.Routes) == 0 {
+		_, err := fmt.Fprintln(w, "Routes: none")
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Routes:"); err != nil {
+		return err
+	}
+	for _, route := range result.Routes {
+		target := route.Host + "/" + route.Namespace
+		if len(route.Repos) > 0 {
+			target += " [" + strings.Join(route.Repos, ", ") + "]"
+		}
+		if _, err := fmt.Fprintf(w, "  - %s: %s\n", route.Profile, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RenderConfigRoutesJSON writes the route listing as indented JSON.
+func RenderConfigRoutesJSON(w io.Writer, result ConfigRoutes) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
 // ConfigClear is the presentation model for `cr config clear`.
 type ConfigClear struct {
 	Backend              string                 `json:"backend"`

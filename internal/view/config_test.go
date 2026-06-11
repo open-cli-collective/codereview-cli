@@ -3,6 +3,7 @@ package view
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -247,6 +248,56 @@ func TestRenderConfigDefaultJSON(t *testing.T) {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
 	if decoded != result {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
+func TestRenderConfigRoutesText(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigRoutes{
+		Routes: []ConfigRoute{
+			{Profile: "home", Host: "github.com", Namespace: "open-cli-collective"},
+			{Profile: "work", Host: "github.com", Namespace: "rianjs", Repos: []string{"bar", "baz"}},
+		},
+	}
+
+	if err := RenderConfigRoutesText(&out, result); err != nil {
+		t.Fatalf("RenderConfigRoutesText: %v", err)
+	}
+	want := "Routes:\n  - home: github.com/open-cli-collective\n  - work: github.com/rianjs [bar, baz]\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigRoutesTextEmpty(t *testing.T) {
+	var out bytes.Buffer
+
+	if err := RenderConfigRoutesText(&out, ConfigRoutes{}); err != nil {
+		t.Fatalf("RenderConfigRoutesText: %v", err)
+	}
+	if out.String() != "Routes: none\n" {
+		t.Fatalf("text output = %q, want empty routes text", out.String())
+	}
+}
+
+func TestRenderConfigRoutesJSON(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigRoutes{
+		Routes: []ConfigRoute{
+			{Profile: "home", Host: "github.com", Namespace: "open-cli-collective"},
+			{Profile: "work", Host: "github.com", Namespace: "rianjs", Repos: []string{"bar", "baz"}},
+		},
+	}
+
+	if err := RenderConfigRoutesJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigRoutesJSON: %v", err)
+	}
+	var decoded ConfigRoutes
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(decoded, result) {
 		t.Fatalf("decoded = %#v, want %#v", decoded, result)
 	}
 }

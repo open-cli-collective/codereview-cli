@@ -197,6 +197,126 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	}
 	defaultCmd.AddCommand(defaultGetCmd, defaultSetCmd)
 
+	routeCmd := &cobra.Command{
+		Use:   "route",
+		Short: "Inspect and update repository profile routes",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+
+	var routeListJSON bool
+	routeListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List repository profile routes",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config route list takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, err := configPath(opts)
+			if err != nil {
+				return exitcode.AuthConfig(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			result := view.ConfigRoutes{Routes: configRoutesView(canonicalRepositoryRoutes(cfg.RepositoryProfiles))}
+			if routeListJSON {
+				return view.RenderConfigRoutesJSON(opts.Stdout, result)
+			}
+			return view.RenderConfigRoutesText(opts.Stdout, result)
+		},
+	}
+	routeListCmd.Flags().BoolVar(&routeListJSON, "json", false, "Emit JSON")
+
+	var routeSetHost string
+	var routeSetNamespace string
+	var routeSetRepos []string
+	routeSetCmd := &cobra.Command{
+		Use:   "set",
+		Short: "Set repository profile routes on the selected profile",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config route set takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, cfg, profileName, profile, err := loadActiveProfile(opts)
+			if err != nil {
+				return err
+			}
+			spec, err := parseRouteSpec(routeSetHost, routeSetNamespace, routeSetRepos)
+			if err != nil {
+				return err
+			}
+			if spec.Host != config.NormalizeHost(profile.Git.Host) {
+				return exitcode.Usage(fmt.Errorf("--host %q does not match selected profile host %q", spec.Host, profile.Git.Host))
+			}
+			cfg.RepositoryProfiles = setRepositoryRoutes(cfg.RepositoryProfiles, profileName, spec)
+			if err := saveConfigFile(path, cfg); err != nil {
+				return cmderr.Config(err)
+			}
+			_, err = fmt.Fprintf(opts.Stdout, "Set route for profile %s: %s\n", profileName, formatRouteSpec(spec))
+			return err
+		},
+	}
+	routeSetCmd.Flags().StringVar(&routeSetHost, "host", "", "Repository host")
+	routeSetCmd.Flags().StringVar(&routeSetNamespace, "namespace", "", "Repository namespace")
+	routeSetCmd.Flags().StringArrayVar(&routeSetRepos, "repo", nil, "Repository name; repeat for multiple repos")
+	mustMarkFlagRequired(routeSetCmd, "host")
+	mustMarkFlagRequired(routeSetCmd, "namespace")
+
+	var routeUnsetHost string
+	var routeUnsetNamespace string
+	var routeUnsetRepos []string
+	routeUnsetCmd := &cobra.Command{
+		Use:   "unset",
+		Short: "Remove repository profile routes",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config route unset takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, err := configPath(opts)
+			if err != nil {
+				return exitcode.AuthConfig(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			spec, err := parseRouteSpec(routeUnsetHost, routeUnsetNamespace, routeUnsetRepos)
+			if err != nil {
+				return err
+			}
+			routes, changed := unsetRepositoryRoutes(cfg.RepositoryProfiles, spec)
+			if !changed {
+				_, err := fmt.Fprintf(opts.Stdout, "Route already absent: %s\n", formatRouteSpec(spec))
+				return err
+			}
+			cfg.RepositoryProfiles = routes
+			if err := saveConfigFile(path, cfg); err != nil {
+				return cmderr.Config(err)
+			}
+			_, err = fmt.Fprintf(opts.Stdout, "Removed route: %s\n", formatRouteSpec(spec))
+			return err
+		},
+	}
+	routeUnsetCmd.Flags().StringVar(&routeUnsetHost, "host", "", "Repository host")
+	routeUnsetCmd.Flags().StringVar(&routeUnsetNamespace, "namespace", "", "Repository namespace")
+	routeUnsetCmd.Flags().StringArrayVar(&routeUnsetRepos, "repo", nil, "Repository name; repeat for multiple repos")
+	mustMarkFlagRequired(routeUnsetCmd, "host")
+	mustMarkFlagRequired(routeUnsetCmd, "namespace")
+
+	routeCmd.AddCommand(routeListCmd, routeSetCmd, routeUnsetCmd)
+
 	var clearAll bool
 	var clearJSON bool
 	var clearDryRun bool
@@ -291,7 +411,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, clearCmd, newLLMCommand(opts))
+	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
 }
 
@@ -504,6 +624,17 @@ type modelResolveResult struct {
 	Source        string `json:"source"`
 }
 
+type routeSpec struct {
+	Host      string
+	Namespace string
+	Repos     []string
+}
+
+type repositoryRouteState struct {
+	namespace map[string]string
+	repos     map[string]string
+}
+
 func loadActiveProfile(opts *root.Options) (string, config.File, string, config.Profile, error) {
 	path, err := configPath(opts)
 	if err != nil {
@@ -526,6 +657,218 @@ func parseModelTierArg(raw string) (config.ModelTier, error) {
 		return "", exitcode.Usage(fmt.Errorf("model tier must be one of small, medium, large"))
 	}
 	return tier, nil
+}
+
+func parseRouteSpec(rawHost string, rawNamespace string, rawRepos []string) (routeSpec, error) {
+	host := config.NormalizeHost(rawHost)
+	if host == "" {
+		return routeSpec{}, exitcode.Usage(fmt.Errorf("--host is required"))
+	}
+	namespace := strings.TrimSpace(rawNamespace)
+	if namespace == "" {
+		return routeSpec{}, exitcode.Usage(fmt.Errorf("--namespace is required"))
+	}
+	repos := normalizeRouteRepos(rawRepos)
+	if len(rawRepos) > 0 && len(repos) == 0 {
+		return routeSpec{}, exitcode.Usage(fmt.Errorf("--repo must be non-empty"))
+	}
+	for _, repo := range repos {
+		if repo == "" {
+			return routeSpec{}, exitcode.Usage(fmt.Errorf("--repo must be non-empty"))
+		}
+	}
+	return routeSpec{Host: host, Namespace: namespace, Repos: repos}, nil
+}
+
+func normalizeRouteRepos(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(raw))
+	repos := make([]string, 0, len(raw))
+	for _, repo := range raw {
+		trimmed := strings.TrimSpace(repo)
+		if trimmed == "" {
+			return []string{""}
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		repos = append(repos, trimmed)
+	}
+	sort.Strings(repos)
+	return repos
+}
+
+func formatRouteSpec(spec routeSpec) string {
+	target := spec.Host + "/" + spec.Namespace
+	if len(spec.Repos) == 0 {
+		return target
+	}
+	return target + " [" + strings.Join(spec.Repos, ", ") + "]"
+}
+
+func configRoutesView(routes []config.RepositoryProfile) []view.ConfigRoute {
+	out := make([]view.ConfigRoute, 0, len(routes))
+	for _, route := range routes {
+		item := view.ConfigRoute{
+			Profile:   route.Profile,
+			Host:      route.Match.Host,
+			Namespace: route.Match.Namespace,
+		}
+		if len(route.Match.Repos) > 0 {
+			item.Repos = append([]string(nil), route.Match.Repos...)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func canonicalRepositoryRoutes(routes []config.RepositoryProfile) []config.RepositoryProfile {
+	state := newRepositoryRouteState(routes)
+	return state.routes()
+}
+
+func setRepositoryRoutes(routes []config.RepositoryProfile, profileName string, spec routeSpec) []config.RepositoryProfile {
+	state := newRepositoryRouteState(routes)
+	if len(spec.Repos) == 0 {
+		state.namespace[configRouteKey(spec.Host, spec.Namespace, "")] = profileName
+		return state.routes()
+	}
+	for _, repo := range spec.Repos {
+		state.repos[configRouteKey(spec.Host, spec.Namespace, repo)] = profileName
+	}
+	return state.routes()
+}
+
+func unsetRepositoryRoutes(routes []config.RepositoryProfile, spec routeSpec) ([]config.RepositoryProfile, bool) {
+	state := newRepositoryRouteState(routes)
+	changed := false
+	if len(spec.Repos) == 0 {
+		key := configRouteKey(spec.Host, spec.Namespace, "")
+		if _, ok := state.namespace[key]; ok {
+			delete(state.namespace, key)
+			changed = true
+		}
+		return state.routes(), changed
+	}
+	for _, repo := range spec.Repos {
+		key := configRouteKey(spec.Host, spec.Namespace, repo)
+		if _, ok := state.repos[key]; ok {
+			delete(state.repos, key)
+			changed = true
+		}
+	}
+	return state.routes(), changed
+}
+
+func newRepositoryRouteState(routes []config.RepositoryProfile) repositoryRouteState {
+	state := repositoryRouteState{
+		namespace: map[string]string{},
+		repos:     map[string]string{},
+	}
+	for _, route := range canonicalRepositoryRoutesFromConfig(routes) {
+		if len(route.Match.Repos) == 0 {
+			state.namespace[configRouteKey(route.Match.Host, route.Match.Namespace, "")] = route.Profile
+			continue
+		}
+		for _, repo := range route.Match.Repos {
+			state.repos[configRouteKey(route.Match.Host, route.Match.Namespace, repo)] = route.Profile
+		}
+	}
+	return state
+}
+
+func canonicalRepositoryRoutesFromConfig(routes []config.RepositoryProfile) []config.RepositoryProfile {
+	if len(routes) == 0 {
+		return nil
+	}
+	canonical := make([]config.RepositoryProfile, len(routes))
+	for i, route := range routes {
+		canonical[i] = route
+		canonical[i].Profile = strings.TrimSpace(route.Profile)
+		canonical[i].Match.Host = config.NormalizeHost(route.Match.Host)
+		canonical[i].Match.Namespace = strings.TrimSpace(route.Match.Namespace)
+		if len(route.Match.Repos) > 0 {
+			canonical[i].Match.Repos = normalizeRouteRepos(route.Match.Repos)
+		}
+	}
+	return canonical
+}
+
+func (s repositoryRouteState) routes() []config.RepositoryProfile {
+	namespaceKeys := make([]string, 0, len(s.namespace))
+	for key := range s.namespace {
+		namespaceKeys = append(namespaceKeys, key)
+	}
+	sort.Strings(namespaceKeys)
+
+	type repoGroup struct {
+		profile   string
+		host      string
+		namespace string
+		repos     []string
+	}
+	repoGroupsByKey := map[string]*repoGroup{}
+	for key, profile := range s.repos {
+		host, namespace, repo := splitConfigRouteKey(key)
+		groupKey := configRouteKey(host, namespace, profile)
+		group := repoGroupsByKey[groupKey]
+		if group == nil {
+			group = &repoGroup{profile: profile, host: host, namespace: namespace}
+			repoGroupsByKey[groupKey] = group
+		}
+		group.repos = append(group.repos, repo)
+	}
+	repoGroupKeys := make([]string, 0, len(repoGroupsByKey))
+	for key := range repoGroupsByKey {
+		repoGroupKeys = append(repoGroupKeys, key)
+	}
+	sort.Strings(repoGroupKeys)
+
+	routes := make([]config.RepositoryProfile, 0, len(namespaceKeys)+len(repoGroupKeys))
+	for _, key := range namespaceKeys {
+		host, namespace, _ := splitConfigRouteKey(key)
+		routes = append(routes, config.RepositoryProfile{
+			Profile: s.namespace[key],
+			Match: config.RepositoryProfileMatch{
+				Host:      host,
+				Namespace: namespace,
+			},
+		})
+	}
+	for _, key := range repoGroupKeys {
+		group := repoGroupsByKey[key]
+		sort.Strings(group.repos)
+		routes = append(routes, config.RepositoryProfile{
+			Profile: group.profile,
+			Match: config.RepositoryProfileMatch{
+				Host:      group.host,
+				Namespace: group.namespace,
+				Repos:     group.repos,
+			},
+		})
+	}
+	return routes
+}
+
+func configRouteKey(host, namespace, repo string) string {
+	return host + "\x00" + namespace + "\x00" + repo
+}
+
+func splitConfigRouteKey(key string) (string, string, string) {
+	parts := strings.SplitN(key, "\x00", 3)
+	if len(parts) != 3 {
+		return "", "", ""
+	}
+	return parts[0], parts[1], parts[2]
+}
+
+func mustMarkFlagRequired(cmd *cobra.Command, name string) {
+	if err := cmd.MarkFlagRequired(name); err != nil {
+		panic(err)
+	}
 }
 
 func modelMapResult(profileName string, profile config.Profile) modelMapResultView {
