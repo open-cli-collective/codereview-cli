@@ -975,6 +975,64 @@ func TestInitAPIKeyAuthWithExistingKeyDoesNotPrintLLMFollowUpHint(t *testing.T) 
 	}
 }
 
+func TestInitReplaceProfilePreservesExistingCredentialRefsByDefault(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Keyring:        config.KeyringConfig{Backend: "file"},
+		Profiles: map[string]config.Profile{
+			"work": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/custom-git",
+				},
+				ReviewerCredentials: &config.ReviewerCredentials{
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/custom-reviewer",
+				},
+				LLM: config.LLMConfig{
+					Provider:      config.LLMProviderAnthropic,
+					Auth:          config.LLMAuthAPIKey,
+					Adapter:       config.LLMAdapterAnthropicAPI,
+					CredentialRef: "codereview/custom-llm",
+				},
+			},
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	seedFileBackend(t, "custom-llm", credentials.AnthropicAPIKeyKey, "llm-token")
+	cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--backend", "file",
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+		"--replace-profile",
+		"--reviewer-auth-mode", string(config.GitAuthModePAT),
+		"--llm-auth", string(config.LLMAuthAPIKey),
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := got.Profiles["work"]
+	if profile.Git.CredentialRef != "codereview/custom-git" {
+		t.Fatalf("git ref = %q, want preserved custom-git", profile.Git.CredentialRef)
+	}
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/custom-reviewer" {
+		t.Fatalf("reviewer = %#v, want preserved custom-reviewer", profile.ReviewerCredentials)
+	}
+	if profile.LLM.CredentialRef != "codereview/custom-llm" {
+		t.Fatalf("llm ref = %q, want preserved custom-llm", profile.LLM.CredentialRef)
+	}
+}
+
 func TestInitAPIKeyAuthRejectsMissingSecretWithoutWritingDanglingConfig(t *testing.T) {
 	hermeticFileBackend(t)
 	path := filepath.Join(t.TempDir(), "config.yml")
@@ -1203,6 +1261,39 @@ func TestPlanInitCredentialsClearsOptionalRefsInStableOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cleared, []string{"reviewer_credentials", "llm"}) {
 		t.Fatalf("cleared purposes = %#v, want reviewer then llm", cleared)
+	}
+}
+
+func TestWriteInitCredentialPlanHintsUsesMissingRequiredKeysOnly(t *testing.T) {
+	var stderr bytes.Buffer
+	entry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "git",
+			Ref:     "codereview/work",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+		PlannedWriteKeys:    []string{credentials.GitHubAppIDKey},
+		MissingRequiredKeys: []string{credentials.GitHubAppPrivateKeyKey},
+		State:               initCredentialPlanStateMissingRequired,
+	}
+
+	if err := writeInitCredentialPlanHints(&stderr, "", entry); err != nil {
+		t.Fatalf("writeInitCredentialPlanHints: %v", err)
+	}
+	got := stderr.String()
+	if !strings.Contains(got, "--key "+credentials.GitHubAppPrivateKeyKey+" --stdin") {
+		t.Fatalf("stderr = %q, want missing required private key hint", got)
+	}
+	if strings.Contains(got, "--key "+credentials.GitHubAppIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want no already-present app id hint", got)
+	}
+	if strings.Contains(got, "--key "+credentials.GitHubAppInstallationIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want no optional installation id hint", got)
 	}
 }
 

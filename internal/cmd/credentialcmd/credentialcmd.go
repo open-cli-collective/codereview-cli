@@ -175,7 +175,6 @@ type initPlan struct {
 	backendFlagSet    bool
 	backendArg        string
 	llmSecretProvided bool
-	credentialHints   []config.CredentialRef
 }
 
 type initCredentialPlanState string
@@ -316,13 +315,33 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	if profileName == "" {
 		profileName = credstore.DefaultProfile
 	}
+	path, err := deps.configPath(opts)
+	if err != nil {
+		return initPlan{}, exitcode.AuthConfig(err)
+	}
+	cfg, exists, err := deps.loadConfig(path)
+	if err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]config.Profile{}
+	}
+	var previousProfile *config.Profile
+	if existing, ok := cfg.Profiles[profileName]; ok {
+		existingCopy := existing
+		previousProfile = &existingCopy
+	}
 	defaultGitRef, err := credentials.FormatRef(profileName)
 	if err != nil {
 		return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q cannot be used as a credential ref segment: %w", profileName, err))
 	}
 	gitRef := flags.gitRef
 	if gitRef == "" {
-		gitRef = defaultGitRef
+		if previousProfile != nil && previousProfile.Git.CredentialRef != "" {
+			gitRef = previousProfile.Git.CredentialRef
+		} else {
+			gitRef = defaultGitRef
+		}
 	}
 	if _, err := credentials.ParseRef(gitRef); err != nil {
 		return initPlan{}, exitcode.Usage(err)
@@ -344,9 +363,13 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			return initPlan{}, exitcode.Usage(fmt.Errorf("reviewer token ingress requires --reviewer-auth-mode %s", config.GitAuthModePAT))
 		}
 		if reviewerRef == "" {
-			reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
-			if err != nil {
-				return initPlan{}, exitcode.Usage(err)
+			if previousProfile != nil && previousProfile.ReviewerCredentials != nil && previousProfile.ReviewerCredentials.CredentialRef != "" {
+				reviewerRef = previousProfile.ReviewerCredentials.CredentialRef
+			} else {
+				reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
+				if err != nil {
+					return initPlan{}, exitcode.Usage(err)
+				}
 			}
 		}
 		if _, err := credentials.ParseRef(reviewerRef); err != nil {
@@ -358,9 +381,13 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 	llmRef := flags.llmRef
 	if flags.llmAuth == string(config.LLMAuthAPIKey) && llmRef == "" {
-		llmRef, err = credentials.FormatRef(profileName + "-llm")
-		if err != nil {
-			return initPlan{}, exitcode.Usage(err)
+		if previousProfile != nil && previousProfile.LLM.Auth == config.LLMAuthAPIKey && previousProfile.LLM.CredentialRef != "" {
+			llmRef = previousProfile.LLM.CredentialRef
+		} else {
+			llmRef, err = credentials.FormatRef(profileName + "-llm")
+			if err != nil {
+				return initPlan{}, exitcode.Usage(err)
+			}
 		}
 	}
 	if llmRef != "" {
@@ -384,22 +411,6 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		return initPlan{}, exitcode.Usage(fmt.Errorf("LLM API-key ingress requires --llm-auth %s", config.LLMAuthAPIKey))
 	}
 
-	path, err := deps.configPath(opts)
-	if err != nil {
-		return initPlan{}, exitcode.AuthConfig(err)
-	}
-	cfg, exists, err := deps.loadConfig(path)
-	if err != nil {
-		return initPlan{}, cmderr.Config(err)
-	}
-	if cfg.Profiles == nil {
-		cfg.Profiles = map[string]config.Profile{}
-	}
-	var previousProfile *config.Profile
-	if existing, ok := cfg.Profiles[profileName]; ok {
-		existingCopy := existing
-		previousProfile = &existingCopy
-	}
 	if previousProfile != nil && !flags.replaceProfile {
 		return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q already exists; use --replace-profile to replace config only", profileName))
 	}
@@ -476,12 +487,6 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	if backendFlagSet && !persistExplicitBackend {
 		backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
 	}
-	credentialHints := []config.CredentialRef{}
-	for _, entry := range credentialPlan {
-		if shouldWriteInitCredentialHint(entry) {
-			credentialHints = append(credentialHints, entry.Ref)
-		}
-	}
 
 	return initPlan{
 		path:              path,
@@ -493,7 +498,6 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		backendFlagSet:    backendFlagSet,
 		backendArg:        backendArg,
 		llmSecretProvided: hasLLMSecret,
-		credentialHints:   credentialHints,
 	}, nil
 }
 
@@ -554,8 +558,11 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 		return err
 	}
 	var err error
-	for _, hint := range plan.credentialHints {
-		hintErr := writeCredentialHints(opts.Stderr, plan.backendArg, hint)
+	for _, entry := range plan.credentialPlan {
+		if !shouldWriteInitCredentialHint(entry) {
+			continue
+		}
+		hintErr := writeInitCredentialPlanHints(opts.Stderr, plan.backendArg, entry)
 		if err == nil {
 			err = hintErr
 		}
@@ -563,13 +570,16 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 	return err
 }
 
-func writeCredentialHints(w io.Writer, backendArg string, ref config.CredentialRef) error {
-	specs, err := credentials.KeySpecsForPurpose(ref)
-	if err != nil {
-		return err
+func writeInitCredentialPlanHints(w io.Writer, backendArg string, entry initCredentialPlanEntry) error {
+	keys := entry.MissingRequiredKeys
+	if len(keys) == 0 {
+		keys = make([]string, 0, len(entry.KeySpecs))
+		for _, spec := range entry.KeySpecs {
+			keys = append(keys, spec.Key)
+		}
 	}
-	for _, spec := range specs {
-		if _, err := fmt.Fprintf(w, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, ref.Ref, spec.Key); err != nil {
+	for _, key := range keys {
+		if _, err := fmt.Fprintf(w, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, entry.Ref.Ref, key); err != nil {
 			return err
 		}
 	}
