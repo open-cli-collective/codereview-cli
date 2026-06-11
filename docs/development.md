@@ -53,6 +53,18 @@ make clean   # remove build artifacts
   review posting/gating in `internal/outbox`, `internal/gate`, and
   `internal/gateio`.
 
+## Interactive Init Notes
+
+`cr init` interactive mode only collects non-secret configuration. When the
+selected LLM auth mode is `api_key`, the wizard saves the non-secret profile
+shape and prints a follow-up `cr set-credential` command instead of collecting
+the API key inline.
+
+Interactive `git.host` edits are also intentionally blocked when the target
+profile already participates in `repository_profiles` routing. Route
+reconciliation is handled separately so the wizard does not partially rewrite
+repository routing state.
+
 ## Release Secrets
 
 `auto-release.yml` passes `RELEASE_TAG_TOKEN` to the shared auto-release

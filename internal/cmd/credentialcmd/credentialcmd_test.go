@@ -1329,34 +1329,253 @@ func TestWriteInitCredentialPlanHintsUsesMissingRequiredKeysOnly(t *testing.T) {
 	}
 }
 
-func TestInitInteractiveRequiresNonInteractiveBeforeDeps(t *testing.T) {
+func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
+	existing.Git.Host = "gitlab.com"
+	existing.Git.AuthMode = config.GitAuthModeGitHubApp
+	existing.Git.CredentialRef = "codereview/custom-git"
+	existing.LLM.ReviewerModelTier = config.ModelTierMedium
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/custom-reviewer",
+	}
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"1", // Edit work
+			"",  // Profile name
+			"",  // Make default
+			"",  // Git host
+			"",  // Git auth
+			"",  // Git ref
+			"",  // Configure reviewer creds
+			"",  // Reviewer auth
+			"",  // Reviewer ref
+			"",  // LLM provider
+			"",  // LLM auth
+			"",  // LLM adapter
+			"",  // Reviewer model tier
+			"",  // LLM ref
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		ExistingProfileNames: []string{"work"},
+		DefaultProfileName:   "work",
+		ExistingConfig: config.File{
+			DefaultProfile: "work",
+			Profiles:       map[string]config.Profile{"work": existing},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.ProfileName != "work" || draft.OriginalProfileName != "work" {
+		t.Fatalf("draft profile = %#v, want existing work prefill", draft)
+	}
+	if !draft.MakeDefault {
+		t.Fatal("draft.MakeDefault = false, want existing default true")
+	}
+	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModeGitHubApp) || draft.GitCredentialRef != "codereview/custom-git" {
+		t.Fatalf("git draft = %#v, want existing values", draft)
+	}
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModeGitHubApp) || draft.ReviewerCredentialRef != "codereview/custom-reviewer" {
+		t.Fatalf("reviewer draft = %#v, want existing reviewer settings", draft)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMReviewerModelTier != string(config.ModelTierMedium) || draft.LLMCredentialRef != "codereview/work-llm" {
+		t.Fatalf("llm draft = %#v, want existing api-key openai values", draft)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Choose a profile to edit or create") || !strings.Contains(out, "Git credential ref") || !strings.Contains(out, "LLM credential ref") {
+		t.Fatalf("wizard output missing expected prompts: %q", out)
+	}
+	if strings.Contains(strings.ToLower(out), "paste a secret") {
+		t.Fatalf("wizard output unexpectedly requested secret ingress: %q", out)
+	}
+}
+
+func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
+	existing.AgentSources = []string{"/tmp/agents"}
+	existing.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+		ResolveAfter:     "24h",
+	}
+	existing.LLM.ModelMap = config.ModelMap{"medium": "gpt-custom"}
+	existing.LLM.ReviewerModelTier = config.ModelTierLarge
+	existing.Git.AuthMode = config.GitAuthModeGitHubApp
+	existing.Git.IdentityCache = "git-cache"
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+		IdentityCache: "reviewer-cache",
+	}
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		}},
+		Profiles: map[string]config.Profile{"work": existing},
+	})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	opts := &root.Options{
-		Stdin:  failReader{},
-		Stdout: &stdout,
-		Stderr: &stderr,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
 	}
+	var gotCtx initPromptContext
 	deps := initDeps{
+		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			gotCtx = ctx
+			return initDraft{
+				OriginalProfileName:   "work",
+				ProfileName:           "office",
+				MakeDefault:           true,
+				GitHost:               "github.com",
+				GitAuth:               string(config.GitAuthModeGitHubApp),
+				GitCredentialRef:      "codereview/office-git",
+				ReviewerEnabled:       true,
+				ReviewerAuth:          string(config.GitAuthModeGitHubApp),
+				ReviewerCredentialRef: "codereview/custom-office-reviewer",
+				LLMProvider:           string(config.LLMProviderOpenAI),
+				LLMAuth:               string(config.LLMAuthAPIKey),
+				LLMAdapter:            string(config.LLMAdapterOpenAIAPI),
+				LLMReviewerModelTier:  string(config.ModelTierSmall),
+				LLMCredentialRef:      "codereview/custom-office-llm",
+			}, nil
+		}),
 		configPath: func(*root.Options) (string, error) {
-			t.Fatal("config path dependency called before interactive gate")
-			return "", nil
+			return path, nil
 		},
-		loadConfig: func(string) (config.File, bool, error) {
-			t.Fatal("config load dependency called before interactive gate")
-			return config.File{}, false, nil
-		},
-		saveConfig: func(string, config.File) error {
-			t.Fatal("config save dependency called before interactive gate")
-			return nil
-		},
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
 		openStore: func(string, bool, config.File) (*credstore.Store, error) {
-			t.Fatal("keyring dependency called before interactive gate")
+			t.Fatal("interactive non-secret init should not open the keyring")
 			return nil, nil
 		},
 		readSecret: func(io.Reader, bool, string, string, string) (string, bool, error) {
-			t.Fatal("secret-read dependency called before interactive gate")
+			t.Fatal("interactive non-secret init should not read secret ingress")
 			return "", false, nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if gotCtx.ExistingProfileName != "work" || gotCtx.DefaultProfileName != "work" {
+		t.Fatalf("prompt context = %#v, want existing/default work", gotCtx)
+	}
+	if gotCtx.ExistingProfile == nil || gotCtx.ExistingProfile.Git.CredentialRef != "codereview/work" {
+		t.Fatalf("prompt existing profile = %#v, want work profile", gotCtx.ExistingProfile)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile != "office" {
+		t.Fatalf("default_profile = %q, want office", cfg.DefaultProfile)
+	}
+	if _, ok := cfg.Profiles["work"]; ok {
+		t.Fatalf("old profile still present after rename: %#v", cfg.Profiles)
+	}
+	profile := cfg.Profiles["office"]
+	if profile.Git.CredentialRef != "codereview/office-git" {
+		t.Fatalf("git ref = %q, want office-git", profile.Git.CredentialRef)
+	}
+	if profile.Git.AuthMode != config.GitAuthModeGitHubApp {
+		t.Fatalf("git auth_mode = %q, want github_app", profile.Git.AuthMode)
+	}
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/custom-office-reviewer" {
+		t.Fatalf("reviewer ref = %#v, want preserved custom-office-reviewer", profile.ReviewerCredentials)
+	}
+	if profile.LLM.CredentialRef != "codereview/custom-office-llm" {
+		t.Fatalf("llm ref = %q, want custom-office-llm", profile.LLM.CredentialRef)
+	}
+	if profile.Git.IdentityCache != "git-cache" {
+		t.Fatalf("git identity cache = %q, want preserved git-cache", profile.Git.IdentityCache)
+	}
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp || profile.ReviewerCredentials.IdentityCache != "reviewer-cache" {
+		t.Fatalf("reviewer credentials = %#v, want github_app with preserved cache", profile.ReviewerCredentials)
+	}
+	if !reflect.DeepEqual(profile.AgentSources, []string{"/tmp/agents"}) {
+		t.Fatalf("agent_sources = %#v, want preserved", profile.AgentSources)
+	}
+	if !reflect.DeepEqual(profile.LLM.ModelMap, config.ModelMap{"medium": "gpt-custom"}) {
+		t.Fatalf("model_map = %#v, want preserved", profile.LLM.ModelMap)
+	}
+	if profile.LLM.ReviewerModelTier != config.ModelTierSmall {
+		t.Fatalf("reviewer_model_tier = %q, want small", profile.LLM.ReviewerModelTier)
+	}
+	if !strings.Contains(stderr.String(), "set-credential --ref codereview/custom-office-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
+		t.Fatalf("stderr = %q, want deferred llm follow-up hint", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "set-credential --ref codereview/office-git --key "+credentials.GitHubAppIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want github app git follow-up hint", stderr.String())
+	}
+	if route := cfg.RepositoryProfiles[0]; route.Profile != "office" {
+		t.Fatalf("repository route profile = %q, want office", route.Profile)
+	}
+}
+
+func TestInitInteractiveBlocksRouteHostChangeBeforeSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		}},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				GitHost:             "gitlab.com",
+				GitCredentialRef:    "codereview/work",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite route-host block")
+			return nil
+		},
+		openStore: func(string, bool, config.File) (*credstore.Store, error) {
+			t.Fatal("openStore called despite route-host block")
+			return nil, nil
 		},
 	}
 
@@ -1364,24 +1583,152 @@ func TestInitInteractiveRequiresNonInteractiveBeforeDeps(t *testing.T) {
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
 	}
-	if !strings.Contains(err.Error(), "init requires --non-interactive in v1") {
-		t.Fatalf("error = %v, want non-interactive requirement", err)
+	if !strings.Contains(err.Error(), "route reconciliation") {
+		t.Fatalf("error = %v, want route reconciliation block", err)
 	}
 }
 
-func TestInitInteractiveCommandRequiresNonInteractiveBeforeSideEffects(t *testing.T) {
+func TestInitInteractiveBlocksRouteHostChangeDuringRenameBeforeSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	cmd, _, _ := newTestCommand(path, failReader{})
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		}},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				OriginalProfileName: "work",
+				ProfileName:         "office",
+				GitHost:             "gitlab.com",
+				GitCredentialRef:    "codereview/custom-office-git",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite rename route-host block")
+			return nil
+		},
+	}
 
-	err := root.Execute(cmd, []string{"init"})
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
 	}
-	if strings.Contains(err.Error(), "secret ingress was read") {
-		t.Fatalf("interactive init read stdin before non-interactive gate: %v", err)
+	if !strings.Contains(err.Error(), "route reconciliation") {
+		t.Fatalf("error = %v, want route reconciliation block", err)
 	}
-	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Fatalf("config stat err = %v, want not created", statErr)
+}
+
+func TestInitInteractiveRejectsSecretIngressFlagsBeforePrompt(t *testing.T) {
+	opts := &root.Options{
+		Stdin:      failReader{},
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			t.Fatal("prompter called despite interactive secret-flag rejection")
+			return initDraft{}, nil
+		}),
+		configPath: func(*root.Options) (string, error) {
+			t.Fatal("configPath called despite interactive secret-flag rejection")
+			return "", nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{
+		// #nosec G101 -- test-only env var name; no credential value is embedded.
+		gitTokenEnv: "CR_GIT_TOKEN",
+	}, deps)
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if !strings.Contains(err.Error(), "only supported with --non-interactive") {
+		t.Fatalf("error = %v, want interactive secret flag rejection", err)
+	}
+}
+
+func TestInitInteractivePersistsExplicitBackendForDeferredLLM(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd := &cobra.Command{}
+	cmd.Flags().String(credstore.BackendFlagName, "", "")
+	if err := cmd.Flags().Set(credstore.BackendFlagName, "file"); err != nil {
+		t.Fatalf("set backend flag: %v", err)
+	}
+	opts := &root.Options{
+		Backend:    "file",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	var stderr bytes.Buffer
+	opts.Stderr = &stderr
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName:          "default",
+				MakeDefault:          true,
+				GitHost:              "github.com",
+				GitAuth:              string(config.GitAuthModePAT),
+				GitCredentialRef:     "codereview/default",
+				LLMProvider:          string(config.LLMProviderOpenAI),
+				LLMAuth:              string(config.LLMAuthAPIKey),
+				LLMAdapter:           string(config.LLMAdapterOpenAIAPI),
+				LLMReviewerModelTier: string(config.ModelTierMedium),
+				LLMCredentialRef:     "codereview/default-llm",
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+		openStore: func(string, bool, config.File) (*credstore.Store, error) {
+			t.Fatal("interactive deferred llm init should not open the keyring")
+			return nil, nil
+		},
+		readSecret: func(io.Reader, bool, string, string, string) (string, bool, error) {
+			t.Fatal("interactive deferred llm init should not read secret ingress")
+			return "", false, nil
+		},
+	}
+
+	err := runInitWithDeps(cmd, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Keyring.Backend != "file" {
+		t.Fatalf("keyring.backend = %q, want file", cfg.Keyring.Backend)
+	}
+	if strings.Contains(stderr.String(), "cr --backend file set-credential") {
+		t.Fatalf("stderr = %q, want persisted backend to drop explicit backend hint", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cr set-credential --ref codereview/default-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
+		t.Fatalf("stderr = %q, want deferred llm follow-up hint without backend flag", stderr.String())
 	}
 }
 
@@ -1390,7 +1737,6 @@ func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "missing non-interactive", args: []string{"init"}},
 		{name: "two stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--llm-api-key-stdin"}},
 		{name: "git and reviewer stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--reviewer-token-stdin"}},
 		{name: "invalid profile segment", args: []string{"--profile", "bad.profile", "init", "--non-interactive"}},
@@ -1458,6 +1804,12 @@ type failReader struct{}
 
 func (failReader) Read([]byte) (int, error) {
 	return 0, errors.New("secret ingress was read")
+}
+
+type initPrompterFunc func(initPromptContext) (initDraft, error)
+
+func (f initPrompterFunc) Run(ctx initPromptContext) (initDraft, error) {
+	return f(ctx)
 }
 
 func hermeticFileBackend(t *testing.T) {
