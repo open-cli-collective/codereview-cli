@@ -554,6 +554,9 @@ func TestConfigRouteSetRejectsBlankRepo(t *testing.T) {
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
 	}
+	if !strings.Contains(err.Error(), "--repo must be non-empty") {
+		t.Fatalf("error = %q, want repo usage text", err)
+	}
 }
 
 func TestConfigRouteUnsetNamespaceRoute(t *testing.T) {
@@ -1277,6 +1280,9 @@ func TestConfigAgentSourceAddRejectsBlankPath(t *testing.T) {
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
 	}
+	if !strings.Contains(err.Error(), "path must be non-empty") {
+		t.Fatalf("error = %q, want path usage text", err)
+	}
 }
 
 func TestConfigAgentSourceRemoveRejectsBlankPath(t *testing.T) {
@@ -1289,6 +1295,9 @@ func TestConfigAgentSourceRemoveRejectsBlankPath(t *testing.T) {
 	}
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+	if !strings.Contains(err.Error(), "path must be non-empty") {
+		t.Fatalf("error = %q, want path usage text", err)
 	}
 }
 

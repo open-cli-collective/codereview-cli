@@ -209,6 +209,10 @@ func TestAgentSourceHelpersNormalizePreserveAndReset(t *testing.T) {
 	if !changed || got != nil {
 		t.Fatalf("ResetAgentSources = (%#v,%t), want nil,true", got, changed)
 	}
+	got, changed = configedit.ResetAgentSources(nil)
+	if changed || got != nil {
+		t.Fatalf("ResetAgentSources nil = (%#v,%t), want nil,false", got, changed)
+	}
 }
 
 func TestAgentSourceHelpersRejectBlankPath(t *testing.T) {
@@ -318,6 +322,13 @@ func TestCredentialRefAndOptionalResetHelpers(t *testing.T) {
 	if !changed || updated.Git.CredentialRef != "codereview/new-work" {
 		t.Fatalf("SetGitCredentialRef = (%#v,%t), want trimmed update", updated.Git, changed)
 	}
+	if updated.Git.AuthMode != profile.Git.AuthMode || updated.Git.IdentityCache != profile.Git.IdentityCache {
+		t.Fatalf("SetGitCredentialRef changed sibling git fields: %#v", updated.Git)
+	}
+	updated, changed = configedit.SetGitCredentialRef(profile, profile.Git.CredentialRef)
+	if changed || !reflect.DeepEqual(updated.Git, profile.Git) {
+		t.Fatalf("SetGitCredentialRef same ref = (%#v,%t), want unchanged,false", updated.Git, changed)
+	}
 
 	updated, changed, err := configedit.SetReviewerCredentialRef(profile, " codereview/new-reviewer ")
 	if err != nil {
@@ -326,13 +337,28 @@ func TestCredentialRefAndOptionalResetHelpers(t *testing.T) {
 	if !changed || updated.ReviewerCredentials.CredentialRef != "codereview/new-reviewer" {
 		t.Fatalf("SetReviewerCredentialRef = (%#v,%t), want trimmed update", updated.ReviewerCredentials, changed)
 	}
+	if updated.ReviewerCredentials.AuthMode != profile.ReviewerCredentials.AuthMode ||
+		updated.ReviewerCredentials.IdentityCache != profile.ReviewerCredentials.IdentityCache {
+		t.Fatalf("SetReviewerCredentialRef changed sibling reviewer fields: %#v", updated.ReviewerCredentials)
+	}
 	if profile.ReviewerCredentials.CredentialRef != "codereview/custom-reviewer" {
 		t.Fatalf("original reviewer credentials mutated to %q", profile.ReviewerCredentials.CredentialRef)
+	}
+	updated, changed, err = configedit.SetReviewerCredentialRef(profile, profile.ReviewerCredentials.CredentialRef)
+	if err != nil {
+		t.Fatalf("SetReviewerCredentialRef same ref: %v", err)
+	}
+	if changed || !reflect.DeepEqual(updated.ReviewerCredentials, profile.ReviewerCredentials) {
+		t.Fatalf("SetReviewerCredentialRef same ref = (%#v,%t), want unchanged,false", updated.ReviewerCredentials, changed)
 	}
 
 	cleared, changed := configedit.ClearReviewerCredentials(updated)
 	if !changed || cleared.ReviewerCredentials != nil {
 		t.Fatalf("ClearReviewerCredentials = (%#v,%t), want nil,true", cleared.ReviewerCredentials, changed)
+	}
+	cleared, changed = configedit.ClearReviewerCredentials(cleared)
+	if changed || cleared.ReviewerCredentials != nil {
+		t.Fatalf("ClearReviewerCredentials already nil = (%#v,%t), want nil,false", cleared.ReviewerCredentials, changed)
 	}
 	if _, _, err := configedit.SetReviewerCredentialRef(cleared, "codereview/reviewer"); !errors.Is(err, configedit.ErrReviewerCredentialsNotConfigured) {
 		t.Fatalf("SetReviewerCredentialRef without section error = %v, want ErrReviewerCredentialsNotConfigured", err)
@@ -342,15 +368,32 @@ func TestCredentialRefAndOptionalResetHelpers(t *testing.T) {
 	if !changed || updated.LLM.CredentialRef != "codereview/new-llm" {
 		t.Fatalf("SetLLMCredentialRef = (%#v,%t), want trimmed update", updated.LLM, changed)
 	}
+	if updated.LLM.Provider != profile.LLM.Provider ||
+		updated.LLM.Auth != profile.LLM.Auth ||
+		updated.LLM.Adapter != profile.LLM.Adapter {
+		t.Fatalf("SetLLMCredentialRef changed sibling llm fields: %#v", updated.LLM)
+	}
+	updated, changed = configedit.SetLLMCredentialRef(profile, profile.LLM.CredentialRef)
+	if changed || !reflect.DeepEqual(updated.LLM, profile.LLM) {
+		t.Fatalf("SetLLMCredentialRef same ref = (%#v,%t), want unchanged,false", updated.LLM, changed)
+	}
 	cleared, changed = configedit.ClearLLMCredentialRef(updated)
 	if !changed || cleared.LLM.CredentialRef != "" {
 		t.Fatalf("ClearLLMCredentialRef = (%#v,%t), want empty,true", cleared.LLM, changed)
+	}
+	cleared, changed = configedit.ClearLLMCredentialRef(cleared)
+	if changed || cleared.LLM.CredentialRef != "" {
+		t.Fatalf("ClearLLMCredentialRef already clear = (%#v,%t), want empty,false", cleared.LLM, changed)
 	}
 
 	profile.LLM.ModelMap = config.ModelMap{"small": "model-a"}
 	cleared, changed = configedit.ResetModelMap(profile)
 	if !changed || cleared.LLM.ModelMap != nil {
 		t.Fatalf("ResetModelMap = (%#v,%t), want nil,true", cleared.LLM.ModelMap, changed)
+	}
+	cleared, changed = configedit.ResetModelMap(cleared)
+	if changed || cleared.LLM.ModelMap != nil {
+		t.Fatalf("ResetModelMap already nil = (%#v,%t), want nil,false", cleared.LLM.ModelMap, changed)
 	}
 }
 
