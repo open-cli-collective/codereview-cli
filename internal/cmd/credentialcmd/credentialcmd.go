@@ -166,16 +166,15 @@ type initDeps struct {
 }
 
 type initPlan struct {
-	path                   string
-	cfg                    config.File
-	profileName            string
-	profile                config.Profile
-	writes                 map[string]map[string]string
-	backendFlagSet         bool
-	persistExplicitBackend bool
-	backendArg             string
-	llmSecretProvided      bool
-	credentialHints        []config.CredentialRef
+	path              string
+	cfg               config.File
+	profileName       string
+	profile           config.Profile
+	writes            map[string]map[string]string
+	backendFlagSet    bool
+	backendArg        string
+	llmSecretProvided bool
+	credentialHints   []config.CredentialRef
 }
 
 func defaultInitDeps() initDeps {
@@ -462,16 +461,15 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 
 	return initPlan{
-		path:                   path,
-		cfg:                    cfg,
-		profileName:            profileName,
-		profile:                profile,
-		writes:                 writes,
-		backendFlagSet:         backendFlagSet,
-		persistExplicitBackend: persistExplicitBackend,
-		backendArg:             backendArg,
-		llmSecretProvided:      hasLLMSecret,
-		credentialHints:        credentialHints,
+		path:              path,
+		cfg:               cfg,
+		profileName:       profileName,
+		profile:           profile,
+		writes:            writes,
+		backendFlagSet:    backendFlagSet,
+		backendArg:        backendArg,
+		llmSecretProvided: hasLLMSecret,
+		credentialHints:   credentialHints,
 	}, nil
 }
 
