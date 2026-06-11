@@ -302,6 +302,78 @@ func TestRenderConfigRoutesJSON(t *testing.T) {
 	}
 }
 
+func TestRenderConfigResolveProfileText(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigResolveProfile{
+		PRURL:           "https://github.com/open-cli-collective/codereview-cli/pull/1",
+		ResolvedProfile: "work",
+		Source:          "repository_route",
+		GitHost:         "github.com",
+		MatchedRoute: &ConfigRoute{
+			Profile:   "work",
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+	}
+
+	if err := RenderConfigResolveProfileText(&out, result); err != nil {
+		t.Fatalf("RenderConfigResolveProfileText: %v", err)
+	}
+	want := "PR URL: https://github.com/open-cli-collective/codereview-cli/pull/1\nResolved profile: work\nSource: repository_route\nMatched route: github.com/open-cli-collective [codereview-cli]\nGit host: github.com\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigResolveProfileJSON(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigResolveProfile{
+		PRURL:           "https://github.com/open-cli-collective/codereview-cli/pull/1",
+		ResolvedProfile: "home",
+		Source:          "default_profile",
+		GitHost:         "github.com",
+	}
+
+	if err := RenderConfigResolveProfileJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigResolveProfileJSON: %v", err)
+	}
+	var decoded ConfigResolveProfile
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
+func TestRenderConfigResolveProfileJSONIncludesMatchedRoute(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigResolveProfile{
+		PRURL:           "https://github.com/open-cli-collective/codereview-cli/pull/1",
+		ResolvedProfile: "work",
+		Source:          "repository_route",
+		GitHost:         "github.com",
+		MatchedRoute: &ConfigRoute{
+			Profile:   "work",
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+	}
+
+	if err := RenderConfigResolveProfileJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigResolveProfileJSON: %v", err)
+	}
+	var decoded ConfigResolveProfile
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
 func TestRenderConfigClearTextIncludesResetFields(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigClear{

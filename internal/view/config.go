@@ -312,6 +312,45 @@ func RenderConfigRoutesJSON(w io.Writer, result ConfigRoutes) error {
 	return encoder.Encode(result)
 }
 
+// ConfigResolveProfile is the presentation model for `cr config resolve-profile`.
+type ConfigResolveProfile struct {
+	PRURL           string       `json:"pr_url"`
+	ResolvedProfile string       `json:"resolved_profile"`
+	Source          string       `json:"source"`
+	GitHost         string       `json:"git_host"`
+	MatchedRoute    *ConfigRoute `json:"matched_route,omitempty"`
+}
+
+// RenderConfigResolveProfileText writes a stable human-readable resolution summary.
+func RenderConfigResolveProfileText(w io.Writer, result ConfigResolveProfile) error {
+	if err := writeKV(w, "PR URL", result.PRURL); err != nil {
+		return err
+	}
+	if err := writeKV(w, "Resolved profile", result.ResolvedProfile); err != nil {
+		return err
+	}
+	if err := writeKV(w, "Source", result.Source); err != nil {
+		return err
+	}
+	if result.MatchedRoute != nil {
+		target := result.MatchedRoute.Host + "/" + result.MatchedRoute.Namespace
+		if len(result.MatchedRoute.Repos) > 0 {
+			target += " [" + strings.Join(result.MatchedRoute.Repos, ", ") + "]"
+		}
+		if err := writeKV(w, "Matched route", target); err != nil {
+			return err
+		}
+	}
+	return writeKV(w, "Git host", result.GitHost)
+}
+
+// RenderConfigResolveProfileJSON writes the resolution summary as indented JSON.
+func RenderConfigResolveProfileJSON(w io.Writer, result ConfigResolveProfile) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
 // ConfigClear is the presentation model for `cr config clear`.
 type ConfigClear struct {
 	Backend              string                 `json:"backend"`

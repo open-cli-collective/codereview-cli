@@ -604,6 +604,103 @@ func TestRepositoryProfileRoutesRoundTripAndResolve(t *testing.T) {
 	}
 }
 
+func TestResolveProfileForRepositoryWithSource(t *testing.T) {
+	cfg := validFile()
+	cfg.RepositoryProfiles = []RepositoryProfile{
+		{
+			Profile: "work",
+			Match: RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"baz"},
+			},
+		},
+		{
+			Profile: "home",
+			Match: RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	tests := []struct {
+		name        string
+		requested   string
+		explicit    bool
+		target      RepositoryTarget
+		wantProfile string
+		wantSource  RepositoryProfileResolutionSource
+		wantRoute   *RepositoryProfile
+	}{
+		{
+			name:        "explicit profile source",
+			requested:   "work",
+			explicit:    true,
+			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "zeta"},
+			wantProfile: "work",
+			wantSource:  RepositoryProfileResolutionSourceExplicit,
+		},
+		{
+			name:        "repo route source",
+			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "baz"},
+			wantProfile: "work",
+			wantSource:  RepositoryProfileResolutionSourceRoute,
+			wantRoute: &RepositoryProfile{
+				Profile: "work",
+				Match: RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "rianjs",
+					Repos:     []string{"baz"},
+				},
+			},
+		},
+		{
+			name:        "namespace route source",
+			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "zeta"},
+			wantProfile: "home",
+			wantSource:  RepositoryProfileResolutionSourceRoute,
+			wantRoute: &RepositoryProfile{
+				Profile: "home",
+				Match: RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "rianjs",
+				},
+			},
+		},
+		{
+			name:        "default source",
+			target:      RepositoryTarget{Host: "github.com", Namespace: "open-cli-collective", Repo: "codereview-cli"},
+			wantProfile: "home",
+			wantSource:  RepositoryProfileResolutionSourceDefault,
+		},
+		{
+			name:        "explicit empty profile still bypasses route",
+			requested:   "",
+			explicit:    true,
+			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "baz"},
+			wantProfile: "home",
+			wantSource:  RepositoryProfileResolutionSourceExplicit,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveProfileForRepositoryWithSource(cfg, tt.requested, tt.explicit, tt.target)
+			if err != nil {
+				t.Fatalf("ResolveProfileForRepositoryWithSource: %v", err)
+			}
+			if got.ProfileName != tt.wantProfile {
+				t.Fatalf("profile = %q, want %q", got.ProfileName, tt.wantProfile)
+			}
+			if got.Source != tt.wantSource {
+				t.Fatalf("source = %q, want %q", got.Source, tt.wantSource)
+			}
+			if !reflect.DeepEqual(got.MatchedRoute, tt.wantRoute) {
+				t.Fatalf("matched_route = %#v, want %#v", got.MatchedRoute, tt.wantRoute)
+			}
+		})
+	}
+}
+
 func TestSaveOmitsEmptyRepositoryProfiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	if err := Save(path, validFile()); err != nil {
