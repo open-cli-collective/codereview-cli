@@ -668,28 +668,23 @@ func parseRouteSpec(rawHost string, rawNamespace string, rawRepos []string) (rou
 	if namespace == "" {
 		return routeSpec{}, exitcode.Usage(fmt.Errorf("--namespace is required"))
 	}
-	repos := normalizeRouteRepos(rawRepos)
-	if len(rawRepos) > 0 && len(repos) == 0 {
-		return routeSpec{}, exitcode.Usage(fmt.Errorf("--repo must be non-empty"))
-	}
-	for _, repo := range repos {
-		if repo == "" {
-			return routeSpec{}, exitcode.Usage(fmt.Errorf("--repo must be non-empty"))
-		}
+	repos, err := parseRouteRepos(rawRepos)
+	if err != nil {
+		return routeSpec{}, err
 	}
 	return routeSpec{Host: host, Namespace: namespace, Repos: repos}, nil
 }
 
-func normalizeRouteRepos(raw []string) []string {
+func parseRouteRepos(raw []string) ([]string, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	seen := make(map[string]struct{}, len(raw))
 	repos := make([]string, 0, len(raw))
 	for _, repo := range raw {
 		trimmed := strings.TrimSpace(repo)
 		if trimmed == "" {
-			return []string{""}
+			return nil, exitcode.Usage(fmt.Errorf("--repo must be non-empty"))
 		}
 		if _, ok := seen[trimmed]; ok {
 			continue
@@ -698,6 +693,14 @@ func normalizeRouteRepos(raw []string) []string {
 		repos = append(repos, trimmed)
 	}
 	sort.Strings(repos)
+	return repos, nil
+}
+
+func normalizeRouteRepos(raw []string) []string {
+	repos, err := parseRouteRepos(raw)
+	if err != nil {
+		return nil
+	}
 	return repos
 }
 
@@ -813,11 +816,11 @@ func (s repositoryRouteState) routes() []config.RepositoryProfile {
 	repoGroupsByKey := map[string]*repoGroup{}
 	for key, profile := range s.repos {
 		host, namespace, repo := splitConfigRouteKey(key)
-		groupKey := configRouteKey(host, namespace, profile)
-		group := repoGroupsByKey[groupKey]
+		profileGroupKey := configRouteKey(host, namespace, profile)
+		group := repoGroupsByKey[profileGroupKey]
 		if group == nil {
 			group = &repoGroup{profile: profile, host: host, namespace: namespace}
-			repoGroupsByKey[groupKey] = group
+			repoGroupsByKey[profileGroupKey] = group
 		}
 		group.repos = append(group.repos, repo)
 	}
@@ -853,12 +856,16 @@ func (s repositoryRouteState) routes() []config.RepositoryProfile {
 	return routes
 }
 
+const configRouteKeySeparator = "\x00"
+
 func configRouteKey(host, namespace, repo string) string {
-	return host + "\x00" + namespace + "\x00" + repo
+	// NUL is collision-safe here because normalized config strings cannot
+	// contain embedded NUL bytes.
+	return host + configRouteKeySeparator + namespace + configRouteKeySeparator + repo
 }
 
 func splitConfigRouteKey(key string) (string, string, string) {
-	parts := strings.SplitN(key, "\x00", 3)
+	parts := strings.SplitN(key, configRouteKeySeparator, 3)
 	if len(parts) != 3 {
 		return "", "", ""
 	}
