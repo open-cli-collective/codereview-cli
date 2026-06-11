@@ -361,6 +361,98 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	}
 	resolveProfileCmd.Flags().BoolVar(&resolveProfileJSON, "json", false, "Emit JSON")
 
+	agentSourceCmd := &cobra.Command{
+		Use:   "agent-source",
+		Short: "Inspect and update profile agent sources",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+
+	var agentSourceListJSON bool
+	agentSourceListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List agent sources on the selected profile",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config agent-source list takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			_, _, profileName, profile, err := loadActiveProfile(opts)
+			if err != nil {
+				return err
+			}
+			result := configAgentSourcesView(profileName, profile.AgentSources)
+			if agentSourceListJSON {
+				return view.RenderConfigAgentSourcesJSON(opts.Stdout, result)
+			}
+			return view.RenderConfigAgentSourcesText(opts.Stdout, result)
+		},
+	}
+	agentSourceListCmd.Flags().BoolVar(&agentSourceListJSON, "json", false, "Emit JSON")
+
+	agentSourceAddCmd := &cobra.Command{
+		Use:   "add <path>",
+		Short: "Add an agent source to the selected profile",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return exitcode.Usage(fmt.Errorf("config agent-source add requires <path>"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			path, cfg, profileName, profile, err := loadActiveProfile(opts)
+			if err != nil {
+				return err
+			}
+			sources, changed, err := addAgentSource(profile.AgentSources, args[0])
+			if err != nil {
+				return err
+			}
+			if changed {
+				profile.AgentSources = sources
+				cfg.Profiles[profileName] = profile
+				if err := saveConfigFile(path, cfg); err != nil {
+					return cmderr.Config(err)
+				}
+			}
+			return view.RenderConfigAgentSourcesText(opts.Stdout, configAgentSourcesView(profileName, sources))
+		},
+	}
+
+	agentSourceRemoveCmd := &cobra.Command{
+		Use:   "remove <path>",
+		Short: "Remove an agent source from the selected profile",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return exitcode.Usage(fmt.Errorf("config agent-source remove requires <path>"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			path, cfg, profileName, profile, err := loadActiveProfile(opts)
+			if err != nil {
+				return err
+			}
+			sources, changed, err := removeAgentSource(profile.AgentSources, args[0])
+			if err != nil {
+				return err
+			}
+			if changed {
+				profile.AgentSources = sources
+				cfg.Profiles[profileName] = profile
+				if err := saveConfigFile(path, cfg); err != nil {
+					return cmderr.Config(err)
+				}
+			}
+			return view.RenderConfigAgentSourcesText(opts.Stdout, configAgentSourcesView(profileName, sources))
+		},
+	}
+
+	agentSourceCmd.AddCommand(agentSourceListCmd, agentSourceAddCmd, agentSourceRemoveCmd)
+
 	var clearAll bool
 	var clearJSON bool
 	var clearDryRun bool
@@ -455,7 +547,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, resolveProfileCmd, clearCmd, newLLMCommand(opts))
+	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, resolveProfileCmd, agentSourceCmd, clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
 }
 
@@ -689,6 +781,17 @@ func configResolveProfileView(prURL string, resolution config.RepositoryProfileR
 	return result
 }
 
+func configAgentSourcesView(profileName string, sources []string) view.ConfigAgentSources {
+	result := view.ConfigAgentSources{
+		ActiveProfile: profileName,
+		AgentSources:  []string{},
+	}
+	if len(sources) > 0 {
+		result.AgentSources = append([]string(nil), sources...)
+	}
+	return result
+}
+
 type routeSpec struct {
 	Host      string
 	Namespace string
@@ -759,6 +862,57 @@ func parseRouteRepos(raw []string) ([]string, error) {
 	}
 	sort.Strings(repos)
 	return repos, nil
+}
+
+func normalizeAgentSourcePath(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", exitcode.Usage(fmt.Errorf("path must be non-empty"))
+	}
+	return filepath.Clean(trimmed), nil
+}
+
+func addAgentSource(existing []string, raw string) ([]string, bool, error) {
+	target, err := normalizeAgentSourcePath(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	out := append([]string(nil), existing...)
+	for _, source := range existing {
+		normalized, err := normalizeAgentSourcePath(source)
+		if err != nil {
+			continue
+		}
+		if normalized == target {
+			return out, false, nil
+		}
+	}
+	out = append(out, target)
+	return out, true, nil
+}
+
+func removeAgentSource(existing []string, raw string) ([]string, bool, error) {
+	target, err := normalizeAgentSourcePath(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]string, 0, len(existing))
+	changed := false
+	for _, source := range existing {
+		normalized, err := normalizeAgentSourcePath(source)
+		if err == nil && normalized == target {
+			changed = true
+			continue
+		}
+		out = append(out, source)
+	}
+	if !changed {
+		return append([]string(nil), existing...), false, nil
+	}
+	if len(out) == 0 {
+		return nil, true, nil
+	}
+	return out, true, nil
 }
 
 func normalizeRouteRepos(raw []string) []string {

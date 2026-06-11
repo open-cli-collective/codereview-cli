@@ -1049,6 +1049,233 @@ func TestConfigShowOpenAIAPIKeyStatus(t *testing.T) {
 	t.Fatalf("credential refs = %#v, want llm ref", got.CredentialRefs)
 }
 
+func TestConfigAgentSourceListText(t *testing.T) {
+	cfg := testConfig()
+	home := cfg.Profiles["home"]
+	home.AgentSources = []string{"~/agents", "../shared/agents"}
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "agent-source", "list"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := "Profile: home\nAgent sources:\n  - ~/agents\n  - ../shared/agents\n"
+	if out.String() != want {
+		t.Fatalf("stdout = %q, want %q", out.String(), want)
+	}
+}
+
+func TestConfigAgentSourceListJSON(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["work"]
+	work.AgentSources = []string{"./agents"}
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "agent-source", "list", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigAgentSources
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	want := view.ConfigAgentSources{ActiveProfile: "work", AgentSources: []string{"./agents"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("agent-source list JSON = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfigAgentSourceListJSONEmptyArray(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "agent-source", "list", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigAgentSources
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.ActiveProfile != "home" || got.AgentSources == nil || len(got.AgentSources) != 0 {
+		t.Fatalf("agent-source list JSON = %#v, want empty array for home profile", got)
+	}
+}
+
+func TestConfigAgentSourceAddNormalizesAndIsIdempotent(t *testing.T) {
+	cfg := testConfig()
+	home := cfg.Profiles["home"]
+	home.AgentSources = []string{" ./agents/../agents/team/ "}
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+
+	cmd, out := newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "agent-source", "add", " ./agents/../agents/team/ "}); err != nil {
+		t.Fatalf("Execute add: %v", err)
+	}
+	want := "Profile: home\nAgent sources:\n  -  ./agents/../agents/team/ \n"
+	if out.String() != want {
+		t.Fatalf("stdout after add = %q, want %q", out.String(), want)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "agent-source", "add", "./agents/../agents/team"}); err != nil {
+		t.Fatalf("Execute second add: %v", err)
+	}
+	if out.String() != want {
+		t.Fatalf("stdout after second add = %q, want %q", out.String(), want)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Profiles["home"].AgentSources
+	if !reflect.DeepEqual(got, []string{" ./agents/../agents/team/ "}) {
+		t.Fatalf("agent_sources = %#v, want one preserved existing entry", got)
+	}
+}
+
+func TestConfigAgentSourceRemoveIsIdempotent(t *testing.T) {
+	cfg := testConfig()
+	home := cfg.Profiles["home"]
+	home.AgentSources = []string{"agents/team", "../shared/agents"}
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+
+	cmd, out := newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "agent-source", "remove", " ./agents/../agents/team "}); err != nil {
+		t.Fatalf("Execute remove: %v", err)
+	}
+	want := "Profile: home\nAgent sources:\n  - ../shared/agents\n"
+	if out.String() != want {
+		t.Fatalf("stdout after remove = %q, want %q", out.String(), want)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "agent-source", "remove", "./missing"}); err != nil {
+		t.Fatalf("Execute second remove: %v", err)
+	}
+	if out.String() != want {
+		t.Fatalf("stdout after absent remove = %q, want %q", out.String(), want)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Profiles["home"].AgentSources
+	if !reflect.DeepEqual(got, []string{"../shared/agents"}) {
+		t.Fatalf("agent_sources = %#v, want remaining source preserved", got)
+	}
+}
+
+func TestConfigAgentSourceMutatesSelectedProfileOnly(t *testing.T) {
+	cfg := testConfig()
+	home := cfg.Profiles["home"]
+	home.AgentSources = []string{"home-agents"}
+	cfg.Profiles["home"] = home
+	work := cfg.Profiles["work"]
+	work.AgentSources = []string{"work-agents"}
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "agent-source", "add", "./team/agents"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.Profiles["home"].AgentSources, []string{"home-agents"}) {
+		t.Fatalf("home agent_sources = %#v, want unchanged", cfg.Profiles["home"].AgentSources)
+	}
+	if !reflect.DeepEqual(cfg.Profiles["work"].AgentSources, []string{"work-agents", "team/agents"}) {
+		t.Fatalf("work agent_sources = %#v, want appended normalized source", cfg.Profiles["work"].AgentSources)
+	}
+}
+
+func TestConfigAgentSourceRemoveMutatesSelectedProfileOnly(t *testing.T) {
+	cfg := testConfig()
+	home := cfg.Profiles["home"]
+	home.AgentSources = []string{"home-agents"}
+	cfg.Profiles["home"] = home
+	work := cfg.Profiles["work"]
+	work.AgentSources = []string{" ./team/agents/ ", "work-extra"}
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "agent-source", "remove", "./team/agents"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.Profiles["home"].AgentSources, []string{"home-agents"}) {
+		t.Fatalf("home agent_sources = %#v, want unchanged", cfg.Profiles["home"].AgentSources)
+	}
+	if !reflect.DeepEqual(cfg.Profiles["work"].AgentSources, []string{"work-extra"}) {
+		t.Fatalf("work agent_sources = %#v, want normalized match removed only from selected profile", cfg.Profiles["work"].AgentSources)
+	}
+}
+
+func TestConfigAgentSourcePreservesUnrelatedProfileFields(t *testing.T) {
+	cfg := testConfig()
+	want := cfg
+	home := cfg.Profiles["home"]
+	home.AgentSources = []string{"home-agents"}
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "agent-source", "add", "./team/agents"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	wantHome := want.Profiles["home"]
+	wantHome.AgentSources = []string{"home-agents", "team/agents"}
+	want.Profiles["home"] = wantHome
+	if !reflect.DeepEqual(cfg, want) {
+		t.Fatalf("config changed unexpectedly:\n got %#v\nwant %#v", cfg, want)
+	}
+}
+
+func TestConfigAgentSourceAddRejectsBlankPath(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "agent-source", "add", "   "})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestConfigAgentSourceRemoveRejectsBlankPath(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "agent-source", "remove", "   "})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
 func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 

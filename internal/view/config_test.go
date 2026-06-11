@@ -374,6 +374,54 @@ func TestRenderConfigResolveProfileJSONIncludesMatchedRoute(t *testing.T) {
 	}
 }
 
+func TestRenderConfigAgentSourcesText(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigAgentSources{
+		ActiveProfile: "home",
+		AgentSources:  []string{"~/agents", "../shared/agents"},
+	}
+
+	if err := RenderConfigAgentSourcesText(&out, result); err != nil {
+		t.Fatalf("RenderConfigAgentSourcesText: %v", err)
+	}
+	want := "Profile: home\nAgent sources:\n  - ~/agents\n  - ../shared/agents\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigAgentSourcesTextNone(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigAgentSources{ActiveProfile: "home"}
+
+	if err := RenderConfigAgentSourcesText(&out, result); err != nil {
+		t.Fatalf("RenderConfigAgentSourcesText: %v", err)
+	}
+	want := "Profile: home\nAgent sources: none\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigAgentSourcesJSON(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigAgentSources{
+		ActiveProfile: "work",
+		AgentSources:  []string{"./agents"},
+	}
+
+	if err := RenderConfigAgentSourcesJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigAgentSourcesJSON: %v", err)
+	}
+	var decoded ConfigAgentSources
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
 func TestRenderConfigClearTextIncludesResetFields(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigClear{
