@@ -680,6 +680,7 @@ func TestConfigRouteUnsetAlreadyAbsentIsIdempotent(t *testing.T) {
 		},
 	}
 	path := saveTestConfig(t, cfg)
+	// #nosec G304 -- test path is controlled by t.TempDir via saveTestConfig.
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile before: %v", err)
@@ -692,6 +693,7 @@ func TestConfigRouteUnsetAlreadyAbsentIsIdempotent(t *testing.T) {
 	if got := out.String(); got != "Route already absent: github.com/rianjs [bar]\n" {
 		t.Fatalf("stdout = %q, want idempotent absence confirmation", got)
 	}
+	// #nosec G304 -- test path is controlled by t.TempDir via saveTestConfig.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile after: %v", err)
