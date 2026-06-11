@@ -1033,6 +1033,38 @@ func TestInitReplaceProfilePreservesExistingCredentialRefsByDefault(t *testing.T
 	}
 }
 
+func TestInitReplaceProfileRefOverwriteEmitsFollowUpHint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+		"--replace-profile",
+		"--git-credential-ref", "codereview/rotated-git",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got.Profiles["work"].Git.CredentialRef != "codereview/rotated-git" {
+		t.Fatalf("git ref = %q, want rotated-git", got.Profiles["work"].Git.CredentialRef)
+	}
+	if !strings.Contains(errOut.String(), "set-credential --ref codereview/rotated-git --key git_token --stdin") {
+		t.Fatalf("stderr = %q, want overwrite-ref follow-up hint", errOut.String())
+	}
+}
+
 func TestInitAPIKeyAuthRejectsMissingSecretWithoutWritingDanglingConfig(t *testing.T) {
 	hermeticFileBackend(t)
 	path := filepath.Join(t.TempDir(), "config.yml")
