@@ -252,6 +252,41 @@ func TestRenderConfigDefaultJSON(t *testing.T) {
 	}
 }
 
+func TestRenderConfigRetentionText(t *testing.T) {
+	var out bytes.Buffer
+	result := NewConfigRetention(config.RetentionConfig{
+		MaxAgeDays:  intPtr(30),
+		Enforcement: config.RetentionManualOnly,
+	})
+
+	if err := RenderConfigRetentionText(&out, result); err != nil {
+		t.Fatalf("RenderConfigRetentionText: %v", err)
+	}
+	want := "Data retention:\n  Max age days: 30\n  Enforcement: manual_only\n"
+	if out.String() != want {
+		t.Fatalf("retention text = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigRetentionJSON(t *testing.T) {
+	var out bytes.Buffer
+	result := NewConfigRetention(config.RetentionConfig{
+		MaxAgeDays:  intPtr(0),
+		Enforcement: config.RetentionAtWrite,
+	})
+
+	if err := RenderConfigRetentionJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigRetentionJSON: %v", err)
+	}
+	var got ConfigRetention
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.MaxAgeDays != 0 || got.Enforcement != "at_write" {
+		t.Fatalf("retention JSON = %#v, want keep forever at_write", got)
+	}
+}
+
 func TestRenderConfigRoutesText(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigRoutes{

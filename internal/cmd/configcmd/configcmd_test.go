@@ -1301,6 +1301,191 @@ func TestConfigAgentSourceRemoveRejectsBlankPath(t *testing.T) {
 	}
 }
 
+func TestConfigRetentionGetTextAndJSON(t *testing.T) {
+	cfg := testConfig()
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  intPtr(0),
+		Enforcement: config.RetentionManualOnly,
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "retention", "get"}); err != nil {
+		t.Fatalf("Execute text: %v", err)
+	}
+	want := "Data retention:\n  Max age days: 0\n  Enforcement: manual_only\n"
+	if out.String() != want {
+		t.Fatalf("retention text = %q, want %q", out.String(), want)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "retention", "get", "--json"}); err != nil {
+		t.Fatalf("Execute JSON: %v", err)
+	}
+	var got view.ConfigRetention
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.MaxAgeDays != 0 || got.Enforcement != "manual_only" {
+		t.Fatalf("retention JSON = %#v, want keep forever manual_only", got)
+	}
+}
+
+func TestConfigRetentionSetMutatesAndPreservesUnrelatedConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+		},
+	}}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "retention", "set", "--max-age-days", "30", "--enforcement", "manual_only"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Data retention:\n  Max age days: 30\n  Enforcement: manual_only\n" {
+		t.Fatalf("stdout = %q, want updated retention text", got)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Data.Retention.MaxAgeDaysValue() != 30 || saved.Data.Retention.Enforcement != config.RetentionManualOnly {
+		t.Fatalf("retention = %#v, want 30/manual_only", saved.Data.Retention)
+	}
+	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) {
+		t.Fatalf("profiles = %#v, want preserved", saved.Profiles)
+	}
+	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
+		t.Fatalf("repository_profiles = %#v, want preserved", saved.RepositoryProfiles)
+	}
+	if !reflect.DeepEqual(saved.Keyring, cfg.Keyring) {
+		t.Fatalf("keyring = %#v, want preserved", saved.Keyring)
+	}
+}
+
+func TestConfigRetentionSetPartialUpdates(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "retention", "set", "--max-age-days", "45"}); err != nil {
+		t.Fatalf("Execute max age: %v", err)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after max age: %v", err)
+	}
+	if saved.Data.Retention.MaxAgeDaysValue() != 45 || saved.Data.Retention.Enforcement != config.RetentionAtWrite {
+		t.Fatalf("retention after max age = %#v, want 45/at_write", saved.Data.Retention)
+	}
+
+	cmd, _ = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "retention", "set", "--enforcement", "manual_only"}); err != nil {
+		t.Fatalf("Execute enforcement: %v", err)
+	}
+	saved, err = config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after enforcement: %v", err)
+	}
+	if saved.Data.Retention.MaxAgeDaysValue() != 45 || saved.Data.Retention.Enforcement != config.RetentionManualOnly {
+		t.Fatalf("retention after enforcement = %#v, want 45/manual_only", saved.Data.Retention)
+	}
+
+	cmd, _ = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "retention", "set", "--max-age-days", "0", "--enforcement", "at_write"}); err != nil {
+		t.Fatalf("Execute explicit zero: %v", err)
+	}
+	saved, err = config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after explicit zero: %v", err)
+	}
+	if saved.Data.Retention.MaxAgeDaysValue() != 0 || saved.Data.Retention.Enforcement != config.RetentionAtWrite {
+		t.Fatalf("retention after explicit zero = %#v, want 0/at_write", saved.Data.Retention)
+	}
+}
+
+func TestConfigRetentionSetPreservesExplicitZeroOnPartialUpdate(t *testing.T) {
+	cfg := testConfig()
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  intPtr(0),
+		Enforcement: config.RetentionAtWrite,
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "retention", "set", "--enforcement", "manual_only"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Data.Retention.MaxAgeDaysValue() != 0 || saved.Data.Retention.Enforcement != config.RetentionManualOnly {
+		t.Fatalf("retention = %#v, want 0/manual_only", saved.Data.Retention)
+	}
+}
+
+func TestConfigRetentionSetRejectsInvalidInputs(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "no flags", args: []string{"config", "retention", "set"}, want: "requires --max-age-days or --enforcement"},
+		{name: "negative max age", args: []string{"config", "retention", "set", "--max-age-days", "-1"}, want: "--max-age-days must be non-negative"},
+		{name: "bad enforcement", args: []string{"config", "retention", "set", "--enforcement", "sometimes"}, want: "--enforcement must be one of at_write, manual_only"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, _ := newTestCommand(path)
+			err := root.Execute(cmd, tt.args)
+			if err == nil {
+				t.Fatal("Execute error = nil, want usage error")
+			}
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfigRetentionResetRestoresDefaultsAndPreservesConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  intPtr(0),
+		Enforcement: config.RetentionManualOnly,
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "retention", "reset"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Data retention:\n  Max age days: 90\n  Enforcement: at_write\n" {
+		t.Fatalf("stdout = %q, want default retention text", got)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Data.Retention.MaxAgeDaysValue() != 90 || saved.Data.Retention.Enforcement != config.RetentionAtWrite {
+		t.Fatalf("retention = %#v, want 90/at_write", saved.Data.Retention)
+	}
+	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) {
+		t.Fatalf("profiles = %#v, want preserved", saved.Profiles)
+	}
+	if !reflect.DeepEqual(saved.Keyring, cfg.Keyring) {
+		t.Fatalf("keyring = %#v, want preserved", saved.Keyring)
+	}
+}
+
 func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 

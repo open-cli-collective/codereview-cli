@@ -271,6 +271,42 @@ func RenderConfigDefaultJSON(w io.Writer, result ConfigDefault) error {
 	return encoder.Encode(result)
 }
 
+// ConfigRetention is the presentation model for `cr config retention`.
+type ConfigRetention struct {
+	MaxAgeDays  int    `json:"max_age_days"`
+	Enforcement string `json:"enforcement"`
+}
+
+// NewConfigRetention builds the retention presentation model.
+func NewConfigRetention(retention config.RetentionConfig) ConfigRetention {
+	enforcement := retention.Enforcement
+	if enforcement == "" {
+		enforcement = config.DefaultRetentionConfig().Enforcement
+	}
+	return ConfigRetention{
+		MaxAgeDays:  retention.MaxAgeDaysValue(),
+		Enforcement: string(enforcement),
+	}
+}
+
+// RenderConfigRetentionText writes a stable human-readable retention summary.
+func RenderConfigRetentionText(w io.Writer, result ConfigRetention) error {
+	if _, err := fmt.Fprintln(w, "Data retention:"); err != nil {
+		return err
+	}
+	if err := writeKV(w, "  Max age days", fmt.Sprint(result.MaxAgeDays)); err != nil {
+		return err
+	}
+	return writeKV(w, "  Enforcement", result.Enforcement)
+}
+
+// RenderConfigRetentionJSON writes the retention summary as indented JSON.
+func RenderConfigRetentionJSON(w io.Writer, result ConfigRetention) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
 // ConfigRoutes is the presentation model for `cr config route list`.
 type ConfigRoutes struct {
 	Routes []ConfigRoute `json:"routes"`
