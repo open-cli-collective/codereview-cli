@@ -836,6 +836,189 @@ func TestInitMergeReplaceAndBackendConflictSemantics(t *testing.T) {
 	}
 }
 
+func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	keepForever := 0
+	home := basicProfile("home")
+	home.AgentSources = []string{"/tmp/home-agents"}
+	home.LLM.ModelMap = config.ModelMap{"medium": "custom-medium-model"}
+	home.LLM.ReviewerModelTier = config.ModelTierMedium
+	home.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+		ResolveAfter:     "24h",
+	}
+	existing := config.File{
+		DefaultProfile: "home",
+		Keyring:        config.KeyringConfig{Backend: "file"},
+		RepositoryProfiles: []config.RepositoryProfile{
+			{
+				Profile: "home",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "open-cli-collective",
+					Repos:     []string{"codereview-cli"},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"home": home,
+		},
+		Data: config.DataConfig{
+			Retention: config.RetentionConfig{
+				MaxAgeDays:  &keepForever,
+				Enforcement: config.RetentionManualOnly,
+			},
+		},
+	}
+	if err := config.Save(path, existing); err != nil {
+		t.Fatalf("Save existing config: %v", err)
+	}
+	before, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load existing config: %v", err)
+	}
+	cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+
+	err = root.Execute(cmd, []string{
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	after, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config after init: %v", err)
+	}
+	if _, ok := after.Profiles["work"]; !ok {
+		t.Fatalf("work profile missing after init: %#v", after.Profiles)
+	}
+	want := before
+	want.Profiles = make(map[string]config.Profile, len(before.Profiles)+1)
+	for name, profile := range before.Profiles {
+		want.Profiles[name] = profile
+	}
+	want.Profiles["work"] = after.Profiles["work"]
+	if !reflect.DeepEqual(after, want) {
+		t.Fatalf("config after init = %#v, want only work profile added to %#v", after, before)
+	}
+}
+
+func TestBuildNonInteractiveInitPlanDoesNotApplySideEffects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	configPathCalled := false
+	loadConfigCalled := false
+	opts := &root.Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	deps := initDeps{
+		configPath: func(*root.Options) (string, error) {
+			configPathCalled = true
+			return path, nil
+		},
+		loadConfig: func(gotPath string) (config.File, bool, error) {
+			loadConfigCalled = true
+			if gotPath != path {
+				t.Fatalf("load path = %q, want %q", gotPath, path)
+			}
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("config save called during plan build")
+			return nil
+		},
+		openStore: func(string, bool, config.File) (*credstore.Store, error) {
+			t.Fatal("keyring opened during plan build")
+			return nil, nil
+		},
+		readSecret: readOptionalSecretIngress,
+	}
+	flags := initOptions{
+		nonInteractive: true,
+		gitHost:        "github.com",
+		reviewerAuth:   string(config.GitAuthModePAT),
+		llmProvider:    string(config.LLMProviderAnthropic),
+		llmAuth:        string(config.LLMAuthSubscription),
+		llmAdapter:     string(config.LLMAdapterClaudeCLI),
+		majorEvent:     string(config.ReviewMajorEventComment),
+	}
+
+	plan, err := buildNonInteractiveInitPlan(&cobra.Command{}, opts, flags, deps)
+	if err != nil {
+		t.Fatalf("buildNonInteractiveInitPlan: %v", err)
+	}
+	if !configPathCalled || !loadConfigCalled {
+		t.Fatalf("plan build called configPath=%v loadConfig=%v, want both", configPathCalled, loadConfigCalled)
+	}
+	if plan.path != path {
+		t.Fatalf("plan path = %q, want %q", plan.path, path)
+	}
+	if _, ok := plan.cfg.Profiles["default"]; !ok {
+		t.Fatalf("plan config profiles = %#v, want default profile", plan.cfg.Profiles)
+	}
+}
+
+func TestInitInteractiveRequiresNonInteractiveBeforeDeps(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:  failReader{},
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}
+	deps := initDeps{
+		configPath: func(*root.Options) (string, error) {
+			t.Fatal("config path dependency called before interactive gate")
+			return "", nil
+		},
+		loadConfig: func(string) (config.File, bool, error) {
+			t.Fatal("config load dependency called before interactive gate")
+			return config.File{}, false, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("config save dependency called before interactive gate")
+			return nil
+		},
+		openStore: func(string, bool, config.File) (*credstore.Store, error) {
+			t.Fatal("keyring dependency called before interactive gate")
+			return nil, nil
+		},
+		readSecret: func(io.Reader, bool, string, string, string) (string, bool, error) {
+			t.Fatal("secret-read dependency called before interactive gate")
+			return "", false, nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if !strings.Contains(err.Error(), "init requires --non-interactive in v1") {
+		t.Fatalf("error = %v, want non-interactive requirement", err)
+	}
+}
+
+func TestInitInteractiveCommandRequiresNonInteractiveBeforeSideEffects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd, _, _ := newTestCommand(path, failReader{})
+
+	err := root.Execute(cmd, []string{"init"})
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if strings.Contains(err.Error(), "secret ingress was read") {
+		t.Fatalf("interactive init read stdin before non-interactive gate: %v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("config stat err = %v, want not created", statErr)
+	}
+}
+
 func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 	tests := []struct {
 		name string

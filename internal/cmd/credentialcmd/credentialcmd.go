@@ -140,6 +140,73 @@ type initOptions struct {
 	replaceProfile     bool
 }
 
+type initPrompter interface {
+	Run(initPromptContext) (initPlan, error)
+}
+
+type terminalSecretReader interface {
+	ReadSecret(prompt string) (string, error)
+}
+
+type clipboardReader interface {
+	ReadText() (string, error)
+}
+
+type initPromptContext struct{}
+
+type initDeps struct {
+	prompter        initPrompter
+	terminalSecrets terminalSecretReader
+	clipboard       clipboardReader
+	configPath      func(*root.Options) (string, error)
+	loadConfig      func(string) (config.File, bool, error)
+	saveConfig      func(string, config.File) error
+	openStore       func(string, bool, config.File) (*credstore.Store, error)
+	readSecret      func(io.Reader, bool, string, string, string) (string, bool, error)
+}
+
+type initPlan struct {
+	path              string
+	cfg               config.File
+	profileName       string
+	profile           config.Profile
+	writes            map[string]map[string]string
+	backendFlagSet    bool
+	backendArg        string
+	llmSecretProvided bool
+	credentialHints   []config.CredentialRef
+}
+
+func defaultInitDeps() initDeps {
+	return initDeps{
+		configPath: configPath,
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+		openStore:  credentials.OpenStore,
+		readSecret: readOptionalSecretIngress,
+	}
+}
+
+func (deps initDeps) withDefaults() initDeps {
+	defaults := defaultInitDeps()
+	if deps.configPath == nil {
+		deps.configPath = defaults.configPath
+	}
+	if deps.loadConfig == nil {
+		deps.loadConfig = defaults.loadConfig
+	}
+	if deps.saveConfig == nil {
+		deps.saveConfig = defaults.saveConfig
+	}
+	if deps.openStore == nil {
+		deps.openStore = defaults.openStore
+	}
+	if deps.readSecret == nil {
+		deps.readSecret = defaults.readSecret
+	}
+	return deps
+}
+
 func newInitCommand(opts *root.Options) *cobra.Command {
 	flags := initOptions{
 		gitHost:      "github.com",
@@ -188,9 +255,32 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 }
 
 func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
+	return runInitWithDeps(cmd, opts, flags, defaultInitDeps())
+}
+
+func runInitWithDeps(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) error {
+	deps = deps.withDefaults()
 	if !flags.nonInteractive {
-		return exitcode.Usage(fmt.Errorf("init requires --non-interactive in v1"))
+		return runInteractiveInit(cmd, opts, flags, deps)
 	}
+	plan, err := buildNonInteractiveInitPlan(cmd, opts, flags, deps)
+	if err != nil {
+		return err
+	}
+	return applyInitPlan(opts, flags, deps, plan)
+}
+
+func runInteractiveInit(_ *cobra.Command, _ *root.Options, _ initOptions, deps initDeps) error {
+	// Future interactive dependencies are intentionally inert while v1 remains gated.
+	_ = deps.hasInteractiveDeps()
+	return exitcode.Usage(fmt.Errorf("init requires --non-interactive in v1"))
+}
+
+func (deps initDeps) hasInteractiveDeps() bool {
+	return deps.prompter != nil || deps.terminalSecrets != nil || deps.clipboard != nil
+}
+
+func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) (initPlan, error) {
 	stdinSecrets := 0
 	for _, stdin := range []bool{flags.gitTokenStdin, flags.reviewerTokenStdin, flags.llmKeyStdin} {
 		if stdin {
@@ -198,7 +288,7 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 		}
 	}
 	if stdinSecrets > 1 {
-		return exitcode.Usage(fmt.Errorf("only one stdin secret ingress flag may be set"))
+		return initPlan{}, exitcode.Usage(fmt.Errorf("only one stdin secret ingress flag may be set"))
 	}
 	profileName := opts.Profile
 	if profileName == "" {
@@ -206,14 +296,14 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 	}
 	defaultGitRef, err := credentials.FormatRef(profileName)
 	if err != nil {
-		return exitcode.Usage(fmt.Errorf("profile %q cannot be used as a credential ref segment: %w", profileName, err))
+		return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q cannot be used as a credential ref segment: %w", profileName, err))
 	}
 	gitRef := flags.gitRef
 	if gitRef == "" {
 		gitRef = defaultGitRef
 	}
 	if _, err := credentials.ParseRef(gitRef); err != nil {
-		return exitcode.Usage(err)
+		return initPlan{}, exitcode.Usage(err)
 	}
 	reviewerRequested := flags.reviewerRef != "" ||
 		flags.reviewerTokenStdin ||
@@ -223,68 +313,68 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 	reviewerMode := config.GitAuthMode(flags.reviewerAuth)
 	if reviewerRequested {
 		if !reviewerMode.Valid() {
-			return exitcode.Usage(fmt.Errorf("--reviewer-auth-mode %q is invalid", flags.reviewerAuth))
+			return initPlan{}, exitcode.Usage(fmt.Errorf("--reviewer-auth-mode %q is invalid", flags.reviewerAuth))
 		}
 		if !reviewerMode.Supported() {
-			return exitcode.Usage(fmt.Errorf("--reviewer-auth-mode %s is not supported in v1", flags.reviewerAuth))
+			return initPlan{}, exitcode.Usage(fmt.Errorf("--reviewer-auth-mode %s is not supported in v1", flags.reviewerAuth))
 		}
 		if reviewerMode != config.GitAuthModePAT && (flags.reviewerTokenStdin || flags.reviewerTokenEnv != "") {
-			return exitcode.Usage(fmt.Errorf("reviewer token ingress requires --reviewer-auth-mode %s", config.GitAuthModePAT))
+			return initPlan{}, exitcode.Usage(fmt.Errorf("reviewer token ingress requires --reviewer-auth-mode %s", config.GitAuthModePAT))
 		}
 		if reviewerRef == "" {
 			reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
 			if err != nil {
-				return exitcode.Usage(err)
+				return initPlan{}, exitcode.Usage(err)
 			}
 		}
 		if _, err := credentials.ParseRef(reviewerRef); err != nil {
-			return exitcode.Usage(err)
+			return initPlan{}, exitcode.Usage(err)
 		}
 		if reviewerRef == gitRef {
-			return exitcode.Usage(fmt.Errorf("--reviewer-credential-ref %q must differ from --git-credential-ref", reviewerRef))
+			return initPlan{}, exitcode.Usage(fmt.Errorf("--reviewer-credential-ref %q must differ from --git-credential-ref", reviewerRef))
 		}
 	}
 	llmRef := flags.llmRef
 	if flags.llmAuth == string(config.LLMAuthAPIKey) && llmRef == "" {
 		llmRef, err = credentials.FormatRef(profileName + "-llm")
 		if err != nil {
-			return exitcode.Usage(err)
+			return initPlan{}, exitcode.Usage(err)
 		}
 	}
 	if llmRef != "" {
 		if _, err := credentials.ParseRef(llmRef); err != nil {
-			return exitcode.Usage(err)
+			return initPlan{}, exitcode.Usage(err)
 		}
 	}
-	gitSecret, hasGitSecret, err := readOptionalSecretIngress(opts.Stdin, flags.gitTokenStdin, flags.gitTokenEnv, "--git-token-stdin", "--git-token-from-env")
+	gitSecret, hasGitSecret, err := deps.readSecret(opts.Stdin, flags.gitTokenStdin, flags.gitTokenEnv, "--git-token-stdin", "--git-token-from-env")
 	if err != nil {
-		return exitcode.Usage(err)
+		return initPlan{}, exitcode.Usage(err)
 	}
-	reviewerSecret, hasReviewerSecret, err := readOptionalSecretIngress(opts.Stdin, flags.reviewerTokenStdin, flags.reviewerTokenEnv, "--reviewer-token-stdin", "--reviewer-token-from-env")
+	reviewerSecret, hasReviewerSecret, err := deps.readSecret(opts.Stdin, flags.reviewerTokenStdin, flags.reviewerTokenEnv, "--reviewer-token-stdin", "--reviewer-token-from-env")
 	if err != nil {
-		return exitcode.Usage(err)
+		return initPlan{}, exitcode.Usage(err)
 	}
-	llmSecret, hasLLMSecret, err := readOptionalSecretIngress(opts.Stdin, flags.llmKeyStdin, flags.llmKeyEnv, "--llm-api-key-stdin", "--llm-api-key-from-env")
+	llmSecret, hasLLMSecret, err := deps.readSecret(opts.Stdin, flags.llmKeyStdin, flags.llmKeyEnv, "--llm-api-key-stdin", "--llm-api-key-from-env")
 	if err != nil {
-		return exitcode.Usage(err)
+		return initPlan{}, exitcode.Usage(err)
 	}
 	if hasLLMSecret && flags.llmAuth != string(config.LLMAuthAPIKey) {
-		return exitcode.Usage(fmt.Errorf("LLM API-key ingress requires --llm-auth %s", config.LLMAuthAPIKey))
+		return initPlan{}, exitcode.Usage(fmt.Errorf("LLM API-key ingress requires --llm-auth %s", config.LLMAuthAPIKey))
 	}
 
-	path, err := configPath(opts)
+	path, err := deps.configPath(opts)
 	if err != nil {
-		return exitcode.AuthConfig(err)
+		return initPlan{}, exitcode.AuthConfig(err)
 	}
-	cfg, exists, err := loadConfigForInit(path)
+	cfg, exists, err := deps.loadConfig(path)
 	if err != nil {
-		return cmderr.Config(err)
+		return initPlan{}, cmderr.Config(err)
 	}
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
 	}
 	if _, ok := cfg.Profiles[profileName]; ok && !flags.replaceProfile {
-		return exitcode.Usage(fmt.Errorf("profile %q already exists; use --replace-profile to replace config only", profileName))
+		return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q already exists; use --replace-profile to replace config only", profileName))
 	}
 	profile := config.Profile{
 		Git: config.GitConfig{
@@ -327,7 +417,7 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 	if hasLLMSecret {
 		llmKey, err := credentials.LLMAPIKeyForProvider(profile.LLM.Provider)
 		if err != nil {
-			return cmderr.Config(err)
+			return initPlan{}, cmderr.Config(err)
 		}
 		addWrite(writes, llmRef, llmKey, llmSecret)
 	}
@@ -335,38 +425,73 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 	backendFlagSet := cmderr.BackendFlagChanged(cmd)
 	if backendFlagSet {
 		if _, err := credentials.StoreOptions(opts.Backend, true, cfg); err != nil {
-			return cmderr.Credential(err)
+			return initPlan{}, cmderr.Credential(err)
 		}
 	}
 	persistExplicitBackend := backendFlagSet && (len(writes) > 0 || profile.LLM.Auth == config.LLMAuthAPIKey)
 	if persistExplicitBackend {
 		if cfg.Keyring.Backend != "" && cfg.Keyring.Backend != opts.Backend {
-			return exitcode.Usage(fmt.Errorf("--backend %q conflicts with existing keyring.backend %q", opts.Backend, cfg.Keyring.Backend))
+			return initPlan{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with existing keyring.backend %q", opts.Backend, cfg.Keyring.Backend))
 		}
 		cfg.Keyring.Backend = opts.Backend
 	}
 
 	if err := config.Validate(cfg); err != nil {
-		return cmderr.Config(err)
+		return initPlan{}, cmderr.Config(err)
 	}
 
+	backendArg := ""
+	if backendFlagSet && !persistExplicitBackend {
+		backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
+	}
+	credentialHints := []config.CredentialRef{}
+	if !hasGitSecret {
+		credentialHints = append(credentialHints, config.CredentialRef{
+			Purpose: "git",
+			Ref:     gitRef,
+			Mode:    string(config.GitAuthModePAT),
+		})
+	}
+	if reviewerRequested && !hasReviewerSecret {
+		credentialHints = append(credentialHints, config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     reviewerRef,
+			Mode:    string(reviewerMode),
+		})
+	}
+
+	return initPlan{
+		path:              path,
+		cfg:               cfg,
+		profileName:       profileName,
+		profile:           profile,
+		writes:            writes,
+		backendFlagSet:    backendFlagSet,
+		backendArg:        backendArg,
+		llmSecretProvided: hasLLMSecret,
+		credentialHints:   credentialHints,
+	}, nil
+}
+
+func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
 	var store *credstore.Store
-	if len(writes) > 0 || profile.LLM.Auth == config.LLMAuthAPIKey {
-		store, err = credentials.OpenStore(opts.Backend, backendFlagSet, cfg)
+	if len(plan.writes) > 0 || plan.profile.LLM.Auth == config.LLMAuthAPIKey {
+		var err error
+		store, err = deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
 		if err != nil {
 			return cmderr.Credential(err)
 		}
 		defer store.Close()
 	}
-	if profile.LLM.Auth == config.LLMAuthAPIKey && !hasLLMSecret {
+	if plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.llmSecretProvided {
 		if flags.overwrite {
 			return exitcode.Usage(fmt.Errorf("--overwrite with api_key LLM auth requires --llm-api-key-stdin or --llm-api-key-from-env"))
 		}
-		parsed, err := credentials.ParseRef(profile.LLM.CredentialRef)
+		parsed, err := credentials.ParseRef(plan.profile.LLM.CredentialRef)
 		if err != nil {
 			return exitcode.Usage(err)
 		}
-		llmKey, err := credentials.LLMAPIKeyForProvider(profile.LLM.Provider)
+		llmKey, err := credentials.LLMAPIKeyForProvider(plan.profile.LLM.Provider)
 		if err != nil {
 			return cmderr.Config(err)
 		}
@@ -378,8 +503,8 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 			return exitcode.Usage(fmt.Errorf("api_key LLM auth requires --llm-api-key-stdin or --llm-api-key-from-env"))
 		}
 	}
-	if store != nil && len(writes) > 0 && !flags.overwrite {
-		if err := preflightNoOverwrite(store, writes); err != nil {
+	if store != nil && len(plan.writes) > 0 && !flags.overwrite {
+		if err := preflightNoOverwrite(store, plan.writes); err != nil {
 			return cmderr.Credential(err)
 		}
 	}
@@ -388,41 +513,27 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 		if flags.overwrite {
 			setOpts = append(setOpts, credstore.WithOverwrite())
 		}
-		if _, err := writeBundles(store, writes, setOpts...); err != nil {
+		if _, err := writeBundles(store, plan.writes, setOpts...); err != nil {
 			return cmderr.Credential(err)
 		}
 	}
-	if err := config.Save(path, cfg); err != nil {
+	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
 		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
 			return cmderr.Config(err)
 		}
-		if len(writes) > 0 {
-			return fmt.Errorf("init wrote credentials but failed to save config for profile %q; credential refs needing cleanup: %v: %w", profileName, sortedRefs(writes), err)
+		if len(plan.writes) > 0 {
+			return fmt.Errorf("init wrote credentials but failed to save config for profile %q; credential refs needing cleanup: %v: %w", plan.profileName, sortedRefs(plan.writes), err)
 		}
 		return err
 	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Initialized profile %s\n", profileName); err != nil {
+	if _, err := fmt.Fprintf(opts.Stdout, "Initialized profile %s\n", plan.profileName); err != nil {
 		return err
 	}
-	backendArg := ""
-	if backendFlagSet && !persistExplicitBackend {
-		backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
-	}
-	if !hasGitSecret {
-		err = writeCredentialHints(opts.Stderr, backendArg, config.CredentialRef{
-			Purpose: "git",
-			Ref:     gitRef,
-			Mode:    string(config.GitAuthModePAT),
-		})
-	}
-	if reviewerRequested && !hasReviewerSecret {
-		reviewerHintErr := writeCredentialHints(opts.Stderr, backendArg, config.CredentialRef{
-			Purpose: "reviewer_credentials",
-			Ref:     reviewerRef,
-			Mode:    string(reviewerMode),
-		})
+	var err error
+	for _, hint := range plan.credentialHints {
+		hintErr := writeCredentialHints(opts.Stderr, plan.backendArg, hint)
 		if err == nil {
-			err = reviewerHintErr
+			err = hintErr
 		}
 	}
 	return err
