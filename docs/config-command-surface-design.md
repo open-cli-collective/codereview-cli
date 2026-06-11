@@ -154,6 +154,9 @@ Route identity and mutation contract:
 - `route set` with one or more `--repo` values manages the listed repo-specific
   mappings for that `host + namespace`, assigning those repos to the requested
   profile
+- if any listed repo is already mapped to another profile, `route set` moves
+  that mapping to the requested profile and prunes it from the old repo-route
+  entry as part of the same converging mutation
 - repeated `--repo` inputs converge by trim, dedupe, and deterministic sort
 - CLI-owned persistence should collapse repo-specific mappings into a
   deterministic shape: one repo-route entry per `profile + host + namespace`
@@ -221,7 +224,8 @@ Path normalization contract:
 
 - normalize configured path strings by:
   - trimming surrounding whitespace
-  - applying `filepath.Clean(...)`
+  - rejecting the value if it is empty after trim
+  - applying `filepath.Clean(...)` to the remaining non-empty string
 - do not expand `~`
 - do not resolve symlinks
 - do not case-fold paths
