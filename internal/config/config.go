@@ -368,6 +368,31 @@ type RepositoryTarget struct {
 	Repo      string
 }
 
+// RepositoryProfileResolutionSource identifies why a profile was selected for
+// a repository target.
+type RepositoryProfileResolutionSource string
+
+const (
+	// RepositoryProfileResolutionSourceExplicit means the inherited global
+	// --profile flag explicitly bypassed repository routing.
+	RepositoryProfileResolutionSourceExplicit RepositoryProfileResolutionSource = "explicit_profile"
+	// RepositoryProfileResolutionSourceRoute means a repository_profiles route
+	// selected the profile.
+	RepositoryProfileResolutionSourceRoute RepositoryProfileResolutionSource = "repository_route"
+	// RepositoryProfileResolutionSourceDefault means routing did not match and
+	// the default profile was used.
+	RepositoryProfileResolutionSourceDefault RepositoryProfileResolutionSource = "default_profile"
+)
+
+// RepositoryProfileResolution describes the resolved profile plus the source of
+// that decision.
+type RepositoryProfileResolution struct {
+	ProfileName  string
+	Profile      Profile
+	Source       RepositoryProfileResolutionSource
+	MatchedRoute *RepositoryProfile
+}
+
 // Path resolves the default cr config.yml path without creating it.
 func Path() (string, error) {
 	dir, err := (statedir.Scope{Name: serviceName}).ConfigDir()
@@ -512,42 +537,88 @@ func ResolveProfile(cfg File, requestedName string) (string, Profile, error) {
 // ResolveProfileForRepository resolves the active profile for a repository.
 // Explicit profile selection bypasses repository routing.
 func ResolveProfileForRepository(cfg File, requestedName string, explicitProfile bool, target RepositoryTarget) (string, Profile, error) {
+	resolution, err := ResolveProfileForRepositoryWithSource(cfg, requestedName, explicitProfile, target)
+	if err != nil {
+		return "", Profile{}, err
+	}
+	return resolution.ProfileName, resolution.Profile, nil
+}
+
+// ResolveProfileForRepositoryWithSource resolves the active profile for a
+// repository and reports why that profile was selected.
+func ResolveProfileForRepositoryWithSource(cfg File, requestedName string, explicitProfile bool, target RepositoryTarget) (RepositoryProfileResolution, error) {
 	if explicitProfile {
-		return ResolveProfile(cfg, requestedName)
+		name, profile, err := ResolveProfile(cfg, requestedName)
+		if err != nil {
+			return RepositoryProfileResolution{}, err
+		}
+		return RepositoryProfileResolution{
+			ProfileName: name,
+			Profile:     profile,
+			Source:      RepositoryProfileResolutionSourceExplicit,
+		}, nil
 	}
 	cfg = cfg.normalized()
 	targetHost := normalizeConfigHost(target.Host)
 	targetNamespace := strings.TrimSpace(target.Namespace)
 	targetRepo := strings.TrimSpace(target.Repo)
 	if targetHost == "" {
-		return "", Profile{}, invalid("repository host is required")
+		return RepositoryProfileResolution{}, invalid("repository host is required")
 	}
 	if targetNamespace == "" {
-		return "", Profile{}, invalid("repository namespace is required")
+		return RepositoryProfileResolution{}, invalid("repository namespace is required")
 	}
 	if targetRepo == "" {
-		return "", Profile{}, invalid("repository repo is required")
+		return RepositoryProfileResolution{}, invalid("repository repo is required")
 	}
 
-	namespaceProfile := ""
+	var namespaceRoute *RepositoryProfile
 	for _, route := range cfg.RepositoryProfiles {
 		if route.Match.Host != targetHost || route.Match.Namespace != targetNamespace {
 			continue
 		}
 		if route.Match.Repos == nil {
-			namespaceProfile = route.Profile
+			routeCopy := route
+			namespaceRoute = &routeCopy
 			continue
 		}
 		for _, repo := range route.Match.Repos {
 			if repo == targetRepo {
-				return ResolveProfile(cfg, route.Profile)
+				name, profile, err := ResolveProfile(cfg, route.Profile)
+				if err != nil {
+					return RepositoryProfileResolution{}, err
+				}
+				routeCopy := route
+				return RepositoryProfileResolution{
+					ProfileName:  name,
+					Profile:      profile,
+					Source:       RepositoryProfileResolutionSourceRoute,
+					MatchedRoute: &routeCopy,
+				}, nil
 			}
 		}
 	}
-	if namespaceProfile != "" {
-		return ResolveProfile(cfg, namespaceProfile)
+	if namespaceRoute != nil {
+		name, profile, err := ResolveProfile(cfg, namespaceRoute.Profile)
+		if err != nil {
+			return RepositoryProfileResolution{}, err
+		}
+		return RepositoryProfileResolution{
+			ProfileName:  name,
+			Profile:      profile,
+			Source:       RepositoryProfileResolutionSourceRoute,
+			MatchedRoute: namespaceRoute,
+		}, nil
 	}
-	return ResolveProfile(cfg, "")
+	name, profile, err := ResolveProfile(cfg, "")
+	if err != nil {
+		return RepositoryProfileResolution{}, err
+	}
+	return RepositoryProfileResolution{
+		ProfileName: name,
+		Profile:     profile,
+		Source:      RepositoryProfileResolutionSourceDefault,
+	}, nil
 }
 
 // CredentialRefs returns all credential-store refs declared by profile.

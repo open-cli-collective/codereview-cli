@@ -729,6 +729,177 @@ func TestConfigRouteUnsetRejectsBlankInputs(t *testing.T) {
 	}
 }
 
+func TestConfigResolveProfileText(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"PR URL: https://github.com/open-cli-collective/codereview-cli/pull/1",
+		"Resolved profile: work",
+		"Source: repository_route",
+		"Matched route: github.com/open-cli-collective [codereview-cli]",
+		"Git host: github.com",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestConfigResolveProfileJSON(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigResolveProfile
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.ResolvedProfile != "home" || got.Source != "default_profile" || got.GitHost != "github.com" || got.MatchedRoute != nil {
+		t.Fatalf("resolve-profile JSON = %#v, want default-profile preview", got)
+	}
+}
+
+func TestConfigResolveProfileJSONIncludesMatchedRoute(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigResolveProfile
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	wantRoute := &view.ConfigRoute{
+		Profile:   "work",
+		Host:      "github.com",
+		Namespace: "open-cli-collective",
+		Repos:     []string{"codereview-cli"},
+	}
+	if got.ResolvedProfile != "work" || got.Source != "repository_route" || got.GitHost != "github.com" || !reflect.DeepEqual(got.MatchedRoute, wantRoute) {
+		t.Fatalf("resolve-profile JSON = %#v, want routed preview with matched route %#v", got, wantRoute)
+	}
+}
+
+func TestConfigResolveProfileExplicitProfileBypassesRoute(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigResolveProfile
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.ResolvedProfile != "home" || got.Source != "explicit_profile" || got.MatchedRoute != nil {
+		t.Fatalf("resolve-profile JSON = %#v, want explicit bypass", got)
+	}
+}
+
+func TestConfigResolveProfileRejectsHostMismatchAfterResolution(t *testing.T) {
+	cfg := testConfig()
+	home := cfg.Profiles["home"]
+	home.Git.Host = "gitlab.com"
+	cfg.Profiles["home"] = home
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestConfigResolveProfileRejectsHostMismatchForExplicitProfile(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["work"]
+	work.Git.Host = "gitlab.com"
+	cfg.Profiles["work"] = work
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"--profile", "work", "config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestConfigResolveProfileExplicitEmptyProfileUsesExplicitSource(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "", "config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigResolveProfile
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.ResolvedProfile != "home" || got.Source != "explicit_profile" {
+		t.Fatalf("resolve-profile JSON = %#v, want explicit empty-profile source", got)
+	}
+}
+
+func TestConfigResolveProfileRejectsInvalidPRURL(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "resolve-profile", "not-a-pr"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want usage error")
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
 func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["work"]

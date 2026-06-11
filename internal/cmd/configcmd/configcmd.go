@@ -20,6 +20,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -317,6 +318,49 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 
 	routeCmd.AddCommand(routeListCmd, routeSetCmd, routeUnsetCmd)
 
+	var resolveProfileJSON bool
+	resolveProfileCmd := &cobra.Command{
+		Use:   "resolve-profile <PR_URL>",
+		Short: "Preview which profile a PR URL would resolve to",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return exitcode.Usage(fmt.Errorf("config resolve-profile requires <PR_URL>"))
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ref, err := prref.ParseGitHubPullURL(args[0])
+			if err != nil {
+				return exitcode.Usage(err)
+			}
+			path, err := configPath(opts)
+			if err != nil {
+				return exitcode.AuthConfig(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			resolution, err := config.ResolveProfileForRepositoryWithSource(cfg, opts.Profile, root.ProfileFlagChanged(cmd), config.RepositoryTarget{
+				Host:      ref.Host,
+				Namespace: ref.Owner,
+				Repo:      ref.Repo,
+			})
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			if !prref.SameHost(ref.Host, resolution.Profile.Git.Host) {
+				return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, resolution.Profile.Git.Host))
+			}
+			result := configResolveProfileView(args[0], resolution)
+			if resolveProfileJSON {
+				return view.RenderConfigResolveProfileJSON(opts.Stdout, result)
+			}
+			return view.RenderConfigResolveProfileText(opts.Stdout, result)
+		},
+	}
+	resolveProfileCmd.Flags().BoolVar(&resolveProfileJSON, "json", false, "Emit JSON")
+
 	var clearAll bool
 	var clearJSON bool
 	var clearDryRun bool
@@ -411,7 +455,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, clearCmd, newLLMCommand(opts))
+	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, resolveProfileCmd, clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
 }
 
@@ -622,6 +666,27 @@ type modelResolveResult struct {
 	Tier          string `json:"tier"`
 	Model         string `json:"model"`
 	Source        string `json:"source"`
+}
+
+func configResolveProfileView(prURL string, resolution config.RepositoryProfileResolution) view.ConfigResolveProfile {
+	result := view.ConfigResolveProfile{
+		PRURL:           prURL,
+		ResolvedProfile: resolution.ProfileName,
+		Source:          string(resolution.Source),
+		GitHost:         resolution.Profile.Git.Host,
+	}
+	if resolution.MatchedRoute != nil {
+		route := &view.ConfigRoute{
+			Profile:   resolution.MatchedRoute.Profile,
+			Host:      resolution.MatchedRoute.Match.Host,
+			Namespace: resolution.MatchedRoute.Match.Namespace,
+		}
+		if len(resolution.MatchedRoute.Match.Repos) > 0 {
+			route.Repos = append([]string(nil), resolution.MatchedRoute.Match.Repos...)
+		}
+		result.MatchedRoute = route
+	}
+	return result
 }
 
 type routeSpec struct {
