@@ -9,10 +9,14 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 )
 
-func TestParseRepositoryRouteSpecNormalizesDomainInputs(t *testing.T) {
-	spec, err := configedit.ParseRepositoryRouteSpec("https://github.com/", " rianjs ", []string{" baz ", "bar", "bar"})
+func TestNormalizeRepositoryRouteSpecNormalizesDomainInputs(t *testing.T) {
+	spec, err := configedit.NormalizeRepositoryRouteSpec(configedit.RepositoryRouteSpec{
+		Host:      "https://github.com/",
+		Namespace: " rianjs ",
+		Repos:     []string{" baz ", "bar", "bar"},
+	})
 	if err != nil {
-		t.Fatalf("ParseRepositoryRouteSpec: %v", err)
+		t.Fatalf("NormalizeRepositoryRouteSpec: %v", err)
 	}
 	want := configedit.RepositoryRouteSpec{
 		Host:      "github.com",
@@ -27,7 +31,7 @@ func TestParseRepositoryRouteSpecNormalizesDomainInputs(t *testing.T) {
 	}
 }
 
-func TestParseRepositoryRouteSpecRejectsMissingFields(t *testing.T) {
+func TestNormalizeRepositoryRouteSpecRejectsMissingFields(t *testing.T) {
 	tests := []struct {
 		name string
 		host string
@@ -41,9 +45,13 @@ func TestParseRepositoryRouteSpecRejectsMissingFields(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := configedit.ParseRepositoryRouteSpec(tt.host, tt.ns, tt.repo)
+			_, err := configedit.NormalizeRepositoryRouteSpec(configedit.RepositoryRouteSpec{
+				Host:      tt.host,
+				Namespace: tt.ns,
+				Repos:     tt.repo,
+			})
 			if !errors.Is(err, tt.want) {
-				t.Fatalf("ParseRepositoryRouteSpec error = %v, want %v", err, tt.want)
+				t.Fatalf("NormalizeRepositoryRouteSpec error = %v, want %v", err, tt.want)
 			}
 		})
 	}
@@ -212,6 +220,11 @@ func TestAgentSourceHelpersNormalizePreserveAndReset(t *testing.T) {
 	got, changed = configedit.ResetAgentSources(nil)
 	if changed || got != nil {
 		t.Fatalf("ResetAgentSources nil = (%#v,%t), want nil,false", got, changed)
+	}
+	empty := []string{}
+	got, changed = configedit.ResetAgentSources(empty)
+	if changed || !reflect.DeepEqual(got, empty) {
+		t.Fatalf("ResetAgentSources empty = (%#v,%t), want empty,false", got, changed)
 	}
 }
 

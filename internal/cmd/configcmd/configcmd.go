@@ -824,7 +824,11 @@ func parseModelTierArg(raw string) (config.ModelTier, error) {
 }
 
 func parseConfigRouteSpec(rawHost string, rawNamespace string, rawRepos []string) (configedit.RepositoryRouteSpec, error) {
-	spec, err := configedit.ParseRepositoryRouteSpec(rawHost, rawNamespace, rawRepos)
+	spec, err := configedit.NormalizeRepositoryRouteSpec(configedit.RepositoryRouteSpec{
+		Host:      rawHost,
+		Namespace: rawNamespace,
+		Repos:     rawRepos,
+	})
 	if err != nil {
 		return configedit.RepositoryRouteSpec{}, usageRouteError(err)
 	}

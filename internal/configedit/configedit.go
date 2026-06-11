@@ -1,4 +1,8 @@
 // Package configedit provides reusable config mutation helpers.
+//
+// This package owns pure config data transforms only. Keep command parsing,
+// Cobra/view dependencies, keyring operations, and exit-code mapping in command
+// packages such as configcmd.
 package configedit
 
 import (
@@ -38,15 +42,6 @@ type RepositoryRouteSpec struct {
 type repositoryRouteState struct {
 	namespace map[string]string
 	repos     map[string]string
-}
-
-// ParseRepositoryRouteSpec normalizes and validates repository route fields.
-func ParseRepositoryRouteSpec(rawHost string, rawNamespace string, rawRepos []string) (RepositoryRouteSpec, error) {
-	return normalizeRepositoryRouteSpec(RepositoryRouteSpec{
-		Host:      rawHost,
-		Namespace: rawNamespace,
-		Repos:     rawRepos,
-	})
 }
 
 // NormalizeRepositoryRouteSpec returns a normalized copy of spec.
@@ -243,8 +238,8 @@ func RemoveAgentSource(existing []string, raw string) ([]string, bool, error) {
 
 // ResetAgentSources clears agent sources while reporting whether anything changed.
 func ResetAgentSources(existing []string) ([]string, bool) {
-	if existing == nil {
-		return nil, false
+	if len(existing) == 0 {
+		return existing, false
 	}
 	return nil, true
 }
@@ -472,6 +467,8 @@ func (s repositoryRouteState) routes() []config.RepositoryProfile {
 const routeKeySeparator = "\x00"
 
 func routeKey(host, namespace, repo string) string {
+	// NUL is collision-safe here because normalized config strings cannot
+	// contain embedded NUL bytes.
 	return host + routeKeySeparator + namespace + routeKeySeparator + repo
 }
 
