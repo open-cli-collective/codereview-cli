@@ -100,6 +100,103 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	}
 	showCmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit JSON")
 
+	var pathJSON bool
+	pathCmd := &cobra.Command{
+		Use:   "path",
+		Short: "Show the resolved cr config path",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config path takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, err := configPath(opts)
+			if err != nil {
+				return exitcode.AuthConfig(err)
+			}
+			result := view.ConfigPath{
+				ConfigPath: path,
+				ConfigDir:  filepath.Dir(path),
+			}
+			if pathJSON {
+				return view.RenderConfigPathJSON(opts.Stdout, result)
+			}
+			return view.RenderConfigPathText(opts.Stdout, result)
+		},
+	}
+	pathCmd.Flags().BoolVar(&pathJSON, "json", false, "Emit JSON")
+
+	defaultCmd := &cobra.Command{
+		Use:   "default",
+		Short: "Inspect and update the default profile",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+
+	var defaultGetJSON bool
+	defaultGetCmd := &cobra.Command{
+		Use:   "get",
+		Short: "Show the configured default profile",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config default get takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, err := configPath(opts)
+			if err != nil {
+				return exitcode.AuthConfig(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			result := view.ConfigDefault{DefaultProfile: cfg.DefaultProfile}
+			if defaultGetJSON {
+				return view.RenderConfigDefaultJSON(opts.Stdout, result)
+			}
+			return view.RenderConfigDefaultText(opts.Stdout, result)
+		},
+	}
+	defaultGetCmd.Flags().BoolVar(&defaultGetJSON, "json", false, "Emit JSON")
+
+	defaultSetCmd := &cobra.Command{
+		Use:   "set <profile>",
+		Short: "Set the configured default profile",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return exitcode.Usage(fmt.Errorf("config default set requires <profile>"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			profileName := strings.TrimSpace(args[0])
+			if profileName == "" {
+				return exitcode.Usage(fmt.Errorf("profile must be non-empty"))
+			}
+			path, err := configPath(opts)
+			if err != nil {
+				return exitcode.AuthConfig(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			if _, ok := cfg.Profiles[profileName]; !ok {
+				return cmderr.Config(fmt.Errorf("%w: %s", config.ErrProfileNotFound, profileName))
+			}
+			cfg.DefaultProfile = profileName
+			if err := saveConfigFile(path, cfg); err != nil {
+				return cmderr.Config(err)
+			}
+			return view.RenderConfigDefaultText(opts.Stdout, view.ConfigDefault{DefaultProfile: profileName})
+		},
+	}
+	defaultCmd.AddCommand(defaultGetCmd, defaultSetCmd)
+
 	var clearAll bool
 	var clearJSON bool
 	var clearDryRun bool
@@ -194,7 +291,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, clearCmd, newLLMCommand(opts))
+	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
 }
 
