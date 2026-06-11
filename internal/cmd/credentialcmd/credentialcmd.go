@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -174,26 +175,39 @@ type initDraft struct {
 }
 
 type initDeps struct {
-	prompter   initPrompter
-	configPath func(*root.Options) (string, error)
-	loadConfig func(string) (config.File, bool, error)
-	saveConfig func(string, config.File) error
-	openStore  func(string, bool, config.File) (*credstore.Store, error)
-	readSecret func(io.Reader, bool, string, string, string) (string, bool, error)
+	prompter           initPrompter
+	secretPrompter     initSecretPrompter
+	clipboardSupported func() bool
+	clipboardRead      func() (string, error)
+	configPath         func(*root.Options) (string, error)
+	loadConfig         func(string) (config.File, bool, error)
+	saveConfig         func(string, config.File) error
+	openStore          func(string, bool, config.File) (initStore, error)
+	readSecret         func(io.Reader, bool, string, string, string) (string, bool, error)
 }
 
 type initPlan struct {
 	path              string
 	cfg               config.File
+	previousProfile   *config.Profile
 	profileName       string
 	profile           config.Profile
 	writes            map[string]map[string]string
 	credentialPlan    []initCredentialPlanEntry
+	overwriteRefs     map[string]bool
+	satisfiedRefs     map[string]bool
 	backendFlagSet    bool
 	backendArg        string
 	llmSecretProvided bool
 	allowDeferredLLM  bool
 	writeLLMHint      bool
+}
+
+type initStore interface {
+	Exists(profile, key string) (bool, error)
+	ListBundle(profile string) ([]string, error)
+	SetBundle(profile string, kv map[string]string, opts ...credstore.SetOpt) (credstore.Result, error)
+	Close() error
 }
 
 type initCredentialPlanState string
@@ -218,18 +232,69 @@ type initCredentialPlanEntry struct {
 	State               initCredentialPlanState
 }
 
+type initSecretPrompter interface {
+	ChooseCredentialAction(initCredentialSecretPrompt) (initCredentialSecretAction, error)
+	ChooseSecretSource(initSecretValuePrompt) (initSecretSource, error)
+	PasteSecret(initSecretValuePrompt) (string, error)
+}
+
+type initCredentialSecretAction string
+
+const (
+	initCredentialSecretActionKeep   initCredentialSecretAction = "keep"
+	initCredentialSecretActionSetNow initCredentialSecretAction = "set_now"
+	initCredentialSecretActionDefer  initCredentialSecretAction = "defer"
+)
+
+type initSecretSource string
+
+const (
+	initSecretSourceKeepExisting initSecretSource = "keep_existing"
+	initSecretSourcePaste        initSecretSource = "paste"
+	initSecretSourceClipboard    initSecretSource = "clipboard"
+	initSecretSourceSkip         initSecretSource = "skip"
+)
+
+type initCredentialSecretPrompt struct {
+	Entry              initCredentialPlanEntry
+	TargetHasRequired  bool
+	TargetHasAnyKeys   bool
+	ClipboardSupported bool
+}
+
+type initSecretValuePrompt struct {
+	Entry              initCredentialPlanEntry
+	Key                string
+	Optional           bool
+	TargetHasKey       bool
+	ClipboardSupported bool
+}
+
 func defaultInitDeps() initDeps {
 	return initDeps{
-		configPath: configPath,
-		loadConfig: loadConfigForInit,
-		saveConfig: config.Save,
-		openStore:  credentials.OpenStore,
+		clipboardSupported: func() bool { return !clipboard.Unsupported },
+		clipboardRead:      clipboard.ReadAll,
+		configPath:         configPath,
+		loadConfig:         loadConfigForInit,
+		saveConfig:         config.Save,
+		openStore: func(flagValue string, flagSet bool, cfg config.File) (initStore, error) {
+			return credentials.OpenStore(flagValue, flagSet, cfg)
+		},
 		readSecret: readOptionalSecretIngress,
 	}
 }
 
 func (deps initDeps) withDefaults() initDeps {
 	defaults := defaultInitDeps()
+	if deps.secretPrompter == nil {
+		deps.secretPrompter = defaults.secretPrompter
+	}
+	if deps.clipboardSupported == nil {
+		deps.clipboardSupported = defaults.clipboardSupported
+	}
+	if deps.clipboardRead == nil {
+		deps.clipboardRead = defaults.clipboardRead
+	}
 	if deps.configPath == nil {
 		deps.configPath = defaults.configPath
 	}
@@ -363,6 +428,10 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if err != nil {
 		return err
 	}
+	plan, err = collectInteractiveInitSecrets(cmd, opts, deps, plan)
+	if err != nil {
+		return err
+	}
 	return applyInitPlan(opts, flags, deps, plan)
 }
 
@@ -373,6 +442,15 @@ type huhInitPrompter struct {
 
 func newHuhInitPrompter(opts *root.Options) initPrompter {
 	return huhInitPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+type huhInitSecretPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
+func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
+	return huhInitSecretPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -513,6 +591,79 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		return initDraft{}, err
 	}
 	return draft, nil
+}
+
+func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecretPrompt) (initCredentialSecretAction, error) {
+	options := make([]huh.Option[initCredentialSecretAction], 0, 3)
+	if prompt.TargetHasRequired {
+		options = append(options, huh.NewOption("Keep existing secrets", initCredentialSecretActionKeep))
+	}
+	options = append(options,
+		huh.NewOption("Set secrets now", initCredentialSecretActionSetNow),
+		huh.NewOption("Defer and configure later", initCredentialSecretActionDefer),
+	)
+	choice := options[0].Value
+	title := fmt.Sprintf("How should init handle %s credentials?", initCredentialPurposeLabel(prompt.Entry.Ref.Purpose))
+	if prompt.Entry.Ref.Ref != "" {
+		title = fmt.Sprintf("%s (%s)", title, prompt.Entry.Ref.Ref)
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initCredentialSecretAction]().
+				Title(title).
+				Options(options...).
+				Value(&choice),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return choice, nil
+}
+
+func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) (initSecretSource, error) {
+	options := make([]huh.Option[initSecretSource], 0, 4)
+	if prompt.TargetHasKey {
+		options = append(options, huh.NewOption("Keep existing value", initSecretSourceKeepExisting))
+	}
+	if prompt.ClipboardSupported {
+		options = append(options, huh.NewOption("Read from clipboard", initSecretSourceClipboard))
+	}
+	options = append(options, huh.NewOption("Paste in terminal", initSecretSourcePaste))
+	if prompt.Optional {
+		options = append(options, huh.NewOption("Skip this optional value", initSecretSourceSkip))
+	}
+	choice := options[0].Value
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initSecretSource]().
+				Title(fmt.Sprintf("How should init get %s?", prompt.Key)).
+				Options(options...).
+				Value(&choice),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return choice, nil
+}
+
+func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string, error) {
+	var value string
+	field := huh.NewInput().
+		Title(fmt.Sprintf("Paste %s", prompt.Key)).
+		Description("Secret input is hidden.").
+		Value(&value).
+		EchoMode(huh.EchoModePassword).
+		Validate(validateRequiredText("secret value is required"))
+	if prompt.Key == credentials.GitHubAppPrivateKeyKey {
+		field.Description("Secret input is hidden. Clipboard is recommended for multi-line private keys.")
+	}
+	form := huh.NewForm(huh.NewGroup(field)).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return credentials.TrimSecretIngress(value), nil
 }
 
 func validateRequiredText(message string) func(string) error {
@@ -790,10 +941,13 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	return initPlan{
 		path:              path,
 		cfg:               cfg,
+		previousProfile:   previousProfile,
 		profileName:       profileName,
 		profile:           profile,
 		writes:            writes,
 		credentialPlan:    credentialPlan,
+		overwriteRefs:     map[string]bool{},
+		satisfiedRefs:     map[string]bool{},
 		backendFlagSet:    backendFlagSet,
 		backendArg:        backendArg,
 		llmSecretProvided: hasLLMSecret,
@@ -885,10 +1039,14 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 	return initPlan{
 		path:             path,
 		cfg:              working,
+		previousProfile:  previousProfile,
 		profileName:      profileName,
 		profile:          profile,
+		writes:           map[string]map[string]string{},
 		credentialPlan:   credentialPlan,
-		backendFlagSet:   false,
+		overwriteRefs:    map[string]bool{},
+		satisfiedRefs:    map[string]bool{},
+		backendFlagSet:   backendFlagSet,
 		backendArg:       backendArg,
 		allowDeferredLLM: deferLLMSecret,
 		writeLLMHint:     deferLLMSecret,
@@ -971,8 +1129,259 @@ func validateInteractiveRouteHostChange(cfg config.File, profileName string, pre
 	return nil
 }
 
+func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+	if len(plan.credentialPlan) == 0 {
+		return plan, nil
+	}
+	needsSecrets := false
+	for _, entry := range plan.credentialPlan {
+		switch entry.State {
+		case initCredentialPlanStateDefer, initCredentialPlanStateMissingRequired, initCredentialPlanStateOverwriteRef:
+			needsSecrets = true
+		case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
+		}
+	}
+	if !needsSecrets {
+		return plan, nil
+	}
+
+	prompter := deps.secretPrompter
+	if prompter == nil {
+		prompter = newHuhInitSecretPrompter(opts)
+	}
+	var store initStore
+	openStore := func() (initStore, error) {
+		if store != nil {
+			return store, nil
+		}
+		opened, err := deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+		if err != nil {
+			return nil, err
+		}
+		store = opened
+		return store, nil
+	}
+	defer func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
+
+	if plan.writes == nil {
+		plan.writes = map[string]map[string]string{}
+	}
+	if plan.overwriteRefs == nil {
+		plan.overwriteRefs = map[string]bool{}
+	}
+	if plan.satisfiedRefs == nil {
+		plan.satisfiedRefs = map[string]bool{}
+	}
+
+	for _, entry := range plan.credentialPlan {
+		switch entry.State {
+		case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
+			continue
+		case initCredentialPlanStateDefer, initCredentialPlanStateMissingRequired, initCredentialPlanStateOverwriteRef:
+		}
+		action, err := prompter.ChooseCredentialAction(initCredentialSecretPrompt{
+			Entry:              entry,
+			ClipboardSupported: deps.clipboardSupported(),
+		})
+		if err != nil {
+			return initPlan{}, err
+		}
+		if action == initCredentialSecretActionDefer {
+			continue
+		}
+		activeStore, err := openStore()
+		if err != nil {
+			return initPlan{}, cmderr.Credential(err)
+		}
+		targetKeys, err := existingInitCredentialKeys(activeStore, entry.Ref.Ref)
+		if err != nil {
+			return initPlan{}, cmderr.Credential(err)
+		}
+		targetHasRequired := initCredentialKeysSatisfySpecs(targetKeys, entry.KeySpecs)
+		switch action {
+		case initCredentialSecretActionKeep:
+			if !targetHasRequired {
+				return initPlan{}, exitcode.Usage(fmt.Errorf("%s credential ref %q does not have all required keys", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
+			}
+			plan.satisfiedRefs[entry.Ref.Ref] = true
+			continue
+		case initCredentialSecretActionSetNow:
+		case initCredentialSecretActionDefer:
+			continue
+		default:
+			return initPlan{}, fmt.Errorf("unsupported interactive secret action %q", action)
+		}
+
+		overwriteRef := false
+		for _, spec := range entry.KeySpecs {
+			targetHasKey := targetKeys[spec.Key]
+			source, err := prompter.ChooseSecretSource(initSecretValuePrompt{
+				Entry:              entry,
+				Key:                spec.Key,
+				Optional:           !spec.Required,
+				TargetHasKey:       targetHasKey,
+				ClipboardSupported: deps.clipboardSupported(),
+			})
+			if err != nil {
+				return initPlan{}, err
+			}
+			switch source {
+			case initSecretSourceKeepExisting:
+				if !targetHasKey {
+					return initPlan{}, exitcode.Usage(fmt.Errorf("%s credential key %q does not exist for ref %q", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key, entry.Ref.Ref))
+				}
+				continue
+			case initSecretSourceSkip:
+				if spec.Required {
+					return initPlan{}, exitcode.Usage(fmt.Errorf("%s credential key %q is required", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key))
+				}
+				continue
+			case initSecretSourceClipboard:
+				value, err := deps.clipboardRead()
+				if err != nil {
+					return initPlan{}, exitcode.Usage(fmt.Errorf("read clipboard: %w", err))
+				}
+				value = credentials.TrimSecretIngress(value)
+				if value == "" {
+					return initPlan{}, exitcode.Usage(fmt.Errorf("clipboard supplied an empty secret"))
+				}
+				addWrite(plan.writes, entry.Ref.Ref, spec.Key, value)
+			case initSecretSourcePaste:
+				value, err := prompter.PasteSecret(initSecretValuePrompt{
+					Entry:              entry,
+					Key:                spec.Key,
+					Optional:           !spec.Required,
+					TargetHasKey:       targetHasKey,
+					ClipboardSupported: deps.clipboardSupported(),
+				})
+				if err != nil {
+					return initPlan{}, err
+				}
+				value = credentials.TrimSecretIngress(value)
+				if value == "" {
+					return initPlan{}, exitcode.Usage(fmt.Errorf("pasted secret for %q is empty", spec.Key))
+				}
+				addWrite(plan.writes, entry.Ref.Ref, spec.Key, value)
+			default:
+				return initPlan{}, fmt.Errorf("unsupported interactive secret source %q", source)
+			}
+			if targetHasKey {
+				overwriteRef = true
+			}
+		}
+		planned := plan.writes[entry.Ref.Ref]
+		if !initCredentialWritePlanSatisfiesEntry(entry, targetKeys, planned) {
+			return initPlan{}, exitcode.Usage(fmt.Errorf("%s credential ref %q still needs required keys; keep existing values or defer instead", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
+		}
+		if overwriteRef {
+			plan.overwriteRefs[entry.Ref.Ref] = true
+		}
+		plan.satisfiedRefs[entry.Ref.Ref] = true
+	}
+	plan.credentialPlan = refreshInteractiveCredentialPlan(plan.credentialPlan, projectInitPlannedWriteKeys(plan.writes), plan.satisfiedRefs)
+	if hasDeferredLLMCredential(plan.credentialPlan) {
+		plan.writeLLMHint = true
+	}
+	return plan, nil
+}
+
+func existingInitCredentialKeys(store initStore, ref string) (map[string]bool, error) {
+	parsed, err := credentials.ParseRef(ref)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := store.ListBundle(parsed.Profile)
+	if err != nil {
+		return nil, err
+	}
+	present := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		present[key] = true
+	}
+	return present, nil
+}
+
+func initCredentialKeysSatisfySpecs(keys map[string]bool, specs []credentials.KeySpec) bool {
+	for _, spec := range specs {
+		if !spec.Required {
+			continue
+		}
+		if !keys[spec.Key] {
+			return false
+		}
+	}
+	return true
+}
+
+func initCredentialWritePlanSatisfiesEntry(entry initCredentialPlanEntry, targetKeys map[string]bool, planned map[string]string) bool {
+	for _, spec := range entry.KeySpecs {
+		if !spec.Required {
+			continue
+		}
+		if _, ok := planned[spec.Key]; ok {
+			continue
+		}
+		if targetKeys[spec.Key] {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func refreshInteractiveCredentialPlan(entries []initCredentialPlanEntry, plannedWriteKeys map[string][]string, satisfiedRefs map[string]bool) []initCredentialPlanEntry {
+	refreshed := make([]initCredentialPlanEntry, 0, len(entries))
+	for _, entry := range entries {
+		next := entry
+		switch entry.State {
+		case initCredentialPlanStateClearRef:
+			refreshed = append(refreshed, next)
+			continue
+		case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateDefer, initCredentialPlanStateOverwriteRef, initCredentialPlanStateMissingRequired:
+		}
+		next.PlannedWriteKeys = append([]string(nil), plannedWriteKeys[entry.Ref.Ref]...)
+		if satisfiedRefs[entry.Ref.Ref] && len(next.PlannedWriteKeys) == 0 {
+			next.MissingRequiredKeys = nil
+			next.State = initCredentialPlanStateKeepExisting
+			refreshed = append(refreshed, next)
+			continue
+		}
+		next.MissingRequiredKeys = missingRequiredInitCredentialKeys(next.KeySpecs, next.PlannedWriteKeys)
+		next.State = classifyInitCredentialPlanEntry(next)
+		refreshed = append(refreshed, next)
+	}
+	return refreshed
+}
+
+func hasDeferredLLMCredential(entries []initCredentialPlanEntry) bool {
+	for _, entry := range entries {
+		if entry.Ref.Purpose != "llm" {
+			continue
+		}
+		return shouldWriteInitCredentialHint(entry, true)
+	}
+	return false
+}
+
+func initCredentialPurposeLabel(purpose string) string {
+	switch purpose {
+	case "git":
+		return "Git"
+	case "reviewer_credentials":
+		return "reviewer"
+	case "llm":
+		return "LLM"
+	default:
+		return purpose
+	}
+}
+
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
-	var store *credstore.Store
+	var store initStore
 	if len(plan.writes) > 0 || (plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.allowDeferredLLM) {
 		var err error
 		store, err = deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
@@ -1002,16 +1411,12 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 		}
 	}
 	if store != nil && len(plan.writes) > 0 && !flags.overwrite {
-		if err := preflightNoOverwrite(store, plan.writes); err != nil {
+		if err := preflightNoOverwrite(store, plan.writes, plan.overwriteRefs); err != nil {
 			return cmderr.Credential(err)
 		}
 	}
 	if store != nil {
-		setOpts := []credstore.SetOpt{}
-		if flags.overwrite {
-			setOpts = append(setOpts, credstore.WithOverwrite())
-		}
-		if _, err := writeBundles(store, plan.writes, setOpts...); err != nil {
+		if _, err := writeBundles(store, plan.writes, flags.overwrite, plan.overwriteRefs); err != nil {
 			return cmderr.Credential(err)
 		}
 	}
@@ -1271,8 +1676,11 @@ func addWrite(writes map[string]map[string]string, ref, key, value string) {
 	writes[ref][key] = value
 }
 
-func preflightNoOverwrite(store *credstore.Store, writes map[string]map[string]string) error {
+func preflightNoOverwrite(store initStore, writes map[string]map[string]string, overwriteRefs map[string]bool) error {
 	for _, ref := range sortedRefs(writes) {
+		if overwriteRefs[ref] {
+			continue
+		}
 		parsed, err := credentials.ParseRef(ref)
 		if err != nil {
 			return err
@@ -1290,14 +1698,18 @@ func preflightNoOverwrite(store *credstore.Store, writes map[string]map[string]s
 	return nil
 }
 
-func writeBundles(store *credstore.Store, writes map[string]map[string]string, opts ...credstore.SetOpt) ([]string, error) {
+func writeBundles(store initStore, writes map[string]map[string]string, overwriteAll bool, overwriteRefs map[string]bool) ([]string, error) {
 	var writtenRefs []string
 	for _, ref := range sortedRefs(writes) {
 		parsed, err := credentials.ParseRef(ref)
 		if err != nil {
 			return writtenRefs, err
 		}
-		result, err := store.SetBundle(parsed.Profile, writes[ref], opts...)
+		setOpts := []credstore.SetOpt{}
+		if overwriteAll || overwriteRefs[ref] {
+			setOpts = append(setOpts, credstore.WithOverwrite())
+		}
+		result, err := store.SetBundle(parsed.Profile, writes[ref], setOpts...)
 		if err != nil {
 			cleanupRefs := append([]string(nil), writtenRefs...)
 			if len(result.RollbackFailed) > 0 {

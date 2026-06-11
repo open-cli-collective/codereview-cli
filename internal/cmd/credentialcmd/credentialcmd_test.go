@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1235,7 +1236,7 @@ func TestBuildNonInteractiveInitPlanDoesNotApplySideEffects(t *testing.T) {
 			t.Fatal("config save called during plan build")
 			return nil
 		},
-		openStore: func(string, bool, config.File) (*credstore.Store, error) {
+		openStore: func(string, bool, config.File) (initStore, error) {
 			t.Fatal("keyring opened during plan build")
 			return nil, nil
 		},
@@ -1459,14 +1460,25 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 				LLMCredentialRef:      "codereview/custom-office-llm",
 			}, nil
 		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		},
+		clipboardSupported: func() bool { return true },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read during deferred interactive init")
+			return "", nil
+		},
 		configPath: func(*root.Options) (string, error) {
 			return path, nil
 		},
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
-		openStore: func(string, bool, config.File) (*credstore.Store, error) {
-			t.Fatal("interactive non-secret init should not open the keyring")
-			return nil, nil
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
 		},
 		readSecret: func(io.Reader, bool, string, string, string) (string, bool, error) {
 			t.Fatal("interactive non-secret init should not read secret ingress")
@@ -1573,7 +1585,7 @@ func TestInitInteractiveBlocksRouteHostChangeBeforeSave(t *testing.T) {
 			t.Fatal("saveConfig called despite route-host block")
 			return nil
 		},
-		openStore: func(string, bool, config.File) (*credstore.Store, error) {
+		openStore: func(string, bool, config.File) (initStore, error) {
 			t.Fatal("openStore called despite route-host block")
 			return nil, nil
 		},
@@ -1700,12 +1712,22 @@ func TestInitInteractivePersistsExplicitBackendForDeferredLLM(t *testing.T) {
 				LLMCredentialRef:     "codereview/default-llm",
 			}, nil
 		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		},
+		clipboardSupported: func() bool { return true },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read during deferred llm init")
+			return "", nil
+		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
-		openStore: func(string, bool, config.File) (*credstore.Store, error) {
-			t.Fatal("interactive deferred llm init should not open the keyring")
-			return nil, nil
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
 		},
 		readSecret: func(io.Reader, bool, string, string, string) (string, bool, error) {
 			t.Fatal("interactive deferred llm init should not read secret ingress")
@@ -1729,6 +1751,373 @@ func TestInitInteractivePersistsExplicitBackendForDeferredLLM(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "cr set-credential --ref codereview/default-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
 		t.Fatalf("stderr = %q, want deferred llm follow-up hint without backend flag", stderr.String())
+	}
+}
+
+func TestInitInteractiveCollectsClipboardGitSecretWithoutHint(t *testing.T) {
+	store := newFakeInitStore(nil)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	var savedCfg config.File
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourceClipboard},
+		},
+		clipboardSupported: func() bool { return true },
+		clipboardRead: func() (string, error) { return "clipboard-token", nil },
+		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(_ string, cfg config.File) error {
+			savedCfg = cfg
+			return nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if got := store.bundles["default"][credentials.GitTokenKey]; got != "clipboard-token" {
+		t.Fatalf("stored git token = %q, want clipboard-token", got)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "clipboard-token") {
+		t.Fatalf("interactive init leaked secret: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if strings.Contains(stderr.String(), "set-credential --ref codereview/default --key "+credentials.GitTokenKey) {
+		t.Fatalf("stderr = %q, want no stale follow-up hint after collected secret", stderr.String())
+	}
+	if savedCfg.DefaultProfile != "default" {
+		t.Fatalf("default_profile = %q, want default", savedCfg.DefaultProfile)
+	}
+	if savedCfg.Profiles["default"].Git.CredentialRef != "codereview/default" {
+		t.Fatalf("git ref = %q, want codereview/default", savedCfg.Profiles["default"].Git.CredentialRef)
+	}
+}
+
+func TestInitInteractiveDeferDoesNotRequireKeyringAccess(t *testing.T) {
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &stderr,
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		clipboardSupported: func() bool { return false },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read on defer")
+			return "", nil
+		},
+		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error { return nil },
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore should not be called when interactive init defers")
+			return nil, nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "set-credential --ref codereview/default --key "+credentials.GitTokenKey+" --stdin") {
+		t.Fatalf("stderr = %q, want deferred git follow-up hint", stderr.String())
+	}
+}
+
+func TestInitInteractiveSetNowOverwritesExistingTargetRef(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{
+		"default": {credentials.GitTokenKey: "old-token"},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"new-token"},
+		},
+		clipboardSupported: func() bool { return false },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read")
+			return "", nil
+		},
+		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error { return nil },
+		openStore:  func(string, bool, config.File) (initStore, error) { return store, nil },
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if got := store.bundles["default"][credentials.GitTokenKey]; got != "new-token" {
+		t.Fatalf("stored git token = %q, want new-token", got)
+	}
+}
+
+func TestInitInteractiveCollectsGitHubAppBundle(t *testing.T) {
+	store := newFakeInitStore(nil)
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModeGitHubApp),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{
+				initSecretSourcePaste,
+				initSecretSourceClipboard,
+				initSecretSourceSkip,
+			},
+			pastes: []string{"12345"},
+		},
+		clipboardSupported: func() bool { return true },
+		clipboardRead:      func() (string, error) { return "private-key", nil },
+		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error { return nil },
+		openStore:  func(string, bool, config.File) (initStore, error) { return store, nil },
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	bundle := store.bundles["default"]
+	if bundle[credentials.GitHubAppIDKey] != "12345" {
+		t.Fatalf("github_app_id = %q, want 12345", bundle[credentials.GitHubAppIDKey])
+	}
+	if bundle[credentials.GitHubAppPrivateKeyKey] != "private-key" {
+		t.Fatalf("github_app_private_key = %q, want private-key", bundle[credentials.GitHubAppPrivateKeyKey])
+	}
+	if _, ok := bundle[credentials.GitHubAppInstallationIDKey]; ok {
+		t.Fatalf("github_app_installation_id present, want skipped optional key")
+	}
+}
+
+func TestInitInteractiveCollectsProviderSpecificLLMKey(t *testing.T) {
+	store := newFakeInitStore(nil)
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &stderr,
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName:      "default",
+				MakeDefault:      true,
+				GitHost:          "github.com",
+				GitAuth:          string(config.GitAuthModePAT),
+				LLMProvider:      string(config.LLMProviderOpenAI),
+				LLMAuth:          string(config.LLMAuthAPIKey),
+				LLMAdapter:       string(config.LLMAdapterOpenAIAPI),
+				LLMCredentialRef: "codereview/default-llm",
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionSetNow,
+			},
+			sources: []initSecretSource{initSecretSourceClipboard},
+		},
+		clipboardSupported: func() bool { return true },
+		clipboardRead:      func() (string, error) { return "openai-key", nil },
+		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error { return nil },
+		openStore:  func(string, bool, config.File) (initStore, error) { return store, nil },
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if got := store.bundles["default-llm"][credentials.OpenAIAPIKeyKey]; got != "openai-key" {
+		t.Fatalf("openai api key = %q, want openai-key", got)
+	}
+	if strings.Contains(stderr.String(), "set-credential --ref codereview/default-llm --key "+credentials.OpenAIAPIKeyKey) {
+		t.Fatalf("stderr = %q, want no stale llm follow-up hint after collected key", stderr.String())
+	}
+}
+
+func TestInitInteractiveEmptyClipboardSecretDoesNotLeak(t *testing.T) {
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourceClipboard},
+		},
+		clipboardSupported: func() bool { return true },
+		clipboardRead:      func() (string, error) { return "", nil },
+		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite empty clipboard secret")
+			return nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if strings.Contains(err.Error(), "clipboard-token") {
+		t.Fatalf("error leaked secret: %v", err)
+	}
+	if !strings.Contains(err.Error(), "empty secret") {
+		t.Fatalf("error = %v, want empty secret rejection", err)
+	}
+}
+
+func TestInitInteractiveRejectsKeepForChangedRefWithoutTargetBundle(t *testing.T) {
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				MakeDefault:         true,
+				GitHost:             "github.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/work-new",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		},
+		clipboardSupported: func() bool { return true },
+		clipboardRead:      func() (string, error) { return "", nil },
+		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{
+				DefaultProfile: "work",
+				Profiles: map[string]config.Profile{
+					"work": basicProfile("work"),
+				},
+			}, true, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite invalid keep-existing secret choice")
+			return nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if !strings.Contains(err.Error(), "does not have all required keys") {
+		t.Fatalf("error = %v, want missing target bundle rejection", err)
 	}
 }
 
@@ -1776,7 +2165,7 @@ func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
 	written, err := writeBundles(store, map[string]map[string]string{
 		"codereview/a": {credentials.GitTokenKey: "new"},
 		"codereview/b": {credentials.GitTokenKey: "conflict"},
-	})
+	}, false, nil)
 	if err == nil {
 		t.Fatal("writeBundles error = nil, want conflict")
 	}
@@ -1787,6 +2176,90 @@ func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
 		t.Fatalf("error = %v, want cleanup ref", err)
 	}
 }
+
+type fakeInitSecretPrompter struct {
+	actions []initCredentialSecretAction
+	sources []initSecretSource
+	pastes  []string
+}
+
+func (f *fakeInitSecretPrompter) ChooseCredentialAction(initCredentialSecretPrompt) (initCredentialSecretAction, error) {
+	if len(f.actions) == 0 {
+		return "", errors.New("unexpected credential action prompt")
+	}
+	action := f.actions[0]
+	f.actions = f.actions[1:]
+	return action, nil
+}
+
+func (f *fakeInitSecretPrompter) ChooseSecretSource(initSecretValuePrompt) (initSecretSource, error) {
+	if len(f.sources) == 0 {
+		return "", errors.New("unexpected secret source prompt")
+	}
+	source := f.sources[0]
+	f.sources = f.sources[1:]
+	return source, nil
+}
+
+func (f *fakeInitSecretPrompter) PasteSecret(initSecretValuePrompt) (string, error) {
+	if len(f.pastes) == 0 {
+		return "", errors.New("unexpected paste prompt")
+	}
+	value := f.pastes[0]
+	f.pastes = f.pastes[1:]
+	return value, nil
+}
+
+type fakeInitStore struct {
+	bundles map[string]map[string]string
+}
+
+func newFakeInitStore(bundles map[string]map[string]string) *fakeInitStore {
+	copied := map[string]map[string]string{}
+	for profile, bundle := range bundles {
+		copied[profile] = map[string]string{}
+		for key, value := range bundle {
+			copied[profile][key] = value
+		}
+	}
+	return &fakeInitStore{bundles: copied}
+}
+
+func (s *fakeInitStore) Exists(profile, key string) (bool, error) {
+	_, ok := s.bundles[profile][key]
+	return ok, nil
+}
+
+func (s *fakeInitStore) ListBundle(profile string) ([]string, error) {
+	bundle := s.bundles[profile]
+	keys := make([]string, 0, len(bundle))
+	for key := range bundle {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
+func (s *fakeInitStore) SetBundle(profile string, kv map[string]string, opts ...credstore.SetOpt) (credstore.Result, error) {
+	if s.bundles[profile] == nil {
+		s.bundles[profile] = map[string]string{}
+	}
+	overwrite := len(opts) > 0
+	for key := range kv {
+		if _, ok := s.bundles[profile][key]; ok && !overwrite {
+			return credstore.Result{}, credstore.ErrExists
+		}
+	}
+	written := make([]string, 0, len(kv))
+	for key, value := range kv {
+		s.bundles[profile][key] = value
+		written = append(written, key)
+	}
+	sort.Strings(written)
+	return credstore.Result{Written: written}, nil
+}
+
+func (s *fakeInitStore) Close() error { return nil }
 
 func newTestCommand(path string, stdin io.Reader) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	var stdout, stderr bytes.Buffer
