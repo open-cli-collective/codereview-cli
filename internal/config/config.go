@@ -864,6 +864,12 @@ func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
 }
 
+// NormalizeHost applies the same host normalization used by config validation
+// and repository route resolution.
+func NormalizeHost(raw string) string {
+	return normalizeConfigHost(raw)
+}
+
 func normalizeConfigHost(raw string) string {
 	host := strings.TrimSpace(raw)
 	if parsed, err := url.Parse(host); err == nil && parsed.Host != "" {
