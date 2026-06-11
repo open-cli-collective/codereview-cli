@@ -1,0 +1,212 @@
+# Init Configuration Surface
+
+This document is the design contract for expanding `cr init` under #164. It
+binds the follow-up child issues #176 through #187: later implementation plans
+should either follow the ownership and semantics below or explicitly amend this
+document first.
+
+`cr init` must configure durable, non-secret `config.yml` state and credential
+references. It must not turn one-shot runtime flags into durable settings, and
+it must not write secret values to config, logs, stdout, stderr, or errors.
+
+## Action Vocabulary
+
+- **Skip**: the user does not enter a section. Existing values are preserved;
+  missing values remain missing unless required to build a valid new profile.
+- **Preserve**: keep the current value exactly, including custom credential
+  refs and identity cache values.
+- **Overwrite**: replace the field with a new value after validation.
+- **Clear/reset**: remove the configured value so validation defaults or
+  built-in behavior apply. This is available only where the schema supports an
+  omitted value.
+- **Defer**: store a valid non-secret reference but do not collect the matching
+  secret yet. The command must print or render follow-up credential commands.
+
+Second-run interactive init defaults to **preserve** for every existing value.
+Optional sections must be skippable. Destructive actions such as clear/reset,
+credential-ref overwrite, and secret overwrite must be explicit.
+
+## Durable Config Inventory
+
+Each durable config path appears once in this table. The scripted owner column
+is the final non-interactive ownership decision for #187: existing init flag,
+future #187 init flag, existing config command, #186 docs sequence, or
+intentionally unsupported.
+
+| Path | Interactive handling | Scripted owner | Defaults and second-run prepopulation | Mutation semantics | Helper/command owner and expected tests |
+|------|----------------------|----------------|---------------------------------------|--------------------|-----------------------------------------|
+| config.default_profile | Core profile wizard lets the user preserve, set to the selected profile, or choose another existing profile. | Existing `cr config default set`; new #187 explicit init set-default/preserve-default flag owns scripted default behavior during init. | First init sets the created profile as default. Existing value is pre-populated and preserved by default. | Overwrite only to an existing profile. Profile rename updates this field when it points at the renamed profile. | #177 shared profile rename/default helper. #180 tests create, preserve, set, and rename updates. |
+| config.keyring.backend | Global settings wizard offers preserve, set, or reset to auto/env/default backend resolution. | New #187 durable init flag for backend persistence. Existing global `--backend` remains a runtime selector and current incidental init persistence should not be the scripted contract. | Empty means backend auto/env selection. Existing value is pre-populated. | Preserve by default. Set validates through credential backend parsing. Reset clears the field. | Existing keyring validation plus #184/#187 tests cover set, reset, backend conflict, and unrelated config preservation. |
+| config.repository_profiles[] | Route wizard lists existing namespace and repo routes and lets the user skip, add, edit, or remove entries. | Existing `cr config route set` and `cr config route unset`; #186 documents route commands. #187 must not add a nested multi-route init grammar. | Empty or omitted means default-profile fallback. Existing routes are shown on second run. | Preserve on skip. Mutations must converge through shared route helpers and preserve unrelated routes. | #177 extracts route helpers. #185 tests list/edit/remove, route canonicalization, and preservation. |
+| config.repository_profiles[].profile | Route wizard selects the profile that a route resolves to. | Existing `cr config route set --profile <name> ...`. | No default inside an entry; required when a route exists. Existing profile is pre-populated. | Overwrite only to an existing profile. Profile rename updates matching route entries. | #177 profile rename/route reference helper. #185 tests rename updates and invalid profile rejection. |
+| config.repository_profiles[].match.host | Route wizard derives from selected profile host or pasted PR URL. | Existing `cr config route set --host`. | Required for a route. Existing host is pre-populated and normalized. | Must match the target profile's `git.host`. Host edits on a profile with routes are blocked or reconciled by #185. | #177 route helper, #185 PR URL derivation and host/profile validation tests. |
+| config.repository_profiles[].match.namespace | Route wizard asks for owner/org or derives from PR URL. | Existing `cr config route set --namespace`. | Required for a route. Existing namespace is pre-populated. | Overwrite validates non-empty and preserves repo-vs-namespace route identity. | #177 route helper. #185 namespace route tests. |
+| config.repository_profiles[].match.repos[] | Route wizard supports namespace-wide route when omitted or repo-specific routes when provided. | Existing repeatable `cr config route set --repo` and `cr config route unset --repo`. | Omitted means namespace-wide route. Existing repos are pre-populated in deterministic order. | Preserve on skip. Add/edit/remove dedupes and sorts via shared route helper. Clear repos converts only when the user explicitly chooses namespace-wide routing. | #177 route helper. #185 repo route and namespace conversion tests. |
+| config.profiles.<name> | Core profile wizard selects existing profile, creates a new profile, or renames an existing profile. | Existing global `--profile` with `cr init --non-interactive` owns scripted create/replace. Scripted rename is intentionally unsupported by init and belongs to future profile-management command design. | Empty global `--profile` means `default` during current init. Existing profile names are pre-populated. | Create requires a valid profile body. Rename preserves credential refs by default, updates default_profile and routes, and does not delete old keyring entries. | #177 profile rename helper. #180 tests create/select/rename and validation. |
+| config.profiles.<name>.git.host | Core profile wizard edits Git host. | Existing `cr init --git-host`; existing route commands own route-safe scripted changes. | Current init defaults to `github.com`. Existing value is pre-populated. | Set validates non-empty normalized host. If routes reference the profile and reconciliation is not selected, block or defer the edit. | #180 blocks/defer route-unsafe host edits. #185 implements reconciliation tests. |
+| config.profiles.<name>.git.auth_mode | Core profile wizard chooses `pat` or `github_app`; `oauth_device` remains reserved. | New #187 durable init flag for user Git auth mode, parallel to existing reviewer auth mode. Current init hardcodes user Git auth to PAT. | Existing value is pre-populated. New profile defaults to `pat`. | Overwrite only to supported v1 modes. Switching auth modes re-plans credential keys but does not delete old secrets. | #179 credential-ref/key-spec planner. #180 auth-mode prompt tests. |
+| config.profiles.<name>.git.credential_ref | Credential-ref planner chooses ref for user Git auth before any secret ingress. | Existing `cr init --git-credential-ref`; `cr set-credential` writes secrets. | New profile defaults to `codereview/<profile>`. Existing ref is pre-populated and preserved by default. | Preserve custom refs on rename. Overwrite requires explicit ref choice; clear is invalid because Git credentials are required. | #179 planner tests default/custom refs and required state. #181 secret ingress tests. |
+| config.profiles.<name>.git.identity_cache | Not shown as an editable init field. Preserve only. | Intentionally unsupported for init and config mutation. Runtime identity refresh owns it. | Existing cache is preserved. New profiles omit it. | Preserve unless a future explicit cache invalidation ticket owns behavior. Profile rename does not rewrite cache contents. | Preserve-only regression in #177/#180. |
+| config.profiles.<name>.reviewer_credentials | Optional reviewer credential section. Wizard supports skip, preserve, enable, edit, or clear reviewer config. | Existing `cr init --reviewer-credential-ref` and `--reviewer-auth-mode` own enable/edit. New #187 clear/disable flag owns scripted removal. | Omitted means posting uses Git credentials. Existing section is pre-populated. | Clear removes the whole section. Enable requires auth mode and credential ref. Ref must differ from Git and LLM refs. | #179 planner and #180 optional section tests. #181 secret ingress tests. |
+| config.profiles.<name>.reviewer_credentials.auth_mode | Reviewer wizard chooses PAT or GitHub App; `oauth_device` remains reserved. | Existing `cr init --reviewer-auth-mode`. | Current init defaults reviewer mode to `pat` when reviewer credentials are requested. Existing value is pre-populated. | Overwrite only to supported v1 modes. Switching modes re-plans key specs and preserves old secrets unless explicit overwrite/migration occurs. | #179 credential bundle tests for PAT and GitHub App. |
+| config.profiles.<name>.reviewer_credentials.credential_ref | Credential-ref planner chooses reviewer Git ref. | Existing `cr init --reviewer-credential-ref`; `cr set-credential` writes secrets. | New reviewer section defaults to `codereview/<profile>-reviewer`. Existing ref is pre-populated and preserved. | Preserve custom refs on rename. Clear is valid only by clearing the whole reviewer_credentials section. Ref must differ from other refs in profile. | #179 planner tests collision handling. #181 secret ingress tests. |
+| config.profiles.<name>.reviewer_credentials.identity_cache | Not shown as an editable init field. Preserve only. | Intentionally unsupported for init and config mutation. Runtime identity refresh owns it. | Existing cache is preserved. New reviewer sections omit it. | Preserve unless a future explicit cache invalidation ticket owns behavior. | Preserve-only regression in #177/#180. |
+| config.profiles.<name>.llm.provider | Core profile wizard chooses provider. | Existing `cr init --llm-provider`. | Current init defaults to `anthropic`. Existing value is pre-populated. | Overwrite validates provider and may require compatible auth/adapter/key specs. | #179 provider credential planning. #180 provider/auth/adapter compatibility tests. |
+| config.profiles.<name>.llm.auth | Core profile wizard chooses subscription or API key auth. | Existing `cr init --llm-auth`. | Current init defaults to `subscription`. Existing value is pre-populated. | Subscription requires empty `llm.credential_ref`; API key requires a provider-supported ref and secret plan. | #179 planner tests subscription/API-key transitions. #181 ingress tests. |
+| config.profiles.<name>.llm.adapter | Core profile wizard chooses compatible adapter. | Existing `cr init --llm-adapter`. | Current init defaults to `claude_cli`. Existing value is pre-populated. | Overwrite validates provider/auth compatibility, including `openai+codex_cli+subscription` and `pi+pi_rpc+subscription`. | #180 compatibility tests. |
+| config.profiles.<name>.llm.credential_ref | Credential-ref planner chooses LLM API-key ref when required. | Existing `cr init --llm-credential-ref`; `cr set-credential` writes secrets. | Omitted for subscription auth. API-key auth defaults to `codereview/<profile>-llm`. Existing ref is pre-populated. | Clear required when switching to subscription. API-key auth cannot clear. Preserve custom refs on rename. Ref must differ from Git/reviewer refs. | #179 planner tests. #181 API-key ingress/no-leak tests. |
+| config.profiles.<name>.llm.model_map | Model-map wizard lets the user skip, set tier mappings, unset one tier, or reset all mappings. | Existing `cr config llm models set/unset/reset`; #186 documents this scripted sequence. #187 must not add model-map init flags. | Omitted uses provider/adapter built-ins. Existing map is pre-populated. | Preserve on skip. Reset clears the map. Set validates tier and non-empty model. | #182 tests add/edit/remove/reset and invalid entries. |
+| config.profiles.<name>.llm.reviewer_model_tier | Core profile wizard offers unset/default or one of small, medium, large. | #187 should add a readable init flag because no config command currently mutates this field directly. | Omitted means effective small baseline. Existing value is pre-populated. | Preserve on skip. Reset clears field. Set validates model tier. | #180 prompt tests. #187 flag persistence tests. |
+| config.profiles.<name>.agent_sources[] | Agent-source wizard lists existing paths and supports add/remove/reset. | Existing `cr init --agent-source`; existing `cr config agent-source add/remove`; #186 docs sequence. | Omitted means no extra trusted sources. Existing values are pre-populated. | Preserve on skip. Add/remove use path normalization from config command. Reset clears slice. | #177 extracts helper. #183 tests add/remove/reset/preserve. |
+| config.profiles.<name>.review_policy.major_event | Review-policy wizard chooses comment or request_changes. | Existing `cr init --major-event`. | Current init defaults to `comment`. Existing value is pre-populated. | Preserve on skip. Set validates enum. Reset clears to normalized default `comment`. | #183 tests prompt, reset, and validation. |
+| config.profiles.<name>.review_policy.allow_self_approve | Review-policy wizard toggles durable self-approval policy. | Existing `cr init --allow-self-approve`. | Current init defaults false. Existing value is pre-populated. | Preserve on skip. Set true/false explicitly. Runtime `cr review --allow-self-approve` remains separate. | #183 tests true/false preservation. |
+| config.profiles.<name>.review_policy.resolve_threads | Review-policy wizard chooses unset, auto, or never. | Existing `cr init --resolve-threads`. | Empty means normal runtime behavior. Existing value is pre-populated. | Preserve on skip. Reset clears field. Set validates enum. Runtime `--no-resolve-threads` remains one-shot. | #183 tests unset/auto/never. |
+| config.profiles.<name>.review_policy.resolve_after | Review-policy wizard edits or clears the configured duration. | Existing `cr init --resolve-after`. | Empty means no configured delay. Existing value is pre-populated. | Preserve on skip. Reset clears field. Set validates Go duration. | #183 tests duration validation and clear. |
+| config.data.retention.max_age_days | Global retention wizard edits max age or keep-forever. | New `cr config retention set/reset` from #178. #187 must not add retention init flags without amending this contract. | Omitted normalizes to 90. Explicit `0` means keep forever. Existing value is pre-populated and must distinguish omitted/default from explicit zero. | Preserve on skip. Set accepts non-negative days. Reset restores the 90-day default; it may encode explicit default values unless #178 changes config save semantics to preserve omission. | #178 command tests and #184 wizard tests cover omitted/default vs explicit 0. |
+| config.data.retention.enforcement | Global retention wizard chooses at_write or manual_only. | New `cr config retention set/reset` from #178. #187 must not add retention init flags without amending this contract. | Omitted normalizes to `at_write`. Existing value is pre-populated. | Preserve on skip. Set validates enum. Reset restores at_write; it may encode explicit default values unless #178 changes config save semantics to preserve omission. | #178 command tests and #184 wizard tests cover reset/manual-only. |
+
+## Profile Lifecycle Semantics
+
+Profile selection and mutation is shared by #177 and consumed by #180:
+
+- Creating a profile builds a complete, valid profile before saving.
+- Selecting an existing profile pre-populates every editable value.
+- Renaming a profile updates `config.default_profile` when it points at the old
+  name.
+- Renaming a profile updates `config.repository_profiles[].profile` entries
+  that point at the old name.
+- Renaming a profile preserves all existing credential refs by default, even
+  refs that look auto-generated. This avoids stranding existing keyring
+  entries.
+- A wizard may offer credential-ref regeneration only when #181 has explicit
+  migration or overwrite behavior for the affected keyring entries.
+- Rename never deletes old keyring profiles implicitly.
+- Rename preserves `git.identity_cache` and
+  `reviewer_credentials.identity_cache`. Cache invalidation requires a future
+  dedicated owner.
+
+## Git Host And Route Safety
+
+`repository_profiles[].match.host` must match the referenced profile's
+`git.host`. Because of that validation rule, editing `git.host` can invalidate
+routes.
+
+Before #185 lands, the core wizard must block or defer a host edit when routes
+exist for the profile. #185 owns the real reconciliation flow:
+
+- show impacted routes before applying the host change
+- update route hosts when the user chooses to reconcile
+- preserve unrelated routes
+- reject route hosts that still do not match the selected profile
+- use the same route helper as `cr config route`
+
+## Credential Bundle Matrix
+
+Credential refs are non-secret config. Secret values are written only through
+the existing credential store plumbing. #179 owns ref/key-spec planning; #181
+owns interactive secret ingress.
+
+| Purpose | Auth/provider | Ref default | Required keys | Optional keys | Keep/defer/overwrite semantics | Migration rule |
+|---------|---------------|-------------|---------------|---------------|--------------------------------|----------------|
+| User Git auth | `pat` | `codereview/<profile>` | `git_token` | None | Keep preserves existing ref and key. Defer stores ref and prints follow-up `cr set-credential`. Overwrite writes `git_token` through keyring only. | Profile rename preserves ref. Regenerate only with explicit key migration or overwrite. |
+| Reviewer Git auth | `pat` | `codereview/<profile>-reviewer` | `git_token` | None | Same as user Git, but ref must differ from user Git ref. Clearing the reviewer section removes the ref from config but does not delete secrets. | Profile rename preserves ref unless #181 migrates or overwrites. |
+| User or reviewer Git auth | `github_app` | Same purpose-specific defaults as PAT | `github_app_id`, `github_app_private_key` | `github_app_installation_id` | Keep preserves bundle. Defer stores ref and prints one follow-up command per key. Overwrite writes only keys the user provided, with required-key validation before saving. | Migration is bundle-wide: never leave config pointing at a partially moved bundle. |
+| Git auth | `oauth_device` | None | None | None | Unsupported in v1. The wizard must not offer it as a selectable mode. | Future OAuth work must amend this document. |
+| LLM API key | `anthropic` + `api_key` | `codereview/<profile>-llm` | `anthropic_api_key` | None | Keep preserves existing ref. Defer stores ref only if the key already exists or follow-up is clearly rendered. Overwrite writes provider key through keyring. | Preserve custom refs on rename. Regeneration requires explicit migration/overwrite. |
+| LLM API key | `openai` + `api_key` | `codereview/<profile>-llm` | `openai_api_key` | None | Same as Anthropic API-key auth. | Same as Anthropic API-key auth. |
+| LLM adapter-managed auth | `subscription` | No ref | None | None | Keep/preserve leaves empty ref. Switching from API key to subscription clears `llm.credential_ref` only after confirmation. | No keyring migration because config no longer points at a ref. |
+| LLM Pi auth | `pi` + `subscription` + `pi_rpc` | No ref | None | None | Supported adapter-managed mode. | No keyring migration. |
+| LLM Pi API key | `pi` + `api_key` | None | None | None | Unsupported in v1. The wizard must not offer this combination. | Future Pi API-key support must amend this document. |
+
+Secret ingress rules:
+
+- Only one stdin-backed secret source can consume stdin in a single command.
+- Interactive secret entry may read a no-echo paste or clipboard value, but the
+  value must be injected behind test fakes.
+- Empty secret input is an error when a secret source was selected.
+- `--overwrite` and interactive overwrite replace existing keyring entries only
+  after preflight confirms the target bundle can be written.
+- If config save fails after keyring writes, errors must identify refs needing
+  cleanup without printing secret values.
+
+## Retention Semantics
+
+Retention is global config under `data.retention`, not profile config.
+
+- Omitted `max_age_days` normalizes to 90 days.
+- Explicit `max_age_days: 0` means keep forever and must survive round trips.
+- Negative `max_age_days` is invalid.
+- Omitted `enforcement` normalizes to `at_write`.
+- `manual_only` disables review-time pruning and leaves `cr data prune` as the
+  explicit maintenance path.
+- Reset means restore default behavior: 90 days and `at_write`. Because current
+  config save normalizes retention before encoding, reset may write explicit
+  default values unless #178 changes save/normalization behavior to preserve
+  omission. Reset must never encode `max_age_days: 0`.
+
+#178 must add retention command tests for omitted/default vs explicit zero.
+#184 must use the same validation and reset behavior in interactive init.
+
+## Scripted Install Ownership
+
+Scripted installs should remain readable. The intended shape is:
+
+1. Run `cr init --non-interactive` for the profile's core non-secret config and
+   any secrets intentionally supplied through stdin/env ingress.
+2. Use `cr set-credential` for deferred or multi-key credential bundles.
+3. Use `cr config default`, `cr config route`, `cr config agent-source`,
+   `cr config llm models`, and future `cr config retention` for narrow
+   idempotent mutations.
+
+#187 adds only the durable init flags assigned to it in the inventory table:
+user Git auth mode, durable keyring backend persistence, reviewer credential
+clear/disable, reviewer model tier, and explicit set-default/preserve-default
+behavior.
+It must not add a nested multi-route grammar, model-map flags, literal secret
+flags, or hidden YAML-in-a-flag structures.
+
+## Runtime-only Flag Audit
+
+The following flags are intentionally not durable init configuration.
+
+| Command | Flags | Rationale |
+|---------|-------|-----------|
+| Global/root | `--version` | Process output only. |
+| Global/root | `--backend` | Runtime credential backend selector. It may persist `keyring.backend` only through explicit init/config backend semantics; most invocations remain one-shot. |
+| Global/root | `--profile` | Runtime profile selector. It participates in init profile selection but is not itself a durable field. |
+| `cr review` execution mode | `--dry-run`, `--no-post`, `--rerun`, `--retry-posts` | Per-run execution behavior, not profile policy. |
+| `cr review` output/audit | `--json`, `--verbose` | Presentation and diagnostic controls. |
+| `cr review` PR/run targeting | `--review-base-sha`, `--review-head-sha`, `--session` | Per-run targeting or session reuse. |
+| `cr review` local resources | `--agents-dir`, `--max-agents`, `--max-concurrency` | Per-run resource and test controls. Durable trusted sources use `agent_sources`. |
+| `cr review` dry-run model overrides | `--selection-model`, `--selection-effort`, `--selection-prompt`, `--reviewer-model`, `--reviewer-model-tier`, `--reviewer-effort` | Dry-run override surface for experiments. Durable reviewer baseline is `llm.reviewer_model_tier`; durable tier-to-model mapping is `llm.model_map`. |
+| `cr review` posting gates | `--fail-on`, `--allow-self-review`, `--allow-self-approve`, `--no-resolve-threads` | One-shot live review gates. Durable self-approval and thread policy are `review_policy.allow_self_approve` and `review_policy.resolve_threads`. |
+| `cr init` control | `--non-interactive`, `--replace-profile` | Command flow controls. They select scripted mode and replacement behavior but do not create durable config fields. |
+| `cr init` secret ingress | `--git-token-stdin`, `--git-token-from-env`, `--reviewer-token-stdin`, `--reviewer-token-from-env`, `--llm-api-key-stdin`, `--llm-api-key-from-env`, `--overwrite` | Secret ingress and overwrite controls. They may be part of init interaction, but their values must never become config. |
+| `cr set-credential` | `--ref`, `--key`, `--stdin`, `--from-env`, `--overwrite`, `--json` | Credential-store operation, not config schema. |
+| `cr config` read/output | `--json`, `--dry-run` where present | Presentation or preview-only behavior. |
+| `cr config route` | `--host`, `--namespace`, `--repo` | Command arguments for route mutation. The durable result is `repository_profiles`. |
+| `cr config llm models reset` | `--provider` | Safety guard for reset, not stored config. |
+| `cr config clear` | `--all`, `--dry-run`, `--json` | Cleanup command behavior, not config. |
+| `cr data prune` | `--dry-run`, `--older-than`, `--keep-last`, `--json` | Manual maintenance operation. Durable automatic retention uses `data.retention`. |
+| `cr data purge` | `--dry-run`, `--yes`, `--json` | Manual destructive operation. |
+| `cr data show` | `--json` | Presentation only. |
+| `cr agents` | `--agents-dir`, `--json` | Per-run inspection inputs and output. Durable trusted sources use `agent_sources`. |
+| `cr me` | `--all`, `--json` | Identity refresh/read behavior, not wizard configuration. |
+| `cr sessions` | `--json` | Presentation only. |
+| `cr benchmark` | `--candidate`, `--case`, `--results-dir`, `--cr-bin`, `--json` | Benchmark harness controls, outside init. |
+
+## Follow-up Issue Ownership
+
+- #176: init plan/apply architecture with no behavior change.
+- #177: shared mutation helpers for profile rename, routes, agent sources,
+  retention validation, and optional clear/reset behavior.
+- #178: `cr config retention` command surface.
+- #179: credential-ref and key-spec planning.
+- #180: non-secret core interactive wizard.
+- #181: interactive secret ingress and safe keyring writes.
+- #182: interactive `llm.model_map`.
+- #183: interactive `agent_sources` and `review_policy`.
+- #184: interactive global `data.retention` and `keyring.backend`.
+- #185: interactive repository routes and host reconciliation.
+- #186: scripted installer documentation.
+- #187: maintainable non-interactive init parity flags.
