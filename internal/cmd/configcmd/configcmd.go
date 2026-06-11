@@ -554,8 +554,129 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, resolveProfileCmd, agentSourceCmd, clearCmd, newLLMCommand(opts))
+	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
+}
+
+func newRetentionCommand(opts *root.Options) *cobra.Command {
+	retentionCmd := &cobra.Command{
+		Use:   "retention",
+		Short: "Inspect and update data retention configuration",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+
+	var getJSON bool
+	getCmd := &cobra.Command{
+		Use:   "get",
+		Short: "Show data retention configuration",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config retention get takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, err := configPath(opts)
+			if err != nil {
+				return exitcode.AuthConfig(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			result := view.NewConfigRetention(cfg.Data.Retention)
+			if getJSON {
+				return view.RenderConfigRetentionJSON(opts.Stdout, result)
+			}
+			return view.RenderConfigRetentionText(opts.Stdout, result)
+		},
+	}
+	getCmd.Flags().BoolVar(&getJSON, "json", false, "Emit JSON")
+
+	var setMaxAgeDays int
+	var setEnforcement string
+	setCmd := &cobra.Command{
+		Use:   "set",
+		Short: "Set data retention configuration",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config retention set takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			maxAgeChanged := cmd.Flags().Changed("max-age-days")
+			enforcementChanged := cmd.Flags().Changed("enforcement")
+			if !maxAgeChanged && !enforcementChanged {
+				return exitcode.Usage(fmt.Errorf("config retention set requires --max-age-days or --enforcement"))
+			}
+			path, err := configPath(opts)
+			if err != nil {
+				return exitcode.AuthConfig(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			retention := cfg.Data.Retention
+			if maxAgeChanged {
+				maxAgeDays, err := parseRetentionMaxAgeDays(setMaxAgeDays)
+				if err != nil {
+					return err
+				}
+				retention.MaxAgeDays = &maxAgeDays
+			}
+			if enforcementChanged {
+				enforcement, err := parseRetentionEnforcement(setEnforcement)
+				if err != nil {
+					return err
+				}
+				retention.Enforcement = enforcement
+			}
+			if err := config.ValidateRetention(retention); err != nil {
+				return cmderr.Config(err)
+			}
+			cfg.Data.Retention = retention
+			if err := saveConfigFile(path, cfg); err != nil {
+				return cmderr.Config(err)
+			}
+			return view.RenderConfigRetentionText(opts.Stdout, view.NewConfigRetention(retention))
+		},
+	}
+	setCmd.Flags().IntVar(&setMaxAgeDays, "max-age-days", 0, "Maximum run-data age in days; 0 keeps data forever")
+	setCmd.Flags().StringVar(&setEnforcement, "enforcement", "", "Retention enforcement policy: at_write or manual_only")
+
+	resetCmd := &cobra.Command{
+		Use:   "reset",
+		Short: "Reset data retention to defaults",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("config retention reset takes no arguments"))
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, err := configPath(opts)
+			if err != nil {
+				return exitcode.AuthConfig(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			retention := config.DefaultRetentionConfig()
+			cfg.Data.Retention = retention
+			if err := saveConfigFile(path, cfg); err != nil {
+				return cmderr.Config(err)
+			}
+			return view.RenderConfigRetentionText(opts.Stdout, view.NewConfigRetention(retention))
+		},
+	}
+
+	retentionCmd.AddCommand(getCmd, setCmd, resetCmd)
+	return retentionCmd
 }
 
 func newLLMCommand(opts *root.Options) *cobra.Command {
@@ -821,6 +942,21 @@ func parseModelTierArg(raw string) (config.ModelTier, error) {
 		return "", exitcode.Usage(fmt.Errorf("model tier must be one of small, medium, large"))
 	}
 	return tier, nil
+}
+
+func parseRetentionMaxAgeDays(days int) (int, error) {
+	if days < 0 {
+		return 0, exitcode.Usage(fmt.Errorf("--max-age-days must be non-negative"))
+	}
+	return days, nil
+}
+
+func parseRetentionEnforcement(raw string) (config.RetentionEnforcement, error) {
+	enforcement := config.RetentionEnforcement(strings.TrimSpace(raw))
+	if !enforcement.Valid() {
+		return "", exitcode.Usage(fmt.Errorf("--enforcement must be one of at_write, manual_only"))
+	}
+	return enforcement, nil
 }
 
 func parseConfigRouteSpec(rawHost string, rawNamespace string, rawRepos []string) (configedit.RepositoryRouteSpec, error) {
