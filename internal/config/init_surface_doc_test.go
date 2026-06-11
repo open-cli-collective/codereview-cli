@@ -79,8 +79,7 @@ func configSchemaLeafPaths(typ reflect.Type, prefix string) []string {
 		typ = typ.Elem()
 	}
 
-	switch typ.Kind() {
-	case reflect.Struct:
+	if typ.Kind() == reflect.Struct {
 		paths := []string{}
 		for index := 0; index < typ.NumField(); index++ {
 			field := typ.Field(index)
@@ -99,7 +98,9 @@ func configSchemaLeafPaths(typ reflect.Type, prefix string) []string {
 			paths = append(paths, configSchemaLeafPaths(field.Type, next)...)
 		}
 		return paths
-	case reflect.Slice:
+	}
+
+	if typ.Kind() == reflect.Slice {
 		elem := typ.Elem()
 		for elem.Kind() == reflect.Pointer {
 			elem = elem.Elem()
@@ -108,11 +109,13 @@ func configSchemaLeafPaths(typ reflect.Type, prefix string) []string {
 			return configSchemaLeafPaths(elem, prefix+"[]")
 		}
 		return []string{prefix + "[]"}
-	case reflect.Map:
-		return []string{prefix}
-	default:
+	}
+
+	if typ.Kind() == reflect.Map {
 		return []string{prefix}
 	}
+
+	return []string{prefix}
 }
 
 func yamlFieldName(field reflect.StructField) string {
