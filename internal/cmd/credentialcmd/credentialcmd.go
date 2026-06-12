@@ -2030,7 +2030,7 @@ func initReviewerEntityDraftFromConfig(profile config.Profile) initReviewerEntit
 	switch profile.ReviewerCredentials.AuthMode {
 	case config.GitAuthModeGitHubApp:
 		entity.Kind = initReviewerEntityKindGitHubApp
-	default:
+	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
 		entity.Kind = initReviewerEntityKindPAT
 	}
 	return entity
