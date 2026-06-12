@@ -1552,6 +1552,42 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	}
 }
 
+func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitRoutesPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Edit repository routes
+			"",  // keep existing route text
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.EditRoutes(initRoutesPrompt{
+		ProfileName: "work",
+		ProfileHost: "github.com",
+		Routes: []configedit.RepositoryRouteSpec{{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("EditRoutes: %v", err)
+	}
+	if !edit.Apply {
+		t.Fatal("edit.Apply = false, want true")
+	}
+	if len(edit.Routes) != 1 || edit.Routes[0].Namespace != "open-cli-collective" {
+		t.Fatalf("routes = %#v, want preserved route", edit.Routes)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Repository routes") || !strings.Contains(out, "Edit repository routes") {
+		t.Fatalf("stderr = %q, want route editor prompt", out)
+	}
+}
+
 func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
@@ -2491,7 +2527,165 @@ func TestInitInteractiveKeyringBackendPreserveSetResetAndConflict(t *testing.T) 
 	}
 }
 
-func TestInitInteractiveBlocksRouteHostChangeBeforeSave(t *testing.T) {
+func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
+	tests := []struct {
+		name           string
+		existingRoutes []config.RepositoryProfile
+		edit           initRoutesEdit
+		want           []config.RepositoryProfile
+	}{
+		{
+			name: "create from pr url",
+			edit: initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			}}},
+			want: []config.RepositoryProfile{{
+				Profile: "work",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "open-cli-collective",
+					Repos:     []string{"codereview-cli"},
+				},
+			}},
+		},
+		{
+			name: "edit and preserve unrelated",
+			existingRoutes: []config.RepositoryProfile{
+				{
+					Profile: "work",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "open-cli-collective",
+					},
+				},
+				{
+					Profile: "home",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "rianjs",
+					},
+				},
+			},
+			edit: initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli", "cli-common"},
+			}}},
+			want: []config.RepositoryProfile{
+				{
+					Profile: "home",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "rianjs",
+					},
+				},
+				{
+					Profile: "work",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "open-cli-collective",
+						Repos:     []string{"cli-common", "codereview-cli"},
+					},
+				},
+			},
+		},
+		{
+			name: "remove all",
+			existingRoutes: []config.RepositoryProfile{{
+				Profile: "work",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "open-cli-collective",
+				},
+			}},
+			edit: initRoutesEdit{Apply: true, Routes: nil},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			saveCredentialTestConfig(t, path, config.File{
+				DefaultProfile:     "work",
+				RepositoryProfiles: tt.existingRoutes,
+				Profiles: map[string]config.Profile{
+					"work": basicProfile("work"),
+					"home": basicProfile("home"),
+				},
+			})
+			opts := &root.Options{
+				Stdin:      strings.NewReader(""),
+				Stdout:     &bytes.Buffer{},
+				Stderr:     &bytes.Buffer{},
+				ConfigPath: path,
+			}
+			deps := initDeps{
+				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+					return initDraft{
+						OriginalProfileName: "work",
+						ProfileName:         "work",
+						MakeDefault:         true,
+						GitHost:             "github.com",
+						GitAuth:             string(config.GitAuthModePAT),
+						GitCredentialRef:    "codereview/work",
+						LLMProvider:         string(config.LLMProviderAnthropic),
+						LLMAuth:             string(config.LLMAuthSubscription),
+						LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					}, nil
+				}),
+				routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
+					return tt.edit, nil
+				}),
+				configPath: func(*root.Options) (string, error) { return path, nil },
+				loadConfig: loadConfigForInit,
+				saveConfig: config.Save,
+			}
+
+			err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+			if err != nil {
+				t.Fatalf("runInitWithDeps: %v", err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load config: %v", err)
+			}
+			if !reflect.DeepEqual(cfg.RepositoryProfiles, tt.want) {
+				t.Fatalf("RepositoryProfiles = %#v, want %#v", cfg.RepositoryProfiles, tt.want)
+			}
+		})
+	}
+}
+
+func TestInitInteractiveRouteParsersAcceptPRURLAndManualSpecs(t *testing.T) {
+	urlSpec, err := parseInitRouteSpec("https://github.com/open-cli-collective/codereview-cli/pull/185")
+	if err != nil {
+		t.Fatalf("parseInitRouteSpec PR URL: %v", err)
+	}
+	if !reflect.DeepEqual(urlSpec, configedit.RepositoryRouteSpec{
+		Host:      "github.com",
+		Namespace: "open-cli-collective",
+		Repos:     []string{"codereview-cli"},
+	}) {
+		t.Fatalf("PR URL spec = %#v", urlSpec)
+	}
+
+	manualSpec, err := parseInitRouteSpec("github.com/open-cli-collective [codereview-cli, cli-common]")
+	if err != nil {
+		t.Fatalf("parseInitRouteSpec manual: %v", err)
+	}
+	if !reflect.DeepEqual(manualSpec, configedit.RepositoryRouteSpec{
+		Host:      "github.com",
+		Namespace: "open-cli-collective",
+		Repos:     []string{"cli-common", "codereview-cli"},
+	}) {
+		t.Fatalf("manual spec = %#v", manualSpec)
+	}
+}
+
+func TestInitInteractiveReconcilesRouteHostChangeBeforeSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -2519,34 +2713,55 @@ func TestInitInteractiveBlocksRouteHostChangeBeforeSave(t *testing.T) {
 				OriginalProfileName: "work",
 				ProfileName:         "work",
 				GitHost:             "gitlab.com",
+				GitAuth:             string(config.GitAuthModePAT),
 				GitCredentialRef:    "codereview/work",
 				LLMProvider:         string(config.LLMProviderAnthropic),
 				LLMAuth:             string(config.LLMAuthSubscription),
 				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
+				t.Fatalf("prompt = %#v, want host reconciliation context", prompt)
+			}
+			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+				Host:      "gitlab.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			}}}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
-		saveConfig: func(string, config.File) error {
-			t.Fatal("saveConfig called despite route-host block")
-			return nil
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			t.Fatal("openStore called despite route-host block")
-			return nil, nil
-		},
+		saveConfig: config.Save,
 	}
 
 	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
-	if got := exitcode.FromError(err); got != exitcode.UsageError {
-		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if !strings.Contains(err.Error(), "route reconciliation") {
-		t.Fatalf("error = %v, want route reconciliation block", err)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Profiles["work"].Git.Host != "gitlab.com" {
+		t.Fatalf("git.host = %q, want gitlab.com", cfg.Profiles["work"].Git.Host)
+	}
+	if !reflect.DeepEqual(cfg.RepositoryProfiles, []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "gitlab.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+	}}) {
+		t.Fatalf("RepositoryProfiles = %#v, want reconciled gitlab route", cfg.RepositoryProfiles)
 	}
 }
 
-func TestInitInteractiveBlocksRouteHostChangeDuringRenameBeforeSave(t *testing.T) {
+func TestInitInteractiveReconcilesRouteHostChangeDuringRename(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -2573,26 +2788,97 @@ func TestInitInteractiveBlocksRouteHostChangeDuringRenameBeforeSave(t *testing.T
 				OriginalProfileName: "work",
 				ProfileName:         "office",
 				GitHost:             "gitlab.com",
+				GitAuth:             string(config.GitAuthModePAT),
 				GitCredentialRef:    "codereview/custom-office-git",
 				LLMProvider:         string(config.LLMProviderAnthropic),
 				LLMAuth:             string(config.LLMAuthSubscription),
 				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			if prompt.ProfileName != "office" || !prompt.HostChanged {
+				t.Fatalf("prompt = %#v, want renamed profile reconciliation context", prompt)
+			}
+			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+				Host:      "gitlab.com",
+				Namespace: "open-cli-collective",
+			}}}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
-		saveConfig: func(string, config.File) error {
-			t.Fatal("saveConfig called despite rename route-host block")
-			return nil
+		saveConfig: config.Save,
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if _, ok := cfg.Profiles["work"]; ok {
+		t.Fatalf("old profile still exists after rename: %#v", cfg.Profiles)
+	}
+	if cfg.RepositoryProfiles[0].Profile != "office" || cfg.RepositoryProfiles[0].Match.Host != "gitlab.com" {
+		t.Fatalf("RepositoryProfiles = %#v, want renamed reconciled route", cfg.RepositoryProfiles)
+	}
+}
+
+func TestInitInteractiveRejectsPreservedMismatchedRoutesAfterHostChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		}},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
 		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				GitHost:             "gitlab.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/work",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
+			return initRoutesEdit{Apply: false}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
 	}
 
 	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
 	}
-	if !strings.Contains(err.Error(), "route reconciliation") {
-		t.Fatalf("error = %v, want route reconciliation block", err)
+	if !strings.Contains(err.Error(), "edit routes to reconcile the host change") {
+		t.Fatalf("error = %v, want host reconciliation rejection", err)
 	}
 }
 
@@ -3307,6 +3593,12 @@ func (f initAgentSourcesPrompterFunc) EditAgentSources(prompt initAgentSourcesPr
 type initReviewPolicyPrompterFunc func(initReviewPolicyPrompt) (initReviewPolicyEdit, error)
 
 func (f initReviewPolicyPrompterFunc) EditReviewPolicy(prompt initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
+	return f(prompt)
+}
+
+type initRoutesPrompterFunc func(initRoutesPrompt) (initRoutesEdit, error)
+
+func (f initRoutesPrompterFunc) EditRoutes(prompt initRoutesPrompt) (initRoutesEdit, error) {
 	return f(prompt)
 }
 

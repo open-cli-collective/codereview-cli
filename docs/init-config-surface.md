@@ -91,14 +91,26 @@ Profile selection and mutation is shared by #177 and consumed by #180:
 `git.host`. Because of that validation rule, editing `git.host` can invalidate
 routes.
 
-Before #185 lands, the core wizard must block or defer a host edit when routes
-exist for the profile. #185 owns the real reconciliation flow:
+Before #185 landed, the core wizard blocked or deferred a host edit when routes
+existed for the profile. Interactive init now owns the reconciliation flow:
 
 - show impacted routes before applying the host change
 - update route hosts when the user chooses to reconcile
 - preserve unrelated routes
 - reject route hosts that still do not match the selected profile
 - use the same route helper as `cr config route`
+
+The route editor in interactive init accepts one route per line in any of these
+forms:
+
+- `host/namespace`
+- `host/namespace/repo`
+- `host/namespace [repo1, repo2]`
+- `https://github.com/<owner>/<repo>/pull/<number>`
+
+Pasted GitHub PR URLs derive `match.host`, `match.namespace`, and the repo name
+from the URL and save the route as a repo-specific route for the selected
+profile.
 
 ## Credential Bundle Matrix
 

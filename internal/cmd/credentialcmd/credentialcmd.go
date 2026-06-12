@@ -22,6 +22,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -162,6 +163,10 @@ type initReviewPolicyPrompter interface {
 	EditReviewPolicy(initReviewPolicyPrompt) (initReviewPolicyEdit, error)
 }
 
+type initRoutesPrompter interface {
+	EditRoutes(initRoutesPrompt) (initRoutesEdit, error)
+}
+
 type initRetentionPrompter interface {
 	EditRetention(initRetentionPrompt) (initRetentionEdit, error)
 }
@@ -224,6 +229,19 @@ type initReviewPolicyEdit struct {
 	ReviewPolicy config.ReviewPolicy
 }
 
+type initRoutesPrompt struct {
+	ProfileName  string
+	ProfileHost  string
+	PreviousHost string
+	HostChanged  bool
+	Routes       []configedit.RepositoryRouteSpec
+}
+
+type initRoutesEdit struct {
+	Apply  bool
+	Routes []configedit.RepositoryRouteSpec
+}
+
 type initRetentionPrompt struct {
 	Retention config.RetentionConfig
 }
@@ -247,6 +265,7 @@ type initDeps struct {
 	modelMapPrompter     initModelMapPrompter
 	agentSourcesPrompter initAgentSourcesPrompter
 	reviewPolicyPrompter initReviewPolicyPrompter
+	routesPrompter       initRoutesPrompter
 	retentionPrompter    initRetentionPrompter
 	keyringPrompter      initKeyringBackendPrompter
 	secretPrompter       initSecretPrompter
@@ -342,6 +361,14 @@ const (
 	initReviewPolicyActionEdit     initReviewPolicyAction = "edit"
 )
 
+type initRoutesAction string
+
+const (
+	initRoutesActionPreserve initRoutesAction = "preserve"
+	initRoutesActionEdit     initRoutesAction = "edit"
+	initRoutesActionReset    initRoutesAction = "reset"
+)
+
 type initRetentionAction string
 
 const (
@@ -395,6 +422,7 @@ func defaultInitDeps() initDeps {
 		modelMapPrompter:     nil,
 		agentSourcesPrompter: nil,
 		reviewPolicyPrompter: nil,
+		routesPrompter:       nil,
 		retentionPrompter:    nil,
 		keyringPrompter:      nil,
 		clipboardSupported:   func() bool { return !clipboard.Unsupported },
@@ -422,6 +450,9 @@ func (deps initDeps) withDefaults() initDeps {
 	}
 	if deps.reviewPolicyPrompter == nil {
 		deps.reviewPolicyPrompter = defaults.reviewPolicyPrompter
+	}
+	if deps.routesPrompter == nil {
+		deps.routesPrompter = defaults.routesPrompter
 	}
 	if deps.retentionPrompter == nil {
 		deps.retentionPrompter = defaults.retentionPrompter
@@ -568,6 +599,10 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if err != nil {
 		return err
 	}
+	plan, err = collectInteractiveInitRoutes(opts, deps, plan)
+	if err != nil {
+		return err
+	}
 	plan, err = collectInteractiveInitModelMap(opts, deps, plan)
 	if err != nil {
 		return err
@@ -624,6 +659,11 @@ type huhInitReviewPolicyPrompter struct {
 	stderr io.Writer
 }
 
+type huhInitRoutesPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
 type huhInitRetentionPrompter struct {
 	stdin  io.Reader
 	stderr io.Writer
@@ -648,6 +688,10 @@ func newHuhInitAgentSourcesPrompter(opts *root.Options) initAgentSourcesPrompter
 
 func newHuhInitReviewPolicyPrompter(opts *root.Options) initReviewPolicyPrompter {
 	return huhInitReviewPolicyPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitRoutesPrompter(opts *root.Options) initRoutesPrompter {
+	return huhInitRoutesPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 func newHuhInitRetentionPrompter(opts *root.Options) initRetentionPrompter {
@@ -1078,6 +1122,66 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 			ResolveAfter:     strings.TrimSpace(resolveAfter),
 		},
 	}, nil
+}
+
+func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEdit, error) {
+	action := initRoutesActionPreserve
+	options := []huh.Option[initRoutesAction]{
+		huh.NewOption("Keep current repository routes", initRoutesActionPreserve),
+		huh.NewOption("Edit repository routes", initRoutesActionEdit),
+	}
+	if len(prompt.Routes) > 0 {
+		options = append(options, huh.NewOption("Remove all routes for this profile", initRoutesActionReset))
+	}
+	if prompt.HostChanged && len(prompt.Routes) > 0 {
+		options = []huh.Option[initRoutesAction]{
+			huh.NewOption("Reconcile repository routes", initRoutesActionEdit),
+			huh.NewOption("Remove all routes for this profile", initRoutesActionReset),
+		}
+		action = initRoutesActionEdit
+	}
+	routeText := formatInitRouteSpecs(prompt.Routes)
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initRoutesAction]().
+				Title("Repository routes").
+				Options(options...).
+				Value(&action),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initRoutesEdit{}, err
+	}
+	switch action {
+	case initRoutesActionPreserve:
+		return initRoutesEdit{Apply: false}, nil
+	case initRoutesActionReset:
+		return initRoutesEdit{Apply: true, Routes: nil}, nil
+	case initRoutesActionEdit:
+	default:
+		return initRoutesEdit{}, fmt.Errorf("unsupported routes action %q", action)
+	}
+
+	fields := []huh.Field{}
+	if prompt.HostChanged && len(prompt.Routes) > 0 {
+		fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
+	}
+	fields = append(fields,
+		huh.NewText().
+			Title("Repository routes").
+			Description("One route per line. Use host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.").
+			Value(&routeText),
+	)
+	group := huh.NewGroup(fields...).Title("Routes")
+	form = huh.NewForm(group).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initRoutesEdit{}, err
+	}
+	routes, err := parseInitRouteSpecs(routeText)
+	if err != nil {
+		return initRoutesEdit{}, err
+	}
+	return initRoutesEdit{Apply: true, Routes: routes}, nil
 }
 
 func (p huhInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
@@ -1569,9 +1673,6 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 			return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q already exists; select it to edit or choose a different name", profileName))
 		}
 	} else if profileName != originalName {
-		if err := validateInteractiveRouteHostChange(working, originalName, previousProfile.Git.Host, draft.GitHost); err != nil {
-			return initPlan{}, exitcode.Usage(err)
-		}
 		renamed, _, err := configedit.RenameProfile(working, originalName, profileName)
 		if err != nil {
 			if errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, configedit.ErrProfileExists) || errors.Is(err, configedit.ErrProfileNameRequired) {
@@ -1580,10 +1681,6 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 			return initPlan{}, cmderr.Config(err)
 		}
 		working = renamed
-	} else if previousProfile != nil {
-		if err := validateInteractiveRouteHostChange(working, originalName, previousProfile.Git.Host, draft.GitHost); err != nil {
-			return initPlan{}, exitcode.Usage(err)
-		}
 	}
 
 	profile, err := synthesizeInteractiveProfile(flags, profileName, previousProfile, draft)
@@ -1602,7 +1699,7 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 			return initPlan{}, cmderr.Config(err)
 		}
 	}
-	if err := config.Validate(working); err != nil {
+	if err := config.Validate(initValidationConfigForProfileHost(working, profileName, previousProfile, profile.Git.Host)); err != nil {
 		return initPlan{}, cmderr.Config(err)
 	}
 
@@ -1632,6 +1729,28 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 		allowDeferredLLM: deferLLMSecret,
 		writeLLMHint:     deferLLMSecret,
 	}, nil
+}
+
+func initValidationConfigForProfileHost(cfg config.File, profileName string, previousProfile *config.Profile, profileHost string) config.File {
+	if previousProfile == nil {
+		return cfg
+	}
+	if config.NormalizeHost(previousProfile.Git.Host) == config.NormalizeHost(profileHost) {
+		return cfg
+	}
+	copyCfg := cfg
+	if len(cfg.RepositoryProfiles) == 0 {
+		return copyCfg
+	}
+	copyCfg.RepositoryProfiles = append([]config.RepositoryProfile(nil), cfg.RepositoryProfiles...)
+	for i, route := range copyCfg.RepositoryProfiles {
+		if route.Profile != profileName {
+			continue
+		}
+		route.Match.Host = profileHost
+		copyCfg.RepositoryProfiles[i] = route
+	}
+	return copyCfg
 }
 
 func synthesizeInteractiveProfile(flags initOptions, profileName string, previousProfile *config.Profile, draft initDraft) (config.Profile, error) {
@@ -1695,19 +1814,6 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 		profile.LLM.CredentialRef = ""
 	}
 	return profile, nil
-}
-
-func validateInteractiveRouteHostChange(cfg config.File, profileName string, previousHost string, nextHost string) error {
-	if config.NormalizeHost(previousHost) == config.NormalizeHost(nextHost) {
-		return nil
-	}
-	for _, route := range cfg.RepositoryProfiles {
-		if route.Profile != profileName {
-			continue
-		}
-		return fmt.Errorf("profile %q has repository routes; changing git.host from %q to %q requires route reconciliation that init does not support yet", profileName, previousHost, nextHost)
-	}
-	return nil
 }
 
 func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
@@ -1821,6 +1927,172 @@ func normalizeInitAgentSources(sources []string) ([]string, error) {
 		return nil, nil
 	}
 	return normalized, nil
+}
+
+func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+	prompter := deps.routesPrompter
+	if prompter == nil {
+		if deps.prompter != nil {
+			return plan, nil
+		}
+		prompter = newHuhInitRoutesPrompter(opts)
+	}
+	previousHost := ""
+	hostChanged := false
+	if plan.previousProfile != nil {
+		previousHost = plan.previousProfile.Git.Host
+		hostChanged = config.NormalizeHost(previousHost) != config.NormalizeHost(plan.profile.Git.Host)
+	}
+	edit, err := prompter.EditRoutes(initRoutesPrompt{
+		ProfileName:  plan.profileName,
+		ProfileHost:  plan.profile.Git.Host,
+		PreviousHost: previousHost,
+		HostChanged:  hostChanged,
+		Routes:       currentProfileRouteSpecs(plan.cfg.RepositoryProfiles, plan.profileName),
+	})
+	if err != nil {
+		return initPlan{}, err
+	}
+	if !edit.Apply {
+		if err := validateInitRouteHosts(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host); err != nil {
+			return initPlan{}, exitcode.Usage(err)
+		}
+		return plan, nil
+	}
+	nextRoutes, err := applyInitProfileRoutes(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host, edit.Routes)
+	if err != nil {
+		return initPlan{}, exitcode.Usage(err)
+	}
+	nextCfg := plan.cfg
+	nextCfg.RepositoryProfiles = nextRoutes
+	if err := config.Validate(nextCfg); err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	plan.cfg = nextCfg
+	return plan, nil
+}
+
+func currentProfileRouteSpecs(routes []config.RepositoryProfile, profileName string) []configedit.RepositoryRouteSpec {
+	if len(routes) == 0 {
+		return nil
+	}
+	canonical := configedit.CanonicalRepositoryRoutes(routes)
+	specs := make([]configedit.RepositoryRouteSpec, 0, len(canonical))
+	for _, route := range canonical {
+		if route.Profile != profileName {
+			continue
+		}
+		specs = append(specs, configedit.RepositoryRouteSpec{
+			Host:      route.Match.Host,
+			Namespace: route.Match.Namespace,
+			Repos:     append([]string(nil), route.Match.Repos...),
+		})
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+	return specs
+}
+
+func validateInitRouteHosts(routes []config.RepositoryProfile, profileName string, profileHost string) error {
+	wantHost := config.NormalizeHost(profileHost)
+	for _, spec := range currentProfileRouteSpecs(routes, profileName) {
+		if spec.Host != wantHost {
+			return fmt.Errorf("profile %q has repository routes on host %q but git.host is %q; edit routes to reconcile the host change", profileName, spec.Host, profileHost)
+		}
+	}
+	return nil
+}
+
+func applyInitProfileRoutes(routes []config.RepositoryProfile, profileName string, profileHost string, specs []configedit.RepositoryRouteSpec) ([]config.RepositoryProfile, error) {
+	pruned := configedit.PruneRepositoryProfileRoutes(routes, profileName)
+	normalizedHost := config.NormalizeHost(profileHost)
+	var err error
+	for _, spec := range specs {
+		spec, err = configedit.NormalizeRepositoryRouteSpec(spec)
+		if err != nil {
+			return nil, err
+		}
+		if spec.Host != normalizedHost {
+			return nil, fmt.Errorf("route host %q does not match selected profile host %q", spec.Host, profileHost)
+		}
+		pruned, err = configedit.SetRepositoryRoutes(pruned, profileName, spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return pruned, nil
+}
+
+func formatInitRouteSpecs(specs []configedit.RepositoryRouteSpec) string {
+	if len(specs) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		lines = append(lines, configedit.FormatRepositoryRouteSpec(spec))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func parseInitRouteSpecs(raw string) ([]configedit.RepositoryRouteSpec, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	lines := strings.Split(raw, "\n")
+	specs := make([]configedit.RepositoryRouteSpec, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		spec, err := parseInitRouteSpec(line)
+		if err != nil {
+			return nil, err
+		}
+		specs = append(specs, spec)
+	}
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	return specs, nil
+}
+
+func parseInitRouteSpec(raw string) (configedit.RepositoryRouteSpec, error) {
+	if ref, err := prref.ParseGitHubPullURL(raw); err == nil {
+		return configedit.NormalizeRepositoryRouteSpec(configedit.RepositoryRouteSpec{
+			Host:      ref.Host,
+			Namespace: ref.Owner,
+			Repos:     []string{ref.Repo},
+		})
+	}
+	trimmed := strings.TrimSpace(raw)
+	repos := []string(nil)
+	if open := strings.Index(trimmed, "["); open >= 0 {
+		closeIndex := strings.LastIndex(trimmed, "]")
+		if closeIndex <= open {
+			return configedit.RepositoryRouteSpec{}, fmt.Errorf("route %q has an invalid repo list", raw)
+		}
+		repoList := strings.TrimSpace(trimmed[open+1 : closeIndex])
+		if repoList != "" {
+			repos = strings.Split(repoList, ",")
+		}
+		trimmed = strings.TrimSpace(trimmed[:open])
+	}
+	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
+	switch len(parts) {
+	case 2:
+	case 3:
+		repos = append(repos, parts[2])
+	default:
+		return configedit.RepositoryRouteSpec{}, fmt.Errorf("route %q must be host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL", raw)
+	}
+	return configedit.NormalizeRepositoryRouteSpec(configedit.RepositoryRouteSpec{
+		Host:      parts[0],
+		Namespace: parts[1],
+		Repos:     repos,
+	})
 }
 
 func collectInteractiveInitRetention(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
