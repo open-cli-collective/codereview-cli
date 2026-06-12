@@ -414,6 +414,46 @@ func TestCredentialStatusesUnknown(t *testing.T) {
 	})
 }
 
+func TestCredentialStatusesPartialRequiredBundle(t *testing.T) {
+	store := fakeKeyStatusStore{
+		present: map[string]map[string]bool{
+			"app": {
+				GitHubAppIDKey: true,
+			},
+		},
+	}
+	ref := config.CredentialRef{
+		Purpose: "reviewer_credentials",
+		Ref:     "codereview/app",
+		Mode:    "github_app",
+	}
+
+	got, err := CredentialRefStatus(store, ref, nil)
+	if err != nil {
+		t.Fatalf("CredentialRefStatus: %v", err)
+	}
+	want := CredentialStatus{
+		Purpose: "reviewer_credentials",
+		Ref:     "codereview/app",
+		Mode:    "github_app",
+		Keys: []KeyStatus{
+			presentKeyStatus(GitHubAppIDKey, true),
+			missingKeyStatus(GitHubAppPrivateKeyKey, true),
+			missingKeyStatus(GitHubAppInstallationIDKey, false),
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("CredentialRefStatus = %#v, want %#v", got, want)
+	}
+	if RequiredKeysSatisfied(got) {
+		t.Fatalf("RequiredKeysSatisfied partial github_app = true, want false")
+	}
+	wantMissing := []string{GitHubAppPrivateKeyKey}
+	if missing := MissingRequiredKeys(got); !reflect.DeepEqual(missing, wantMissing) {
+		t.Fatalf("MissingRequiredKeys partial github_app = %#v, want %#v", missing, wantMissing)
+	}
+}
+
 func TestMissingRequiredKeys(t *testing.T) {
 	status := CredentialStatus{
 		Purpose: "reviewer_credentials",
