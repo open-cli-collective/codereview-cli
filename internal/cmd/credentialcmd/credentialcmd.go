@@ -2899,7 +2899,7 @@ func resolveHistoricProfileName(session initSessionDraft, currentName string, dr
 }
 
 func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraft) (initSessionPlan, error) {
-	profileNames := finalizeInteractiveProfileNames(session)
+	profileNames := sortedTouchedProfileNames(session)
 	profileRefs := make(map[string][]config.CredentialRef, len(profileNames))
 	entriesByKey := map[string]initCredentialPlanEntry{}
 	for _, profileName := range profileNames {
@@ -2951,7 +2951,7 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 	}, nil
 }
 
-func finalizeInteractiveProfileNames(session initSessionDraft) []string {
+func sortedTouchedProfileNames(session initSessionDraft) []string {
 	names := map[string]struct{}{}
 	for name := range session.touchedProfiles {
 		names[name] = struct{}{}
@@ -4153,12 +4153,7 @@ func initCredentialReadinessNote(entry initCredentialPlanEntry) string {
 		return ""
 	case initCredentialPlanStateDefer:
 		return label + " deferred"
-	case initCredentialPlanStateOverwriteRef:
-		if len(entry.MissingRequiredKeys) == 0 {
-			return label + " needs setup"
-		}
-		return fmt.Sprintf("%s missing %s", label, strings.Join(entry.MissingRequiredKeys, ", "))
-	case initCredentialPlanStateMissingRequired:
+	case initCredentialPlanStateOverwriteRef, initCredentialPlanStateMissingRequired:
 		if len(entry.MissingRequiredKeys) == 0 {
 			return label + " needs setup"
 		}
