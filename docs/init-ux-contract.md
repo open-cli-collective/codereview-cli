@@ -1,7 +1,7 @@
 # Init UX Contract
 
 This document is the product-facing UX contract for the interactive `cr init`
-experience. It complements [docs/init-config-surface.md](/Users/rianjs/dev/codereview-cli/docs/init-config-surface.md),
+experience. It complements [docs/init-config-surface.md](init-config-surface.md),
 which owns durable config fields, mutation semantics, and non-interactive
 surface rules.
 
@@ -146,6 +146,11 @@ Interactive `init` must offer both:
 Credential collection belongs near final save, after the user has assembled the
 profile shape well enough to understand why each secret is needed.
 
+If the user cancels during credential collection after choosing **Save and
+exit**, any pending secret values remain draft-only and the session returns to a
+no-write state. Until final apply begins, cancellation must still leave both
+config and keyring untouched.
+
 ## Draft-Local Reuse Rules
 
 LLM runtimes and reviewer entities are reusable **within the current interactive
@@ -237,6 +242,8 @@ The interactive workspace-builder work must not silently regress
 Follow-on tickets that touch shared `init` code should keep non-interactive
 behavior readable and explicitly tested where relevant, especially for:
 
+- `cr init --non-interactive` staying on its scripted path instead of routing
+  through the interactive workspace draft model
 - durable config ownership
 - credential-planning behavior
 - keyring backend persistence

@@ -6,7 +6,7 @@ should either follow the ownership and semantics below or explicitly amend this
 document first.
 
 Product-facing interaction and terminology for the interactive experience now
-live in [docs/init-ux-contract.md](/Users/rianjs/dev/codereview-cli/docs/init-ux-contract.md).
+live in [docs/init-ux-contract.md](init-ux-contract.md).
 Use that document for the workspace-builder model, user-facing terms, and
 save/exit semantics. Use this document for durable config ownership, mutation
 rules, and scripted/non-interactive boundaries.
