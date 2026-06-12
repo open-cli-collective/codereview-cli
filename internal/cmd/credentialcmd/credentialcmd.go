@@ -303,21 +303,47 @@ type initPlan struct {
 }
 
 type initWorkspaceDraft struct {
-	path             string
-	cfg              config.File
-	previousProfile  *config.Profile
-	profileName      string
-	profile          config.Profile
-	llmRuntimeName   string
-	llmRuntimes      map[string]initLLMRuntimeDraft
-	writes           map[string]map[string]string
-	credentialPlan   []initCredentialPlanEntry
-	overwriteRefs    map[string]bool
-	satisfiedRefs    map[string]bool
-	backendFlagSet   bool
-	backendArg       string
-	allowDeferredLLM bool
-	writeLLMHint     bool
+	path               string
+	cfg                config.File
+	previousProfile    *config.Profile
+	profileName        string
+	profile            config.Profile
+	gitScopeName       string
+	gitScopes          map[string]initGitScopeDraft
+	reviewerEntityName string
+	reviewerEntities   map[string]initReviewerEntityDraft
+	llmRuntimeName     string
+	llmRuntimes        map[string]initLLMRuntimeDraft
+	writes             map[string]map[string]string
+	credentialPlan     []initCredentialPlanEntry
+	overwriteRefs      map[string]bool
+	satisfiedRefs      map[string]bool
+	backendFlagSet     bool
+	backendArg         string
+	allowDeferredLLM   bool
+	writeLLMHint       bool
+}
+
+type initGitScopeDraft struct {
+	Name          string
+	Host          string
+	AuthMode      config.GitAuthMode
+	CredentialRef string
+}
+
+type initReviewerEntityKind string
+
+const (
+	initReviewerEntityKindUseGitIdentity initReviewerEntityKind = "use_git_identity"
+	initReviewerEntityKindPAT            initReviewerEntityKind = "pat"
+	initReviewerEntityKindGitHubApp      initReviewerEntityKind = "github_app"
+)
+
+type initReviewerEntityDraft struct {
+	Name          string
+	Kind          initReviewerEntityKind
+	AuthMode      config.GitAuthMode
+	CredentialRef string
 }
 
 type initLLMRuntimePreset string
@@ -1847,6 +1873,16 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 	if err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
+	gitScopes, profileGitScopeNames := buildInitGitScopeInventory(working)
+	gitScopeName := profileGitScopeNames[profileName]
+	if gitScopeName == "" {
+		return initWorkspaceDraft{}, cmderr.Config(fmt.Errorf("draft Git scope missing for profile %q", profileName))
+	}
+	reviewerEntities, profileReviewerEntityNames := buildInitReviewerEntityInventory(working)
+	reviewerEntityName := profileReviewerEntityNames[profileName]
+	if reviewerEntityName == "" {
+		return initWorkspaceDraft{}, cmderr.Config(fmt.Errorf("draft reviewer entity missing for profile %q", profileName))
+	}
 	llmRuntimes, profileRuntimeNames := buildInitLLMRuntimeInventory(working)
 	llmRuntimeName := profileRuntimeNames[profileName]
 	if llmRuntimeName == "" {
@@ -1860,21 +1896,25 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 		}
 	}
 	return initWorkspaceDraft{
-		path:             path,
-		cfg:              working,
-		previousProfile:  previousProfile,
-		profileName:      profileName,
-		profile:          profile,
-		llmRuntimeName:   llmRuntimeName,
-		llmRuntimes:      llmRuntimes,
-		writes:           map[string]map[string]string{},
-		credentialPlan:   credentialPlan,
-		overwriteRefs:    map[string]bool{},
-		satisfiedRefs:    map[string]bool{},
-		backendFlagSet:   backendFlagSet,
-		backendArg:       interactiveInitBackendArg(opts, backendFlagSet, working),
-		allowDeferredLLM: deferLLMSecret,
-		writeLLMHint:     deferLLMSecret,
+		path:               path,
+		cfg:                working,
+		previousProfile:    previousProfile,
+		profileName:        profileName,
+		profile:            profile,
+		gitScopeName:       gitScopeName,
+		gitScopes:          gitScopes,
+		reviewerEntityName: reviewerEntityName,
+		reviewerEntities:   reviewerEntities,
+		llmRuntimeName:     llmRuntimeName,
+		llmRuntimes:        llmRuntimes,
+		writes:             map[string]map[string]string{},
+		credentialPlan:     credentialPlan,
+		overwriteRefs:      map[string]bool{},
+		satisfiedRefs:      map[string]bool{},
+		backendFlagSet:     backendFlagSet,
+		backendArg:         interactiveInitBackendArg(opts, backendFlagSet, working),
+		allowDeferredLLM:   deferLLMSecret,
+		writeLLMHint:       deferLLMSecret,
 	}, nil
 }
 
@@ -1893,6 +1933,172 @@ func finalizeInteractiveInitPlan(workspace initWorkspaceDraft) initPlan {
 		backendArg:       workspace.backendArg,
 		allowDeferredLLM: workspace.allowDeferredLLM,
 		writeLLMHint:     workspace.writeLLMHint,
+	}
+}
+
+func initGitScopeDraftFromConfig(git config.GitConfig) initGitScopeDraft {
+	return initGitScopeDraft{
+		Host:          strings.TrimSpace(git.Host),
+		AuthMode:      git.AuthMode,
+		CredentialRef: strings.TrimSpace(git.CredentialRef),
+	}
+}
+
+func (scope initGitScopeDraft) exportConfig(previous *config.GitConfig) config.GitConfig {
+	git := config.GitConfig{
+		Host:          strings.TrimSpace(scope.Host),
+		AuthMode:      scope.AuthMode,
+		CredentialRef: strings.TrimSpace(scope.CredentialRef),
+	}
+	if previous != nil {
+		git.IdentityCache = previous.IdentityCache
+	}
+	return git
+}
+
+func (scope initGitScopeDraft) identityKey() string {
+	return strings.Join([]string{
+		config.NormalizeHost(scope.Host),
+		string(scope.AuthMode),
+		strings.TrimSpace(scope.CredentialRef),
+	}, "\x00")
+}
+
+func (scope initGitScopeDraft) suggestedName() string {
+	host := strings.ReplaceAll(config.NormalizeHost(scope.Host), ".", "-")
+	host = strings.ReplaceAll(host, "/", "-")
+	host = strings.Trim(host, "-")
+	if host == "" {
+		host = "git-scope"
+	}
+	return fmt.Sprintf("%s-%s", host, scope.AuthMode)
+}
+
+func buildInitGitScopeInventory(cfg config.File) (map[string]initGitScopeDraft, map[string]string) {
+	scopes := map[string]initGitScopeDraft{}
+	profileScopeNames := map[string]string{}
+	scopeNamesByKey := map[string]string{}
+	for _, profileName := range sortedProfileNames(cfg.Profiles) {
+		profile := cfg.Profiles[profileName]
+		scope := initGitScopeDraftFromConfig(profile.Git)
+		key := scope.identityKey()
+		if existingName, ok := scopeNamesByKey[key]; ok {
+			profileScopeNames[profileName] = existingName
+			continue
+		}
+		scope.Name = uniqueInitGitScopeName(scopes, scope.suggestedName())
+		scopes[scope.Name] = scope
+		scopeNamesByKey[key] = scope.Name
+		profileScopeNames[profileName] = scope.Name
+	}
+	return scopes, profileScopeNames
+}
+
+func uniqueInitGitScopeName(existing map[string]initGitScopeDraft, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "git-scope"
+	}
+	if _, ok := existing[base]; !ok {
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", base, suffix)
+		if _, ok := existing[candidate]; !ok {
+			return candidate
+		}
+	}
+}
+
+func initReviewerEntityDraftFromConfig(profile config.Profile) initReviewerEntityDraft {
+	if profile.ReviewerCredentials == nil {
+		return initReviewerEntityDraft{
+			Kind: initReviewerEntityKindUseGitIdentity,
+		}
+	}
+	entity := initReviewerEntityDraft{
+		AuthMode:      profile.ReviewerCredentials.AuthMode,
+		CredentialRef: strings.TrimSpace(profile.ReviewerCredentials.CredentialRef),
+	}
+	switch profile.ReviewerCredentials.AuthMode {
+	case config.GitAuthModeGitHubApp:
+		entity.Kind = initReviewerEntityKindGitHubApp
+	default:
+		entity.Kind = initReviewerEntityKindPAT
+	}
+	return entity
+}
+
+func (entity initReviewerEntityDraft) exportConfig(previous *config.ReviewerCredentials) *config.ReviewerCredentials {
+	if entity.Kind == initReviewerEntityKindUseGitIdentity {
+		return nil
+	}
+	reviewer := &config.ReviewerCredentials{
+		AuthMode:      entity.AuthMode,
+		CredentialRef: strings.TrimSpace(entity.CredentialRef),
+	}
+	if previous != nil {
+		reviewer.IdentityCache = previous.IdentityCache
+	}
+	return reviewer
+}
+
+func (entity initReviewerEntityDraft) identityKey() string {
+	if entity.Kind == initReviewerEntityKindUseGitIdentity {
+		return string(entity.Kind)
+	}
+	return strings.Join([]string{
+		string(entity.Kind),
+		string(entity.AuthMode),
+		strings.TrimSpace(entity.CredentialRef),
+	}, "\x00")
+}
+
+func (entity initReviewerEntityDraft) suggestedName() string {
+	switch entity.Kind {
+	case initReviewerEntityKindUseGitIdentity:
+		return "use-git-identity"
+	case initReviewerEntityKindGitHubApp:
+		return "reviewer-github-app"
+	case initReviewerEntityKindPAT:
+		return "reviewer-pat"
+	}
+	return "reviewer-entity"
+}
+
+func buildInitReviewerEntityInventory(cfg config.File) (map[string]initReviewerEntityDraft, map[string]string) {
+	entities := map[string]initReviewerEntityDraft{}
+	profileEntityNames := map[string]string{}
+	entityNamesByKey := map[string]string{}
+	for _, profileName := range sortedProfileNames(cfg.Profiles) {
+		profile := cfg.Profiles[profileName]
+		entity := initReviewerEntityDraftFromConfig(profile)
+		key := entity.identityKey()
+		if existingName, ok := entityNamesByKey[key]; ok {
+			profileEntityNames[profileName] = existingName
+			continue
+		}
+		entity.Name = uniqueInitReviewerEntityName(entities, entity.suggestedName())
+		entities[entity.Name] = entity
+		entityNamesByKey[key] = entity.Name
+		profileEntityNames[profileName] = entity.Name
+	}
+	return entities, profileEntityNames
+}
+
+func uniqueInitReviewerEntityName(existing map[string]initReviewerEntityDraft, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "reviewer-entity"
+	}
+	if _, ok := existing[base]; !ok {
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", base, suffix)
+		if _, ok := existing[candidate]; !ok {
+			return candidate
+		}
 	}
 }
 
