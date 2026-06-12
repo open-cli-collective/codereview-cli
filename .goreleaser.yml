@@ -16,6 +16,9 @@ builds:
   - id: cr-darwin
     main: ./cmd/cr
     binary: cr
+    # Standard keyring opt-out tags (cli-common working-with-secrets.md §1.10).
+    flags:
+      - -tags=keyring_no1password,keyring_nopassage
     env:
       - CGO_ENABLED=1
     goos:
@@ -51,6 +54,8 @@ builds:
   - id: cr-unix-win
     main: ./cmd/cr
     binary: cr
+    flags:
+      - -tags=keyring_no1password,keyring_nopassage
     env:
       - CGO_ENABLED=0
     goos:
