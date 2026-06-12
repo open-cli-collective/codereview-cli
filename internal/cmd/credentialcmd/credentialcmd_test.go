@@ -1401,6 +1401,93 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	}
 }
 
+func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitModelMapPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2",          // Edit tier mappings
+			"",           // small stays blank
+			"gpt-custom", // medium override
+			"",           // large stays blank
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.EditModelMap(initModelMapPrompt{
+		LLM: config.LLMConfig{
+			Provider: config.LLMProviderOpenAI,
+			Adapter:  config.LLMAdapterCodexCLI,
+		},
+		ModelMap: nil,
+	})
+	if err != nil {
+		t.Fatalf("EditModelMap: %v", err)
+	}
+	if !edit.Apply {
+		t.Fatal("edit.Apply = false, want true")
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "small model") || !strings.Contains(out, "medium model") || !strings.Contains(out, "large model") {
+		t.Fatalf("stderr = %q, want tier input prompts", out)
+	}
+}
+
+func TestHuhInitModelMapPrompterAccessibleKeepsExistingOverrideWhenLeftBlank(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	prompter := huhInitModelMapPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Edit tier mappings
+			"",  // small stays blank
+			"",  // medium keeps existing prefilled value
+			"",  // large stays blank
+			"",
+		}, "\n")),
+		stderr: &bytes.Buffer{},
+	}
+
+	edit, err := prompter.EditModelMap(initModelMapPrompt{
+		LLM: config.LLMConfig{
+			Provider: config.LLMProviderAnthropic,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		ModelMap: config.ModelMap{"medium": "claude-custom"},
+	})
+	if err != nil {
+		t.Fatalf("EditModelMap: %v", err)
+	}
+	if !reflect.DeepEqual(edit.ModelMap, config.ModelMap{"medium": "claude-custom"}) {
+		t.Fatalf("edit.ModelMap = %#v, want preserved existing override", edit.ModelMap)
+	}
+}
+
+func TestHuhInitModelMapPrompterAccessibleShowsResetOptionForExistingOverrides(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitModelMapPrompter{
+		stdin:  strings.NewReader("\n"),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.EditModelMap(initModelMapPrompt{
+		LLM: config.LLMConfig{
+			Provider: config.LLMProviderAnthropic,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		ModelMap: config.ModelMap{"medium": "claude-custom"},
+	})
+	if err != nil {
+		t.Fatalf("EditModelMap: %v", err)
+	}
+	if edit.Apply {
+		t.Fatalf("edit.Apply = %v, want preserve path", edit.Apply)
+	}
+	if !strings.Contains(stderr.String(), "Reset all overrides to built-in defaults") {
+		t.Fatalf("stderr = %q, want reset option when overrides exist", stderr.String())
+	}
+}
+
 func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
@@ -1542,6 +1629,226 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	}
 	if route := cfg.RepositoryProfiles[0]; route.Profile != "office" {
 		t.Fatalf("repository route profile = %q, want office", route.Profile)
+	}
+}
+
+func TestInitInteractiveModelMapPreserveUsesEditedLLMContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	existing := basicProfile("work")
+	existing.LLM.ModelMap = config.ModelMap{"medium": "claude-custom"}
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	var gotPrompt initModelMapPrompt
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				OriginalProfileName:  "work",
+				ProfileName:          "work",
+				MakeDefault:          true,
+				GitHost:              "github.com",
+				GitAuth:              string(config.GitAuthModePAT),
+				GitCredentialRef:     "codereview/work",
+				LLMProvider:          string(config.LLMProviderOpenAI),
+				LLMAuth:              string(config.LLMAuthSubscription),
+				LLMAdapter:           string(config.LLMAdapterCodexCLI),
+				LLMReviewerModelTier: "",
+			}, nil
+		}),
+		modelMapPrompter: initModelMapPrompterFunc(func(prompt initModelMapPrompt) (initModelMapEdit, error) {
+			gotPrompt = prompt
+			return initModelMapEdit{}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if gotPrompt.LLM.Provider != config.LLMProviderOpenAI || gotPrompt.LLM.Adapter != config.LLMAdapterCodexCLI {
+		t.Fatalf("model-map prompt llm = %#v, want edited openai/codex_cli", gotPrompt.LLM)
+	}
+	if !reflect.DeepEqual(gotPrompt.ModelMap, config.ModelMap{"medium": "claude-custom"}) {
+		t.Fatalf("model-map prompt map = %#v, want preserved existing override", gotPrompt.ModelMap)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.Profiles["work"].LLM.ModelMap, config.ModelMap{"medium": "claude-custom"}) {
+		t.Fatalf("saved model_map = %#v, want preserved override", cfg.Profiles["work"].LLM.ModelMap)
+	}
+}
+
+func TestInitInteractiveModelMapAddEditRemoveAndReset(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing config.ModelMap
+		edit     initModelMapEdit
+		want     config.ModelMap
+	}{
+		{
+			name:     "add",
+			existing: nil,
+			edit:     initModelMapEdit{Apply: true, ModelMap: config.ModelMap{"medium": "claude-custom"}},
+			want:     config.ModelMap{"medium": "claude-custom"},
+		},
+		{
+			name:     "edit",
+			existing: config.ModelMap{"medium": "claude-old"},
+			edit:     initModelMapEdit{Apply: true, ModelMap: config.ModelMap{"medium": "claude-new"}},
+			want:     config.ModelMap{"medium": "claude-new"},
+		},
+		{
+			name:     "remove one tier",
+			existing: config.ModelMap{"small": "small-model", "medium": "medium-model"},
+			edit:     initModelMapEdit{Apply: true, ModelMap: config.ModelMap{"small": "small-model"}},
+			want:     config.ModelMap{"small": "small-model"},
+		},
+		{
+			name:     "reset all",
+			existing: config.ModelMap{"large": "large-model"},
+			edit:     initModelMapEdit{Apply: true, ModelMap: nil},
+			want:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			existing := basicProfile("work")
+			existing.LLM.ModelMap = copyModelMap(tt.existing)
+			existing.AgentSources = []string{"/tmp/agents"}
+			saveCredentialTestConfig(t, path, config.File{
+				DefaultProfile: "work",
+				Profiles:       map[string]config.Profile{"work": existing},
+			})
+			opts := &root.Options{
+				Stdin:      strings.NewReader(""),
+				Stdout:     &bytes.Buffer{},
+				Stderr:     &bytes.Buffer{},
+				ConfigPath: path,
+			}
+			deps := initDeps{
+				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+					return initDraft{
+						OriginalProfileName:  "work",
+						ProfileName:          "work",
+						MakeDefault:          true,
+						GitHost:              "github.com",
+						GitAuth:              string(config.GitAuthModePAT),
+						GitCredentialRef:     "codereview/work",
+						LLMProvider:          string(config.LLMProviderAnthropic),
+						LLMAuth:              string(config.LLMAuthSubscription),
+						LLMAdapter:           string(config.LLMAdapterClaudeCLI),
+						LLMReviewerModelTier: "",
+					}, nil
+				}),
+				modelMapPrompter: initModelMapPrompterFunc(func(initModelMapPrompt) (initModelMapEdit, error) {
+					return tt.edit, nil
+				}),
+				configPath: func(*root.Options) (string, error) { return path, nil },
+				loadConfig: loadConfigForInit,
+				saveConfig: config.Save,
+			}
+
+			err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+			if err != nil {
+				t.Fatalf("runInitWithDeps: %v", err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load config: %v", err)
+			}
+			expected := existing
+			expected.LLM.ModelMap = copyModelMap(tt.want)
+			expected.ReviewPolicy.MajorEvent = config.ReviewMajorEventComment
+			if !reflect.DeepEqual(cfg.Profiles["work"], expected) {
+				t.Fatalf("saved profile = %#v, want %#v", cfg.Profiles["work"], expected)
+			}
+		})
+	}
+}
+
+func TestInitInteractiveModelMapRejectsInvalidEntries(t *testing.T) {
+	tests := []struct {
+		name string
+		edit initModelMapEdit
+		want string
+	}{
+		{
+			name: "blank model",
+			edit: initModelMapEdit{Apply: true, ModelMap: config.ModelMap{"medium": " \t "}},
+			want: "model_map.medium is required",
+		},
+		{
+			name: "invalid tier",
+			edit: initModelMapEdit{Apply: true, ModelMap: config.ModelMap{"flagship": "gpt"}},
+			want: `tier "flagship" is invalid`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			existing := basicProfile("work")
+			saveCredentialTestConfig(t, path, config.File{
+				DefaultProfile: "work",
+				Profiles:       map[string]config.Profile{"work": existing},
+			})
+			opts := &root.Options{
+				Stdin:      strings.NewReader(""),
+				Stdout:     &bytes.Buffer{},
+				Stderr:     &bytes.Buffer{},
+				ConfigPath: path,
+			}
+			deps := initDeps{
+				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+					return initDraft{
+						OriginalProfileName: "work",
+						ProfileName:         "work",
+						MakeDefault:         true,
+						GitHost:             "github.com",
+						GitAuth:             string(config.GitAuthModePAT),
+						GitCredentialRef:    "codereview/work",
+						LLMProvider:         string(config.LLMProviderAnthropic),
+						LLMAuth:             string(config.LLMAuthSubscription),
+						LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					}, nil
+				}),
+				modelMapPrompter: initModelMapPrompterFunc(func(initModelMapPrompt) (initModelMapEdit, error) {
+					return tt.edit, nil
+				}),
+				configPath: func(*root.Options) (string, error) { return path, nil },
+				loadConfig: loadConfigForInit,
+				saveConfig: config.Save,
+			}
+
+			err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+			if err == nil {
+				t.Fatal("runInitWithDeps error = nil, want invalid model-map rejection")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			cfg, loadErr := config.Load(path)
+			if loadErr != nil {
+				t.Fatalf("Load config: %v", loadErr)
+			}
+			if !reflect.DeepEqual(cfg.Profiles["work"].LLM.ModelMap, existing.LLM.ModelMap) {
+				t.Fatalf("saved model_map = %#v, want unchanged %#v", cfg.Profiles["work"].LLM.ModelMap, existing.LLM.ModelMap)
+			}
+		})
 	}
 }
 
@@ -2341,6 +2648,12 @@ type initPrompterFunc func(initPromptContext) (initDraft, error)
 
 func (f initPrompterFunc) Run(ctx initPromptContext) (initDraft, error) {
 	return f(ctx)
+}
+
+type initModelMapPrompterFunc func(initModelMapPrompt) (initModelMapEdit, error)
+
+func (f initModelMapPrompterFunc) EditModelMap(prompt initModelMapPrompt) (initModelMapEdit, error) {
+	return f(prompt)
 }
 
 func hermeticFileBackend(t *testing.T) {

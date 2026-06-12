@@ -148,6 +148,10 @@ type initPrompter interface {
 	Run(initPromptContext) (initDraft, error)
 }
 
+type initModelMapPrompter interface {
+	EditModelMap(initModelMapPrompt) (initModelMapEdit, error)
+}
+
 type initPromptContext struct {
 	RequestedProfileName string
 	ExistingProfileName  string
@@ -174,8 +178,19 @@ type initDraft struct {
 	LLMCredentialRef      string
 }
 
+type initModelMapPrompt struct {
+	LLM      config.LLMConfig
+	ModelMap config.ModelMap
+}
+
+type initModelMapEdit struct {
+	Apply    bool
+	ModelMap config.ModelMap
+}
+
 type initDeps struct {
 	prompter           initPrompter
+	modelMapPrompter   initModelMapPrompter
 	secretPrompter     initSecretPrompter
 	clipboardSupported func() bool
 	clipboardRead      func() (string, error)
@@ -246,6 +261,14 @@ const (
 	initCredentialSecretActionDefer  initCredentialSecretAction = "defer"
 )
 
+type initModelMapAction string
+
+const (
+	initModelMapActionPreserve initModelMapAction = "preserve"
+	initModelMapActionEdit     initModelMapAction = "edit"
+	initModelMapActionReset    initModelMapAction = "reset"
+)
+
 type initSecretSource string
 
 const (
@@ -272,6 +295,7 @@ type initSecretValuePrompt struct {
 
 func defaultInitDeps() initDeps {
 	return initDeps{
+		modelMapPrompter:   nil,
 		clipboardSupported: func() bool { return !clipboard.Unsupported },
 		clipboardRead:      clipboard.ReadAll,
 		configPath:         configPath,
@@ -288,6 +312,9 @@ func (deps initDeps) withDefaults() initDeps {
 	defaults := defaultInitDeps()
 	if deps.secretPrompter == nil {
 		deps.secretPrompter = defaults.secretPrompter
+	}
+	if deps.modelMapPrompter == nil {
+		deps.modelMapPrompter = defaults.modelMapPrompter
 	}
 	if deps.clipboardSupported == nil {
 		deps.clipboardSupported = defaults.clipboardSupported
@@ -428,6 +455,10 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if err != nil {
 		return err
 	}
+	plan, err = collectInteractiveInitModelMap(opts, deps, plan)
+	if err != nil {
+		return err
+	}
 	plan, err = collectInteractiveInitSecrets(cmd, opts, deps, plan)
 	if err != nil {
 		return err
@@ -449,8 +480,17 @@ type huhInitSecretPrompter struct {
 	stderr io.Writer
 }
 
+type huhInitModelMapPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
 	return huhInitSecretPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitModelMapPrompter(opts *root.Options) initModelMapPrompter {
+	return huhInitModelMapPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -667,6 +707,76 @@ func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string
 		return "", err
 	}
 	return credentials.TrimSecretIngress(value), nil
+}
+
+func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initModelMapEdit, error) {
+	action := initModelMapActionPreserve
+	options := []huh.Option[initModelMapAction]{
+		huh.NewOption("Keep current model-map overrides", initModelMapActionPreserve),
+		huh.NewOption("Edit tier mappings", initModelMapActionEdit),
+	}
+	if len(prompt.ModelMap) > 0 {
+		options = append(options, huh.NewOption("Reset all overrides to built-in defaults", initModelMapActionReset))
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initModelMapAction]().
+				Title("Model-map overrides").
+				Options(options...).
+				Value(&action),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initModelMapEdit{}, err
+	}
+	switch action {
+	case initModelMapActionPreserve:
+		return initModelMapEdit{Apply: false}, nil
+	case initModelMapActionReset:
+		return initModelMapEdit{Apply: true, ModelMap: nil}, nil
+	case initModelMapActionEdit:
+	default:
+		return initModelMapEdit{}, fmt.Errorf("unsupported model-map action %q", action)
+	}
+
+	existing := copyModelMap(prompt.ModelMap)
+	values := map[config.ModelTier]*string{}
+	fields := make([]huh.Field, 0, len(config.ModelTiers()))
+	builtIns := config.BuiltInModelMap(prompt.LLM.Provider, prompt.LLM.Adapter)
+	for _, tier := range config.ModelTiers() {
+		value := strings.TrimSpace(existing[string(tier)])
+		values[tier] = &value
+		description := initModelMapInputDescription(tier, builtIns[string(tier)])
+		fields = append(fields,
+			huh.NewInput().
+				Title(fmt.Sprintf("%s model", tier)).
+				Description(description).
+				Value(values[tier]),
+		)
+	}
+	form = huh.NewForm(huh.NewGroup(fields...).Title("Model tiers")).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initModelMapEdit{}, err
+	}
+	edited := config.ModelMap{}
+	for _, tier := range config.ModelTiers() {
+		value := strings.TrimSpace(*values[tier])
+		if value == "" {
+			continue
+		}
+		edited[string(tier)] = value
+	}
+	if len(edited) == 0 {
+		edited = nil
+	}
+	return initModelMapEdit{Apply: true, ModelMap: edited}, nil
+}
+
+func initModelMapInputDescription(tier config.ModelTier, builtIn string) string {
+	if builtIn = strings.TrimSpace(builtIn); builtIn != "" {
+		return fmt.Sprintf("Leave blank to use the built-in %s model: %s", tier, builtIn)
+	}
+	return "Leave blank to remove the override for this tier."
 }
 
 func validateRequiredText(message string) func(string) error {
@@ -1132,6 +1242,36 @@ func validateInteractiveRouteHostChange(cfg config.File, profileName string, pre
 	return nil
 }
 
+func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+	prompter := deps.modelMapPrompter
+	if prompter == nil {
+		if deps.prompter != nil {
+			return plan, nil
+		}
+		prompter = newHuhInitModelMapPrompter(opts)
+	}
+	edit, err := prompter.EditModelMap(initModelMapPrompt{
+		LLM:      plan.profile.LLM,
+		ModelMap: copyModelMap(plan.profile.LLM.ModelMap),
+	})
+	if err != nil {
+		return initPlan{}, err
+	}
+	if !edit.Apply {
+		return plan, nil
+	}
+	nextProfile := plan.profile
+	nextProfile.LLM.ModelMap = normalizeInitModelMap(edit.ModelMap)
+	nextCfg := plan.cfg
+	nextCfg.Profiles[plan.profileName] = nextProfile
+	if err := config.Validate(nextCfg); err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	plan.profile = nextProfile
+	plan.cfg = nextCfg
+	return plan, nil
+}
+
 func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
 	if len(plan.credentialPlan) == 0 {
 		return plan, nil
@@ -1346,6 +1486,41 @@ func initCredentialWritePlanSatisfiesEntry(entry initCredentialPlanEntry, target
 		return false
 	}
 	return true
+}
+
+func copyModelMap(modelMap config.ModelMap) config.ModelMap {
+	if len(modelMap) == 0 {
+		return nil
+	}
+	copied := make(config.ModelMap, len(modelMap))
+	for tier, model := range modelMap {
+		copied[tier] = model
+	}
+	return copied
+}
+
+func normalizeInitModelMap(modelMap config.ModelMap) config.ModelMap {
+	if len(modelMap) == 0 {
+		return nil
+	}
+	normalized := config.ModelMap{}
+	for _, tier := range config.ModelTiers() {
+		model, ok := modelMap[string(tier)]
+		if !ok {
+			continue
+		}
+		normalized[string(tier)] = strings.TrimSpace(model)
+	}
+	for tier, model := range modelMap {
+		if _, seen := normalized[tier]; seen {
+			continue
+		}
+		normalized[tier] = strings.TrimSpace(model)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
 func refreshInteractiveCredentialPlan(entries []initCredentialPlanEntry, plannedWriteKeys map[string][]string, satisfiedRefs map[string]bool) []initCredentialPlanEntry {
