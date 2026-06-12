@@ -4872,6 +4872,102 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 	}
 }
 
+func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Data: config.DataConfig{
+			Retention: config.RetentionConfig{
+				MaxAgeDays:  intPtr(14),
+				Enforcement: config.RetentionManualOnly,
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	finalizeCalls := 0
+	openStoreCalls := 0
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionGlobalSettings,
+				initMenuActionSave,
+			},
+		},
+		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+			return initRetentionEdit{
+				Apply: true,
+				Retention: config.RetentionConfig{
+					MaxAgeDays:  intPtr(30),
+					Enforcement: config.RetentionAtWrite,
+				},
+			}, nil
+		}),
+		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{
+				Apply:   true,
+				Backend: "file",
+			}, nil
+		}),
+		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+			finalizeCalls++
+			if len(prompt.Profiles) != 0 {
+				t.Fatalf("finalize prompt = %#v, want no profile readiness for untouched bootstrap profile", prompt)
+			}
+			return initFinalizeActionSave, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			openStoreCalls++
+			return newFakeInitStore(nil), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if finalizeCalls != 1 {
+		t.Fatalf("finalizeCalls = %d, want 1", finalizeCalls)
+	}
+	if openStoreCalls != 0 {
+		t.Fatalf("openStoreCalls = %d, want 0 when no touched profiles require credential handling", openStoreCalls)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Keyring.Backend != "file" {
+		t.Fatalf("keyring.backend = %q, want file", cfg.Keyring.Backend)
+	}
+	if cfg.Data.Retention.MaxAgeDaysValue() != 30 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
+		t.Fatalf("retention = %#v, want 30/at_write", cfg.Data.Retention)
+	}
+	if got := sortedProfileNames(cfg.Profiles); !reflect.DeepEqual(got, []string{"work"}) {
+		t.Fatalf("profiles = %#v, want only existing work profile", got)
+	}
+	work := cfg.Profiles["work"]
+	if work.Git.Host != "github.com" || work.Git.AuthMode != config.GitAuthModePAT || work.Git.CredentialRef != "codereview/work" {
+		t.Fatalf("work git = %#v, want untouched bootstrap profile git config", work.Git)
+	}
+	if work.ReviewerCredentials != nil {
+		t.Fatalf("reviewer credentials = %#v, want nil for untouched profile", work.ReviewerCredentials)
+	}
+	if work.LLM.Provider != config.LLMProviderAnthropic || work.LLM.Auth != config.LLMAuthSubscription || work.LLM.Adapter != config.LLMAdapterClaudeCLI {
+		t.Fatalf("work llm = %#v, want untouched bootstrap profile llm config", work.LLM)
+	}
+}
+
 func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t *testing.T) {
 	store := newFakeInitStore(nil)
 	opts := &root.Options{

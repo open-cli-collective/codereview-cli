@@ -2951,9 +2951,6 @@ func finalizeInteractiveProfileNames(session initSessionDraft) []string {
 	for name := range session.touchedProfiles {
 		names[name] = struct{}{}
 	}
-	if session.workspace != nil && strings.TrimSpace(session.workspace.profileName) != "" {
-		names[session.workspace.profileName] = struct{}{}
-	}
 	profileNames := make([]string, 0, len(names))
 	for name := range names {
 		profileNames = append(profileNames, name)
