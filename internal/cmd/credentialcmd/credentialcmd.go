@@ -1950,7 +1950,8 @@ func (scope initGitScopeDraft) exportConfig(previous *config.GitConfig) config.G
 		AuthMode:      scope.AuthMode,
 		CredentialRef: strings.TrimSpace(scope.CredentialRef),
 	}
-	if previous != nil {
+	if previous != nil && scope.matchesConfig(*previous) {
+		git.Host = previous.Host
 		git.IdentityCache = previous.IdentityCache
 	}
 	return git
@@ -1972,6 +1973,12 @@ func (scope initGitScopeDraft) suggestedName() string {
 		host = "git-scope"
 	}
 	return fmt.Sprintf("%s-%s", host, scope.AuthMode)
+}
+
+func (scope initGitScopeDraft) matchesConfig(previous config.GitConfig) bool {
+	return config.NormalizeHost(previous.Host) == config.NormalizeHost(scope.Host) &&
+		previous.AuthMode == scope.AuthMode &&
+		strings.TrimSpace(previous.CredentialRef) == strings.TrimSpace(scope.CredentialRef)
 }
 
 func buildInitGitScopeInventory(cfg config.File) (map[string]initGitScopeDraft, map[string]string) {
@@ -2037,7 +2044,7 @@ func (entity initReviewerEntityDraft) exportConfig(previous *config.ReviewerCred
 		AuthMode:      entity.AuthMode,
 		CredentialRef: strings.TrimSpace(entity.CredentialRef),
 	}
-	if previous != nil {
+	if previous != nil && entity.matchesConfig(*previous) {
 		reviewer.IdentityCache = previous.IdentityCache
 	}
 	return reviewer
@@ -2064,6 +2071,12 @@ func (entity initReviewerEntityDraft) suggestedName() string {
 		return "reviewer-pat"
 	}
 	return "reviewer-entity"
+}
+
+func (entity initReviewerEntityDraft) matchesConfig(previous config.ReviewerCredentials) bool {
+	return entity.Kind == initReviewerEntityDraftFromConfig(config.Profile{ReviewerCredentials: &previous}).Kind &&
+		previous.AuthMode == entity.AuthMode &&
+		strings.TrimSpace(previous.CredentialRef) == strings.TrimSpace(entity.CredentialRef)
 }
 
 func buildInitReviewerEntityInventory(cfg config.File) (map[string]initReviewerEntityDraft, map[string]string) {

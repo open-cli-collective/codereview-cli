@@ -1658,6 +1658,29 @@ func TestInitGitScopeDraftRoundTripPreservesIdentityCacheFromPreviousProfile(t *
 	}
 }
 
+func TestInitGitScopeDraftExportClearsIdentityCacheWhenShapeChanges(t *testing.T) {
+	previous := config.GitConfig{
+		Host:          "https://github.mycompany.com/",
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work",
+		IdentityCache: "rianjs-work",
+	}
+
+	scope := initGitScopeDraft{
+		Host:          "github.mycompany.com",
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-2",
+	}
+	exported := scope.exportConfig(&previous)
+
+	if exported.IdentityCache != "" {
+		t.Fatalf("IdentityCache = %q, want cleared on scope change", exported.IdentityCache)
+	}
+	if exported.Host != "github.mycompany.com" {
+		t.Fatalf("Host = %q, want draft host spelling on shape change", exported.Host)
+	}
+}
+
 func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1731,6 +1754,28 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 				t.Fatalf("exportConfig = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestInitReviewerEntityDraftExportClearsIdentityCacheWhenShapeChanges(t *testing.T) {
+	previous := &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+		IdentityCache: "review-app",
+	}
+	entity := initReviewerEntityDraft{
+		Kind:          initReviewerEntityKindPAT,
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer-2",
+	}
+
+	exported := entity.exportConfig(previous)
+
+	if exported == nil {
+		t.Fatal("exportConfig = nil, want separate reviewer credentials")
+	}
+	if exported.IdentityCache != "" {
+		t.Fatalf("IdentityCache = %q, want cleared on reviewer entity change", exported.IdentityCache)
 	}
 }
 
@@ -1837,6 +1882,9 @@ func TestSharedGitScopeAndReviewerEntityDoNotDriftIdentityCacheAcrossProfiles(t 
 	}
 	if homeReviewer.IdentityCache != "home-reviewer-cache" || workReviewer.IdentityCache != "work-reviewer-cache" {
 		t.Fatalf("reviewer identity caches drifted: home=%q work=%q", homeReviewer.IdentityCache, workReviewer.IdentityCache)
+	}
+	if homeGit.Host != "github.mycompany.com" || workGit.Host != "https://github.mycompany.com/" {
+		t.Fatalf("git host spellings drifted: home=%q work=%q", homeGit.Host, workGit.Host)
 	}
 }
 
