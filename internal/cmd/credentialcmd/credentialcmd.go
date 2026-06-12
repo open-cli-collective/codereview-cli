@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -189,6 +190,10 @@ type initPromptContext struct {
 	ExistingProfileNames []string
 	DefaultProfileName   string
 	ExistingConfig       config.File
+	GitScopes            map[string]initGitScopeDraft
+	ReviewerEntities     map[string]initReviewerEntityDraft
+	LLMRuntimes          map[string]initLLMRuntimeDraft
+	ProfileWarnings      map[string][]string
 }
 
 type initDraft struct {
@@ -206,6 +211,7 @@ type initDraft struct {
 	LLMAdapter            string
 	LLMReviewerModelTier  string
 	LLMCredentialRef      string
+	AdvancedStorageLabels bool
 }
 
 type initModelMapPrompt struct {
@@ -665,7 +671,7 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if prompter == nil {
 		prompter = newHuhInitPrompter(opts)
 	}
-	draft, err := prompter.Run(initPromptContext{
+	promptCtx, err := buildInteractiveInitPromptContext(cmd, opts, deps, initPromptContext{
 		RequestedProfileName: profileName,
 		ExistingProfileName:  existingProfileName,
 		ExistingProfile:      existingProfile,
@@ -673,6 +679,10 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 		DefaultProfileName:   cfg.DefaultProfile,
 		ExistingConfig:       cfg,
 	})
+	if err != nil {
+		return err
+	}
+	draft, err := prompter.Run(promptCtx)
 	if err != nil {
 		return err
 	}
@@ -784,6 +794,68 @@ func newHuhInitKeyringBackendPrompter(opts *root.Options) initKeyringBackendProm
 	return huhInitKeyringBackendPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
+func buildInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, deps initDeps, ctx initPromptContext) (initPromptContext, error) {
+	ctx.GitScopes, _ = buildInitGitScopeInventory(ctx.ExistingConfig)
+	ctx.ReviewerEntities, _ = buildInitReviewerEntityInventory(ctx.ExistingConfig)
+	ctx.LLMRuntimes, _ = buildInitLLMRuntimeInventory(ctx.ExistingConfig)
+
+	if len(ctx.ExistingConfig.Profiles) == 0 {
+		return ctx, nil
+	}
+	backendFlagSet := cmderr.BackendFlagChanged(cmd)
+	store, err := deps.openStore(opts.Backend, backendFlagSet, ctx.ExistingConfig)
+	var storeErr error
+	if err != nil {
+		storeErr = err
+	}
+	if initStorePresent(store) {
+		defer func() { _ = store.Close() }()
+	}
+	ctx.ProfileWarnings = map[string][]string{}
+	for name, profile := range ctx.ExistingConfig.Profiles {
+		refs, err := config.CredentialRefs(profile)
+		if err != nil {
+			return initPromptContext{}, cmderr.Config(err)
+		}
+		statuses, err := credentials.CredentialStatuses(store, refs, storeErr)
+		if err != nil {
+			return initPromptContext{}, cmderr.Credential(err)
+		}
+		if warnings := initCredentialHealthWarnings(statuses); len(warnings) > 0 {
+			ctx.ProfileWarnings[name] = warnings
+		}
+	}
+	return ctx, nil
+}
+
+func initStorePresent(store initStore) bool {
+	if store == nil {
+		return false
+	}
+	value := reflect.ValueOf(store)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return !value.IsNil()
+	default:
+		return true
+	}
+}
+
+func initCredentialHealthWarnings(statuses []credentials.CredentialStatus) []string {
+	var warnings []string
+	for _, status := range statuses {
+		label := initCredentialPurposeLabel(status.Purpose)
+		missing := credentials.MissingRequiredKeys(status)
+		switch {
+		case len(missing) > 0:
+			warnings = append(warnings, fmt.Sprintf("%s secret health: %s is missing required keys (%s)", label, status.Ref, strings.Join(missing, ", ")))
+		case !credentials.RequiredKeysSatisfied(status):
+			warnings = append(warnings, fmt.Sprintf("%s secret health: cannot verify required keys for %s", label, status.Ref))
+		}
+	}
+	return warnings
+}
+
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	selectedProfileName := ctx.ExistingProfileName
 	selectedExistingProfile := ctx.ExistingProfile
@@ -823,31 +895,18 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	}
 
 	draft := seedInteractiveInitDraft(ctx.RequestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
-	reviewerGroup := huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Reviewer credential auth mode").
-			Options(
-				huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
-				huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
-			).
-			Value(&draft.ReviewerAuth),
-		huh.NewInput().
-			Title("Reviewer credential ref").
-			Description("Leave blank to use the standard profile-based ref.").
-			Value(&draft.ReviewerCredentialRef).
-			Validate(validateOptionalCredentialRef),
-	).WithHideFunc(func() bool {
-		return !draft.ReviewerEnabled
-	})
-	llmRefGroup := huh.NewGroup(
-		huh.NewInput().
-			Title("LLM credential ref").
-			Description("Leave blank to use the standard profile-based ref. The secret itself is configured later.").
-			Value(&draft.LLMCredentialRef).
-			Validate(validateOptionalCredentialRef),
-	).WithHideFunc(func() bool {
-		return draft.LLMAuth != string(config.LLMAuthAPIKey)
-	})
+	if warnings := ctx.ProfileWarnings[selectedProfileName]; len(warnings) > 0 {
+		_, _ = fmt.Fprintln(p.stderr, "Existing profile secret health:")
+		for _, warning := range warnings {
+			_, _ = fmt.Fprintf(p.stderr, "- %s\n", warning)
+		}
+		_, _ = fmt.Fprintln(p.stderr)
+	}
+	reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
+	llmRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
+	selectedRuntimePreset := string(llmRuntime.Preset)
+	reviewerMode := string(reviewerEntity.Kind)
+
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
@@ -860,26 +919,65 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		).Title("Profile"),
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Git host").
+				Title("Git scope host").
+				Description("The Git host this review profile applies to, such as github.com or github.mycompany.com.").
 				Value(&draft.GitHost).
 				Validate(validateRequiredText("git host is required")),
 			huh.NewSelect[string]().
-				Title("Git auth mode").
+				Title("Git scope auth mode").
 				Options(
 					huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
 					huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
 				).
 				Value(&draft.GitAuth),
-			huh.NewInput().
-				Title("Git credential ref").
-				Description("Leave blank to use the standard profile-based ref.").
-				Value(&draft.GitCredentialRef).
-				Validate(validateOptionalCredentialRef),
+		).Title("Git Scope"),
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Reviewer entity").
+				Description("Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile.").
+				Options(
+					huh.NewOption("Use this profile's Git identity", string(initReviewerEntityKindUseGitIdentity)),
+					huh.NewOption("Personal access token reviewer", string(initReviewerEntityKindPAT)),
+					huh.NewOption("GitHub App reviewer", string(initReviewerEntityKindGitHubApp)),
+				).
+				Value(&reviewerMode),
+			huh.NewSelect[string]().
+				Title("LLM runtime").
+				Description("Choose how reviewer agents run for this profile.").
+				Options(
+					huh.NewOption("Claude CLI subscription", string(initLLMRuntimePresetClaudeCLISubscription)),
+					huh.NewOption("Codex CLI subscription", string(initLLMRuntimePresetCodexCLISubscription)),
+					huh.NewOption("Pi local runtime", string(initLLMRuntimePresetPiLocal)),
+					huh.NewOption("Anthropic API key", string(initLLMRuntimePresetAnthropicAPIKey)),
+					huh.NewOption("OpenAI API key", string(initLLMRuntimePresetOpenAIAPIKey)),
+					huh.NewOption("Custom compatible runtime", string(initLLMRuntimePresetCustom)),
+				).
+				Value(&selectedRuntimePreset),
+			huh.NewSelect[string]().
+				Title("Reviewer model tier").
+				Options(
+					huh.NewOption("Built-in default", ""),
+					huh.NewOption("Small", string(config.ModelTierSmall)),
+					huh.NewOption("Medium", string(config.ModelTierMedium)),
+					huh.NewOption("Large", string(config.ModelTierLarge)),
+				).
+				Value(&draft.LLMReviewerModelTier),
 			huh.NewConfirm().
-				Title("Configure separate reviewer credentials").
-				Value(&draft.ReviewerEnabled),
-		).Title("Git"),
-		reviewerGroup.Title("Reviewer"),
+				Title("Advanced storage labels").
+				Description("Inspect or override non-secret credential-store labels for Git, reviewer, and LLM secrets.").
+				Value(&draft.AdvancedStorageLabels),
+		).Title("Review Profile"),
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Reviewer credential auth mode").
+				Options(
+					huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
+					huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
+				).
+				Value(&draft.ReviewerAuth),
+		).WithHideFunc(func() bool {
+			return reviewerMode == string(initReviewerEntityKindUseGitIdentity)
+		}).Title("Reviewer Entity Details"),
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("LLM provider").
@@ -906,22 +1004,114 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
 				).
 				Value(&draft.LLMAdapter),
-			huh.NewSelect[string]().
-				Title("Reviewer model tier").
-				Options(
-					huh.NewOption("Built-in default", ""),
-					huh.NewOption("Small", string(config.ModelTierSmall)),
-					huh.NewOption("Medium", string(config.ModelTierMedium)),
-					huh.NewOption("Large", string(config.ModelTierLarge)),
-				).
-				Value(&draft.LLMReviewerModelTier),
-		).Title("LLM"),
-		llmRefGroup.Title("LLM Credential Ref"),
+		).WithHideFunc(func() bool {
+			return selectedRuntimePreset != string(initLLMRuntimePresetCustom)
+		}).Title("LLM Runtime Details"),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Git storage label").
+				Description("Leave blank to use the standard profile-based label.").
+				Value(&draft.GitCredentialRef).
+				Validate(validateOptionalCredentialRef),
+			huh.NewInput().
+				Title("Reviewer storage label").
+				Description("Leave blank to use the standard profile-based label when using separate reviewer credentials.").
+				Value(&draft.ReviewerCredentialRef).
+				Validate(validateOptionalCredentialRef),
+			huh.NewInput().
+				Title("LLM storage label").
+				Description("Leave blank to use the standard profile-based label when using an API-key runtime.").
+				Value(&draft.LLMCredentialRef).
+				Validate(validateOptionalCredentialRef),
+		).WithHideFunc(func() bool {
+			return !draft.AdvancedStorageLabels
+		}).Title("Advanced Storage Labels"),
 	).WithInput(p.stdin).WithOutput(p.stderr)
 	if err := form.Run(); err != nil {
 		return initDraft{}, err
 	}
+	applyReviewerEntitySelection(&draft, reviewerMode)
+	applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
 	return draft, nil
+}
+
+func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDraft {
+	if !draft.ReviewerEnabled {
+		return initReviewerEntityDraft{Kind: initReviewerEntityKindUseGitIdentity}
+	}
+	entity := initReviewerEntityDraft{
+		AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
+		CredentialRef: strings.TrimSpace(draft.ReviewerCredentialRef),
+	}
+	switch entity.AuthMode {
+	case config.GitAuthModeGitHubApp:
+		entity.Kind = initReviewerEntityKindGitHubApp
+	default:
+		entity.Kind = initReviewerEntityKindPAT
+	}
+	return entity
+}
+
+func applyReviewerEntitySelection(draft *initDraft, selection string) {
+	switch initReviewerEntityKind(selection) {
+	case initReviewerEntityKindUseGitIdentity:
+		draft.ReviewerEnabled = false
+		draft.ReviewerAuth = string(config.GitAuthModePAT)
+		if !draft.AdvancedStorageLabels {
+			draft.ReviewerCredentialRef = ""
+		}
+	case initReviewerEntityKindGitHubApp:
+		draft.ReviewerEnabled = true
+		draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	case initReviewerEntityKindPAT:
+		draft.ReviewerEnabled = true
+		draft.ReviewerAuth = string(config.GitAuthModePAT)
+	}
+}
+
+func initLLMRuntimeDraftFromSeedDraft(draft initDraft) initLLMRuntimeDraft {
+	return initLLMRuntimeDraftFromConfig(config.LLMConfig{
+		Provider:      config.LLMProvider(draft.LLMProvider),
+		Auth:          config.LLMAuth(draft.LLMAuth),
+		Adapter:       config.LLMAdapter(draft.LLMAdapter),
+		CredentialRef: strings.TrimSpace(draft.LLMCredentialRef),
+	})
+}
+
+func applyLLMRuntimeSelection(draft *initDraft, selection string) {
+	runtime := initLLMRuntimeDraft{
+		Preset: initLLMRuntimePreset(selection),
+	}
+	switch runtime.Preset {
+	case initLLMRuntimePresetClaudeCLISubscription:
+		runtime.Provider = config.LLMProviderAnthropic
+		runtime.Auth = config.LLMAuthSubscription
+		runtime.Adapter = config.LLMAdapterClaudeCLI
+	case initLLMRuntimePresetCodexCLISubscription:
+		runtime.Provider = config.LLMProviderOpenAI
+		runtime.Auth = config.LLMAuthSubscription
+		runtime.Adapter = config.LLMAdapterCodexCLI
+	case initLLMRuntimePresetPiLocal:
+		runtime.Provider = config.LLMProviderPi
+		runtime.Auth = config.LLMAuthSubscription
+		runtime.Adapter = config.LLMAdapterPiRPC
+	case initLLMRuntimePresetAnthropicAPIKey:
+		runtime.Provider = config.LLMProviderAnthropic
+		runtime.Auth = config.LLMAuthAPIKey
+		runtime.Adapter = config.LLMAdapterAnthropicAPI
+	case initLLMRuntimePresetOpenAIAPIKey:
+		runtime.Provider = config.LLMProviderOpenAI
+		runtime.Auth = config.LLMAuthAPIKey
+		runtime.Adapter = config.LLMAdapterOpenAIAPI
+	case initLLMRuntimePresetCustom:
+		return
+	}
+	draft.LLMProvider = string(runtime.Provider)
+	draft.LLMAuth = string(runtime.Auth)
+	draft.LLMAdapter = string(runtime.Adapter)
+	if runtime.Auth != config.LLMAuthAPIKey && !draft.AdvancedStorageLabels {
+		draft.LLMCredentialRef = ""
+	}
 }
 
 func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecretPrompt) (initCredentialSecretAction, error) {

@@ -2451,11 +2451,89 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 		t.Fatalf("llm draft = %#v, want existing api-key openai values", draft)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Choose a profile to edit or create") || !strings.Contains(out, "Git credential ref") || !strings.Contains(out, "LLM credential ref") {
+	if !strings.Contains(out, "Choose a profile to edit or create") || !strings.Contains(out, "Git scope host") || !strings.Contains(out, "Reviewer entity") || !strings.Contains(out, "LLM runtime") {
 		t.Fatalf("wizard output missing expected prompts: %q", out)
+	}
+	if strings.Contains(out, "Git credential ref") || strings.Contains(out, "LLM credential ref") {
+		t.Fatalf("wizard output unexpectedly exposed raw credential refs on the primary path: %q", out)
 	}
 	if strings.Contains(strings.ToLower(out), "paste a secret") {
 		t.Fatalf("wizard output unexpectedly requested secret ingress: %q", out)
+	}
+}
+
+func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"",  // Profile name
+			"",  // Make default
+			"",  // Git scope host
+			"",  // Git scope auth mode
+			"2", // Reviewer entity: PAT reviewer
+			"4", // LLM runtime: Anthropic API key
+			"",  // Reviewer model tier
+			"y", // Advanced storage labels
+			"",  // Reviewer auth mode
+			"",  // Git storage label
+			"",  // Reviewer storage label
+			"",  // LLM storage label
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "default",
+		DefaultProfileName:   "",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Advanced storage labels") || !strings.Contains(out, "Git storage label") || !strings.Contains(out, "LLM storage label") {
+		t.Fatalf("wizard output missing advanced storage label prompts: %q", out)
+	}
+}
+
+func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Git scope host
+			"", // Git scope auth mode
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Advanced storage labels
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		ExistingProfileNames: []string{"work"},
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
+		ProfileWarnings: map[string][]string{
+			"work": {"Git secret health: codereview/work is missing required keys (git_token)"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Existing profile secret health") || !strings.Contains(out, "missing required keys") {
+		t.Fatalf("wizard output missing health warning banner: %q", out)
 	}
 }
 
