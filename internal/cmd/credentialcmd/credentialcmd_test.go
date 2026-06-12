@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -2431,6 +2432,18 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 			DefaultProfile: "work",
 			Profiles:       map[string]config.Profile{"work": existing},
 		},
+		GitScopes: map[string]initGitScopeDraft{
+			"gitlab-scope": initGitScopeDraftFromConfig(existing.Git),
+		},
+		ProfileGitScopes: map[string]string{"work": "gitlab-scope"},
+		ReviewerEntities: map[string]initReviewerEntityDraft{
+			"reviewer-app": initReviewerEntityDraftFromConfig(existing),
+		},
+		ProfileReviewerEntities: map[string]string{"work": "reviewer-app"},
+		LLMRuntimes: map[string]initLLMRuntimeDraft{
+			"openai-runtime": initLLMRuntimeDraftFromConfig(existing.LLM),
+		},
+		ProfileLLMRuntimes: map[string]string{"work": "openai-runtime"},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -2534,6 +2547,35 @@ func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.
 	out := stderr.String()
 	if !strings.Contains(out, "Existing profile secret health") || !strings.Contains(out, "missing required keys") {
 		t.Fatalf("wizard output missing health warning banner: %q", out)
+	}
+}
+
+func TestBuildInteractiveInitPromptContextReportsCannotVerifyWarnings(t *testing.T) {
+	opts := &root.Options{
+		Backend: "file",
+	}
+	existing := basicProfile("work")
+	ctx, err := buildInteractiveInitPromptContext(&cobra.Command{}, opts, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return nil, fmt.Errorf("keyring unavailable")
+		},
+	}, initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		ExistingProfileNames: []string{"work"},
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
+	})
+	if err != nil {
+		t.Fatalf("buildInteractiveInitPromptContext: %v", err)
+	}
+	warnings := ctx.ProfileWarnings["work"]
+	if len(warnings) == 0 {
+		t.Fatalf("ProfileWarnings = %#v, want cannot verify warning", ctx.ProfileWarnings)
+	}
+	if !strings.Contains(warnings[0], "cannot verify") {
+		t.Fatalf("warning = %q, want cannot verify wording", warnings[0])
 	}
 }
 
@@ -2842,11 +2884,11 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	if profile.LLM.CredentialRef != "codereview/custom-office-llm" {
 		t.Fatalf("llm ref = %q, want custom-office-llm", profile.LLM.CredentialRef)
 	}
-	if profile.Git.IdentityCache != "git-cache" {
-		t.Fatalf("git identity cache = %q, want preserved git-cache", profile.Git.IdentityCache)
+	if profile.Git.IdentityCache != "" {
+		t.Fatalf("git identity cache = %q, want cleared after git scope change", profile.Git.IdentityCache)
 	}
-	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp || profile.ReviewerCredentials.IdentityCache != "reviewer-cache" {
-		t.Fatalf("reviewer credentials = %#v, want github_app with preserved cache", profile.ReviewerCredentials)
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp || profile.ReviewerCredentials.IdentityCache != "" {
+		t.Fatalf("reviewer credentials = %#v, want github_app with cleared cache after entity change", profile.ReviewerCredentials)
 	}
 	if !reflect.DeepEqual(profile.AgentSources, []string{"/tmp/agents"}) {
 		t.Fatalf("agent_sources = %#v, want preserved", profile.AgentSources)

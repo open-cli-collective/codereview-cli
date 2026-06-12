@@ -191,8 +191,11 @@ type initPromptContext struct {
 	DefaultProfileName   string
 	ExistingConfig       config.File
 	GitScopes            map[string]initGitScopeDraft
+	ProfileGitScopes     map[string]string
 	ReviewerEntities     map[string]initReviewerEntityDraft
+	ProfileReviewerEntities map[string]string
 	LLMRuntimes          map[string]initLLMRuntimeDraft
+	ProfileLLMRuntimes   map[string]string
 	ProfileWarnings      map[string][]string
 }
 
@@ -766,6 +769,12 @@ type huhInitKeyringBackendPrompter struct {
 	stderr io.Writer
 }
 
+const (
+	initCustomGitScopeSelection       = "__custom_git_scope__"
+	initCustomReviewerEntitySelection = "__custom_reviewer_entity__"
+	initCustomLLMRuntimeSelection     = "__custom_llm_runtime__"
+)
+
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
 	return huhInitSecretPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
@@ -795,9 +804,9 @@ func newHuhInitKeyringBackendPrompter(opts *root.Options) initKeyringBackendProm
 }
 
 func buildInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, deps initDeps, ctx initPromptContext) (initPromptContext, error) {
-	ctx.GitScopes, _ = buildInitGitScopeInventory(ctx.ExistingConfig)
-	ctx.ReviewerEntities, _ = buildInitReviewerEntityInventory(ctx.ExistingConfig)
-	ctx.LLMRuntimes, _ = buildInitLLMRuntimeInventory(ctx.ExistingConfig)
+	ctx.GitScopes, ctx.ProfileGitScopes = buildInitGitScopeInventory(ctx.ExistingConfig)
+	ctx.ReviewerEntities, ctx.ProfileReviewerEntities = buildInitReviewerEntityInventory(ctx.ExistingConfig)
+	ctx.LLMRuntimes, ctx.ProfileLLMRuntimes = buildInitLLMRuntimeInventory(ctx.ExistingConfig)
 
 	if len(ctx.ExistingConfig.Profiles) == 0 {
 		return ctx, nil
@@ -906,6 +915,21 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	llmRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
 	selectedRuntimePreset := string(llmRuntime.Preset)
 	reviewerMode := string(reviewerEntity.Kind)
+	selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
+	if selectedGitScope == "" {
+		selectedGitScope = initCustomGitScopeSelection
+	}
+	selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
+	if selectedReviewerEntity == "" {
+		selectedReviewerEntity = initCustomReviewerEntitySelection
+	}
+	selectedLLMRuntime := ctx.ProfileLLMRuntimes[selectedProfileName]
+	if selectedLLMRuntime == "" {
+		selectedLLMRuntime = initCustomLLMRuntimeSelection
+	}
+	gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
+	reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities)
+	llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -918,6 +942,11 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				Value(&draft.MakeDefault),
 		).Title("Profile"),
 		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Git scope").
+				Description("Choose an existing Git scope for this profile or configure a custom one.").
+				Options(gitScopeOptions...).
+				Value(&selectedGitScope),
 			huh.NewInput().
 				Title("Git scope host").
 				Description("The Git host this review profile applies to, such as github.com or github.mycompany.com.").
@@ -930,29 +959,20 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
 				).
 				Value(&draft.GitAuth),
-		).Title("Git Scope"),
+		).WithHideFunc(func() bool {
+			return selectedGitScope != initCustomGitScopeSelection
+		}).Title("Git Scope"),
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Reviewer entity").
 				Description("Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile.").
-				Options(
-					huh.NewOption("Use this profile's Git identity", string(initReviewerEntityKindUseGitIdentity)),
-					huh.NewOption("Personal access token reviewer", string(initReviewerEntityKindPAT)),
-					huh.NewOption("GitHub App reviewer", string(initReviewerEntityKindGitHubApp)),
-				).
-				Value(&reviewerMode),
+				Options(reviewerEntityOptions...).
+				Value(&selectedReviewerEntity),
 			huh.NewSelect[string]().
 				Title("LLM runtime").
 				Description("Choose how reviewer agents run for this profile.").
-				Options(
-					huh.NewOption("Claude CLI subscription", string(initLLMRuntimePresetClaudeCLISubscription)),
-					huh.NewOption("Codex CLI subscription", string(initLLMRuntimePresetCodexCLISubscription)),
-					huh.NewOption("Pi local runtime", string(initLLMRuntimePresetPiLocal)),
-					huh.NewOption("Anthropic API key", string(initLLMRuntimePresetAnthropicAPIKey)),
-					huh.NewOption("OpenAI API key", string(initLLMRuntimePresetOpenAIAPIKey)),
-					huh.NewOption("Custom compatible runtime", string(initLLMRuntimePresetCustom)),
-				).
-				Value(&selectedRuntimePreset),
+				Options(llmRuntimeOptions...).
+				Value(&selectedLLMRuntime),
 			huh.NewSelect[string]().
 				Title("Reviewer model tier").
 				Options(
@@ -976,7 +996,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				).
 				Value(&draft.ReviewerAuth),
 		).WithHideFunc(func() bool {
-			return reviewerMode == string(initReviewerEntityKindUseGitIdentity)
+			return selectedReviewerEntity != initCustomReviewerEntitySelection
 		}).Title("Reviewer Entity Details"),
 		huh.NewGroup(
 			huh.NewSelect[string]().
@@ -1005,7 +1025,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				).
 				Value(&draft.LLMAdapter),
 		).WithHideFunc(func() bool {
-			return selectedRuntimePreset != string(initLLMRuntimePresetCustom)
+			return selectedLLMRuntime != initCustomLLMRuntimeSelection
 		}).Title("LLM Runtime Details"),
 		huh.NewGroup(
 			huh.NewInput().
@@ -1030,6 +1050,11 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	if err := form.Run(); err != nil {
 		return initDraft{}, err
 	}
+	applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
+	applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
+	applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, ctx.LLMRuntimes)
+	reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+	selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
 	applyReviewerEntitySelection(&draft, reviewerMode)
 	applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
 	return draft, nil
@@ -1050,6 +1075,98 @@ func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDra
 		entity.Kind = initReviewerEntityKindPAT
 	}
 	return entity
+}
+
+func initGitScopeOptions(scopes map[string]initGitScopeDraft) []huh.Option[string] {
+	names := make([]string, 0, len(scopes))
+	for name := range scopes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	options := make([]huh.Option[string], 0, len(names)+1)
+	for _, name := range names {
+		scope := scopes[name]
+		options = append(options, huh.NewOption(initGitScopeLabel(scope), name))
+	}
+	options = append(options, huh.NewOption("Configure a custom Git scope", initCustomGitScopeSelection))
+	return options
+}
+
+func initGitScopeLabel(scope initGitScopeDraft) string {
+	return fmt.Sprintf("%s via %s", scope.Host, initGitAuthModeLabel(scope.AuthMode))
+}
+
+func initGitAuthModeLabel(mode config.GitAuthMode) string {
+	switch mode {
+	case config.GitAuthModeGitHubApp:
+		return "GitHub App"
+	default:
+		return "personal access token"
+	}
+}
+
+func applyGitScopeSelection(draft *initDraft, selection string, scopes map[string]initGitScopeDraft) {
+	if selection == initCustomGitScopeSelection {
+		return
+	}
+	scope, ok := scopes[selection]
+	if !ok {
+		return
+	}
+	draft.GitHost = scope.Host
+	draft.GitAuth = string(scope.AuthMode)
+	if !draft.AdvancedStorageLabels {
+		draft.GitCredentialRef = scope.CredentialRef
+	}
+}
+
+func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft) []huh.Option[string] {
+	names := make([]string, 0, len(entities))
+	for name := range entities {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	options := make([]huh.Option[string], 0, len(names)+3)
+	for _, name := range names {
+		entity := entities[name]
+		options = append(options, huh.NewOption(initReviewerEntityLabel(entity), name))
+	}
+	options = append(options,
+		huh.NewOption("Use this profile's Git identity", string(initReviewerEntityKindUseGitIdentity)),
+		huh.NewOption("Personal access token reviewer", string(initReviewerEntityKindPAT)),
+		huh.NewOption("GitHub App reviewer", string(initReviewerEntityKindGitHubApp)),
+	)
+	return dedupeInitStringOptions(options)
+}
+
+func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
+	switch entity.Kind {
+	case initReviewerEntityKindUseGitIdentity:
+		return "Use this profile's Git identity"
+	case initReviewerEntityKindGitHubApp:
+		return "GitHub App reviewer"
+	default:
+		return "Personal access token reviewer"
+	}
+}
+
+func applyReviewerEntityInventorySelection(draft *initDraft, selection string, entities map[string]initReviewerEntityDraft) {
+	switch selection {
+	case initCustomReviewerEntitySelection:
+		return
+	case string(initReviewerEntityKindUseGitIdentity), string(initReviewerEntityKindPAT), string(initReviewerEntityKindGitHubApp):
+		applyReviewerEntitySelection(draft, selection)
+		return
+	}
+	entity, ok := entities[selection]
+	if !ok {
+		return
+	}
+	draft.ReviewerEnabled = entity.Kind != initReviewerEntityKindUseGitIdentity
+	draft.ReviewerAuth = string(entity.AuthMode)
+	if !draft.AdvancedStorageLabels {
+		draft.ReviewerCredentialRef = entity.CredentialRef
+	}
 }
 
 func applyReviewerEntitySelection(draft *initDraft, selection string) {
@@ -1076,6 +1193,75 @@ func initLLMRuntimeDraftFromSeedDraft(draft initDraft) initLLMRuntimeDraft {
 		Adapter:       config.LLMAdapter(draft.LLMAdapter),
 		CredentialRef: strings.TrimSpace(draft.LLMCredentialRef),
 	})
+}
+
+func initLLMRuntimeOptions(runtimes map[string]initLLMRuntimeDraft) []huh.Option[string] {
+	names := make([]string, 0, len(runtimes))
+	for name := range runtimes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	options := make([]huh.Option[string], 0, len(names)+6)
+	for _, name := range names {
+		runtime := runtimes[name]
+		options = append(options, huh.NewOption(initLLMRuntimeLabel(runtime), name))
+	}
+	options = append(options,
+		huh.NewOption("Claude CLI subscription", string(initLLMRuntimePresetClaudeCLISubscription)),
+		huh.NewOption("Codex CLI subscription", string(initLLMRuntimePresetCodexCLISubscription)),
+		huh.NewOption("Pi local runtime", string(initLLMRuntimePresetPiLocal)),
+		huh.NewOption("Anthropic API key", string(initLLMRuntimePresetAnthropicAPIKey)),
+		huh.NewOption("OpenAI API key", string(initLLMRuntimePresetOpenAIAPIKey)),
+		huh.NewOption("Custom compatible runtime", initCustomLLMRuntimeSelection),
+	)
+	return dedupeInitStringOptions(options)
+}
+
+func initLLMRuntimeLabel(runtime initLLMRuntimeDraft) string {
+	switch runtime.Preset {
+	case initLLMRuntimePresetClaudeCLISubscription:
+		return "Claude CLI subscription"
+	case initLLMRuntimePresetCodexCLISubscription:
+		return "Codex CLI subscription"
+	case initLLMRuntimePresetPiLocal:
+		return "Pi local runtime"
+	case initLLMRuntimePresetAnthropicAPIKey:
+		return "Anthropic API key"
+	case initLLMRuntimePresetOpenAIAPIKey:
+		return "OpenAI API key"
+	default:
+		return fmt.Sprintf("Custom runtime (%s/%s/%s)", runtime.Provider, runtime.Auth, runtime.Adapter)
+	}
+}
+
+func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runtimes map[string]initLLMRuntimeDraft) {
+	if selection == initCustomLLMRuntimeSelection {
+		return
+	}
+	if runtime, ok := runtimes[selection]; ok {
+		draft.LLMProvider = string(runtime.Provider)
+		draft.LLMAuth = string(runtime.Auth)
+		draft.LLMAdapter = string(runtime.Adapter)
+		if !draft.AdvancedStorageLabels {
+			draft.LLMCredentialRef = runtime.CredentialRef
+		}
+		return
+	}
+	applyLLMRuntimeSelection(draft, selection)
+}
+
+func dedupeInitStringOptions(options []huh.Option[string]) []huh.Option[string] {
+	seen := map[string]struct{}{}
+	deduped := make([]huh.Option[string], 0, len(options))
+	for _, option := range options {
+		key := fmt.Sprintf("%v", option.Value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, option)
+	}
+	return deduped
 }
 
 func applyLLMRuntimeSelection(draft *initDraft, selection string) {
@@ -2502,6 +2688,9 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	if profile.Git.CredentialRef == "" {
 		profile.Git.CredentialRef = defaultGitRef
 	}
+	if previousProfile != nil && !initGitScopeDraftFromConfig(profile.Git).matchesConfig(previousProfile.Git) {
+		profile.Git.IdentityCache = ""
+	}
 	if draft.ReviewerEnabled {
 		reviewerRef := strings.TrimSpace(draft.ReviewerCredentialRef)
 		if reviewerRef == "" {
@@ -2514,7 +2703,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 			AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
 			CredentialRef: reviewerRef,
 		}
-		if previousProfile != nil && previousProfile.ReviewerCredentials != nil {
+		if previousProfile != nil && previousProfile.ReviewerCredentials != nil && initReviewerEntityDraftFromConfig(config.Profile{ReviewerCredentials: &reviewer}).matchesConfig(*previousProfile.ReviewerCredentials) {
 			reviewer.IdentityCache = previousProfile.ReviewerCredentials.IdentityCache
 		}
 		profile.ReviewerCredentials = &reviewer
