@@ -3832,6 +3832,16 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceDisablesProfileDependentAction
 	}
 }
 
+func TestValidateInteractiveInitGlobalConfigWithoutProfilesStillValidatesKeyringBackend(t *testing.T) {
+	err := validateInteractiveInitGlobalConfig(config.File{
+		Keyring:  config.KeyringConfig{Backend: "definitely-not-a-backend"},
+		Profiles: map[string]config.Profile{},
+	})
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("error = %v, want ErrInvalid for bad keyring backend without profiles", err)
+	}
+}
+
 func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCounts(t *testing.T) {
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{

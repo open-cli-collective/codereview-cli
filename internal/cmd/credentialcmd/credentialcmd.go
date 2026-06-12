@@ -710,7 +710,8 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if err != nil {
 		return err
 	}
-	if deps.prompter != nil && deps.menuPrompter == nil {
+	useLegacyInitPath := deps.prompter != nil && deps.menuPrompter == nil
+	if useLegacyInitPath {
 		session, err = runInjectedInteractiveInit(cmd, opts, flags, deps, session)
 	} else {
 		session, err = runInteractiveInitMenuLoop(cmd, opts, flags, deps, session)
@@ -1221,12 +1222,12 @@ func initMenuDescription(prompt initMenuPrompt) string {
 func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
 	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
 	selectedRuntime := prompt.Context.ProfileLLMRuntimes[prompt.Context.ExistingProfileName]
-	selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+	seedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
 	if selectedRuntime == "" {
-		if selectedRuntimePreset == string(initLLMRuntimePresetCustom) {
+		if seedRuntimePreset == string(initLLMRuntimePresetCustom) {
 			selectedRuntime = initCustomLLMRuntimeSelection
 		} else {
-			selectedRuntime = selectedRuntimePreset
+			selectedRuntime = seedRuntimePreset
 		}
 	}
 	form := huh.NewForm(
@@ -1269,8 +1270,8 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 		return initDraft{}, err
 	}
 	applyLLMRuntimeInventorySelection(&draft, selectedRuntime, prompt.Context.LLMRuntimes)
-	selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
-	applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+	applyLLMRuntimeSelection(&draft, resolvedRuntimePreset)
 	return draft, nil
 }
 
@@ -3500,6 +3501,9 @@ func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDep
 
 func validateInteractiveInitGlobalConfig(cfg config.File) error {
 	if len(cfg.Profiles) == 0 || strings.TrimSpace(cfg.DefaultProfile) == "" {
+		if err := config.ValidateKeyring(cfg.Keyring); err != nil {
+			return err
+		}
 		return config.ValidateRetention(cfg.Data.Retention)
 	}
 	return config.Validate(cfg)

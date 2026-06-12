@@ -510,7 +510,7 @@ func Validate(cfg File) error {
 	if err := validateRepositoryProfiles(cfg); err != nil {
 		return err
 	}
-	if err := validateKeyring(cfg.Keyring); err != nil {
+	if err := ValidateKeyring(cfg.Keyring); err != nil {
 		return err
 	}
 	if err := ValidateRetention(cfg.Data.Retention); err != nil {
@@ -823,7 +823,8 @@ func validateRepositoryProfiles(cfg File) error {
 	return nil
 }
 
-func validateKeyring(keyring KeyringConfig) error {
+// ValidateKeyring checks non-secret keyring backend preferences.
+func ValidateKeyring(keyring KeyringConfig) error {
 	backend := strings.TrimSpace(keyring.Backend)
 	if backend == "" {
 		return nil
