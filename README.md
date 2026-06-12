@@ -151,10 +151,14 @@ sequence looks like:
 
 ```bash
 cr --profile work init --non-interactive \
+  --set-default \
   --git-host github.com \
+  --git-auth-mode pat \
   --llm-provider anthropic \
   --llm-auth subscription \
-  --llm-adapter claude_cli
+  --llm-adapter claude_cli \
+  --llm-reviewer-model-tier medium \
+  --keyring-backend file
 
 cr --profile work config route set \
   --host github.com \
@@ -173,11 +177,16 @@ printf '%s' "$GITHUB_TOKEN" | cr set-credential \
 
 Use `cr config route` for repository routing, `cr config agent-source` for
 trusted source paths, `cr config llm models` for `llm.model_map`, and
-`cr config retention` for durable run-data policy. Persistent
-`keyring.backend` selection does not yet have a dedicated scripted command
-surface; leave it unset for platform auto selection or track the non-
-interactive parity work in
-[`#187`](https://github.com/open-cli-collective/codereview-cli/issues/187).
+`cr config retention` for durable run-data policy. Use `cr init
+--non-interactive --keyring-backend <backend>` to persist a keyring backend,
+`--reset-keyring-backend` to clear it, `--disable-reviewer` to remove separate
+reviewer credentials, `--llm-reviewer-model-tier` or
+`--clear-llm-reviewer-model-tier` for the durable reviewer baseline, and
+`--set-default` to make the target profile the default during init. For
+backward compatibility, init may still persist a runtime `--backend` when the
+command writes credentials or configures API-key LLM auth, but the explicit
+`--keyring-backend` / `--reset-keyring-backend` flags are the readable
+scripted surface to prefer.
 
 ```yaml
 default_profile: personal

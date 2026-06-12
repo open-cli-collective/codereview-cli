@@ -125,13 +125,17 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 type initOptions struct {
 	nonInteractive     bool
 	gitHost            string
+	gitAuth            string
 	gitRef             string
 	reviewerRef        string
 	reviewerAuth       string
+	disableReviewer    bool
 	llmProvider        string
 	llmAuth            string
 	llmAdapter         string
 	llmRef             string
+	llmReviewerTier    string
+	clearLLMReviewer   bool
 	agentSources       []string
 	majorEvent         string
 	selfApprove        bool
@@ -145,6 +149,9 @@ type initOptions struct {
 	llmKeyEnv          string
 	overwrite          bool
 	replaceProfile     bool
+	setDefault         bool
+	keyringBackend     string
+	resetKeyring       bool
 }
 
 type initPrompter interface {
@@ -487,6 +494,7 @@ func (deps initDeps) withDefaults() initDeps {
 func newInitCommand(opts *root.Options) *cobra.Command {
 	flags := initOptions{
 		gitHost:      "github.com",
+		gitAuth:      string(config.GitAuthModePAT),
 		reviewerAuth: string(config.GitAuthModePAT),
 		llmProvider:  string(config.LLMProviderAnthropic),
 		llmAuth:      string(config.LLMAuthSubscription),
@@ -508,13 +516,17 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&flags.nonInteractive, "non-interactive", false, "Run without prompts")
 	cmd.Flags().StringVar(&flags.gitHost, "git-host", flags.gitHost, "Git host")
+	cmd.Flags().StringVar(&flags.gitAuth, "git-auth-mode", flags.gitAuth, "Git credential auth mode")
 	cmd.Flags().StringVar(&flags.gitRef, "git-credential-ref", "", "Git credential ref")
 	cmd.Flags().StringVar(&flags.reviewerRef, "reviewer-credential-ref", "", "Reviewer credential ref")
 	cmd.Flags().StringVar(&flags.reviewerAuth, "reviewer-auth-mode", flags.reviewerAuth, "Reviewer credential auth mode")
+	cmd.Flags().BoolVar(&flags.disableReviewer, "disable-reviewer", false, "Disable separate reviewer credentials")
 	cmd.Flags().StringVar(&flags.llmProvider, "llm-provider", flags.llmProvider, "LLM provider")
 	cmd.Flags().StringVar(&flags.llmAuth, "llm-auth", flags.llmAuth, "LLM auth mode")
 	cmd.Flags().StringVar(&flags.llmAdapter, "llm-adapter", flags.llmAdapter, "LLM adapter")
 	cmd.Flags().StringVar(&flags.llmRef, "llm-credential-ref", "", "LLM credential ref")
+	cmd.Flags().StringVar(&flags.llmReviewerTier, "llm-reviewer-model-tier", "", "Reviewer model tier override")
+	cmd.Flags().BoolVar(&flags.clearLLMReviewer, "clear-llm-reviewer-model-tier", false, "Clear the configured reviewer model tier")
 	cmd.Flags().StringArrayVar(&flags.agentSources, "agent-source", nil, "Agent source ref (repeatable)")
 	cmd.Flags().StringVar(&flags.majorEvent, "major-event", flags.majorEvent, "Major finding event policy")
 	cmd.Flags().BoolVar(&flags.selfApprove, "allow-self-approve", false, "Allow self approval")
@@ -528,6 +540,9 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 	cmd.Flags().StringVar(&flags.llmKeyEnv, "llm-api-key-from-env", "", "Read the LLM API key from this environment variable")
 	cmd.Flags().BoolVar(&flags.overwrite, "overwrite", false, "Replace existing keyring entries")
 	cmd.Flags().BoolVar(&flags.replaceProfile, "replace-profile", false, "Replace an existing config profile")
+	cmd.Flags().BoolVar(&flags.setDefault, "set-default", false, "Set the target profile as the default profile")
+	cmd.Flags().StringVar(&flags.keyringBackend, "keyring-backend", "", "Persist this keyring backend in config")
+	cmd.Flags().BoolVar(&flags.resetKeyring, "reset-keyring-backend", false, "Clear any persisted keyring backend")
 	return cmd
 }
 
@@ -548,7 +563,7 @@ func runInitWithDeps(cmd *cobra.Command, opts *root.Options, flags initOptions, 
 }
 
 func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) error {
-	if err := validateInteractiveInitFlags(flags); err != nil {
+	if err := validateInteractiveInitFlags(cmd, flags); err != nil {
 		return exitcode.Usage(err)
 	}
 	profileName := opts.Profile
@@ -1386,12 +1401,22 @@ func parseInteractiveRetentionMaxAgeDays(value string) (int, error) {
 	return days, nil
 }
 
-func validateInteractiveInitFlags(flags initOptions) error {
+func validateInteractiveInitFlags(cmd *cobra.Command, flags initOptions) error {
 	if flags.overwrite {
 		return fmt.Errorf("--overwrite is only supported with --non-interactive")
 	}
 	if flags.gitTokenStdin || flags.gitTokenEnv != "" || flags.reviewerTokenStdin || flags.reviewerTokenEnv != "" || flags.llmKeyStdin || flags.llmKeyEnv != "" {
 		return fmt.Errorf("secret ingress flags are only supported with --non-interactive")
+	}
+	anyNonInteractiveParityFlagSet := flags.disableReviewer ||
+		flags.clearLLMReviewer ||
+		flags.setDefault ||
+		flags.resetKeyring ||
+		cmd.Flags().Changed("git-auth-mode") ||
+		cmd.Flags().Changed("llm-reviewer-model-tier") ||
+		cmd.Flags().Changed("keyring-backend")
+	if anyNonInteractiveParityFlagSet {
+		return fmt.Errorf("non-interactive parity flags are only supported with --non-interactive")
 	}
 	return nil
 }
@@ -1456,6 +1481,19 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	if stdinSecrets > 1 {
 		return initPlan{}, exitcode.Usage(fmt.Errorf("only one stdin secret ingress flag may be set"))
 	}
+	if flags.keyringBackend != "" && flags.resetKeyring {
+		return initPlan{}, exitcode.Usage(fmt.Errorf("--keyring-backend and --reset-keyring-backend may not be used together; use one or the other"))
+	}
+	if flags.llmReviewerTier != "" && flags.clearLLMReviewer {
+		return initPlan{}, exitcode.Usage(fmt.Errorf("--llm-reviewer-model-tier and --clear-llm-reviewer-model-tier may not be used together; use one or the other"))
+	}
+	reviewerCredentialsConfigured := flags.reviewerRef != "" ||
+		flags.reviewerTokenStdin ||
+		flags.reviewerTokenEnv != "" ||
+		cmd.Flags().Changed("reviewer-auth-mode")
+	if flags.disableReviewer && reviewerCredentialsConfigured {
+		return initPlan{}, exitcode.Usage(fmt.Errorf("--disable-reviewer may not be combined with reviewer credential flags; use one or the other"))
+	}
 	profileName := opts.Profile
 	if profileName == "" {
 		profileName = credstore.DefaultProfile
@@ -1490,6 +1528,13 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 	if _, err := credentials.ParseRef(gitRef); err != nil {
 		return initPlan{}, exitcode.Usage(err)
+	}
+	gitMode := config.GitAuthMode(flags.gitAuth)
+	if !gitMode.Valid() {
+		return initPlan{}, exitcode.Usage(fmt.Errorf("--git-auth-mode %q is invalid: valid values are pat, github_app", flags.gitAuth))
+	}
+	if !gitMode.Supported() {
+		return initPlan{}, exitcode.Usage(fmt.Errorf("--git-auth-mode %s is not supported in v1", flags.gitAuth))
 	}
 	reviewerRequested := flags.reviewerRef != "" ||
 		flags.reviewerTokenStdin ||
@@ -1540,6 +1585,9 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			return initPlan{}, exitcode.Usage(err)
 		}
 	}
+	if gitMode != config.GitAuthModePAT && (flags.gitTokenStdin || flags.gitTokenEnv != "") {
+		return initPlan{}, exitcode.Usage(fmt.Errorf("git token ingress requires --git-auth-mode %s", config.GitAuthModePAT))
+	}
 	gitSecret, hasGitSecret, err := readInitSecret(deps, opts.Stdin, flags.gitTokenStdin, flags.gitTokenEnv, "--git-token-stdin", "--git-token-from-env")
 	if err != nil {
 		return initPlan{}, exitcode.Usage(err)
@@ -1562,7 +1610,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	profile := config.Profile{
 		Git: config.GitConfig{
 			Host:          flags.gitHost,
-			AuthMode:      config.GitAuthModePAT,
+			AuthMode:      gitMode,
 			CredentialRef: gitRef,
 		},
 		LLM: config.LLMConfig{
@@ -1579,14 +1627,52 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			ResolveAfter:     flags.resolveAfter,
 		},
 	}
-	if reviewerRequested {
+	if flags.clearLLMReviewer {
+		profile.LLM.ReviewerModelTier = ""
+	} else {
+		profile.LLM.ReviewerModelTier = config.ModelTier(strings.TrimSpace(flags.llmReviewerTier))
+	}
+	if reviewerRequested && !flags.disableReviewer {
 		profile.ReviewerCredentials = &config.ReviewerCredentials{
 			AuthMode:      reviewerMode,
 			CredentialRef: reviewerRef,
 		}
 	}
+	if previousProfile != nil {
+		profile.Git.IdentityCache = previousProfile.Git.IdentityCache
+		if previousProfile.LLM.ModelMap != nil {
+			modelMap := make(config.ModelMap, len(previousProfile.LLM.ModelMap))
+			for tier, model := range previousProfile.LLM.ModelMap {
+				modelMap[tier] = model
+			}
+			profile.LLM.ModelMap = modelMap
+		}
+		if !cmd.Flags().Changed("agent-source") {
+			profile.AgentSources = append([]string(nil), previousProfile.AgentSources...)
+		}
+		if !cmd.Flags().Changed("major-event") &&
+			!cmd.Flags().Changed("allow-self-approve") &&
+			!cmd.Flags().Changed("resolve-threads") &&
+			!cmd.Flags().Changed("resolve-after") {
+			profile.ReviewPolicy = previousProfile.ReviewPolicy
+		}
+		if !cmd.Flags().Changed("llm-reviewer-model-tier") && !flags.clearLLMReviewer {
+			profile.LLM.ReviewerModelTier = previousProfile.LLM.ReviewerModelTier
+		}
+		if flags.disableReviewer {
+			profile.ReviewerCredentials = nil
+		} else if !reviewerRequested && previousProfile.ReviewerCredentials != nil {
+			creds := *previousProfile.ReviewerCredentials
+			profile.ReviewerCredentials = &creds
+		} else if profile.ReviewerCredentials != nil && previousProfile.ReviewerCredentials != nil {
+			profile.ReviewerCredentials.IdentityCache = previousProfile.ReviewerCredentials.IdentityCache
+		}
+	}
 	cfg.Profiles[profileName] = profile
 	if !exists {
+		cfg.DefaultProfile = profileName
+	}
+	if flags.setDefault {
 		cfg.DefaultProfile = profileName
 	}
 
@@ -1616,8 +1702,24 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			return initPlan{}, cmderr.Credential(err)
 		}
 	}
-	persistExplicitBackend := backendFlagSet && (len(writes) > 0 || profile.LLM.Auth == config.LLMAuthAPIKey)
-	if persistExplicitBackend {
+	explicitKeyringBackend := flags.keyringBackend != ""
+	if explicitKeyringBackend {
+		if _, err := credentials.StoreOptions(flags.keyringBackend, true, cfg); err != nil {
+			return initPlan{}, cmderr.Credential(err)
+		}
+		if backendFlagSet && opts.Backend != flags.keyringBackend {
+			return initPlan{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with --keyring-backend %q", opts.Backend, flags.keyringBackend))
+		}
+		cfg.Keyring.Backend = flags.keyringBackend
+	}
+	if flags.resetKeyring {
+		cfg.Keyring.Backend = ""
+	}
+	// Preserve the legacy init behavior where a write-backed runtime backend may
+	// still become durable. New scripted flows should prefer --keyring-backend
+	// and --reset-keyring-backend for readable, explicit ownership.
+	persistRuntimeBackend := !explicitKeyringBackend && !flags.resetKeyring && backendFlagSet && (len(writes) > 0 || profile.LLM.Auth == config.LLMAuthAPIKey)
+	if persistRuntimeBackend {
 		if cfg.Keyring.Backend != "" && cfg.Keyring.Backend != opts.Backend {
 			return initPlan{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with existing keyring.backend %q", opts.Backend, cfg.Keyring.Backend))
 		}
@@ -1628,10 +1730,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		return initPlan{}, cmderr.Config(err)
 	}
 
-	backendArg := ""
-	if backendFlagSet && !persistExplicitBackend {
-		backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
-	}
+	backendArg := interactiveInitBackendArg(opts, backendFlagSet, cfg)
 
 	return initPlan{
 		path:              path,

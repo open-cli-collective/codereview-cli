@@ -1139,6 +1139,272 @@ func TestInitMergeReplaceAndBackendConflictSemantics(t *testing.T) {
 	}
 }
 
+func TestInitSetDefaultUpdatesExistingConfigWhenRequested(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := config.Save(path, config.File{
+		DefaultProfile: "home",
+		Profiles: map[string]config.Profile{
+			"home": basicProfile("home"),
+		},
+	}); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+	err := root.Execute(cmd, []string{
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+		"--set-default",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got.DefaultProfile != "work" {
+		t.Fatalf("default_profile = %q, want work", got.DefaultProfile)
+	}
+}
+
+func TestInitDurableKeyringBackendFlags(t *testing.T) {
+	t.Run("set backend", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yml")
+		cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+
+		err := root.Execute(cmd, []string{
+			"init",
+			"--non-interactive",
+			"--keyring-backend", "file",
+		})
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+
+		got, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load config: %v", err)
+		}
+		if got.Keyring.Backend != "file" {
+			t.Fatalf("keyring.backend = %q, want file", got.Keyring.Backend)
+		}
+	})
+
+	t.Run("reset backend", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yml")
+		if err := config.Save(path, config.File{
+			DefaultProfile: "work",
+			Keyring:        config.KeyringConfig{Backend: "file"},
+			Profiles: map[string]config.Profile{
+				"work": basicProfile("work"),
+			},
+		}); err != nil {
+			t.Fatalf("Save config: %v", err)
+		}
+
+		cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+		err := root.Execute(cmd, []string{
+			"--profile", "work",
+			"init",
+			"--non-interactive",
+			"--replace-profile",
+			"--reset-keyring-backend",
+		})
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+
+		got, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load config: %v", err)
+		}
+		if got.Keyring.Backend != "" {
+			t.Fatalf("keyring.backend = %q, want empty after reset", got.Keyring.Backend)
+		}
+	})
+}
+
+func TestInitGitAuthModeFlagSupportsGitHubApp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
+
+	err := root.Execute(cmd, []string{
+		"init",
+		"--non-interactive",
+		"--git-auth-mode", string(config.GitAuthModeGitHubApp),
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got.Profiles["default"].Git.AuthMode != config.GitAuthModeGitHubApp {
+		t.Fatalf("git.auth_mode = %q, want github_app", got.Profiles["default"].Git.AuthMode)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, "--key "+credentials.GitHubAppIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want github app id follow-up hint", stderr)
+	}
+	if !strings.Contains(stderr, "--key "+credentials.GitHubAppPrivateKeyKey+" --stdin") {
+		t.Fatalf("stderr = %q, want github app private key follow-up hint", stderr)
+	}
+}
+
+func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	existing := basicProfile("work")
+	existing.Git.IdentityCache = "git-cache"
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+		IdentityCache: "reviewer-cache",
+	}
+	existing.LLM.ModelMap = config.ModelMap{
+		string(config.ModelTierSmall):  "claude-haiku-4",
+		string(config.ModelTierMedium): "claude-sonnet-4-6",
+	}
+	existing.LLM.ReviewerModelTier = config.ModelTierMedium
+	existing.AgentSources = []string{"/tmp/agents", "/tmp/more-agents"}
+	existing.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+		ResolveAfter:     "24h",
+	}
+	if err := config.Save(path, config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": existing,
+		},
+	}); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+	err := root.Execute(cmd, []string{
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+		"--replace-profile",
+		"--disable-reviewer",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	expected := existing
+	expected.ReviewerCredentials = nil
+	if !reflect.DeepEqual(got.Profiles["work"], expected) {
+		t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
+	}
+}
+
+func TestInitLLMReviewerModelTierFlags(t *testing.T) {
+	t.Run("set tier", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yml")
+		cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+
+		err := root.Execute(cmd, []string{
+			"init",
+			"--non-interactive",
+			"--llm-reviewer-model-tier", string(config.ModelTierLarge),
+		})
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+
+		got, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load config: %v", err)
+		}
+		if got.Profiles["default"].LLM.ReviewerModelTier != config.ModelTierLarge {
+			t.Fatalf("reviewer_model_tier = %q, want large", got.Profiles["default"].LLM.ReviewerModelTier)
+		}
+	})
+
+	t.Run("clear tier", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yml")
+		existing := basicProfile("work")
+		existing.Git.IdentityCache = "git-cache"
+		existing.ReviewerCredentials = &config.ReviewerCredentials{
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/work-reviewer",
+			IdentityCache: "reviewer-cache",
+		}
+		existing.LLM.ModelMap = config.ModelMap{
+			string(config.ModelTierSmall):  "claude-haiku-4",
+			string(config.ModelTierMedium): "claude-sonnet-4-6",
+		}
+		existing.LLM.ReviewerModelTier = config.ModelTierMedium
+		existing.AgentSources = []string{"/tmp/agents"}
+		existing.ReviewPolicy = config.ReviewPolicy{
+			MajorEvent:       config.ReviewMajorEventRequestChanges,
+			AllowSelfApprove: true,
+			ResolveThreads:   config.ResolveThreadsNever,
+			ResolveAfter:     "24h",
+		}
+		if err := config.Save(path, config.File{
+			DefaultProfile: "work",
+			Profiles: map[string]config.Profile{
+				"work": existing,
+			},
+		}); err != nil {
+			t.Fatalf("Save config: %v", err)
+		}
+
+		cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+		err := root.Execute(cmd, []string{
+			"--profile", "work",
+			"init",
+			"--non-interactive",
+			"--replace-profile",
+			"--clear-llm-reviewer-model-tier",
+		})
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+
+		got, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load config: %v", err)
+		}
+		expected := existing
+		expected.LLM.ReviewerModelTier = ""
+		if !reflect.DeepEqual(got.Profiles["work"], expected) {
+			t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
+		}
+	})
+}
+
+func TestInitGitTokenIngressUnderGitHubAppRejectsBeforeReadingSecret(t *testing.T) {
+	cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), failReader{})
+	err := root.Execute(cmd, []string{
+		"init",
+		"--non-interactive",
+		"--git-auth-mode", string(config.GitAuthModeGitHubApp),
+		"--git-token-stdin",
+	})
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if !strings.Contains(err.Error(), "git token ingress requires --git-auth-mode pat") {
+		t.Fatalf("error = %v, want git auth mode rejection", err)
+	}
+	if strings.Contains(err.Error(), "secret ingress was read") {
+		t.Fatalf("init read git-token stdin before rejecting github_app mode: %v", err)
+	}
+}
+
 func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	keepForever := 0
@@ -1248,6 +1514,7 @@ func TestBuildNonInteractiveInitPlanDoesNotApplySideEffects(t *testing.T) {
 	flags := initOptions{
 		nonInteractive: true,
 		gitHost:        "github.com",
+		gitAuth:        string(config.GitAuthModePAT),
 		reviewerAuth:   string(config.GitAuthModePAT),
 		llmProvider:    string(config.LLMProviderAnthropic),
 		llmAuth:        string(config.LLMAuthSubscription),
@@ -2912,6 +3179,73 @@ func TestInitInteractiveRejectsSecretIngressFlagsBeforePrompt(t *testing.T) {
 	}
 }
 
+func TestInitInteractiveRejectsNonInteractiveParityFlagsBeforePrompt(t *testing.T) {
+	tests := []struct {
+		name  string
+		args  []string
+		flags initOptions
+	}{
+		{
+			name: "string git auth",
+			args: []string{"--git-auth-mode", "github_app"},
+			flags: initOptions{
+				gitAuth: string(config.GitAuthModeGitHubApp),
+			},
+		},
+		{
+			name: "bool disable reviewer",
+			args: []string{"--disable-reviewer"},
+			flags: initOptions{
+				disableReviewer: true,
+			},
+		},
+		{
+			name: "string keyring backend",
+			args: []string{"--keyring-backend", "file"},
+			flags: initOptions{
+				keyringBackend: "file",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &root.Options{
+				Stdin:      failReader{},
+				Stdout:     &bytes.Buffer{},
+				Stderr:     &bytes.Buffer{},
+				ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+			}
+			deps := initDeps{
+				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+					t.Fatal("prompter called despite interactive parity-flag rejection")
+					return initDraft{}, nil
+				}),
+				configPath: func(*root.Options) (string, error) {
+					t.Fatal("configPath called despite interactive parity-flag rejection")
+					return "", nil
+				},
+			}
+			cmd := &cobra.Command{}
+			cmd.Flags().String("git-auth-mode", "", "")
+			cmd.Flags().Bool("disable-reviewer", false, "")
+			cmd.Flags().String("llm-reviewer-model-tier", "", "")
+			cmd.Flags().String("keyring-backend", "", "")
+			if err := cmd.Flags().Parse(tt.args); err != nil {
+				t.Fatalf("Parse flags: %v", err)
+			}
+
+			err := runInitWithDeps(cmd, opts, tt.flags, deps)
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+			}
+			if !strings.Contains(err.Error(), "only supported with --non-interactive") {
+				t.Fatalf("error = %v, want interactive parity-flag rejection", err)
+			}
+		})
+	}
+}
+
 func TestInitInteractivePersistsExplicitBackendForDeferredLLM(t *testing.T) {
 	hermeticFileBackend(t)
 	path := filepath.Join(t.TempDir(), "config.yml")
@@ -3422,14 +3756,24 @@ func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 		{name: "git and reviewer stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--reviewer-token-stdin"}},
 		{name: "invalid profile segment", args: []string{"--profile", "bad.profile", "init", "--non-interactive"}},
 		{name: "reviewer ref matches git ref", args: []string{"init", "--non-interactive", "--reviewer-credential-ref", "codereview/default"}},
+		{name: "unsupported git auth", args: []string{"init", "--non-interactive", "--git-auth-mode", string(config.GitAuthModeOAuthDevice)}},
+		{name: "git token ingress under github app", args: []string{"init", "--non-interactive", "--git-auth-mode", string(config.GitAuthModeGitHubApp), "--git-token-from-env", "CR_GIT_TOKEN"}},
 		{name: "unsupported reviewer auth", args: []string{"init", "--non-interactive", "--reviewer-auth-mode", string(config.GitAuthModeOAuthDevice)}},
+		{name: "disable reviewer with reviewer auth", args: []string{"init", "--non-interactive", "--disable-reviewer", "--reviewer-auth-mode", string(config.GitAuthModePAT)}},
+		{name: "disable reviewer with reviewer secret", args: []string{"init", "--non-interactive", "--disable-reviewer", "--reviewer-token-from-env", "CR_REVIEWER_TOKEN"}},
 		{name: "empty reviewer env secret", args: []string{"init", "--non-interactive", "--reviewer-token-from-env", "CR_EMPTY_REVIEWER_TOKEN"}},
 		{name: "llm ingress under subscription auth", args: []string{"init", "--non-interactive", "--llm-api-key-from-env", "CR_LLM_KEY"}},
+		{name: "invalid reviewer model tier", args: []string{"init", "--non-interactive", "--llm-reviewer-model-tier", "flagship"}},
+		{name: "set and clear reviewer model tier", args: []string{"init", "--non-interactive", "--llm-reviewer-model-tier", string(config.ModelTierMedium), "--clear-llm-reviewer-model-tier"}},
+		{name: "set and reset keyring backend", args: []string{"init", "--non-interactive", "--keyring-backend", "file", "--reset-keyring-backend"}},
+		{name: "runtime and durable backend conflict", args: []string{"--backend", "memory", "init", "--non-interactive", "--keyring-backend", "file"}},
 		{name: "pi rpc adapter without pi provider", args: []string{"init", "--non-interactive", "--llm-adapter", string(config.LLMAdapterPiRPC)}},
 		{name: "codex cli adapter without openai provider", args: []string{"init", "--non-interactive", "--llm-adapter", string(config.LLMAdapterCodexCLI)}},
 	}
 	t.Setenv("CR_LLM_KEY", "llm-key")
+	t.Setenv("CR_GIT_TOKEN", "git-token")
 	t.Setenv("CR_EMPTY_REVIEWER_TOKEN", "")
+	t.Setenv("CR_REVIEWER_TOKEN", "reviewer-token")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("secret"))
