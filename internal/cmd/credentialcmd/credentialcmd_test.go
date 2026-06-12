@@ -3861,6 +3861,86 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCou
 	}
 }
 
+func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitMenuPrompter{
+		stdin:  strings.NewReader("6\n"),
+		stderr: &stderr,
+	}
+	action, err := prompter.ChooseAction(initMenuPrompt{
+		HasWorkspace:        false,
+		LLMRuntimeCount:     2,
+		ReviewerEntityCount: 3,
+		ReviewProfileCount:  1,
+	})
+	if err != nil {
+		t.Fatalf("ChooseAction: %v", err)
+	}
+	if action != initMenuActionExit {
+		t.Fatalf("action = %q, want exit", action)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Configure LLM runtimes (2)",
+		"Configure reviewer entities (3)",
+		"Configure review profiles (1)",
+		"Review global settings",
+		"Save and exit",
+		"Exit without saving",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr = %q, want menu item %q", out, want)
+		}
+	}
+}
+
+func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitMenuPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"5", // Save and exit (disabled)
+			"6", // Exit without saving
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+	action, err := prompter.ChooseAction(initMenuPrompt{})
+	if err != nil {
+		t.Fatalf("ChooseAction: %v", err)
+	}
+	if action == initMenuActionSave {
+		t.Fatalf("action = %q, want disabled save selection to be rejected", action)
+	}
+	if !strings.Contains(stderr.String(), "configure a review profile before saving") {
+		t.Fatalf("stderr = %q, want disabled-save validation message", stderr.String())
+	}
+}
+
+func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitMenuPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"1", // Configure LLM runtimes (disabled)
+			"6", // Exit without saving
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+	action, err := prompter.ChooseAction(initMenuPrompt{})
+	if err != nil {
+		t.Fatalf("ChooseAction: %v", err)
+	}
+	if action == initMenuActionLLMRuntimes {
+		t.Fatalf("action = %q, want disabled LLM selection to be rejected", action)
+	}
+	if !strings.Contains(stderr.String(), "configure a review profile before editing LLM runtimes") {
+		t.Fatalf("stderr = %q, want disabled-llm validation message", stderr.String())
+	}
+}
+
 func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	original := config.File{
@@ -3878,9 +3958,17 @@ func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	openStoreCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{initMenuActionExit},
+		},
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			openStoreCalls++
+			return newFakeInitStore(map[string]map[string]string{}), nil
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -3896,6 +3984,9 @@ func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg, wantCfg) {
 		t.Fatalf("config after exit-without-save = %#v, want %#v", cfg, wantCfg)
+	}
+	if openStoreCalls != 0 {
+		t.Fatalf("openStoreCalls = %d, want 0 on exit-without-save", openStoreCalls)
 	}
 }
 
@@ -3985,6 +4076,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
+				initMenuActionGlobalSettings,
 				initMenuActionReviewProfiles,
 				initMenuActionLLMRuntimes,
 				initMenuActionSave,
@@ -4007,6 +4099,15 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 			draft.LLMAuth = string(config.LLMAuthAPIKey)
 			draft.LLMAdapter = string(config.LLMAdapterOpenAIAPI)
 			return draft, nil
+		}),
+		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+			return initRetentionEdit{Apply: true, Retention: config.RetentionConfig{
+				MaxAgeDays:  intPtr(30),
+				Enforcement: config.RetentionManualOnly,
+			}}, nil
+		}),
+		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{Apply: true, Backend: "file"}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
@@ -4041,6 +4142,9 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 	if profile.LLM.CredentialRef == "" {
 		t.Fatalf("llm credential ref = %q, want generated ref after runtime rebuild", profile.LLM.CredentialRef)
 	}
+	if cfg.Keyring.Backend != "file" || cfg.Data.Retention.MaxAgeDaysValue() != 30 || cfg.Data.Retention.Enforcement != config.RetentionManualOnly {
+		t.Fatalf("global settings after runtime rebuild = %#v / %#v, want file + 30/manual_only", cfg.Keyring, cfg.Data.Retention)
+	}
 }
 
 func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testing.T) {
@@ -4054,6 +4158,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
+				initMenuActionGlobalSettings,
 				initMenuActionReviewProfiles,
 				initMenuActionReviewerEntities,
 				initMenuActionSave,
@@ -4075,6 +4180,15 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			return draft, nil
+		}),
+		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+			return initRetentionEdit{Apply: true, Retention: config.RetentionConfig{
+				MaxAgeDays:  intPtr(14),
+				Enforcement: config.RetentionAtWrite,
+			}}, nil
+		}),
+		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{Apply: true, Backend: "memory"}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
@@ -4116,6 +4230,9 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	}
 	if profile.ReviewerCredentials.CredentialRef == "" {
 		t.Fatalf("reviewer credential ref = %q, want generated ref after reviewer rebuild", profile.ReviewerCredentials.CredentialRef)
+	}
+	if cfg.Keyring.Backend != "memory" || cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
+		t.Fatalf("global settings after reviewer rebuild = %#v / %#v, want memory + 14/at_write", cfg.Keyring, cfg.Data.Retention)
 	}
 }
 
