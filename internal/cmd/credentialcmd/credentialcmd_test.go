@@ -3832,6 +3832,35 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceDisablesProfileDependentAction
 	}
 }
 
+func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCounts(t *testing.T) {
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	home := basicProfile("home")
+	home.LLM = config.LLMConfig{
+		Provider:      config.LLMProviderOpenAI,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterOpenAIAPI,
+		CredentialRef: "codereview/home-llm",
+	}
+	prompt := buildInteractiveInitMenuPrompt(initSessionDraft{
+		cfg: config.File{
+			Profiles: map[string]config.Profile{
+				"home": home,
+				"work": work,
+			},
+		},
+	})
+	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
+		t.Fatalf("prompt = %#v, want actions disabled without active workspace", prompt)
+	}
+	if prompt.LLMRuntimeCount != 2 || prompt.ReviewerEntityCount != 2 || prompt.ReviewProfileCount != 2 {
+		t.Fatalf("prompt counts = %#v, want existing inventory counts from session cfg", prompt)
+	}
+}
+
 func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	original := config.File{

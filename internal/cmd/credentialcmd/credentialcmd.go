@@ -979,16 +979,18 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 }
 
 func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
+	llmRuntimes, _ := buildInitLLMRuntimeInventory(session.cfg)
+	reviewerEntities, _ := buildInitReviewerEntityInventory(session.cfg)
 	prompt := initMenuPrompt{
-		HasWorkspace:       session.workspace != nil,
-		ReviewProfileCount: len(session.cfg.Profiles),
+		HasWorkspace:         session.workspace != nil,
+		LLMRuntimeCount:      len(llmRuntimes),
+		ReviewerEntityCount:  len(reviewerEntities),
+		ReviewProfileCount:   len(session.cfg.Profiles),
 	}
 	if session.workspace == nil {
 		return prompt
 	}
 	prompt.ActiveProfileName = session.workspace.profileName
-	prompt.LLMRuntimeCount = len(session.workspace.llmRuntimes)
-	prompt.ReviewerEntityCount = len(session.workspace.reviewerEntities)
 	prompt.CanConfigureLLM = true
 	prompt.CanConfigureReviewer = true
 	prompt.CanSave = true
