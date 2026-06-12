@@ -1341,7 +1341,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	}
 
 	requestedProfileName := ctx.RequestedProfileName
-	if selectedCreateNewProfile {
+	if selectedCreateNewProfile && ctx.ExistingProfile != nil {
 		requestedProfileName = ""
 	}
 	draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)

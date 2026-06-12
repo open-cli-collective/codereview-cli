@@ -2601,6 +2601,42 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 	}
 }
 
+func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedNameWhenNoProfileMatched(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Create new profile
+			"",  // Profile name
+			"",  // Make default
+			"",  // Git host
+			"",  // Git auth
+			"",  // Reviewer entity
+			"",  // LLM runtime
+			"",  // Reviewer model tier
+			"",  // Advanced storage labels
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "office",
+		ExistingProfileNames: []string{"work"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.OriginalProfileName != "" {
+		t.Fatalf("draft.OriginalProfileName = %q, want blank for unmatched requested profile", draft.OriginalProfileName)
+	}
+	if draft.ProfileName != "office" {
+		t.Fatalf("draft.ProfileName = %q, want explicit requested profile name preserved for create-new fallback", draft.ProfileName)
+	}
+}
+
 func TestInitInventorySelectionsApplyToDraft(t *testing.T) {
 	draft := seedInteractiveInitDraft("default", "", "", nil)
 	gitScopes := map[string]initGitScopeDraft{
