@@ -60,10 +60,10 @@ selected LLM auth mode is `api_key`, the wizard saves the non-secret profile
 shape and prints a follow-up `cr set-credential` command instead of collecting
 the API key inline.
 
-Interactive `git.host` edits are also intentionally blocked when the target
-profile already participates in `repository_profiles` routing. Route
-reconciliation is handled separately so the wizard does not partially rewrite
-repository routing state.
+Interactive `git.host` edits now route through the repository-route stage when
+the target profile already participates in `repository_profiles` routing. The
+wizard shows the affected routes, lets the user reconcile or remove them, and
+rejects preserved routes whose host no longer matches the selected profile.
 
 ## Release Secrets
 
