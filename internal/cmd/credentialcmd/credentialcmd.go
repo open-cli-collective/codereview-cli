@@ -812,10 +812,7 @@ func buildInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, d
 	}
 	backendFlagSet := cmderr.BackendFlagChanged(cmd)
 	store, err := deps.openStore(opts.Backend, backendFlagSet, ctx.ExistingConfig)
-	var storeErr error
-	if err != nil {
-		storeErr = err
-	}
+	storeErr := err
 	if initStorePresent(store) {
 		defer func() { _ = store.Close() }()
 	}
@@ -840,6 +837,7 @@ func initStorePresent(store initStore) bool {
 	if store == nil {
 		return false
 	}
+	// A typed-nil store can sit inside the interface after openStore returns, so store == nil is not sufficient here.
 	value := reflect.ValueOf(store)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
@@ -1045,6 +1043,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
 	applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
 	applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, ctx.LLMRuntimes)
+	// Inventory selections fill provider/auth/ref fields; rerunning the mode finalizers applies side effects like clearing refs for self-reviewers or subscription runtimes.
 	reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
 	selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
 	applyReviewerEntitySelection(&draft, reviewerMode)
@@ -1258,7 +1257,7 @@ func dedupeInitStringOptions(options []huh.Option[string]) []huh.Option[string] 
 	seen := map[string]struct{}{}
 	deduped := make([]huh.Option[string], 0, len(options))
 	for _, option := range options {
-		key := fmt.Sprintf("%v", option.Value)
+		key := option.Value
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -2692,6 +2691,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	if profile.Git.CredentialRef == "" {
 		profile.Git.CredentialRef = defaultGitRef
 	}
+	// Changing the selected Git scope means any cached resolved identity may belong to the wrong host/auth pair.
 	if previousProfile != nil && !initGitScopeDraftFromConfig(profile.Git).matchesConfig(previousProfile.Git) {
 		profile.Git.IdentityCache = ""
 	}
@@ -2707,6 +2707,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 			AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
 			CredentialRef: reviewerRef,
 		}
+		// Changing reviewer credentials can invalidate the cached reviewer identity even when the profile name stays the same.
 		if previousProfile != nil && previousProfile.ReviewerCredentials != nil && initReviewerEntityDraftFromConfig(config.Profile{ReviewerCredentials: &reviewer}).matchesConfig(*previousProfile.ReviewerCredentials) {
 			reviewer.IdentityCache = previousProfile.ReviewerCredentials.IdentityCache
 		}
