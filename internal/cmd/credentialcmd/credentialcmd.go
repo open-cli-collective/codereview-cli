@@ -1770,7 +1770,7 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 	if profileName == "" {
 		return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("profile name is required"))
 	}
-	working := cfg
+	working := cloneInitConfigFile(cfg)
 	if working.Profiles == nil {
 		working.Profiles = map[string]config.Profile{}
 	}
@@ -1863,6 +1863,55 @@ func finalizeInteractiveInitPlan(workspace initWorkspaceDraft) initPlan {
 		allowDeferredLLM: workspace.allowDeferredLLM,
 		writeLLMHint:     workspace.writeLLMHint,
 	}
+}
+
+func cloneInitConfigFile(cfg config.File) config.File {
+	cloned := cfg
+	if cfg.Profiles != nil {
+		cloned.Profiles = make(map[string]config.Profile, len(cfg.Profiles))
+		for name, profile := range cfg.Profiles {
+			cloned.Profiles[name] = cloneInitProfile(profile)
+		}
+	}
+	if len(cfg.RepositoryProfiles) > 0 {
+		cloned.RepositoryProfiles = make([]config.RepositoryProfile, len(cfg.RepositoryProfiles))
+		for i, route := range cfg.RepositoryProfiles {
+			clonedRoute := route
+			if len(route.Match.Repos) > 0 {
+				clonedRoute.Match.Repos = append([]string(nil), route.Match.Repos...)
+			}
+			cloned.RepositoryProfiles[i] = clonedRoute
+		}
+	}
+	if cfg.Data.Retention.MaxAgeDays != nil {
+		value := *cfg.Data.Retention.MaxAgeDays
+		cloned.Data.Retention.MaxAgeDays = &value
+	}
+	return cloned
+}
+
+func cloneInitProfile(profile config.Profile) config.Profile {
+	cloned := profile
+	if profile.ReviewerCredentials != nil {
+		reviewer := *profile.ReviewerCredentials
+		cloned.ReviewerCredentials = &reviewer
+	}
+	cloned.LLM = cloneInitLLMConfig(profile.LLM)
+	if len(profile.AgentSources) > 0 {
+		cloned.AgentSources = append([]string(nil), profile.AgentSources...)
+	}
+	return cloned
+}
+
+func cloneInitLLMConfig(llm config.LLMConfig) config.LLMConfig {
+	cloned := llm
+	if len(llm.ModelMap) > 0 {
+		cloned.ModelMap = make(config.ModelMap, len(llm.ModelMap))
+		for tier, model := range llm.ModelMap {
+			cloned.ModelMap[tier] = model
+		}
+	}
+	return cloned
 }
 
 func initValidationConfigForProfileHost(cfg config.File, profileName string, previousProfile *config.Profile, profileHost string) config.File {

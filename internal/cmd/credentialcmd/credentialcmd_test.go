@@ -1613,6 +1613,35 @@ func TestInitNonInteractiveBypassesInteractiveWorkspacePrompter(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveInitWorkspaceDoesNotMutateInputConfig(t *testing.T) {
+	opts := &root.Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	cfg := config.File{Profiles: map[string]config.Profile{}}
+	draft := initDraft{
+		ProfileName: "default",
+		MakeDefault: true,
+		GitHost:     "github.com",
+		GitAuth:     string(config.GitAuthModePAT),
+		LLMProvider: string(config.LLMProviderAnthropic),
+		LLMAuth:     string(config.LLMAuthSubscription),
+		LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+	}
+
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, opts, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	if _, ok := cfg.Profiles["default"]; ok {
+		t.Fatalf("input config mutated during workspace build: %#v", cfg.Profiles)
+	}
+	if _, ok := workspace.cfg.Profiles["default"]; !ok {
+		t.Fatalf("workspace config profiles = %#v, want draft default profile", workspace.cfg.Profiles)
+	}
+}
+
 func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T) {
 	store := newFakeInitStore(map[string]map[string]string{})
 	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
@@ -1661,6 +1690,15 @@ func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T
 	}
 	if got := workspace.writes["codereview/default"][credentials.GitTokenKey]; got != "new-token" {
 		t.Fatalf("draft write = %q, want new-token", got)
+	}
+	if !workspace.satisfiedRefs["codereview/default"] {
+		t.Fatalf("satisfiedRefs = %#v, want default ref marked satisfied", workspace.satisfiedRefs)
+	}
+	if workspace.overwriteRefs["codereview/default"] {
+		t.Fatalf("overwriteRefs = %#v, want default ref not marked for overwrite", workspace.overwriteRefs)
+	}
+	if len(workspace.credentialPlan) != 1 || workspace.credentialPlan[0].State != initCredentialPlanStateWrite {
+		t.Fatalf("credentialPlan = %#v, want single write entry", workspace.credentialPlan)
 	}
 	if got := store.bundles["default"][credentials.GitTokenKey]; got != "" {
 		t.Fatalf("stored git token = %q, want no keyring write before apply", got)
