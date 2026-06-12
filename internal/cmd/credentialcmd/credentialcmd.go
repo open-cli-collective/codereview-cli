@@ -771,7 +771,6 @@ type huhInitKeyringBackendPrompter struct {
 
 const (
 	initCustomGitScopeSelection       = "__custom_git_scope__"
-	initCustomReviewerEntitySelection = "__custom_reviewer_entity__"
 	initCustomLLMRuntimeSelection     = "__custom_llm_runtime__"
 )
 
@@ -921,11 +920,15 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	}
 	selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
 	if selectedReviewerEntity == "" {
-		selectedReviewerEntity = initCustomReviewerEntitySelection
+		selectedReviewerEntity = reviewerMode
 	}
 	selectedLLMRuntime := ctx.ProfileLLMRuntimes[selectedProfileName]
 	if selectedLLMRuntime == "" {
-		selectedLLMRuntime = initCustomLLMRuntimeSelection
+		if selectedRuntimePreset == string(initLLMRuntimePresetCustom) {
+			selectedLLMRuntime = initCustomLLMRuntimeSelection
+		} else {
+			selectedLLMRuntime = selectedRuntimePreset
+		}
 	}
 	gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
 	reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities)
@@ -987,17 +990,6 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				Description("Inspect or override non-secret credential-store labels for Git, reviewer, and LLM secrets.").
 				Value(&draft.AdvancedStorageLabels),
 		).Title("Review Profile"),
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Reviewer credential auth mode").
-				Options(
-					huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
-					huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
-				).
-				Value(&draft.ReviewerAuth),
-		).WithHideFunc(func() bool {
-			return selectedReviewerEntity != initCustomReviewerEntitySelection
-		}).Title("Reviewer Entity Details"),
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("LLM provider").
@@ -1093,7 +1085,11 @@ func initGitScopeOptions(scopes map[string]initGitScopeDraft) []huh.Option[strin
 }
 
 func initGitScopeLabel(scope initGitScopeDraft) string {
-	return fmt.Sprintf("%s via %s", scope.Host, initGitAuthModeLabel(scope.AuthMode))
+	label := fmt.Sprintf("%s via %s", scope.Host, initGitAuthModeLabel(scope.AuthMode))
+	if strings.TrimSpace(scope.Name) != "" {
+		label = fmt.Sprintf("%s (%s)", label, scope.Name)
+	}
+	return label
 }
 
 func initGitAuthModeLabel(mode config.GitAuthMode) string {
@@ -1140,20 +1136,23 @@ func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft) []hu
 }
 
 func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
+	var label string
 	switch entity.Kind {
 	case initReviewerEntityKindUseGitIdentity:
-		return "Use this profile's Git identity"
+		label = "Use this profile's Git identity"
 	case initReviewerEntityKindGitHubApp:
-		return "GitHub App reviewer"
+		label = "GitHub App reviewer"
 	default:
-		return "Personal access token reviewer"
+		label = "Personal access token reviewer"
 	}
+	if strings.TrimSpace(entity.Name) != "" {
+		label = fmt.Sprintf("%s (%s)", label, entity.Name)
+	}
+	return label
 }
 
 func applyReviewerEntityInventorySelection(draft *initDraft, selection string, entities map[string]initReviewerEntityDraft) {
 	switch selection {
-	case initCustomReviewerEntitySelection:
-		return
 	case string(initReviewerEntityKindUseGitIdentity), string(initReviewerEntityKindPAT), string(initReviewerEntityKindGitHubApp):
 		applyReviewerEntitySelection(draft, selection)
 		return
@@ -1218,20 +1217,25 @@ func initLLMRuntimeOptions(runtimes map[string]initLLMRuntimeDraft) []huh.Option
 }
 
 func initLLMRuntimeLabel(runtime initLLMRuntimeDraft) string {
+	var label string
 	switch runtime.Preset {
 	case initLLMRuntimePresetClaudeCLISubscription:
-		return "Claude CLI subscription"
+		label = "Claude CLI subscription"
 	case initLLMRuntimePresetCodexCLISubscription:
-		return "Codex CLI subscription"
+		label = "Codex CLI subscription"
 	case initLLMRuntimePresetPiLocal:
-		return "Pi local runtime"
+		label = "Pi local runtime"
 	case initLLMRuntimePresetAnthropicAPIKey:
-		return "Anthropic API key"
+		label = "Anthropic API key"
 	case initLLMRuntimePresetOpenAIAPIKey:
-		return "OpenAI API key"
+		label = "OpenAI API key"
 	default:
-		return fmt.Sprintf("Custom runtime (%s/%s/%s)", runtime.Provider, runtime.Auth, runtime.Adapter)
+		label = fmt.Sprintf("Custom runtime (%s/%s/%s)", runtime.Provider, runtime.Auth, runtime.Adapter)
 	}
+	if strings.TrimSpace(runtime.Name) != "" {
+		label = fmt.Sprintf("%s (%s)", label, runtime.Name)
+	}
+	return label
 }
 
 func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runtimes map[string]initLLMRuntimeDraft) {

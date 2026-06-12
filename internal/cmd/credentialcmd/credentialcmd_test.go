@@ -1831,6 +1831,9 @@ func TestBuildInitGitScopeInventoryAssignsStableSuffixOnNameCollision(t *testing
 	if profileScopeNames["home"] != "github-com-pat" && profileScopeNames["work"] != "github-com-pat" {
 		t.Fatalf("profileScopeNames = %#v, want one unsuffixed base name", profileScopeNames)
 	}
+	if initGitScopeLabel(scopes[profileScopeNames["home"]]) == initGitScopeLabel(scopes[profileScopeNames["work"]]) {
+		t.Fatalf("git scope labels should be distinguishable: %#v", profileScopeNames)
+	}
 }
 
 func TestBuildInitReviewerEntityInventoryVariantsAndDeduping(t *testing.T) {
@@ -1894,6 +1897,9 @@ func TestBuildInitReviewerEntityInventoryAssignsStableSuffixOnNameCollision(t *t
 	}
 	if profileEntityNames["home"] != "reviewer-pat" && profileEntityNames["work"] != "reviewer-pat" {
 		t.Fatalf("profileEntityNames = %#v, want one unsuffixed base name", profileEntityNames)
+	}
+	if initReviewerEntityLabel(entities[profileEntityNames["home"]]) == initReviewerEntityLabel(entities[profileEntityNames["work"]]) {
+		t.Fatalf("reviewer labels should be distinguishable: %#v", profileEntityNames)
 	}
 }
 
@@ -2050,6 +2056,24 @@ func TestBuildInitLLMRuntimeInventoryDeduplicatesSharedAPIKeyRuntime(t *testing.
 	}
 	if runtime.CredentialRef != "codereview/shared-llm" {
 		t.Fatalf("runtime credential ref = %q, want codereview/shared-llm", runtime.CredentialRef)
+	}
+}
+
+func TestInitLLMRuntimeLabelsDifferentiateSamePresetEntries(t *testing.T) {
+	first := initLLMRuntimeDraft{
+		Name:          "anthropic-api-key",
+		Preset:        initLLMRuntimePresetAnthropicAPIKey,
+		Provider:      config.LLMProviderAnthropic,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterAnthropicAPI,
+		CredentialRef: "codereview/a",
+	}
+	second := first
+	second.Name = "anthropic-api-key-2"
+	second.CredentialRef = "codereview/b"
+
+	if initLLMRuntimeLabel(first) == initLLMRuntimeLabel(second) {
+		t.Fatalf("runtime labels should be distinguishable: %q", initLLMRuntimeLabel(first))
 	}
 }
 
