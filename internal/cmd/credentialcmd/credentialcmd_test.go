@@ -1547,7 +1547,7 @@ func TestBuildInteractiveInitWorkspaceCancelLeavesConfigAndKeyringUntouched(t *t
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
-	wantErr := errors.New("cancelled")
+	wantErr := errors.New("canceled")
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{}, wantErr
