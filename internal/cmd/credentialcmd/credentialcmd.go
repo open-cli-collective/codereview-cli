@@ -2877,6 +2877,15 @@ func recordTouchedProfile(session initSessionDraft, currentName string, draftOri
 	if session.touchedProfiles == nil {
 		session.touchedProfiles = map[string]string{}
 	}
+	originalName := resolveHistoricProfileName(session, currentName, draftOriginalName)
+	if draftOriginalName != "" && strings.TrimSpace(draftOriginalName) != currentName {
+		delete(session.touchedProfiles, strings.TrimSpace(draftOriginalName))
+	}
+	session.touchedProfiles[currentName] = originalName
+	return session
+}
+
+func resolveHistoricProfileName(session initSessionDraft, currentName string, draftOriginalName string) string {
 	originalName := strings.TrimSpace(draftOriginalName)
 	if preservedOriginal, ok := session.touchedProfiles[originalName]; ok {
 		originalName = preservedOriginal
@@ -2886,11 +2895,7 @@ func recordTouchedProfile(session initSessionDraft, currentName string, draftOri
 			originalName = currentName
 		}
 	}
-	if draftOriginalName != "" && strings.TrimSpace(draftOriginalName) != currentName {
-		delete(session.touchedProfiles, strings.TrimSpace(draftOriginalName))
-	}
-	session.touchedProfiles[currentName] = originalName
-	return session
+	return originalName
 }
 
 func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraft) (initSessionPlan, error) {
@@ -4082,19 +4087,26 @@ func refreshInteractiveCredentialPlan(entries []initCredentialPlanEntry, planned
 			refreshed = append(refreshed, next)
 			continue
 		}
-		if len(next.PlannedWriteKeys) == 0 {
-			switch entry.State {
-			case initCredentialPlanStateDefer, initCredentialPlanStateOverwriteRef, initCredentialPlanStateMissingRequired:
-				refreshed = append(refreshed, next)
-				continue
-			case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
-			}
+		if len(next.PlannedWriteKeys) == 0 && statePreservesWithoutPlannedWrites(entry.State) {
+			refreshed = append(refreshed, next)
+			continue
 		}
 		next.MissingRequiredKeys = missingRequiredInitCredentialKeys(next.KeySpecs, next.PlannedWriteKeys)
 		next.State = classifyInitCredentialPlanEntry(next)
 		refreshed = append(refreshed, next)
 	}
 	return refreshed
+}
+
+func statePreservesWithoutPlannedWrites(state initCredentialPlanState) bool {
+	switch state {
+	case initCredentialPlanStateDefer, initCredentialPlanStateOverwriteRef, initCredentialPlanStateMissingRequired:
+		return true
+	case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
+		return false
+	default:
+		return false
+	}
 }
 
 func chooseInteractiveInitFinalizeAction(opts *root.Options, deps initDeps, plan initSessionPlan) (initFinalizeAction, error) {
