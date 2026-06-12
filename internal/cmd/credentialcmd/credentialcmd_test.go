@@ -4159,6 +4159,9 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 				initMenuActionSave,
 			},
 		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName:      "default",
@@ -4230,6 +4233,9 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 				initMenuActionSave,
 			},
 		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
 		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
@@ -4271,7 +4277,10 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 			}
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
 		},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(map[string]map[string]string{}), nil
@@ -4320,6 +4329,9 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 				initMenuActionSave,
 			},
 		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
 		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
@@ -4383,7 +4395,10 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 			}
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
 		},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(map[string]map[string]string{}), nil
@@ -4435,6 +4450,9 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 				initMenuActionSave,
 			},
 		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
 		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls != 1 {
@@ -4521,6 +4539,9 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 				initMenuActionSave,
 			},
 		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
 		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			if ctx.ExistingProfileName != "work" {
 				t.Fatalf("prompt context = %#v, want default work profile selected for rename", ctx)
@@ -4600,6 +4621,9 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 				initMenuActionSave,
 			},
 		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
@@ -4682,6 +4706,9 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 				initMenuActionSave,
 			},
 		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
@@ -4751,6 +4778,347 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	}
 	if cfg.Keyring.Backend != "memory" || cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("global settings after reviewer rebuild = %#v / %#v, want memory + 14/at_write", cfg.Keyring, cfg.Data.Retention)
+	}
+}
+
+func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	prompterCalls := 0
+	var finalizePrompt initFinalizePrompt
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+			finalizePrompt = prompt
+			return initFinalizeActionSave, nil
+		}),
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			prompterCalls++
+			if prompterCalls == 1 {
+				return initDraft{
+					ProfileName: "home",
+					MakeDefault: true,
+					GitHost:     "github.com",
+					GitAuth:     string(config.GitAuthModePAT),
+					LLMProvider: string(config.LLMProviderAnthropic),
+					LLMAuth:     string(config.LLMAuthSubscription),
+					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				}, nil
+			}
+			return initDraft{
+				ProfileName: "work",
+				MakeDefault: false,
+				GitHost:     "gitlab.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(finalizePrompt.Profiles) != 2 {
+		t.Fatalf("finalize prompt = %#v, want readiness for both touched profiles", finalizePrompt)
+	}
+	readinessByProfile := map[string]initProfileReadiness{}
+	for _, profile := range finalizePrompt.Profiles {
+		readinessByProfile[profile.ProfileName] = profile
+	}
+	for _, name := range []string{"home", "work"} {
+		profile := readinessByProfile[name]
+		if profile.Ready {
+			t.Fatalf("profile readiness = %#v, want deferred git credentials to mark %s not ready", profile, name)
+		}
+		if !strings.Contains(strings.Join(profile.Notes, "\n"), "Git deferred") {
+			t.Fatalf("profile notes = %#v, want deferred git note for %s", profile.Notes, name)
+		}
+	}
+	if !strings.Contains(stdout.String(), "Initialized 2 profile(s)") || !strings.Contains(stdout.String(), "- home: needs follow-up") || !strings.Contains(stdout.String(), "- work: needs follow-up") {
+		t.Fatalf("stdout = %q, want readiness summary for both profiles", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "set-credential --ref codereview/home --key "+credentials.GitTokenKey) || !strings.Contains(stderr.String(), "set-credential --ref codereview/work --key "+credentials.GitTokenKey) {
+		t.Fatalf("stderr = %q, want follow-up hints for both deferred profiles", stderr.String())
+	}
+}
+
+func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t *testing.T) {
+	store := newFakeInitStore(nil)
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionCancel, nil
+		}),
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"new-token"},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite cancel-before-save")
+			return nil
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if _, exists := store.bundles["default"][credentials.GitTokenKey]; exists {
+		t.Fatalf("store bundles = %#v, want no keyring writes after cancel", store.bundles)
+	}
+}
+
+func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			t.Fatal("finalize prompt should not run after keyring open failure")
+			return "", nil
+		}),
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return nil, errors.New("open failed")
+		},
+		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite keyring open failure")
+			return nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err == nil || !strings.Contains(err.Error(), "open failed") {
+		t.Fatalf("error = %v, want keyring open failure", err)
+	}
+}
+
+func TestApplyInteractiveInitSessionPlanRejectsInvalidConfigBeforeKeyringWrite(t *testing.T) {
+	opts := &root.Options{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	storeOpened := false
+	plan := initSessionPlan{
+		cfg: config.File{
+			Profiles: map[string]config.Profile{
+				"default": basicProfile("default"),
+			},
+		},
+		profileNames: []string{"default"},
+		writes: map[string]map[string]string{
+			"codereview/default": {credentials.GitTokenKey: "git-token"},
+		},
+	}
+	err := applyInteractiveInitSessionPlan(opts, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			storeOpened = true
+			return newFakeInitStore(nil), nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite invalid config")
+			return nil
+		},
+	}, plan)
+	if err == nil || !strings.Contains(err.Error(), "default_profile") {
+		t.Fatalf("error = %v, want config validation failure", err)
+	}
+	if storeOpened {
+		t.Fatal("store opened despite config validation failure")
+	}
+}
+
+func TestApplyInteractiveInitSessionPlanConfigSaveFailureAfterKeyringWritesReportsCleanup(t *testing.T) {
+	store := newFakeInitStore(nil)
+	opts := &root.Options{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	profile := basicProfile("default")
+	refs, err := config.CredentialRefs(profile)
+	if err != nil {
+		t.Fatalf("CredentialRefs: %v", err)
+	}
+	plan := initSessionPlan{
+		path:         filepath.Join(t.TempDir(), "config.yml"),
+		cfg:          config.File{DefaultProfile: "default", Profiles: map[string]config.Profile{"default": profile}},
+		profileNames: []string{"default"},
+		profileRefs:  map[string][]config.CredentialRef{"default": refs},
+		writes: map[string]map[string]string{
+			"codereview/default": {credentials.GitTokenKey: "git-token"},
+		},
+	}
+	err = applyInteractiveInitSessionPlan(opts, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+		saveConfig: func(string, config.File) error {
+			return errors.New("disk full")
+		},
+	}, plan)
+	if err == nil || !strings.Contains(err.Error(), "credential refs needing cleanup: [codereview/default]") {
+		t.Fatalf("error = %v, want cleanup hint after config save failure", err)
+	}
+	if got := store.bundles["default"][credentials.GitTokenKey]; got != "git-token" {
+		t.Fatalf("stored git token = %q, want git-token before config save failure", got)
+	}
+}
+
+func TestApplyInteractiveInitSessionPlanPartialKeyringWriteFailureReportsCleanup(t *testing.T) {
+	store := newFakeInitStore(nil)
+	store.setBundleFunc = func(profile string, kv map[string]string, _ ...credstore.SetOpt) (credstore.Result, error) {
+		if profile == "a" {
+			if store.bundles[profile] == nil {
+				store.bundles[profile] = map[string]string{}
+			}
+			for key, value := range kv {
+				store.bundles[profile][key] = value
+			}
+			return credstore.Result{Written: []string{credentials.GitTokenKey}}, nil
+		}
+		return credstore.Result{RollbackFailed: []string{credentials.GitTokenKey}}, errors.New("write failed")
+	}
+	opts := &root.Options{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	plan := initSessionPlan{
+		cfg: config.File{
+			DefaultProfile: "a",
+			Profiles: map[string]config.Profile{
+				"a": basicProfile("a"),
+				"b": basicProfile("b"),
+			},
+		},
+		profileNames: []string{"a", "b"},
+		writes: map[string]map[string]string{
+			"codereview/a": {credentials.GitTokenKey: "token-a"},
+			"codereview/b": {credentials.GitTokenKey: "token-b"},
+		},
+	}
+	err := applyInteractiveInitSessionPlan(opts, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite partial keyring write failure")
+			return nil
+		},
+	}, plan)
+	if err == nil || !strings.Contains(err.Error(), "credential refs needing cleanup: [codereview/a codereview/b]") {
+		t.Fatalf("error = %v, want cleanup refs after partial keyring write failure", err)
+	}
+}
+
+func TestApplyInteractiveInitSessionPlanOverwriteConflictFailsBeforeWrite(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{
+		"default": {credentials.GitTokenKey: "existing-token"},
+	})
+	opts := &root.Options{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	plan := initSessionPlan{
+		cfg: config.File{
+			DefaultProfile: "default",
+			Profiles: map[string]config.Profile{
+				"default": basicProfile("default"),
+			},
+		},
+		profileNames: []string{"default"},
+		writes: map[string]map[string]string{
+			"codereview/default": {credentials.GitTokenKey: "new-token"},
+		},
+		overwriteRefs: map[string]bool{},
+	}
+	err := applyInteractiveInitSessionPlan(opts, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite overwrite conflict")
+			return nil
+		},
+	}, plan)
+	if err == nil || !strings.Contains(err.Error(), credstore.ErrExists.Error()) {
+		t.Fatalf("error = %v, want overwrite conflict", err)
+	}
+	if got := store.bundles["default"][credentials.GitTokenKey]; got != "existing-token" {
+		t.Fatalf("stored git token = %q, want existing-token preserved on conflict", got)
 	}
 }
 
@@ -6024,6 +6392,12 @@ func (f initLLMRuntimePrompterFunc) EditLLMRuntime(prompt initLLMRuntimePrompt) 
 type initReviewerEntityPrompterFunc func(initReviewerEntityPrompt) (initDraft, error)
 
 func (f initReviewerEntityPrompterFunc) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
+	return f(prompt)
+}
+
+type initFinalizePrompterFunc func(initFinalizePrompt) (initFinalizeAction, error)
+
+func (f initFinalizePrompterFunc) ChooseFinalizeAction(prompt initFinalizePrompt) (initFinalizeAction, error) {
 	return f(prompt)
 }
 

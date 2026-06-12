@@ -195,6 +195,10 @@ type initReviewerEntityPrompter interface {
 	EditReviewerEntity(initReviewerEntityPrompt) (initDraft, error)
 }
 
+type initFinalizePrompter interface {
+	ChooseFinalizeAction(initFinalizePrompt) (initFinalizeAction, error)
+}
+
 type initPromptContext struct {
 	RequestedProfileName string
 	ExistingProfileName  string
@@ -288,6 +292,23 @@ type initKeyringBackendEdit struct {
 	Backend string
 }
 
+type initFinalizeAction string
+
+const (
+	initFinalizeActionSave   initFinalizeAction = "save"
+	initFinalizeActionCancel initFinalizeAction = "cancel"
+)
+
+type initProfileReadiness struct {
+	ProfileName string
+	Ready       bool
+	Notes       []string
+}
+
+type initFinalizePrompt struct {
+	Profiles []initProfileReadiness
+}
+
 type initMenuAction string
 
 const (
@@ -323,6 +344,7 @@ type initDeps struct {
 	menuPrompter         initMenuPrompter
 	llmRuntimePrompter   initLLMRuntimePrompter
 	reviewerPrompter     initReviewerEntityPrompter
+	finalizePrompter     initFinalizePrompter
 	modelMapPrompter     initModelMapPrompter
 	agentSourcesPrompter initAgentSourcesPrompter
 	reviewPolicyPrompter initReviewPolicyPrompter
@@ -378,12 +400,27 @@ type initWorkspaceDraft struct {
 	writeLLMHint       bool
 }
 
+type initSessionPlan struct {
+	path           string
+	cfg            config.File
+	profileNames   []string
+	profileRefs    map[string][]config.CredentialRef
+	writes         map[string]map[string]string
+	credentialPlan []initCredentialPlanEntry
+	overwriteRefs  map[string]bool
+	satisfiedRefs  map[string]bool
+	backendFlagSet bool
+	backendArg     string
+}
+
 type initSessionDraft struct {
 	path                 string
+	originalCfg          config.File
 	cfg                  config.File
 	requestedProfileName string
 	backendFlagSet       bool
 	workspace            *initWorkspaceDraft
+	touchedProfiles      map[string]string
 }
 
 type initGitScopeDraft struct {
@@ -557,6 +594,7 @@ func defaultInitDeps() initDeps {
 		menuPrompter:         nil,
 		llmRuntimePrompter:   nil,
 		reviewerPrompter:     nil,
+		finalizePrompter:     nil,
 		modelMapPrompter:     nil,
 		agentSourcesPrompter: nil,
 		reviewPolicyPrompter: nil,
@@ -588,6 +626,9 @@ func (deps initDeps) withDefaults() initDeps {
 	}
 	if deps.reviewerPrompter == nil {
 		deps.reviewerPrompter = defaults.reviewerPrompter
+	}
+	if deps.finalizePrompter == nil {
+		deps.finalizePrompter = defaults.finalizePrompter
 	}
 	if deps.modelMapPrompter == nil {
 		deps.modelMapPrompter = defaults.modelMapPrompter
@@ -722,12 +763,30 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if session.workspace == nil {
 		return nil
 	}
-	workspace, err := collectInteractiveInitSecrets(cmd, opts, deps, *session.workspace)
+	if useLegacyInitPath {
+		workspace, err := collectInteractiveInitSecrets(cmd, opts, deps, *session.workspace)
+		if err != nil {
+			return err
+		}
+		plan := finalizeInteractiveInitPlan(workspace)
+		return applyInitPlan(opts, flags, deps, plan)
+	}
+	plan, err := buildInteractiveInitSessionPlan(opts, session)
 	if err != nil {
 		return err
 	}
-	plan := finalizeInteractiveInitPlan(workspace)
-	return applyInitPlan(opts, flags, deps, plan)
+	plan, err = collectInteractiveInitSessionSecrets(opts, deps, plan)
+	if err != nil {
+		return err
+	}
+	action, err := chooseInteractiveInitFinalizeAction(opts, deps, plan)
+	if err != nil {
+		return err
+	}
+	if action == initFinalizeActionCancel {
+		return nil
+	}
+	return applyInteractiveInitSessionPlan(opts, deps, plan)
 }
 
 func runInjectedInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
@@ -782,6 +841,11 @@ type huhInitReviewerEntityPrompter struct {
 	stderr io.Writer
 }
 
+type huhInitFinalizePrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
 func newHuhInitPrompter(opts *root.Options) initPrompter {
 	return huhInitPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
@@ -796,6 +860,10 @@ func newHuhInitLLMRuntimePrompter(opts *root.Options) initLLMRuntimePrompter {
 
 func newHuhInitReviewerEntityPrompter(opts *root.Options) initReviewerEntityPrompter {
 	return huhInitReviewerEntityPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitFinalizePrompter(opts *root.Options) initFinalizePrompter {
+	return huhInitFinalizePrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 type huhInitSecretPrompter struct {
@@ -948,9 +1016,11 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 	}
 	session := initSessionDraft{
 		path:                 path,
+		originalCfg:          cloneInitConfigFile(cfg),
 		cfg:                  cloneInitConfigFile(cfg),
 		requestedProfileName: profileName,
 		backendFlagSet:       cmderr.BackendFlagChanged(cmd),
+		touchedProfiles:      map[string]string{},
 	}
 	existingProfileName := ""
 	var existingProfile *config.Profile
@@ -1092,6 +1162,7 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
 	session.requestedProfileName = workspace.profileName
+	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
 	return session, nil
 }
 
@@ -1118,6 +1189,7 @@ func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
 	session.requestedProfileName = workspace.profileName
+	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
 	return session, nil
 }
 
@@ -1144,6 +1216,7 @@ func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
 	session.requestedProfileName = workspace.profileName
+	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
 	return session, nil
 }
 
@@ -1217,6 +1290,42 @@ func initMenuDescription(prompt initMenuPrompt) string {
 		return fmt.Sprintf("Active profile: %s", prompt.ActiveProfileName)
 	}
 	return "Configure the parts cr needs, then save when the active profile is ready."
+}
+
+func (p huhInitFinalizePrompter) ChooseFinalizeAction(prompt initFinalizePrompt) (initFinalizeAction, error) {
+	action := initFinalizeActionSave
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewNote().Description(initFinalizeDescription(prompt)),
+			huh.NewSelect[initFinalizeAction]().
+				Title("Finalize init").
+				Options(
+					huh.NewOption("Save and write config/credentials", initFinalizeActionSave),
+					huh.NewOption("Cancel without saving", initFinalizeActionCancel),
+				).
+				Value(&action),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return action, nil
+}
+
+func initFinalizeDescription(prompt initFinalizePrompt) string {
+	lines := []string{"Review readiness before writing config or credentials."}
+	for _, profile := range prompt.Profiles {
+		status := "ready"
+		if !profile.Ready {
+			status = "needs follow-up"
+		}
+		line := fmt.Sprintf("- %s: %s", profile.ProfileName, status)
+		if len(profile.Notes) > 0 {
+			line += " (" + strings.Join(profile.Notes, "; ") + ")"
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
@@ -2760,6 +2869,103 @@ func finalizeInteractiveInitPlan(workspace initWorkspaceDraft) initPlan {
 	}
 }
 
+func recordTouchedProfile(session initSessionDraft, currentName string, draftOriginalName string) initSessionDraft {
+	currentName = strings.TrimSpace(currentName)
+	if currentName == "" {
+		return session
+	}
+	if session.touchedProfiles == nil {
+		session.touchedProfiles = map[string]string{}
+	}
+	originalName := strings.TrimSpace(draftOriginalName)
+	if preservedOriginal, ok := session.touchedProfiles[originalName]; ok {
+		originalName = preservedOriginal
+	}
+	if originalName == "" {
+		if _, exists := session.originalCfg.Profiles[currentName]; exists {
+			originalName = currentName
+		}
+	}
+	if draftOriginalName != "" && strings.TrimSpace(draftOriginalName) != currentName {
+		delete(session.touchedProfiles, strings.TrimSpace(draftOriginalName))
+	}
+	session.touchedProfiles[currentName] = originalName
+	return session
+}
+
+func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraft) (initSessionPlan, error) {
+	profileNames := finalizeInteractiveProfileNames(session)
+	profileRefs := make(map[string][]config.CredentialRef, len(profileNames))
+	entriesByKey := map[string]initCredentialPlanEntry{}
+	for _, profileName := range profileNames {
+		profile, ok := session.cfg.Profiles[profileName]
+		if !ok {
+			return initSessionPlan{}, cmderr.Config(fmt.Errorf("%w: %s", config.ErrProfileNotFound, profileName))
+		}
+		refs, err := config.CredentialRefs(profile)
+		if err != nil {
+			return initSessionPlan{}, cmderr.Config(err)
+		}
+		profileRefs[profileName] = append([]config.CredentialRef(nil), refs...)
+		for _, ref := range refs {
+			key := initCredentialEntryKey(ref)
+			if _, exists := entriesByKey[key]; exists {
+				continue
+			}
+			specs, err := credentials.KeySpecsForPurpose(ref)
+			if err != nil {
+				return initSessionPlan{}, cmderr.Config(err)
+			}
+			entriesByKey[key] = initCredentialPlanEntry{
+				Ref:      ref,
+				KeySpecs: append([]credentials.KeySpec(nil), specs...),
+				State:    initCredentialPlanStateDefer,
+			}
+		}
+	}
+	entryKeys := make([]string, 0, len(entriesByKey))
+	for key := range entriesByKey {
+		entryKeys = append(entryKeys, key)
+	}
+	sort.Strings(entryKeys)
+	entries := make([]initCredentialPlanEntry, 0, len(entryKeys))
+	for _, key := range entryKeys {
+		entries = append(entries, entriesByKey[key])
+	}
+	return initSessionPlan{
+		path:           session.path,
+		cfg:            cloneInitConfigFile(session.cfg),
+		profileNames:   profileNames,
+		profileRefs:    profileRefs,
+		writes:         map[string]map[string]string{},
+		credentialPlan: entries,
+		overwriteRefs:  map[string]bool{},
+		satisfiedRefs:  map[string]bool{},
+		backendFlagSet: session.backendFlagSet,
+		backendArg:     interactiveInitBackendArg(opts, session.backendFlagSet, session.cfg),
+	}, nil
+}
+
+func finalizeInteractiveProfileNames(session initSessionDraft) []string {
+	names := map[string]struct{}{}
+	for name := range session.touchedProfiles {
+		names[name] = struct{}{}
+	}
+	if session.workspace != nil && strings.TrimSpace(session.workspace.profileName) != "" {
+		names[session.workspace.profileName] = struct{}{}
+	}
+	profileNames := make([]string, 0, len(names))
+	for name := range names {
+		profileNames = append(profileNames, name)
+	}
+	sort.Strings(profileNames)
+	return profileNames
+}
+
+func initCredentialEntryKey(ref config.CredentialRef) string {
+	return strings.Join([]string{ref.Purpose, ref.Ref, ref.Mode, ref.Provider}, "\x00")
+}
+
 func initGitScopeDraftFromConfig(git config.GitConfig) initGitScopeDraft {
 	return initGitScopeDraft{
 		Host:          strings.TrimSpace(git.Host),
@@ -3701,6 +3907,99 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 	return plan, nil
 }
 
+func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, plan initSessionPlan) (initSessionPlan, error) {
+	if len(plan.credentialPlan) == 0 {
+		return plan, nil
+	}
+	var err error
+	plan.credentialPlan, err = loadInteractiveCredentialPlanState(plan.credentialPlan, func() (initStore, error) {
+		return deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+	})
+	if err != nil {
+		return initSessionPlan{}, cmderr.Credential(err)
+	}
+	workspacePlan := initWorkspaceDraft{
+		cfg:             plan.cfg,
+		writes:          plan.writes,
+		credentialPlan:  plan.credentialPlan,
+		overwriteRefs:   plan.overwriteRefs,
+		satisfiedRefs:   plan.satisfiedRefs,
+		backendFlagSet:  plan.backendFlagSet,
+		backendArg:      plan.backendArg,
+		allowDeferredLLM: true,
+	}
+	workspacePlan, err = collectInteractiveInitSecrets(nil, opts, deps, workspacePlan)
+	if err != nil {
+		return initSessionPlan{}, err
+	}
+	plan.writes = workspacePlan.writes
+	plan.credentialPlan = workspacePlan.credentialPlan
+	plan.overwriteRefs = workspacePlan.overwriteRefs
+	plan.satisfiedRefs = workspacePlan.satisfiedRefs
+	return plan, nil
+}
+
+func loadInteractiveCredentialPlanState(entries []initCredentialPlanEntry, openStore func() (initStore, error)) ([]initCredentialPlanEntry, error) {
+	var needsStore bool
+	for _, entry := range entries {
+		if entry.State != initCredentialPlanStateClearRef {
+			needsStore = true
+			break
+		}
+	}
+	if !needsStore {
+		return entries, nil
+	}
+	store, err := openStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	normalized := make([]initCredentialPlanEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.State == initCredentialPlanStateClearRef {
+			normalized = append(normalized, entry)
+			continue
+		}
+		status, err := credentials.CredentialRefStatus(store, entry.Ref, nil)
+		if err != nil {
+			return nil, err
+		}
+		next := entry
+		missingRequired := credentials.MissingRequiredKeys(status)
+		if credentials.RequiredKeysSatisfied(status) {
+			next.State = initCredentialPlanStateKeepExisting
+			next.MissingRequiredKeys = nil
+			normalized = append(normalized, next)
+			continue
+		}
+		if next.State == initCredentialPlanStateOverwriteRef {
+			next.MissingRequiredKeys = missingRequired
+			normalized = append(normalized, next)
+			continue
+		}
+		if credentialStatusHasAnyKeys(status) {
+			next.State = initCredentialPlanStateMissingRequired
+			next.MissingRequiredKeys = missingRequired
+			normalized = append(normalized, next)
+			continue
+		}
+		next.State = initCredentialPlanStateDefer
+		next.MissingRequiredKeys = nil
+		normalized = append(normalized, next)
+	}
+	return normalized, nil
+}
+
+func credentialStatusHasAnyKeys(status credentials.CredentialStatus) bool {
+	for _, key := range status.Keys {
+		if key.Present != nil && *key.Present {
+			return true
+		}
+	}
+	return false
+}
+
 func existingInitCredentialKeys(store initStore, ref string) (map[string]bool, error) {
 	parsed, err := credentials.ParseRef(ref)
 	if err != nil {
@@ -3786,11 +4085,133 @@ func refreshInteractiveCredentialPlan(entries []initCredentialPlanEntry, planned
 			refreshed = append(refreshed, next)
 			continue
 		}
+		if len(next.PlannedWriteKeys) == 0 {
+			switch entry.State {
+			case initCredentialPlanStateDefer, initCredentialPlanStateOverwriteRef, initCredentialPlanStateMissingRequired:
+				refreshed = append(refreshed, next)
+				continue
+			case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
+			}
+		}
 		next.MissingRequiredKeys = missingRequiredInitCredentialKeys(next.KeySpecs, next.PlannedWriteKeys)
 		next.State = classifyInitCredentialPlanEntry(next)
 		refreshed = append(refreshed, next)
 	}
 	return refreshed
+}
+
+func chooseInteractiveInitFinalizeAction(opts *root.Options, deps initDeps, plan initSessionPlan) (initFinalizeAction, error) {
+	prompter := deps.finalizePrompter
+	if prompter == nil {
+		prompter = newHuhInitFinalizePrompter(opts)
+	}
+	return prompter.ChooseFinalizeAction(buildInteractiveInitFinalizePrompt(plan))
+}
+
+func buildInteractiveInitFinalizePrompt(plan initSessionPlan) initFinalizePrompt {
+	return initFinalizePrompt{Profiles: buildInteractiveInitProfileReadiness(plan)}
+}
+
+func buildInteractiveInitProfileReadiness(plan initSessionPlan) []initProfileReadiness {
+	entryByKey := map[string]initCredentialPlanEntry{}
+	for _, entry := range plan.credentialPlan {
+		entryByKey[initCredentialEntryKey(entry.Ref)] = entry
+	}
+	readiness := make([]initProfileReadiness, 0, len(plan.profileNames))
+	for _, profileName := range plan.profileNames {
+		profileReadiness := initProfileReadiness{ProfileName: profileName, Ready: true}
+		for _, ref := range plan.profileRefs[profileName] {
+			entry, ok := entryByKey[initCredentialEntryKey(ref)]
+			if !ok {
+				continue
+			}
+			note := initCredentialReadinessNote(entry)
+			if note == "" {
+				continue
+			}
+			profileReadiness.Ready = false
+			profileReadiness.Notes = append(profileReadiness.Notes, note)
+		}
+		readiness = append(readiness, profileReadiness)
+	}
+	return readiness
+}
+
+func initCredentialReadinessNote(entry initCredentialPlanEntry) string {
+	label := initCredentialPurposeLabel(entry.Ref.Purpose)
+	switch entry.State {
+	case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
+		return ""
+	case initCredentialPlanStateDefer:
+		return label + " deferred"
+	case initCredentialPlanStateOverwriteRef:
+		if len(entry.MissingRequiredKeys) == 0 {
+			return label + " needs setup"
+		}
+		return fmt.Sprintf("%s missing %s", label, strings.Join(entry.MissingRequiredKeys, ", "))
+	case initCredentialPlanStateMissingRequired:
+		if len(entry.MissingRequiredKeys) == 0 {
+			return label + " needs setup"
+		}
+		return fmt.Sprintf("%s missing %s", label, strings.Join(entry.MissingRequiredKeys, ", "))
+	}
+	return ""
+}
+
+func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan initSessionPlan) error {
+	if err := config.Validate(plan.cfg); err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
+			return cmderr.Config(err)
+		}
+		return err
+	}
+	var store initStore
+	if len(plan.writes) > 0 {
+		var err error
+		store, err = deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+		if err != nil {
+			return cmderr.Credential(err)
+		}
+		defer store.Close()
+		if err := preflightNoOverwrite(store, plan.writes, plan.overwriteRefs); err != nil {
+			return cmderr.Credential(err)
+		}
+		if _, err := writeBundles(store, plan.writes, false, plan.overwriteRefs); err != nil {
+			return cmderr.Credential(err)
+		}
+	}
+	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
+			return cmderr.Config(err)
+		}
+		if len(plan.writes) > 0 {
+			return fmt.Errorf("init wrote credentials but failed to save config; credential refs needing cleanup: %v: %w", sortedRefs(plan.writes), err)
+		}
+		return err
+	}
+	if _, err := fmt.Fprintf(opts.Stdout, "Initialized %d profile(s)\n", len(plan.profileNames)); err != nil {
+		return err
+	}
+	for _, readiness := range buildInteractiveInitProfileReadiness(plan) {
+		status := "ready"
+		if !readiness.Ready {
+			status = "needs follow-up"
+		}
+		if _, err := fmt.Fprintf(opts.Stdout, "- %s: %s\n", readiness.ProfileName, status); err != nil {
+			return err
+		}
+	}
+	var writeErr error
+	for _, entry := range plan.credentialPlan {
+		if !shouldWriteInitCredentialHint(entry, true) {
+			continue
+		}
+		hintErr := writeInitCredentialPlanHints(opts.Stderr, plan.backendArg, entry)
+		if writeErr == nil {
+			writeErr = hintErr
+		}
+	}
+	return writeErr
 }
 
 func hasDeferredLLMCredential(entries []initCredentialPlanEntry) bool {
