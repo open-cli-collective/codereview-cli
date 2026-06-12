@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/huh"
@@ -152,6 +153,14 @@ type initModelMapPrompter interface {
 	EditModelMap(initModelMapPrompt) (initModelMapEdit, error)
 }
 
+type initAgentSourcesPrompter interface {
+	EditAgentSources(initAgentSourcesPrompt) (initAgentSourcesEdit, error)
+}
+
+type initReviewPolicyPrompter interface {
+	EditReviewPolicy(initReviewPolicyPrompt) (initReviewPolicyEdit, error)
+}
+
 type initPromptContext struct {
 	RequestedProfileName string
 	ExistingProfileName  string
@@ -188,17 +197,37 @@ type initModelMapEdit struct {
 	ModelMap config.ModelMap
 }
 
+type initAgentSourcesPrompt struct {
+	Sources []string
+}
+
+type initAgentSourcesEdit struct {
+	Apply   bool
+	Sources []string
+}
+
+type initReviewPolicyPrompt struct {
+	ReviewPolicy config.ReviewPolicy
+}
+
+type initReviewPolicyEdit struct {
+	Apply        bool
+	ReviewPolicy config.ReviewPolicy
+}
+
 type initDeps struct {
-	prompter           initPrompter
-	modelMapPrompter   initModelMapPrompter
-	secretPrompter     initSecretPrompter
-	clipboardSupported func() bool
-	clipboardRead      func() (string, error)
-	configPath         func(*root.Options) (string, error)
-	loadConfig         func(string) (config.File, bool, error)
-	saveConfig         func(string, config.File) error
-	openStore          func(string, bool, config.File) (initStore, error)
-	readSecret         func(io.Reader, bool, string, string, string) (string, bool, error)
+	prompter             initPrompter
+	modelMapPrompter     initModelMapPrompter
+	agentSourcesPrompter initAgentSourcesPrompter
+	reviewPolicyPrompter initReviewPolicyPrompter
+	secretPrompter       initSecretPrompter
+	clipboardSupported   func() bool
+	clipboardRead        func() (string, error)
+	configPath           func(*root.Options) (string, error)
+	loadConfig           func(string) (config.File, bool, error)
+	saveConfig           func(string, config.File) error
+	openStore            func(string, bool, config.File) (initStore, error)
+	readSecret           func(io.Reader, bool, string, string, string) (string, bool, error)
 }
 
 type initPlan struct {
@@ -269,6 +298,21 @@ const (
 	initModelMapActionReset    initModelMapAction = "reset"
 )
 
+type initAgentSourcesAction string
+
+const (
+	initAgentSourcesActionPreserve initAgentSourcesAction = "preserve"
+	initAgentSourcesActionEdit     initAgentSourcesAction = "edit"
+	initAgentSourcesActionReset    initAgentSourcesAction = "reset"
+)
+
+type initReviewPolicyAction string
+
+const (
+	initReviewPolicyActionPreserve initReviewPolicyAction = "preserve"
+	initReviewPolicyActionEdit     initReviewPolicyAction = "edit"
+)
+
 type initSecretSource string
 
 const (
@@ -295,12 +339,14 @@ type initSecretValuePrompt struct {
 
 func defaultInitDeps() initDeps {
 	return initDeps{
-		modelMapPrompter:   nil,
-		clipboardSupported: func() bool { return !clipboard.Unsupported },
-		clipboardRead:      clipboard.ReadAll,
-		configPath:         configPath,
-		loadConfig:         loadConfigForInit,
-		saveConfig:         config.Save,
+		modelMapPrompter:     nil,
+		agentSourcesPrompter: nil,
+		reviewPolicyPrompter: nil,
+		clipboardSupported:   func() bool { return !clipboard.Unsupported },
+		clipboardRead:        clipboard.ReadAll,
+		configPath:           configPath,
+		loadConfig:           loadConfigForInit,
+		saveConfig:           config.Save,
 		openStore: func(flagValue string, flagSet bool, cfg config.File) (initStore, error) {
 			return credentials.OpenStore(flagValue, flagSet, cfg)
 		},
@@ -315,6 +361,12 @@ func (deps initDeps) withDefaults() initDeps {
 	}
 	if deps.modelMapPrompter == nil {
 		deps.modelMapPrompter = defaults.modelMapPrompter
+	}
+	if deps.agentSourcesPrompter == nil {
+		deps.agentSourcesPrompter = defaults.agentSourcesPrompter
+	}
+	if deps.reviewPolicyPrompter == nil {
+		deps.reviewPolicyPrompter = defaults.reviewPolicyPrompter
 	}
 	if deps.clipboardSupported == nil {
 		deps.clipboardSupported = defaults.clipboardSupported
@@ -459,6 +511,14 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if err != nil {
 		return err
 	}
+	plan, err = collectInteractiveInitAgentSources(opts, deps, plan)
+	if err != nil {
+		return err
+	}
+	plan, err = collectInteractiveInitReviewPolicy(opts, deps, plan)
+	if err != nil {
+		return err
+	}
 	plan, err = collectInteractiveInitSecrets(cmd, opts, deps, plan)
 	if err != nil {
 		return err
@@ -485,12 +545,30 @@ type huhInitModelMapPrompter struct {
 	stderr io.Writer
 }
 
+type huhInitAgentSourcesPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
+type huhInitReviewPolicyPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
 	return huhInitSecretPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 func newHuhInitModelMapPrompter(opts *root.Options) initModelMapPrompter {
 	return huhInitModelMapPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitAgentSourcesPrompter(opts *root.Options) initAgentSourcesPrompter {
+	return huhInitAgentSourcesPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitReviewPolicyPrompter(opts *root.Options) initReviewPolicyPrompter {
+	return huhInitReviewPolicyPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -772,6 +850,149 @@ func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initMo
 	return initModelMapEdit{Apply: true, ModelMap: edited}, nil
 }
 
+func (p huhInitAgentSourcesPrompter) EditAgentSources(prompt initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
+	action := initAgentSourcesActionPreserve
+	options := []huh.Option[initAgentSourcesAction]{
+		huh.NewOption("Keep current agent source paths", initAgentSourcesActionPreserve),
+		huh.NewOption("Edit agent source paths", initAgentSourcesActionEdit),
+	}
+	if len(prompt.Sources) > 0 {
+		options = append(options, huh.NewOption("Reset all agent source paths", initAgentSourcesActionReset))
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initAgentSourcesAction]().
+				Title("Agent source paths").
+				Options(options...).
+				Value(&action),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initAgentSourcesEdit{}, err
+	}
+	switch action {
+	case initAgentSourcesActionPreserve:
+		return initAgentSourcesEdit{Apply: false}, nil
+	case initAgentSourcesActionReset:
+		return initAgentSourcesEdit{Apply: true, Sources: nil}, nil
+	case initAgentSourcesActionEdit:
+	default:
+		return initAgentSourcesEdit{}, fmt.Errorf("unsupported agent-sources action %q", action)
+	}
+
+	values := make([]string, len(prompt.Sources))
+	fields := make([]huh.Field, 0, len(values)+1)
+	for i := range prompt.Sources {
+		values[i] = prompt.Sources[i]
+		fields = append(fields,
+			huh.NewInput().
+				Title(fmt.Sprintf("Agent source %d", i+1)).
+				Description("Leave blank to remove this path. Paths are normalized before save.").
+				Value(&values[i]),
+		)
+	}
+	var additions string
+	fields = append(fields,
+		huh.NewInput().
+			Title("Add agent sources").
+			Description("Optional. Enter comma-separated paths to append.").
+			Value(&additions),
+	)
+	form = huh.NewForm(huh.NewGroup(fields...).Title("Agent sources")).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initAgentSourcesEdit{}, err
+	}
+	edited := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		edited = append(edited, value)
+	}
+	for _, value := range strings.Split(additions, ",") {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		edited = append(edited, value)
+	}
+	if len(edited) == 0 {
+		edited = nil
+	}
+	return initAgentSourcesEdit{Apply: true, Sources: edited}, nil
+}
+
+func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
+	action := initReviewPolicyActionPreserve
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initReviewPolicyAction]().
+				Title("Review policy").
+				Options(
+					huh.NewOption("Keep current review policy", initReviewPolicyActionPreserve),
+					huh.NewOption("Edit review policy", initReviewPolicyActionEdit),
+				).
+				Value(&action),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initReviewPolicyEdit{}, err
+	}
+	if action == initReviewPolicyActionPreserve {
+		return initReviewPolicyEdit{Apply: false}, nil
+	}
+	if action != initReviewPolicyActionEdit {
+		return initReviewPolicyEdit{}, fmt.Errorf("unsupported review-policy action %q", action)
+	}
+
+	policy := prompt.ReviewPolicy
+	if policy.MajorEvent == "" {
+		policy.MajorEvent = config.ReviewMajorEventComment
+	}
+	majorEvent := policy.MajorEvent
+	selfApprove := policy.AllowSelfApprove
+	resolveThreads := string(policy.ResolveThreads)
+	resolveAfter := policy.ResolveAfter
+	form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[config.ReviewMajorEvent]().
+				Title("Major findings event").
+				Options(
+					huh.NewOption("Comment", config.ReviewMajorEventComment),
+					huh.NewOption("Request changes", config.ReviewMajorEventRequestChanges),
+				).
+				Value(&majorEvent),
+			huh.NewConfirm().
+				Title("Allow self-approve").
+				Value(&selfApprove),
+			huh.NewSelect[string]().
+				Title("Resolve threads").
+				Options(
+					huh.NewOption("Use built-in default", ""),
+					huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
+					huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
+				).
+				Value(&resolveThreads),
+			huh.NewInput().
+				Title("Resolve-after duration").
+				Description("Optional. Leave blank to clear. Example: 24h or 30m.").
+				Value(&resolveAfter).
+				Validate(validateOptionalDuration),
+		).Title("Review policy"),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initReviewPolicyEdit{}, err
+	}
+	return initReviewPolicyEdit{
+		Apply: true,
+		ReviewPolicy: config.ReviewPolicy{
+			MajorEvent:       majorEvent,
+			AllowSelfApprove: selfApprove,
+			ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(resolveThreads)),
+			ResolveAfter:     strings.TrimSpace(resolveAfter),
+		},
+	}, nil
+}
+
 func initModelMapInputDescription(tier config.ModelTier, builtIn string) string {
 	if builtIn = strings.TrimSpace(builtIn); builtIn != "" {
 		return fmt.Sprintf("Leave blank to use the built-in %s model: %s", tier, builtIn)
@@ -801,6 +1022,15 @@ func validateOptionalCredentialRef(value string) error {
 		return nil
 	}
 	_, err := credentials.ParseRef(trimmed)
+	return err
+}
+
+func validateOptionalDuration(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	_, err := time.ParseDuration(trimmed)
 	return err
 }
 
@@ -1270,6 +1500,89 @@ func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan init
 	plan.profile = nextProfile
 	plan.cfg = nextCfg
 	return plan, nil
+}
+
+func collectInteractiveInitAgentSources(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+	prompter := deps.agentSourcesPrompter
+	if prompter == nil {
+		if deps.prompter != nil {
+			return plan, nil
+		}
+		prompter = newHuhInitAgentSourcesPrompter(opts)
+	}
+	edit, err := prompter.EditAgentSources(initAgentSourcesPrompt{
+		Sources: append([]string(nil), plan.profile.AgentSources...),
+	})
+	if err != nil {
+		return initPlan{}, err
+	}
+	if !edit.Apply {
+		return plan, nil
+	}
+	nextSources, err := normalizeInitAgentSources(edit.Sources)
+	if err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	nextProfile := plan.profile
+	nextProfile.AgentSources = nextSources
+	nextCfg := plan.cfg
+	nextCfg.Profiles[plan.profileName] = nextProfile
+	if err := config.Validate(nextCfg); err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	plan.profile = nextProfile
+	plan.cfg = nextCfg
+	return plan, nil
+}
+
+func collectInteractiveInitReviewPolicy(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+	prompter := deps.reviewPolicyPrompter
+	if prompter == nil {
+		if deps.prompter != nil {
+			return plan, nil
+		}
+		prompter = newHuhInitReviewPolicyPrompter(opts)
+	}
+	edit, err := prompter.EditReviewPolicy(initReviewPolicyPrompt{
+		ReviewPolicy: plan.profile.ReviewPolicy,
+	})
+	if err != nil {
+		return initPlan{}, err
+	}
+	if !edit.Apply {
+		return plan, nil
+	}
+	nextProfile := plan.profile
+	nextProfile.ReviewPolicy = edit.ReviewPolicy
+	nextCfg := plan.cfg
+	nextCfg.Profiles[plan.profileName] = nextProfile
+	if err := config.Validate(nextCfg); err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	plan.profile = nextProfile
+	plan.cfg = nextCfg
+	return plan, nil
+}
+
+func normalizeInitAgentSources(sources []string) ([]string, error) {
+	if len(sources) == 0 {
+		return nil, nil
+	}
+	var normalized []string
+	for _, source := range sources {
+		if strings.TrimSpace(source) == "" {
+			continue
+		}
+		var err error
+		normalized, _, err = configedit.AddAgentSource(normalized, source)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
 }
 
 func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {

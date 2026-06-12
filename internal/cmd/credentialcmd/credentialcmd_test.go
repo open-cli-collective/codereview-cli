@@ -1488,6 +1488,70 @@ func TestHuhInitModelMapPrompterAccessibleShowsResetOptionForExistingOverrides(t
 	}
 }
 
+func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitAgentSourcesPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Edit agent source paths
+			"",  // keep first prefilled path
+			"",  // no additional paths
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.EditAgentSources(initAgentSourcesPrompt{
+		Sources: []string{"/tmp/agents"},
+	})
+	if err != nil {
+		t.Fatalf("EditAgentSources: %v", err)
+	}
+	if !edit.Apply {
+		t.Fatal("edit.Apply = false, want true")
+	}
+	if !reflect.DeepEqual(edit.Sources, []string{"/tmp/agents"}) {
+		t.Fatalf("edit.Sources = %#v, want preserved source", edit.Sources)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Agent source 1") || !strings.Contains(out, "Add agent sources") {
+		t.Fatalf("stderr = %q, want editable agent source inputs", out)
+	}
+}
+
+func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitReviewPolicyPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2",   // Edit review policy
+			"",    // keep comment
+			"n",   // allow self-approve false
+			"2",   // auto resolve
+			"24h", // resolve after
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.EditReviewPolicy(initReviewPolicyPrompt{
+		ReviewPolicy: config.ReviewPolicy{},
+	})
+	if err != nil {
+		t.Fatalf("EditReviewPolicy: %v", err)
+	}
+	if !edit.Apply {
+		t.Fatal("edit.Apply = false, want true")
+	}
+	if edit.ReviewPolicy.MajorEvent != config.ReviewMajorEventComment {
+		t.Fatalf("review policy = %#v, want default comment major_event", edit.ReviewPolicy)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Major findings event") || !strings.Contains(out, "Resolve-after duration") {
+		t.Fatalf("stderr = %q, want review-policy fields", out)
+	}
+}
+
 func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
@@ -1852,6 +1916,320 @@ func TestInitInteractiveModelMapRejectsInvalidEntries(t *testing.T) {
 	}
 }
 
+func TestInitInteractiveAgentSourcesPreserveAddRemoveAndReset(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []string
+		edit     initAgentSourcesEdit
+		want     []string
+	}{
+		{
+			name:     "add",
+			existing: nil,
+			edit:     initAgentSourcesEdit{Apply: true, Sources: []string{" ./agents "}},
+			want:     []string{"agents"},
+		},
+		{
+			name:     "remove one and add one",
+			existing: []string{"/tmp/alpha", "/tmp/beta"},
+			edit:     initAgentSourcesEdit{Apply: true, Sources: []string{"/tmp/beta", "/tmp/gamma"}},
+			want:     []string{"/tmp/beta", "/tmp/gamma"},
+		},
+		{
+			name:     "dedupe normalized",
+			existing: []string{"/tmp/alpha"},
+			edit:     initAgentSourcesEdit{Apply: true, Sources: []string{"/tmp/alpha", "/tmp/alpha/../alpha"}},
+			want:     []string{"/tmp/alpha"},
+		},
+		{
+			name:     "reset all",
+			existing: []string{"/tmp/alpha"},
+			edit:     initAgentSourcesEdit{Apply: true, Sources: nil},
+			want:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			existing := basicProfile("work")
+			existing.AgentSources = append([]string(nil), tt.existing...)
+			existing.ReviewPolicy = config.ReviewPolicy{
+				MajorEvent:       config.ReviewMajorEventRequestChanges,
+				AllowSelfApprove: true,
+				ResolveThreads:   config.ResolveThreadsNever,
+				ResolveAfter:     "24h",
+			}
+			saveCredentialTestConfig(t, path, config.File{
+				DefaultProfile: "work",
+				Profiles:       map[string]config.Profile{"work": existing},
+			})
+			opts := &root.Options{
+				Stdin:      strings.NewReader(""),
+				Stdout:     &bytes.Buffer{},
+				Stderr:     &bytes.Buffer{},
+				ConfigPath: path,
+			}
+			deps := initDeps{
+				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+					return initDraft{
+						OriginalProfileName: "work",
+						ProfileName:         "work",
+						MakeDefault:         true,
+						GitHost:             "github.com",
+						GitAuth:             string(config.GitAuthModePAT),
+						GitCredentialRef:    "codereview/work",
+						LLMProvider:         string(config.LLMProviderAnthropic),
+						LLMAuth:             string(config.LLMAuthSubscription),
+						LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					}, nil
+				}),
+				agentSourcesPrompter: initAgentSourcesPrompterFunc(func(initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
+					return tt.edit, nil
+				}),
+				configPath: func(*root.Options) (string, error) { return path, nil },
+				loadConfig: loadConfigForInit,
+				saveConfig: config.Save,
+			}
+
+			err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+			if err != nil {
+				t.Fatalf("runInitWithDeps: %v", err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load config: %v", err)
+			}
+			if !reflect.DeepEqual(cfg.Profiles["work"].AgentSources, tt.want) {
+				t.Fatalf("agent_sources = %#v, want %#v", cfg.Profiles["work"].AgentSources, tt.want)
+			}
+			if !reflect.DeepEqual(cfg.Profiles["work"].ReviewPolicy, existing.ReviewPolicy) {
+				t.Fatalf("review_policy = %#v, want preserved %#v", cfg.Profiles["work"].ReviewPolicy, existing.ReviewPolicy)
+			}
+		})
+	}
+}
+
+func TestInitInteractiveAgentSourcesCanClearToEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				MakeDefault:         true,
+				GitHost:             "github.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/work",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		agentSourcesPrompter: initAgentSourcesPrompterFunc(func(initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
+			return initAgentSourcesEdit{Apply: true, Sources: []string{" \t ", ""}}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, loadErr := config.Load(path)
+	if loadErr != nil {
+		t.Fatalf("Load config: %v", loadErr)
+	}
+	if cfg.Profiles["work"].AgentSources != nil {
+		t.Fatalf("agent_sources = %#v, want cleared empty slice semantics", cfg.Profiles["work"].AgentSources)
+	}
+}
+
+func TestInitInteractiveReviewPolicyPreserveEditAndDefaults(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing config.ReviewPolicy
+		edit     initReviewPolicyEdit
+		want     config.ReviewPolicy
+	}{
+		{
+			name: "set request changes policy",
+			edit: initReviewPolicyEdit{Apply: true, ReviewPolicy: config.ReviewPolicy{
+				MajorEvent:       config.ReviewMajorEventRequestChanges,
+				AllowSelfApprove: true,
+				ResolveThreads:   config.ResolveThreadsNever,
+				ResolveAfter:     "24h",
+			}},
+			want: config.ReviewPolicy{
+				MajorEvent:       config.ReviewMajorEventRequestChanges,
+				AllowSelfApprove: true,
+				ResolveThreads:   config.ResolveThreadsNever,
+				ResolveAfter:     "24h",
+			},
+		},
+		{
+			name: "reset major event and self approve default",
+			existing: config.ReviewPolicy{
+				MajorEvent:       config.ReviewMajorEventRequestChanges,
+				AllowSelfApprove: true,
+				ResolveThreads:   config.ResolveThreadsAuto,
+				ResolveAfter:     "1h",
+			},
+			edit: initReviewPolicyEdit{Apply: true, ReviewPolicy: config.ReviewPolicy{
+				MajorEvent:       config.ReviewMajorEventComment,
+				AllowSelfApprove: false,
+			}},
+			want: config.ReviewPolicy{
+				MajorEvent: config.ReviewMajorEventComment,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			existing := basicProfile("work")
+			existing.AgentSources = []string{"/tmp/agents"}
+			existing.ReviewPolicy = tt.existing
+			saveCredentialTestConfig(t, path, config.File{
+				DefaultProfile: "work",
+				Profiles:       map[string]config.Profile{"work": existing},
+			})
+			opts := &root.Options{
+				Stdin:      strings.NewReader(""),
+				Stdout:     &bytes.Buffer{},
+				Stderr:     &bytes.Buffer{},
+				ConfigPath: path,
+			}
+			deps := initDeps{
+				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+					return initDraft{
+						OriginalProfileName: "work",
+						ProfileName:         "work",
+						MakeDefault:         true,
+						GitHost:             "github.com",
+						GitAuth:             string(config.GitAuthModePAT),
+						GitCredentialRef:    "codereview/work",
+						LLMProvider:         string(config.LLMProviderAnthropic),
+						LLMAuth:             string(config.LLMAuthSubscription),
+						LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					}, nil
+				}),
+				reviewPolicyPrompter: initReviewPolicyPrompterFunc(func(initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
+					return tt.edit, nil
+				}),
+				configPath: func(*root.Options) (string, error) { return path, nil },
+				loadConfig: loadConfigForInit,
+				saveConfig: config.Save,
+			}
+
+			err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+			if err != nil {
+				t.Fatalf("runInitWithDeps: %v", err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load config: %v", err)
+			}
+			if !reflect.DeepEqual(cfg.Profiles["work"].ReviewPolicy, tt.want) {
+				t.Fatalf("review_policy = %#v, want %#v", cfg.Profiles["work"].ReviewPolicy, tt.want)
+			}
+			if !reflect.DeepEqual(cfg.Profiles["work"].AgentSources, existing.AgentSources) {
+				t.Fatalf("agent_sources = %#v, want preserved %#v", cfg.Profiles["work"].AgentSources, existing.AgentSources)
+			}
+		})
+	}
+}
+
+func TestInitInteractiveReviewPolicyRejectsInvalidEntries(t *testing.T) {
+	tests := []struct {
+		name string
+		edit initReviewPolicyEdit
+		want string
+	}{
+		{
+			name: "invalid major_event",
+			edit: initReviewPolicyEdit{Apply: true, ReviewPolicy: config.ReviewPolicy{
+				MajorEvent: "flag",
+			}},
+			want: `review_policy.major_event "flag" is invalid`,
+		},
+		{
+			name: "invalid resolve_threads",
+			edit: initReviewPolicyEdit{Apply: true, ReviewPolicy: config.ReviewPolicy{
+				MajorEvent:     config.ReviewMajorEventComment,
+				ResolveThreads: "always",
+			}},
+			want: `review_policy.resolve_threads "always" is invalid`,
+		},
+		{
+			name: "invalid resolve_after",
+			edit: initReviewPolicyEdit{Apply: true, ReviewPolicy: config.ReviewPolicy{
+				MajorEvent:   config.ReviewMajorEventComment,
+				ResolveAfter: "tomorrow",
+			}},
+			want: `review_policy.resolve_after "tomorrow" is invalid`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			saveCredentialTestConfig(t, path, config.File{
+				DefaultProfile: "work",
+				Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+			})
+			opts := &root.Options{
+				Stdin:      strings.NewReader(""),
+				Stdout:     &bytes.Buffer{},
+				Stderr:     &bytes.Buffer{},
+				ConfigPath: path,
+			}
+			deps := initDeps{
+				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+					return initDraft{
+						OriginalProfileName: "work",
+						ProfileName:         "work",
+						MakeDefault:         true,
+						GitHost:             "github.com",
+						GitAuth:             string(config.GitAuthModePAT),
+						GitCredentialRef:    "codereview/work",
+						LLMProvider:         string(config.LLMProviderAnthropic),
+						LLMAuth:             string(config.LLMAuthSubscription),
+						LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					}, nil
+				}),
+				reviewPolicyPrompter: initReviewPolicyPrompterFunc(func(initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
+					return tt.edit, nil
+				}),
+				configPath: func(*root.Options) (string, error) { return path, nil },
+				loadConfig: loadConfigForInit,
+				saveConfig: config.Save,
+			}
+
+			err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+			if err == nil {
+				t.Fatal("runInitWithDeps error = nil, want invalid review-policy rejection")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestInitInteractiveBlocksRouteHostChangeBeforeSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
@@ -2089,8 +2467,8 @@ func TestInitInteractiveCollectsClipboardGitSecretWithoutHint(t *testing.T) {
 			sources: []initSecretSource{initSecretSourceClipboard},
 		},
 		clipboardSupported: func() bool { return true },
-		clipboardRead: func() (string, error) { return "clipboard-token", nil },
-		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		clipboardRead:      func() (string, error) { return "clipboard-token", nil },
+		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
@@ -2653,6 +3031,18 @@ func (f initPrompterFunc) Run(ctx initPromptContext) (initDraft, error) {
 type initModelMapPrompterFunc func(initModelMapPrompt) (initModelMapEdit, error)
 
 func (f initModelMapPrompterFunc) EditModelMap(prompt initModelMapPrompt) (initModelMapEdit, error) {
+	return f(prompt)
+}
+
+type initAgentSourcesPrompterFunc func(initAgentSourcesPrompt) (initAgentSourcesEdit, error)
+
+func (f initAgentSourcesPrompterFunc) EditAgentSources(prompt initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
+	return f(prompt)
+}
+
+type initReviewPolicyPrompterFunc func(initReviewPolicyPrompt) (initReviewPolicyEdit, error)
+
+func (f initReviewPolicyPrompterFunc) EditReviewPolicy(prompt initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
 	return f(prompt)
 }
 
