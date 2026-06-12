@@ -4570,6 +4570,9 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
 		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
