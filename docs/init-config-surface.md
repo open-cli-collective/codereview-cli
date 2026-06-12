@@ -167,8 +167,12 @@ Scripted installs should remain readable. The intended shape is:
    any secrets intentionally supplied through stdin/env ingress.
 2. Use `cr set-credential` for deferred or multi-key credential bundles.
 3. Use `cr config default`, `cr config route`, `cr config agent-source`,
-   `cr config llm models`, and future `cr config retention` for narrow
-   idempotent mutations.
+   `cr config llm models`, and `cr config retention` for narrow idempotent
+   mutations.
+
+Persistent `keyring.backend` selection still does not have a dedicated scripted
+config command. Scripted installs should either leave it unset for platform
+auto-selection or wait for the non-interactive parity work tracked in #187.
 
 #187 adds only the durable init flags assigned to it in the inventory table:
 user Git auth mode, durable keyring backend persistence, reviewer credential

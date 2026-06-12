@@ -145,6 +145,40 @@ Repo-aware profile routing can select a profile from the PR repository when
 `--profile` is omitted. Use this when org, personal, or repo-specific reviewer
 credentials should differ without changing commands:
 
+For scripted installs, use `cr init --non-interactive` for the core profile and
+then layer narrow config mutations with the dedicated config commands. A typical
+sequence looks like:
+
+```bash
+cr --profile work init --non-interactive \
+  --git-host github.com \
+  --llm-provider anthropic \
+  --llm-auth subscription \
+  --llm-adapter claude_cli
+
+cr --profile work config route set \
+  --host github.com \
+  --namespace open-cli-collective \
+  --repo codereview-cli
+
+cr --profile work config agent-source add ~/.config/codereview/agents
+cr --profile work config llm models set medium claude-sonnet-4-6
+cr config retention set --max-age-days 30 --enforcement manual_only
+printf '%s' "$GITHUB_TOKEN" | cr set-credential \
+  --ref codereview/work \
+  --key git_token \
+  --stdin \
+  --overwrite
+```
+
+Use `cr config route` for repository routing, `cr config agent-source` for
+trusted source paths, `cr config llm models` for `llm.model_map`, and
+`cr config retention` for durable run-data policy. Persistent
+`keyring.backend` selection does not yet have a dedicated scripted command
+surface; leave it unset for platform auto selection or track the non-
+interactive parity work in
+[`#187`](https://github.com/open-cli-collective/codereview-cli/issues/187).
+
 ```yaml
 default_profile: personal
 repository_profiles:
@@ -250,7 +284,7 @@ profiles:
       adapter: anthropic_api
       credential_ref: codereview/work-llm
       model_map:
-        medium: claude-sonnet-model-id
+        medium: claude-sonnet-4-6
     agent_sources:
       - ~/.config/codereview/agents
     review_policy:
@@ -338,13 +372,26 @@ Those locations are warned because they are easy for local scripts or PR authors
 to mutate. Symlinked sources are accepted, but `cr` records the canonical path
 and fingerprints the resolved files.
 
-Pre-stage each secret with `set-credential`:
+When deploying a profile without the interactive wizard, run
+`cr init --non-interactive` first to write the core non-secret profile shape,
+then use `set-credential` only for secrets that you are intentionally staging
+outside init. Example:
 
 `github_app_installation_id` is optional for `cr review`, which can discover
 the installation from the PR repository. Stage it when you want `cr me` and
 other commands without repository context to work.
 
 ```bash
+cr --profile work init --non-interactive \
+  --git-host github.com \
+  --git-credential-ref codereview/work \
+  --reviewer-auth-mode github_app \
+  --reviewer-credential-ref codereview/work-reviewer-app \
+  --llm-provider anthropic \
+  --llm-auth api_key \
+  --llm-adapter anthropic_api \
+  --llm-credential-ref codereview/work-llm
+
 printf '%s' "$USER_GITHUB_TOKEN" | cr set-credential \
   --ref codereview/work \
   --key git_token \
@@ -377,15 +424,28 @@ printf '%s' "$ANTHROPIC_API_KEY" | cr set-credential \
   --overwrite
 ```
 
-Then verify the deployed profile without running `init`:
+Then apply any config that intentionally lives outside init flags:
+
+```bash
+cr --profile work config route set \
+  --host github.com \
+  --namespace open-cli-collective \
+  --repo codereview-cli
+
+cr --profile work config agent-source add ~/.config/codereview/agents
+cr --profile work config llm models set medium claude-sonnet-4-6
+cr config retention set --max-age-days 30 --enforcement manual_only
+```
+
+Then verify the deployed profile:
 
 ```bash
 cr config show --json
 cr me --all --json
 ```
 
-Do not run `cr init` after pre-staging; the profile and credentials are already
-deployed.
+Use `set-credential` only for deferred or multi-key credential bundles that are
+clearer to manage outside init.
 
 Environment variables in the examples above are setup ingress only. Runtime
 commands resolve service credentials from `config.yml` and the configured
@@ -721,6 +781,46 @@ canonical path, warnings, and SHA-256 fingerprint prefix without inlining agent
 definition contents.
 
 `--json` emits the same information as structured JSON.
+
+### `cr config route`
+
+```text
+cr config route list [--json]
+cr config route set --host <host> --namespace <namespace> [--repo <repo> ...]
+cr config route unset --host <host> --namespace <namespace> [--repo <repo> ...]
+```
+
+Inspects and updates `repository_profiles` routing rules. `set` and `unset`
+apply to the active profile when `--profile` is supplied; omit `--repo` to make
+the route namespace-wide, or repeat `--repo` for repo-specific routes.
+
+Use this command for scripted route parity instead of trying to encode routing
+inside `cr init --non-interactive`.
+
+### `cr config agent-source`
+
+```text
+cr config agent-source list [--json]
+cr config agent-source add <path>
+cr config agent-source remove <path>
+```
+
+Inspects and updates the active profile's `agent_sources`. `add` normalizes the
+path, skips duplicates, and preserves unrelated sources. `remove` removes only
+matching normalized paths from the active profile.
+
+### `cr config retention`
+
+```text
+cr config retention get [--json]
+cr config retention set [--max-age-days <days>] [--enforcement <policy>]
+cr config retention reset
+```
+
+Inspects and updates global `data.retention`. `set` accepts a non-negative
+`--max-age-days` value where `0` means keep forever, and an `--enforcement`
+value of `at_write` or `manual_only`. `reset` restores the default `90` day
+`at_write` policy.
 
 ### `cr config llm models`
 
