@@ -2637,6 +2637,103 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 	}
 }
 
+func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeHidesCustomFields(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"1",
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}})
+	if err != nil {
+		t.Fatalf("EditLLMRuntime: %v", err)
+	}
+	if draft.LLMProvider != string(config.LLMProviderAnthropic) || draft.LLMAdapter != string(config.LLMAdapterClaudeCLI) {
+		t.Fatalf("draft = %#v, want existing claude runtime", draft)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") || !strings.Contains(out, "Custom compatible runtime") {
+		t.Fatalf("stderr = %q, want mixed configured/custom runtime options", out)
+	}
+	if strings.Contains(out, "LLM provider") || strings.Contains(out, "LLM auth mode") || strings.Contains(out, "LLM adapter") {
+		t.Fatalf("stderr = %q, want configured runtime flow to hide custom fields", out)
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterAccessibleCustomRuntimeShowsCustomFields(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	existing.LLM = config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterAnthropicAPI,
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"",
+			"2",
+			"2",
+			"4",
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes: map[string]initLLMRuntimeDraft{
+			"claude-cli": {
+				Name:     "claude-cli",
+				Preset:   initLLMRuntimePresetClaudeCLISubscription,
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+		},
+		ProfileLLMRuntimes: map[string]string{"work": initCustomLLMRuntimeSelection},
+	}})
+	if err != nil {
+		t.Fatalf("EditLLMRuntime: %v", err)
+	}
+	if draft.ProfileName != "work" {
+		t.Fatalf("draft.ProfileName = %q, want work", draft.ProfileName)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") || !strings.Contains(out, "Custom compatible runtime") {
+		t.Fatalf("stderr = %q, want mixed configured/custom runtime options", out)
+	}
+	if !strings.Contains(out, "LLM provider") || !strings.Contains(out, "LLM auth mode") || !strings.Contains(out, "LLM adapter") {
+		t.Fatalf("stderr = %q, want custom runtime fields", out)
+	}
+}
+
 func TestInitInventorySelectionsApplyToDraft(t *testing.T) {
 	draft := seedInteractiveInitDraft("default", "", "", nil)
 	gitScopes := map[string]initGitScopeDraft{
@@ -2678,6 +2775,57 @@ func TestInitInventorySelectionsApplyToDraft(t *testing.T) {
 	}
 	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMCredentialRef != "codereview/work-llm" {
 		t.Fatalf("llm draft = %#v, want selected openai api-key runtime", draft)
+	}
+}
+
+func TestCustomLLMRuntimeSelectionUsesEditedProviderAuthAndAdapter(t *testing.T) {
+	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft.LLMProvider = string(config.LLMProviderOpenAI)
+	draft.LLMAuth = string(config.LLMAuthAPIKey)
+	draft.LLMAdapter = string(config.LLMAdapterOpenAIAPI)
+
+	applyLLMRuntimeInventorySelection(&draft, initCustomLLMRuntimeSelection, map[string]initLLMRuntimeDraft{
+		"claude-cli": {
+			Name:     "claude-cli",
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	})
+	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+	applyLLMRuntimeSelection(&draft, resolvedRuntimePreset)
+
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) {
+		t.Fatalf("draft = %#v, want edited openai api runtime retained for custom selection", draft)
+	}
+}
+
+func TestInitLLMRuntimeOptionsDistinguishConfiguredAndTemplateLabels(t *testing.T) {
+	options := initLLMRuntimeOptions(map[string]initLLMRuntimeDraft{
+		"claude-cli": {
+			Name:     "claude-cli",
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	})
+	var configuredLabel string
+	var templateLabel string
+	for _, option := range options {
+		switch option.Value {
+		case "claude-cli":
+			configuredLabel = option.Key
+		case string(initLLMRuntimePresetClaudeCLISubscription):
+			templateLabel = option.Key
+		}
+	}
+	if configuredLabel == "" || templateLabel == "" {
+		t.Fatalf("labels = %q / %q, want both configured and template options present", configuredLabel, templateLabel)
+	}
+	if configuredLabel == templateLabel {
+		t.Fatalf("configured/template labels = %q / %q, want distinct labels", configuredLabel, templateLabel)
 	}
 }
 
@@ -4164,15 +4312,15 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				ProfileName:      "default",
-				MakeDefault:      true,
-				GitHost:          "github.com",
-				GitAuth:          string(config.GitAuthModePAT),
-				LLMProvider:      string(config.LLMProviderAnthropic),
-				LLMAuth:          string(config.LLMAuthSubscription),
-				LLMAdapter:       string(config.LLMAdapterClaudeCLI),
-				ReviewerEnabled:  false,
-				ReviewerAuth:     string(config.GitAuthModePAT),
+				ProfileName:          "default",
+				MakeDefault:          true,
+				GitHost:              "github.com",
+				GitAuth:              string(config.GitAuthModePAT),
+				LLMProvider:          string(config.LLMProviderAnthropic),
+				LLMAuth:              string(config.LLMAuthSubscription),
+				LLMAdapter:           string(config.LLMAdapterClaudeCLI),
+				ReviewerEnabled:      false,
+				ReviewerAuth:         string(config.GitAuthModePAT),
 				LLMReviewerModelTier: "",
 			}, nil
 		}),
@@ -4692,6 +4840,220 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 	}
 }
 
+func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	profile := basicProfile("work")
+	profile.Git.Host = "gitlab.example.com"
+	profile.Git.CredentialRef = "codereview/work-git"
+	profile.Git.IdentityCache = "git-cache"
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+		IdentityCache: "reviewer-cache",
+	}
+	profile.LLM.ModelMap = config.ModelMap{"medium": "claude-custom"}
+	profile.LLM.ReviewerModelTier = config.ModelTierSmall
+	profile.AgentSources = []string{"/tmp/agents"}
+	profile.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+		ResolveAfter:     "24h",
+	}
+	wantRoutes := []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "gitlab.example.com",
+			Namespace: "team",
+			Repos:     []string{"repo"},
+		},
+	}}
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile:     "work",
+		RepositoryProfiles: wantRoutes,
+		Profiles:           map[string]config.Profile{"work": profile},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionLLMRuntimes,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.LLMProvider = string(config.LLMProviderOpenAI)
+			draft.LLMAuth = string(config.LLMAuthSubscription)
+			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"work-git":      {credentials.GitTokenKey: "existing-token"},
+				"work-reviewer": {credentials.GitHubAppIDKey: "12345", credentials.GitHubAppPrivateKeyKey: "private-key"},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	got := cfg.Profiles["work"]
+	if got.LLM.Provider != config.LLMProviderOpenAI || got.LLM.Adapter != config.LLMAdapterCodexCLI || got.LLM.Auth != config.LLMAuthSubscription {
+		t.Fatalf("llm = %#v, want codex subscription runtime", got.LLM)
+	}
+	if got.LLM.CredentialRef != "" {
+		t.Fatalf("llm credential ref = %q, want cleared for subscription runtime", got.LLM.CredentialRef)
+	}
+	if got.Git != profile.Git {
+		t.Fatalf("git = %#v, want preserved %#v", got.Git, profile.Git)
+	}
+	if !reflect.DeepEqual(got.ReviewerCredentials, profile.ReviewerCredentials) {
+		t.Fatalf("reviewer credentials = %#v, want preserved %#v", got.ReviewerCredentials, profile.ReviewerCredentials)
+	}
+	if !reflect.DeepEqual(got.AgentSources, profile.AgentSources) {
+		t.Fatalf("agent_sources = %#v, want preserved %#v", got.AgentSources, profile.AgentSources)
+	}
+	if !reflect.DeepEqual(got.LLM.ModelMap, profile.LLM.ModelMap) {
+		t.Fatalf("model_map = %#v, want preserved %#v", got.LLM.ModelMap, profile.LLM.ModelMap)
+	}
+	if got.LLM.ReviewerModelTier != profile.LLM.ReviewerModelTier {
+		t.Fatalf("reviewer_model_tier = %q, want %q", got.LLM.ReviewerModelTier, profile.LLM.ReviewerModelTier)
+	}
+	if !reflect.DeepEqual(got.ReviewPolicy, profile.ReviewPolicy) {
+		t.Fatalf("review_policy = %#v, want preserved %#v", got.ReviewPolicy, profile.ReviewPolicy)
+	}
+	if !reflect.DeepEqual(cfg.RepositoryProfiles, wantRoutes) {
+		t.Fatalf("repository_profiles = %#v, want preserved route %#v", cfg.RepositoryProfiles, wantRoutes)
+	}
+}
+
+func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlobalSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	wantProfile := basicProfile("work")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": wantProfile},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	openStoreCalls := 0
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionGlobalSettings,
+				initMenuActionLLMRuntimes,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
+		}),
+		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+			return initRetentionEdit{Apply: true, Retention: config.RetentionConfig{
+				MaxAgeDays:  intPtr(14),
+				Enforcement: config.RetentionAtWrite,
+			}}, nil
+		}),
+		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{Apply: true, Backend: "memory"}, nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			openStoreCalls++
+			return newFakeInitStore(nil), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if openStoreCalls != 0 {
+		t.Fatalf("openStoreCalls = %d, want 0 for no-op focused runtime edit", openStoreCalls)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Keyring.Backend != "memory" {
+		t.Fatalf("keyring backend = %q, want memory", cfg.Keyring.Backend)
+	}
+	if cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
+		t.Fatalf("retention = %#v, want 14/at_write", cfg.Data.Retention)
+	}
+	wantProfile.ReviewPolicy.MajorEvent = config.ReviewMajorEventComment
+	if !reflect.DeepEqual(cfg.Profiles["work"], wantProfile) {
+		t.Fatalf("profile = %#v, want unchanged %#v", cfg.Profiles["work"], wantProfile)
+	}
+}
+
+func TestInitInteractiveMenuFocusedLLMRuntimeDoesNotOpenStoreForPromptContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionLLMRuntimes,
+				initMenuActionExit,
+			},
+		},
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore should not run for focused llm prompt context")
+			return nil, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+}
+
 func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	opts := &root.Options{
@@ -4781,6 +5143,42 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	}
 	if cfg.Keyring.Backend != "memory" || cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("global settings after reviewer rebuild = %#v / %#v, want memory + 14/at_write", cfg.Keyring, cfg.Data.Retention)
+	}
+}
+
+func TestInitInteractiveMenuFocusedReviewerEntityDoesNotOpenStoreForPromptContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionExit,
+			},
+		},
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore should not run for focused reviewer prompt context")
+			return nil, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
 	}
 }
 
@@ -5191,7 +5589,7 @@ func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t
 			sources: []initSecretSource{initSecretSourcePaste},
 			pastes:  []string{"new-token"},
 		},
-		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+		openStore:  func(string, bool, config.File) (initStore, error) { return store, nil },
 		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -5702,9 +6100,9 @@ func TestInitInteractiveReconcilesRouteHostChangeFromSelectedGitScope(t *testing
 		},
 	}
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile:      cfg.DefaultProfile,
-		RepositoryProfiles:  cfg.RepositoryProfiles,
-		Profiles:            cfg.Profiles,
+		DefaultProfile:     cfg.DefaultProfile,
+		RepositoryProfiles: cfg.RepositoryProfiles,
+		Profiles:           cfg.Profiles,
 	})
 	scopes, profileScopeNames := buildInitGitScopeInventory(cfg)
 	opts := &root.Options{
