@@ -5,6 +5,12 @@ binds the follow-up child issues #176 through #187: later implementation plans
 should either follow the ownership and semantics below or explicitly amend this
 document first.
 
+Product-facing interaction and terminology for the interactive experience now
+live in [docs/init-ux-contract.md](init-ux-contract.md).
+Use that document for the workspace-builder model, user-facing terms, and
+save/exit semantics. Use this document for durable config ownership, mutation
+rules, and scripted/non-interactive boundaries.
+
 `cr init` must configure durable, non-secret `config.yml` state and credential
 references. It must not turn one-shot runtime flags into durable settings, and
 it must not write secret values to config, logs, stdout, stderr, or errors.
