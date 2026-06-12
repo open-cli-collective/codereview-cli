@@ -1338,7 +1338,11 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		}
 	}
 
-	draft := seedInteractiveInitDraft(ctx.RequestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
+	requestedProfileName := ctx.RequestedProfileName
+	if selectedProfileName == "" {
+		requestedProfileName = ""
+	}
+	draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
 	if warnings := ctx.ProfileWarnings[selectedProfileName]; len(warnings) > 0 {
 		_, _ = fmt.Fprintln(p.stderr, "Existing profile secret health:")
 		for _, warning := range warnings {

@@ -2499,6 +2499,75 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	}
 }
 
+func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
+	existing.Git.Host = "gitlab.com"
+	existing.Git.AuthMode = config.GitAuthModeGitHubApp
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Create new profile
+			"",  // Profile name
+			"",  // Make default
+			"",  // Git host
+			"",  // Git auth
+			"",  // Reviewer entity
+			"",  // LLM runtime
+			"",  // Reviewer model tier
+			"",  // Advanced storage labels
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		ExistingProfileNames: []string{"work"},
+		DefaultProfileName:   "work",
+		ExistingConfig: config.File{
+			DefaultProfile: "work",
+			Profiles:       map[string]config.Profile{"work": existing},
+		},
+		GitScopes: map[string]initGitScopeDraft{
+			"gitlab-work": initGitScopeDraftFromConfig(existing.Git),
+		},
+		ProfileGitScopes: map[string]string{"work": "gitlab-work"},
+		ReviewerEntities: map[string]initReviewerEntityDraft{
+			"work-reviewer": initReviewerEntityDraftFromConfig(existing),
+		},
+		ProfileReviewerEntities: map[string]string{"work": "work-reviewer"},
+		LLMRuntimes: map[string]initLLMRuntimeDraft{
+			"work-runtime": initLLMRuntimeDraftFromConfig(existing.LLM),
+		},
+		ProfileLLMRuntimes: map[string]string{"work": "work-runtime"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.OriginalProfileName != "" {
+		t.Fatalf("draft.OriginalProfileName = %q, want blank for create-new seed", draft.OriginalProfileName)
+	}
+	if draft.ProfileName != credstore.DefaultProfile {
+		t.Fatalf("draft.ProfileName = %q, want fresh default profile seed", draft.ProfileName)
+	}
+	if draft.GitHost != "github.com" || draft.GitAuth != string(config.GitAuthModePAT) {
+		t.Fatalf("git draft = %#v, want fresh defaults for create-new seed", draft)
+	}
+	if draft.ReviewerEnabled {
+		t.Fatalf("reviewer draft = %#v, want create-new seed to avoid inherited separate reviewer", draft)
+	}
+	if draft.LLMProvider != string(config.LLMProviderAnthropic) || draft.LLMAuth != string(config.LLMAuthSubscription) || draft.LLMAdapter != string(config.LLMAdapterClaudeCLI) {
+		t.Fatalf("llm draft = %#v, want fresh llm defaults for create-new seed", draft)
+	}
+}
+
 func TestInitInventorySelectionsApplyToDraft(t *testing.T) {
 	draft := seedInteractiveInitDraft("default", "", "", nil)
 	gitScopes := map[string]initGitScopeDraft{
@@ -4071,6 +4140,343 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 	}
 	if cfg.Data.Retention.MaxAgeDaysValue() != 45 || cfg.Data.Retention.Enforcement != config.RetentionManualOnly {
 		t.Fatalf("retention = %#v, want 45/manual_only", cfg.Data.Retention)
+	}
+}
+
+func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	prompterCalls := 0
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			prompterCalls++
+			switch prompterCalls {
+			case 1:
+				if len(ctx.ExistingProfileNames) != 0 {
+					t.Fatalf("first prompt ExistingProfileNames = %#v, want empty", ctx.ExistingProfileNames)
+				}
+				return initDraft{
+					ProfileName: "home",
+					MakeDefault: true,
+					GitHost:     "github.com",
+					GitAuth:     string(config.GitAuthModePAT),
+					LLMProvider: string(config.LLMProviderAnthropic),
+					LLMAuth:     string(config.LLMAuthSubscription),
+					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				}, nil
+			case 2:
+				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"home"}) {
+					t.Fatalf("second prompt ExistingProfileNames = %#v, want [home]", ctx.ExistingProfileNames)
+				}
+				if _, ok := ctx.ExistingConfig.Profiles["home"]; !ok {
+					t.Fatalf("second prompt ExistingConfig = %#v, want persisted unsaved home profile", ctx.ExistingConfig.Profiles)
+				}
+				return initDraft{
+					ProfileName: "work",
+					MakeDefault: false,
+					GitHost:     "github.company.com",
+					GitAuth:     string(config.GitAuthModePAT),
+					LLMProvider: string(config.LLMProviderAnthropic),
+					LLMAuth:     string(config.LLMAuthSubscription),
+					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				}, nil
+			default:
+				t.Fatalf("unexpected prompter call %d", prompterCalls)
+				return initDraft{}, nil
+			}
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got := sortedProfileNames(cfg.Profiles); !reflect.DeepEqual(got, []string{"home", "work"}) {
+		t.Fatalf("profiles = %#v, want [home work]", got)
+	}
+	if cfg.DefaultProfile != "home" {
+		t.Fatalf("default profile = %q, want home", cfg.DefaultProfile)
+	}
+	if cfg.Profiles["work"].Git.Host != "github.company.com" {
+		t.Fatalf("work git.host = %q, want github.company.com", cfg.Profiles["work"].Git.Host)
+	}
+}
+
+func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	prompterCalls := 0
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionReviewProfiles,
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			prompterCalls++
+			switch prompterCalls {
+			case 1:
+				return initDraft{
+					ProfileName: "work",
+					MakeDefault: true,
+					GitHost:     "github.com",
+					GitAuth:     string(config.GitAuthModePAT),
+					LLMProvider: string(config.LLMProviderAnthropic),
+					LLMAuth:     string(config.LLMAuthSubscription),
+					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				}, nil
+			case 2:
+				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"work"}) {
+					t.Fatalf("second prompt ExistingProfileNames = %#v, want [work]", ctx.ExistingProfileNames)
+				}
+				if ctx.DefaultProfileName != "work" {
+					t.Fatalf("second prompt DefaultProfileName = %q, want work", ctx.DefaultProfileName)
+				}
+				if ctx.ExistingConfig.Profiles["work"].Git.Host != "github.com" {
+					t.Fatalf("second prompt work profile = %#v, want first unsaved work draft in session cfg", ctx.ExistingConfig.Profiles["work"])
+				}
+				return initDraft{
+					ProfileName: "home",
+					MakeDefault: false,
+					GitHost:     "gitlab.com",
+					GitAuth:     string(config.GitAuthModePAT),
+					LLMProvider: string(config.LLMProviderAnthropic),
+					LLMAuth:     string(config.LLMAuthSubscription),
+					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				}, nil
+			case 3:
+				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"home", "work"}) {
+					t.Fatalf("third prompt ExistingProfileNames = %#v, want [home work]", ctx.ExistingProfileNames)
+				}
+				work := ctx.ExistingConfig.Profiles["work"]
+				home := ctx.ExistingConfig.Profiles["home"]
+				if work.Git.Host != "github.com" || home.Git.Host != "gitlab.com" {
+					t.Fatalf("third prompt ExistingConfig = %#v, want both unsaved profiles available for resume", ctx.ExistingConfig.Profiles)
+				}
+				return initDraft{
+					OriginalProfileName: "work",
+					ProfileName:         "work",
+					MakeDefault:         true,
+					GitHost:             "github.enterprise.local",
+					GitAuth:             string(config.GitAuthModePAT),
+					LLMProvider:         string(config.LLMProviderAnthropic),
+					LLMAuth:             string(config.LLMAuthSubscription),
+					LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+				}, nil
+			default:
+				t.Fatalf("unexpected prompter call %d", prompterCalls)
+				return initDraft{}, nil
+			}
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile != "work" {
+		t.Fatalf("default profile = %q, want work", cfg.DefaultProfile)
+	}
+	if cfg.Profiles["work"].Git.Host != "github.enterprise.local" {
+		t.Fatalf("work git.host = %q, want resumed update", cfg.Profiles["work"].Git.Host)
+	}
+	if cfg.Profiles["home"].Git.Host != "gitlab.com" {
+		t.Fatalf("home git.host = %q, want persisted second profile", cfg.Profiles["home"].Git.Host)
+	}
+}
+
+func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	prompterCalls := 0
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			prompterCalls++
+			if prompterCalls != 1 {
+				t.Fatalf("unexpected prompter call %d", prompterCalls)
+			}
+			if ctx.RequestedProfileName != "work" || ctx.ExistingProfileName != "work" {
+				t.Fatalf("prompt context = %#v, want fallback bootstrap from default work profile", ctx)
+			}
+			return initDraft{
+				ProfileName: "home",
+				MakeDefault: false,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile != "work" {
+		t.Fatalf("default profile = %q, want existing fallback default preserved", cfg.DefaultProfile)
+	}
+	if got := sortedProfileNames(cfg.Profiles); !reflect.DeepEqual(got, []string{"home", "work"}) {
+		t.Fatalf("profiles = %#v, want [home work]", got)
+	}
+}
+
+func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		}},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			if ctx.ExistingProfileName != "work" {
+				t.Fatalf("prompt context = %#v, want default work profile selected for rename", ctx)
+			}
+			return initDraft{
+				OriginalProfileName: "work",
+				ProfileName:         "office",
+				MakeDefault:         true,
+				GitHost:             "gitlab.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/custom-office-git",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			if prompt.ProfileName != "office" || !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
+				t.Fatalf("prompt = %#v, want renamed default profile reconciliation context", prompt)
+			}
+			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+				Host:      "gitlab.com",
+				Namespace: "open-cli-collective",
+			}}}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if _, ok := cfg.Profiles["work"]; ok {
+		t.Fatalf("old profile still exists after rename: %#v", cfg.Profiles)
+	}
+	if cfg.DefaultProfile != "office" {
+		t.Fatalf("default profile = %q, want renamed office default", cfg.DefaultProfile)
+	}
+	if len(cfg.RepositoryProfiles) != 1 || cfg.RepositoryProfiles[0].Profile != "office" || cfg.RepositoryProfiles[0].Match.Host != "gitlab.com" {
+		t.Fatalf("RepositoryProfiles = %#v, want renamed reconciled route", cfg.RepositoryProfiles)
 	}
 }
 
