@@ -842,9 +842,13 @@ func initStorePresent(store initStore) bool {
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return !value.IsNil()
-	default:
+	case reflect.Invalid, reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128, reflect.Array,
+		reflect.String, reflect.Struct, reflect.UnsafePointer:
 		return true
 	}
+	return true
 }
 
 func initCredentialHealthWarnings(statuses []credentials.CredentialStatus) []string {
@@ -1062,7 +1066,7 @@ func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDra
 	switch entity.AuthMode {
 	case config.GitAuthModeGitHubApp:
 		entity.Kind = initReviewerEntityKindGitHubApp
-	default:
+	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
 		entity.Kind = initReviewerEntityKindPAT
 	}
 	return entity
@@ -1095,9 +1099,10 @@ func initGitAuthModeLabel(mode config.GitAuthMode) string {
 	switch mode {
 	case config.GitAuthModeGitHubApp:
 		return "GitHub App"
-	default:
+	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
 		return "personal access token"
 	}
+	return "personal access token"
 }
 
 func applyGitScopeSelection(draft *initDraft, selection string, scopes map[string]initGitScopeDraft) {
@@ -1141,7 +1146,7 @@ func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
 		label = "Use this profile's Git identity"
 	case initReviewerEntityKindGitHubApp:
 		label = "GitHub App reviewer"
-	default:
+	case initReviewerEntityKindPAT:
 		label = "Personal access token reviewer"
 	}
 	if strings.TrimSpace(entity.Name) != "" {
@@ -1228,7 +1233,7 @@ func initLLMRuntimeLabel(runtime initLLMRuntimeDraft) string {
 		label = "Anthropic API key"
 	case initLLMRuntimePresetOpenAIAPIKey:
 		label = "OpenAI API key"
-	default:
+	case initLLMRuntimePresetCustom:
 		label = fmt.Sprintf("Custom runtime (%s/%s/%s)", runtime.Provider, runtime.Auth, runtime.Adapter)
 	}
 	if strings.TrimSpace(runtime.Name) != "" {
