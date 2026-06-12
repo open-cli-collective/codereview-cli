@@ -200,19 +200,19 @@ type initFinalizePrompter interface {
 }
 
 type initPromptContext struct {
-	RequestedProfileName string
-	ExistingProfileName  string
-	ExistingProfile      *config.Profile
-	ExistingProfileNames []string
-	DefaultProfileName   string
-	ExistingConfig       config.File
-	GitScopes            map[string]initGitScopeDraft
-	ProfileGitScopes     map[string]string
-	ReviewerEntities     map[string]initReviewerEntityDraft
+	RequestedProfileName    string
+	ExistingProfileName     string
+	ExistingProfile         *config.Profile
+	ExistingProfileNames    []string
+	DefaultProfileName      string
+	ExistingConfig          config.File
+	GitScopes               map[string]initGitScopeDraft
+	ProfileGitScopes        map[string]string
+	ReviewerEntities        map[string]initReviewerEntityDraft
 	ProfileReviewerEntities map[string]string
-	LLMRuntimes          map[string]initLLMRuntimeDraft
-	ProfileLLMRuntimes   map[string]string
-	ProfileWarnings      map[string][]string
+	LLMRuntimes             map[string]initLLMRuntimeDraft
+	ProfileLLMRuntimes      map[string]string
+	ProfileWarnings         map[string][]string
 }
 
 type initDraft struct {
@@ -321,14 +321,14 @@ const (
 )
 
 type initMenuPrompt struct {
-	HasWorkspace          bool
-	LLMRuntimeCount       int
-	ReviewerEntityCount   int
-	ReviewProfileCount    int
-	CanConfigureLLM       bool
-	CanConfigureReviewer  bool
-	CanSave               bool
-	ActiveProfileName     string
+	HasWorkspace         bool
+	LLMRuntimeCount      int
+	ReviewerEntityCount  int
+	ReviewProfileCount   int
+	CanConfigureLLM      bool
+	CanConfigureReviewer bool
+	CanSave              bool
+	ActiveProfileName    string
 }
 
 type initLLMRuntimePrompt struct {
@@ -902,8 +902,8 @@ type huhInitKeyringBackendPrompter struct {
 }
 
 const (
-	initCustomGitScopeSelection       = "__custom_git_scope__"
-	initCustomLLMRuntimeSelection     = "__custom_llm_runtime__"
+	initCustomGitScopeSelection   = "__custom_git_scope__"
+	initCustomLLMRuntimeSelection = "__custom_llm_runtime__"
 )
 
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
@@ -934,10 +934,15 @@ func newHuhInitKeyringBackendPrompter(opts *root.Options) initKeyringBackendProm
 	return huhInitKeyringBackendPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
-func buildInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, deps initDeps, ctx initPromptContext) (initPromptContext, error) {
+func buildInteractiveInitInventoryPromptContext(ctx initPromptContext) initPromptContext {
 	ctx.GitScopes, ctx.ProfileGitScopes = buildInitGitScopeInventory(ctx.ExistingConfig)
 	ctx.ReviewerEntities, ctx.ProfileReviewerEntities = buildInitReviewerEntityInventory(ctx.ExistingConfig)
 	ctx.LLMRuntimes, ctx.ProfileLLMRuntimes = buildInitLLMRuntimeInventory(ctx.ExistingConfig)
+	return ctx
+}
+
+func buildInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, deps initDeps, ctx initPromptContext) (initPromptContext, error) {
+	ctx = buildInteractiveInitInventoryPromptContext(ctx)
 
 	if len(ctx.ExistingConfig.Profiles) == 0 {
 		return ctx, nil
@@ -1053,10 +1058,10 @@ func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
 	llmRuntimes, _ := buildInitLLMRuntimeInventory(session.cfg)
 	reviewerEntities, _ := buildInitReviewerEntityInventory(session.cfg)
 	prompt := initMenuPrompt{
-		HasWorkspace:         session.workspace != nil,
-		LLMRuntimeCount:      len(llmRuntimes),
-		ReviewerEntityCount:  len(reviewerEntities),
-		ReviewProfileCount:   len(session.cfg.Profiles),
+		HasWorkspace:        session.workspace != nil,
+		LLMRuntimeCount:     len(llmRuntimes),
+		ReviewerEntityCount: len(reviewerEntities),
+		ReviewProfileCount:  len(session.cfg.Profiles),
 	}
 	if session.workspace == nil {
 		return prompt
@@ -1069,6 +1074,22 @@ func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
 }
 
 func currentInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initPromptContext, error) {
+	return currentInteractiveInitPromptContextWithWarnings(cmd, opts, deps, session, true)
+}
+
+func currentInteractiveInitInventoryPromptContext(session initSessionDraft) initPromptContext {
+	return buildInteractiveInitInventoryPromptContext(currentInteractiveInitPromptContextBase(session))
+}
+
+func currentInteractiveInitPromptContextWithWarnings(cmd *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft, includeWarnings bool) (initPromptContext, error) {
+	ctx := currentInteractiveInitPromptContextBase(session)
+	if !includeWarnings {
+		return buildInteractiveInitInventoryPromptContext(ctx), nil
+	}
+	return buildInteractiveInitPromptContext(cmd, opts, deps, ctx)
+}
+
+func currentInteractiveInitPromptContextBase(session initSessionDraft) initPromptContext {
 	existingProfileName := ""
 	var existingProfile *config.Profile
 	if session.workspace != nil {
@@ -1080,14 +1101,14 @@ func currentInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options,
 		profileCopy := profile
 		existingProfile = &profileCopy
 	}
-	return buildInteractiveInitPromptContext(cmd, opts, deps, initPromptContext{
+	return initPromptContext{
 		RequestedProfileName: session.requestedProfileName,
 		ExistingProfileName:  existingProfileName,
 		ExistingProfile:      existingProfile,
 		ExistingProfileNames: sortedProfileNames(session.cfg.Profiles),
 		DefaultProfileName:   session.cfg.DefaultProfile,
 		ExistingConfig:       session.cfg,
-	})
+	}
 }
 
 func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
@@ -1174,14 +1195,13 @@ func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 	if prompter == nil {
 		prompter = newHuhInitLLMRuntimePrompter(opts)
 	}
-	promptCtx, err := currentInteractiveInitPromptContext(cmd, opts, deps, session)
-	if err != nil {
-		return initSessionDraft{}, err
-	}
+	promptCtx := currentInteractiveInitInventoryPromptContext(session)
 	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: promptCtx})
 	if err != nil {
 		return initSessionDraft{}, err
 	}
+	previousProfileName := session.workspace.profileName
+	previousProfile := session.workspace.profile
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
 	if err != nil {
 		return initSessionDraft{}, err
@@ -1189,7 +1209,9 @@ func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
 	session.requestedProfileName = workspace.profileName
-	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, workspace.profile) {
+		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+	}
 	return session, nil
 }
 
@@ -1201,14 +1223,13 @@ func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 	if prompter == nil {
 		prompter = newHuhInitReviewerEntityPrompter(opts)
 	}
-	promptCtx, err := currentInteractiveInitPromptContext(cmd, opts, deps, session)
-	if err != nil {
-		return initSessionDraft{}, err
-	}
+	promptCtx := currentInteractiveInitInventoryPromptContext(session)
 	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: promptCtx})
 	if err != nil {
 		return initSessionDraft{}, err
 	}
+	previousProfileName := session.workspace.profileName
+	previousProfile := session.workspace.profile
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
 	if err != nil {
 		return initSessionDraft{}, err
@@ -1216,7 +1237,9 @@ func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
 	session.requestedProfileName = workspace.profileName
-	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, workspace.profile) {
+		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+	}
 	return session, nil
 }
 
@@ -1339,44 +1362,51 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 			selectedRuntime = seedRuntimePreset
 		}
 	}
-	form := huh.NewForm(
+	selectForm := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("LLM runtime").
 				Description("Choose how reviewer agents run for this profile.").
 				Options(initLLMRuntimeOptions(prompt.Context.LLMRuntimes)...).
 				Value(&selectedRuntime),
-			huh.NewSelect[string]().
-				Title("LLM provider").
-				Options(
-					huh.NewOption("Anthropic", string(config.LLMProviderAnthropic)),
-					huh.NewOption("OpenAI", string(config.LLMProviderOpenAI)),
-					huh.NewOption("Pi", string(config.LLMProviderPi)),
-				).
-				Value(&draft.LLMProvider),
-			huh.NewSelect[string]().
-				Title("LLM auth mode").
-				Options(
-					huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
-					huh.NewOption("API key", string(config.LLMAuthAPIKey)),
-				).
-				Value(&draft.LLMAuth),
-			huh.NewSelect[string]().
-				Title("LLM adapter").
-				Options(
-					huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
-					huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
-					huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
-					huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
-					huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
-				).
-				Value(&draft.LLMAdapter),
-		).WithHideFunc(func() bool {
-			return selectedRuntime != initCustomLLMRuntimeSelection
-		}).Title("LLM Runtime"),
+		).Title("LLM Runtime"),
 	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
+	if err := selectForm.Run(); err != nil {
 		return initDraft{}, err
+	}
+	if selectedRuntime == initCustomLLMRuntimeSelection {
+		customForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("LLM provider").
+					Options(
+						huh.NewOption("Anthropic", string(config.LLMProviderAnthropic)),
+						huh.NewOption("OpenAI", string(config.LLMProviderOpenAI)),
+						huh.NewOption("Pi", string(config.LLMProviderPi)),
+					).
+					Value(&draft.LLMProvider),
+				huh.NewSelect[string]().
+					Title("LLM auth mode").
+					Options(
+						huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
+						huh.NewOption("API key", string(config.LLMAuthAPIKey)),
+					).
+					Value(&draft.LLMAuth),
+				huh.NewSelect[string]().
+					Title("LLM adapter").
+					Options(
+						huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
+						huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
+						huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
+						huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
+						huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
+					).
+					Value(&draft.LLMAdapter),
+			).Title("LLM Runtime"),
+		).WithInput(p.stdin).WithOutput(p.stderr)
+		if err := customForm.Run(); err != nil {
+			return initDraft{}, err
+		}
 	}
 	applyLLMRuntimeInventorySelection(&draft, selectedRuntime, prompt.Context.LLMRuntimes)
 	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
@@ -1756,14 +1786,14 @@ func initLLMRuntimeOptions(runtimes map[string]initLLMRuntimeDraft) []huh.Option
 	options := make([]huh.Option[string], 0, len(names)+6)
 	for _, name := range names {
 		runtime := runtimes[name]
-		options = append(options, huh.NewOption(initLLMRuntimeLabel(runtime), name))
+		options = append(options, huh.NewOption("Configured: "+initLLMRuntimeLabel(runtime), name))
 	}
 	options = append(options,
-		huh.NewOption("Claude CLI subscription", string(initLLMRuntimePresetClaudeCLISubscription)),
-		huh.NewOption("Codex CLI subscription", string(initLLMRuntimePresetCodexCLISubscription)),
-		huh.NewOption("Pi local runtime", string(initLLMRuntimePresetPiLocal)),
-		huh.NewOption("Anthropic API key", string(initLLMRuntimePresetAnthropicAPIKey)),
-		huh.NewOption("OpenAI API key", string(initLLMRuntimePresetOpenAIAPIKey)),
+		huh.NewOption("Template: Claude CLI subscription", string(initLLMRuntimePresetClaudeCLISubscription)),
+		huh.NewOption("Template: Codex CLI subscription", string(initLLMRuntimePresetCodexCLISubscription)),
+		huh.NewOption("Template: Pi local runtime", string(initLLMRuntimePresetPiLocal)),
+		huh.NewOption("Template: Anthropic API key", string(initLLMRuntimePresetAnthropicAPIKey)),
+		huh.NewOption("Template: OpenAI API key", string(initLLMRuntimePresetOpenAIAPIKey)),
 		huh.NewOption("Custom compatible runtime", initCustomLLMRuntimeSelection),
 	)
 	return dedupeInitStringOptions(options)
@@ -3921,13 +3951,13 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 		return initSessionPlan{}, cmderr.Credential(err)
 	}
 	workspacePlan := initWorkspaceDraft{
-		cfg:             plan.cfg,
-		writes:          plan.writes,
-		credentialPlan:  plan.credentialPlan,
-		overwriteRefs:   plan.overwriteRefs,
-		satisfiedRefs:   plan.satisfiedRefs,
-		backendFlagSet:  plan.backendFlagSet,
-		backendArg:      plan.backendArg,
+		cfg:              plan.cfg,
+		writes:           plan.writes,
+		credentialPlan:   plan.credentialPlan,
+		overwriteRefs:    plan.overwriteRefs,
+		satisfiedRefs:    plan.satisfiedRefs,
+		backendFlagSet:   plan.backendFlagSet,
+		backendArg:       plan.backendArg,
 		allowDeferredLLM: true,
 	}
 	workspacePlan, err = collectInteractiveInitSecrets(nil, opts, deps, workspacePlan)
