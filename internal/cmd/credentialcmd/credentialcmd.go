@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -161,6 +162,14 @@ type initReviewPolicyPrompter interface {
 	EditReviewPolicy(initReviewPolicyPrompt) (initReviewPolicyEdit, error)
 }
 
+type initRetentionPrompter interface {
+	EditRetention(initRetentionPrompt) (initRetentionEdit, error)
+}
+
+type initKeyringBackendPrompter interface {
+	EditKeyringBackend(initKeyringBackendPrompt) (initKeyringBackendEdit, error)
+}
+
 type initPromptContext struct {
 	RequestedProfileName string
 	ExistingProfileName  string
@@ -215,11 +224,31 @@ type initReviewPolicyEdit struct {
 	ReviewPolicy config.ReviewPolicy
 }
 
+type initRetentionPrompt struct {
+	Retention config.RetentionConfig
+}
+
+type initRetentionEdit struct {
+	Apply     bool
+	Retention config.RetentionConfig
+}
+
+type initKeyringBackendPrompt struct {
+	Backend string
+}
+
+type initKeyringBackendEdit struct {
+	Apply   bool
+	Backend string
+}
+
 type initDeps struct {
 	prompter             initPrompter
 	modelMapPrompter     initModelMapPrompter
 	agentSourcesPrompter initAgentSourcesPrompter
 	reviewPolicyPrompter initReviewPolicyPrompter
+	retentionPrompter    initRetentionPrompter
+	keyringPrompter      initKeyringBackendPrompter
 	secretPrompter       initSecretPrompter
 	clipboardSupported   func() bool
 	clipboardRead        func() (string, error)
@@ -313,6 +342,30 @@ const (
 	initReviewPolicyActionEdit     initReviewPolicyAction = "edit"
 )
 
+type initRetentionAction string
+
+const (
+	initRetentionActionPreserve initRetentionAction = "preserve"
+	initRetentionActionEdit     initRetentionAction = "edit"
+	initRetentionActionReset    initRetentionAction = "reset"
+)
+
+type initRetentionMaxAgeMode string
+
+const (
+	initRetentionMaxAgeDefault initRetentionMaxAgeMode = "default"
+	initRetentionMaxAgeForever initRetentionMaxAgeMode = "forever"
+	initRetentionMaxAgeCustom  initRetentionMaxAgeMode = "custom"
+)
+
+type initKeyringBackendAction string
+
+const (
+	initKeyringBackendActionPreserve initKeyringBackendAction = "preserve"
+	initKeyringBackendActionEdit     initKeyringBackendAction = "edit"
+	initKeyringBackendActionReset    initKeyringBackendAction = "reset"
+)
+
 type initSecretSource string
 
 const (
@@ -342,6 +395,8 @@ func defaultInitDeps() initDeps {
 		modelMapPrompter:     nil,
 		agentSourcesPrompter: nil,
 		reviewPolicyPrompter: nil,
+		retentionPrompter:    nil,
+		keyringPrompter:      nil,
 		clipboardSupported:   func() bool { return !clipboard.Unsupported },
 		clipboardRead:        clipboard.ReadAll,
 		configPath:           configPath,
@@ -367,6 +422,12 @@ func (deps initDeps) withDefaults() initDeps {
 	}
 	if deps.reviewPolicyPrompter == nil {
 		deps.reviewPolicyPrompter = defaults.reviewPolicyPrompter
+	}
+	if deps.retentionPrompter == nil {
+		deps.retentionPrompter = defaults.retentionPrompter
+	}
+	if deps.keyringPrompter == nil {
+		deps.keyringPrompter = defaults.keyringPrompter
 	}
 	if deps.clipboardSupported == nil {
 		deps.clipboardSupported = defaults.clipboardSupported
@@ -519,6 +580,14 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if err != nil {
 		return err
 	}
+	plan, err = collectInteractiveInitRetention(opts, deps, plan)
+	if err != nil {
+		return err
+	}
+	plan, err = collectInteractiveInitKeyringBackend(opts, deps, plan)
+	if err != nil {
+		return err
+	}
 	plan, err = collectInteractiveInitSecrets(cmd, opts, deps, plan)
 	if err != nil {
 		return err
@@ -555,6 +624,16 @@ type huhInitReviewPolicyPrompter struct {
 	stderr io.Writer
 }
 
+type huhInitRetentionPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
+type huhInitKeyringBackendPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
 	return huhInitSecretPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
@@ -569,6 +648,14 @@ func newHuhInitAgentSourcesPrompter(opts *root.Options) initAgentSourcesPrompter
 
 func newHuhInitReviewPolicyPrompter(opts *root.Options) initReviewPolicyPrompter {
 	return huhInitReviewPolicyPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitRetentionPrompter(opts *root.Options) initRetentionPrompter {
+	return huhInitRetentionPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitKeyringBackendPrompter(opts *root.Options) initKeyringBackendPrompter {
+	return huhInitKeyringBackendPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -993,6 +1080,147 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 	}, nil
 }
 
+func (p huhInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
+	action := initRetentionActionPreserve
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initRetentionAction]().
+				Title("Data retention").
+				Options(
+					huh.NewOption("Keep current retention settings", initRetentionActionPreserve),
+					huh.NewOption("Edit retention settings", initRetentionActionEdit),
+					huh.NewOption("Reset retention to defaults", initRetentionActionReset),
+				).
+				Value(&action),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initRetentionEdit{}, err
+	}
+	switch action {
+	case initRetentionActionPreserve:
+		return initRetentionEdit{Apply: false}, nil
+	case initRetentionActionReset:
+		return initRetentionEdit{Apply: true, Retention: config.DefaultRetentionConfig()}, nil
+	case initRetentionActionEdit:
+	default:
+		return initRetentionEdit{}, fmt.Errorf("unsupported retention action %q", action)
+	}
+
+	retention := prompt.Retention
+	mode := initRetentionMaxAgeDefault
+	customDays := ""
+	switch {
+	case retention.MaxAgeDays != nil && *retention.MaxAgeDays == 0:
+		mode = initRetentionMaxAgeForever
+	case retention.MaxAgeDays != nil && *retention.MaxAgeDays != config.DefaultRetentionConfig().MaxAgeDaysValue():
+		mode = initRetentionMaxAgeCustom
+		customDays = fmt.Sprintf("%d", *retention.MaxAgeDays)
+	}
+	enforcement := string(retention.Enforcement)
+	if enforcement == "" {
+		enforcement = string(config.RetentionAtWrite)
+	}
+	form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initRetentionMaxAgeMode]().
+				Title("Maximum run-data age").
+				Options(
+					huh.NewOption("Default 90 days", initRetentionMaxAgeDefault),
+					huh.NewOption("Keep forever", initRetentionMaxAgeForever),
+					huh.NewOption("Custom days", initRetentionMaxAgeCustom),
+				).
+				Value(&mode),
+			huh.NewInput().
+				Title("Custom max age in days").
+				Description("Required only when using a custom max age. Use 0 from the mode selector for keep forever.").
+				Value(&customDays).
+				Validate(func(value string) error {
+					if mode != initRetentionMaxAgeCustom {
+						return nil
+					}
+					return validateRetentionMaxAgeDays(value)
+				}),
+			huh.NewSelect[string]().
+				Title("Retention enforcement").
+				Options(
+					huh.NewOption("At write", string(config.RetentionAtWrite)),
+					huh.NewOption("Manual only", string(config.RetentionManualOnly)),
+				).
+				Value(&enforcement),
+		).Title("Retention"),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initRetentionEdit{}, err
+	}
+	next := config.RetentionConfig{
+		Enforcement: config.RetentionEnforcement(strings.TrimSpace(enforcement)),
+	}
+	switch mode {
+	case initRetentionMaxAgeDefault:
+		defaultDays := config.DefaultRetentionConfig().MaxAgeDaysValue()
+		next.MaxAgeDays = &defaultDays
+	case initRetentionMaxAgeForever:
+		keepForever := 0
+		next.MaxAgeDays = &keepForever
+	case initRetentionMaxAgeCustom:
+		days, err := parseInteractiveRetentionMaxAgeDays(customDays)
+		if err != nil {
+			return initRetentionEdit{}, err
+		}
+		next.MaxAgeDays = &days
+	default:
+		return initRetentionEdit{}, fmt.Errorf("unsupported retention max-age mode %q", mode)
+	}
+	return initRetentionEdit{Apply: true, Retention: next}, nil
+}
+
+func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+	action := initKeyringBackendActionPreserve
+	options := []huh.Option[initKeyringBackendAction]{
+		huh.NewOption("Keep current keyring backend", initKeyringBackendActionPreserve),
+		huh.NewOption("Set keyring backend", initKeyringBackendActionEdit),
+	}
+	if strings.TrimSpace(prompt.Backend) != "" {
+		options = append(options, huh.NewOption("Reset backend to auto selection", initKeyringBackendActionReset))
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initKeyringBackendAction]().
+				Title("Keyring backend").
+				Options(options...).
+				Value(&action),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initKeyringBackendEdit{}, err
+	}
+	switch action {
+	case initKeyringBackendActionPreserve:
+		return initKeyringBackendEdit{Apply: false}, nil
+	case initKeyringBackendActionReset:
+		return initKeyringBackendEdit{Apply: true, Backend: ""}, nil
+	case initKeyringBackendActionEdit:
+	default:
+		return initKeyringBackendEdit{}, fmt.Errorf("unsupported keyring-backend action %q", action)
+	}
+
+	backend := strings.TrimSpace(prompt.Backend)
+	form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Persistent keyring backend").
+				Description("Examples include file or memory. Leave runtime-only --backend choices out unless you want them saved.").
+				Value(&backend).
+				Validate(validateRequiredText("keyring backend is required")),
+		).Title("Keyring"),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initKeyringBackendEdit{}, err
+	}
+	return initKeyringBackendEdit{Apply: true, Backend: strings.TrimSpace(backend)}, nil
+}
+
 func initModelMapInputDescription(tier config.ModelTier, builtIn string) string {
 	if builtIn = strings.TrimSpace(builtIn); builtIn != "" {
 		return fmt.Sprintf("Leave blank to use the built-in %s model: %s", tier, builtIn)
@@ -1032,6 +1260,26 @@ func validateOptionalDuration(value string) error {
 	}
 	_, err := time.ParseDuration(trimmed)
 	return err
+}
+
+func validateRetentionMaxAgeDays(value string) error {
+	_, err := parseInteractiveRetentionMaxAgeDays(value)
+	return err
+}
+
+func parseInteractiveRetentionMaxAgeDays(value string) (int, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, fmt.Errorf("custom max age is required")
+	}
+	days, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("custom max age must be a whole number")
+	}
+	if days < 0 {
+		return 0, fmt.Errorf("custom max age must be non-negative")
+	}
+	return days, nil
 }
 
 func validateInteractiveInitFlags(flags initOptions) error {
@@ -1364,19 +1612,9 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 	}
 	deferLLMSecret := profile.LLM.Auth == config.LLMAuthAPIKey
 	backendFlagSet := cmderr.BackendFlagChanged(cmd)
-	backendArg := ""
 	if backendFlagSet {
 		if _, err := credentials.StoreOptions(opts.Backend, true, working); err != nil {
 			return initPlan{}, cmderr.Credential(err)
-		}
-		persistExplicitBackend := deferLLMSecret
-		if persistExplicitBackend {
-			if working.Keyring.Backend != "" && working.Keyring.Backend != opts.Backend {
-				return initPlan{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with existing keyring.backend %q", opts.Backend, working.Keyring.Backend))
-			}
-			working.Keyring.Backend = opts.Backend
-		} else {
-			backendArg = fmt.Sprintf(" --backend %s", opts.Backend)
 		}
 	}
 	return initPlan{
@@ -1390,7 +1628,7 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 		overwriteRefs:    map[string]bool{},
 		satisfiedRefs:    map[string]bool{},
 		backendFlagSet:   backendFlagSet,
-		backendArg:       backendArg,
+		backendArg:       interactiveInitBackendArg(opts, backendFlagSet, working),
 		allowDeferredLLM: deferLLMSecret,
 		writeLLMHint:     deferLLMSecret,
 	}, nil
@@ -1583,6 +1821,73 @@ func normalizeInitAgentSources(sources []string) ([]string, error) {
 		return nil, nil
 	}
 	return normalized, nil
+}
+
+func collectInteractiveInitRetention(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+	prompter := deps.retentionPrompter
+	if prompter == nil {
+		if deps.prompter != nil {
+			return plan, nil
+		}
+		prompter = newHuhInitRetentionPrompter(opts)
+	}
+	edit, err := prompter.EditRetention(initRetentionPrompt{
+		Retention: plan.cfg.Data.Retention,
+	})
+	if err != nil {
+		return initPlan{}, err
+	}
+	if !edit.Apply {
+		return plan, nil
+	}
+	nextCfg := plan.cfg
+	nextCfg.Data.Retention = edit.Retention
+	if err := config.Validate(nextCfg); err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	plan.cfg = nextCfg
+	return plan, nil
+}
+
+func collectInteractiveInitKeyringBackend(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+	prompter := deps.keyringPrompter
+	if prompter == nil {
+		if deps.prompter != nil {
+			return plan, nil
+		}
+		prompter = newHuhInitKeyringBackendPrompter(opts)
+	}
+	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+		Backend: plan.cfg.Keyring.Backend,
+	})
+	if err != nil {
+		return initPlan{}, err
+	}
+	if !edit.Apply {
+		plan.backendArg = interactiveInitBackendArg(opts, plan.backendFlagSet, plan.cfg)
+		return plan, nil
+	}
+	nextCfg := plan.cfg
+	nextCfg.Keyring.Backend = strings.TrimSpace(edit.Backend)
+	if err := config.Validate(nextCfg); err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	if plan.backendFlagSet && nextCfg.Keyring.Backend != "" && nextCfg.Keyring.Backend != opts.Backend {
+		return initPlan{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with selected keyring.backend %q", opts.Backend, nextCfg.Keyring.Backend))
+	}
+	plan.cfg = nextCfg
+	plan.backendArg = interactiveInitBackendArg(opts, plan.backendFlagSet, nextCfg)
+	return plan, nil
+}
+
+func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, cfg config.File) string {
+	if !backendFlagSet {
+		return ""
+	}
+	if strings.TrimSpace(cfg.Keyring.Backend) == strings.TrimSpace(opts.Backend) {
+		return ""
+	}
+	return fmt.Sprintf(" --backend %s", opts.Backend)
 }
 
 func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {

@@ -2230,6 +2230,267 @@ func TestInitInteractiveReviewPolicyRejectsInvalidEntries(t *testing.T) {
 	}
 }
 
+func TestHuhInitRetentionPrompterAccessibleShowsFields(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitRetentionPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Edit retention settings
+			"",  // keep default 90 days
+			"",  // custom days unused
+			"2", // manual only
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.EditRetention(initRetentionPrompt{Retention: config.RetentionConfig{}})
+	if err != nil {
+		t.Fatalf("EditRetention: %v", err)
+	}
+	if !edit.Apply {
+		t.Fatal("edit.Apply = false, want true")
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Maximum run-data age") || !strings.Contains(out, "Retention enforcement") {
+		t.Fatalf("stderr = %q, want retention fields", out)
+	}
+}
+
+func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitKeyringBackendPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2",    // Set keyring backend
+			"file", //
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{})
+	if err != nil {
+		t.Fatalf("EditKeyringBackend: %v", err)
+	}
+	if !edit.Apply {
+		t.Fatalf("edit = %#v, want apply edit path", edit)
+	}
+	if !strings.Contains(stderr.String(), "Persistent keyring backend") {
+		t.Fatalf("stderr = %q, want backend input prompt", stderr.String())
+	}
+}
+
+func TestInitInteractiveRetentionPreserveEditResetAndExplicitZero(t *testing.T) {
+	keepForever := 0
+	tests := []struct {
+		name     string
+		existing config.RetentionConfig
+		edit     initRetentionEdit
+		wantDays int
+		wantMode config.RetentionEnforcement
+	}{
+		{
+			name: "preserve explicit zero",
+			existing: config.RetentionConfig{
+				MaxAgeDays:  &keepForever,
+				Enforcement: config.RetentionManualOnly,
+			},
+			edit:     initRetentionEdit{Apply: false},
+			wantDays: 0,
+			wantMode: config.RetentionManualOnly,
+		},
+		{
+			name: "edit custom",
+			edit: initRetentionEdit{Apply: true, Retention: config.RetentionConfig{
+				MaxAgeDays:  intPtr(45),
+				Enforcement: config.RetentionManualOnly,
+			}},
+			wantDays: 45,
+			wantMode: config.RetentionManualOnly,
+		},
+		{
+			name: "reset defaults",
+			existing: config.RetentionConfig{
+				MaxAgeDays:  &keepForever,
+				Enforcement: config.RetentionManualOnly,
+			},
+			edit:     initRetentionEdit{Apply: true, Retention: config.DefaultRetentionConfig()},
+			wantDays: 90,
+			wantMode: config.RetentionAtWrite,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			existing := basicProfile("work")
+			saveCredentialTestConfig(t, path, config.File{
+				DefaultProfile: "work",
+				Keyring:        config.KeyringConfig{Backend: "file"},
+				Profiles:       map[string]config.Profile{"work": existing},
+				Data:           config.DataConfig{Retention: tt.existing},
+			})
+			opts := &root.Options{
+				Stdin:      strings.NewReader(""),
+				Stdout:     &bytes.Buffer{},
+				Stderr:     &bytes.Buffer{},
+				ConfigPath: path,
+			}
+			deps := initDeps{
+				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+					return initDraft{
+						OriginalProfileName: "work",
+						ProfileName:         "work",
+						MakeDefault:         true,
+						GitHost:             "github.com",
+						GitAuth:             string(config.GitAuthModePAT),
+						GitCredentialRef:    "codereview/work",
+						LLMProvider:         string(config.LLMProviderAnthropic),
+						LLMAuth:             string(config.LLMAuthSubscription),
+						LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					}, nil
+				}),
+				retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+					return tt.edit, nil
+				}),
+				configPath: func(*root.Options) (string, error) { return path, nil },
+				loadConfig: loadConfigForInit,
+				saveConfig: config.Save,
+			}
+
+			err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+			if err != nil {
+				t.Fatalf("runInitWithDeps: %v", err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load config: %v", err)
+			}
+			if cfg.Data.Retention.MaxAgeDaysValue() != tt.wantDays || cfg.Data.Retention.Enforcement != tt.wantMode {
+				t.Fatalf("retention = %#v, want %d/%s", cfg.Data.Retention, tt.wantDays, tt.wantMode)
+			}
+			if cfg.Keyring.Backend != "file" {
+				t.Fatalf("keyring.backend = %q, want preserved file", cfg.Keyring.Backend)
+			}
+		})
+	}
+}
+
+func TestInitInteractiveKeyringBackendPreserveSetResetAndConflict(t *testing.T) {
+	tests := []struct {
+		name        string
+		existing    string
+		edit        initKeyringBackendEdit
+		runtime     string
+		wantBackend string
+		wantHint    string
+		wantErr     string
+	}{
+		{
+			name:        "preserve existing",
+			existing:    "file",
+			edit:        initKeyringBackendEdit{Apply: false},
+			wantBackend: "file",
+		},
+		{
+			name:        "set backend",
+			edit:        initKeyringBackendEdit{Apply: true, Backend: "memory"},
+			wantBackend: "memory",
+		},
+		{
+			name:        "reset runtime only backend keeps hint",
+			existing:    "file",
+			edit:        initKeyringBackendEdit{Apply: true, Backend: ""},
+			runtime:     "memory",
+			wantBackend: "",
+			wantHint:    "--backend memory",
+		},
+		{
+			name:    "runtime conflict",
+			edit:    initKeyringBackendEdit{Apply: true, Backend: "file"},
+			runtime: "memory",
+			wantErr: `--backend "memory" conflicts with selected keyring.backend "file"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			saveCredentialTestConfig(t, path, config.File{
+				DefaultProfile: "work",
+				Keyring:        config.KeyringConfig{Backend: tt.existing},
+				Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+			})
+			cmd := &cobra.Command{}
+			cmd.Flags().String(credstore.BackendFlagName, "", "")
+			opts := &root.Options{
+				Backend:    tt.runtime,
+				Stdin:      strings.NewReader(""),
+				Stdout:     &bytes.Buffer{},
+				Stderr:     &bytes.Buffer{},
+				ConfigPath: path,
+			}
+			if tt.runtime != "" {
+				if err := cmd.Flags().Set(credstore.BackendFlagName, tt.runtime); err != nil {
+					t.Fatalf("set backend flag: %v", err)
+				}
+			}
+			var stderr bytes.Buffer
+			opts.Stderr = &stderr
+			deps := initDeps{
+				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+					return initDraft{
+						OriginalProfileName: "work",
+						ProfileName:         "work",
+						MakeDefault:         true,
+						GitHost:             "github.com",
+						GitAuth:             string(config.GitAuthModePAT),
+						GitCredentialRef:    "codereview/work",
+						LLMProvider:         string(config.LLMProviderOpenAI),
+						LLMAuth:             string(config.LLMAuthAPIKey),
+						LLMAdapter:          string(config.LLMAdapterOpenAIAPI),
+						LLMCredentialRef:    "codereview/work-llm",
+					}, nil
+				}),
+				keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+					return tt.edit, nil
+				}),
+				secretPrompter: &fakeInitSecretPrompter{
+					actions: []initCredentialSecretAction{initCredentialSecretActionDefer, initCredentialSecretActionDefer},
+				},
+				configPath: func(*root.Options) (string, error) { return path, nil },
+				loadConfig: loadConfigForInit,
+				saveConfig: config.Save,
+				openStore: func(string, bool, config.File) (initStore, error) {
+					return newFakeInitStore(nil), nil
+				},
+			}
+
+			err := runInitWithDeps(cmd, opts, initOptions{}, deps)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("runInitWithDeps: %v", err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load config: %v", err)
+			}
+			if cfg.Keyring.Backend != tt.wantBackend {
+				t.Fatalf("keyring.backend = %q, want %q", cfg.Keyring.Backend, tt.wantBackend)
+			}
+			if tt.wantHint != "" && !strings.Contains(stderr.String(), tt.wantHint) {
+				t.Fatalf("stderr = %q, want %q hint", stderr.String(), tt.wantHint)
+			}
+		})
+	}
+}
+
 func TestInitInteractiveBlocksRouteHostChangeBeforeSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
@@ -2411,6 +2672,9 @@ func TestInitInteractivePersistsExplicitBackendForDeferredLLM(t *testing.T) {
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
+		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{Apply: true, Backend: "file"}, nil
+		}),
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
 		},
@@ -3046,6 +3310,18 @@ func (f initReviewPolicyPrompterFunc) EditReviewPolicy(prompt initReviewPolicyPr
 	return f(prompt)
 }
 
+type initRetentionPrompterFunc func(initRetentionPrompt) (initRetentionEdit, error)
+
+func (f initRetentionPrompterFunc) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
+	return f(prompt)
+}
+
+type initKeyringBackendPrompterFunc func(initKeyringBackendPrompt) (initKeyringBackendEdit, error)
+
+func (f initKeyringBackendPrompterFunc) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+	return f(prompt)
+}
+
 func hermeticFileBackend(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -3073,6 +3349,8 @@ func assertStored(t *testing.T, profile, key, want string) {
 		t.Fatalf("Get(%s,%s) = %q, want %q", profile, key, got, want)
 	}
 }
+
+func intPtr(v int) *int { return &v }
 
 func assertFileBundleKeys(t *testing.T, profile string, want []string) {
 	t.Helper()
