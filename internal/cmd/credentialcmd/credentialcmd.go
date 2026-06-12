@@ -308,6 +308,8 @@ type initWorkspaceDraft struct {
 	previousProfile  *config.Profile
 	profileName      string
 	profile          config.Profile
+	llmRuntimeName   string
+	llmRuntimes      map[string]initLLMRuntimeDraft
 	writes           map[string]map[string]string
 	credentialPlan   []initCredentialPlanEntry
 	overwriteRefs    map[string]bool
@@ -316,6 +318,26 @@ type initWorkspaceDraft struct {
 	backendArg       string
 	allowDeferredLLM bool
 	writeLLMHint     bool
+}
+
+type initLLMRuntimePreset string
+
+const (
+	initLLMRuntimePresetClaudeCLISubscription initLLMRuntimePreset = "claude_cli_subscription"
+	initLLMRuntimePresetCodexCLISubscription  initLLMRuntimePreset = "codex_cli_subscription"
+	initLLMRuntimePresetPiLocal               initLLMRuntimePreset = "pi_local"
+	initLLMRuntimePresetAnthropicAPIKey       initLLMRuntimePreset = "anthropic_api_key"
+	initLLMRuntimePresetOpenAIAPIKey          initLLMRuntimePreset = "openai_api_key"
+	initLLMRuntimePresetCustom                initLLMRuntimePreset = "custom"
+)
+
+type initLLMRuntimeDraft struct {
+	Name          string
+	Preset        initLLMRuntimePreset
+	Provider      config.LLMProvider
+	Auth          config.LLMAuth
+	Adapter       config.LLMAdapter
+	CredentialRef string
 }
 
 type initStore interface {
@@ -1823,6 +1845,11 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 	if err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
+	llmRuntimes, profileRuntimeNames := buildInitLLMRuntimeInventory(working)
+	llmRuntimeName := profileRuntimeNames[profileName]
+	if llmRuntimeName == "" {
+		return initWorkspaceDraft{}, cmderr.Config(fmt.Errorf("draft LLM runtime missing for profile %q", profileName))
+	}
 	deferLLMSecret := profile.LLM.Auth == config.LLMAuthAPIKey
 	backendFlagSet := cmderr.BackendFlagChanged(cmd)
 	if backendFlagSet {
@@ -1836,6 +1863,8 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 		previousProfile:  previousProfile,
 		profileName:      profileName,
 		profile:          profile,
+		llmRuntimeName:   llmRuntimeName,
+		llmRuntimes:      llmRuntimes,
 		writes:           map[string]map[string]string{},
 		credentialPlan:   credentialPlan,
 		overwriteRefs:    map[string]bool{},
@@ -1862,6 +1891,106 @@ func finalizeInteractiveInitPlan(workspace initWorkspaceDraft) initPlan {
 		backendArg:       workspace.backendArg,
 		allowDeferredLLM: workspace.allowDeferredLLM,
 		writeLLMHint:     workspace.writeLLMHint,
+	}
+}
+
+func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
+	runtime := initLLMRuntimeDraft{
+		Preset:        initLLMRuntimePresetCustom,
+		Provider:      llm.Provider,
+		Auth:          llm.Auth,
+		Adapter:       llm.Adapter,
+		CredentialRef: strings.TrimSpace(llm.CredentialRef),
+	}
+	switch {
+	case runtime.Provider == config.LLMProviderAnthropic && runtime.Auth == config.LLMAuthSubscription && runtime.Adapter == config.LLMAdapterClaudeCLI:
+		runtime.Preset = initLLMRuntimePresetClaudeCLISubscription
+	case runtime.Provider == config.LLMProviderOpenAI && runtime.Auth == config.LLMAuthSubscription && runtime.Adapter == config.LLMAdapterCodexCLI:
+		runtime.Preset = initLLMRuntimePresetCodexCLISubscription
+	case runtime.Provider == config.LLMProviderPi && runtime.Auth == config.LLMAuthSubscription && runtime.Adapter == config.LLMAdapterPiRPC:
+		runtime.Preset = initLLMRuntimePresetPiLocal
+	case runtime.Provider == config.LLMProviderAnthropic && runtime.Auth == config.LLMAuthAPIKey && runtime.Adapter == config.LLMAdapterAnthropicAPI:
+		runtime.Preset = initLLMRuntimePresetAnthropicAPIKey
+	case runtime.Provider == config.LLMProviderOpenAI && runtime.Auth == config.LLMAuthAPIKey && runtime.Adapter == config.LLMAdapterOpenAIAPI:
+		runtime.Preset = initLLMRuntimePresetOpenAIAPIKey
+	}
+	if runtime.Auth == config.LLMAuthSubscription {
+		runtime.CredentialRef = ""
+	}
+	return runtime
+}
+
+func (runtime initLLMRuntimeDraft) exportConfig() config.LLMConfig {
+	llm := config.LLMConfig{
+		Provider: runtime.Provider,
+		Auth:     runtime.Auth,
+		Adapter:  runtime.Adapter,
+	}
+	if runtime.Auth == config.LLMAuthAPIKey {
+		llm.CredentialRef = strings.TrimSpace(runtime.CredentialRef)
+	}
+	return llm
+}
+
+func (runtime initLLMRuntimeDraft) identityKey() string {
+	return strings.Join([]string{
+		string(runtime.Provider),
+		string(runtime.Auth),
+		string(runtime.Adapter),
+		strings.TrimSpace(runtime.CredentialRef),
+	}, "\x00")
+}
+
+func (runtime initLLMRuntimeDraft) suggestedName() string {
+	switch runtime.Preset {
+	case initLLMRuntimePresetClaudeCLISubscription:
+		return "claude-cli"
+	case initLLMRuntimePresetCodexCLISubscription:
+		return "codex-cli"
+	case initLLMRuntimePresetPiLocal:
+		return "pi-local"
+	case initLLMRuntimePresetAnthropicAPIKey:
+		return "anthropic-api-key"
+	case initLLMRuntimePresetOpenAIAPIKey:
+		return "openai-api-key"
+	default:
+		return fmt.Sprintf("%s-%s-%s", runtime.Provider, runtime.Auth, runtime.Adapter)
+	}
+}
+
+func buildInitLLMRuntimeInventory(cfg config.File) (map[string]initLLMRuntimeDraft, map[string]string) {
+	runtimes := map[string]initLLMRuntimeDraft{}
+	profileRuntimeNames := map[string]string{}
+	runtimeNamesByKey := map[string]string{}
+	for _, profileName := range sortedProfileNames(cfg.Profiles) {
+		profile := cfg.Profiles[profileName]
+		runtime := initLLMRuntimeDraftFromConfig(profile.LLM)
+		key := runtime.identityKey()
+		if existingName, ok := runtimeNamesByKey[key]; ok {
+			profileRuntimeNames[profileName] = existingName
+			continue
+		}
+		runtime.Name = uniqueInitLLMRuntimeName(runtimes, runtime.suggestedName())
+		runtimes[runtime.Name] = runtime
+		runtimeNamesByKey[key] = runtime.Name
+		profileRuntimeNames[profileName] = runtime.Name
+	}
+	return runtimes, profileRuntimeNames
+}
+
+func uniqueInitLLMRuntimeName(existing map[string]initLLMRuntimeDraft, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "llm-runtime"
+	}
+	if _, ok := existing[base]; !ok {
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", base, suffix)
+		if _, ok := existing[candidate]; !ok {
+			return candidate
+		}
 	}
 }
 
