@@ -2499,6 +2499,50 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	}
 }
 
+func TestInitInventorySelectionsApplyToDraft(t *testing.T) {
+	draft := seedInteractiveInitDraft("default", "", "", nil)
+	gitScopes := map[string]initGitScopeDraft{
+		"gitlab-work": {
+			Name:          "gitlab-work",
+			Host:          "gitlab.com",
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: "codereview/work-git",
+		},
+	}
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"work-app": {
+			Name:          "work-app",
+			Kind:          initReviewerEntityKindGitHubApp,
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: "codereview/work-reviewer",
+		},
+	}
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"openai-work": {
+			Name:          "openai-work",
+			Preset:        initLLMRuntimePresetOpenAIAPIKey,
+			Provider:      config.LLMProviderOpenAI,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterOpenAIAPI,
+			CredentialRef: "codereview/work-llm",
+		},
+	}
+
+	applyGitScopeSelection(&draft, "gitlab-work", gitScopes)
+	applyReviewerEntityInventorySelection(&draft, "work-app", reviewerEntities)
+	applyLLMRuntimeInventorySelection(&draft, "openai-work", llmRuntimes)
+
+	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModeGitHubApp) || draft.GitCredentialRef != "codereview/work-git" {
+		t.Fatalf("git draft = %#v, want selected gitlab scope values", draft)
+	}
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModeGitHubApp) || draft.ReviewerCredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("reviewer draft = %#v, want selected github app reviewer", draft)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMCredentialRef != "codereview/work-llm" {
+		t.Fatalf("llm draft = %#v, want selected openai api-key runtime", draft)
+	}
+}
+
 func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
@@ -2512,7 +2556,6 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 			"4", // LLM runtime: Anthropic API key
 			"",  // Reviewer model tier
 			"y", // Advanced storage labels
-			"",  // Reviewer auth mode
 			"",  // Git storage label
 			"",  // Reviewer storage label
 			"",  // LLM storage label
@@ -2521,7 +2564,7 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 		stderr: &stderr,
 	}
 
-	_, err := prompter.Run(initPromptContext{
+	draft, err := prompter.Run(initPromptContext{
 		RequestedProfileName: "default",
 		DefaultProfileName:   "",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
@@ -2533,6 +2576,7 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 	if !strings.Contains(out, "Advanced storage labels") || !strings.Contains(out, "Git storage label") || !strings.Contains(out, "LLM storage label") {
 		t.Fatalf("wizard output missing advanced storage label prompts: %q", out)
 	}
+	_ = draft
 }
 
 func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.T) {
@@ -2571,6 +2615,53 @@ func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.
 	out := stderr.String()
 	if !strings.Contains(out, "Existing profile secret health") || !strings.Contains(out, "missing required keys") {
 		t.Fatalf("wizard output missing health warning banner: %q", out)
+	}
+}
+
+func TestHuhInitPrompterAccessibleRendersComputedProfileHealthWarnings(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	opts := &root.Options{
+		Backend: "file",
+	}
+	existing := basicProfile("work")
+	ctx, err := buildInteractiveInitPromptContext(&cobra.Command{}, opts, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{}), nil
+		},
+	}, initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		ExistingProfileNames: []string{"work"},
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
+	})
+	if err != nil {
+		t.Fatalf("buildInteractiveInitPromptContext: %v", err)
+	}
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Git scope host
+			"", // Git scope auth mode
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Advanced storage labels
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err = prompter.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Existing profile secret health") || !strings.Contains(out, "codereview/work is missing required keys (git_token)") {
+		t.Fatalf("wizard output missing computed health warning banner: %q", out)
 	}
 }
 
@@ -3950,6 +4041,90 @@ func TestInitInteractiveReconcilesRouteHostChangeBeforeSave(t *testing.T) {
 	}
 	if cfg.Profiles["work"].Git.Host != "gitlab.com" {
 		t.Fatalf("git.host = %q, want gitlab.com", cfg.Profiles["work"].Git.Host)
+	}
+	if !reflect.DeepEqual(cfg.RepositoryProfiles, []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "gitlab.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+	}}) {
+		t.Fatalf("RepositoryProfiles = %#v, want reconciled gitlab route", cfg.RepositoryProfiles)
+	}
+}
+
+func TestInitInteractiveReconcilesRouteHostChangeFromSelectedGitScope(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	work := basicProfile("work")
+	office := basicProfile("office")
+	office.Git.Host = "gitlab.com"
+	office.Git.CredentialRef = "codereview/office"
+	cfg := config.File{
+		DefaultProfile: "work",
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		}},
+		Profiles: map[string]config.Profile{
+			"office": office,
+			"work":   work,
+		},
+	}
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile:      cfg.DefaultProfile,
+		RepositoryProfiles:  cfg.RepositoryProfiles,
+		Profiles:            cfg.Profiles,
+	})
+	scopes, profileScopeNames := buildInitGitScopeInventory(cfg)
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			draft := seedInteractiveInitDraft("work", "work", "work", &work)
+			applyGitScopeSelection(&draft, profileScopeNames["office"], scopes)
+			return draft, nil
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
+				t.Fatalf("prompt = %#v, want selected git scope reconciliation context", prompt)
+			}
+			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+				Host:      "gitlab.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			}}}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"office": {credentials.GitTokenKey: "existing-token"},
+			}), nil
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Profiles["work"].Git.Host != "gitlab.com" || cfg.Profiles["work"].Git.CredentialRef != "codereview/office" {
+		t.Fatalf("git profile = %#v, want selected gitlab scope persisted onto work", cfg.Profiles["work"].Git)
 	}
 	if !reflect.DeepEqual(cfg.RepositoryProfiles, []config.RepositoryProfile{{
 		Profile: "work",
