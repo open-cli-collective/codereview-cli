@@ -3820,6 +3820,315 @@ func TestInitInteractiveKeyringBackendPreserveSetResetAndConflict(t *testing.T) 
 	}
 }
 
+func TestBuildInteractiveInitMenuPromptNoWorkspaceDisablesProfileDependentActions(t *testing.T) {
+	prompt := buildInteractiveInitMenuPrompt(initSessionDraft{
+		cfg: config.File{Profiles: map[string]config.Profile{}},
+	})
+	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
+		t.Fatalf("prompt = %#v, want LLM/reviewer/save disabled without a workspace", prompt)
+	}
+	if prompt.ReviewProfileCount != 0 || prompt.LLMRuntimeCount != 0 || prompt.ReviewerEntityCount != 0 {
+		t.Fatalf("prompt counts = %#v, want zero counts without a workspace", prompt)
+	}
+}
+
+func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	original := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	}
+	saveCredentialTestConfig(t, path, original)
+	wantCfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load initial config: %v", err)
+	}
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{initMenuActionExit},
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if !reflect.DeepEqual(cfg, wantCfg) {
+		t.Fatalf("config after exit-without-save = %#v, want %#v", cfg, wantCfg)
+	}
+}
+
+func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	retention := config.RetentionConfig{
+		MaxAgeDays:  intPtr(45),
+		Enforcement: config.RetentionManualOnly,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionGlobalSettings,
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName:      "default",
+				MakeDefault:      true,
+				GitHost:          "github.com",
+				GitAuth:          string(config.GitAuthModePAT),
+				LLMProvider:      string(config.LLMProviderAnthropic),
+				LLMAuth:          string(config.LLMAuthSubscription),
+				LLMAdapter:       string(config.LLMAdapterClaudeCLI),
+				ReviewerEnabled:  false,
+				ReviewerAuth:     string(config.GitAuthModePAT),
+				LLMReviewerModelTier: "",
+			}, nil
+		}),
+		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+			return initRetentionEdit{Apply: true, Retention: retention}, nil
+		}),
+		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{Apply: true, Backend: "file"}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"default": {credentials.GitTokenKey: "existing-token"},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile != "default" {
+		t.Fatalf("default profile = %q, want default", cfg.DefaultProfile)
+	}
+	if cfg.Keyring.Backend != "file" {
+		t.Fatalf("keyring.backend = %q, want file", cfg.Keyring.Backend)
+	}
+	if cfg.Data.Retention.MaxAgeDaysValue() != 45 || cfg.Data.Retention.Enforcement != config.RetentionManualOnly {
+		t.Fatalf("retention = %#v, want 45/manual_only", cfg.Data.Retention)
+	}
+}
+
+func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionLLMRuntimes,
+				initMenuActionSave,
+			},
+		},
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.LLMProvider = string(config.LLMProviderOpenAI)
+			draft.LLMAuth = string(config.LLMAuthAPIKey)
+			draft.LLMAdapter = string(config.LLMAdapterOpenAIAPI)
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"default":     {credentials.GitTokenKey: "existing-token"},
+				"default-llm": {credentials.OpenAIAPIKeyKey: "existing-openai-key"},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := cfg.Profiles["default"]
+	if profile.LLM.Auth != config.LLMAuthAPIKey || profile.LLM.Adapter != config.LLMAdapterOpenAIAPI {
+		t.Fatalf("llm profile = %#v, want openai api-key runtime", profile.LLM)
+	}
+	if profile.LLM.CredentialRef == "" {
+		t.Fatalf("llm credential ref = %q, want generated ref after runtime rebuild", profile.LLM.CredentialRef)
+	}
+}
+
+func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"default": {
+					credentials.GitTokenKey: "existing-token",
+				},
+				"default-reviewer": {
+					credentials.GitHubAppIDKey:         "12345",
+					credentials.GitHubAppPrivateKeyKey: "private-key",
+				},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := cfg.Profiles["default"]
+	if profile.ReviewerCredentials == nil {
+		t.Fatal("reviewer credentials = nil, want focused reviewer edit to enable separate reviewer")
+	}
+	if profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp {
+		t.Fatalf("reviewer credentials = %#v, want github app reviewer", profile.ReviewerCredentials)
+	}
+	if profile.ReviewerCredentials.CredentialRef == "" {
+		t.Fatalf("reviewer credential ref = %q, want generated ref after reviewer rebuild", profile.ReviewerCredentials.CredentialRef)
+	}
+}
+
+func TestInitNonInteractiveBypassesInteractiveMenuPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: initMenuPrompterFunc(func(initMenuPrompt) (initMenuAction, error) {
+			t.Fatal("interactive menu should not run for --non-interactive")
+			return "", nil
+		}),
+		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+			t.Fatal("global settings should not run for --non-interactive")
+			return initRetentionEdit{}, nil
+		}),
+	}
+	flags := initOptions{
+		nonInteractive: true,
+		gitHost:        "github.com",
+		gitAuth:        string(config.GitAuthModePAT),
+		llmProvider:    string(config.LLMProviderAnthropic),
+		llmAuth:        string(config.LLMAuthSubscription),
+		llmAdapter:     string(config.LLMAdapterClaudeCLI),
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, flags, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile == "" || len(cfg.Profiles) != 1 {
+		t.Fatalf("config = %#v, want non-interactive profile saved", cfg)
+	}
+}
+
 func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -5036,6 +5345,24 @@ func (f initPrompterFunc) Run(ctx initPromptContext) (initDraft, error) {
 	return f(ctx)
 }
 
+type initMenuPrompterFunc func(initMenuPrompt) (initMenuAction, error)
+
+func (f initMenuPrompterFunc) ChooseAction(prompt initMenuPrompt) (initMenuAction, error) {
+	return f(prompt)
+}
+
+type initLLMRuntimePrompterFunc func(initLLMRuntimePrompt) (initDraft, error)
+
+func (f initLLMRuntimePrompterFunc) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
+	return f(prompt)
+}
+
+type initReviewerEntityPrompterFunc func(initReviewerEntityPrompt) (initDraft, error)
+
+func (f initReviewerEntityPrompterFunc) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
+	return f(prompt)
+}
+
 type initModelMapPrompterFunc func(initModelMapPrompt) (initModelMapEdit, error)
 
 func (f initModelMapPrompterFunc) EditModelMap(prompt initModelMapPrompt) (initModelMapEdit, error) {
@@ -5070,6 +5397,21 @@ type initKeyringBackendPrompterFunc func(initKeyringBackendPrompt) (initKeyringB
 
 func (f initKeyringBackendPrompterFunc) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 	return f(prompt)
+}
+
+type fakeInitMenuPrompter struct {
+	actions []initMenuAction
+	prompts []initMenuPrompt
+}
+
+func (f *fakeInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction, error) {
+	f.prompts = append(f.prompts, prompt)
+	if len(f.actions) == 0 {
+		return "", errors.New("unexpected menu prompt")
+	}
+	action := f.actions[0]
+	f.actions = f.actions[1:]
+	return action, nil
 }
 
 func hermeticFileBackend(t *testing.T) {

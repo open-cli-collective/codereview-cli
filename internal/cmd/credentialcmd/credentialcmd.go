@@ -159,6 +159,10 @@ type initPrompter interface {
 	Run(initPromptContext) (initDraft, error)
 }
 
+type initMenuPrompter interface {
+	ChooseAction(initMenuPrompt) (initMenuAction, error)
+}
+
 type initModelMapPrompter interface {
 	EditModelMap(initModelMapPrompt) (initModelMapEdit, error)
 }
@@ -181,6 +185,14 @@ type initRetentionPrompter interface {
 
 type initKeyringBackendPrompter interface {
 	EditKeyringBackend(initKeyringBackendPrompt) (initKeyringBackendEdit, error)
+}
+
+type initLLMRuntimePrompter interface {
+	EditLLMRuntime(initLLMRuntimePrompt) (initDraft, error)
+}
+
+type initReviewerEntityPrompter interface {
+	EditReviewerEntity(initReviewerEntityPrompt) (initDraft, error)
 }
 
 type initPromptContext struct {
@@ -276,8 +288,41 @@ type initKeyringBackendEdit struct {
 	Backend string
 }
 
+type initMenuAction string
+
+const (
+	initMenuActionLLMRuntimes      initMenuAction = "llm_runtimes"
+	initMenuActionReviewerEntities initMenuAction = "reviewer_entities"
+	initMenuActionReviewProfiles   initMenuAction = "review_profiles"
+	initMenuActionGlobalSettings   initMenuAction = "global_settings"
+	initMenuActionSave             initMenuAction = "save"
+	initMenuActionExit             initMenuAction = "exit"
+)
+
+type initMenuPrompt struct {
+	HasWorkspace          bool
+	LLMRuntimeCount       int
+	ReviewerEntityCount   int
+	ReviewProfileCount    int
+	CanConfigureLLM       bool
+	CanConfigureReviewer  bool
+	CanSave               bool
+	ActiveProfileName     string
+}
+
+type initLLMRuntimePrompt struct {
+	Context initPromptContext
+}
+
+type initReviewerEntityPrompt struct {
+	Context initPromptContext
+}
+
 type initDeps struct {
 	prompter             initPrompter
+	menuPrompter         initMenuPrompter
+	llmRuntimePrompter   initLLMRuntimePrompter
+	reviewerPrompter     initReviewerEntityPrompter
 	modelMapPrompter     initModelMapPrompter
 	agentSourcesPrompter initAgentSourcesPrompter
 	reviewPolicyPrompter initReviewPolicyPrompter
@@ -331,6 +376,14 @@ type initWorkspaceDraft struct {
 	backendArg         string
 	allowDeferredLLM   bool
 	writeLLMHint       bool
+}
+
+type initSessionDraft struct {
+	path                 string
+	cfg                  config.File
+	requestedProfileName string
+	backendFlagSet       bool
+	workspace            *initWorkspaceDraft
 }
 
 type initGitScopeDraft struct {
@@ -501,6 +554,9 @@ type initSecretValuePrompt struct {
 
 func defaultInitDeps() initDeps {
 	return initDeps{
+		menuPrompter:         nil,
+		llmRuntimePrompter:   nil,
+		reviewerPrompter:     nil,
 		modelMapPrompter:     nil,
 		agentSourcesPrompter: nil,
 		reviewPolicyPrompter: nil,
@@ -523,6 +579,15 @@ func (deps initDeps) withDefaults() initDeps {
 	defaults := defaultInitDeps()
 	if deps.secretPrompter == nil {
 		deps.secretPrompter = defaults.secretPrompter
+	}
+	if deps.menuPrompter == nil {
+		deps.menuPrompter = defaults.menuPrompter
+	}
+	if deps.llmRuntimePrompter == nil {
+		deps.llmRuntimePrompter = defaults.llmRuntimePrompter
+	}
+	if deps.reviewerPrompter == nil {
+		deps.reviewerPrompter = defaults.reviewerPrompter
 	}
 	if deps.modelMapPrompter == nil {
 		deps.modelMapPrompter = defaults.modelMapPrompter
@@ -641,83 +706,22 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if err := validateInteractiveInitFlags(cmd, flags); err != nil {
 		return exitcode.Usage(err)
 	}
-	profileName := opts.Profile
-	if profileName == "" {
-		profileName = credstore.DefaultProfile
-	}
-	path, err := deps.configPath(opts)
-	if err != nil {
-		return exitcode.AuthConfig(err)
-	}
-	cfg, _, err := deps.loadConfig(path)
-	if err != nil {
-		return cmderr.Config(err)
-	}
-	if cfg.Profiles == nil {
-		cfg.Profiles = map[string]config.Profile{}
-	}
-	existingProfileName := ""
-	var existingProfile *config.Profile
-	if profile, ok := cfg.Profiles[profileName]; ok {
-		existingProfileName = profileName
-		profileCopy := profile
-		existingProfile = &profileCopy
-	} else if opts.Profile == "" && cfg.DefaultProfile != "" {
-		if profile, ok := cfg.Profiles[cfg.DefaultProfile]; ok {
-			existingProfileName = cfg.DefaultProfile
-			profileCopy := profile
-			existingProfile = &profileCopy
-			profileName = cfg.DefaultProfile
-		}
-	}
-	prompter := deps.prompter
-	if prompter == nil {
-		prompter = newHuhInitPrompter(opts)
-	}
-	promptCtx, err := buildInteractiveInitPromptContext(cmd, opts, deps, initPromptContext{
-		RequestedProfileName: profileName,
-		ExistingProfileName:  existingProfileName,
-		ExistingProfile:      existingProfile,
-		ExistingProfileNames: sortedProfileNames(cfg.Profiles),
-		DefaultProfileName:   cfg.DefaultProfile,
-		ExistingConfig:       cfg,
-	})
+	session, err := bootstrapInteractiveInitSession(cmd, opts, flags, deps)
 	if err != nil {
 		return err
 	}
-	draft, err := prompter.Run(promptCtx)
+	if deps.prompter != nil && deps.menuPrompter == nil {
+		session, err = runInjectedInteractiveInit(cmd, opts, flags, deps, session)
+	} else {
+		session, err = runInteractiveInitMenuLoop(cmd, opts, flags, deps, session)
+	}
 	if err != nil {
 		return err
 	}
-	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, path, cfg, draft)
-	if err != nil {
-		return err
+	if session.workspace == nil {
+		return nil
 	}
-	workspace, err = collectInteractiveInitRoutes(opts, deps, workspace)
-	if err != nil {
-		return err
-	}
-	workspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
-	if err != nil {
-		return err
-	}
-	workspace, err = collectInteractiveInitAgentSources(opts, deps, workspace)
-	if err != nil {
-		return err
-	}
-	workspace, err = collectInteractiveInitReviewPolicy(opts, deps, workspace)
-	if err != nil {
-		return err
-	}
-	workspace, err = collectInteractiveInitRetention(opts, deps, workspace)
-	if err != nil {
-		return err
-	}
-	workspace, err = collectInteractiveInitKeyringBackend(opts, deps, workspace)
-	if err != nil {
-		return err
-	}
-	workspace, err = collectInteractiveInitSecrets(cmd, opts, deps, workspace)
+	workspace, err := collectInteractiveInitSecrets(cmd, opts, deps, *session.workspace)
 	if err != nil {
 		return err
 	}
@@ -725,13 +729,72 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	return applyInitPlan(opts, flags, deps, plan)
 }
 
+func runInjectedInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	var err error
+	session, err = editInteractiveInitProfile(cmd, opts, flags, deps, session)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	if deps.retentionPrompter != nil {
+		session.cfg, err = collectInteractiveInitRetentionConfig(opts, deps, cloneInitConfigFile(session.cfg))
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+		if session.workspace != nil {
+			workspace := *session.workspace
+			workspace.cfg = cloneInitConfigFile(session.cfg)
+			session.workspace = &workspace
+		}
+	}
+	if deps.keyringPrompter != nil {
+		session.cfg, err = collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cloneInitConfigFile(session.cfg))
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+		if session.workspace != nil {
+			workspace := *session.workspace
+			workspace.cfg = cloneInitConfigFile(session.cfg)
+			workspace.backendArg = interactiveInitBackendArg(opts, workspace.backendFlagSet, session.cfg)
+			session.workspace = &workspace
+		}
+	}
+	return session, nil
+}
+
 type huhInitPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
+type huhInitMenuPrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
+type huhInitLLMRuntimePrompter struct {
+	stdin  io.Reader
+	stderr io.Writer
+}
+
+type huhInitReviewerEntityPrompter struct {
 	stdin  io.Reader
 	stderr io.Writer
 }
 
 func newHuhInitPrompter(opts *root.Options) initPrompter {
 	return huhInitPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitMenuPrompter(opts *root.Options) initMenuPrompter {
+	return huhInitMenuPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitLLMRuntimePrompter(opts *root.Options) initLLMRuntimePrompter {
+	return huhInitLLMRuntimePrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+}
+
+func newHuhInitReviewerEntityPrompter(opts *root.Options) initReviewerEntityPrompter {
+	return huhInitReviewerEntityPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 type huhInitSecretPrompter struct {
@@ -864,6 +927,374 @@ func initCredentialHealthWarnings(statuses []credentials.CredentialStatus) []str
 		}
 	}
 	return warnings
+}
+
+func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) (initSessionDraft, error) {
+	profileName := opts.Profile
+	if profileName == "" {
+		profileName = credstore.DefaultProfile
+	}
+	path, err := deps.configPath(opts)
+	if err != nil {
+		return initSessionDraft{}, exitcode.AuthConfig(err)
+	}
+	cfg, _, err := deps.loadConfig(path)
+	if err != nil {
+		return initSessionDraft{}, cmderr.Config(err)
+	}
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]config.Profile{}
+	}
+	session := initSessionDraft{
+		path:                 path,
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: profileName,
+		backendFlagSet:       cmderr.BackendFlagChanged(cmd),
+	}
+	existingProfileName := ""
+	var existingProfile *config.Profile
+	if profile, ok := session.cfg.Profiles[profileName]; ok {
+		existingProfileName = profileName
+		profileCopy := profile
+		existingProfile = &profileCopy
+	} else if opts.Profile == "" && session.cfg.DefaultProfile != "" {
+		if profile, ok := session.cfg.Profiles[session.cfg.DefaultProfile]; ok {
+			existingProfileName = session.cfg.DefaultProfile
+			profileCopy := profile
+			existingProfile = &profileCopy
+			session.requestedProfileName = session.cfg.DefaultProfile
+		}
+	}
+	if existingProfile == nil {
+		return session, nil
+	}
+	draft := seedInteractiveInitDraft(session.requestedProfileName, existingProfileName, session.cfg.DefaultProfile, existingProfile)
+	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, path, session.cfg, draft)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	session.workspace = &workspace
+	session.cfg = cloneInitConfigFile(workspace.cfg)
+	return session, nil
+}
+
+func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
+	prompt := initMenuPrompt{
+		HasWorkspace:       session.workspace != nil,
+		ReviewProfileCount: len(session.cfg.Profiles),
+	}
+	if session.workspace == nil {
+		return prompt
+	}
+	prompt.ActiveProfileName = session.workspace.profileName
+	prompt.LLMRuntimeCount = len(session.workspace.llmRuntimes)
+	prompt.ReviewerEntityCount = len(session.workspace.reviewerEntities)
+	prompt.CanConfigureLLM = true
+	prompt.CanConfigureReviewer = true
+	prompt.CanSave = true
+	return prompt
+}
+
+func currentInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initPromptContext, error) {
+	existingProfileName := ""
+	var existingProfile *config.Profile
+	if session.workspace != nil {
+		existingProfileName = session.workspace.profileName
+		profileCopy := session.workspace.profile
+		existingProfile = &profileCopy
+	} else if profile, ok := session.cfg.Profiles[session.requestedProfileName]; ok {
+		existingProfileName = session.requestedProfileName
+		profileCopy := profile
+		existingProfile = &profileCopy
+	}
+	return buildInteractiveInitPromptContext(cmd, opts, deps, initPromptContext{
+		RequestedProfileName: session.requestedProfileName,
+		ExistingProfileName:  existingProfileName,
+		ExistingProfile:      existingProfile,
+		ExistingProfileNames: sortedProfileNames(session.cfg.Profiles),
+		DefaultProfileName:   session.cfg.DefaultProfile,
+		ExistingConfig:       session.cfg,
+	})
+}
+
+func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	menuPrompter := deps.menuPrompter
+	if menuPrompter == nil {
+		menuPrompter = newHuhInitMenuPrompter(opts)
+	}
+	for {
+		action, err := menuPrompter.ChooseAction(buildInteractiveInitMenuPrompt(session))
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+		switch action {
+		case initMenuActionLLMRuntimes:
+			session, err = editInteractiveInitLLMRuntime(cmd, opts, flags, deps, session)
+		case initMenuActionReviewerEntities:
+			session, err = editInteractiveInitReviewerEntity(cmd, opts, flags, deps, session)
+		case initMenuActionReviewProfiles:
+			session, err = editInteractiveInitProfile(cmd, opts, flags, deps, session)
+		case initMenuActionGlobalSettings:
+			session, err = editInteractiveInitGlobalSettings(cmd, opts, deps, session)
+		case initMenuActionSave:
+			if session.workspace == nil {
+				return initSessionDraft{}, exitcode.Usage(errors.New("save requires at least one configured profile"))
+			}
+			return session, nil
+		case initMenuActionExit:
+			session.workspace = nil
+			return session, nil
+		default:
+			err = fmt.Errorf("unsupported init menu action %q", action)
+		}
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+	}
+}
+
+func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	prompter := deps.prompter
+	if prompter == nil {
+		prompter = newHuhInitPrompter(opts)
+	}
+	promptCtx, err := currentInteractiveInitPromptContext(cmd, opts, deps, session)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	draft, err := prompter.Run(promptCtx)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	workspace, err = collectInteractiveInitRoutes(opts, deps, workspace)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	workspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	workspace, err = collectInteractiveInitAgentSources(opts, deps, workspace)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	workspace, err = collectInteractiveInitReviewPolicy(opts, deps, workspace)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	session.workspace = &workspace
+	session.cfg = cloneInitConfigFile(workspace.cfg)
+	session.requestedProfileName = workspace.profileName
+	return session, nil
+}
+
+func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	if session.workspace == nil {
+		return initSessionDraft{}, exitcode.Usage(errors.New("configure a review profile before editing LLM runtimes"))
+	}
+	prompter := deps.llmRuntimePrompter
+	if prompter == nil {
+		prompter = newHuhInitLLMRuntimePrompter(opts)
+	}
+	promptCtx, err := currentInteractiveInitPromptContext(cmd, opts, deps, session)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: promptCtx})
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	session.workspace = &workspace
+	session.cfg = cloneInitConfigFile(workspace.cfg)
+	session.requestedProfileName = workspace.profileName
+	return session, nil
+}
+
+func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	if session.workspace == nil {
+		return initSessionDraft{}, exitcode.Usage(errors.New("configure a review profile before editing reviewer entities"))
+	}
+	prompter := deps.reviewerPrompter
+	if prompter == nil {
+		prompter = newHuhInitReviewerEntityPrompter(opts)
+	}
+	promptCtx, err := currentInteractiveInitPromptContext(cmd, opts, deps, session)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: promptCtx})
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	session.workspace = &workspace
+	session.cfg = cloneInitConfigFile(workspace.cfg)
+	session.requestedProfileName = workspace.profileName
+	return session, nil
+}
+
+func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	cfg, err := collectInteractiveInitRetentionConfig(opts, deps, cloneInitConfigFile(session.cfg))
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	cfg, err = collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cfg)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	session.cfg = cfg
+	if session.workspace != nil {
+		workspace := *session.workspace
+		workspace.cfg = cloneInitConfigFile(cfg)
+		workspace.backendArg = interactiveInitBackendArg(opts, workspace.backendFlagSet, cfg)
+		session.workspace = &workspace
+	}
+	return session, nil
+}
+
+func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction, error) {
+	action := initMenuActionReviewProfiles
+	if prompt.CanSave {
+		action = initMenuActionSave
+	}
+	options := []huh.Option[initMenuAction]{
+		huh.NewOption(fmt.Sprintf("Configure LLM runtimes (%d)", prompt.LLMRuntimeCount), initMenuActionLLMRuntimes),
+		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
+		huh.NewOption(fmt.Sprintf("Configure review profiles (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfiles),
+		huh.NewOption("Review global settings", initMenuActionGlobalSettings),
+		huh.NewOption("Save and exit", initMenuActionSave),
+		huh.NewOption("Exit without saving", initMenuActionExit),
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initMenuAction]().
+				Title("cr init").
+				Description(initMenuDescription(prompt)).
+				Options(options...).
+				Value(&action).
+				Validate(func(value initMenuAction) error {
+					switch value {
+					case initMenuActionLLMRuntimes:
+						if !prompt.CanConfigureLLM {
+							return errors.New("configure a review profile before editing LLM runtimes")
+						}
+					case initMenuActionReviewerEntities:
+						if !prompt.CanConfigureReviewer {
+							return errors.New("configure a review profile before editing reviewer entities")
+						}
+					case initMenuActionSave:
+						if !prompt.CanSave {
+							return errors.New("configure a review profile before saving")
+						}
+					case initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+					}
+					return nil
+				}),
+		),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return action, nil
+}
+
+func initMenuDescription(prompt initMenuPrompt) string {
+	if prompt.HasWorkspace && strings.TrimSpace(prompt.ActiveProfileName) != "" {
+		return fmt.Sprintf("Active profile: %s", prompt.ActiveProfileName)
+	}
+	return "Configure the parts cr needs, then save when the active profile is ready."
+}
+
+func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
+	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+	selectedRuntime := prompt.Context.ProfileLLMRuntimes[prompt.Context.ExistingProfileName]
+	selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+	if selectedRuntime == "" {
+		if selectedRuntimePreset == string(initLLMRuntimePresetCustom) {
+			selectedRuntime = initCustomLLMRuntimeSelection
+		} else {
+			selectedRuntime = selectedRuntimePreset
+		}
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("LLM runtime").
+				Description("Choose how reviewer agents run for this profile.").
+				Options(initLLMRuntimeOptions(prompt.Context.LLMRuntimes)...).
+				Value(&selectedRuntime),
+			huh.NewSelect[string]().
+				Title("LLM provider").
+				Options(
+					huh.NewOption("Anthropic", string(config.LLMProviderAnthropic)),
+					huh.NewOption("OpenAI", string(config.LLMProviderOpenAI)),
+					huh.NewOption("Pi", string(config.LLMProviderPi)),
+				).
+				Value(&draft.LLMProvider),
+			huh.NewSelect[string]().
+				Title("LLM auth mode").
+				Options(
+					huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
+					huh.NewOption("API key", string(config.LLMAuthAPIKey)),
+				).
+				Value(&draft.LLMAuth),
+			huh.NewSelect[string]().
+				Title("LLM adapter").
+				Options(
+					huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
+					huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
+					huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
+					huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
+					huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
+				).
+				Value(&draft.LLMAdapter),
+		).WithHideFunc(func() bool {
+			return selectedRuntime != initCustomLLMRuntimeSelection
+		}).Title("LLM Runtime"),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initDraft{}, err
+	}
+	applyLLMRuntimeInventorySelection(&draft, selectedRuntime, prompt.Context.LLMRuntimes)
+	selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+	applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+	return draft, nil
+}
+
+func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
+	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+	selectedReviewerEntity := prompt.Context.ProfileReviewerEntities[prompt.Context.ExistingProfileName]
+	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+	if selectedReviewerEntity == "" {
+		selectedReviewerEntity = reviewerMode
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Reviewer entity").
+				Description("Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile.").
+				Options(initReviewerEntityOptions(prompt.Context.ReviewerEntities)...).
+				Value(&selectedReviewerEntity),
+		).Title("Reviewer Entity"),
+	).WithInput(p.stdin).WithOutput(p.stderr)
+	if err := form.Run(); err != nil {
+		return initDraft{}, err
+	}
+	applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, prompt.Context.ReviewerEntities)
+	reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+	applyReviewerEntitySelection(&draft, reviewerMode)
+	return draft, nil
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -3018,61 +3449,58 @@ func parseInitRouteSpec(raw string) (configedit.RepositoryRouteSpec, error) {
 	})
 }
 
-func collectInteractiveInitRetention(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
+func collectInteractiveInitRetentionConfig(opts *root.Options, deps initDeps, cfg config.File) (config.File, error) {
 	prompter := deps.retentionPrompter
 	if prompter == nil {
-		if deps.prompter != nil {
-			return plan, nil
-		}
 		prompter = newHuhInitRetentionPrompter(opts)
 	}
 	edit, err := prompter.EditRetention(initRetentionPrompt{
-		Retention: plan.cfg.Data.Retention,
+		Retention: cfg.Data.Retention,
 	})
 	if err != nil {
-		return initWorkspaceDraft{}, err
+		return config.File{}, err
 	}
 	if !edit.Apply {
-		return plan, nil
+		return cfg, nil
 	}
-	nextCfg := plan.cfg
+	nextCfg := cfg
 	nextCfg.Data.Retention = edit.Retention
-	if err := config.Validate(nextCfg); err != nil {
-		return initWorkspaceDraft{}, cmderr.Config(err)
+	if err := validateInteractiveInitGlobalConfig(nextCfg); err != nil {
+		return config.File{}, cmderr.Config(err)
 	}
-	plan.cfg = nextCfg
-	return plan, nil
+	return nextCfg, nil
 }
 
-func collectInteractiveInitKeyringBackend(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
+func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDeps, backendFlagSet bool, cfg config.File) (config.File, error) {
 	prompter := deps.keyringPrompter
 	if prompter == nil {
-		if deps.prompter != nil {
-			return plan, nil
-		}
 		prompter = newHuhInitKeyringBackendPrompter(opts)
 	}
 	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Backend: plan.cfg.Keyring.Backend,
+		Backend: cfg.Keyring.Backend,
 	})
 	if err != nil {
-		return initWorkspaceDraft{}, err
+		return config.File{}, err
 	}
 	if !edit.Apply {
-		plan.backendArg = interactiveInitBackendArg(opts, plan.backendFlagSet, plan.cfg)
-		return plan, nil
+		return cfg, nil
 	}
-	nextCfg := plan.cfg
+	nextCfg := cfg
 	nextCfg.Keyring.Backend = strings.TrimSpace(edit.Backend)
-	if err := config.Validate(nextCfg); err != nil {
-		return initWorkspaceDraft{}, cmderr.Config(err)
+	if err := validateInteractiveInitGlobalConfig(nextCfg); err != nil {
+		return config.File{}, cmderr.Config(err)
 	}
-	if plan.backendFlagSet && nextCfg.Keyring.Backend != "" && nextCfg.Keyring.Backend != opts.Backend {
-		return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with selected keyring.backend %q", opts.Backend, nextCfg.Keyring.Backend))
+	if backendFlagSet && nextCfg.Keyring.Backend != "" && nextCfg.Keyring.Backend != opts.Backend {
+		return config.File{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with selected keyring.backend %q", opts.Backend, nextCfg.Keyring.Backend))
 	}
-	plan.cfg = nextCfg
-	plan.backendArg = interactiveInitBackendArg(opts, plan.backendFlagSet, nextCfg)
-	return plan, nil
+	return nextCfg, nil
+}
+
+func validateInteractiveInitGlobalConfig(cfg config.File) error {
+	if len(cfg.Profiles) == 0 || strings.TrimSpace(cfg.DefaultProfile) == "" {
+		return config.ValidateRetention(cfg.Data.Retention)
+	}
+	return config.Validate(cfg)
 }
 
 func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, cfg config.File) string {
