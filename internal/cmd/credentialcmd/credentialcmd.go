@@ -2333,7 +2333,11 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 		if err != nil {
 			return initPlan{}, cmderr.Credential(err)
 		}
-		targetHasRequired := initCredentialKeysSatisfySpecs(targetKeys, entry.KeySpecs)
+		targetStatus, err := credentials.CredentialRefStatus(activeStore, entry.Ref, nil)
+		if err != nil {
+			return initPlan{}, cmderr.Credential(err)
+		}
+		targetHasRequired := credentials.RequiredKeysSatisfied(targetStatus)
 		targetHasAnyKeys := len(targetKeys) > 0
 		if action == initCredentialSecretActionSetNow && targetHasAnyKeys {
 			action, err = prompter.ChooseCredentialAction(initCredentialSecretPrompt{
@@ -2447,18 +2451,6 @@ func existingInitCredentialKeys(store initStore, ref string) (map[string]bool, e
 		present[key] = true
 	}
 	return present, nil
-}
-
-func initCredentialKeysSatisfySpecs(keys map[string]bool, specs []credentials.KeySpec) bool {
-	for _, spec := range specs {
-		if !spec.Required {
-			continue
-		}
-		if !keys[spec.Key] {
-			return false
-		}
-	}
-	return true
 }
 
 func initCredentialWritePlanSatisfiesEntry(entry initCredentialPlanEntry, targetKeys map[string]bool, planned map[string]string) bool {
