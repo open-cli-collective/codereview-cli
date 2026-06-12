@@ -1805,6 +1805,33 @@ func TestBuildInitGitScopeInventoryDeduplicatesNormalizedGitHubEnterpriseHost(t 
 	}
 }
 
+func TestBuildInitGitScopeInventoryAssignsStableSuffixOnNameCollision(t *testing.T) {
+	home := basicProfile("home")
+	work := basicProfile("work")
+	home.Git.Host = "github.com"
+	work.Git.Host = "https://github.com/"
+	home.Git.CredentialRef = "codereview/home"
+	work.Git.CredentialRef = "codereview/work"
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	}
+
+	scopes, profileScopeNames := buildInitGitScopeInventory(cfg)
+
+	if len(scopes) != 2 {
+		t.Fatalf("len(scopes) = %d, want 2; scopes=%#v", len(scopes), scopes)
+	}
+	if profileScopeNames["home"] == profileScopeNames["work"] {
+		t.Fatalf("profileScopeNames = %#v, want distinct names for colliding scope bases", profileScopeNames)
+	}
+	if profileScopeNames["home"] != "github-com-pat" && profileScopeNames["work"] != "github-com-pat" {
+		t.Fatalf("profileScopeNames = %#v, want one unsuffixed base name", profileScopeNames)
+	}
+}
+
 func TestBuildInitReviewerEntityInventoryVariantsAndDeduping(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
@@ -1835,6 +1862,37 @@ func TestBuildInitReviewerEntityInventoryVariantsAndDeduping(t *testing.T) {
 	}
 	if profileEntityNames["work"] != profileEntityNames["bot"] {
 		t.Fatalf("profileEntityNames = %#v, want deduped PAT reviewer entity", profileEntityNames)
+	}
+}
+
+func TestBuildInitReviewerEntityInventoryAssignsStableSuffixOnNameCollision(t *testing.T) {
+	home := basicProfile("home")
+	work := basicProfile("work")
+	home.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/home-reviewer",
+	}
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	}
+
+	entities, profileEntityNames := buildInitReviewerEntityInventory(cfg)
+
+	if len(entities) != 2 {
+		t.Fatalf("len(entities) = %d, want 2; entities=%#v", len(entities), entities)
+	}
+	if profileEntityNames["home"] == profileEntityNames["work"] {
+		t.Fatalf("profileEntityNames = %#v, want distinct names for colliding reviewer bases", profileEntityNames)
+	}
+	if profileEntityNames["home"] != "reviewer-pat" && profileEntityNames["work"] != "reviewer-pat" {
+		t.Fatalf("profileEntityNames = %#v, want one unsuffixed base name", profileEntityNames)
 	}
 }
 
@@ -2144,6 +2202,69 @@ func TestInitInteractivePromptDrivenFlowStillExportsReviewerNilAfterDraftInvento
 	}
 	if profile.ReviewerCredentials != nil {
 		t.Fatalf("reviewer credentials = %#v, want nil for use-git-identity path", profile.ReviewerCredentials)
+	}
+}
+
+func TestInitInteractivePromptDrivenFlowStillExportsSeparateReviewerAfterDraftInventoryImport(t *testing.T) {
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	var savedCfg config.File
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName:           "office",
+				MakeDefault:           true,
+				GitHost:               "github.mycompany.com",
+				GitAuth:               string(config.GitAuthModePAT),
+				GitCredentialRef:      "codereview/office-git",
+				ReviewerEnabled:       true,
+				ReviewerAuth:          string(config.GitAuthModeGitHubApp),
+				ReviewerCredentialRef: "codereview/office-reviewer",
+				LLMProvider:           string(config.LLMProviderAnthropic),
+				LLMAuth:               string(config.LLMAuthSubscription),
+				LLMAdapter:            string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(_ string, cfg config.File) error {
+			savedCfg = cloneInitConfigFile(cfg)
+			return nil
+		},
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"office-git": {
+					credentials.GitTokenKey: "existing-git-token",
+				},
+				"office-reviewer": {
+					credentials.GitHubAppIDKey:         "12345",
+					credentials.GitHubAppPrivateKeyKey: "private-key",
+				},
+			}), nil
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	profile := savedCfg.Profiles["office"]
+	if profile.ReviewerCredentials == nil {
+		t.Fatal("reviewer credentials = nil, want separate reviewer preserved")
+	}
+	if profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp || profile.ReviewerCredentials.CredentialRef != "codereview/office-reviewer" {
+		t.Fatalf("reviewer credentials = %#v, want github_app office reviewer", profile.ReviewerCredentials)
 	}
 }
 
