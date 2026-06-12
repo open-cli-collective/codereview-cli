@@ -326,9 +326,11 @@ const (
 	initLLMRuntimePresetClaudeCLISubscription initLLMRuntimePreset = "claude_cli_subscription"
 	initLLMRuntimePresetCodexCLISubscription  initLLMRuntimePreset = "codex_cli_subscription"
 	initLLMRuntimePresetPiLocal               initLLMRuntimePreset = "pi_local"
-	initLLMRuntimePresetAnthropicAPIKey       initLLMRuntimePreset = "anthropic_api_key"
-	initLLMRuntimePresetOpenAIAPIKey          initLLMRuntimePreset = "openai_api_key"
-	initLLMRuntimePresetCustom                initLLMRuntimePreset = "custom"
+	// #nosec G101 -- runtime preset identifiers, not secret material.
+	initLLMRuntimePresetAnthropicAPIKey initLLMRuntimePreset = "anthropic_api_key"
+	// #nosec G101 -- runtime preset identifiers, not secret material.
+	initLLMRuntimePresetOpenAIAPIKey initLLMRuntimePreset = "openai_api_key"
+	initLLMRuntimePresetCustom       initLLMRuntimePreset = "custom"
 )
 
 type initLLMRuntimeDraft struct {
@@ -1953,9 +1955,10 @@ func (runtime initLLMRuntimeDraft) suggestedName() string {
 		return "anthropic-api-key"
 	case initLLMRuntimePresetOpenAIAPIKey:
 		return "openai-api-key"
-	default:
+	case initLLMRuntimePresetCustom:
 		return fmt.Sprintf("%s-%s-%s", runtime.Provider, runtime.Auth, runtime.Adapter)
 	}
+	return "llm-runtime"
 }
 
 func buildInitLLMRuntimeInventory(cfg config.File) (map[string]initLLMRuntimeDraft, map[string]string) {
