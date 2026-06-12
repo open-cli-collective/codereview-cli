@@ -4875,6 +4875,192 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 	}
 }
 
+func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	store := newFakeInitStore(map[string]map[string]string{})
+	var finalizePrompt initFinalizePrompt
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+			finalizePrompt = prompt
+			return initFinalizeActionSave, nil
+		}),
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"git-token"},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(finalizePrompt.Profiles) != 1 {
+		t.Fatalf("finalize prompt = %#v, want one touched profile", finalizePrompt)
+	}
+	profileReadiness := finalizePrompt.Profiles[0]
+	if profileReadiness.ProfileName != "default" || !profileReadiness.Ready || len(profileReadiness.Notes) != 0 {
+		t.Fatalf("profile readiness = %#v, want ready default profile with no notes", profileReadiness)
+	}
+	if got := store.bundles["default"][credentials.GitTokenKey]; got != "git-token" {
+		t.Fatalf("stored git token = %q, want git-token from interactive SetNow flow", got)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile != "default" {
+		t.Fatalf("default profile = %q, want default", cfg.DefaultProfile)
+	}
+	if cfg.Profiles["default"].Git.CredentialRef != "codereview/default" {
+		t.Fatalf("default profile git ref = %q, want codereview/default", cfg.Profiles["default"].Git.CredentialRef)
+	}
+	if !strings.Contains(stdout.String(), "Initialized 1 profile(s)") || !strings.Contains(stdout.String(), "- default: ready") {
+		t.Fatalf("stdout = %q, want ready summary for default profile", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "set-credential --ref") {
+		t.Fatalf("stderr = %q, want no follow-up credential hints after SetNow flow", stderr.String())
+	}
+}
+
+func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	store := newFakeInitStore(map[string]map[string]string{})
+	var finalizePrompt initFinalizePrompt
+	prompterCalls := 0
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionReviewProfiles,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+			finalizePrompt = prompt
+			return initFinalizeActionSave, nil
+		}),
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			prompterCalls++
+			if prompterCalls == 1 {
+				return initDraft{
+					ProfileName: "home",
+					MakeDefault: true,
+					GitHost:     "github.com",
+					GitAuth:     string(config.GitAuthModePAT),
+					LLMProvider: string(config.LLMProviderAnthropic),
+					LLMAuth:     string(config.LLMAuthSubscription),
+					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				}, nil
+			}
+			return initDraft{
+				ProfileName: "work",
+				MakeDefault: false,
+				GitHost:     "gitlab.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionDefer,
+			},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"home-token"},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(finalizePrompt.Profiles) != 2 {
+		t.Fatalf("finalize prompt = %#v, want readiness for both touched profiles", finalizePrompt)
+	}
+	readinessByProfile := map[string]initProfileReadiness{}
+	for _, profile := range finalizePrompt.Profiles {
+		readinessByProfile[profile.ProfileName] = profile
+	}
+	home := readinessByProfile["home"]
+	if !home.Ready || len(home.Notes) != 0 {
+		t.Fatalf("home readiness = %#v, want ready with no notes after SetNow", home)
+	}
+	work := readinessByProfile["work"]
+	if work.Ready {
+		t.Fatalf("work readiness = %#v, want deferred work profile to need follow-up", work)
+	}
+	if !strings.Contains(strings.Join(work.Notes, "\n"), "Git deferred") {
+		t.Fatalf("work notes = %#v, want deferred git note", work.Notes)
+	}
+	if got := store.bundles["home"][credentials.GitTokenKey]; got != "home-token" {
+		t.Fatalf("stored home git token = %q, want home-token", got)
+	}
+	if _, ok := store.bundles["work"][credentials.GitTokenKey]; ok {
+		t.Fatalf("work store bundle = %#v, want deferred work profile to skip keyring write", store.bundles["work"])
+	}
+	if !strings.Contains(stdout.String(), "- home: ready") || !strings.Contains(stdout.String(), "- work: needs follow-up") {
+		t.Fatalf("stdout = %q, want mixed readiness summary", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "set-credential --ref codereview/home --key "+credentials.GitTokenKey) {
+		t.Fatalf("stderr = %q, want no follow-up hint for ready home profile", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "set-credential --ref codereview/work --key "+credentials.GitTokenKey) {
+		t.Fatalf("stderr = %q, want follow-up hint for deferred work profile", stderr.String())
+	}
+}
+
 func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
