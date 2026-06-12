@@ -1642,6 +1642,172 @@ func TestBuildInteractiveInitWorkspaceDoesNotMutateInputConfig(t *testing.T) {
 	}
 }
 
+func TestInitLLMRuntimeDraftFromConfigRecognizesKnownPresets(t *testing.T) {
+	tests := []struct {
+		name   string
+		llm    config.LLMConfig
+		preset initLLMRuntimePreset
+	}{
+		{
+			name: "claude cli subscription",
+			llm: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+			preset: initLLMRuntimePresetClaudeCLISubscription,
+		},
+		{
+			name: "codex cli subscription",
+			llm: config.LLMConfig{
+				Provider: config.LLMProviderOpenAI,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterCodexCLI,
+			},
+			preset: initLLMRuntimePresetCodexCLISubscription,
+		},
+		{
+			name: "pi local runtime",
+			llm: config.LLMConfig{
+				Provider: config.LLMProviderPi,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterPiRPC,
+			},
+			preset: initLLMRuntimePresetPiLocal,
+		},
+		{
+			name: "anthropic api key",
+			llm: config.LLMConfig{
+				Provider:      config.LLMProviderAnthropic,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterAnthropicAPI,
+				CredentialRef: "codereview/work-llm",
+			},
+			preset: initLLMRuntimePresetAnthropicAPIKey,
+		},
+		{
+			name: "openai api key",
+			llm: config.LLMConfig{
+				Provider:      config.LLMProviderOpenAI,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterOpenAIAPI,
+				CredentialRef: "codereview/work-llm",
+			},
+			preset: initLLMRuntimePresetOpenAIAPIKey,
+		},
+		{
+			name: "custom supported combination",
+			llm: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterAnthropicAPI,
+			},
+			preset: initLLMRuntimePresetCustom,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime := initLLMRuntimeDraftFromConfig(tt.llm)
+			if runtime.Preset != tt.preset {
+				t.Fatalf("Preset = %q, want %q", runtime.Preset, tt.preset)
+			}
+			if got := runtime.exportConfig(); !reflect.DeepEqual(got, tt.llm) {
+				t.Fatalf("exportConfig = %#v, want %#v", got, tt.llm)
+			}
+		})
+	}
+}
+
+func TestBuildInitLLMRuntimeInventoryDeduplicatesSharedAPIKeyRuntime(t *testing.T) {
+	home := apiKeyProfile("home", config.LLMProviderOpenAI)
+	work := apiKeyProfile("work", config.LLMProviderOpenAI)
+	home.LLM.CredentialRef = "codereview/shared-llm"
+	work.LLM.CredentialRef = "codereview/shared-llm"
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	}
+
+	runtimes, profileRuntimeNames := buildInitLLMRuntimeInventory(cfg)
+
+	if len(runtimes) != 1 {
+		t.Fatalf("len(runtimes) = %d, want 1; runtimes=%#v", len(runtimes), runtimes)
+	}
+	if profileRuntimeNames["home"] == "" || profileRuntimeNames["home"] != profileRuntimeNames["work"] {
+		t.Fatalf("profileRuntimeNames = %#v, want shared runtime name for home/work", profileRuntimeNames)
+	}
+	runtime := runtimes[profileRuntimeNames["home"]]
+	if runtime.Preset != initLLMRuntimePresetOpenAIAPIKey {
+		t.Fatalf("runtime preset = %q, want %q", runtime.Preset, initLLMRuntimePresetOpenAIAPIKey)
+	}
+	if runtime.CredentialRef != "codereview/shared-llm" {
+		t.Fatalf("runtime credential ref = %q, want codereview/shared-llm", runtime.CredentialRef)
+	}
+}
+
+func TestBuildInitLLMRuntimeInventoryKeepsCrossProviderSameRefDistinct(t *testing.T) {
+	openAI := apiKeyProfile("home", config.LLMProviderOpenAI)
+	anthropic := apiKeyProfile("work", config.LLMProviderAnthropic)
+	openAI.LLM.CredentialRef = "codereview/shared-llm"
+	anthropic.LLM.CredentialRef = "codereview/shared-llm"
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"home": openAI,
+			"work": anthropic,
+		},
+	}
+
+	runtimes, profileRuntimeNames := buildInitLLMRuntimeInventory(cfg)
+
+	if len(runtimes) != 2 {
+		t.Fatalf("len(runtimes) = %d, want 2; runtimes=%#v", len(runtimes), runtimes)
+	}
+	if profileRuntimeNames["home"] == profileRuntimeNames["work"] {
+		t.Fatalf("profileRuntimeNames = %#v, want distinct runtime names for cross-provider shared ref", profileRuntimeNames)
+	}
+	if runtimes[profileRuntimeNames["home"]].CredentialRef != "codereview/shared-llm" || runtimes[profileRuntimeNames["work"]].CredentialRef != "codereview/shared-llm" {
+		t.Fatalf("runtime refs = %#v, want shared credential ref preserved for both providers", runtimes)
+	}
+}
+
+func TestBuildInteractiveInitWorkspaceImportsLLMRuntimeInventory(t *testing.T) {
+	opts := &root.Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	home := apiKeyProfile("home", config.LLMProviderOpenAI)
+	work := apiKeyProfile("work", config.LLMProviderOpenAI)
+	home.LLM.CredentialRef = "codereview/shared-llm"
+	work.LLM.CredentialRef = "codereview/shared-llm"
+	cfg := config.File{
+		DefaultProfile: "home",
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	}
+	draft := seedInteractiveInitDraft("home", "home", "home", &home)
+
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, opts, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	if workspace.llmRuntimeName == "" {
+		t.Fatal("workspace.llmRuntimeName = empty, want selected runtime")
+	}
+	if len(workspace.llmRuntimes) != 1 {
+		t.Fatalf("len(workspace.llmRuntimes) = %d, want 1; runtimes=%#v", len(workspace.llmRuntimes), workspace.llmRuntimes)
+	}
+	runtime := workspace.llmRuntimes[workspace.llmRuntimeName]
+	if got := runtime.exportConfig(); !reflect.DeepEqual(got, workspace.profile.LLM) {
+		t.Fatalf("selected runtime export = %#v, want profile llm %#v", got, workspace.profile.LLM)
+	}
+}
+
 func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T) {
 	store := newFakeInitStore(map[string]map[string]string{})
 	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
