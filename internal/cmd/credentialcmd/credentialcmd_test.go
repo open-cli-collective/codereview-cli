@@ -2670,6 +2670,9 @@ func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeHidesCustomFields(t
 		t.Fatalf("draft = %#v, want existing claude runtime", draft)
 	}
 	out := stderr.String()
+	if !strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") || !strings.Contains(out, "Custom compatible runtime") {
+		t.Fatalf("stderr = %q, want mixed configured/custom runtime options", out)
+	}
 	if strings.Contains(out, "LLM provider") || strings.Contains(out, "LLM auth mode") || strings.Contains(out, "LLM adapter") {
 		t.Fatalf("stderr = %q, want configured runtime flow to hide custom fields", out)
 	}
@@ -2705,8 +2708,16 @@ func TestHuhInitLLMRuntimePrompterAccessibleCustomRuntimeShowsCustomFields(t *te
 		ExistingProfile:      &existing,
 		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
-		LLMRuntimes:          map[string]initLLMRuntimeDraft{},
-		ProfileLLMRuntimes:   map[string]string{"work": initCustomLLMRuntimeSelection},
+		LLMRuntimes: map[string]initLLMRuntimeDraft{
+			"claude-cli": {
+				Name:     "claude-cli",
+				Preset:   initLLMRuntimePresetClaudeCLISubscription,
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+		},
+		ProfileLLMRuntimes: map[string]string{"work": initCustomLLMRuntimeSelection},
 	}})
 	if err != nil {
 		t.Fatalf("EditLLMRuntime: %v", err)
@@ -2715,6 +2726,9 @@ func TestHuhInitLLMRuntimePrompterAccessibleCustomRuntimeShowsCustomFields(t *te
 		t.Fatalf("draft.ProfileName = %q, want work", draft.ProfileName)
 	}
 	out := stderr.String()
+	if !strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") || !strings.Contains(out, "Custom compatible runtime") {
+		t.Fatalf("stderr = %q, want mixed configured/custom runtime options", out)
+	}
 	if !strings.Contains(out, "LLM provider") || !strings.Contains(out, "LLM auth mode") || !strings.Contains(out, "LLM adapter") {
 		t.Fatalf("stderr = %q, want custom runtime fields", out)
 	}
@@ -2761,6 +2775,29 @@ func TestInitInventorySelectionsApplyToDraft(t *testing.T) {
 	}
 	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMCredentialRef != "codereview/work-llm" {
 		t.Fatalf("llm draft = %#v, want selected openai api-key runtime", draft)
+	}
+}
+
+func TestCustomLLMRuntimeSelectionUsesEditedProviderAuthAndAdapter(t *testing.T) {
+	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft.LLMProvider = string(config.LLMProviderOpenAI)
+	draft.LLMAuth = string(config.LLMAuthAPIKey)
+	draft.LLMAdapter = string(config.LLMAdapterOpenAIAPI)
+
+	applyLLMRuntimeInventorySelection(&draft, initCustomLLMRuntimeSelection, map[string]initLLMRuntimeDraft{
+		"claude-cli": {
+			Name:     "claude-cli",
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	})
+	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+	applyLLMRuntimeSelection(&draft, resolvedRuntimePreset)
+
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) {
+		t.Fatalf("draft = %#v, want edited openai api runtime retained for custom selection", draft)
 	}
 }
 
