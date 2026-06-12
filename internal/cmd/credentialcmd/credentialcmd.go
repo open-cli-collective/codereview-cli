@@ -1303,6 +1303,7 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	selectedProfileName := ctx.ExistingProfileName
 	selectedExistingProfile := ctx.ExistingProfile
+	selectedCreateNewProfile := false
 	if len(ctx.ExistingProfileNames) > 0 {
 		choice := initCreateProfileSentinel
 		options := make([]huh.Option[string], 0, len(ctx.ExistingProfileNames)+1)
@@ -1330,6 +1331,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		if choice == initCreateProfileSentinel {
 			selectedProfileName = ""
 			selectedExistingProfile = nil
+			selectedCreateNewProfile = true
 		} else {
 			selectedProfileName = choice
 			profile := ctx.ExistingConfig.Profiles[choice]
@@ -1338,7 +1340,11 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		}
 	}
 
-	draft := seedInteractiveInitDraft(ctx.RequestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
+	requestedProfileName := ctx.RequestedProfileName
+	if selectedCreateNewProfile && ctx.ExistingProfile != nil {
+		requestedProfileName = ""
+	}
+	draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
 	if warnings := ctx.ProfileWarnings[selectedProfileName]; len(warnings) > 0 {
 		_, _ = fmt.Fprintln(p.stderr, "Existing profile secret health:")
 		for _, warning := range warnings {
