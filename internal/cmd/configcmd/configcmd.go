@@ -1104,44 +1104,30 @@ func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg
 }
 
 func credentialStatuses(store *credstore.Store, refs []config.CredentialRef, storeErr error) ([]view.CredentialStatus, error) {
-	statuses := make([]view.CredentialStatus, 0, len(refs))
-	for _, ref := range refs {
-		parsed, err := credentials.ParseRef(ref.Ref)
-		if err != nil {
-			return nil, err
+	statuses, err := credentials.CredentialStatuses(store, refs, storeErr)
+	if err != nil {
+		return nil, err
+	}
+	viewStatuses := make([]view.CredentialStatus, 0, len(statuses))
+	for _, status := range statuses {
+		keys := make([]view.KeyStatus, 0, len(status.Keys))
+		for _, key := range status.Keys {
+			keys = append(keys, view.KeyStatus{
+				Key:      key.Key,
+				Required: key.Required,
+				Present:  key.Present,
+				Status:   key.Status,
+				Error:    key.Error,
+			})
 		}
-		specs, err := credentials.KeySpecsForPurpose(ref)
-		if err != nil {
-			return nil, err
-		}
-		keys := make([]view.KeyStatus, 0, len(specs))
-		for _, spec := range specs {
-			var present bool
-			statusErr := storeErr
-			if store != nil {
-				present, statusErr = store.Exists(parsed.Profile, spec.Key)
-			}
-			keys = append(keys, keyStatus(spec.Key, spec.Required, present, statusErr))
-		}
-		statuses = append(statuses, view.CredentialStatus{
-			Purpose: ref.Purpose,
-			Ref:     ref.Ref,
-			Mode:    ref.Mode,
+		viewStatuses = append(viewStatuses, view.CredentialStatus{
+			Purpose: status.Purpose,
+			Ref:     status.Ref,
+			Mode:    status.Mode,
 			Keys:    keys,
 		})
 	}
-	return statuses, nil
-}
-
-func keyStatus(key string, required bool, present bool, err error) view.KeyStatus {
-	if err != nil {
-		return view.KeyStatus{Key: key, Required: required, Status: "unknown", Error: err.Error()}
-	}
-	status := "missing"
-	if present {
-		status = "present"
-	}
-	return view.KeyStatus{Key: key, Required: required, Present: &present, Status: status}
+	return viewStatuses, nil
 }
 
 func removeProfileFromConfig(path string, cfg config.File, profileName string) (configClearChange, error) {

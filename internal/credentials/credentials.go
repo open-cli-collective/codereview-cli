@@ -134,6 +134,29 @@ func BackendMetadata(flagValue string, flagSet bool, cfg config.File) (credstore
 	}
 }
 
+// KeyStatus reports the presence state for one declared keyring key.
+type KeyStatus struct {
+	Key      string
+	Required bool
+	Present  *bool
+	Status   string
+	Error    string
+}
+
+// CredentialStatus reports declared ref context and per-key presence state.
+type CredentialStatus struct {
+	Purpose  string
+	Ref      string
+	Mode     string
+	Provider string
+	Keys     []KeyStatus
+}
+
+// KeyStatusStore is the read-only store surface needed for credential health inspection.
+type KeyStatusStore interface {
+	Exists(profile, key string) (bool, error)
+}
+
 // KeySpec describes one key in a declared credential bundle.
 type KeySpec struct {
 	Key      string
@@ -186,6 +209,83 @@ func KeyForPurpose(ref config.CredentialRef) (string, error) {
 		return "", fmt.Errorf("credentials: credential purpose %q has %d keys, want one", ref.Purpose, len(specs))
 	}
 	return specs[0].Key, nil
+}
+
+// CredentialStatuses returns per-ref, per-key presence state for declared refs.
+func CredentialStatuses(store KeyStatusStore, refs []config.CredentialRef, storeErr error) ([]CredentialStatus, error) {
+	statuses := make([]CredentialStatus, 0, len(refs))
+	for _, ref := range refs {
+		status, err := CredentialRefStatus(store, ref, storeErr)
+		if err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
+}
+
+// CredentialRefStatus returns per-key presence state for one declared ref.
+func CredentialRefStatus(store KeyStatusStore, ref config.CredentialRef, storeErr error) (CredentialStatus, error) {
+	parsed, err := ParseRef(ref.Ref)
+	if err != nil {
+		return CredentialStatus{}, err
+	}
+	specs, err := KeySpecsForPurpose(ref)
+	if err != nil {
+		return CredentialStatus{}, err
+	}
+	keys := make([]KeyStatus, 0, len(specs))
+	for _, spec := range specs {
+		var present bool
+		statusErr := storeErr
+		if statusErr == nil && store != nil {
+			present, statusErr = store.Exists(parsed.Profile, spec.Key)
+		}
+		keys = append(keys, buildKeyStatus(spec.Key, spec.Required, present, statusErr))
+	}
+	return CredentialStatus{
+		Purpose:  ref.Purpose,
+		Ref:      ref.Ref,
+		Mode:     ref.Mode,
+		Provider: ref.Provider,
+		Keys:     keys,
+	}, nil
+}
+
+// RequiredKeysSatisfied reports whether every required key is known-present.
+func RequiredKeysSatisfied(status CredentialStatus) bool {
+	for _, key := range status.Keys {
+		if !key.Required {
+			continue
+		}
+		if key.Present == nil || !*key.Present {
+			return false
+		}
+	}
+	return true
+}
+
+// MissingRequiredKeys reports required keys that are known-missing.
+func MissingRequiredKeys(status CredentialStatus) []string {
+	var missing []string
+	for _, key := range status.Keys {
+		if !key.Required || key.Status != "missing" {
+			continue
+		}
+		missing = append(missing, key.Key)
+	}
+	return missing
+}
+
+func buildKeyStatus(key string, required bool, present bool, err error) KeyStatus {
+	if err != nil {
+		return KeyStatus{Key: key, Required: required, Status: "unknown", Error: err.Error()}
+	}
+	status := "missing"
+	if present {
+		status = "present"
+	}
+	return KeyStatus{Key: key, Required: required, Present: &present, Status: status}
 }
 
 // LLMAPIKeyForProvider returns the provider-specific key for API-key LLM auth.

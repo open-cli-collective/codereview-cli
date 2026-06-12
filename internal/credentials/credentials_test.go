@@ -288,6 +288,149 @@ func TestAllowedKeyMemoryRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCredentialStatuses(t *testing.T) {
+	store := fakeKeyStatusStore{
+		present: map[string]map[string]bool{
+			"git": {
+				GitTokenKey: true,
+			},
+			"app": {
+				GitHubAppIDKey:         true,
+				GitHubAppPrivateKeyKey: true,
+			},
+			"llm": {
+				OpenAIAPIKeyKey: true,
+			},
+		},
+	}
+	refs := []config.CredentialRef{
+		{Purpose: "git", Ref: "codereview/git", Mode: "pat"},
+		{Purpose: "reviewer_credentials", Ref: "codereview/app", Mode: "github_app"},
+		{Purpose: "llm", Ref: "codereview/llm", Mode: "api_key", Provider: "openai"},
+	}
+
+	got, err := CredentialStatuses(store, refs, nil)
+	if err != nil {
+		t.Fatalf("CredentialStatuses: %v", err)
+	}
+
+	want := []CredentialStatus{
+		{
+			Purpose: "git",
+			Ref:     "codereview/git",
+			Mode:    "pat",
+			Keys: []KeyStatus{
+				presentKeyStatus(GitTokenKey, true),
+			},
+		},
+		{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/app",
+			Mode:    "github_app",
+			Keys: []KeyStatus{
+				presentKeyStatus(GitHubAppIDKey, true),
+				presentKeyStatus(GitHubAppPrivateKeyKey, true),
+				missingKeyStatus(GitHubAppInstallationIDKey, false),
+			},
+		},
+		{
+			Purpose:  "llm",
+			Ref:      "codereview/llm",
+			Mode:     "api_key",
+			Provider: "openai",
+			Keys: []KeyStatus{
+				presentKeyStatus(OpenAIAPIKeyKey, true),
+			},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("CredentialStatuses = %#v, want %#v", got, want)
+	}
+	if !RequiredKeysSatisfied(got[0]) {
+		t.Fatalf("RequiredKeysSatisfied git = false, want true")
+	}
+	if !RequiredKeysSatisfied(got[1]) {
+		t.Fatalf("RequiredKeysSatisfied github_app = false, want true")
+	}
+	if missing := MissingRequiredKeys(got[1]); len(missing) != 0 {
+		t.Fatalf("MissingRequiredKeys github_app = %#v, want empty because optional key is missing", missing)
+	}
+}
+
+func TestCredentialStatusesUnknown(t *testing.T) {
+	refs := []config.CredentialRef{
+		{Purpose: "git", Ref: "codereview/git", Mode: "pat"},
+	}
+
+	t.Run("store open error", func(t *testing.T) {
+		got, err := CredentialStatuses(nil, refs, errors.New("open failed"))
+		if err != nil {
+			t.Fatalf("CredentialStatuses: %v", err)
+		}
+		want := []CredentialStatus{
+			{
+				Purpose: "git",
+				Ref:     "codereview/git",
+				Mode:    "pat",
+				Keys: []KeyStatus{
+					unknownKeyStatus(GitTokenKey, true, "open failed"),
+				},
+			},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("CredentialStatuses store error = %#v, want %#v", got, want)
+		}
+		if RequiredKeysSatisfied(got[0]) {
+			t.Fatalf("RequiredKeysSatisfied unknown = true, want false")
+		}
+		if missing := MissingRequiredKeys(got[0]); len(missing) != 0 {
+			t.Fatalf("MissingRequiredKeys unknown = %#v, want empty", missing)
+		}
+	})
+
+	t.Run("per-key exists error", func(t *testing.T) {
+		store := fakeKeyStatusStore{
+			errs: map[string]error{
+				"git/" + GitTokenKey: errors.New("exists failed"),
+			},
+		}
+		got, err := CredentialStatuses(store, refs, nil)
+		if err != nil {
+			t.Fatalf("CredentialStatuses: %v", err)
+		}
+		want := []CredentialStatus{
+			{
+				Purpose: "git",
+				Ref:     "codereview/git",
+				Mode:    "pat",
+				Keys: []KeyStatus{
+					unknownKeyStatus(GitTokenKey, true, "exists failed"),
+				},
+			},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("CredentialStatuses exists error = %#v, want %#v", got, want)
+		}
+	})
+}
+
+func TestMissingRequiredKeys(t *testing.T) {
+	status := CredentialStatus{
+		Purpose: "reviewer_credentials",
+		Ref:     "codereview/app",
+		Mode:    "github_app",
+		Keys: []KeyStatus{
+			missingKeyStatus(GitHubAppIDKey, true),
+			unknownKeyStatus(GitHubAppPrivateKeyKey, true, "boom"),
+			missingKeyStatus(GitHubAppInstallationIDKey, false),
+		},
+	}
+	want := []string{GitHubAppIDKey}
+	if got := MissingRequiredKeys(status); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MissingRequiredKeys = %#v, want %#v", got, want)
+	}
+}
+
 func matrixProfile(gitRef, llmRef string, provider config.LLMProvider) config.Profile {
 	adapter := config.LLMAdapterAnthropicAPI
 	if provider == config.LLMProviderOpenAI {
@@ -306,4 +449,30 @@ func matrixProfile(gitRef, llmRef string, provider config.LLMProvider) config.Pr
 			CredentialRef: llmRef,
 		},
 	}
+}
+
+type fakeKeyStatusStore struct {
+	present map[string]map[string]bool
+	errs    map[string]error
+}
+
+func (s fakeKeyStatusStore) Exists(profile, key string) (bool, error) {
+	if err := s.errs[profile+"/"+key]; err != nil {
+		return false, err
+	}
+	return s.present[profile][key], nil
+}
+
+func presentKeyStatus(key string, required bool) KeyStatus {
+	present := true
+	return KeyStatus{Key: key, Required: required, Present: &present, Status: "present"}
+}
+
+func missingKeyStatus(key string, required bool) KeyStatus {
+	present := false
+	return KeyStatus{Key: key, Required: required, Present: &present, Status: "missing"}
+}
+
+func unknownKeyStatus(key string, required bool, message string) KeyStatus {
+	return KeyStatus{Key: key, Required: required, Status: "unknown", Error: message}
 }
