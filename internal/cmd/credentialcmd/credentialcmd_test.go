@@ -4250,6 +4250,9 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"home"}) {
 					t.Fatalf("second prompt ExistingProfileNames = %#v, want [home]", ctx.ExistingProfileNames)
 				}
+				if ctx.RequestedProfileName != "home" || ctx.ExistingProfileName != "home" {
+					t.Fatalf("second prompt active profile = (%q, %q), want home/home", ctx.RequestedProfileName, ctx.ExistingProfileName)
+				}
 				if _, ok := ctx.ExistingConfig.Profiles["home"]; !ok {
 					t.Fatalf("second prompt ExistingConfig = %#v, want persisted unsaved home profile", ctx.ExistingConfig.Profiles)
 				}
@@ -4334,6 +4337,9 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"work"}) {
 					t.Fatalf("second prompt ExistingProfileNames = %#v, want [work]", ctx.ExistingProfileNames)
 				}
+				if ctx.RequestedProfileName != "work" || ctx.ExistingProfileName != "work" {
+					t.Fatalf("second prompt active profile = (%q, %q), want work/work", ctx.RequestedProfileName, ctx.ExistingProfileName)
+				}
 				if ctx.DefaultProfileName != "work" {
 					t.Fatalf("second prompt DefaultProfileName = %q, want work", ctx.DefaultProfileName)
 				}
@@ -4352,6 +4358,9 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 			case 3:
 				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"home", "work"}) {
 					t.Fatalf("third prompt ExistingProfileNames = %#v, want [home work]", ctx.ExistingProfileNames)
+				}
+				if ctx.RequestedProfileName != "home" || ctx.ExistingProfileName != "home" {
+					t.Fatalf("third prompt active profile = (%q, %q), want home/home after switching profiles", ctx.RequestedProfileName, ctx.ExistingProfileName)
 				}
 				work := ctx.ExistingConfig.Profiles["work"]
 				home := ctx.ExistingConfig.Profiles["home"]
@@ -4434,6 +4443,9 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 			if ctx.RequestedProfileName != "work" || ctx.ExistingProfileName != "work" {
 				t.Fatalf("prompt context = %#v, want fallback bootstrap from default work profile", ctx)
 			}
+			if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"work"}) {
+				t.Fatalf("prompt ExistingProfileNames = %#v, want [work] from fallback bootstrap", ctx.ExistingProfileNames)
+			}
 			return initDraft{
 				ProfileName: "home",
 				MakeDefault: false,
@@ -4474,15 +4486,26 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
-		RepositoryProfiles: []config.RepositoryProfile{{
-			Profile: "work",
-			Match: config.RepositoryProfileMatch{
-				Host:      "github.com",
-				Namespace: "open-cli-collective",
+		RepositoryProfiles: []config.RepositoryProfile{
+			{
+				Profile: "work",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "open-cli-collective",
+				},
 			},
-		}},
+			{
+				Profile: "home",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "open-cli-collective",
+					Repos:     []string{"codereview-cli"},
+				},
+			},
+		},
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
+			"home": basicProfile("home"),
 		},
 	})
 	opts := &root.Options{
@@ -4544,8 +4567,18 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 	if cfg.DefaultProfile != "office" {
 		t.Fatalf("default profile = %q, want renamed office default", cfg.DefaultProfile)
 	}
-	if len(cfg.RepositoryProfiles) != 1 || cfg.RepositoryProfiles[0].Profile != "office" || cfg.RepositoryProfiles[0].Match.Host != "gitlab.com" {
-		t.Fatalf("RepositoryProfiles = %#v, want renamed reconciled route", cfg.RepositoryProfiles)
+	if len(cfg.RepositoryProfiles) != 2 {
+		t.Fatalf("RepositoryProfiles = %#v, want renamed route plus unrelated preserved route", cfg.RepositoryProfiles)
+	}
+	routesByProfile := map[string]config.RepositoryProfile{}
+	for _, route := range cfg.RepositoryProfiles {
+		routesByProfile[route.Profile] = route
+	}
+	if routesByProfile["home"].Match.Host != "github.com" {
+		t.Fatalf("home route = %#v, want unrelated home route preserved", routesByProfile["home"])
+	}
+	if routesByProfile["office"].Match.Host != "gitlab.com" {
+		t.Fatalf("office route = %#v, want renamed reconciled route", routesByProfile["office"])
 	}
 }
 
