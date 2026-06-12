@@ -302,6 +302,22 @@ type initPlan struct {
 	writeLLMHint      bool
 }
 
+type initWorkspaceDraft struct {
+	path             string
+	cfg              config.File
+	previousProfile  *config.Profile
+	profileName      string
+	profile          config.Profile
+	writes           map[string]map[string]string
+	credentialPlan   []initCredentialPlanEntry
+	overwriteRefs    map[string]bool
+	satisfiedRefs    map[string]bool
+	backendFlagSet   bool
+	backendArg       string
+	allowDeferredLLM bool
+	writeLLMHint     bool
+}
+
 type initStore interface {
 	Exists(profile, key string) (bool, error)
 	ListBundle(profile string) ([]string, error)
@@ -610,38 +626,39 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	if err != nil {
 		return err
 	}
-	plan, err := buildInteractiveInitPlan(cmd, opts, flags, deps, path, cfg, draft)
+	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, path, cfg, draft)
 	if err != nil {
 		return err
 	}
-	plan, err = collectInteractiveInitRoutes(opts, deps, plan)
+	workspace, err = collectInteractiveInitRoutes(opts, deps, workspace)
 	if err != nil {
 		return err
 	}
-	plan, err = collectInteractiveInitModelMap(opts, deps, plan)
+	workspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
 	if err != nil {
 		return err
 	}
-	plan, err = collectInteractiveInitAgentSources(opts, deps, plan)
+	workspace, err = collectInteractiveInitAgentSources(opts, deps, workspace)
 	if err != nil {
 		return err
 	}
-	plan, err = collectInteractiveInitReviewPolicy(opts, deps, plan)
+	workspace, err = collectInteractiveInitReviewPolicy(opts, deps, workspace)
 	if err != nil {
 		return err
 	}
-	plan, err = collectInteractiveInitRetention(opts, deps, plan)
+	workspace, err = collectInteractiveInitRetention(opts, deps, workspace)
 	if err != nil {
 		return err
 	}
-	plan, err = collectInteractiveInitKeyringBackend(opts, deps, plan)
+	workspace, err = collectInteractiveInitKeyringBackend(opts, deps, workspace)
 	if err != nil {
 		return err
 	}
-	plan, err = collectInteractiveInitSecrets(cmd, opts, deps, plan)
+	workspace, err = collectInteractiveInitSecrets(cmd, opts, deps, workspace)
 	if err != nil {
 		return err
 	}
+	plan := finalizeInteractiveInitPlan(workspace)
 	return applyInitPlan(opts, flags, deps, plan)
 }
 
@@ -1748,10 +1765,10 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}, nil
 }
 
-func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags initOptions, _ initDeps, path string, cfg config.File, draft initDraft) (initPlan, error) {
+func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags initOptions, _ initDeps, path string, cfg config.File, draft initDraft) (initWorkspaceDraft, error) {
 	profileName := strings.TrimSpace(draft.ProfileName)
 	if profileName == "" {
-		return initPlan{}, exitcode.Usage(fmt.Errorf("profile name is required"))
+		return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("profile name is required"))
 	}
 	working := cfg
 	if working.Profiles == nil {
@@ -1762,29 +1779,29 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 	if originalName != "" {
 		profile, ok := working.Profiles[originalName]
 		if !ok {
-			return initPlan{}, cmderr.Config(fmt.Errorf("%w: %s", config.ErrProfileNotFound, originalName))
+			return initWorkspaceDraft{}, cmderr.Config(fmt.Errorf("%w: %s", config.ErrProfileNotFound, originalName))
 		}
 		profileCopy := profile
 		previousProfile = &profileCopy
 	}
 	if originalName == "" {
 		if _, exists := working.Profiles[profileName]; exists {
-			return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q already exists; select it to edit or choose a different name", profileName))
+			return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("profile %q already exists; select it to edit or choose a different name", profileName))
 		}
 	} else if profileName != originalName {
 		renamed, _, err := configedit.RenameProfile(working, originalName, profileName)
 		if err != nil {
 			if errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, configedit.ErrProfileExists) || errors.Is(err, configedit.ErrProfileNameRequired) {
-				return initPlan{}, exitcode.Usage(err)
+				return initWorkspaceDraft{}, exitcode.Usage(err)
 			}
-			return initPlan{}, cmderr.Config(err)
+			return initWorkspaceDraft{}, cmderr.Config(err)
 		}
 		working = renamed
 	}
 
 	profile, err := synthesizeInteractiveProfile(flags, profileName, previousProfile, draft)
 	if err != nil {
-		return initPlan{}, err
+		return initWorkspaceDraft{}, err
 	}
 	working.Profiles[profileName] = profile
 	if draft.MakeDefault || working.DefaultProfile == "" {
@@ -1793,27 +1810,27 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 		_ = changed
 		if err != nil {
 			if errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, configedit.ErrProfileNameRequired) {
-				return initPlan{}, exitcode.Usage(err)
+				return initWorkspaceDraft{}, exitcode.Usage(err)
 			}
-			return initPlan{}, cmderr.Config(err)
+			return initWorkspaceDraft{}, cmderr.Config(err)
 		}
 	}
 	if err := config.Validate(initValidationConfigForProfileHost(working, profileName, previousProfile, profile.Git.Host)); err != nil {
-		return initPlan{}, cmderr.Config(err)
+		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 
 	credentialPlan, err := planInitCredentials(previousProfile, profile, nil)
 	if err != nil {
-		return initPlan{}, cmderr.Config(err)
+		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 	deferLLMSecret := profile.LLM.Auth == config.LLMAuthAPIKey
 	backendFlagSet := cmderr.BackendFlagChanged(cmd)
 	if backendFlagSet {
 		if _, err := credentials.StoreOptions(opts.Backend, true, working); err != nil {
-			return initPlan{}, cmderr.Credential(err)
+			return initWorkspaceDraft{}, cmderr.Credential(err)
 		}
 	}
-	return initPlan{
+	return initWorkspaceDraft{
 		path:             path,
 		cfg:              working,
 		previousProfile:  previousProfile,
@@ -1828,6 +1845,24 @@ func buildInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags init
 		allowDeferredLLM: deferLLMSecret,
 		writeLLMHint:     deferLLMSecret,
 	}, nil
+}
+
+func finalizeInteractiveInitPlan(workspace initWorkspaceDraft) initPlan {
+	return initPlan{
+		path:             workspace.path,
+		cfg:              workspace.cfg,
+		previousProfile:  workspace.previousProfile,
+		profileName:      workspace.profileName,
+		profile:          workspace.profile,
+		writes:           workspace.writes,
+		credentialPlan:   workspace.credentialPlan,
+		overwriteRefs:    workspace.overwriteRefs,
+		satisfiedRefs:    workspace.satisfiedRefs,
+		backendFlagSet:   workspace.backendFlagSet,
+		backendArg:       workspace.backendArg,
+		allowDeferredLLM: workspace.allowDeferredLLM,
+		writeLLMHint:     workspace.writeLLMHint,
+	}
 }
 
 func initValidationConfigForProfileHost(cfg config.File, profileName string, previousProfile *config.Profile, profileHost string) config.File {
@@ -1915,7 +1950,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	return profile, nil
 }
 
-func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	prompter := deps.modelMapPrompter
 	if prompter == nil {
 		if deps.prompter != nil {
@@ -1928,7 +1963,7 @@ func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan init
 		ModelMap: copyModelMap(plan.profile.LLM.ModelMap),
 	})
 	if err != nil {
-		return initPlan{}, err
+		return initWorkspaceDraft{}, err
 	}
 	if !edit.Apply {
 		return plan, nil
@@ -1938,14 +1973,14 @@ func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan init
 	nextCfg := plan.cfg
 	nextCfg.Profiles[plan.profileName] = nextProfile
 	if err := config.Validate(nextCfg); err != nil {
-		return initPlan{}, cmderr.Config(err)
+		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 	plan.profile = nextProfile
 	plan.cfg = nextCfg
 	return plan, nil
 }
 
-func collectInteractiveInitAgentSources(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+func collectInteractiveInitAgentSources(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	prompter := deps.agentSourcesPrompter
 	if prompter == nil {
 		if deps.prompter != nil {
@@ -1957,28 +1992,28 @@ func collectInteractiveInitAgentSources(opts *root.Options, deps initDeps, plan 
 		Sources: append([]string(nil), plan.profile.AgentSources...),
 	})
 	if err != nil {
-		return initPlan{}, err
+		return initWorkspaceDraft{}, err
 	}
 	if !edit.Apply {
 		return plan, nil
 	}
 	nextSources, err := normalizeInitAgentSources(edit.Sources)
 	if err != nil {
-		return initPlan{}, cmderr.Config(err)
+		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 	nextProfile := plan.profile
 	nextProfile.AgentSources = nextSources
 	nextCfg := plan.cfg
 	nextCfg.Profiles[plan.profileName] = nextProfile
 	if err := config.Validate(nextCfg); err != nil {
-		return initPlan{}, cmderr.Config(err)
+		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 	plan.profile = nextProfile
 	plan.cfg = nextCfg
 	return plan, nil
 }
 
-func collectInteractiveInitReviewPolicy(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+func collectInteractiveInitReviewPolicy(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	prompter := deps.reviewPolicyPrompter
 	if prompter == nil {
 		if deps.prompter != nil {
@@ -1990,7 +2025,7 @@ func collectInteractiveInitReviewPolicy(opts *root.Options, deps initDeps, plan 
 		ReviewPolicy: plan.profile.ReviewPolicy,
 	})
 	if err != nil {
-		return initPlan{}, err
+		return initWorkspaceDraft{}, err
 	}
 	if !edit.Apply {
 		return plan, nil
@@ -2000,7 +2035,7 @@ func collectInteractiveInitReviewPolicy(opts *root.Options, deps initDeps, plan 
 	nextCfg := plan.cfg
 	nextCfg.Profiles[plan.profileName] = nextProfile
 	if err := config.Validate(nextCfg); err != nil {
-		return initPlan{}, cmderr.Config(err)
+		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 	plan.profile = nextProfile
 	plan.cfg = nextCfg
@@ -2028,7 +2063,7 @@ func normalizeInitAgentSources(sources []string) ([]string, error) {
 	return normalized, nil
 }
 
-func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	prompter := deps.routesPrompter
 	if prompter == nil {
 		if deps.prompter != nil {
@@ -2050,22 +2085,22 @@ func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initPl
 		Routes:       currentProfileRouteSpecs(plan.cfg.RepositoryProfiles, plan.profileName),
 	})
 	if err != nil {
-		return initPlan{}, err
+		return initWorkspaceDraft{}, err
 	}
 	if !edit.Apply {
 		if err := validateInitRouteHosts(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host); err != nil {
-			return initPlan{}, exitcode.Usage(err)
+			return initWorkspaceDraft{}, exitcode.Usage(err)
 		}
 		return plan, nil
 	}
 	nextRoutes, err := applyInitProfileRoutes(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host, edit.Routes)
 	if err != nil {
-		return initPlan{}, exitcode.Usage(err)
+		return initWorkspaceDraft{}, exitcode.Usage(err)
 	}
 	nextCfg := plan.cfg
 	nextCfg.RepositoryProfiles = nextRoutes
 	if err := config.Validate(nextCfg); err != nil {
-		return initPlan{}, cmderr.Config(err)
+		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 	plan.cfg = nextCfg
 	return plan, nil
@@ -2194,7 +2229,7 @@ func parseInitRouteSpec(raw string) (configedit.RepositoryRouteSpec, error) {
 	})
 }
 
-func collectInteractiveInitRetention(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+func collectInteractiveInitRetention(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	prompter := deps.retentionPrompter
 	if prompter == nil {
 		if deps.prompter != nil {
@@ -2206,7 +2241,7 @@ func collectInteractiveInitRetention(opts *root.Options, deps initDeps, plan ini
 		Retention: plan.cfg.Data.Retention,
 	})
 	if err != nil {
-		return initPlan{}, err
+		return initWorkspaceDraft{}, err
 	}
 	if !edit.Apply {
 		return plan, nil
@@ -2214,13 +2249,13 @@ func collectInteractiveInitRetention(opts *root.Options, deps initDeps, plan ini
 	nextCfg := plan.cfg
 	nextCfg.Data.Retention = edit.Retention
 	if err := config.Validate(nextCfg); err != nil {
-		return initPlan{}, cmderr.Config(err)
+		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 	plan.cfg = nextCfg
 	return plan, nil
 }
 
-func collectInteractiveInitKeyringBackend(opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+func collectInteractiveInitKeyringBackend(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	prompter := deps.keyringPrompter
 	if prompter == nil {
 		if deps.prompter != nil {
@@ -2232,7 +2267,7 @@ func collectInteractiveInitKeyringBackend(opts *root.Options, deps initDeps, pla
 		Backend: plan.cfg.Keyring.Backend,
 	})
 	if err != nil {
-		return initPlan{}, err
+		return initWorkspaceDraft{}, err
 	}
 	if !edit.Apply {
 		plan.backendArg = interactiveInitBackendArg(opts, plan.backendFlagSet, plan.cfg)
@@ -2241,10 +2276,10 @@ func collectInteractiveInitKeyringBackend(opts *root.Options, deps initDeps, pla
 	nextCfg := plan.cfg
 	nextCfg.Keyring.Backend = strings.TrimSpace(edit.Backend)
 	if err := config.Validate(nextCfg); err != nil {
-		return initPlan{}, cmderr.Config(err)
+		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 	if plan.backendFlagSet && nextCfg.Keyring.Backend != "" && nextCfg.Keyring.Backend != opts.Backend {
-		return initPlan{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with selected keyring.backend %q", opts.Backend, nextCfg.Keyring.Backend))
+		return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with selected keyring.backend %q", opts.Backend, nextCfg.Keyring.Backend))
 	}
 	plan.cfg = nextCfg
 	plan.backendArg = interactiveInitBackendArg(opts, plan.backendFlagSet, nextCfg)
@@ -2261,7 +2296,7 @@ func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, cfg conf
 	return fmt.Sprintf(" --backend %s", opts.Backend)
 }
 
-func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps initDeps, plan initPlan) (initPlan, error) {
+func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	if len(plan.credentialPlan) == 0 {
 		return plan, nil
 	}
@@ -2320,22 +2355,22 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			ClipboardSupported: deps.clipboardSupported(),
 		})
 		if err != nil {
-			return initPlan{}, err
+			return initWorkspaceDraft{}, err
 		}
 		if action == initCredentialSecretActionDefer {
 			continue
 		}
 		activeStore, err := openStore()
 		if err != nil {
-			return initPlan{}, cmderr.Credential(err)
+			return initWorkspaceDraft{}, cmderr.Credential(err)
 		}
 		targetKeys, err := existingInitCredentialKeys(activeStore, entry.Ref.Ref)
 		if err != nil {
-			return initPlan{}, cmderr.Credential(err)
+			return initWorkspaceDraft{}, cmderr.Credential(err)
 		}
 		targetStatus, err := credentials.CredentialRefStatus(activeStore, entry.Ref, nil)
 		if err != nil {
-			return initPlan{}, cmderr.Credential(err)
+			return initWorkspaceDraft{}, cmderr.Credential(err)
 		}
 		targetHasRequired := credentials.RequiredKeysSatisfied(targetStatus)
 		targetHasAnyKeys := len(targetKeys) > 0
@@ -2347,12 +2382,12 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 				ClipboardSupported: deps.clipboardSupported(),
 			})
 			if err != nil {
-				return initPlan{}, err
+				return initWorkspaceDraft{}, err
 			}
 		}
 		if action == initCredentialSecretActionKeep {
 			if !targetHasRequired {
-				return initPlan{}, exitcode.Usage(fmt.Errorf("%s credential ref %q does not have all required keys", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
+				return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential ref %q does not have all required keys", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
 			}
 			plan.satisfiedRefs[entry.Ref.Ref] = true
 			continue
@@ -2361,7 +2396,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			continue
 		}
 		if action != initCredentialSecretActionSetNow {
-			return initPlan{}, fmt.Errorf("unsupported interactive secret action %q", action)
+			return initWorkspaceDraft{}, fmt.Errorf("unsupported interactive secret action %q", action)
 		}
 
 		overwriteRef := false
@@ -2375,27 +2410,27 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 				ClipboardSupported: deps.clipboardSupported(),
 			})
 			if err != nil {
-				return initPlan{}, err
+				return initWorkspaceDraft{}, err
 			}
 			switch source {
 			case initSecretSourceKeepExisting:
 				if !targetHasKey {
-					return initPlan{}, exitcode.Usage(fmt.Errorf("%s credential key %q does not exist for ref %q", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key, entry.Ref.Ref))
+					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential key %q does not exist for ref %q", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key, entry.Ref.Ref))
 				}
 				continue
 			case initSecretSourceSkip:
 				if spec.Required {
-					return initPlan{}, exitcode.Usage(fmt.Errorf("%s credential key %q is required", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key))
+					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential key %q is required", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key))
 				}
 				continue
 			case initSecretSourceClipboard:
 				value, err := deps.clipboardRead()
 				if err != nil {
-					return initPlan{}, exitcode.Usage(fmt.Errorf("read clipboard: %w", err))
+					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("read clipboard: %w", err))
 				}
 				value = credentials.TrimSecretIngress(value)
 				if value == "" {
-					return initPlan{}, exitcode.Usage(fmt.Errorf("clipboard supplied an empty secret"))
+					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("clipboard supplied an empty secret"))
 				}
 				addWrite(plan.writes, entry.Ref.Ref, spec.Key, value)
 			case initSecretSourcePaste:
@@ -2407,15 +2442,15 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 					ClipboardSupported: deps.clipboardSupported(),
 				})
 				if err != nil {
-					return initPlan{}, err
+					return initWorkspaceDraft{}, err
 				}
 				value = credentials.TrimSecretIngress(value)
 				if value == "" {
-					return initPlan{}, exitcode.Usage(fmt.Errorf("pasted secret for %q is empty", spec.Key))
+					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("pasted secret for %q is empty", spec.Key))
 				}
 				addWrite(plan.writes, entry.Ref.Ref, spec.Key, value)
 			default:
-				return initPlan{}, fmt.Errorf("unsupported interactive secret source %q", source)
+				return initWorkspaceDraft{}, fmt.Errorf("unsupported interactive secret source %q", source)
 			}
 			if targetHasKey {
 				overwriteRef = true
@@ -2423,7 +2458,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 		}
 		planned := plan.writes[entry.Ref.Ref]
 		if !initCredentialWritePlanSatisfiesEntry(entry, targetKeys, planned) {
-			return initPlan{}, exitcode.Usage(fmt.Errorf("%s credential ref %q still needs required keys; keep existing values or defer instead", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
+			return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential ref %q still needs required keys; keep existing values or defer instead", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
 		}
 		if overwriteRef {
 			plan.overwriteRefs[entry.Ref.Ref] = true

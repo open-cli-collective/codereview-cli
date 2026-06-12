@@ -1540,6 +1540,133 @@ func TestBuildNonInteractiveInitPlanDoesNotApplySideEffects(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveInitWorkspaceCancelLeavesConfigAndKeyringUntouched(t *testing.T) {
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
+	}
+	wantErr := errors.New("cancelled")
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{}, wantErr
+		}),
+		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called after interactive cancel")
+			return nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore called after interactive cancel")
+			return nil, nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runInitWithDeps error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestInitNonInteractiveBypassesInteractiveWorkspacePrompter(t *testing.T) {
+	opts := &root.Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			t.Fatal("interactive prompter called during non-interactive init")
+			return initDraft{}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return filepath.Join(t.TempDir(), "config.yml"), nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: func(string, config.File) error { return nil },
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("keyring opened during non-interactive init without secrets")
+			return nil, nil
+		},
+		readSecret: func(io.Reader, bool, string, string, string) (string, bool, error) {
+			t.Fatal("readSecret called during non-interactive init without secret ingress")
+			return "", false, nil
+		},
+	}
+	flags := initOptions{
+		nonInteractive: true,
+		gitHost:        "github.com",
+		gitAuth:        string(config.GitAuthModePAT),
+		reviewerAuth:   string(config.GitAuthModePAT),
+		llmProvider:    string(config.LLMProviderAnthropic),
+		llmAuth:        string(config.LLMAuthSubscription),
+		llmAdapter:     string(config.LLMAdapterClaudeCLI),
+		majorEvent:     string(config.ReviewMajorEventComment),
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, flags, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+}
+
+func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{})
+	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
+		t.Fatal("SetBundle called during draft secret collection")
+		return credstore.Result{}, nil
+	}
+	opts := &root.Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	cfg := config.File{Profiles: map[string]config.Profile{}}
+	draft := initDraft{
+		ProfileName: "default",
+		MakeDefault: true,
+		GitHost:     "github.com",
+		GitAuth:     string(config.GitAuthModePAT),
+		LLMProvider: string(config.LLMProviderAnthropic),
+		LLMAuth:     string(config.LLMAuthSubscription),
+		LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+	}
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, opts, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	deps := initDeps{
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionSetNow,
+			},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"new-token"},
+		},
+		clipboardSupported: func() bool { return false },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read")
+			return "", nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+	}
+
+	workspace, err = collectInteractiveInitSecrets(&cobra.Command{}, opts, deps, workspace)
+	if err != nil {
+		t.Fatalf("collectInteractiveInitSecrets: %v", err)
+	}
+	if got := workspace.writes["codereview/default"][credentials.GitTokenKey]; got != "new-token" {
+		t.Fatalf("draft write = %q, want new-token", got)
+	}
+	if got := store.bundles["default"][credentials.GitTokenKey]; got != "" {
+		t.Fatalf("stored git token = %q, want no keyring write before apply", got)
+	}
+}
+
 func TestPlanInitCredentialsClearsOptionalRefsInStableOrder(t *testing.T) {
 	previous := apiKeyProfile("work", config.LLMProviderAnthropic)
 	previous.ReviewerCredentials = &config.ReviewerCredentials{
@@ -3847,7 +3974,8 @@ func (f *fakeInitSecretPrompter) PasteSecret(initSecretValuePrompt) (string, err
 }
 
 type fakeInitStore struct {
-	bundles map[string]map[string]string
+	bundles       map[string]map[string]string
+	setBundleFunc func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error)
 }
 
 func newFakeInitStore(bundles map[string]map[string]string) *fakeInitStore {
@@ -3877,6 +4005,9 @@ func (s *fakeInitStore) ListBundle(profile string) ([]string, error) {
 }
 
 func (s *fakeInitStore) SetBundle(profile string, kv map[string]string, opts ...credstore.SetOpt) (credstore.Result, error) {
+	if s.setBundleFunc != nil {
+		return s.setBundleFunc(profile, kv, opts...)
+	}
 	if s.bundles[profile] == nil {
 		s.bundles[profile] = map[string]string{}
 	}
