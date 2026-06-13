@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
@@ -2356,6 +2357,91 @@ func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T
 	}
 }
 
+func TestCollectInteractiveInitSecretsSourceBackReturnsToCredentialChoices(t *testing.T) {
+	store := newFakeInitStore(nil)
+	prompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{
+			initCredentialSecretActionSetNow,
+			initCredentialSecretActionDefer,
+		},
+		sources: []initSecretSource{initSecretSourceBack},
+	}
+	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
+		secretPrompter:     prompter,
+		clipboardSupported: func() bool { return false },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read")
+			return "", nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+	}, testInitSecretWorkspace())
+	if err != nil {
+		t.Fatalf("collectInteractiveInitSecrets: %v", err)
+	}
+	if len(prompter.actions) != 0 || len(prompter.sources) != 0 {
+		t.Fatalf("prompter queues = actions %#v sources %#v, want consumed", prompter.actions, prompter.sources)
+	}
+	if got := workspace.writes["codereview/default"][credentials.GitTokenKey]; got != "" {
+		t.Fatalf("draft write = %q, want none after source Back then defer", got)
+	}
+	if workspace.satisfiedRefs["codereview/default"] {
+		t.Fatalf("satisfiedRefs = %#v, want deferred ref unsatisfied", workspace.satisfiedRefs)
+	}
+}
+
+func TestCollectInteractiveInitSecretsPasteBackReturnsToSourceChoices(t *testing.T) {
+	store := newFakeInitStore(nil)
+	prompter := &fakeInitSecretPrompter{
+		actions:     []initCredentialSecretAction{initCredentialSecretActionSetNow},
+		sources:     []initSecretSource{initSecretSourcePaste, initSecretSourceClipboard},
+		pasteErrors: []error{errInitSecretValueBack},
+	}
+	clipboardReads := 0
+	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
+		secretPrompter:     prompter,
+		clipboardSupported: func() bool { return true },
+		clipboardRead: func() (string, error) {
+			clipboardReads++
+			return "clipboard-token", nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+	}, testInitSecretWorkspace())
+	if err != nil {
+		t.Fatalf("collectInteractiveInitSecrets: %v", err)
+	}
+	if got := workspace.writes["codereview/default"][credentials.GitTokenKey]; got != "clipboard-token" {
+		t.Fatalf("draft write = %q, want clipboard-token", got)
+	}
+	if !workspace.satisfiedRefs["codereview/default"] {
+		t.Fatalf("satisfiedRefs = %#v, want ref satisfied after clipboard retry", workspace.satisfiedRefs)
+	}
+	if clipboardReads != 1 {
+		t.Fatalf("clipboardReads = %d, want 1", clipboardReads)
+	}
+	if len(prompter.actions) != 0 || len(prompter.sources) != 0 || len(prompter.pasteErrors) != 0 {
+		t.Fatalf("prompter queues = actions %#v sources %#v pasteErrors %#v, want consumed", prompter.actions, prompter.sources, prompter.pasteErrors)
+	}
+}
+
+func testInitSecretWorkspace() initWorkspaceDraft {
+	return initWorkspaceDraft{
+		cfg: config.File{Profiles: map[string]config.Profile{}},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "git",
+				Ref:     "codereview/default",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			KeySpecs: []credentials.KeySpec{{
+				Key:      credentials.GitTokenKey,
+				Required: true,
+			}},
+			MissingRequiredKeys: []string{credentials.GitTokenKey},
+			State:               initCredentialPlanStateMissingRequired,
+		}},
+	}
+}
+
 func TestPlanInitCredentialsClearsOptionalRefsInStableOrder(t *testing.T) {
 	previous := apiKeyProfile("work", config.LLMProviderAnthropic)
 	previous.ReviewerCredentials = &config.ReviewerCredentials{
@@ -2637,7 +2723,60 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 	}
 }
 
-func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeHidesCustomFields(t *testing.T) {
+func TestRunBackableInitFormEscapeReturnsBack(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	var stderr bytes.Buffer
+	choice := "stay"
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Backable").
+				Options(
+					huh.NewOption("Stay", "stay"),
+					huh.NewOption("Leave", "leave"),
+				).
+				Value(&choice),
+		),
+	)
+
+	back, err := runBackableInitForm(form, strings.NewReader("\x1b"), &stderr)
+	if err != nil {
+		t.Fatalf("runBackableInitForm: %v", err)
+	}
+	if !back {
+		t.Fatal("back = false, want Escape to return local back")
+	}
+	if choice != "stay" {
+		t.Fatalf("choice = %q, want unchanged default", choice)
+	}
+}
+
+func TestRunBackableInitFormCtrlCStillAborts(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	var stderr bytes.Buffer
+	choice := "stay"
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Backable").
+				Options(
+					huh.NewOption("Stay", "stay"),
+					huh.NewOption("Leave", "leave"),
+				).
+				Value(&choice),
+		),
+	)
+
+	back, err := runBackableInitForm(form, strings.NewReader("\x03"), &stderr)
+	if !errors.Is(err, huh.ErrUserAborted) {
+		t.Fatalf("runBackableInitForm error = %v, want ErrUserAborted", err)
+	}
+	if back {
+		t.Fatal("back = true, want Ctrl+C to remain abort")
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeShowsDetails(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	cfg := config.File{
@@ -2649,6 +2788,9 @@ func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeHidesCustomFields(t
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"1",
+			"",
+			"",
+			"",
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -2673,8 +2815,55 @@ func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeHidesCustomFields(t
 	if !strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") || !strings.Contains(out, "Custom compatible runtime") {
 		t.Fatalf("stderr = %q, want mixed configured/custom runtime options", out)
 	}
-	if strings.Contains(out, "LLM provider") || strings.Contains(out, "LLM auth mode") || strings.Contains(out, "LLM adapter") {
-		t.Fatalf("stderr = %q, want configured runtime flow to hide custom fields", out)
+	if !strings.Contains(out, "LLM provider") || !strings.Contains(out, "LLM auth mode") || !strings.Contains(out, "LLM adapter") {
+		t.Fatalf("stderr = %q, want configured runtime flow to show editable details", out)
+	}
+	if !strings.Contains(out, "Back to main menu") {
+		t.Fatalf("stderr = %q, want focused runtime Back option", out)
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"3", // Template: Codex CLI subscription.
+			"",  // Keep OpenAI provider default from the selected template.
+			"",  // Keep subscription auth default.
+			"",  // Keep Codex CLI adapter default.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}})
+	if err != nil {
+		t.Fatalf("EditLLMRuntime: %v", err)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthSubscription) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
+		t.Fatalf("draft = %#v, want codex subscription runtime", draft)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Template: Codex CLI subscription") ||
+		!strings.Contains(out, "LLM provider") ||
+		!strings.Contains(out, "LLM auth mode") ||
+		!strings.Contains(out, "LLM adapter") {
+		t.Fatalf("stderr = %q, want template selection to show editable details", out)
 	}
 }
 
@@ -2731,6 +2920,116 @@ func TestHuhInitLLMRuntimePrompterAccessibleCustomRuntimeShowsCustomFields(t *te
 	}
 	if !strings.Contains(out, "LLM provider") || !strings.Contains(out, "LLM auth mode") || !strings.Contains(out, "LLM adapter") {
 		t.Fatalf("stderr = %q, want custom runtime fields", out)
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterAccessibleBackReturnsNavigateBack(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"7", // Back to main menu.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditLLMRuntime error = %v, want errInitNavigateBack", err)
+	}
+	if !strings.Contains(stderr.String(), "Back to main menu") {
+		t.Fatalf("stderr = %q, want focused runtime Back option", stderr.String())
+	}
+}
+
+func TestHuhInitLLMRuntimeDetailsBackDoesNotMutateDraft(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft.LLMProvider = string(config.LLMProviderOpenAI)
+	draft.LLMAuth = string(config.LLMAuthSubscription)
+	draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
+	want := draft
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Back to runtime choices.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	back, err := prompter.editLLMRuntimeDetails(&draft)
+	if err != nil {
+		t.Fatalf("editLLMRuntimeDetails: %v", err)
+	}
+	if !back {
+		t.Fatal("back = false, want details Back")
+	}
+	if !reflect.DeepEqual(draft, want) {
+		t.Fatalf("draft mutated on details Back:\n got: %#v\nwant: %#v", draft, want)
+	}
+}
+
+func TestHuhInitReviewerEntityPrompterAccessibleBackReturnsNavigateBack(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"4", // Back to main menu.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditReviewerEntity error = %v, want errInitNavigateBack", err)
+	}
+	if !strings.Contains(stderr.String(), "Back to main menu") {
+		t.Fatalf("stderr = %q, want focused reviewer Back option", stderr.String())
+	}
+}
+
+func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft.ReviewerEnabled = true
+	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	draft.ReviewerCredentialRef = "codereview/work-reviewer"
+	want := draft
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Back to reviewer choices.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	back, err := prompter.editReviewerEntityDetails(&draft)
+	if err != nil {
+		t.Fatalf("editReviewerEntityDetails: %v", err)
+	}
+	if !back {
+		t.Fatal("back = false, want details Back")
+	}
+	if !reflect.DeepEqual(draft, want) {
+		t.Fatalf("draft mutated on details Back:\n got: %#v\nwant: %#v", draft, want)
 	}
 }
 
@@ -2986,6 +3285,7 @@ func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
 	prompter := huhInitModelMapPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2",          // Edit tier mappings
+			"",           // Edit model tier details
 			"",           // small stays blank
 			"gpt-custom", // medium override
 			"",           // large stays blank
@@ -3011,6 +3311,9 @@ func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
 	if !strings.Contains(out, "small model") || !strings.Contains(out, "medium model") || !strings.Contains(out, "large model") {
 		t.Fatalf("stderr = %q, want tier input prompts", out)
 	}
+	if !strings.Contains(out, "Back to model-map choices") {
+		t.Fatalf("stderr = %q, want model-map detail Back option", out)
+	}
 }
 
 func TestHuhInitModelMapPrompterAccessibleKeepsExistingOverrideWhenLeftBlank(t *testing.T) {
@@ -3018,6 +3321,7 @@ func TestHuhInitModelMapPrompterAccessibleKeepsExistingOverrideWhenLeftBlank(t *
 	prompter := huhInitModelMapPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Edit tier mappings
+			"",  // Edit model tier details
 			"",  // small stays blank
 			"",  // medium keeps existing prefilled value
 			"",  // large stays blank
@@ -3073,6 +3377,7 @@ func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
 	prompter := huhInitAgentSourcesPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Edit agent source paths
+			"",  // Edit agent source details
 			"",  // keep first prefilled path
 			"",  // no additional paths
 			"",
@@ -3096,6 +3401,9 @@ func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
 	if !strings.Contains(out, "Agent source 1") || !strings.Contains(out, "Add agent sources") {
 		t.Fatalf("stderr = %q, want editable agent source inputs", out)
 	}
+	if !strings.Contains(out, "Back to agent-source choices") {
+		t.Fatalf("stderr = %q, want agent-source detail Back option", out)
+	}
 }
 
 func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
@@ -3104,6 +3412,7 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	prompter := huhInitReviewPolicyPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2",   // Edit review policy
+			"",    // Edit review policy details
 			"",    // keep comment
 			"n",   // allow self-approve false
 			"2",   // auto resolve
@@ -3129,6 +3438,9 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	if !strings.Contains(out, "Major findings event") || !strings.Contains(out, "Resolve-after duration") {
 		t.Fatalf("stderr = %q, want review-policy fields", out)
 	}
+	if !strings.Contains(out, "Back to review-policy choices") {
+		t.Fatalf("stderr = %q, want review-policy detail Back option", out)
+	}
 }
 
 func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
@@ -3137,6 +3449,7 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	prompter := huhInitRoutesPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Edit repository routes
+			"",  // Edit repository route details
 			"",  // keep existing route text
 			"",
 		}, "\n")),
@@ -3164,6 +3477,9 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	out := stderr.String()
 	if !strings.Contains(out, "Repository routes") || !strings.Contains(out, "Edit repository routes") {
 		t.Fatalf("stderr = %q, want route editor prompt", out)
+	}
+	if !strings.Contains(out, "Back to repository-route choices") {
+		t.Fatalf("stderr = %q, want repository-route detail Back option", out)
 	}
 }
 
@@ -3851,6 +4167,7 @@ func TestHuhInitRetentionPrompterAccessibleShowsFields(t *testing.T) {
 	prompter := huhInitRetentionPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Edit retention settings
+			"",  // Edit retention details
 			"",  // keep default 90 days
 			"",  // custom days unused
 			"2", // manual only
@@ -3870,6 +4187,9 @@ func TestHuhInitRetentionPrompterAccessibleShowsFields(t *testing.T) {
 	if !strings.Contains(out, "Maximum run-data age") || !strings.Contains(out, "Retention enforcement") {
 		t.Fatalf("stderr = %q, want retention fields", out)
 	}
+	if !strings.Contains(out, "Back to retention choices") {
+		t.Fatalf("stderr = %q, want retention detail Back option", out)
+	}
 }
 
 func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
@@ -3878,7 +4198,8 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	prompter := huhInitKeyringBackendPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2",    // Set keyring backend
-			"file", //
+			"",     // Set keyring backend details
+			"file", // Persistent backend
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -3893,6 +4214,9 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Persistent keyring backend") {
 		t.Fatalf("stderr = %q, want backend input prompt", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Back to keyring choices") {
+		t.Fatalf("stderr = %q, want keyring detail Back option", stderr.String())
 	}
 }
 
@@ -5051,6 +5375,61 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDoesNotOpenStoreForPromptContext(t 
 
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
+	}
+}
+
+func TestInitInteractiveMenuFocusedBackKeepsSessionUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	original := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	}
+	saveCredentialTestConfig(t, path, original)
+	wantCfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load original config: %v", err)
+	}
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionLLMRuntimes,
+				initMenuActionReviewerEntities,
+				initMenuActionExit,
+			},
+		},
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+			return initDraft{}, errInitNavigateBack
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(initReviewerEntityPrompt) (initDraft, error) {
+			return initDraft{}, errInitNavigateBack
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore should not run for focused Back navigation")
+			return nil, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig should not run after exiting without save")
+			return nil
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if !reflect.DeepEqual(got, wantCfg) {
+		t.Fatalf("config changed after focused Back navigation:\n got: %#v\nwant: %#v", got, wantCfg)
 	}
 }
 
@@ -6948,9 +7327,10 @@ func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
 }
 
 type fakeInitSecretPrompter struct {
-	actions []initCredentialSecretAction
-	sources []initSecretSource
-	pastes  []string
+	actions     []initCredentialSecretAction
+	sources     []initSecretSource
+	pastes      []string
+	pasteErrors []error
 }
 
 func (f *fakeInitSecretPrompter) ChooseCredentialAction(initCredentialSecretPrompt) (initCredentialSecretAction, error) {
@@ -6972,6 +7352,13 @@ func (f *fakeInitSecretPrompter) ChooseSecretSource(initSecretValuePrompt) (init
 }
 
 func (f *fakeInitSecretPrompter) PasteSecret(initSecretValuePrompt) (string, error) {
+	if len(f.pasteErrors) > 0 {
+		err := f.pasteErrors[0]
+		f.pasteErrors = f.pasteErrors[1:]
+		if err != nil {
+			return "", err
+		}
+	}
 	if len(f.pastes) == 0 {
 		return "", errors.New("unexpected paste prompt")
 	}
