@@ -3024,6 +3024,13 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	if draft.LLMProvider != string(config.LLMProviderAnthropic) || draft.LLMAuth != string(config.LLMAuthSubscription) || draft.LLMAdapter != string(config.LLMAdapterClaudeCLI) {
 		t.Fatalf("llm draft = %#v, want fresh llm defaults for create-new seed", draft)
 	}
+	out := stderr.String()
+	if !strings.Contains(out, "Use a profile's Git account (no separate reviewer entity)") {
+		t.Fatalf("stderr = %q, want generic fallback label for create-new profile flow", out)
+	}
+	if !strings.Contains(out, "Profiles with no separate reviewer entity post using their profile Git account.") {
+		t.Fatalf("stderr = %q, want reviewer entity selection description", out)
+	}
 }
 
 func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T) {
