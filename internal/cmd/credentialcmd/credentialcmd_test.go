@@ -3227,6 +3227,53 @@ func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInve
 	}
 }
 
+func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMixedInventory(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	home := basicProfile("home")
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "home",
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	}
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"1", // Configured: Personal access token reviewer (reviewer-pat)
+			"",  // Edit reviewer details
+			"",  // Keep PAT reviewer type
+			"n",
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{
+		Context: initPromptContext{
+			RequestedProfileName:    "home",
+			ExistingProfileName:     "home",
+			ExistingProfile:         &home,
+			DefaultProfileName:      "home",
+			ExistingConfig:          cfg,
+			ReviewerEntities:        reviewerEntities,
+			ProfileReviewerEntities: profileReviewerEntities,
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditReviewerEntity: %v", err)
+	}
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) || draft.ReviewerCredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("draft reviewer = %#v, want configured PAT reviewer to round-trip intact", draft)
+	}
+}
+
 func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
