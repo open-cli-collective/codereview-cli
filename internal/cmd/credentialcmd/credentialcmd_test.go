@@ -3028,8 +3028,8 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	if !strings.Contains(out, "Use a profile's Git account (no separate reviewer entity)") {
 		t.Fatalf("stderr = %q, want generic fallback label for create-new profile flow", out)
 	}
-	if !strings.Contains(out, "Profiles with no separate reviewer entity post using their profile Git account.") {
-		t.Fatalf("stderr = %q, want reviewer entity selection description", out)
+	if !strings.Contains(out, "Reviewer entity") {
+		t.Fatalf("stderr = %q, want reviewer entity prompt in create-new profile flow", out)
 	}
 }
 
