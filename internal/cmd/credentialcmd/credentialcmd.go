@@ -1899,31 +1899,29 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		}
 		detailOptions = append(detailOptions, huh.NewOption(detailBackLabel, initDetailActionBack))
 
-		if selectedExistingProfile != nil {
-			actionForm := huh.NewForm(
-				huh.NewGroup(
-					huh.NewSelect[string]().
-						Title("Review profile details").
-						Options(detailOptions...).
-						Value(&detailAction),
-				).Title("Review Profile"),
-			)
-			back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
-			if err != nil {
-				return initDraft{}, err
+		actionForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Review profile details").
+					Options(detailOptions...).
+					Value(&detailAction),
+			).Title("Review Profile"),
+		)
+		back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
+		if err != nil {
+			return initDraft{}, err
+		}
+		if back || detailAction == initDetailActionBack {
+			if hasProfileChooser {
+				continue
 			}
-			if back || detailAction == initDetailActionBack {
-				if hasProfileChooser {
-					continue
-				}
-				return initDraft{}, errInitNavigateBack
-			}
-			if detailAction == initDetailActionDelete {
-				return initDraft{
-					Action:       initDraftActionDeleteProfile,
-					ActionTarget: selectedProfileName,
-				}, nil
-			}
+			return initDraft{}, errInitNavigateBack
+		}
+		if detailAction == initDetailActionDelete {
+			return initDraft{
+				Action:       initDraftActionDeleteProfile,
+				ActionTarget: selectedProfileName,
+			}, nil
 		}
 
 		form := huh.NewForm(
@@ -2031,7 +2029,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				return !draft.AdvancedStorageLabels
 			}).Title("Advanced Storage Labels"),
 		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		back, err = runBackableInitForm(form, p.stdin, p.stderr)
 		if err != nil {
 			return initDraft{}, err
 		}

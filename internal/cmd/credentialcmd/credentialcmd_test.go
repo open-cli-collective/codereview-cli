@@ -2860,6 +2860,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Create new profile
+			"",  // Edit profile details
 			"",  // Profile name
 			"",  // Make default
 			"",  // Git host
@@ -2949,6 +2950,27 @@ func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T
 	}
 	if strings.Contains(stderr.String(), "Profile name") || strings.Contains(stderr.String(), "Git scope") || strings.Contains(stderr.String(), "Reviewer entity") {
 		t.Fatalf("stderr = %q, want delete flow to skip profile edit fields", stderr.String())
+	}
+}
+
+func TestHuhInitPrompterAccessibleNewProfileFlowShowsBackOption(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Back to main menu
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.Run(initPromptContext{ExistingConfig: config.File{Profiles: map[string]config.Profile{}}})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("Run error = %v, want errInitNavigateBack", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Edit profile details") || !strings.Contains(out, "Back to main menu") {
+		t.Fatalf("stderr = %q, want visible back option for new-profile flow", out)
 	}
 }
 
@@ -3070,6 +3092,7 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
+			"", // Edit profile details
 			"", // Profile name
 			"", // Make default
 			"", // Git host
@@ -3105,6 +3128,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Create new profile
+			"",  // Edit profile details
 			"",  // Profile name
 			"",  // Make default
 			"",  // Git host
