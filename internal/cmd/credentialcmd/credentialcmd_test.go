@@ -3119,6 +3119,9 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 	if draft.ProfileName != "office" {
 		t.Fatalf("draft.ProfileName = %q, want explicit requested profile name preserved", draft.ProfileName)
 	}
+	if !strings.Contains(stderr.String(), "Back to main menu") {
+		t.Fatalf("stderr = %q, want visible back option for new-profile flow", stderr.String())
+	}
 }
 
 func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedNameWhenNoProfileMatched(t *testing.T) {
