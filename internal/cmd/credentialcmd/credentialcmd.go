@@ -977,68 +977,6 @@ func buildInteractiveInitInventoryPromptContext(ctx initPromptContext) initPromp
 	return ctx
 }
 
-func buildInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, deps initDeps, ctx initPromptContext) (initPromptContext, error) {
-	ctx = buildInteractiveInitInventoryPromptContext(ctx)
-
-	if len(ctx.ExistingConfig.Profiles) == 0 {
-		return ctx, nil
-	}
-	backendFlagSet := cmderr.BackendFlagChanged(cmd)
-	store, err := deps.openStore(opts.Backend, backendFlagSet, ctx.ExistingConfig)
-	storeErr := err
-	if initStorePresent(store) {
-		defer func() { _ = store.Close() }()
-	}
-	ctx.ProfileWarnings = map[string][]string{}
-	for name, profile := range ctx.ExistingConfig.Profiles {
-		refs, err := config.CredentialRefs(profile)
-		if err != nil {
-			return initPromptContext{}, cmderr.Config(err)
-		}
-		statuses, err := credentials.CredentialStatuses(store, refs, storeErr)
-		if err != nil {
-			return initPromptContext{}, cmderr.Credential(err)
-		}
-		if warnings := initCredentialHealthWarnings(statuses); len(warnings) > 0 {
-			ctx.ProfileWarnings[name] = warnings
-		}
-	}
-	return ctx, nil
-}
-
-func initStorePresent(store initStore) bool {
-	if store == nil {
-		return false
-	}
-	// A typed-nil store can sit inside the interface after openStore returns, so store == nil is not sufficient here.
-	value := reflect.ValueOf(store)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return !value.IsNil()
-	case reflect.Invalid, reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
-		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128, reflect.Array,
-		reflect.String, reflect.Struct, reflect.UnsafePointer:
-		return true
-	}
-	return true
-}
-
-func initCredentialHealthWarnings(statuses []credentials.CredentialStatus) []string {
-	var warnings []string
-	for _, status := range statuses {
-		label := initCredentialPurposeLabel(status.Purpose)
-		missing := credentials.MissingRequiredKeys(status)
-		switch {
-		case len(missing) > 0:
-			warnings = append(warnings, fmt.Sprintf("%s secret health: %s is missing required keys (%s)", label, status.Ref, strings.Join(missing, ", ")))
-		case !credentials.RequiredKeysSatisfied(status):
-			warnings = append(warnings, fmt.Sprintf("%s secret health: cannot verify required keys for %s", label, status.Ref))
-		}
-	}
-	return warnings
-}
-
 func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) (initSessionDraft, error) {
 	profileName := opts.Profile
 	if profileName == "" {
@@ -1109,20 +1047,8 @@ func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
 	return prompt
 }
 
-func currentInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initPromptContext, error) {
-	return currentInteractiveInitPromptContextWithWarnings(cmd, opts, deps, session, true)
-}
-
 func currentInteractiveInitInventoryPromptContext(session initSessionDraft) initPromptContext {
 	return buildInteractiveInitInventoryPromptContext(currentInteractiveInitPromptContextBase(session))
-}
-
-func currentInteractiveInitPromptContextWithWarnings(cmd *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft, includeWarnings bool) (initPromptContext, error) {
-	ctx := currentInteractiveInitPromptContextBase(session)
-	if !includeWarnings {
-		return buildInteractiveInitInventoryPromptContext(ctx), nil
-	}
-	return buildInteractiveInitPromptContext(cmd, opts, deps, ctx)
 }
 
 func currentInteractiveInitPromptContextBase(session initSessionDraft) initPromptContext {
@@ -1188,10 +1114,7 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	if prompter == nil {
 		prompter = newHuhInitPrompter(opts)
 	}
-	promptCtx, err := currentInteractiveInitPromptContext(cmd, opts, deps, session)
-	if err != nil {
-		return initSessionDraft{}, err
-	}
+	promptCtx := currentInteractiveInitInventoryPromptContext(session)
 	draft, err := prompter.Run(promptCtx)
 	if errors.Is(err, errInitNavigateBack) {
 		return session, nil

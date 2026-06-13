@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -3296,82 +3295,6 @@ func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.
 	}
 }
 
-func TestHuhInitPrompterAccessibleRendersComputedProfileHealthWarnings(t *testing.T) {
-	t.Setenv("TERM", "dumb")
-	opts := &root.Options{
-		Backend: "file",
-	}
-	existing := basicProfile("work")
-	ctx, err := buildInteractiveInitPromptContext(&cobra.Command{}, opts, initDeps{
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{}), nil
-		},
-	}, initPromptContext{
-		RequestedProfileName: "work",
-		ExistingProfileName:  "work",
-		ExistingProfile:      &existing,
-		ExistingProfileNames: []string{"work"},
-		DefaultProfileName:   "work",
-		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
-	})
-	if err != nil {
-		t.Fatalf("buildInteractiveInitPromptContext: %v", err)
-	}
-	var stderr bytes.Buffer
-	prompter := huhInitPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Profile name
-			"", // Make default
-			"", // Git scope host
-			"", // Git scope auth mode
-			"", // Reviewer entity
-			"", // LLM runtime
-			"", // Reviewer model tier
-			"", // Advanced storage labels
-			"",
-		}, "\n")),
-		stderr: &stderr,
-	}
-
-	_, err = prompter.Run(ctx)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	out := stderr.String()
-	if !strings.Contains(out, "Existing profile secret health") || !strings.Contains(out, "codereview/work is missing required keys (git_token)") {
-		t.Fatalf("wizard output missing computed health warning banner: %q", out)
-	}
-}
-
-func TestBuildInteractiveInitPromptContextReportsCannotVerifyWarnings(t *testing.T) {
-	opts := &root.Options{
-		Backend: "file",
-	}
-	existing := basicProfile("work")
-	ctx, err := buildInteractiveInitPromptContext(&cobra.Command{}, opts, initDeps{
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return nil, fmt.Errorf("keyring unavailable")
-		},
-	}, initPromptContext{
-		RequestedProfileName: "work",
-		ExistingProfileName:  "work",
-		ExistingProfile:      &existing,
-		ExistingProfileNames: []string{"work"},
-		DefaultProfileName:   "work",
-		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
-	})
-	if err != nil {
-		t.Fatalf("buildInteractiveInitPromptContext: %v", err)
-	}
-	warnings := ctx.ProfileWarnings["work"]
-	if len(warnings) == 0 {
-		t.Fatalf("ProfileWarnings = %#v, want cannot verify warning", ctx.ProfileWarnings)
-	}
-	if !strings.Contains(warnings[0], "cannot verify") {
-		t.Fatalf("warning = %q, want cannot verify wording", warnings[0])
-	}
-}
-
 func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
@@ -5784,6 +5707,78 @@ func TestInitInteractiveMenuFocusedReviewerEntityDoesNotOpenStoreForPromptContex
 		}),
 		openStore: func(string, bool, config.File) (initStore, error) {
 			t.Fatal("openStore should not run for focused reviewer prompt context")
+			return nil, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+}
+
+func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	existing := cfg.Profiles["work"]
+	expectedPrompt := buildInteractiveInitInventoryPromptContext(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		ExistingProfileNames: []string{"work"},
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewProfiles,
+				initMenuActionExit,
+			},
+		},
+		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+			if prompt.RequestedProfileName != expectedPrompt.RequestedProfileName ||
+				prompt.ExistingProfileName != expectedPrompt.ExistingProfileName ||
+				prompt.DefaultProfileName != expectedPrompt.DefaultProfileName {
+				t.Fatalf("prompt identity = %#v, want %#v", prompt, expectedPrompt)
+			}
+			if prompt.ExistingProfile == nil {
+				t.Fatal("ExistingProfile = nil, want existing work profile")
+			}
+			if !reflect.DeepEqual(prompt.ExistingProfile.Git, expectedPrompt.ExistingProfile.Git) {
+				t.Fatalf("ExistingProfile.Git = %#v, want %#v", prompt.ExistingProfile.Git, expectedPrompt.ExistingProfile.Git)
+			}
+			if !reflect.DeepEqual(prompt.ExistingProfile.LLM, expectedPrompt.ExistingProfile.LLM) {
+				t.Fatalf("ExistingProfile.LLM = %#v, want %#v", prompt.ExistingProfile.LLM, expectedPrompt.ExistingProfile.LLM)
+			}
+			if !reflect.DeepEqual(prompt.ExistingProfileNames, expectedPrompt.ExistingProfileNames) {
+				t.Fatalf("ExistingProfileNames = %#v, want %#v", prompt.ExistingProfileNames, expectedPrompt.ExistingProfileNames)
+			}
+			if !reflect.DeepEqual(prompt.ProfileGitScopes, expectedPrompt.ProfileGitScopes) {
+				t.Fatalf("ProfileGitScopes = %#v, want %#v", prompt.ProfileGitScopes, expectedPrompt.ProfileGitScopes)
+			}
+			if !reflect.DeepEqual(prompt.ProfileReviewerEntities, expectedPrompt.ProfileReviewerEntities) {
+				t.Fatalf("ProfileReviewerEntities = %#v, want %#v", prompt.ProfileReviewerEntities, expectedPrompt.ProfileReviewerEntities)
+			}
+			if !reflect.DeepEqual(prompt.ProfileLLMRuntimes, expectedPrompt.ProfileLLMRuntimes) {
+				t.Fatalf("ProfileLLMRuntimes = %#v, want %#v", prompt.ProfileLLMRuntimes, expectedPrompt.ProfileLLMRuntimes)
+			}
+			return seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile), nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore should not run for focused review profile prompt context")
 			return nil, nil
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
