@@ -2860,6 +2860,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Create new profile
+			"",  // Edit profile details
 			"",  // Profile name
 			"",  // Make default
 			"",  // Git host
@@ -2923,13 +2924,6 @@ func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Mark profile for deletion
-			"",  // Profile name
-			"",  // Make default
-			"",  // Git scope
-			"",  // Reviewer entity
-			"",  // LLM runtime
-			"",  // Reviewer model tier
-			"",  // Advanced storage labels
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -2953,6 +2947,30 @@ func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T
 	}
 	if !strings.Contains(stderr.String(), "Mark profile for deletion") {
 		t.Fatalf("stderr = %q, want deletion action label", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Profile name") || strings.Contains(stderr.String(), "Git scope") || strings.Contains(stderr.String(), "Reviewer entity") {
+		t.Fatalf("stderr = %q, want delete flow to skip profile edit fields", stderr.String())
+	}
+}
+
+func TestHuhInitPrompterAccessibleNewProfileFlowShowsBackOption(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Back to main menu
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.Run(initPromptContext{ExistingConfig: config.File{Profiles: map[string]config.Profile{}}})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("Run error = %v, want errInitNavigateBack", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Edit profile details") || !strings.Contains(out, "Back to main menu") {
+		t.Fatalf("stderr = %q, want visible back option for new-profile flow", out)
 	}
 }
 
@@ -3028,6 +3046,9 @@ func TestHuhInitReviewerEntityDetailsAccessibleCanMarkConfiguredEntityForDeletio
 	if !strings.Contains(stderr.String(), "Mark reviewer entity for deletion") {
 		t.Fatalf("stderr = %q, want reviewer delete label", stderr.String())
 	}
+	if strings.Contains(stderr.String(), "Reviewer entity type") || strings.Contains(stderr.String(), "Advanced storage labels") || strings.Contains(stderr.String(), "Reviewer storage label") {
+		t.Fatalf("stderr = %q, want delete flow to skip reviewer edit fields", stderr.String())
+	}
 }
 
 func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t *testing.T) {
@@ -3071,6 +3092,7 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
+			"", // Edit profile details
 			"", // Profile name
 			"", // Make default
 			"", // Git host
@@ -3097,6 +3119,9 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 	if draft.ProfileName != "office" {
 		t.Fatalf("draft.ProfileName = %q, want explicit requested profile name preserved", draft.ProfileName)
 	}
+	if !strings.Contains(stderr.String(), "Back to main menu") {
+		t.Fatalf("stderr = %q, want visible back option for new-profile flow", stderr.String())
+	}
 }
 
 func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedNameWhenNoProfileMatched(t *testing.T) {
@@ -3106,6 +3131,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Create new profile
+			"",  // Edit profile details
 			"",  // Profile name
 			"",  // Make default
 			"",  // Git host
@@ -3436,6 +3462,9 @@ func TestHuhInitLLMRuntimeDetailsAccessibleCanMarkConfiguredRuntimeForDeletion(t
 	}
 	if !strings.Contains(stderr.String(), "Mark runtime for deletion") {
 		t.Fatalf("stderr = %q, want runtime delete label", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "LLM provider") || strings.Contains(stderr.String(), "LLM auth mode") || strings.Contains(stderr.String(), "LLM adapter") {
+		t.Fatalf("stderr = %q, want delete flow to skip runtime edit fields", stderr.String())
 	}
 }
 
