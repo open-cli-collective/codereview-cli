@@ -5721,9 +5721,19 @@ func TestInitInteractiveMenuFocusedReviewerEntityDoesNotOpenStoreForPromptContex
 
 func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	saveCredentialTestConfig(t, path, config.File{
+	cfg := config.File{
 		DefaultProfile: "work",
 		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	existing := cfg.Profiles["work"]
+	expectedPrompt := buildInteractiveInitInventoryPromptContext(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		ExistingProfileNames: []string{"work"},
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -5739,6 +5749,32 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 			},
 		},
 		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+			if prompt.RequestedProfileName != expectedPrompt.RequestedProfileName ||
+				prompt.ExistingProfileName != expectedPrompt.ExistingProfileName ||
+				prompt.DefaultProfileName != expectedPrompt.DefaultProfileName {
+				t.Fatalf("prompt identity = %#v, want %#v", prompt, expectedPrompt)
+			}
+			if prompt.ExistingProfile == nil {
+				t.Fatal("ExistingProfile = nil, want existing work profile")
+			}
+			if !reflect.DeepEqual(prompt.ExistingProfile.Git, expectedPrompt.ExistingProfile.Git) {
+				t.Fatalf("ExistingProfile.Git = %#v, want %#v", prompt.ExistingProfile.Git, expectedPrompt.ExistingProfile.Git)
+			}
+			if !reflect.DeepEqual(prompt.ExistingProfile.LLM, expectedPrompt.ExistingProfile.LLM) {
+				t.Fatalf("ExistingProfile.LLM = %#v, want %#v", prompt.ExistingProfile.LLM, expectedPrompt.ExistingProfile.LLM)
+			}
+			if !reflect.DeepEqual(prompt.ExistingProfileNames, expectedPrompt.ExistingProfileNames) {
+				t.Fatalf("ExistingProfileNames = %#v, want %#v", prompt.ExistingProfileNames, expectedPrompt.ExistingProfileNames)
+			}
+			if !reflect.DeepEqual(prompt.ProfileGitScopes, expectedPrompt.ProfileGitScopes) {
+				t.Fatalf("ProfileGitScopes = %#v, want %#v", prompt.ProfileGitScopes, expectedPrompt.ProfileGitScopes)
+			}
+			if !reflect.DeepEqual(prompt.ProfileReviewerEntities, expectedPrompt.ProfileReviewerEntities) {
+				t.Fatalf("ProfileReviewerEntities = %#v, want %#v", prompt.ProfileReviewerEntities, expectedPrompt.ProfileReviewerEntities)
+			}
+			if !reflect.DeepEqual(prompt.ProfileLLMRuntimes, expectedPrompt.ProfileLLMRuntimes) {
+				t.Fatalf("ProfileLLMRuntimes = %#v, want %#v", prompt.ProfileLLMRuntimes, expectedPrompt.ProfileLLMRuntimes)
+			}
 			return seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile), nil
 		}),
 		openStore: func(string, bool, config.File) (initStore, error) {
