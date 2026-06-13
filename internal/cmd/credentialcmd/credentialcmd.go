@@ -214,9 +214,26 @@ type initPromptContext struct {
 	LLMRuntimes             map[string]initLLMRuntimeDraft
 	ProfileLLMRuntimes      map[string]string
 	ProfileWarnings         map[string][]string
+	PendingProfileDeletes        map[string]initPendingProfileDelete
+	PendingReviewerEntityDeletes map[string]initPendingReviewerEntityDelete
+	PendingLLMRuntimeDeletes     map[string]initPendingLLMRuntimeDelete
 }
 
+type initDraftAction string
+
+const (
+	initDraftActionNone                     initDraftAction = ""
+	initDraftActionDeleteProfile           initDraftAction = "delete_profile"
+	initDraftActionUndoDeleteProfile       initDraftAction = "undo_delete_profile"
+	initDraftActionDeleteReviewerEntity    initDraftAction = "delete_reviewer_entity"
+	initDraftActionUndoDeleteReviewerEntity initDraftAction = "undo_delete_reviewer_entity"
+	initDraftActionDeleteLLMRuntime        initDraftAction = "delete_llm_runtime"
+	initDraftActionUndoDeleteLLMRuntime    initDraftAction = "undo_delete_llm_runtime"
+)
+
 type initDraft struct {
+	Action                initDraftAction
+	ActionTarget          string
 	OriginalProfileName   string
 	ProfileName           string
 	MakeDefault           bool
@@ -428,6 +445,32 @@ type initSessionDraft struct {
 	backendFlagSet       bool
 	workspace            *initWorkspaceDraft
 	touchedProfiles      map[string]string
+	pendingProfileDeletes        map[string]initPendingProfileDelete
+	pendingReviewerEntityDeletes map[string]initPendingReviewerEntityDelete
+	pendingLLMRuntimeDeletes     map[string]initPendingLLMRuntimeDelete
+}
+
+type initPendingProfileDelete struct {
+	ProfileName       string
+	Profile           config.Profile
+	OriginalDefault   string
+	FallbackDefault   string
+	PrunedRoutes      []config.RepositoryProfile
+	WasActive         bool
+	HadTouchedProfile bool
+	TouchedOriginal   string
+}
+
+type initPendingReviewerEntityDelete struct {
+	EntityName string
+	Affected   map[string]config.ReviewerCredentials
+}
+
+type initPendingLLMRuntimeDelete struct {
+	RuntimeName string
+	Replacement initLLMRuntimeDraft
+	Applied     map[string]config.LLMConfig
+	Original    map[string]config.LLMConfig
 }
 
 type initGitScopeDraft struct {
@@ -938,8 +981,12 @@ const (
 	initCustomGitScopeSelection   = "__custom_git_scope__"
 	initCustomLLMRuntimeSelection = "__custom_llm_runtime__"
 	initBackSelection             = "__back__"
+	initUndoProfileDeletePrefix   = "__undo_profile_delete__:"
+	initUndoReviewerEntityDeletePrefix = "__undo_reviewer_entity_delete__:"
+	initUndoLLMRuntimeDeletePrefix = "__undo_llm_runtime_delete__:"
 	initDetailActionEdit          = "edit"
 	initDetailActionBack          = "back"
+	initDetailActionDelete        = "delete"
 )
 
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
@@ -1000,6 +1047,9 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 		requestedProfileName: profileName,
 		backendFlagSet:       cmderr.BackendFlagChanged(cmd),
 		touchedProfiles:      map[string]string{},
+		pendingProfileDeletes:        map[string]initPendingProfileDelete{},
+		pendingReviewerEntityDeletes: map[string]initPendingReviewerEntityDelete{},
+		pendingLLMRuntimeDeletes:     map[string]initPendingLLMRuntimeDelete{},
 	}
 	existingProfileName := ""
 	var existingProfile *config.Profile
@@ -1070,6 +1120,9 @@ func currentInteractiveInitPromptContextBase(session initSessionDraft) initPromp
 		ExistingProfileNames: sortedProfileNames(session.cfg.Profiles),
 		DefaultProfileName:   session.cfg.DefaultProfile,
 		ExistingConfig:       session.cfg,
+		PendingProfileDeletes:        session.pendingProfileDeletes,
+		PendingReviewerEntityDeletes: session.pendingReviewerEntityDeletes,
+		PendingLLMRuntimeDeletes:     session.pendingLLMRuntimeDeletes,
 	}
 }
 
@@ -1121,6 +1174,15 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	}
 	if err != nil {
 		return initSessionDraft{}, err
+	}
+	switch draft.Action {
+	case initDraftActionNone:
+	case initDraftActionDeleteProfile:
+		return deleteInteractiveInitProfile(session, draft.ActionTarget)
+	case initDraftActionUndoDeleteProfile:
+		return undoInteractiveInitProfileDelete(session, draft.ActionTarget)
+	case initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
+		return initSessionDraft{}, fmt.Errorf("unsupported review-profile draft action %q", draft.Action)
 	}
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
 	if err != nil {
@@ -1197,6 +1259,15 @@ func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 	if err != nil {
 		return initSessionDraft{}, err
 	}
+	switch draft.Action {
+	case initDraftActionNone:
+	case initDraftActionDeleteLLMRuntime:
+		return deleteInteractiveInitLLMRuntime(session, draft.ActionTarget, initLLMRuntimeDraftFromSeedDraft(draft))
+	case initDraftActionUndoDeleteLLMRuntime:
+		return undoInteractiveInitLLMRuntimeDelete(session, draft.ActionTarget)
+	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity:
+		return initSessionDraft{}, fmt.Errorf("unsupported LLM-runtime draft action %q", draft.Action)
+	}
 	previousProfileName := session.workspace.profileName
 	previousProfile := session.workspace.profile
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
@@ -1227,6 +1298,15 @@ func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 	}
 	if err != nil {
 		return initSessionDraft{}, err
+	}
+	switch draft.Action {
+	case initDraftActionNone:
+	case initDraftActionDeleteReviewerEntity:
+		return deleteInteractiveInitReviewerEntity(session, draft.ActionTarget)
+	case initDraftActionUndoDeleteReviewerEntity:
+		return undoInteractiveInitReviewerEntityDelete(session, draft.ActionTarget)
+	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
+		return initSessionDraft{}, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
 	}
 	previousProfileName := session.workspace.profileName
 	previousProfile := session.workspace.profile
@@ -1404,7 +1484,16 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 	}
 	for {
 		choice := selectedRuntime
-		options := append(initLLMRuntimeOptions(prompt.Context.LLMRuntimes), huh.NewOption("Back to main menu", initBackSelection))
+		options := initLLMRuntimeOptions(prompt.Context.LLMRuntimes)
+		pendingDeleteNames := make([]string, 0, len(prompt.Context.PendingLLMRuntimeDeletes))
+		for name := range prompt.Context.PendingLLMRuntimeDeletes {
+			pendingDeleteNames = append(pendingDeleteNames, name)
+		}
+		sort.Strings(pendingDeleteNames)
+		for _, name := range pendingDeleteNames {
+			options = append(options, huh.NewOption(llmRuntimeDeletePendingLabel(name), initUndoLLMRuntimeDeletePrefix+name))
+		}
+		options = append(options, huh.NewOption("Back to main menu", initBackSelection))
 		selectForm := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
@@ -1421,6 +1510,12 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 		if back || choice == initBackSelection {
 			return initDraft{}, errInitNavigateBack
 		}
+		if strings.HasPrefix(choice, initUndoLLMRuntimeDeletePrefix) {
+			return initDraft{
+				Action:       initDraftActionUndoDeleteLLMRuntime,
+				ActionTarget: strings.TrimPrefix(choice, initUndoLLMRuntimeDeletePrefix),
+			}, nil
+		}
 
 		candidateDraft := draft
 		if choice != initCustomLLMRuntimeSelection {
@@ -1429,7 +1524,7 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 			applyLLMRuntimeSelection(&candidateDraft, resolvedRuntimePreset)
 		}
 		detailDraft := candidateDraft
-		back, err = p.editLLMRuntimeDetails(&detailDraft)
+		back, deleted, err := p.editLLMRuntimeDetails(choice, &detailDraft, prompt.Context.LLMRuntimes)
 		if err != nil {
 			return initDraft{}, err
 		}
@@ -1437,22 +1532,39 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 			selectedRuntime = choice
 			continue
 		}
+		if deleted {
+			replacementDraft, err := p.chooseLLMRuntimeDeleteReplacement(prompt, choice, draft)
+			if err != nil {
+				if errors.Is(err, errInitNavigateBack) {
+					selectedRuntime = choice
+					continue
+				}
+				return initDraft{}, err
+			}
+			replacementDraft.Action = initDraftActionDeleteLLMRuntime
+			replacementDraft.ActionTarget = choice
+			return replacementDraft, nil
+		}
 		resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(detailDraft).Preset)
 		applyLLMRuntimeSelection(&detailDraft, resolvedRuntimePreset)
 		return detailDraft, nil
 	}
 }
 
-func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(draft *initDraft) (bool, error) {
+func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft *initDraft, runtimes map[string]initLLMRuntimeDraft) (bool, bool, error) {
 	action := initDetailActionEdit
+	detailOptions := []huh.Option[string]{
+		huh.NewOption("Edit runtime details", initDetailActionEdit),
+	}
+	if _, ok := runtimes[selection]; ok {
+		detailOptions = append(detailOptions, huh.NewOption("Mark runtime for deletion", initDetailActionDelete))
+	}
+	detailOptions = append(detailOptions, huh.NewOption("Back to runtime choices", initDetailActionBack))
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("LLM runtime details").
-				Options(
-					huh.NewOption("Edit runtime details", initDetailActionEdit),
-					huh.NewOption("Back to runtime choices", initDetailActionBack),
-				).
+				Options(detailOptions...).
 				Value(&action),
 		).Title("LLM Runtime Details"),
 		huh.NewGroup(
@@ -1487,12 +1599,61 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(draft *initDraft) (bool
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if back || action == initDetailActionBack {
-		return true, nil
+		return true, false, nil
 	}
-	return false, nil
+	if action == initDetailActionDelete {
+		return false, true, nil
+	}
+	return false, false, nil
+}
+
+func (p huhInitLLMRuntimePrompter) chooseLLMRuntimeDeleteReplacement(prompt initLLMRuntimePrompt, deletedRuntimeName string, seed initDraft) (initDraft, error) {
+	choice := ""
+	options := make([]huh.Option[string], 0, len(prompt.Context.LLMRuntimes)+6)
+	for _, option := range initLLMRuntimeOptions(prompt.Context.LLMRuntimes) {
+		if option.Value == deletedRuntimeName {
+			continue
+		}
+		options = append(options, option)
+	}
+	options = append(options, huh.NewOption("Back to runtime details", initBackSelection))
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Replacement LLM runtime").
+				Description("Choose the runtime that should replace this deleted runtime for every affected profile.").
+				Options(options...).
+				Value(&choice),
+		).Title("LLM Runtime Replacement"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return initDraft{}, err
+	}
+	if back || choice == initBackSelection {
+		return initDraft{}, errInitNavigateBack
+	}
+	replacementDraft := seed
+	if choice != initCustomLLMRuntimeSelection {
+		applyLLMRuntimeInventorySelection(&replacementDraft, choice, prompt.Context.LLMRuntimes)
+		resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(replacementDraft).Preset)
+		applyLLMRuntimeSelection(&replacementDraft, resolvedRuntimePreset)
+		return replacementDraft, nil
+	}
+	customDraft := replacementDraft
+	back, deleted, err := p.editLLMRuntimeDetails(choice, &customDraft, prompt.Context.LLMRuntimes)
+	if err != nil {
+		return initDraft{}, err
+	}
+	if back || deleted {
+		return initDraft{}, errInitNavigateBack
+	}
+	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(customDraft).Preset)
+	applyLLMRuntimeSelection(&customDraft, resolvedRuntimePreset)
+	return customDraft, nil
 }
 
 func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
@@ -1504,7 +1665,16 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 	}
 	for {
 		choice := selectedReviewerEntity
-		options := append(initReviewerEntityOptions(prompt.Context.ReviewerEntities), huh.NewOption("Back to main menu", initBackSelection))
+		options := initReviewerEntityOptions(prompt.Context.ReviewerEntities)
+		pendingDeleteNames := make([]string, 0, len(prompt.Context.PendingReviewerEntityDeletes))
+		for name := range prompt.Context.PendingReviewerEntityDeletes {
+			pendingDeleteNames = append(pendingDeleteNames, name)
+		}
+		sort.Strings(pendingDeleteNames)
+		for _, name := range pendingDeleteNames {
+			options = append(options, huh.NewOption(reviewerEntityDeletePendingLabel(name), initUndoReviewerEntityDeletePrefix+name))
+		}
+		options = append(options, huh.NewOption("Back to main menu", initBackSelection))
 		form := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
@@ -1521,12 +1691,18 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 		if back || choice == initBackSelection {
 			return initDraft{}, errInitNavigateBack
 		}
+		if strings.HasPrefix(choice, initUndoReviewerEntityDeletePrefix) {
+			return initDraft{
+				Action:       initDraftActionUndoDeleteReviewerEntity,
+				ActionTarget: strings.TrimPrefix(choice, initUndoReviewerEntityDeletePrefix),
+			}, nil
+		}
 		candidateDraft := draft
 		applyReviewerEntityInventorySelection(&candidateDraft, choice, prompt.Context.ReviewerEntities)
 		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(candidateDraft).Kind)
 		applyReviewerEntitySelection(&candidateDraft, reviewerMode)
 		detailDraft := candidateDraft
-		back, err = p.editReviewerEntityDetails(&detailDraft)
+		back, deleted, err := p.editReviewerEntityDetails(choice, &detailDraft, prompt.Context.ReviewerEntities)
 		if err != nil {
 			return initDraft{}, err
 		}
@@ -1534,23 +1710,33 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 			selectedReviewerEntity = choice
 			continue
 		}
+		if deleted {
+			return initDraft{
+				Action:       initDraftActionDeleteReviewerEntity,
+				ActionTarget: choice,
+			}, nil
+		}
 		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(detailDraft).Kind)
 		applyReviewerEntitySelection(&detailDraft, reviewerMode)
 		return detailDraft, nil
 	}
 }
 
-func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(draft *initDraft) (bool, error) {
+func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection string, draft *initDraft, entities map[string]initReviewerEntityDraft) (bool, bool, error) {
 	action := initDetailActionEdit
 	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(*draft).Kind)
+	detailOptions := []huh.Option[string]{
+		huh.NewOption("Edit reviewer details", initDetailActionEdit),
+	}
+	if _, ok := entities[selection]; ok {
+		detailOptions = append(detailOptions, huh.NewOption("Mark reviewer entity for deletion", initDetailActionDelete))
+	}
+	detailOptions = append(detailOptions, huh.NewOption("Back to reviewer choices", initDetailActionBack))
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Reviewer entity details").
-				Options(
-					huh.NewOption("Edit reviewer details", initDetailActionEdit),
-					huh.NewOption("Back to reviewer choices", initDetailActionBack),
-				).
+				Options(detailOptions...).
 				Value(&action),
 		).Title("Reviewer Entity Details"),
 		huh.NewGroup(
@@ -1577,13 +1763,16 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(draft *initDraf
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if back || action == initDetailActionBack {
-		return true, nil
+		return true, false, nil
+	}
+	if action == initDetailActionDelete {
+		return false, true, nil
 	}
 	applyReviewerEntitySelection(draft, reviewerMode)
-	return false, nil
+	return false, false, nil
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -1594,12 +1783,20 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		hasProfileChooser := len(ctx.ExistingProfileNames) > 0
 		if len(ctx.ExistingProfileNames) > 0 {
 			choice := initCreateProfileSentinel
-			options := make([]huh.Option[string], 0, len(ctx.ExistingProfileNames)+1)
+			options := make([]huh.Option[string], 0, len(ctx.ExistingProfileNames)+len(ctx.PendingProfileDeletes)+2)
 			for _, name := range ctx.ExistingProfileNames {
 				options = append(options, huh.NewOption("Edit "+name, name))
 				if name == ctx.ExistingProfileName {
 					choice = name
 				}
+			}
+			pendingDeleteNames := make([]string, 0, len(ctx.PendingProfileDeletes))
+			for name := range ctx.PendingProfileDeletes {
+				pendingDeleteNames = append(pendingDeleteNames, name)
+			}
+			sort.Strings(pendingDeleteNames)
+			for _, name := range pendingDeleteNames {
+				options = append(options, huh.NewOption(profileDeletePendingLabel(name), initUndoProfileDeletePrefix+name))
 			}
 			if ctx.ExistingProfile == nil {
 				choice = initCreateProfileSentinel
@@ -1620,6 +1817,12 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 			if back || choice == initBackSelection {
 				return initDraft{}, errInitNavigateBack
+			}
+			if strings.HasPrefix(choice, initUndoProfileDeletePrefix) {
+				return initDraft{
+					Action:      initDraftActionUndoDeleteProfile,
+					ActionTarget: strings.TrimPrefix(choice, initUndoProfileDeletePrefix),
+				}, nil
 			}
 			if choice == initCreateProfileSentinel {
 				selectedProfileName = ""
@@ -1674,14 +1877,19 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			detailBackLabel = "Back to profile choices"
 		}
 
+		detailOptions := []huh.Option[string]{
+			huh.NewOption("Edit profile details", initDetailActionEdit),
+		}
+		if selectedExistingProfile != nil {
+			detailOptions = append(detailOptions, huh.NewOption("Mark profile for deletion", initDetailActionDelete))
+		}
+		detailOptions = append(detailOptions, huh.NewOption(detailBackLabel, initDetailActionBack))
+
 		form := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
 					Title("Review profile details").
-					Options(
-						huh.NewOption("Edit profile details", initDetailActionEdit),
-						huh.NewOption(detailBackLabel, initDetailActionBack),
-					).
+					Options(detailOptions...).
 					Value(&detailAction),
 			).Title("Review Profile"),
 			huh.NewGroup(
@@ -1801,6 +2009,12 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				continue
 			}
 			return initDraft{}, errInitNavigateBack
+		}
+		if detailAction == initDetailActionDelete {
+			return initDraft{
+				Action:       initDraftActionDeleteProfile,
+				ActionTarget: selectedProfileName,
+			}, nil
 		}
 		applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
 		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
@@ -1999,6 +2213,18 @@ func initLLMRuntimeLabel(runtime initLLMRuntimeDraft) string {
 		label = fmt.Sprintf("%s (%s)", label, runtime.Name)
 	}
 	return label
+}
+
+func profileDeletePendingLabel(name string) string {
+	return fmt.Sprintf("Restore %s (will delete on save)", name)
+}
+
+func reviewerEntityDeletePendingLabel(name string) string {
+	return fmt.Sprintf("Restore reviewer entity %s (will delete on save)", name)
+}
+
+func llmRuntimeDeletePendingLabel(name string) string {
+	return fmt.Sprintf("Restore LLM runtime %s (will delete on save)", name)
 }
 
 func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runtimes map[string]initLLMRuntimeDraft) {
@@ -3354,6 +3580,291 @@ func sortedTouchedProfileNames(session initSessionDraft) []string {
 	}
 	sort.Strings(profileNames)
 	return profileNames
+}
+
+func ensureInitDeleteState(session *initSessionDraft) {
+	if session.pendingProfileDeletes == nil {
+		session.pendingProfileDeletes = map[string]initPendingProfileDelete{}
+	}
+	if session.pendingReviewerEntityDeletes == nil {
+		session.pendingReviewerEntityDeletes = map[string]initPendingReviewerEntityDelete{}
+	}
+	if session.pendingLLMRuntimeDeletes == nil {
+		session.pendingLLMRuntimeDeletes = map[string]initPendingLLMRuntimeDelete{}
+	}
+}
+
+func rebuildInteractiveInitWorkspace(session initSessionDraft, profileName string) initSessionDraft {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		session.workspace = nil
+		session.requestedProfileName = ""
+		return session
+	}
+	profile, ok := session.cfg.Profiles[profileName]
+	if !ok {
+		session.workspace = nil
+		session.requestedProfileName = ""
+		return session
+	}
+	gitScopes, profileGitScopeNames := buildInitGitScopeInventory(session.cfg)
+	reviewerEntities, profileReviewerEntityNames := buildInitReviewerEntityInventory(session.cfg)
+	llmRuntimes, profileRuntimeNames := buildInitLLMRuntimeInventory(session.cfg)
+	workspace := initWorkspaceDraft{
+		path:               session.path,
+		cfg:                cloneInitConfigFile(session.cfg),
+		profileName:        profileName,
+		profile:            profile,
+		gitScopeName:       profileGitScopeNames[profileName],
+		gitScopes:          gitScopes,
+		reviewerEntityName: profileReviewerEntityNames[profileName],
+		reviewerEntities:   reviewerEntities,
+		llmRuntimeName:     profileRuntimeNames[profileName],
+		llmRuntimes:        llmRuntimes,
+		writes:             map[string]map[string]string{},
+		overwriteRefs:      map[string]bool{},
+		satisfiedRefs:      map[string]bool{},
+		backendFlagSet:     session.backendFlagSet,
+		backendArg:         interactiveInitBackendArg(&root.Options{}, session.backendFlagSet, session.cfg),
+		allowDeferredLLM:   profile.LLM.Auth == config.LLMAuthAPIKey,
+		writeLLMHint:       profile.LLM.Auth == config.LLMAuthAPIKey,
+	}
+	session.workspace = &workspace
+	session.requestedProfileName = profileName
+	return session
+}
+
+func preferredInteractiveInitProfile(session initSessionDraft) string {
+	if session.workspace != nil {
+		if _, ok := session.cfg.Profiles[session.workspace.profileName]; ok {
+			return session.workspace.profileName
+		}
+	}
+	if session.requestedProfileName != "" {
+		if _, ok := session.cfg.Profiles[session.requestedProfileName]; ok {
+			return session.requestedProfileName
+		}
+	}
+	return configedit.FirstProfileName(session.cfg.Profiles)
+}
+
+func deleteInteractiveInitProfile(session initSessionDraft, profileName string) (initSessionDraft, error) {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		return initSessionDraft{}, exitcode.Usage(configedit.ErrProfileNameRequired)
+	}
+	profile, ok := session.cfg.Profiles[profileName]
+	if !ok {
+		return initSessionDraft{}, cmderr.Config(fmt.Errorf("%w: %s", config.ErrProfileNotFound, profileName))
+	}
+	ensureInitDeleteState(&session)
+	if _, exists := session.pendingProfileDeletes[profileName]; exists {
+		return session, nil
+	}
+	prunedRoutes := make([]config.RepositoryProfile, 0, len(session.cfg.RepositoryProfiles))
+	for _, route := range session.cfg.RepositoryProfiles {
+		if route.Profile == profileName {
+			prunedRoutes = append(prunedRoutes, route)
+		}
+	}
+	fallbackDefault := configedit.FirstProfileName(withoutProfile(session.cfg.Profiles, profileName))
+	touchedOriginal, hadTouchedProfile := session.touchedProfiles[profileName]
+	pending := initPendingProfileDelete{
+		ProfileName:       profileName,
+		Profile:           cloneInitProfile(profile),
+		OriginalDefault:   session.cfg.DefaultProfile,
+		FallbackDefault:   fallbackDefault,
+		PrunedRoutes:      append([]config.RepositoryProfile(nil), prunedRoutes...),
+		WasActive:         session.workspace != nil && session.workspace.profileName == profileName,
+		HadTouchedProfile: hadTouchedProfile,
+		TouchedOriginal:   touchedOriginal,
+	}
+	delete(session.cfg.Profiles, profileName)
+	session.cfg.RepositoryProfiles = configedit.PruneRepositoryProfileRoutes(session.cfg.RepositoryProfiles, profileName)
+	if session.cfg.DefaultProfile == profileName {
+		session.cfg.DefaultProfile = fallbackDefault
+	}
+	delete(session.touchedProfiles, profileName)
+	session.pendingProfileDeletes[profileName] = pending
+	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
+}
+
+func undoInteractiveInitProfileDelete(session initSessionDraft, profileName string) (initSessionDraft, error) {
+	profileName = strings.TrimSpace(profileName)
+	ensureInitDeleteState(&session)
+	pending, ok := session.pendingProfileDeletes[profileName]
+	if !ok {
+		return session, nil
+	}
+	if session.cfg.Profiles == nil {
+		session.cfg.Profiles = map[string]config.Profile{}
+	}
+	session.cfg.Profiles[profileName] = cloneInitProfile(pending.Profile)
+	session.cfg.RepositoryProfiles = configedit.CanonicalRepositoryRoutes(append(append([]config.RepositoryProfile(nil), session.cfg.RepositoryProfiles...), pending.PrunedRoutes...))
+	if pending.OriginalDefault == profileName && session.cfg.DefaultProfile == pending.FallbackDefault {
+		session.cfg.DefaultProfile = profileName
+	}
+	if pending.HadTouchedProfile {
+		if session.touchedProfiles == nil {
+			session.touchedProfiles = map[string]string{}
+		}
+		session.touchedProfiles[profileName] = pending.TouchedOriginal
+	}
+	delete(session.pendingProfileDeletes, profileName)
+	if session.workspace == nil {
+		return rebuildInteractiveInitWorkspace(session, profileName), nil
+	}
+	return session, nil
+}
+
+func deleteInteractiveInitReviewerEntity(session initSessionDraft, entityName string) (initSessionDraft, error) {
+	entityName = strings.TrimSpace(entityName)
+	if entityName == "" {
+		return initSessionDraft{}, exitcode.Usage(errors.New("reviewer entity name is required"))
+	}
+	ensureInitDeleteState(&session)
+	if _, exists := session.pendingReviewerEntityDeletes[entityName]; exists {
+		return session, nil
+	}
+	_, profileEntityNames := buildInitReviewerEntityInventory(session.cfg)
+	affected := map[string]config.ReviewerCredentials{}
+	for profileName, selected := range profileEntityNames {
+		if selected != entityName {
+			continue
+		}
+		profile := session.cfg.Profiles[profileName]
+		if profile.ReviewerCredentials == nil {
+			continue
+		}
+		affected[profileName] = *profile.ReviewerCredentials
+		cleared, _ := configedit.ClearReviewerCredentials(profile)
+		session.cfg.Profiles[profileName] = cleared
+	}
+	if len(affected) == 0 {
+		return initSessionDraft{}, exitcode.Usage(fmt.Errorf("reviewer entity %q is not deletable", entityName))
+	}
+	session.pendingReviewerEntityDeletes[entityName] = initPendingReviewerEntityDelete{
+		EntityName: entityName,
+		Affected:   affected,
+	}
+	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
+}
+
+func undoInteractiveInitReviewerEntityDelete(session initSessionDraft, entityName string) (initSessionDraft, error) {
+	entityName = strings.TrimSpace(entityName)
+	ensureInitDeleteState(&session)
+	pending, ok := session.pendingReviewerEntityDeletes[entityName]
+	if !ok {
+		return session, nil
+	}
+	for profileName, previous := range pending.Affected {
+		profile, ok := session.cfg.Profiles[profileName]
+		if !ok {
+			continue
+		}
+		if profile.ReviewerCredentials != nil {
+			continue
+		}
+		restored := previous
+		profile.ReviewerCredentials = &restored
+		session.cfg.Profiles[profileName] = profile
+	}
+	delete(session.pendingReviewerEntityDeletes, entityName)
+	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
+}
+
+func deleteInteractiveInitLLMRuntime(session initSessionDraft, runtimeName string, replacement initLLMRuntimeDraft) (initSessionDraft, error) {
+	runtimeName = strings.TrimSpace(runtimeName)
+	if runtimeName == "" {
+		return initSessionDraft{}, exitcode.Usage(errors.New("LLM runtime name is required"))
+	}
+	if replacement.Provider == "" || replacement.Auth == "" || replacement.Adapter == "" {
+		return initSessionDraft{}, exitcode.Usage(errors.New("LLM runtime deletion requires a replacement runtime"))
+	}
+	ensureInitDeleteState(&session)
+	if _, exists := session.pendingLLMRuntimeDeletes[runtimeName]; exists {
+		return session, nil
+	}
+	_, profileRuntimeNames := buildInitLLMRuntimeInventory(session.cfg)
+	original := map[string]config.LLMConfig{}
+	applied := map[string]config.LLMConfig{}
+	for profileName, selected := range profileRuntimeNames {
+		if selected != runtimeName {
+			continue
+		}
+		profile := session.cfg.Profiles[profileName]
+		original[profileName] = cloneInitLLMConfig(profile.LLM)
+		nextLLM, err := initLLMConfigForReplacement(profileName, replacement)
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+		applied[profileName] = cloneInitLLMConfig(nextLLM)
+		profile.LLM = nextLLM
+		session.cfg.Profiles[profileName] = profile
+	}
+	if len(original) == 0 {
+		return initSessionDraft{}, exitcode.Usage(fmt.Errorf("LLM runtime %q is not deletable", runtimeName))
+	}
+	session.pendingLLMRuntimeDeletes[runtimeName] = initPendingLLMRuntimeDelete{
+		RuntimeName: runtimeName,
+		Replacement: replacement,
+		Applied:     applied,
+		Original:    original,
+	}
+	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
+}
+
+func undoInteractiveInitLLMRuntimeDelete(session initSessionDraft, runtimeName string) (initSessionDraft, error) {
+	runtimeName = strings.TrimSpace(runtimeName)
+	ensureInitDeleteState(&session)
+	pending, ok := session.pendingLLMRuntimeDeletes[runtimeName]
+	if !ok {
+		return session, nil
+	}
+	for profileName, previous := range pending.Original {
+		profile, ok := session.cfg.Profiles[profileName]
+		if !ok {
+			continue
+		}
+		applied := pending.Applied[profileName]
+		if !reflect.DeepEqual(profile.LLM, applied) {
+			continue
+		}
+		profile.LLM = cloneInitLLMConfig(previous)
+		session.cfg.Profiles[profileName] = profile
+	}
+	delete(session.pendingLLMRuntimeDeletes, runtimeName)
+	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
+}
+
+func initLLMConfigForReplacement(profileName string, runtime initLLMRuntimeDraft) (config.LLMConfig, error) {
+	llm := runtime.exportConfig()
+	if llm.Auth != config.LLMAuthAPIKey {
+		return llm, nil
+	}
+	if strings.TrimSpace(llm.CredentialRef) != "" {
+		return llm, nil
+	}
+	ref, err := credentials.FormatRef(profileName + "-llm")
+	if err != nil {
+		return config.LLMConfig{}, exitcode.Usage(err)
+	}
+	llm.CredentialRef = ref
+	return llm, nil
+}
+
+func withoutProfile(profiles map[string]config.Profile, removed string) map[string]config.Profile {
+	if len(profiles) == 0 {
+		return nil
+	}
+	next := make(map[string]config.Profile, max(len(profiles)-1, 0))
+	for name, profile := range profiles {
+		if name == removed {
+			continue
+		}
+		next[name] = profile
+	}
+	return next
 }
 
 func initCredentialEntryKey(ref config.CredentialRef) string {

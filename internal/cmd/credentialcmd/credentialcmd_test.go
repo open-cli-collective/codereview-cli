@@ -2102,6 +2102,211 @@ func TestBuildInitLLMRuntimeInventoryKeepsCrossProviderSameRefDistinct(t *testin
 	}
 }
 
+func TestDeleteInteractiveInitProfilePrunesRoutesReselectsDefaultAndUndoRestores(t *testing.T) {
+	work := basicProfile("work")
+	alpha := basicProfile("alpha")
+	home := basicProfile("home")
+	session := initSessionDraft{
+		cfg: config.File{
+			DefaultProfile: "work",
+			RepositoryProfiles: []config.RepositoryProfile{
+				{
+					Profile: "work",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "rianjs",
+					},
+				},
+				{
+					Profile: "home",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "open-cli-collective",
+					},
+				},
+			},
+			Profiles: map[string]config.Profile{
+				"alpha": alpha,
+				"home":  home,
+				"work":  work,
+			},
+		},
+		touchedProfiles:               map[string]string{"work": "work"},
+		pendingProfileDeletes:         map[string]initPendingProfileDelete{},
+		pendingReviewerEntityDeletes:  map[string]initPendingReviewerEntityDelete{},
+		pendingLLMRuntimeDeletes:      map[string]initPendingLLMRuntimeDelete{},
+	}
+	session = rebuildInteractiveInitWorkspace(session, "work")
+
+	next, err := deleteInteractiveInitProfile(session, "work")
+	if err != nil {
+		t.Fatalf("deleteInteractiveInitProfile: %v", err)
+	}
+	if _, ok := next.cfg.Profiles["work"]; ok {
+		t.Fatalf("profiles after delete = %#v, want work removed", next.cfg.Profiles)
+	}
+	if next.cfg.DefaultProfile != "alpha" {
+		t.Fatalf("default profile after delete = %q, want alpha", next.cfg.DefaultProfile)
+	}
+	if len(next.cfg.RepositoryProfiles) != 1 || next.cfg.RepositoryProfiles[0].Profile != "home" {
+		t.Fatalf("repository_profiles after delete = %#v, want only home route", next.cfg.RepositoryProfiles)
+	}
+	if next.workspace == nil || next.workspace.profileName != "alpha" {
+		t.Fatalf("workspace after delete = %#v, want active alpha workspace", next.workspace)
+	}
+	if _, ok := next.pendingProfileDeletes["work"]; !ok {
+		t.Fatalf("pendingProfileDeletes = %#v, want work pending delete", next.pendingProfileDeletes)
+	}
+	if _, ok := next.touchedProfiles["work"]; ok {
+		t.Fatalf("touchedProfiles after delete = %#v, want work removed", next.touchedProfiles)
+	}
+
+	restored, err := undoInteractiveInitProfileDelete(next, "work")
+	if err != nil {
+		t.Fatalf("undoInteractiveInitProfileDelete: %v", err)
+	}
+	if restored.cfg.DefaultProfile != "work" {
+		t.Fatalf("default profile after undo = %q, want work", restored.cfg.DefaultProfile)
+	}
+	if !reflect.DeepEqual(restored.cfg.Profiles["work"], work) {
+		t.Fatalf("restored work profile = %#v, want %#v", restored.cfg.Profiles["work"], work)
+	}
+	if len(restored.cfg.RepositoryProfiles) != 2 {
+		t.Fatalf("repository_profiles after undo = %#v, want restored routes", restored.cfg.RepositoryProfiles)
+	}
+	if got := restored.touchedProfiles["work"]; got != "work" {
+		t.Fatalf("touchedProfiles[work] = %q, want restored original marker", got)
+	}
+	if _, ok := restored.pendingProfileDeletes["work"]; ok {
+		t.Fatalf("pendingProfileDeletes after undo = %#v, want cleared work entry", restored.pendingProfileDeletes)
+	}
+}
+
+func TestDeleteInteractiveInitReviewerEntityClearsAffectedProfilesAndUndoSkipsReeditedProfiles(t *testing.T) {
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/shared-reviewer",
+	}
+	home := basicProfile("home")
+	home.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/shared-reviewer",
+	}
+	bot := basicProfile("bot")
+	session := initSessionDraft{
+		cfg: config.File{
+			DefaultProfile: "work",
+			Profiles: map[string]config.Profile{
+				"bot":  bot,
+				"home": home,
+				"work": work,
+			},
+		},
+		pendingProfileDeletes:        map[string]initPendingProfileDelete{},
+		pendingReviewerEntityDeletes: map[string]initPendingReviewerEntityDelete{},
+		pendingLLMRuntimeDeletes:     map[string]initPendingLLMRuntimeDelete{},
+	}
+	session = rebuildInteractiveInitWorkspace(session, "work")
+	_, profileEntityNames := buildInitReviewerEntityInventory(session.cfg)
+	entityName := profileEntityNames["work"]
+
+	next, err := deleteInteractiveInitReviewerEntity(session, entityName)
+	if err != nil {
+		t.Fatalf("deleteInteractiveInitReviewerEntity: %v", err)
+	}
+	if next.cfg.Profiles["work"].ReviewerCredentials != nil || next.cfg.Profiles["home"].ReviewerCredentials != nil {
+		t.Fatalf("reviewer credentials after delete = work:%#v home:%#v, want cleared", next.cfg.Profiles["work"].ReviewerCredentials, next.cfg.Profiles["home"].ReviewerCredentials)
+	}
+	if next.cfg.Profiles["bot"].ReviewerCredentials != nil {
+		t.Fatalf("bot reviewer credentials = %#v, want untouched nil", next.cfg.Profiles["bot"].ReviewerCredentials)
+	}
+
+	editedHome := next.cfg.Profiles["home"]
+	editedHome.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/home-reviewer",
+	}
+	next.cfg.Profiles["home"] = editedHome
+
+	restored, err := undoInteractiveInitReviewerEntityDelete(next, entityName)
+	if err != nil {
+		t.Fatalf("undoInteractiveInitReviewerEntityDelete: %v", err)
+	}
+	if restored.cfg.Profiles["work"].ReviewerCredentials == nil {
+		t.Fatal("work reviewer credentials = nil, want restored shared reviewer")
+	}
+	if got := restored.cfg.Profiles["home"].ReviewerCredentials; got == nil || got.CredentialRef != "codereview/home-reviewer" {
+		t.Fatalf("home reviewer credentials after undo = %#v, want preserved re-edit", got)
+	}
+}
+
+func TestDeleteInteractiveInitLLMRuntimeRebindsAffectedProfilesAndUndoSkipsReeditedProfiles(t *testing.T) {
+	work := basicProfile("work")
+	home := basicProfile("home")
+	bot := basicProfile("bot")
+	bot.LLM = config.LLMConfig{
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterCodexCLI,
+	}
+	session := initSessionDraft{
+		cfg: config.File{
+			DefaultProfile: "work",
+			Profiles: map[string]config.Profile{
+				"bot":  bot,
+				"home": home,
+				"work": work,
+			},
+		},
+		pendingProfileDeletes:        map[string]initPendingProfileDelete{},
+		pendingReviewerEntityDeletes: map[string]initPendingReviewerEntityDelete{},
+		pendingLLMRuntimeDeletes:     map[string]initPendingLLMRuntimeDelete{},
+	}
+	session = rebuildInteractiveInitWorkspace(session, "work")
+	_, profileRuntimeNames := buildInitLLMRuntimeInventory(session.cfg)
+	runtimeName := profileRuntimeNames["work"]
+	replacement := initLLMRuntimeDraft{
+		Provider:      config.LLMProviderOpenAI,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterOpenAIAPI,
+		CredentialRef: "codereview/shared-llm",
+	}
+
+	next, err := deleteInteractiveInitLLMRuntime(session, runtimeName, replacement)
+	if err != nil {
+		t.Fatalf("deleteInteractiveInitLLMRuntime: %v", err)
+	}
+	for _, profileName := range []string{"work", "home"} {
+		llm := next.cfg.Profiles[profileName].LLM
+		if llm.Provider != config.LLMProviderOpenAI || llm.Auth != config.LLMAuthAPIKey || llm.Adapter != config.LLMAdapterOpenAIAPI || llm.CredentialRef != "codereview/shared-llm" {
+			t.Fatalf("%s llm after delete = %#v, want shared openai api-key replacement", profileName, llm)
+		}
+	}
+	if !reflect.DeepEqual(next.cfg.Profiles["bot"].LLM, bot.LLM) {
+		t.Fatalf("bot llm after delete = %#v, want untouched %#v", next.cfg.Profiles["bot"].LLM, bot.LLM)
+	}
+
+	editedHome := next.cfg.Profiles["home"]
+	editedHome.LLM = config.LLMConfig{
+		Provider: config.LLMProviderPi,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterPiRPC,
+	}
+	next.cfg.Profiles["home"] = editedHome
+
+	restored, err := undoInteractiveInitLLMRuntimeDelete(next, runtimeName)
+	if err != nil {
+		t.Fatalf("undoInteractiveInitLLMRuntimeDelete: %v", err)
+	}
+	if !reflect.DeepEqual(restored.cfg.Profiles["work"].LLM, work.LLM) {
+		t.Fatalf("work llm after undo = %#v, want %#v", restored.cfg.Profiles["work"].LLM, work.LLM)
+	}
+	if !reflect.DeepEqual(restored.cfg.Profiles["home"].LLM, editedHome.LLM) {
+		t.Fatalf("home llm after undo = %#v, want preserved re-edit %#v", restored.cfg.Profiles["home"].LLM, editedHome.LLM)
+	}
+}
+
 func TestBuildInteractiveInitWorkspaceImportsLLMRuntimeInventory(t *testing.T) {
 	opts := &root.Options{
 		Stdin:  strings.NewReader(""),
@@ -2711,6 +2916,156 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 }
 
+func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Mark profile for deletion
+			"",  // Profile name
+			"",  // Make default
+			"",  // Git scope
+			"",  // Reviewer entity
+			"",  // LLM runtime
+			"",  // Reviewer model tier
+			"",  // Advanced storage labels
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig: config.File{
+			DefaultProfile: "work",
+			Profiles:       map[string]config.Profile{"work": existing},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.Action != initDraftActionDeleteProfile || draft.ActionTarget != "work" {
+		t.Fatalf("draft delete action = %#v, want delete work", draft)
+	}
+	if !strings.Contains(stderr.String(), "Mark profile for deletion") {
+		t.Fatalf("stderr = %q, want deletion action label", stderr.String())
+	}
+}
+
+func TestHuhInitPrompterAccessibleCanRestorePendingDeletedProfile(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	home := basicProfile("home")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Restore work (will delete on save)
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "home",
+		ExistingProfileName:  "home",
+		ExistingProfile:      &home,
+		ExistingProfileNames: []string{"home"},
+		DefaultProfileName:   "home",
+		ExistingConfig: config.File{
+			DefaultProfile: "home",
+			Profiles:       map[string]config.Profile{"home": home},
+		},
+		PendingProfileDeletes: map[string]initPendingProfileDelete{
+			"work": {ProfileName: "work"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.Action != initDraftActionUndoDeleteProfile || draft.ActionTarget != "work" {
+		t.Fatalf("draft undo action = %#v, want restore work", draft)
+	}
+	if !strings.Contains(stderr.String(), "Restore work (will delete on save)") {
+		t.Fatalf("stderr = %q, want restore label", stderr.String())
+	}
+}
+
+func TestHuhInitReviewerEntityDetailsAccessibleCanMarkConfiguredEntityForDeletion(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft.ReviewerEnabled = true
+	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	draft.ReviewerCredentialRef = "codereview/shared-reviewer"
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Mark reviewer entity for deletion
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	back, deleted, err := prompter.editReviewerEntityDetails("reviewer-github-app", &draft, map[string]initReviewerEntityDraft{
+		"reviewer-github-app": {
+			Name:          "reviewer-github-app",
+			Kind:          initReviewerEntityKindGitHubApp,
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: "codereview/shared-reviewer",
+		},
+	})
+	if err != nil {
+		t.Fatalf("editReviewerEntityDetails: %v", err)
+	}
+	if back {
+		t.Fatal("back = true, want delete action")
+	}
+	if !deleted {
+		t.Fatal("deleted = false, want configured reviewer delete")
+	}
+	if !strings.Contains(stderr.String(), "Mark reviewer entity for deletion") {
+		t.Fatalf("stderr = %q, want reviewer delete label", stderr.String())
+	}
+}
+
+func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"4", // Restore reviewer entity reviewer-github-app (will delete on save)
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{
+		Context: initPromptContext{
+			RequestedProfileName: "work",
+			ExistingProfileName:  "work",
+			ExistingProfile:      &existing,
+			ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+			ReviewerEntities:        map[string]initReviewerEntityDraft{},
+			ProfileReviewerEntities: map[string]string{"work": string(initReviewerEntityKindUseGitIdentity)},
+			PendingReviewerEntityDeletes: map[string]initPendingReviewerEntityDelete{
+				"reviewer-github-app": {EntityName: "reviewer-github-app"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditReviewerEntity: %v", err)
+	}
+	if draft.Action != initDraftActionUndoDeleteReviewerEntity || draft.ActionTarget != "reviewer-github-app" {
+		t.Fatalf("draft undo reviewer action = %#v, want reviewer-github-app restore", draft)
+	}
+	if !strings.Contains(stderr.String(), "Restore reviewer entity reviewer-github-app (will delete on save)") {
+		t.Fatalf("stderr = %q, want reviewer restore label", stderr.String())
+	}
+}
+
 func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
@@ -3017,21 +3372,141 @@ func TestHuhInitLLMRuntimeDetailsBackDoesNotMutateDraft(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Back to runtime choices.
+			"3", // Back to runtime choices.
 			"",
 		}, "\n")),
 		stderr: &stderr,
 	}
 
-	back, err := prompter.editLLMRuntimeDetails(&draft)
+	back, deleted, err := prompter.editLLMRuntimeDetails("claude-cli", &draft, map[string]initLLMRuntimeDraft{
+		"claude-cli": {
+			Name:     "claude-cli",
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	})
 	if err != nil {
 		t.Fatalf("editLLMRuntimeDetails: %v", err)
 	}
 	if !back {
 		t.Fatal("back = false, want details Back")
 	}
+	if deleted {
+		t.Fatal("deleted = true, want details Back")
+	}
 	if !reflect.DeepEqual(draft, want) {
 		t.Fatalf("draft mutated on details Back:\n got: %#v\nwant: %#v", draft, want)
+	}
+}
+
+func TestHuhInitLLMRuntimeDetailsAccessibleCanMarkConfiguredRuntimeForDeletion(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft.LLMProvider = string(config.LLMProviderAnthropic)
+	draft.LLMAuth = string(config.LLMAuthSubscription)
+	draft.LLMAdapter = string(config.LLMAdapterClaudeCLI)
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Mark runtime for deletion.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	back, deleted, err := prompter.editLLMRuntimeDetails("claude-cli", &draft, map[string]initLLMRuntimeDraft{
+		"claude-cli": {
+			Name:     "claude-cli",
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	})
+	if err != nil {
+		t.Fatalf("editLLMRuntimeDetails: %v", err)
+	}
+	if back {
+		t.Fatal("back = true, want delete action")
+	}
+	if !deleted {
+		t.Fatal("deleted = false, want configured runtime delete")
+	}
+	if !strings.Contains(stderr.String(), "Mark runtime for deletion") {
+		t.Fatalf("stderr = %q, want runtime delete label", stderr.String())
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterReplacementChoosesConfiguredTemplate(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Replacement: Template Codex CLI subscription
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.chooseLLMRuntimeDeleteReplacement(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}}, "claude-cli", seedInteractiveInitDraft("work", "work", "work", &existing))
+	if err != nil {
+		t.Fatalf("chooseLLMRuntimeDeleteReplacement: %v", err)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthSubscription) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
+		t.Fatalf("draft replacement = %#v, want codex subscription replacement", draft)
+	}
+	if !strings.Contains(stderr.String(), "Replacement LLM runtime") {
+		t.Fatalf("stderr = %q, want replacement runtime prompt", stderr.String())
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"7", // Restore LLM runtime claude-cli (will delete on save)
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+		LLMRuntimes:          map[string]initLLMRuntimeDraft{},
+		PendingLLMRuntimeDeletes: map[string]initPendingLLMRuntimeDelete{
+			"claude-cli": {RuntimeName: "claude-cli"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("EditLLMRuntime: %v", err)
+	}
+	if draft.Action != initDraftActionUndoDeleteLLMRuntime || draft.ActionTarget != "claude-cli" {
+		t.Fatalf("draft undo runtime action = %#v, want claude-cli restore", draft)
+	}
+	if !strings.Contains(stderr.String(), "Restore LLM runtime claude-cli (will delete on save)") {
+		t.Fatalf("stderr = %q, want runtime restore label", stderr.String())
 	}
 }
 
@@ -3113,12 +3588,22 @@ func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 		stderr: &stderr,
 	}
 
-	back, err := prompter.editReviewerEntityDetails(&draft)
+	back, deleted, err := prompter.editReviewerEntityDetails(string(initReviewerEntityKindGitHubApp), &draft, map[string]initReviewerEntityDraft{
+		"reviewer-github-app": {
+			Name:          "reviewer-github-app",
+			Kind:          initReviewerEntityKindGitHubApp,
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: "codereview/work-reviewer",
+		},
+	})
 	if err != nil {
 		t.Fatalf("editReviewerEntityDetails: %v", err)
 	}
 	if !back {
 		t.Fatal("back = false, want details Back")
+	}
+	if deleted {
+		t.Fatal("deleted = true, want details Back to avoid delete")
 	}
 	if !reflect.DeepEqual(draft, want) {
 		t.Fatalf("draft mutated on details Back:\n got: %#v\nwant: %#v", draft, want)
@@ -4600,6 +5085,23 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceDisablesProfileDependentAction
 	}
 }
 
+func TestBuildInteractiveInitMenuPromptAfterDeletingLastProfileDisablesSaveAndFocusedEditors(t *testing.T) {
+	session := initSessionDraft{
+		cfg:                        config.File{Profiles: map[string]config.Profile{}},
+		pendingProfileDeletes:      map[string]initPendingProfileDelete{"work": {ProfileName: "work"}},
+		pendingReviewerEntityDeletes: map[string]initPendingReviewerEntityDelete{},
+		pendingLLMRuntimeDeletes:   map[string]initPendingLLMRuntimeDelete{},
+	}
+
+	prompt := buildInteractiveInitMenuPrompt(session)
+	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
+		t.Fatalf("prompt = %#v, want save/focused editors disabled with zero-profile draft", prompt)
+	}
+	if prompt.ReviewProfileCount != 0 || prompt.LLMRuntimeCount != 0 || prompt.ReviewerEntityCount != 0 {
+		t.Fatalf("prompt counts = %#v, want effective inventory counts at zero after deleting last profile", prompt)
+	}
+}
+
 func TestValidateInteractiveInitGlobalConfigWithoutProfilesStillValidatesKeyringBackend(t *testing.T) {
 	err := validateInteractiveInitGlobalConfig(config.File{
 		Keyring:  config.KeyringConfig{Backend: "definitely-not-a-backend"},
@@ -5788,6 +6290,139 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
+	}
+}
+
+func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/shared-reviewer",
+	}
+	home := basicProfile("home")
+	home.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/shared-reviewer",
+	}
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	})
+	var stdout bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionReviewProfiles,
+			initMenuActionReviewerEntities,
+			initMenuActionLLMRuntimes,
+			initMenuActionSave,
+		},
+	}
+	profileEdits := 0
+	deps := initDeps{
+		menuPrompter:         menu,
+		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+			profileEdits++
+			switch profileEdits {
+			case 1:
+				if got := prompt.ExistingProfileName; got != "work" {
+					t.Fatalf("first profile prompt ExistingProfileName = %q, want work", got)
+				}
+				return initDraft{
+					Action:       initDraftActionDeleteProfile,
+					ActionTarget: "work",
+				}, nil
+			case 2:
+				if got := prompt.ExistingProfileName; got != "home" {
+					t.Fatalf("second profile prompt ExistingProfileName = %q, want home after deleting active work profile", got)
+				}
+				if _, ok := prompt.PendingProfileDeletes["work"]; !ok {
+					t.Fatalf("PendingProfileDeletes = %#v, want work pending delete before undo", prompt.PendingProfileDeletes)
+				}
+				return initDraft{
+					Action:       initDraftActionUndoDeleteProfile,
+					ActionTarget: "work",
+				}, nil
+			default:
+				t.Fatalf("unexpected extra profile prompt #%d", profileEdits)
+				return initDraft{}, nil
+			}
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			if _, ok := prompt.Context.ReviewerEntities["reviewer-github-app"]; !ok {
+				t.Fatalf("ReviewerEntities = %#v, want configured reviewer-github-app inventory entry", prompt.Context.ReviewerEntities)
+			}
+			return initDraft{
+				Action:       initDraftActionDeleteReviewerEntity,
+				ActionTarget: "reviewer-github-app",
+			}, nil
+		}),
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			if _, ok := prompt.Context.LLMRuntimes["claude-cli"]; !ok {
+				t.Fatalf("LLMRuntimes = %#v, want configured claude-cli runtime", prompt.Context.LLMRuntimes)
+			}
+			return initDraft{
+				Action:       initDraftActionDeleteLLMRuntime,
+				ActionTarget: "claude-cli",
+				LLMProvider:  string(config.LLMProviderOpenAI),
+				LLMAuth:      string(config.LLMAuthSubscription),
+				LLMAdapter:   string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		configPath:           func(*root.Options) (string, error) { return path, nil },
+		loadConfig:           loadConfigForInit,
+		saveConfig:           config.Save,
+		clipboardSupported:   func() bool { return false },
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"home": {credentials.GitTokenKey: "home-token"},
+				"work": {credentials.GitTokenKey: "work-token"},
+			}), nil
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+
+	if len(menu.prompts) < 5 {
+		t.Fatalf("menu prompts = %#v, want repeated menu passes through delete/undo/save flow", menu.prompts)
+	}
+	if got := menu.prompts[1].ReviewProfileCount; got != 1 {
+		t.Fatalf("review profile count after delete = %d, want 1 remaining profile before undo", got)
+	}
+	if got := menu.prompts[3].ReviewerEntityCount; got != 1 {
+		t.Fatalf("reviewer entity count after delete = %d, want use-git-identity only", got)
+	}
+	if profileEdits != 2 {
+		t.Fatalf("profileEdits = %d, want delete then undo sequence", profileEdits)
+	}
+
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	for _, name := range []string{"home", "work"} {
+		profile := saved.Profiles[name]
+		if profile.ReviewerCredentials != nil {
+			t.Fatalf("%s reviewer credentials = %#v, want deleted reviewer entity to fall back to git identity", name, profile.ReviewerCredentials)
+		}
+		if profile.LLM.Provider != config.LLMProviderOpenAI || profile.LLM.Auth != config.LLMAuthSubscription || profile.LLM.Adapter != config.LLMAdapterCodexCLI {
+			t.Fatalf("%s llm = %#v, want codex subscription replacement", name, profile.LLM)
+		}
 	}
 }
 
