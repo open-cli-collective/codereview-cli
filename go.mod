@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.6
 	github.com/charmbracelet/huh v1.0.0
 	github.com/google/uuid v1.6.0
-	github.com/open-cli-collective/cli-common v0.3.2
+	github.com/open-cli-collective/cli-common v0.3.3-0.20260612213303-74c4b8e8dad3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
