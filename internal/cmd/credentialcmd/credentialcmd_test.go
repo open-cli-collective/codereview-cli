@@ -1915,7 +1915,7 @@ func TestInitReviewerEntityOptionsExcludeConfiguredGitIdentityFallback(t *testin
 			AuthMode:      config.GitAuthModePAT,
 			CredentialRef: "codereview/reviewer-pat",
 		},
-	})
+	}, reviewerEntityTemplateFallbackLabel())
 	var fallbackCount int
 	var configuredFallbackLabel string
 	var configuredPATLabel string
@@ -1937,6 +1937,19 @@ func TestInitReviewerEntityOptionsExcludeConfiguredGitIdentityFallback(t *testin
 	}
 	if configuredPATLabel == "" {
 		t.Fatal("configured PAT reviewer option missing")
+	}
+	if !strings.Contains(configuredPATLabel, "(PAT)") {
+		t.Fatalf("configuredPATLabel = %q, want PAT wording", configuredPATLabel)
+	}
+}
+
+func TestInitReviewerEntityOptionsUseProfileAwareFallbackLabelWhenProfileKnown(t *testing.T) {
+	options := initReviewerEntityOptions(map[string]initReviewerEntityDraft{}, focusedReviewerEntityFallbackLabel("home"))
+	if len(options) == 0 {
+		t.Fatal("options = empty, want fallback option")
+	}
+	if got := options[0].Key; got != "None (uses the home profile's Git account)" {
+		t.Fatalf("fallback label = %q, want focused profile-specific fallback label", got)
 	}
 }
 
@@ -2938,6 +2951,9 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 	if draft.ReviewerEnabled {
 		t.Fatalf("draft reviewer = %#v, want fallback profile to remain on git identity", draft)
 	}
+	if !strings.Contains(stderr.String(), "None (uses this profile's Git account; no separate reviewer entity)") {
+		t.Fatalf("stderr = %q, want profile-editor fallback label", stderr.String())
+	}
 }
 
 func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) {
@@ -3007,6 +3023,13 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 	if draft.LLMProvider != string(config.LLMProviderAnthropic) || draft.LLMAuth != string(config.LLMAuthSubscription) || draft.LLMAdapter != string(config.LLMAdapterClaudeCLI) {
 		t.Fatalf("llm draft = %#v, want fresh llm defaults for create-new seed", draft)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Use a profile's Git account (no separate reviewer entity)") {
+		t.Fatalf("stderr = %q, want generic fallback label for create-new profile flow", out)
+	}
+	if !strings.Contains(out, "Reviewer entity") {
+		t.Fatalf("stderr = %q, want reviewer entity prompt in create-new profile flow", out)
 	}
 }
 
@@ -3225,6 +3248,9 @@ func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInve
 	if draft.ReviewerEnabled {
 		t.Fatalf("draft reviewer = %#v, want focused reviewer flow to preserve git-identity fallback", draft)
 	}
+	if !strings.Contains(stderr.String(), "None (uses the home profile's Git account)") {
+		t.Fatalf("stderr = %q, want focused fallback label", stderr.String())
+	}
 }
 
 func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMixedInventory(t *testing.T) {
@@ -3246,7 +3272,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"1", // Configured: Personal access token reviewer (reviewer-pat)
+			"1", // Configured: Personal access token (PAT) reviewer (reviewer-pat)
 			"",  // Edit reviewer details
 			"",  // Keep PAT reviewer type
 			"n",
@@ -3759,7 +3785,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Personal access token reviewer.
+			"2", // Use a personal access token (PAT) reviewer.
 			"",  // Edit reviewer details.
 			"",  // Keep PAT reviewer type.
 			"n", // Advanced storage labels false.
@@ -3783,7 +3809,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 		t.Fatalf("draft = %#v, want PAT reviewer", draft)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Reviewer entity details") || !strings.Contains(out, "Reviewer entity type") || !strings.Contains(out, "Back to reviewer choices") {
+	if !strings.Contains(out, "Reviewer entity details") || !strings.Contains(out, "Reviewer entity type") || !strings.Contains(out, "Use a personal access token (PAT) reviewer") || !strings.Contains(out, "Back to reviewer choices") {
 		t.Fatalf("stderr = %q, want reviewer details screen", out)
 	}
 }
