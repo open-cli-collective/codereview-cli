@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"reflect"
 	"sort"
 	"strconv"
@@ -445,6 +446,9 @@ type initSessionDraft struct {
 	backendFlagSet       bool
 	workspace            *initWorkspaceDraft
 	touchedProfiles      map[string]string
+	writes               map[string]map[string]string
+	overwriteRefs        map[string]bool
+	satisfiedRefs        map[string]bool
 	pendingProfileDeletes        map[string]initPendingProfileDelete
 	pendingReviewerEntityDeletes map[string]initPendingReviewerEntityDelete
 	pendingLLMRuntimeDeletes     map[string]initPendingLLMRuntimeDelete
@@ -908,8 +912,9 @@ type huhInitMenuPrompter struct {
 }
 
 type huhInitLLMRuntimePrompter struct {
-	stdin  io.Reader
-	stderr io.Writer
+	stdin   io.Reader
+	stderr  io.Writer
+	checker func(initLLMRuntimePreset) string
 }
 
 type huhInitReviewerEntityPrompter struct {
@@ -931,7 +936,11 @@ func newHuhInitMenuPrompter(opts *root.Options) initMenuPrompter {
 }
 
 func newHuhInitLLMRuntimePrompter(opts *root.Options) initLLMRuntimePrompter {
-	return huhInitLLMRuntimePrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	return huhInitLLMRuntimePrompter{
+		stdin:   opts.Stdin,
+		stderr:  opts.Stderr,
+		checker: defaultInitLLMRuntimeAvailabilityNote,
+	}
 }
 
 func newHuhInitReviewerEntityPrompter(opts *root.Options) initReviewerEntityPrompter {
@@ -984,6 +993,8 @@ const (
 	initUndoProfileDeletePrefix   = "__undo_profile_delete__:"
 	initUndoReviewerEntityDeletePrefix = "__undo_reviewer_entity_delete__:"
 	initUndoLLMRuntimeDeletePrefix = "__undo_llm_runtime_delete__:"
+	initLLMRuntimeTemplateActionUse       = "use"
+	initLLMRuntimeTemplateActionCustomize = "customize"
 	initDetailActionEdit          = "edit"
 	initDetailActionBack          = "back"
 	initDetailActionDelete        = "delete"
@@ -1047,6 +1058,9 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 		requestedProfileName: profileName,
 		backendFlagSet:       cmderr.BackendFlagChanged(cmd),
 		touchedProfiles:      map[string]string{},
+		writes:               map[string]map[string]string{},
+		overwriteRefs:        map[string]bool{},
+		satisfiedRefs:        map[string]bool{},
 		pendingProfileDeletes:        map[string]initPendingProfileDelete{},
 		pendingReviewerEntityDeletes: map[string]initPendingReviewerEntityDelete{},
 		pendingLLMRuntimeDeletes:     map[string]initPendingLLMRuntimeDelete{},
@@ -1240,6 +1254,15 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	session.cfg = cloneInitConfigFile(workspace.cfg)
 	session.requestedProfileName = workspace.profileName
 	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+	if deps.menuPrompter != nil || deps.prompter == nil {
+		session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"git", "reviewer_credentials", "llm"})
+		if errors.Is(err, errInitNavigateBack) {
+			return session, nil
+		}
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+	}
 	return session, nil
 }
 
@@ -1279,6 +1302,15 @@ func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 	session.requestedProfileName = workspace.profileName
 	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, workspace.profile) {
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+		if deps.menuPrompter != nil || deps.prompter == nil {
+			session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"llm"})
+			if errors.Is(err, errInitNavigateBack) {
+				return session, nil
+			}
+			if err != nil {
+				return initSessionDraft{}, err
+			}
+		}
 	}
 	return session, nil
 }
@@ -1319,6 +1351,15 @@ func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 	session.requestedProfileName = workspace.profileName
 	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, workspace.profile) {
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+		if deps.menuPrompter != nil || deps.prompter == nil {
+			session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"reviewer_credentials"})
+			if errors.Is(err, errInitNavigateBack) {
+				return session, nil
+			}
+			if err != nil {
+				return initSessionDraft{}, err
+			}
+		}
 	}
 	return session, nil
 }
@@ -1524,9 +1565,12 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 			applyLLMRuntimeSelection(&candidateDraft, resolvedRuntimePreset)
 		}
 		detailDraft := candidateDraft
-		back, deleted, err := p.editLLMRuntimeDetails(choice, &detailDraft, prompt.Context.LLMRuntimes)
+		usedSelection, back, deleted, err := p.editLLMRuntimeDetails(choice, &detailDraft, prompt.Context.LLMRuntimes)
 		if err != nil {
 			return initDraft{}, err
+		}
+		if usedSelection {
+			return detailDraft, nil
 		}
 		if back {
 			selectedRuntime = choice
@@ -1551,7 +1595,37 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 	}
 }
 
-func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft *initDraft, runtimes map[string]initLLMRuntimeDraft) (bool, bool, error) {
+func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft *initDraft, runtimes map[string]initLLMRuntimeDraft) (bool, bool, bool, error) {
+	runtime := initLLMRuntimeDraftFromSeedDraft(*draft)
+	detailTitle := "LLM Runtime Details"
+	detailDescription := initLLMRuntimeSelectionDescription(runtime, p.runtimeAvailabilityNote(runtime.Preset))
+	if _, ok := runtimes[selection]; !ok && selection != initCustomLLMRuntimeSelection {
+		action := initLLMRuntimeTemplateActionUse
+		actionForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("LLM runtime details").
+					Description(detailDescription).
+					Options(
+						huh.NewOption("Use this runtime", initLLMRuntimeTemplateActionUse),
+						huh.NewOption("Customize runtime details", initLLMRuntimeTemplateActionCustomize),
+						huh.NewOption("Back to runtime choices", initDetailActionBack),
+					).
+					Value(&action),
+			).Title(detailTitle),
+		)
+		back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
+		if err != nil {
+			return false, false, false, err
+		}
+		if back || action == initDetailActionBack {
+			return false, true, false, nil
+		}
+		if action == initLLMRuntimeTemplateActionUse {
+			return true, false, false, nil
+		}
+	}
+
 	action := initDetailActionEdit
 	detailOptions := []huh.Option[string]{
 		huh.NewOption("Edit runtime details", initDetailActionEdit),
@@ -1564,22 +1638,31 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("LLM runtime details").
+				Description(detailDescription).
 				Options(detailOptions...).
 				Value(&action),
-		).Title("LLM Runtime Details"),
+		).Title(detailTitle),
 	)
 	back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
 	if err != nil {
-		return false, false, err
+		return false, false, false, err
 	}
 	if back || action == initDetailActionBack {
-		return true, false, nil
+		return false, true, false, nil
 	}
 	if action == initDetailActionDelete {
-		return false, true, nil
+		return false, false, true, nil
 	}
+	editAction := initDetailActionEdit
 	editForm := huh.NewForm(
 		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Runtime detail action").
+				Options(
+					huh.NewOption("Use these runtime details", initDetailActionEdit),
+					huh.NewOption("Back to runtime actions", initDetailActionBack),
+				).
+				Value(&editAction),
 			huh.NewSelect[string]().
 				Title("LLM provider").
 				Options(
@@ -1605,16 +1688,16 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft
 					huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
 				).
 				Value(&draft.LLMAdapter),
-		).Title("LLM Runtime Details"),
+		).Title(detailTitle),
 	)
 	back, err = runBackableInitForm(editForm, p.stdin, p.stderr)
 	if err != nil {
-		return false, false, err
+		return false, false, false, err
 	}
-	if back {
-		return true, false, nil
+	if back || editAction == initDetailActionBack {
+		return false, true, false, nil
 	}
-	return false, false, nil
+	return false, false, false, nil
 }
 
 func (p huhInitLLMRuntimePrompter) chooseLLMRuntimeDeleteReplacement(prompt initLLMRuntimePrompt, deletedRuntimeName string, seed initDraft) (initDraft, error) {
@@ -1651,16 +1734,23 @@ func (p huhInitLLMRuntimePrompter) chooseLLMRuntimeDeleteReplacement(prompt init
 		return replacementDraft, nil
 	}
 	customDraft := replacementDraft
-	back, deleted, err := p.editLLMRuntimeDetails(choice, &customDraft, prompt.Context.LLMRuntimes)
+	usedSelection, back, deleted, err := p.editLLMRuntimeDetails(choice, &customDraft, prompt.Context.LLMRuntimes)
 	if err != nil {
 		return initDraft{}, err
 	}
-	if back || deleted {
+	if usedSelection || back || deleted {
 		return initDraft{}, errInitNavigateBack
 	}
 	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(customDraft).Preset)
 	applyLLMRuntimeSelection(&customDraft, resolvedRuntimePreset)
 	return customDraft, nil
+}
+
+func (p huhInitLLMRuntimePrompter) runtimeAvailabilityNote(preset initLLMRuntimePreset) string {
+	if p.checker == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.checker(preset))
 }
 
 func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
@@ -2294,6 +2384,56 @@ func initLLMRuntimeLabel(runtime initLLMRuntimeDraft) string {
 		label = fmt.Sprintf("%s (%s)", label, runtime.Name)
 	}
 	return label
+}
+
+func initLLMRuntimeSelectionDescription(runtime initLLMRuntimeDraft, availability string) string {
+	lines := []string{
+		fmt.Sprintf("Selected runtime: %s.", initLLMRuntimeLabel(runtime)),
+	}
+	switch runtime.Preset {
+	case initLLMRuntimePresetClaudeCLISubscription:
+		lines = append(lines, "Uses your existing Claude CLI login. cr does not store a Claude subscription secret or launch browser sign-in.")
+	case initLLMRuntimePresetCodexCLISubscription:
+		lines = append(lines, "Uses your existing Codex CLI login. cr does not store a Codex subscription secret or launch browser sign-in.")
+	case initLLMRuntimePresetPiLocal:
+		lines = append(lines, "Uses the local Pi runtime without storing an additional cr-managed secret.")
+	case initLLMRuntimePresetAnthropicAPIKey:
+		lines = append(lines, "This runtime needs an Anthropic API key. init will gather it in this runtime flow and stage the write until Save and exit.")
+	case initLLMRuntimePresetOpenAIAPIKey:
+		lines = append(lines, "This runtime needs an OpenAI API key. init will gather it in this runtime flow and stage the write until Save and exit.")
+	case initLLMRuntimePresetCustom:
+		lines = append(lines, "Customize provider, auth mode, and adapter before staging this runtime for the active profile.")
+	}
+	if availability != "" {
+		lines = append(lines, availability)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func defaultInitLLMRuntimeAvailabilityNote(preset initLLMRuntimePreset) string {
+	command := ""
+	label := ""
+	switch preset {
+	case initLLMRuntimePresetClaudeCLISubscription:
+		command = "claude"
+		label = "Claude CLI"
+	case initLLMRuntimePresetCodexCLISubscription:
+		command = "codex"
+		label = "Codex CLI"
+	case initLLMRuntimePresetPiLocal, initLLMRuntimePresetAnthropicAPIKey, initLLMRuntimePresetOpenAIAPIKey, initLLMRuntimePresetCustom:
+		return ""
+	default:
+		return ""
+	}
+	output, err := exec.Command(command, "--version").CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("%s check: `%s --version` not available.", label, command)
+	}
+	version := strings.TrimSpace(strings.SplitN(string(output), "\n", 2)[0])
+	if version == "" {
+		return fmt.Sprintf("%s check: `%s --version` succeeded.", label, command)
+	}
+	return fmt.Sprintf("%s check: %s installed.", label, version)
 }
 
 func profileDeletePendingLabel(name string) string {
@@ -3633,21 +3773,63 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 	}
 	sort.Strings(entryKeys)
 	entries := make([]initCredentialPlanEntry, 0, len(entryKeys))
+	activeRefs := map[string]bool{}
 	for _, key := range entryKeys {
-		entries = append(entries, entriesByKey[key])
+		entry := entriesByKey[key]
+		activeRefs[entry.Ref.Ref] = true
+		entries = append(entries, entry)
 	}
+	writes := filterInitWritesByRefs(session.writes, activeRefs)
+	overwriteRefs := filterInitBoolMapByRefs(session.overwriteRefs, activeRefs)
+	satisfiedRefs := filterInitBoolMapByRefs(session.satisfiedRefs, activeRefs)
+	entries = refreshInteractiveCredentialPlan(entries, projectInitPlannedWriteKeys(writes), satisfiedRefs)
 	return initSessionPlan{
 		path:           session.path,
 		cfg:            cloneInitConfigFile(session.cfg),
 		profileNames:   profileNames,
 		profileRefs:    profileRefs,
-		writes:         map[string]map[string]string{},
+		writes:         writes,
 		credentialPlan: entries,
-		overwriteRefs:  map[string]bool{},
-		satisfiedRefs:  map[string]bool{},
+		overwriteRefs:  overwriteRefs,
+		satisfiedRefs:  satisfiedRefs,
 		backendFlagSet: session.backendFlagSet,
 		backendArg:     interactiveInitBackendArg(opts, session.backendFlagSet, session.cfg),
 	}, nil
+}
+
+func collectInteractiveInitSessionWorkspaceSecrets(opts *root.Options, deps initDeps, session initSessionDraft, purposes []string) (initSessionDraft, error) {
+	if session.workspace == nil {
+		return session, nil
+	}
+	purposeSet := map[string]struct{}{}
+	for _, purpose := range purposes {
+		purposeSet[purpose] = struct{}{}
+	}
+	entries := make([]initCredentialPlanEntry, 0, len(session.workspace.credentialPlan))
+	for _, entry := range session.workspace.credentialPlan {
+		if _, ok := purposeSet[entry.Ref.Purpose]; !ok {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) == 0 {
+		return session, nil
+	}
+	workspace := *session.workspace
+	workspace.writes = cloneInitWrites(session.writes)
+	workspace.overwriteRefs = cloneInitBoolMap(session.overwriteRefs)
+	workspace.satisfiedRefs = cloneInitBoolMap(session.satisfiedRefs)
+	workspace.credentialPlan = refreshInteractiveCredentialPlan(entries, projectInitPlannedWriteKeys(workspace.writes), workspace.satisfiedRefs)
+	nextWorkspace, err := collectInteractiveInitSecrets(nil, opts, deps, workspace)
+	if err != nil {
+		return session, err
+	}
+	session.workspace = &nextWorkspace
+	session.cfg = cloneInitConfigFile(nextWorkspace.cfg)
+	session.writes = cloneInitWrites(nextWorkspace.writes)
+	session.overwriteRefs = cloneInitBoolMap(nextWorkspace.overwriteRefs)
+	session.satisfiedRefs = cloneInitBoolMap(nextWorkspace.satisfiedRefs)
+	return session, nil
 }
 
 func sortedTouchedProfileNames(session initSessionDraft) []string {
@@ -4975,6 +5157,10 @@ func loadInteractiveCredentialPlanState(entries []initCredentialPlanEntry, openS
 			normalized = append(normalized, entry)
 			continue
 		}
+		if entry.State == initCredentialPlanStateKeepExisting || len(entry.PlannedWriteKeys) > 0 {
+			normalized = append(normalized, entry)
+			continue
+		}
 		status, err := credentials.CredentialRefStatus(store, entry.Ref, nil)
 		if err != nil {
 			return nil, err
@@ -5066,6 +5252,50 @@ func copyStringMap(values map[string]string) map[string]string {
 		copied[key] = value
 	}
 	return copied
+}
+
+func cloneInitWrites(writes map[string]map[string]string) map[string]map[string]string {
+	if len(writes) == 0 {
+		return map[string]map[string]string{}
+	}
+	cloned := make(map[string]map[string]string, len(writes))
+	for ref, values := range writes {
+		cloned[ref] = copyStringMap(values)
+	}
+	return cloned
+}
+
+func cloneInitBoolMap(values map[string]bool) map[string]bool {
+	if len(values) == 0 {
+		return map[string]bool{}
+	}
+	cloned := make(map[string]bool, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func filterInitWritesByRefs(writes map[string]map[string]string, activeRefs map[string]bool) map[string]map[string]string {
+	filtered := map[string]map[string]string{}
+	for ref, values := range writes {
+		if !activeRefs[ref] {
+			continue
+		}
+		filtered[ref] = copyStringMap(values)
+	}
+	return filtered
+}
+
+func filterInitBoolMapByRefs(values map[string]bool, activeRefs map[string]bool) map[string]bool {
+	filtered := map[string]bool{}
+	for key, value := range values {
+		if !activeRefs[key] {
+			continue
+		}
+		filtered[key] = value
+	}
+	return filtered
 }
 
 func normalizeInitModelMap(modelMap config.ModelMap) config.ModelMap {
