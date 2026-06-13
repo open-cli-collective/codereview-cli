@@ -1560,13 +1560,25 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft
 		detailOptions = append(detailOptions, huh.NewOption("Mark runtime for deletion", initDetailActionDelete))
 	}
 	detailOptions = append(detailOptions, huh.NewOption("Back to runtime choices", initDetailActionBack))
-	form := huh.NewForm(
+	actionForm := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("LLM runtime details").
 				Options(detailOptions...).
 				Value(&action),
 		).Title("LLM Runtime Details"),
+	)
+	back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
+	if err != nil {
+		return false, false, err
+	}
+	if back || action == initDetailActionBack {
+		return true, false, nil
+	}
+	if action == initDetailActionDelete {
+		return false, true, nil
+	}
+	editForm := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("LLM provider").
@@ -1593,19 +1605,14 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft
 					huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
 				).
 				Value(&draft.LLMAdapter),
-		).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("LLM Runtime Details"),
+		).Title("LLM Runtime Details"),
 	)
-	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	back, err = runBackableInitForm(editForm, p.stdin, p.stderr)
 	if err != nil {
 		return false, false, err
 	}
-	if back || action == initDetailActionBack {
+	if back {
 		return true, false, nil
-	}
-	if action == initDetailActionDelete {
-		return false, true, nil
 	}
 	return false, false, nil
 }
@@ -1732,13 +1739,25 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 		detailOptions = append(detailOptions, huh.NewOption("Mark reviewer entity for deletion", initDetailActionDelete))
 	}
 	detailOptions = append(detailOptions, huh.NewOption("Back to reviewer choices", initDetailActionBack))
-	form := huh.NewForm(
+	actionForm := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Reviewer entity details").
 				Options(detailOptions...).
 				Value(&action),
 		).Title("Reviewer Entity Details"),
+	)
+	back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
+	if err != nil {
+		return false, false, err
+	}
+	if back || action == initDetailActionBack {
+		return true, false, nil
+	}
+	if action == initDetailActionDelete {
+		return false, true, nil
+	}
+	editForm := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Reviewer entity type").
@@ -1757,19 +1776,14 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 				Description("Leave blank to use the standard profile-based label when using separate reviewer credentials.").
 				Value(&draft.ReviewerCredentialRef).
 				Validate(validateOptionalCredentialRef),
-		).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("Reviewer Entity Details"),
+		).Title("Reviewer Entity Details"),
 	)
-	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	back, err = runBackableInitForm(editForm, p.stdin, p.stderr)
 	if err != nil {
 		return false, false, err
 	}
-	if back || action == initDetailActionBack {
+	if back {
 		return true, false, nil
-	}
-	if action == initDetailActionDelete {
-		return false, true, nil
 	}
 	applyReviewerEntitySelection(draft, reviewerMode)
 	return false, false, nil
@@ -1885,13 +1899,34 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		}
 		detailOptions = append(detailOptions, huh.NewOption(detailBackLabel, initDetailActionBack))
 
+		if selectedExistingProfile != nil {
+			actionForm := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("Review profile details").
+						Options(detailOptions...).
+						Value(&detailAction),
+				).Title("Review Profile"),
+			)
+			back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
+			if err != nil {
+				return initDraft{}, err
+			}
+			if back || detailAction == initDetailActionBack {
+				if hasProfileChooser {
+					continue
+				}
+				return initDraft{}, errInitNavigateBack
+			}
+			if detailAction == initDetailActionDelete {
+				return initDraft{
+					Action:       initDraftActionDeleteProfile,
+					ActionTarget: selectedProfileName,
+				}, nil
+			}
+		}
+
 		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Review profile details").
-					Options(detailOptions...).
-					Value(&detailAction),
-			).Title("Review Profile"),
 			huh.NewGroup(
 				huh.NewInput().
 					Title("Profile name").
@@ -1900,9 +1935,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				huh.NewConfirm().
 					Title("Make this the default profile").
 					Value(&draft.MakeDefault),
-			).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack
-			}).Title("Profile"),
+			).Title("Profile"),
 			huh.NewGroup(
 				huh.NewSelect[string]().
 					Title("Git scope").
@@ -1922,7 +1955,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					).
 					Value(&draft.GitAuth),
 			).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack || selectedGitScope != initCustomGitScopeSelection
+				return selectedGitScope != initCustomGitScopeSelection
 			}).Title("Git Scope"),
 			huh.NewGroup(
 				huh.NewSelect[string]().
@@ -1948,9 +1981,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Title("Advanced storage labels").
 					Description("Inspect or override non-secret credential-store labels for Git, reviewer, and LLM secrets.").
 					Value(&draft.AdvancedStorageLabels),
-			).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack
-			}).Title("Review Profile"),
+			).Title("Review Profile"),
 			huh.NewGroup(
 				huh.NewSelect[string]().
 					Title("LLM provider").
@@ -1978,7 +2009,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					).
 					Value(&draft.LLMAdapter),
 			).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack || selectedLLMRuntime != initCustomLLMRuntimeSelection
+				return selectedLLMRuntime != initCustomLLMRuntimeSelection
 			}).Title("LLM Runtime Details"),
 			huh.NewGroup(
 				huh.NewInput().
@@ -1997,24 +2028,18 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Value(&draft.LLMCredentialRef).
 					Validate(validateOptionalCredentialRef),
 			).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack || !draft.AdvancedStorageLabels
+				return !draft.AdvancedStorageLabels
 			}).Title("Advanced Storage Labels"),
 		)
 		back, err := runBackableInitForm(form, p.stdin, p.stderr)
 		if err != nil {
 			return initDraft{}, err
 		}
-		if back || detailAction == initDetailActionBack {
+		if back {
 			if hasProfileChooser {
 				continue
 			}
 			return initDraft{}, errInitNavigateBack
-		}
-		if detailAction == initDetailActionDelete {
-			return initDraft{
-				Action:       initDraftActionDeleteProfile,
-				ActionTarget: selectedProfileName,
-			}, nil
 		}
 		applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
 		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)

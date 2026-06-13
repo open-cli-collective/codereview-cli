@@ -2923,13 +2923,6 @@ func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"2", // Mark profile for deletion
-			"",  // Profile name
-			"",  // Make default
-			"",  // Git scope
-			"",  // Reviewer entity
-			"",  // LLM runtime
-			"",  // Reviewer model tier
-			"",  // Advanced storage labels
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -2953,6 +2946,9 @@ func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T
 	}
 	if !strings.Contains(stderr.String(), "Mark profile for deletion") {
 		t.Fatalf("stderr = %q, want deletion action label", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Profile name") || strings.Contains(stderr.String(), "Git scope") || strings.Contains(stderr.String(), "Reviewer entity") {
+		t.Fatalf("stderr = %q, want delete flow to skip profile edit fields", stderr.String())
 	}
 }
 
@@ -3027,6 +3023,9 @@ func TestHuhInitReviewerEntityDetailsAccessibleCanMarkConfiguredEntityForDeletio
 	}
 	if !strings.Contains(stderr.String(), "Mark reviewer entity for deletion") {
 		t.Fatalf("stderr = %q, want reviewer delete label", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Reviewer entity type") || strings.Contains(stderr.String(), "Advanced storage labels") || strings.Contains(stderr.String(), "Reviewer storage label") {
+		t.Fatalf("stderr = %q, want delete flow to skip reviewer edit fields", stderr.String())
 	}
 }
 
@@ -3436,6 +3435,9 @@ func TestHuhInitLLMRuntimeDetailsAccessibleCanMarkConfiguredRuntimeForDeletion(t
 	}
 	if !strings.Contains(stderr.String(), "Mark runtime for deletion") {
 		t.Fatalf("stderr = %q, want runtime delete label", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "LLM provider") || strings.Contains(stderr.String(), "LLM auth mode") || strings.Contains(stderr.String(), "LLM adapter") {
+		t.Fatalf("stderr = %q, want delete flow to skip runtime edit fields", stderr.String())
 	}
 }
 
