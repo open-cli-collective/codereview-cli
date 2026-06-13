@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -297,6 +298,7 @@ type initFinalizeAction string
 const (
 	initFinalizeActionSave   initFinalizeAction = "save"
 	initFinalizeActionCancel initFinalizeAction = "cancel"
+	initFinalizeActionBack   initFinalizeAction = "back"
 )
 
 type initProfileReadiness struct {
@@ -318,6 +320,11 @@ const (
 	initMenuActionGlobalSettings   initMenuAction = "global_settings"
 	initMenuActionSave             initMenuAction = "save"
 	initMenuActionExit             initMenuAction = "exit"
+)
+
+var (
+	errInitNavigateBack    = errors.New("init: navigate back")
+	errInitSecretValueBack = errors.New("init: secret value back")
 )
 
 type initMenuPrompt struct {
@@ -508,6 +515,7 @@ const (
 	initCredentialSecretActionKeep   initCredentialSecretAction = "keep"
 	initCredentialSecretActionSetNow initCredentialSecretAction = "set_now"
 	initCredentialSecretActionDefer  initCredentialSecretAction = "defer"
+	initCredentialSecretActionBack   initCredentialSecretAction = "back"
 )
 
 type initModelMapAction string
@@ -516,6 +524,7 @@ const (
 	initModelMapActionPreserve initModelMapAction = "preserve"
 	initModelMapActionEdit     initModelMapAction = "edit"
 	initModelMapActionReset    initModelMapAction = "reset"
+	initModelMapActionBack     initModelMapAction = "back"
 )
 
 type initAgentSourcesAction string
@@ -524,6 +533,7 @@ const (
 	initAgentSourcesActionPreserve initAgentSourcesAction = "preserve"
 	initAgentSourcesActionEdit     initAgentSourcesAction = "edit"
 	initAgentSourcesActionReset    initAgentSourcesAction = "reset"
+	initAgentSourcesActionBack     initAgentSourcesAction = "back"
 )
 
 type initReviewPolicyAction string
@@ -531,6 +541,7 @@ type initReviewPolicyAction string
 const (
 	initReviewPolicyActionPreserve initReviewPolicyAction = "preserve"
 	initReviewPolicyActionEdit     initReviewPolicyAction = "edit"
+	initReviewPolicyActionBack     initReviewPolicyAction = "back"
 )
 
 type initRoutesAction string
@@ -539,6 +550,7 @@ const (
 	initRoutesActionPreserve initRoutesAction = "preserve"
 	initRoutesActionEdit     initRoutesAction = "edit"
 	initRoutesActionReset    initRoutesAction = "reset"
+	initRoutesActionBack     initRoutesAction = "back"
 )
 
 type initRetentionAction string
@@ -547,6 +559,7 @@ const (
 	initRetentionActionPreserve initRetentionAction = "preserve"
 	initRetentionActionEdit     initRetentionAction = "edit"
 	initRetentionActionReset    initRetentionAction = "reset"
+	initRetentionActionBack     initRetentionAction = "back"
 )
 
 type initRetentionMaxAgeMode string
@@ -563,6 +576,7 @@ const (
 	initKeyringBackendActionPreserve initKeyringBackendAction = "preserve"
 	initKeyringBackendActionEdit     initKeyringBackendAction = "edit"
 	initKeyringBackendActionReset    initKeyringBackendAction = "reset"
+	initKeyringBackendActionBack     initKeyringBackendAction = "back"
 )
 
 type initSecretSource string
@@ -572,6 +586,7 @@ const (
 	initSecretSourcePaste        initSecretSource = "paste"
 	initSecretSourceClipboard    initSecretSource = "clipboard"
 	initSecretSourceSkip         initSecretSource = "skip"
+	initSecretSourceBack         initSecretSource = "back"
 )
 
 type initCredentialSecretPrompt struct {
@@ -754,16 +769,12 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 	useLegacyInitPath := deps.prompter != nil && deps.menuPrompter == nil
 	if useLegacyInitPath {
 		session, err = runInjectedInteractiveInit(cmd, opts, flags, deps, session)
-	} else {
-		session, err = runInteractiveInitMenuLoop(cmd, opts, flags, deps, session)
-	}
-	if err != nil {
-		return err
-	}
-	if session.workspace == nil {
-		return nil
-	}
-	if useLegacyInitPath {
+		if err != nil {
+			return err
+		}
+		if session.workspace == nil {
+			return nil
+		}
 		workspace, err := collectInteractiveInitSecrets(cmd, opts, deps, *session.workspace)
 		if err != nil {
 			return err
@@ -771,22 +782,44 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 		plan := finalizeInteractiveInitPlan(workspace)
 		return applyInitPlan(opts, flags, deps, plan)
 	}
-	plan, err := buildInteractiveInitSessionPlan(opts, session)
-	if err != nil {
-		return err
+
+	for {
+		session, err = runInteractiveInitMenuLoop(cmd, opts, flags, deps, session)
+		if err != nil {
+			return err
+		}
+		if session.workspace == nil {
+			return nil
+		}
+		plan, err := buildInteractiveInitSessionPlan(opts, session)
+		if err != nil {
+			return err
+		}
+		plan, err = collectInteractiveInitSessionSecrets(opts, deps, plan)
+		if errors.Is(err, errInitNavigateBack) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		action, err := chooseInteractiveInitFinalizeAction(opts, deps, plan)
+		if errors.Is(err, errInitNavigateBack) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		switch action {
+		case initFinalizeActionBack:
+			continue
+		case initFinalizeActionCancel:
+			return nil
+		case initFinalizeActionSave:
+			return applyInteractiveInitSessionPlan(opts, deps, plan)
+		default:
+			return fmt.Errorf("unsupported init finalize action %q", action)
+		}
 	}
-	plan, err = collectInteractiveInitSessionSecrets(opts, deps, plan)
-	if err != nil {
-		return err
-	}
-	action, err := chooseInteractiveInitFinalizeAction(opts, deps, plan)
-	if err != nil {
-		return err
-	}
-	if action == initFinalizeActionCancel {
-		return nil
-	}
-	return applyInteractiveInitSessionPlan(opts, deps, plan)
 }
 
 func runInjectedInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
@@ -904,6 +937,9 @@ type huhInitKeyringBackendPrompter struct {
 const (
 	initCustomGitScopeSelection   = "__custom_git_scope__"
 	initCustomLLMRuntimeSelection = "__custom_llm_runtime__"
+	initBackSelection             = "__back__"
+	initDetailActionEdit          = "edit"
+	initDetailActionBack          = "back"
 )
 
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
@@ -1157,6 +1193,9 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 		return initSessionDraft{}, err
 	}
 	draft, err := prompter.Run(promptCtx)
+	if errors.Is(err, errInitNavigateBack) {
+		return session, nil
+	}
 	if err != nil {
 		return initSessionDraft{}, err
 	}
@@ -1164,22 +1203,54 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	workspace, err = collectInteractiveInitRoutes(opts, deps, workspace)
+	nextWorkspace, err := collectInteractiveInitRoutes(opts, deps, workspace)
+	if errors.Is(err, errInitNavigateBack) {
+		session.workspace = &workspace
+		session.cfg = cloneInitConfigFile(workspace.cfg)
+		session.requestedProfileName = workspace.profileName
+		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+		return session, nil
+	}
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	workspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
+	workspace = nextWorkspace
+	nextWorkspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
+	if errors.Is(err, errInitNavigateBack) {
+		session.workspace = &workspace
+		session.cfg = cloneInitConfigFile(workspace.cfg)
+		session.requestedProfileName = workspace.profileName
+		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+		return session, nil
+	}
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	workspace, err = collectInteractiveInitAgentSources(opts, deps, workspace)
+	workspace = nextWorkspace
+	nextWorkspace, err = collectInteractiveInitAgentSources(opts, deps, workspace)
+	if errors.Is(err, errInitNavigateBack) {
+		session.workspace = &workspace
+		session.cfg = cloneInitConfigFile(workspace.cfg)
+		session.requestedProfileName = workspace.profileName
+		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+		return session, nil
+	}
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	workspace, err = collectInteractiveInitReviewPolicy(opts, deps, workspace)
+	workspace = nextWorkspace
+	nextWorkspace, err = collectInteractiveInitReviewPolicy(opts, deps, workspace)
+	if errors.Is(err, errInitNavigateBack) {
+		session.workspace = &workspace
+		session.cfg = cloneInitConfigFile(workspace.cfg)
+		session.requestedProfileName = workspace.profileName
+		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+		return session, nil
+	}
 	if err != nil {
 		return initSessionDraft{}, err
 	}
+	workspace = nextWorkspace
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
 	session.requestedProfileName = workspace.profileName
@@ -1197,6 +1268,9 @@ func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 	}
 	promptCtx := currentInteractiveInitInventoryPromptContext(session)
 	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: promptCtx})
+	if errors.Is(err, errInitNavigateBack) {
+		return session, nil
+	}
 	if err != nil {
 		return initSessionDraft{}, err
 	}
@@ -1225,6 +1299,9 @@ func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 	}
 	promptCtx := currentInteractiveInitInventoryPromptContext(session)
 	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: promptCtx})
+	if errors.Is(err, errInitNavigateBack) {
+		return session, nil
+	}
 	if err != nil {
 		return initSessionDraft{}, err
 	}
@@ -1245,13 +1322,27 @@ func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 
 func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
 	cfg, err := collectInteractiveInitRetentionConfig(opts, deps, cloneInitConfigFile(session.cfg))
+	if errors.Is(err, errInitNavigateBack) {
+		return session, nil
+	}
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	cfg, err = collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cfg)
+	nextCfg, err := collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cfg)
+	if errors.Is(err, errInitNavigateBack) {
+		session.cfg = cfg
+		if session.workspace != nil {
+			workspace := *session.workspace
+			workspace.cfg = cloneInitConfigFile(cfg)
+			workspace.backendArg = interactiveInitBackendArg(opts, workspace.backendFlagSet, cfg)
+			session.workspace = &workspace
+		}
+		return session, nil
+	}
 	if err != nil {
 		return initSessionDraft{}, err
 	}
+	cfg = nextCfg
 	session.cfg = cfg
 	if session.workspace != nil {
 		workspace := *session.workspace
@@ -1315,6 +1406,27 @@ func initMenuDescription(prompt initMenuPrompt) string {
 	return "Configure the parts cr needs, then save when the active profile is ready."
 }
 
+func runBackableInitForm(form *huh.Form, stdin io.Reader, stderr io.Writer) (bool, error) {
+	escaped := false
+	filter := func(_ tea.Model, msg tea.Msg) tea.Msg {
+		keyMsg, ok := msg.(tea.KeyMsg)
+		if ok && keyMsg.Type == tea.KeyEsc {
+			escaped = true
+			return tea.Quit()
+		}
+		return msg
+	}
+	err := form.
+		WithProgramOptions(tea.WithFilter(filter)).
+		WithInput(stdin).
+		WithOutput(stderr).
+		Run()
+	if err != nil {
+		return false, err
+	}
+	return escaped, nil
+}
+
 func (p huhInitFinalizePrompter) ChooseFinalizeAction(prompt initFinalizePrompt) (initFinalizeAction, error) {
 	action := initFinalizeActionSave
 	form := huh.NewForm(
@@ -1324,13 +1436,18 @@ func (p huhInitFinalizePrompter) ChooseFinalizeAction(prompt initFinalizePrompt)
 				Title("Finalize init").
 				Options(
 					huh.NewOption("Save and write config/credentials", initFinalizeActionSave),
+					huh.NewOption("Back to main menu", initFinalizeActionBack),
 					huh.NewOption("Cancel without saving", initFinalizeActionCancel),
 				).
 				Value(&action),
 		),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
 		return "", err
+	}
+	if back {
+		return initFinalizeActionBack, nil
 	}
 	return action, nil
 }
@@ -1362,215 +1479,59 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 			selectedRuntime = seedRuntimePreset
 		}
 	}
-	selectForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("LLM runtime").
-				Description("Choose how reviewer agents run for this profile.").
-				Options(initLLMRuntimeOptions(prompt.Context.LLMRuntimes)...).
-				Value(&selectedRuntime),
-		).Title("LLM Runtime"),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := selectForm.Run(); err != nil {
-		return initDraft{}, err
-	}
-	if selectedRuntime == initCustomLLMRuntimeSelection {
-		customForm := huh.NewForm(
+	for {
+		choice := selectedRuntime
+		options := append(initLLMRuntimeOptions(prompt.Context.LLMRuntimes), huh.NewOption("Back to main menu", initBackSelection))
+		selectForm := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
-					Title("LLM provider").
-					Options(
-						huh.NewOption("Anthropic", string(config.LLMProviderAnthropic)),
-						huh.NewOption("OpenAI", string(config.LLMProviderOpenAI)),
-						huh.NewOption("Pi", string(config.LLMProviderPi)),
-					).
-					Value(&draft.LLMProvider),
-				huh.NewSelect[string]().
-					Title("LLM auth mode").
-					Options(
-						huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
-						huh.NewOption("API key", string(config.LLMAuthAPIKey)),
-					).
-					Value(&draft.LLMAuth),
-				huh.NewSelect[string]().
-					Title("LLM adapter").
-					Options(
-						huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
-						huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
-						huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
-						huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
-						huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
-					).
-					Value(&draft.LLMAdapter),
-			).Title("LLM Runtime"),
-		).WithInput(p.stdin).WithOutput(p.stderr)
-		if err := customForm.Run(); err != nil {
-			return initDraft{}, err
-		}
-	}
-	applyLLMRuntimeInventorySelection(&draft, selectedRuntime, prompt.Context.LLMRuntimes)
-	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
-	applyLLMRuntimeSelection(&draft, resolvedRuntimePreset)
-	return draft, nil
-}
-
-func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
-	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
-	selectedReviewerEntity := prompt.Context.ProfileReviewerEntities[prompt.Context.ExistingProfileName]
-	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
-	if selectedReviewerEntity == "" {
-		selectedReviewerEntity = reviewerMode
-	}
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Reviewer entity").
-				Description("Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile.").
-				Options(initReviewerEntityOptions(prompt.Context.ReviewerEntities)...).
-				Value(&selectedReviewerEntity),
-		).Title("Reviewer Entity"),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initDraft{}, err
-	}
-	applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, prompt.Context.ReviewerEntities)
-	reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
-	applyReviewerEntitySelection(&draft, reviewerMode)
-	return draft, nil
-}
-
-func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
-	selectedProfileName := ctx.ExistingProfileName
-	selectedExistingProfile := ctx.ExistingProfile
-	selectedCreateNewProfile := false
-	if len(ctx.ExistingProfileNames) > 0 {
-		choice := initCreateProfileSentinel
-		options := make([]huh.Option[string], 0, len(ctx.ExistingProfileNames)+1)
-		for _, name := range ctx.ExistingProfileNames {
-			options = append(options, huh.NewOption("Edit "+name, name))
-			if name == ctx.ExistingProfileName {
-				choice = name
-			}
-		}
-		if ctx.ExistingProfile == nil {
-			choice = initCreateProfileSentinel
-		}
-		options = append(options, huh.NewOption("Create new profile", initCreateProfileSentinel))
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Choose a profile to edit or create").
+					Title("LLM runtime").
+					Description("Choose how reviewer agents run for this profile.").
 					Options(options...).
 					Value(&choice),
-			),
-		).WithInput(p.stdin).WithOutput(p.stderr)
-		if err := form.Run(); err != nil {
+			).Title("LLM Runtime"),
+		)
+		back, err := runBackableInitForm(selectForm, p.stdin, p.stderr)
+		if err != nil {
 			return initDraft{}, err
 		}
-		if choice == initCreateProfileSentinel {
-			selectedProfileName = ""
-			selectedExistingProfile = nil
-			selectedCreateNewProfile = true
-		} else {
-			selectedProfileName = choice
-			profile := ctx.ExistingConfig.Profiles[choice]
-			profileCopy := profile
-			selectedExistingProfile = &profileCopy
+		if back || choice == initBackSelection {
+			return initDraft{}, errInitNavigateBack
 		}
-	}
 
-	requestedProfileName := ctx.RequestedProfileName
-	if selectedCreateNewProfile && ctx.ExistingProfile != nil {
-		requestedProfileName = ""
-	}
-	draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
-	if warnings := ctx.ProfileWarnings[selectedProfileName]; len(warnings) > 0 {
-		_, _ = fmt.Fprintln(p.stderr, "Existing profile secret health:")
-		for _, warning := range warnings {
-			_, _ = fmt.Fprintf(p.stderr, "- %s\n", warning)
+		candidateDraft := draft
+		if choice != initCustomLLMRuntimeSelection {
+			applyLLMRuntimeInventorySelection(&candidateDraft, choice, prompt.Context.LLMRuntimes)
+			resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(candidateDraft).Preset)
+			applyLLMRuntimeSelection(&candidateDraft, resolvedRuntimePreset)
 		}
-		_, _ = fmt.Fprintln(p.stderr)
-	}
-	reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
-	llmRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
-	selectedRuntimePreset := string(llmRuntime.Preset)
-	reviewerMode := string(reviewerEntity.Kind)
-	selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
-	if selectedGitScope == "" {
-		selectedGitScope = initCustomGitScopeSelection
-	}
-	selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
-	if selectedReviewerEntity == "" {
-		selectedReviewerEntity = reviewerMode
-	}
-	selectedLLMRuntime := ctx.ProfileLLMRuntimes[selectedProfileName]
-	if selectedLLMRuntime == "" {
-		if selectedRuntimePreset == string(initLLMRuntimePresetCustom) {
-			selectedLLMRuntime = initCustomLLMRuntimeSelection
-		} else {
-			selectedLLMRuntime = selectedRuntimePreset
+		detailDraft := candidateDraft
+		back, err = p.editLLMRuntimeDetails(&detailDraft)
+		if err != nil {
+			return initDraft{}, err
 		}
+		if back {
+			selectedRuntime = choice
+			continue
+		}
+		resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(detailDraft).Preset)
+		applyLLMRuntimeSelection(&detailDraft, resolvedRuntimePreset)
+		return detailDraft, nil
 	}
-	gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
-	reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities)
-	llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
+}
 
+func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(draft *initDraft) (bool, error) {
+	action := initDetailActionEdit
 	form := huh.NewForm(
 		huh.NewGroup(
-			huh.NewInput().
-				Title("Profile name").
-				Value(&draft.ProfileName).
-				Validate(validateProfileName),
-			huh.NewConfirm().
-				Title("Make this the default profile").
-				Value(&draft.MakeDefault),
-		).Title("Profile"),
-		huh.NewGroup(
 			huh.NewSelect[string]().
-				Title("Git scope").
-				Description("Choose an existing Git scope for this profile or configure a custom one.").
-				Options(gitScopeOptions...).
-				Value(&selectedGitScope),
-			huh.NewInput().
-				Title("Git scope host").
-				Description("The Git host this review profile applies to, such as github.com or github.mycompany.com.").
-				Value(&draft.GitHost).
-				Validate(validateRequiredText("git host is required")),
-			huh.NewSelect[string]().
-				Title("Git scope auth mode").
+				Title("LLM runtime details").
 				Options(
-					huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
-					huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
+					huh.NewOption("Edit runtime details", initDetailActionEdit),
+					huh.NewOption("Back to runtime choices", initDetailActionBack),
 				).
-				Value(&draft.GitAuth),
-		).WithHideFunc(func() bool {
-			return selectedGitScope != initCustomGitScopeSelection
-		}).Title("Git Scope"),
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Reviewer entity").
-				Description("Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile.").
-				Options(reviewerEntityOptions...).
-				Value(&selectedReviewerEntity),
-			huh.NewSelect[string]().
-				Title("LLM runtime").
-				Description("Choose how reviewer agents run for this profile.").
-				Options(llmRuntimeOptions...).
-				Value(&selectedLLMRuntime),
-			huh.NewSelect[string]().
-				Title("Reviewer model tier").
-				Options(
-					huh.NewOption("Built-in default", ""),
-					huh.NewOption("Small", string(config.ModelTierSmall)),
-					huh.NewOption("Medium", string(config.ModelTierMedium)),
-					huh.NewOption("Large", string(config.ModelTierLarge)),
-				).
-				Value(&draft.LLMReviewerModelTier),
-			huh.NewConfirm().
-				Title("Advanced storage labels").
-				Description("Inspect or override non-secret credential-store labels for Git, reviewer, and LLM secrets.").
-				Value(&draft.AdvancedStorageLabels),
-		).Title("Review Profile"),
+				Value(&action),
+		).Title("LLM Runtime Details"),
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("LLM provider").
@@ -1598,40 +1559,336 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				).
 				Value(&draft.LLMAdapter),
 		).WithHideFunc(func() bool {
-			return selectedLLMRuntime != initCustomLLMRuntimeSelection
+			return action == initDetailActionBack
 		}).Title("LLM Runtime Details"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return false, err
+	}
+	if back || action == initDetailActionBack {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
+	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+	selectedReviewerEntity := prompt.Context.ProfileReviewerEntities[prompt.Context.ExistingProfileName]
+	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+	if selectedReviewerEntity == "" {
+		selectedReviewerEntity = reviewerMode
+	}
+	for {
+		choice := selectedReviewerEntity
+		options := append(initReviewerEntityOptions(prompt.Context.ReviewerEntities), huh.NewOption("Back to main menu", initBackSelection))
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Reviewer entity").
+					Description("Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile.").
+					Options(options...).
+					Value(&choice),
+			).Title("Reviewer Entity"),
+		)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initDraft{}, err
+		}
+		if back || choice == initBackSelection {
+			return initDraft{}, errInitNavigateBack
+		}
+		candidateDraft := draft
+		applyReviewerEntityInventorySelection(&candidateDraft, choice, prompt.Context.ReviewerEntities)
+		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(candidateDraft).Kind)
+		applyReviewerEntitySelection(&candidateDraft, reviewerMode)
+		detailDraft := candidateDraft
+		back, err = p.editReviewerEntityDetails(&detailDraft)
+		if err != nil {
+			return initDraft{}, err
+		}
+		if back {
+			selectedReviewerEntity = choice
+			continue
+		}
+		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(detailDraft).Kind)
+		applyReviewerEntitySelection(&detailDraft, reviewerMode)
+		return detailDraft, nil
+	}
+}
+
+func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(draft *initDraft) (bool, error) {
+	action := initDetailActionEdit
+	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(*draft).Kind)
+	form := huh.NewForm(
 		huh.NewGroup(
-			huh.NewInput().
-				Title("Git storage label").
-				Description("Leave blank to use the standard profile-based label.").
-				Value(&draft.GitCredentialRef).
-				Validate(validateOptionalCredentialRef),
+			huh.NewSelect[string]().
+				Title("Reviewer entity details").
+				Options(
+					huh.NewOption("Edit reviewer details", initDetailActionEdit),
+					huh.NewOption("Back to reviewer choices", initDetailActionBack),
+				).
+				Value(&action),
+		).Title("Reviewer Entity Details"),
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Reviewer entity type").
+				Options(
+					huh.NewOption("Use this profile's Git identity", string(initReviewerEntityKindUseGitIdentity)),
+					huh.NewOption("Personal access token reviewer", string(initReviewerEntityKindPAT)),
+					huh.NewOption("GitHub App reviewer", string(initReviewerEntityKindGitHubApp)),
+				).
+				Value(&reviewerMode),
+			huh.NewConfirm().
+				Title("Advanced storage labels").
+				Description("Inspect or override the non-secret reviewer credential-store label.").
+				Value(&draft.AdvancedStorageLabels),
 			huh.NewInput().
 				Title("Reviewer storage label").
 				Description("Leave blank to use the standard profile-based label when using separate reviewer credentials.").
 				Value(&draft.ReviewerCredentialRef).
 				Validate(validateOptionalCredentialRef),
-			huh.NewInput().
-				Title("LLM storage label").
-				Description("Leave blank to use the standard profile-based label when using an API-key runtime.").
-				Value(&draft.LLMCredentialRef).
-				Validate(validateOptionalCredentialRef),
 		).WithHideFunc(func() bool {
-			return !draft.AdvancedStorageLabels
-		}).Title("Advanced Storage Labels"),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initDraft{}, err
+			return action == initDetailActionBack
+		}).Title("Reviewer Entity Details"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return false, err
 	}
-	applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
-	applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
-	applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, ctx.LLMRuntimes)
-	// Inventory selections fill provider/auth/ref fields; rerunning the mode finalizers applies side effects like clearing refs for self-reviewers or subscription runtimes.
-	reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
-	selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
-	applyReviewerEntitySelection(&draft, reviewerMode)
-	applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
-	return draft, nil
+	if back || action == initDetailActionBack {
+		return true, nil
+	}
+	applyReviewerEntitySelection(draft, reviewerMode)
+	return false, nil
+}
+
+func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
+	for {
+		selectedProfileName := ctx.ExistingProfileName
+		selectedExistingProfile := ctx.ExistingProfile
+		selectedCreateNewProfile := false
+		hasProfileChooser := len(ctx.ExistingProfileNames) > 0
+		if len(ctx.ExistingProfileNames) > 0 {
+			choice := initCreateProfileSentinel
+			options := make([]huh.Option[string], 0, len(ctx.ExistingProfileNames)+1)
+			for _, name := range ctx.ExistingProfileNames {
+				options = append(options, huh.NewOption("Edit "+name, name))
+				if name == ctx.ExistingProfileName {
+					choice = name
+				}
+			}
+			if ctx.ExistingProfile == nil {
+				choice = initCreateProfileSentinel
+			}
+			options = append(options, huh.NewOption("Create new profile", initCreateProfileSentinel))
+			options = append(options, huh.NewOption("Back to main menu", initBackSelection))
+			form := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("Choose a profile to edit or create").
+						Options(options...).
+						Value(&choice),
+				),
+			)
+			back, err := runBackableInitForm(form, p.stdin, p.stderr)
+			if err != nil {
+				return initDraft{}, err
+			}
+			if back || choice == initBackSelection {
+				return initDraft{}, errInitNavigateBack
+			}
+			if choice == initCreateProfileSentinel {
+				selectedProfileName = ""
+				selectedExistingProfile = nil
+				selectedCreateNewProfile = true
+			} else {
+				selectedProfileName = choice
+				profile := ctx.ExistingConfig.Profiles[choice]
+				profileCopy := profile
+				selectedExistingProfile = &profileCopy
+			}
+		}
+
+		requestedProfileName := ctx.RequestedProfileName
+		if selectedCreateNewProfile && ctx.ExistingProfile != nil {
+			requestedProfileName = ""
+		}
+		draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
+		if warnings := ctx.ProfileWarnings[selectedProfileName]; len(warnings) > 0 {
+			_, _ = fmt.Fprintln(p.stderr, "Existing profile secret health:")
+			for _, warning := range warnings {
+				_, _ = fmt.Fprintf(p.stderr, "- %s\n", warning)
+			}
+			_, _ = fmt.Fprintln(p.stderr)
+		}
+		reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
+		llmRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
+		selectedRuntimePreset := string(llmRuntime.Preset)
+		reviewerMode := string(reviewerEntity.Kind)
+		selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
+		if selectedGitScope == "" {
+			selectedGitScope = initCustomGitScopeSelection
+		}
+		selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
+		if selectedReviewerEntity == "" {
+			selectedReviewerEntity = reviewerMode
+		}
+		selectedLLMRuntime := ctx.ProfileLLMRuntimes[selectedProfileName]
+		if selectedLLMRuntime == "" {
+			if selectedRuntimePreset == string(initLLMRuntimePresetCustom) {
+				selectedLLMRuntime = initCustomLLMRuntimeSelection
+			} else {
+				selectedLLMRuntime = selectedRuntimePreset
+			}
+		}
+		gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
+		reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities)
+		llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
+		detailAction := initDetailActionEdit
+		detailBackLabel := "Back to main menu"
+		if hasProfileChooser {
+			detailBackLabel = "Back to profile choices"
+		}
+
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Review profile details").
+					Options(
+						huh.NewOption("Edit profile details", initDetailActionEdit),
+						huh.NewOption(detailBackLabel, initDetailActionBack),
+					).
+					Value(&detailAction),
+			).Title("Review Profile"),
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Profile name").
+					Value(&draft.ProfileName).
+					Validate(validateProfileName),
+				huh.NewConfirm().
+					Title("Make this the default profile").
+					Value(&draft.MakeDefault),
+			).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack
+			}).Title("Profile"),
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Git scope").
+					Description("Choose an existing Git scope for this profile or configure a custom one.").
+					Options(gitScopeOptions...).
+					Value(&selectedGitScope),
+				huh.NewInput().
+					Title("Git scope host").
+					Description("The Git host this review profile applies to, such as github.com or github.mycompany.com.").
+					Value(&draft.GitHost).
+					Validate(validateRequiredText("git host is required")),
+				huh.NewSelect[string]().
+					Title("Git scope auth mode").
+					Options(
+						huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
+						huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
+					).
+					Value(&draft.GitAuth),
+			).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack || selectedGitScope != initCustomGitScopeSelection
+			}).Title("Git Scope"),
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Reviewer entity").
+					Description("Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile.").
+					Options(reviewerEntityOptions...).
+					Value(&selectedReviewerEntity),
+				huh.NewSelect[string]().
+					Title("LLM runtime").
+					Description("Choose how reviewer agents run for this profile.").
+					Options(llmRuntimeOptions...).
+					Value(&selectedLLMRuntime),
+				huh.NewSelect[string]().
+					Title("Reviewer model tier").
+					Options(
+						huh.NewOption("Built-in default", ""),
+						huh.NewOption("Small", string(config.ModelTierSmall)),
+						huh.NewOption("Medium", string(config.ModelTierMedium)),
+						huh.NewOption("Large", string(config.ModelTierLarge)),
+					).
+					Value(&draft.LLMReviewerModelTier),
+				huh.NewConfirm().
+					Title("Advanced storage labels").
+					Description("Inspect or override non-secret credential-store labels for Git, reviewer, and LLM secrets.").
+					Value(&draft.AdvancedStorageLabels),
+			).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack
+			}).Title("Review Profile"),
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("LLM provider").
+					Options(
+						huh.NewOption("Anthropic", string(config.LLMProviderAnthropic)),
+						huh.NewOption("OpenAI", string(config.LLMProviderOpenAI)),
+						huh.NewOption("Pi", string(config.LLMProviderPi)),
+					).
+					Value(&draft.LLMProvider),
+				huh.NewSelect[string]().
+					Title("LLM auth mode").
+					Options(
+						huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
+						huh.NewOption("API key", string(config.LLMAuthAPIKey)),
+					).
+					Value(&draft.LLMAuth),
+				huh.NewSelect[string]().
+					Title("LLM adapter").
+					Options(
+						huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
+						huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
+						huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
+						huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
+						huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
+					).
+					Value(&draft.LLMAdapter),
+			).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack || selectedLLMRuntime != initCustomLLMRuntimeSelection
+			}).Title("LLM Runtime Details"),
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Git storage label").
+					Description("Leave blank to use the standard profile-based label.").
+					Value(&draft.GitCredentialRef).
+					Validate(validateOptionalCredentialRef),
+				huh.NewInput().
+					Title("Reviewer storage label").
+					Description("Leave blank to use the standard profile-based label when using separate reviewer credentials.").
+					Value(&draft.ReviewerCredentialRef).
+					Validate(validateOptionalCredentialRef),
+				huh.NewInput().
+					Title("LLM storage label").
+					Description("Leave blank to use the standard profile-based label when using an API-key runtime.").
+					Value(&draft.LLMCredentialRef).
+					Validate(validateOptionalCredentialRef),
+			).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack || !draft.AdvancedStorageLabels
+			}).Title("Advanced Storage Labels"),
+		)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initDraft{}, err
+		}
+		if back || detailAction == initDetailActionBack {
+			if hasProfileChooser {
+				continue
+			}
+			return initDraft{}, errInitNavigateBack
+		}
+		applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
+		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
+		applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, ctx.LLMRuntimes)
+		// Inventory selections fill provider/auth/ref fields; rerunning the mode finalizers applies side effects like clearing refs for self-reviewers or subscription runtimes.
+		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+		selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+		applyReviewerEntitySelection(&draft, reviewerMode)
+		applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+		return draft, nil
+	}
 }
 
 func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDraft {
@@ -1895,6 +2152,7 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 	options = append(options,
 		huh.NewOption("Set secrets now", initCredentialSecretActionSetNow),
 		huh.NewOption("Defer and configure later", initCredentialSecretActionDefer),
+		huh.NewOption("Back to main menu", initCredentialSecretActionBack),
 	)
 	choice := options[0].Value
 	title := fmt.Sprintf("How should init handle %s credentials?", initCredentialPurposeLabel(prompt.Entry.Ref.Purpose))
@@ -1911,9 +2169,13 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 				Options(options...).
 				Value(&choice),
 		),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
 		return "", err
+	}
+	if back {
+		return initCredentialSecretActionBack, nil
 	}
 	return choice, nil
 }
@@ -1930,6 +2192,7 @@ func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) 
 	if prompt.Optional {
 		options = append(options, huh.NewOption("Skip this optional value", initSecretSourceSkip))
 	}
+	options = append(options, huh.NewOption("Back to credential choices", initSecretSourceBack))
 	choice := options[0].Value
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -1938,15 +2201,20 @@ func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) 
 				Options(options...).
 				Value(&choice),
 		),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
 		return "", err
+	}
+	if back {
+		return initSecretSourceBack, nil
 	}
 	return choice, nil
 }
 
 func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string, error) {
 	var value string
+	action := initDetailActionEdit
 	field := huh.NewInput().
 		Title(fmt.Sprintf("Paste %s", prompt.Key)).
 		Description("Secret input is hidden.").
@@ -1956,418 +2224,589 @@ func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string
 	if prompt.Key == credentials.GitHubAppPrivateKeyKey {
 		field.Description("Secret input is hidden. Clipboard is recommended for multi-line private keys.")
 	}
-	form := huh.NewForm(huh.NewGroup(field)).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Secret value").
+				Options(
+					huh.NewOption("Paste secret", initDetailActionEdit),
+					huh.NewOption("Back to secret source choices", initDetailActionBack),
+				).
+				Value(&action),
+		).Title("Secret Value"),
+		huh.NewGroup(field).WithHideFunc(func() bool {
+			return action == initDetailActionBack
+		}).Title("Secret Value"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
 		return "", err
+	}
+	if back || action == initDetailActionBack {
+		return "", errInitSecretValueBack
 	}
 	return credentials.TrimSecretIngress(value), nil
 }
 
 func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initModelMapEdit, error) {
-	action := initModelMapActionPreserve
-	options := []huh.Option[initModelMapAction]{
-		huh.NewOption("Keep current model-map overrides", initModelMapActionPreserve),
-		huh.NewOption("Edit tier mappings", initModelMapActionEdit),
-	}
-	if len(prompt.ModelMap) > 0 {
-		options = append(options, huh.NewOption("Reset all overrides to built-in defaults", initModelMapActionReset))
-	}
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initModelMapAction]().
-				Title("Model-map overrides").
-				Options(options...).
-				Value(&action),
-		),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initModelMapEdit{}, err
-	}
-	switch action {
-	case initModelMapActionPreserve:
-		return initModelMapEdit{Apply: false}, nil
-	case initModelMapActionReset:
-		return initModelMapEdit{Apply: true, ModelMap: nil}, nil
-	case initModelMapActionEdit:
-	default:
-		return initModelMapEdit{}, fmt.Errorf("unsupported model-map action %q", action)
-	}
-
-	existing := copyModelMap(prompt.ModelMap)
-	values := map[config.ModelTier]*string{}
-	fields := make([]huh.Field, 0, len(config.ModelTiers()))
-	builtIns := config.BuiltInModelMap(prompt.LLM.Provider, prompt.LLM.Adapter)
-	for _, tier := range config.ModelTiers() {
-		value := strings.TrimSpace(existing[string(tier)])
-		values[tier] = &value
-		description := initModelMapInputDescription(tier, builtIns[string(tier)])
-		fields = append(fields,
-			huh.NewInput().
-				Title(fmt.Sprintf("%s model", tier)).
-				Description(description).
-				Value(values[tier]),
+	for {
+		action := initModelMapActionPreserve
+		options := []huh.Option[initModelMapAction]{
+			huh.NewOption("Keep current model-map overrides", initModelMapActionPreserve),
+			huh.NewOption("Edit tier mappings", initModelMapActionEdit),
+			huh.NewOption("Back to main menu", initModelMapActionBack),
+		}
+		if len(prompt.ModelMap) > 0 {
+			options = append(options, huh.NewOption("Reset all overrides to built-in defaults", initModelMapActionReset))
+		}
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[initModelMapAction]().
+					Title("Model-map overrides").
+					Options(options...).
+					Value(&action),
+			),
 		)
-	}
-	form = huh.NewForm(huh.NewGroup(fields...).Title("Model tiers")).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initModelMapEdit{}, err
-	}
-	edited := config.ModelMap{}
-	for _, tier := range config.ModelTiers() {
-		value := strings.TrimSpace(*values[tier])
-		if value == "" {
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initModelMapEdit{}, err
+		}
+		if back || action == initModelMapActionBack {
+			return initModelMapEdit{}, errInitNavigateBack
+		}
+		switch action {
+		case initModelMapActionPreserve:
+			return initModelMapEdit{Apply: false}, nil
+		case initModelMapActionReset:
+			return initModelMapEdit{Apply: true, ModelMap: nil}, nil
+		case initModelMapActionEdit:
+		case initModelMapActionBack:
+			return initModelMapEdit{}, errInitNavigateBack
+		default:
+			return initModelMapEdit{}, fmt.Errorf("unsupported model-map action %q", action)
+		}
+
+		detailAction := initDetailActionEdit
+		existing := copyModelMap(prompt.ModelMap)
+		values := map[config.ModelTier]*string{}
+		fields := make([]huh.Field, 0, len(config.ModelTiers()))
+		builtIns := config.BuiltInModelMap(prompt.LLM.Provider, prompt.LLM.Adapter)
+		for _, tier := range config.ModelTiers() {
+			value := strings.TrimSpace(existing[string(tier)])
+			values[tier] = &value
+			description := initModelMapInputDescription(tier, builtIns[string(tier)])
+			fields = append(fields,
+				huh.NewInput().
+					Title(fmt.Sprintf("%s model", tier)).
+					Description(description).
+					Value(values[tier]),
+			)
+		}
+		form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Model tier details").
+					Options(
+						huh.NewOption("Edit tier mappings", initDetailActionEdit),
+						huh.NewOption("Back to model-map choices", initDetailActionBack),
+					).
+					Value(&detailAction),
+			).Title("Model Tiers"),
+			huh.NewGroup(fields...).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack
+			}).Title("Model Tiers"),
+		)
+		back, err = runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initModelMapEdit{}, err
+		}
+		if back || detailAction == initDetailActionBack {
 			continue
 		}
-		edited[string(tier)] = value
+		edited := config.ModelMap{}
+		for _, tier := range config.ModelTiers() {
+			value := strings.TrimSpace(*values[tier])
+			if value == "" {
+				continue
+			}
+			edited[string(tier)] = value
+		}
+		if len(edited) == 0 {
+			edited = nil
+		}
+		return initModelMapEdit{Apply: true, ModelMap: edited}, nil
 	}
-	if len(edited) == 0 {
-		edited = nil
-	}
-	return initModelMapEdit{Apply: true, ModelMap: edited}, nil
 }
 
 func (p huhInitAgentSourcesPrompter) EditAgentSources(prompt initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
-	action := initAgentSourcesActionPreserve
-	options := []huh.Option[initAgentSourcesAction]{
-		huh.NewOption("Keep current agent source paths", initAgentSourcesActionPreserve),
-		huh.NewOption("Edit agent source paths", initAgentSourcesActionEdit),
-	}
-	if len(prompt.Sources) > 0 {
-		options = append(options, huh.NewOption("Reset all agent source paths", initAgentSourcesActionReset))
-	}
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initAgentSourcesAction]().
-				Title("Agent source paths").
-				Options(options...).
-				Value(&action),
-		),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initAgentSourcesEdit{}, err
-	}
-	switch action {
-	case initAgentSourcesActionPreserve:
-		return initAgentSourcesEdit{Apply: false}, nil
-	case initAgentSourcesActionReset:
-		return initAgentSourcesEdit{Apply: true, Sources: nil}, nil
-	case initAgentSourcesActionEdit:
-	default:
-		return initAgentSourcesEdit{}, fmt.Errorf("unsupported agent-sources action %q", action)
-	}
+	for {
+		action := initAgentSourcesActionPreserve
+		options := []huh.Option[initAgentSourcesAction]{
+			huh.NewOption("Keep current agent source paths", initAgentSourcesActionPreserve),
+			huh.NewOption("Edit agent source paths", initAgentSourcesActionEdit),
+			huh.NewOption("Back to main menu", initAgentSourcesActionBack),
+		}
+		if len(prompt.Sources) > 0 {
+			options = append(options, huh.NewOption("Reset all agent source paths", initAgentSourcesActionReset))
+		}
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[initAgentSourcesAction]().
+					Title("Agent source paths").
+					Options(options...).
+					Value(&action),
+			),
+		)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initAgentSourcesEdit{}, err
+		}
+		if back || action == initAgentSourcesActionBack {
+			return initAgentSourcesEdit{}, errInitNavigateBack
+		}
+		switch action {
+		case initAgentSourcesActionPreserve:
+			return initAgentSourcesEdit{Apply: false}, nil
+		case initAgentSourcesActionReset:
+			return initAgentSourcesEdit{Apply: true, Sources: nil}, nil
+		case initAgentSourcesActionEdit:
+		case initAgentSourcesActionBack:
+			return initAgentSourcesEdit{}, errInitNavigateBack
+		default:
+			return initAgentSourcesEdit{}, fmt.Errorf("unsupported agent-sources action %q", action)
+		}
 
-	values := make([]string, len(prompt.Sources))
-	fields := make([]huh.Field, 0, len(values)+1)
-	for i := range prompt.Sources {
-		values[i] = prompt.Sources[i]
+		detailAction := initDetailActionEdit
+		values := make([]string, len(prompt.Sources))
+		fields := make([]huh.Field, 0, len(values)+1)
+		for i := range prompt.Sources {
+			values[i] = prompt.Sources[i]
+			fields = append(fields,
+				huh.NewInput().
+					Title(fmt.Sprintf("Agent source %d", i+1)).
+					Description("Leave blank to remove this path. Paths are normalized before save.").
+					Value(&values[i]),
+			)
+		}
+		var additions string
 		fields = append(fields,
 			huh.NewInput().
-				Title(fmt.Sprintf("Agent source %d", i+1)).
-				Description("Leave blank to remove this path. Paths are normalized before save.").
-				Value(&values[i]),
+				Title("Add agent sources").
+				Description("Optional. Enter comma-separated paths to append.").
+				Value(&additions),
 		)
-	}
-	var additions string
-	fields = append(fields,
-		huh.NewInput().
-			Title("Add agent sources").
-			Description("Optional. Enter comma-separated paths to append.").
-			Value(&additions),
-	)
-	form = huh.NewForm(huh.NewGroup(fields...).Title("Agent sources")).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initAgentSourcesEdit{}, err
-	}
-	edited := make([]string, 0, len(values))
-	for _, value := range values {
-		if strings.TrimSpace(value) == "" {
+		form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Agent source details").
+					Options(
+						huh.NewOption("Edit agent source paths", initDetailActionEdit),
+						huh.NewOption("Back to agent-source choices", initDetailActionBack),
+					).
+					Value(&detailAction),
+			).Title("Agent Sources"),
+			huh.NewGroup(fields...).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack
+			}).Title("Agent Sources"),
+		)
+		back, err = runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initAgentSourcesEdit{}, err
+		}
+		if back || detailAction == initDetailActionBack {
 			continue
 		}
-		edited = append(edited, value)
-	}
-	for _, value := range strings.Split(additions, ",") {
-		if strings.TrimSpace(value) == "" {
-			continue
+		edited := make([]string, 0, len(values))
+		for _, value := range values {
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			edited = append(edited, value)
 		}
-		edited = append(edited, value)
+		for _, value := range strings.Split(additions, ",") {
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			edited = append(edited, value)
+		}
+		if len(edited) == 0 {
+			edited = nil
+		}
+		return initAgentSourcesEdit{Apply: true, Sources: edited}, nil
 	}
-	if len(edited) == 0 {
-		edited = nil
-	}
-	return initAgentSourcesEdit{Apply: true, Sources: edited}, nil
 }
 
 func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
-	action := initReviewPolicyActionPreserve
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initReviewPolicyAction]().
-				Title("Review policy").
-				Options(
-					huh.NewOption("Keep current review policy", initReviewPolicyActionPreserve),
-					huh.NewOption("Edit review policy", initReviewPolicyActionEdit),
-				).
-				Value(&action),
-		),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initReviewPolicyEdit{}, err
-	}
-	if action == initReviewPolicyActionPreserve {
-		return initReviewPolicyEdit{Apply: false}, nil
-	}
-	if action != initReviewPolicyActionEdit {
-		return initReviewPolicyEdit{}, fmt.Errorf("unsupported review-policy action %q", action)
-	}
+	for {
+		action := initReviewPolicyActionPreserve
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[initReviewPolicyAction]().
+					Title("Review policy").
+					Options(
+						huh.NewOption("Keep current review policy", initReviewPolicyActionPreserve),
+						huh.NewOption("Edit review policy", initReviewPolicyActionEdit),
+						huh.NewOption("Back to main menu", initReviewPolicyActionBack),
+					).
+					Value(&action),
+			),
+		)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initReviewPolicyEdit{}, err
+		}
+		if back || action == initReviewPolicyActionBack {
+			return initReviewPolicyEdit{}, errInitNavigateBack
+		}
+		if action == initReviewPolicyActionPreserve {
+			return initReviewPolicyEdit{Apply: false}, nil
+		}
+		if action != initReviewPolicyActionEdit {
+			return initReviewPolicyEdit{}, fmt.Errorf("unsupported review-policy action %q", action)
+		}
 
-	policy := prompt.ReviewPolicy
-	if policy.MajorEvent == "" {
-		policy.MajorEvent = config.ReviewMajorEventComment
+		detailAction := initDetailActionEdit
+		policy := prompt.ReviewPolicy
+		if policy.MajorEvent == "" {
+			policy.MajorEvent = config.ReviewMajorEventComment
+		}
+		majorEvent := policy.MajorEvent
+		selfApprove := policy.AllowSelfApprove
+		resolveThreads := string(policy.ResolveThreads)
+		resolveAfter := policy.ResolveAfter
+		form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Review policy details").
+					Options(
+						huh.NewOption("Edit review policy", initDetailActionEdit),
+						huh.NewOption("Back to review-policy choices", initDetailActionBack),
+					).
+					Value(&detailAction),
+			).Title("Review Policy"),
+			huh.NewGroup(
+				huh.NewSelect[config.ReviewMajorEvent]().
+					Title("Major findings event").
+					Options(
+						huh.NewOption("Comment", config.ReviewMajorEventComment),
+						huh.NewOption("Request changes", config.ReviewMajorEventRequestChanges),
+					).
+					Value(&majorEvent),
+				huh.NewConfirm().
+					Title("Allow self-approve").
+					Value(&selfApprove),
+				huh.NewSelect[string]().
+					Title("Resolve threads").
+					Options(
+						huh.NewOption("Use built-in default", ""),
+						huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
+						huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
+					).
+					Value(&resolveThreads),
+				huh.NewInput().
+					Title("Resolve-after duration").
+					Description("Optional. Leave blank to clear. Example: 24h or 30m.").
+					Value(&resolveAfter).
+					Validate(validateOptionalDuration),
+			).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack
+			}).Title("Review Policy"),
+		)
+		back, err = runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initReviewPolicyEdit{}, err
+		}
+		if back || detailAction == initDetailActionBack {
+			continue
+		}
+		return initReviewPolicyEdit{
+			Apply: true,
+			ReviewPolicy: config.ReviewPolicy{
+				MajorEvent:       majorEvent,
+				AllowSelfApprove: selfApprove,
+				ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(resolveThreads)),
+				ResolveAfter:     strings.TrimSpace(resolveAfter),
+			},
+		}, nil
 	}
-	majorEvent := policy.MajorEvent
-	selfApprove := policy.AllowSelfApprove
-	resolveThreads := string(policy.ResolveThreads)
-	resolveAfter := policy.ResolveAfter
-	form = huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[config.ReviewMajorEvent]().
-				Title("Major findings event").
-				Options(
-					huh.NewOption("Comment", config.ReviewMajorEventComment),
-					huh.NewOption("Request changes", config.ReviewMajorEventRequestChanges),
-				).
-				Value(&majorEvent),
-			huh.NewConfirm().
-				Title("Allow self-approve").
-				Value(&selfApprove),
-			huh.NewSelect[string]().
-				Title("Resolve threads").
-				Options(
-					huh.NewOption("Use built-in default", ""),
-					huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
-					huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
-				).
-				Value(&resolveThreads),
-			huh.NewInput().
-				Title("Resolve-after duration").
-				Description("Optional. Leave blank to clear. Example: 24h or 30m.").
-				Value(&resolveAfter).
-				Validate(validateOptionalDuration),
-		).Title("Review policy"),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initReviewPolicyEdit{}, err
-	}
-	return initReviewPolicyEdit{
-		Apply: true,
-		ReviewPolicy: config.ReviewPolicy{
-			MajorEvent:       majorEvent,
-			AllowSelfApprove: selfApprove,
-			ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(resolveThreads)),
-			ResolveAfter:     strings.TrimSpace(resolveAfter),
-		},
-	}, nil
 }
 
 func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEdit, error) {
-	action := initRoutesActionPreserve
-	options := []huh.Option[initRoutesAction]{
-		huh.NewOption("Keep current repository routes", initRoutesActionPreserve),
-		huh.NewOption("Edit repository routes", initRoutesActionEdit),
-	}
-	if len(prompt.Routes) > 0 {
-		options = append(options, huh.NewOption("Remove all routes for this profile", initRoutesActionReset))
-	}
-	if prompt.HostChanged && len(prompt.Routes) > 0 {
-		options = []huh.Option[initRoutesAction]{
-			huh.NewOption("Reconcile repository routes", initRoutesActionEdit),
-			huh.NewOption("Remove all routes for this profile", initRoutesActionReset),
+	for {
+		action := initRoutesActionPreserve
+		options := []huh.Option[initRoutesAction]{
+			huh.NewOption("Keep current repository routes", initRoutesActionPreserve),
+			huh.NewOption("Edit repository routes", initRoutesActionEdit),
+			huh.NewOption("Back to main menu", initRoutesActionBack),
 		}
-		action = initRoutesActionEdit
-	}
-	routeText := formatInitRouteSpecs(prompt.Routes)
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initRoutesAction]().
-				Title("Repository routes").
-				Options(options...).
-				Value(&action),
-		),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initRoutesEdit{}, err
-	}
-	switch action {
-	case initRoutesActionPreserve:
-		return initRoutesEdit{Apply: false}, nil
-	case initRoutesActionReset:
-		return initRoutesEdit{Apply: true, Routes: nil}, nil
-	case initRoutesActionEdit:
-	default:
-		return initRoutesEdit{}, fmt.Errorf("unsupported routes action %q", action)
-	}
+		if len(prompt.Routes) > 0 {
+			options = append(options, huh.NewOption("Remove all routes for this profile", initRoutesActionReset))
+		}
+		if prompt.HostChanged && len(prompt.Routes) > 0 {
+			options = []huh.Option[initRoutesAction]{
+				huh.NewOption("Reconcile repository routes", initRoutesActionEdit),
+				huh.NewOption("Remove all routes for this profile", initRoutesActionReset),
+				huh.NewOption("Back to main menu", initRoutesActionBack),
+			}
+			action = initRoutesActionEdit
+		}
+		routeText := formatInitRouteSpecs(prompt.Routes)
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[initRoutesAction]().
+					Title("Repository routes").
+					Options(options...).
+					Value(&action),
+			),
+		)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initRoutesEdit{}, err
+		}
+		if back || action == initRoutesActionBack {
+			return initRoutesEdit{}, errInitNavigateBack
+		}
+		switch action {
+		case initRoutesActionPreserve:
+			return initRoutesEdit{Apply: false}, nil
+		case initRoutesActionReset:
+			return initRoutesEdit{Apply: true, Routes: nil}, nil
+		case initRoutesActionEdit:
+		case initRoutesActionBack:
+			return initRoutesEdit{}, errInitNavigateBack
+		default:
+			return initRoutesEdit{}, fmt.Errorf("unsupported routes action %q", action)
+		}
 
-	fields := []huh.Field{}
-	if prompt.HostChanged && len(prompt.Routes) > 0 {
-		fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
+		detailAction := initDetailActionEdit
+		fields := []huh.Field{}
+		if prompt.HostChanged && len(prompt.Routes) > 0 {
+			fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
+		}
+		fields = append(fields,
+			huh.NewText().
+				Title("Repository routes").
+				Description("One route per line. Use host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.").
+				Value(&routeText),
+		)
+		form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Repository route details").
+					Options(
+						huh.NewOption("Edit repository routes", initDetailActionEdit),
+						huh.NewOption("Back to repository-route choices", initDetailActionBack),
+					).
+					Value(&detailAction),
+			).Title("Routes"),
+			huh.NewGroup(fields...).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack
+			}).Title("Routes"),
+		)
+		back, err = runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initRoutesEdit{}, err
+		}
+		if back || detailAction == initDetailActionBack {
+			continue
+		}
+		routes, err := parseInitRouteSpecs(routeText)
+		if err != nil {
+			return initRoutesEdit{}, err
+		}
+		return initRoutesEdit{Apply: true, Routes: routes}, nil
 	}
-	fields = append(fields,
-		huh.NewText().
-			Title("Repository routes").
-			Description("One route per line. Use host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.").
-			Value(&routeText),
-	)
-	group := huh.NewGroup(fields...).Title("Routes")
-	form = huh.NewForm(group).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initRoutesEdit{}, err
-	}
-	routes, err := parseInitRouteSpecs(routeText)
-	if err != nil {
-		return initRoutesEdit{}, err
-	}
-	return initRoutesEdit{Apply: true, Routes: routes}, nil
 }
 
 func (p huhInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
-	action := initRetentionActionPreserve
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initRetentionAction]().
-				Title("Data retention").
-				Options(
-					huh.NewOption("Keep current retention settings", initRetentionActionPreserve),
-					huh.NewOption("Edit retention settings", initRetentionActionEdit),
-					huh.NewOption("Reset retention to defaults", initRetentionActionReset),
-				).
-				Value(&action),
-		),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initRetentionEdit{}, err
-	}
-	switch action {
-	case initRetentionActionPreserve:
-		return initRetentionEdit{Apply: false}, nil
-	case initRetentionActionReset:
-		return initRetentionEdit{Apply: true, Retention: config.DefaultRetentionConfig()}, nil
-	case initRetentionActionEdit:
-	default:
-		return initRetentionEdit{}, fmt.Errorf("unsupported retention action %q", action)
-	}
-
-	retention := prompt.Retention
-	mode := initRetentionMaxAgeDefault
-	customDays := ""
-	switch {
-	case retention.MaxAgeDays != nil && *retention.MaxAgeDays == 0:
-		mode = initRetentionMaxAgeForever
-	case retention.MaxAgeDays != nil && *retention.MaxAgeDays != config.DefaultRetentionConfig().MaxAgeDaysValue():
-		mode = initRetentionMaxAgeCustom
-		customDays = fmt.Sprintf("%d", *retention.MaxAgeDays)
-	}
-	enforcement := string(retention.Enforcement)
-	if enforcement == "" {
-		enforcement = string(config.RetentionAtWrite)
-	}
-	form = huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initRetentionMaxAgeMode]().
-				Title("Maximum run-data age").
-				Options(
-					huh.NewOption("Default 90 days", initRetentionMaxAgeDefault),
-					huh.NewOption("Keep forever", initRetentionMaxAgeForever),
-					huh.NewOption("Custom days", initRetentionMaxAgeCustom),
-				).
-				Value(&mode),
-			huh.NewInput().
-				Title("Custom max age in days").
-				Description("Required only when using a custom max age. Use 0 from the mode selector for keep forever.").
-				Value(&customDays).
-				Validate(func(value string) error {
-					if mode != initRetentionMaxAgeCustom {
-						return nil
-					}
-					return validateRetentionMaxAgeDays(value)
-				}),
-			huh.NewSelect[string]().
-				Title("Retention enforcement").
-				Options(
-					huh.NewOption("At write", string(config.RetentionAtWrite)),
-					huh.NewOption("Manual only", string(config.RetentionManualOnly)),
-				).
-				Value(&enforcement),
-		).Title("Retention"),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initRetentionEdit{}, err
-	}
-	next := config.RetentionConfig{
-		Enforcement: config.RetentionEnforcement(strings.TrimSpace(enforcement)),
-	}
-	switch mode {
-	case initRetentionMaxAgeDefault:
-		defaultDays := config.DefaultRetentionConfig().MaxAgeDaysValue()
-		next.MaxAgeDays = &defaultDays
-	case initRetentionMaxAgeForever:
-		keepForever := 0
-		next.MaxAgeDays = &keepForever
-	case initRetentionMaxAgeCustom:
-		days, err := parseInteractiveRetentionMaxAgeDays(customDays)
+	for {
+		action := initRetentionActionPreserve
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[initRetentionAction]().
+					Title("Data retention").
+					Options(
+						huh.NewOption("Keep current retention settings", initRetentionActionPreserve),
+						huh.NewOption("Edit retention settings", initRetentionActionEdit),
+						huh.NewOption("Reset retention to defaults", initRetentionActionReset),
+						huh.NewOption("Back to main menu", initRetentionActionBack),
+					).
+					Value(&action),
+			),
+		)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
 		if err != nil {
 			return initRetentionEdit{}, err
 		}
-		next.MaxAgeDays = &days
-	default:
-		return initRetentionEdit{}, fmt.Errorf("unsupported retention max-age mode %q", mode)
+		if back || action == initRetentionActionBack {
+			return initRetentionEdit{}, errInitNavigateBack
+		}
+		switch action {
+		case initRetentionActionPreserve:
+			return initRetentionEdit{Apply: false}, nil
+		case initRetentionActionReset:
+			return initRetentionEdit{Apply: true, Retention: config.DefaultRetentionConfig()}, nil
+		case initRetentionActionEdit:
+		case initRetentionActionBack:
+			return initRetentionEdit{}, errInitNavigateBack
+		default:
+			return initRetentionEdit{}, fmt.Errorf("unsupported retention action %q", action)
+		}
+
+		detailAction := initDetailActionEdit
+		retention := prompt.Retention
+		mode := initRetentionMaxAgeDefault
+		customDays := ""
+		switch {
+		case retention.MaxAgeDays != nil && *retention.MaxAgeDays == 0:
+			mode = initRetentionMaxAgeForever
+		case retention.MaxAgeDays != nil && *retention.MaxAgeDays != config.DefaultRetentionConfig().MaxAgeDaysValue():
+			mode = initRetentionMaxAgeCustom
+			customDays = fmt.Sprintf("%d", *retention.MaxAgeDays)
+		}
+		enforcement := string(retention.Enforcement)
+		if enforcement == "" {
+			enforcement = string(config.RetentionAtWrite)
+		}
+		form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Retention details").
+					Options(
+						huh.NewOption("Edit retention settings", initDetailActionEdit),
+						huh.NewOption("Back to retention choices", initDetailActionBack),
+					).
+					Value(&detailAction),
+			).Title("Retention"),
+			huh.NewGroup(
+				huh.NewSelect[initRetentionMaxAgeMode]().
+					Title("Maximum run-data age").
+					Options(
+						huh.NewOption("Default 90 days", initRetentionMaxAgeDefault),
+						huh.NewOption("Keep forever", initRetentionMaxAgeForever),
+						huh.NewOption("Custom days", initRetentionMaxAgeCustom),
+					).
+					Value(&mode),
+				huh.NewInput().
+					Title("Custom max age in days").
+					Description("Required only when using a custom max age. Use 0 from the mode selector for keep forever.").
+					Value(&customDays).
+					Validate(func(value string) error {
+						if mode != initRetentionMaxAgeCustom {
+							return nil
+						}
+						return validateRetentionMaxAgeDays(value)
+					}),
+				huh.NewSelect[string]().
+					Title("Retention enforcement").
+					Options(
+						huh.NewOption("At write", string(config.RetentionAtWrite)),
+						huh.NewOption("Manual only", string(config.RetentionManualOnly)),
+					).
+					Value(&enforcement),
+			).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack
+			}).Title("Retention"),
+		)
+		back, err = runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initRetentionEdit{}, err
+		}
+		if back || detailAction == initDetailActionBack {
+			continue
+		}
+		next := config.RetentionConfig{
+			Enforcement: config.RetentionEnforcement(strings.TrimSpace(enforcement)),
+		}
+		switch mode {
+		case initRetentionMaxAgeDefault:
+			defaultDays := config.DefaultRetentionConfig().MaxAgeDaysValue()
+			next.MaxAgeDays = &defaultDays
+		case initRetentionMaxAgeForever:
+			keepForever := 0
+			next.MaxAgeDays = &keepForever
+		case initRetentionMaxAgeCustom:
+			days, err := parseInteractiveRetentionMaxAgeDays(customDays)
+			if err != nil {
+				return initRetentionEdit{}, err
+			}
+			next.MaxAgeDays = &days
+		default:
+			return initRetentionEdit{}, fmt.Errorf("unsupported retention max-age mode %q", mode)
+		}
+		return initRetentionEdit{Apply: true, Retention: next}, nil
 	}
-	return initRetentionEdit{Apply: true, Retention: next}, nil
 }
 
 func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
-	action := initKeyringBackendActionPreserve
-	options := []huh.Option[initKeyringBackendAction]{
-		huh.NewOption("Keep current keyring backend", initKeyringBackendActionPreserve),
-		huh.NewOption("Set keyring backend", initKeyringBackendActionEdit),
-	}
-	if strings.TrimSpace(prompt.Backend) != "" {
-		options = append(options, huh.NewOption("Reset backend to auto selection", initKeyringBackendActionReset))
-	}
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initKeyringBackendAction]().
-				Title("Keyring backend").
-				Options(options...).
-				Value(&action),
-		),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initKeyringBackendEdit{}, err
-	}
-	switch action {
-	case initKeyringBackendActionPreserve:
-		return initKeyringBackendEdit{Apply: false}, nil
-	case initKeyringBackendActionReset:
-		return initKeyringBackendEdit{Apply: true, Backend: ""}, nil
-	case initKeyringBackendActionEdit:
-	default:
-		return initKeyringBackendEdit{}, fmt.Errorf("unsupported keyring-backend action %q", action)
-	}
+	for {
+		action := initKeyringBackendActionPreserve
+		options := []huh.Option[initKeyringBackendAction]{
+			huh.NewOption("Keep current keyring backend", initKeyringBackendActionPreserve),
+			huh.NewOption("Set keyring backend", initKeyringBackendActionEdit),
+			huh.NewOption("Back to main menu", initKeyringBackendActionBack),
+		}
+		if strings.TrimSpace(prompt.Backend) != "" {
+			options = append(options, huh.NewOption("Reset backend to auto selection", initKeyringBackendActionReset))
+		}
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[initKeyringBackendAction]().
+					Title("Keyring backend").
+					Options(options...).
+					Value(&action),
+			),
+		)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initKeyringBackendEdit{}, err
+		}
+		if back || action == initKeyringBackendActionBack {
+			return initKeyringBackendEdit{}, errInitNavigateBack
+		}
+		switch action {
+		case initKeyringBackendActionPreserve:
+			return initKeyringBackendEdit{Apply: false}, nil
+		case initKeyringBackendActionReset:
+			return initKeyringBackendEdit{Apply: true, Backend: ""}, nil
+		case initKeyringBackendActionEdit:
+		case initKeyringBackendActionBack:
+			return initKeyringBackendEdit{}, errInitNavigateBack
+		default:
+			return initKeyringBackendEdit{}, fmt.Errorf("unsupported keyring-backend action %q", action)
+		}
 
-	backend := strings.TrimSpace(prompt.Backend)
-	form = huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Persistent keyring backend").
-				Description("Examples include file or memory. Leave runtime-only --backend choices out unless you want them saved.").
-				Value(&backend).
-				Validate(validateRequiredText("keyring backend is required")),
-		).Title("Keyring"),
-	).WithInput(p.stdin).WithOutput(p.stderr)
-	if err := form.Run(); err != nil {
-		return initKeyringBackendEdit{}, err
+		detailAction := initDetailActionEdit
+		backend := strings.TrimSpace(prompt.Backend)
+		form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Keyring backend details").
+					Options(
+						huh.NewOption("Set keyring backend", initDetailActionEdit),
+						huh.NewOption("Back to keyring choices", initDetailActionBack),
+					).
+					Value(&detailAction),
+			).Title("Keyring"),
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Persistent keyring backend").
+					Description("Examples include file or memory. Leave runtime-only --backend choices out unless you want them saved.").
+					Value(&backend).
+					Validate(validateRequiredText("keyring backend is required")),
+			).WithHideFunc(func() bool {
+				return detailAction == initDetailActionBack
+			}).Title("Keyring"),
+		)
+		back, err = runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initKeyringBackendEdit{}, err
+		}
+		if back || detailAction == initDetailActionBack {
+			continue
+		}
+		return initKeyringBackendEdit{Apply: true, Backend: strings.TrimSpace(backend)}, nil
 	}
-	return initKeyringBackendEdit{Apply: true, Backend: strings.TrimSpace(backend)}, nil
 }
 
 func initModelMapInputDescription(tier config.ModelTier, builtIn string) string {
@@ -3817,120 +4256,148 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			continue
 		case initCredentialPlanStateDefer, initCredentialPlanStateMissingRequired, initCredentialPlanStateOverwriteRef:
 		}
-		action, err := prompter.ChooseCredentialAction(initCredentialSecretPrompt{
-			Entry:              entry,
-			ClipboardSupported: deps.clipboardSupported(),
-		})
-		if err != nil {
-			return initWorkspaceDraft{}, err
-		}
-		if action == initCredentialSecretActionDefer {
-			continue
-		}
-		activeStore, err := openStore()
-		if err != nil {
-			return initWorkspaceDraft{}, cmderr.Credential(err)
-		}
-		targetKeys, err := existingInitCredentialKeys(activeStore, entry.Ref.Ref)
-		if err != nil {
-			return initWorkspaceDraft{}, cmderr.Credential(err)
-		}
-		targetStatus, err := credentials.CredentialRefStatus(activeStore, entry.Ref, nil)
-		if err != nil {
-			return initWorkspaceDraft{}, cmderr.Credential(err)
-		}
-		targetHasRequired := credentials.RequiredKeysSatisfied(targetStatus)
-		targetHasAnyKeys := len(targetKeys) > 0
-		if action == initCredentialSecretActionSetNow && targetHasAnyKeys {
-			action, err = prompter.ChooseCredentialAction(initCredentialSecretPrompt{
+	credentialChoices:
+		for {
+			action, err := prompter.ChooseCredentialAction(initCredentialSecretPrompt{
 				Entry:              entry,
-				TargetHasRequired:  targetHasRequired,
-				TargetHasAnyKeys:   targetHasAnyKeys,
 				ClipboardSupported: deps.clipboardSupported(),
 			})
 			if err != nil {
 				return initWorkspaceDraft{}, err
 			}
-		}
-		if action == initCredentialSecretActionKeep {
-			if !targetHasRequired {
-				return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential ref %q does not have all required keys", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
+			if action == initCredentialSecretActionBack {
+				return initWorkspaceDraft{}, errInitNavigateBack
 			}
-			plan.satisfiedRefs[entry.Ref.Ref] = true
-			continue
-		}
-		if action == initCredentialSecretActionDefer {
-			continue
-		}
-		if action != initCredentialSecretActionSetNow {
-			return initWorkspaceDraft{}, fmt.Errorf("unsupported interactive secret action %q", action)
-		}
-
-		overwriteRef := false
-		for _, spec := range entry.KeySpecs {
-			targetHasKey := targetKeys[spec.Key]
-			source, err := prompter.ChooseSecretSource(initSecretValuePrompt{
-				Entry:              entry,
-				Key:                spec.Key,
-				Optional:           !spec.Required,
-				TargetHasKey:       targetHasKey,
-				ClipboardSupported: deps.clipboardSupported(),
-			})
+			if action == initCredentialSecretActionDefer {
+				break
+			}
+			activeStore, err := openStore()
 			if err != nil {
-				return initWorkspaceDraft{}, err
+				return initWorkspaceDraft{}, cmderr.Credential(err)
 			}
-			switch source {
-			case initSecretSourceKeepExisting:
-				if !targetHasKey {
-					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential key %q does not exist for ref %q", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key, entry.Ref.Ref))
-				}
-				continue
-			case initSecretSourceSkip:
-				if spec.Required {
-					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential key %q is required", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key))
-				}
-				continue
-			case initSecretSourceClipboard:
-				value, err := deps.clipboardRead()
-				if err != nil {
-					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("read clipboard: %w", err))
-				}
-				value = credentials.TrimSecretIngress(value)
-				if value == "" {
-					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("clipboard supplied an empty secret"))
-				}
-				addWrite(plan.writes, entry.Ref.Ref, spec.Key, value)
-			case initSecretSourcePaste:
-				value, err := prompter.PasteSecret(initSecretValuePrompt{
+			targetKeys, err := existingInitCredentialKeys(activeStore, entry.Ref.Ref)
+			if err != nil {
+				return initWorkspaceDraft{}, cmderr.Credential(err)
+			}
+			targetStatus, err := credentials.CredentialRefStatus(activeStore, entry.Ref, nil)
+			if err != nil {
+				return initWorkspaceDraft{}, cmderr.Credential(err)
+			}
+			targetHasRequired := credentials.RequiredKeysSatisfied(targetStatus)
+			targetHasAnyKeys := len(targetKeys) > 0
+			if action == initCredentialSecretActionSetNow && targetHasAnyKeys {
+				action, err = prompter.ChooseCredentialAction(initCredentialSecretPrompt{
 					Entry:              entry,
-					Key:                spec.Key,
-					Optional:           !spec.Required,
-					TargetHasKey:       targetHasKey,
+					TargetHasRequired:  targetHasRequired,
+					TargetHasAnyKeys:   targetHasAnyKeys,
 					ClipboardSupported: deps.clipboardSupported(),
 				})
 				if err != nil {
 					return initWorkspaceDraft{}, err
 				}
-				value = credentials.TrimSecretIngress(value)
-				if value == "" {
-					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("pasted secret for %q is empty", spec.Key))
+				if action == initCredentialSecretActionBack {
+					return initWorkspaceDraft{}, errInitNavigateBack
 				}
-				addWrite(plan.writes, entry.Ref.Ref, spec.Key, value)
-			default:
-				return initWorkspaceDraft{}, fmt.Errorf("unsupported interactive secret source %q", source)
 			}
-			if targetHasKey {
-				overwriteRef = true
+			if action == initCredentialSecretActionKeep {
+				if !targetHasRequired {
+					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential ref %q does not have all required keys", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
+				}
+				plan.satisfiedRefs[entry.Ref.Ref] = true
+				break
 			}
+			if action == initCredentialSecretActionDefer {
+				break
+			}
+			if action != initCredentialSecretActionSetNow {
+				return initWorkspaceDraft{}, fmt.Errorf("unsupported interactive secret action %q", action)
+			}
+
+			overwriteRef := false
+			entryWrites := map[string]map[string]string{
+				entry.Ref.Ref: copyStringMap(plan.writes[entry.Ref.Ref]),
+			}
+			for _, spec := range entry.KeySpecs {
+			sourceChoices:
+				for {
+					targetHasKey := targetKeys[spec.Key]
+					source, err := prompter.ChooseSecretSource(initSecretValuePrompt{
+						Entry:              entry,
+						Key:                spec.Key,
+						Optional:           !spec.Required,
+						TargetHasKey:       targetHasKey,
+						ClipboardSupported: deps.clipboardSupported(),
+					})
+					if err != nil {
+						return initWorkspaceDraft{}, err
+					}
+					if source == initSecretSourceBack {
+						continue credentialChoices
+					}
+					switch source {
+					case initSecretSourceKeepExisting:
+						if !targetHasKey {
+							return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential key %q does not exist for ref %q", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key, entry.Ref.Ref))
+						}
+					case initSecretSourceSkip:
+						if spec.Required {
+							return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential key %q is required", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key))
+						}
+					case initSecretSourceClipboard:
+						value, err := deps.clipboardRead()
+						if err != nil {
+							return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("read clipboard: %w", err))
+						}
+						value = credentials.TrimSecretIngress(value)
+						if value == "" {
+							return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("clipboard supplied an empty secret"))
+						}
+						addWrite(entryWrites, entry.Ref.Ref, spec.Key, value)
+					case initSecretSourcePaste:
+						value, err := prompter.PasteSecret(initSecretValuePrompt{
+							Entry:              entry,
+							Key:                spec.Key,
+							Optional:           !spec.Required,
+							TargetHasKey:       targetHasKey,
+							ClipboardSupported: deps.clipboardSupported(),
+						})
+						if errors.Is(err, errInitSecretValueBack) {
+							continue sourceChoices
+						}
+						if err != nil {
+							return initWorkspaceDraft{}, err
+						}
+						value = credentials.TrimSecretIngress(value)
+						if value == "" {
+							return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("pasted secret for %q is empty", spec.Key))
+						}
+						addWrite(entryWrites, entry.Ref.Ref, spec.Key, value)
+					case initSecretSourceBack:
+						continue credentialChoices
+					default:
+						return initWorkspaceDraft{}, fmt.Errorf("unsupported interactive secret source %q", source)
+					}
+					if targetHasKey {
+						overwriteRef = true
+					}
+					break
+				}
+			}
+			planned := entryWrites[entry.Ref.Ref]
+			if !initCredentialWritePlanSatisfiesEntry(entry, targetKeys, planned) {
+				return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential ref %q still needs required keys; keep existing values or defer instead", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
+			}
+			if len(planned) == 0 {
+				delete(plan.writes, entry.Ref.Ref)
+			} else {
+				plan.writes[entry.Ref.Ref] = planned
+			}
+			if overwriteRef {
+				plan.overwriteRefs[entry.Ref.Ref] = true
+			}
+			plan.satisfiedRefs[entry.Ref.Ref] = true
+			break
 		}
-		planned := plan.writes[entry.Ref.Ref]
-		if !initCredentialWritePlanSatisfiesEntry(entry, targetKeys, planned) {
-			return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential ref %q still needs required keys; keep existing values or defer instead", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
-		}
-		if overwriteRef {
-			plan.overwriteRefs[entry.Ref.Ref] = true
-		}
-		plan.satisfiedRefs[entry.Ref.Ref] = true
 	}
 	plan.credentialPlan = refreshInteractiveCredentialPlan(plan.credentialPlan, projectInitPlannedWriteKeys(plan.writes), plan.satisfiedRefs)
 	if hasDeferredLLMCredential(plan.credentialPlan) {
@@ -4071,6 +4538,17 @@ func copyModelMap(modelMap config.ModelMap) config.ModelMap {
 	copied := make(config.ModelMap, len(modelMap))
 	for tier, model := range modelMap {
 		copied[tier] = model
+	}
+	return copied
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	copied := make(map[string]string, len(values))
+	for key, value := range values {
+		copied[key] = value
 	}
 	return copied
 }
