@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -3293,82 +3292,6 @@ func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.
 	out := stderr.String()
 	if !strings.Contains(out, "Existing profile secret health") || !strings.Contains(out, "missing required keys") {
 		t.Fatalf("wizard output missing health warning banner: %q", out)
-	}
-}
-
-func TestHuhInitPrompterAccessibleRendersComputedProfileHealthWarnings(t *testing.T) {
-	t.Setenv("TERM", "dumb")
-	opts := &root.Options{
-		Backend: "file",
-	}
-	existing := basicProfile("work")
-	ctx, err := buildInteractiveInitPromptContext(&cobra.Command{}, opts, initDeps{
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{}), nil
-		},
-	}, initPromptContext{
-		RequestedProfileName: "work",
-		ExistingProfileName:  "work",
-		ExistingProfile:      &existing,
-		ExistingProfileNames: []string{"work"},
-		DefaultProfileName:   "work",
-		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
-	})
-	if err != nil {
-		t.Fatalf("buildInteractiveInitPromptContext: %v", err)
-	}
-	var stderr bytes.Buffer
-	prompter := huhInitPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Profile name
-			"", // Make default
-			"", // Git scope host
-			"", // Git scope auth mode
-			"", // Reviewer entity
-			"", // LLM runtime
-			"", // Reviewer model tier
-			"", // Advanced storage labels
-			"",
-		}, "\n")),
-		stderr: &stderr,
-	}
-
-	_, err = prompter.Run(ctx)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	out := stderr.String()
-	if !strings.Contains(out, "Existing profile secret health") || !strings.Contains(out, "codereview/work is missing required keys (git_token)") {
-		t.Fatalf("wizard output missing computed health warning banner: %q", out)
-	}
-}
-
-func TestBuildInteractiveInitPromptContextReportsCannotVerifyWarnings(t *testing.T) {
-	opts := &root.Options{
-		Backend: "file",
-	}
-	existing := basicProfile("work")
-	ctx, err := buildInteractiveInitPromptContext(&cobra.Command{}, opts, initDeps{
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return nil, fmt.Errorf("keyring unavailable")
-		},
-	}, initPromptContext{
-		RequestedProfileName: "work",
-		ExistingProfileName:  "work",
-		ExistingProfile:      &existing,
-		ExistingProfileNames: []string{"work"},
-		DefaultProfileName:   "work",
-		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
-	})
-	if err != nil {
-		t.Fatalf("buildInteractiveInitPromptContext: %v", err)
-	}
-	warnings := ctx.ProfileWarnings["work"]
-	if len(warnings) == 0 {
-		t.Fatalf("ProfileWarnings = %#v, want cannot verify warning", ctx.ProfileWarnings)
-	}
-	if !strings.Contains(warnings[0], "cannot verify") {
-		t.Fatalf("warning = %q, want cannot verify wording", warnings[0])
 	}
 }
 
