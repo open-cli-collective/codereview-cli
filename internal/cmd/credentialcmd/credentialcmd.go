@@ -1499,13 +1499,13 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 			return initDraft{}, errInitNavigateBack
 		}
 
-		working := draft
+		candidateDraft := draft
 		if choice != initCustomLLMRuntimeSelection {
-			applyLLMRuntimeInventorySelection(&working, choice, prompt.Context.LLMRuntimes)
-			resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(working).Preset)
-			applyLLMRuntimeSelection(&working, resolvedRuntimePreset)
+			applyLLMRuntimeInventorySelection(&candidateDraft, choice, prompt.Context.LLMRuntimes)
+			resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(candidateDraft).Preset)
+			applyLLMRuntimeSelection(&candidateDraft, resolvedRuntimePreset)
 		}
-		detailDraft := working
+		detailDraft := candidateDraft
 		back, err = p.editLLMRuntimeDetails(&detailDraft)
 		if err != nil {
 			return initDraft{}, err
@@ -1598,11 +1598,11 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 		if back || choice == initBackSelection {
 			return initDraft{}, errInitNavigateBack
 		}
-		working := draft
-		applyReviewerEntityInventorySelection(&working, choice, prompt.Context.ReviewerEntities)
-		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(working).Kind)
-		applyReviewerEntitySelection(&working, reviewerMode)
-		detailDraft := working
+		candidateDraft := draft
+		applyReviewerEntityInventorySelection(&candidateDraft, choice, prompt.Context.ReviewerEntities)
+		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(candidateDraft).Kind)
+		applyReviewerEntitySelection(&candidateDraft, reviewerMode)
+		detailDraft := candidateDraft
 		back, err = p.editReviewerEntityDetails(&detailDraft)
 		if err != nil {
 			return initDraft{}, err
@@ -2280,6 +2280,8 @@ func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initMo
 		case initModelMapActionReset:
 			return initModelMapEdit{Apply: true, ModelMap: nil}, nil
 		case initModelMapActionEdit:
+		case initModelMapActionBack:
+			return initModelMapEdit{}, errInitNavigateBack
 		default:
 			return initModelMapEdit{}, fmt.Errorf("unsupported model-map action %q", action)
 		}
@@ -2368,6 +2370,8 @@ func (p huhInitAgentSourcesPrompter) EditAgentSources(prompt initAgentSourcesPro
 		case initAgentSourcesActionReset:
 			return initAgentSourcesEdit{Apply: true, Sources: nil}, nil
 		case initAgentSourcesActionEdit:
+		case initAgentSourcesActionBack:
+			return initAgentSourcesEdit{}, errInitNavigateBack
 		default:
 			return initAgentSourcesEdit{}, fmt.Errorf("unsupported agent-sources action %q", action)
 		}
@@ -2568,6 +2572,8 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 		case initRoutesActionReset:
 			return initRoutesEdit{Apply: true, Routes: nil}, nil
 		case initRoutesActionEdit:
+		case initRoutesActionBack:
+			return initRoutesEdit{}, errInitNavigateBack
 		default:
 			return initRoutesEdit{}, fmt.Errorf("unsupported routes action %q", action)
 		}
@@ -2641,6 +2647,8 @@ func (p huhInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (ini
 		case initRetentionActionReset:
 			return initRetentionEdit{Apply: true, Retention: config.DefaultRetentionConfig()}, nil
 		case initRetentionActionEdit:
+		case initRetentionActionBack:
+			return initRetentionEdit{}, errInitNavigateBack
 		default:
 			return initRetentionEdit{}, fmt.Errorf("unsupported retention action %q", action)
 		}
@@ -2762,6 +2770,8 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 		case initKeyringBackendActionReset:
 			return initKeyringBackendEdit{Apply: true, Backend: ""}, nil
 		case initKeyringBackendActionEdit:
+		case initKeyringBackendActionBack:
+			return initKeyringBackendEdit{}, errInitNavigateBack
 		default:
 			return initKeyringBackendEdit{}, fmt.Errorf("unsupported keyring-backend action %q", action)
 		}
@@ -4362,6 +4372,8 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 							return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("pasted secret for %q is empty", spec.Key))
 						}
 						addWrite(entryWrites, entry.Ref.Ref, spec.Key, value)
+					case initSecretSourceBack:
+						continue credentialChoices
 					default:
 						return initWorkspaceDraft{}, fmt.Errorf("unsupported interactive secret source %q", source)
 					}
