@@ -1903,6 +1903,43 @@ func TestBuildInitReviewerEntityInventoryAssignsStableSuffixOnNameCollision(t *t
 	}
 }
 
+func TestInitReviewerEntityOptionsExcludeConfiguredGitIdentityFallback(t *testing.T) {
+	options := initReviewerEntityOptions(map[string]initReviewerEntityDraft{
+		"use-git-identity": {
+			Name: "use-git-identity",
+			Kind: initReviewerEntityKindUseGitIdentity,
+		},
+		"reviewer-pat": {
+			Name:          "reviewer-pat",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/reviewer-pat",
+		},
+	})
+	var fallbackCount int
+	var configuredFallbackLabel string
+	var configuredPATLabel string
+	for _, option := range options {
+		switch option.Value {
+		case string(initReviewerEntityKindUseGitIdentity):
+			fallbackCount++
+		case "use-git-identity":
+			configuredFallbackLabel = option.Key
+		case "reviewer-pat":
+			configuredPATLabel = option.Key
+		}
+	}
+	if fallbackCount != 1 {
+		t.Fatalf("fallbackCount = %d, want exactly one generic git-identity fallback option", fallbackCount)
+	}
+	if configuredFallbackLabel != "" {
+		t.Fatalf("configuredFallbackLabel = %q, want no configured pseudo-entity fallback option", configuredFallbackLabel)
+	}
+	if configuredPATLabel == "" {
+		t.Fatal("configured PAT reviewer option missing")
+	}
+}
+
 func TestSharedGitScopeAndReviewerEntityDoNotDriftIdentityCacheAcrossProfiles(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
@@ -2847,6 +2884,62 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	}
 }
 
+func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	home := basicProfile("home")
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "home",
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	}
+	gitScopes, profileGitScopes := buildInitGitScopeInventory(cfg)
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"1", // Edit home
+			"",  // Edit profile details
+			"",  // Profile name
+			"",  // Make default
+			"",  // Reviewer entity
+			"",  // LLM runtime
+			"",  // Reviewer model tier
+			"",  // Advanced storage labels
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "home",
+		ExistingProfileName:  "home",
+		ExistingProfile:      &home,
+		ExistingProfileNames: []string{"home"},
+		DefaultProfileName:   "home",
+		ExistingConfig:       cfg,
+		GitScopes:            gitScopes,
+		ProfileGitScopes:     profileGitScopes,
+		ReviewerEntities:        reviewerEntities,
+		ProfileReviewerEntities: profileReviewerEntities,
+		LLMRuntimes:             llmRuntimes,
+		ProfileLLMRuntimes:      profileLLMRuntimes,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.ReviewerEnabled {
+		t.Fatalf("draft reviewer = %#v, want fallback profile to remain on git identity", draft)
+	}
+}
+
 func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
@@ -3084,6 +3177,100 @@ func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t
 	}
 	if !strings.Contains(stderr.String(), "Restore reviewer entity reviewer-github-app (will delete on save)") {
 		t.Fatalf("stderr = %q, want reviewer restore label", stderr.String())
+	}
+}
+
+func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInventory(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	home := basicProfile("home")
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "home",
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	}
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Reviewer entity
+			"", // Edit reviewer details
+			"", // Reviewer entity type
+			"n",
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{
+		Context: initPromptContext{
+			RequestedProfileName:    "home",
+			ExistingProfileName:     "home",
+			ExistingProfile:         &home,
+			DefaultProfileName:      "home",
+			ExistingConfig:          cfg,
+			ReviewerEntities:        reviewerEntities,
+			ProfileReviewerEntities: profileReviewerEntities,
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditReviewerEntity: %v", err)
+	}
+	if draft.ReviewerEnabled {
+		t.Fatalf("draft reviewer = %#v, want focused reviewer flow to preserve git-identity fallback", draft)
+	}
+}
+
+func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMixedInventory(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	home := basicProfile("home")
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "home",
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	}
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"1", // Configured: Personal access token reviewer (reviewer-pat)
+			"",  // Edit reviewer details
+			"",  // Keep PAT reviewer type
+			"n",
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{
+		Context: initPromptContext{
+			RequestedProfileName:    "home",
+			ExistingProfileName:     "home",
+			ExistingProfile:         &home,
+			DefaultProfileName:      "home",
+			ExistingConfig:          cfg,
+			ReviewerEntities:        reviewerEntities,
+			ProfileReviewerEntities: profileReviewerEntities,
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditReviewerEntity: %v", err)
+	}
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) || draft.ReviewerCredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("draft reviewer = %#v, want configured PAT reviewer to round-trip intact", draft)
 	}
 }
 
@@ -5165,7 +5352,7 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCou
 	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
 		t.Fatalf("prompt = %#v, want actions disabled without active workspace", prompt)
 	}
-	if prompt.LLMRuntimeCount != 2 || prompt.ReviewerEntityCount != 2 || prompt.ReviewProfileCount != 2 {
+	if prompt.LLMRuntimeCount != 2 || prompt.ReviewerEntityCount != 1 || prompt.ReviewProfileCount != 2 {
 		t.Fatalf("prompt counts = %#v, want existing inventory counts from session cfg", prompt)
 	}
 }
@@ -6433,8 +6620,8 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 	if got := menu.prompts[1].ReviewProfileCount; got != 1 {
 		t.Fatalf("review profile count after delete = %d, want 1 remaining profile before undo", got)
 	}
-	if got := menu.prompts[3].ReviewerEntityCount; got != 1 {
-		t.Fatalf("reviewer entity count after delete = %d, want use-git-identity only", got)
+	if got := menu.prompts[3].ReviewerEntityCount; got != 0 {
+		t.Fatalf("reviewer entity count after delete = %d, want zero configured separate reviewers after fallback", got)
 	}
 	if profileEdits != 2 {
 		t.Fatalf("profileEdits = %d, want delete then undo sequence", profileEdits)
