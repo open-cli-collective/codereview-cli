@@ -1109,20 +1109,8 @@ func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
 	return prompt
 }
 
-func currentInteractiveInitPromptContext(cmd *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initPromptContext, error) {
-	return currentInteractiveInitPromptContextWithWarnings(cmd, opts, deps, session, true)
-}
-
 func currentInteractiveInitInventoryPromptContext(session initSessionDraft) initPromptContext {
 	return buildInteractiveInitInventoryPromptContext(currentInteractiveInitPromptContextBase(session))
-}
-
-func currentInteractiveInitPromptContextWithWarnings(cmd *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft, includeWarnings bool) (initPromptContext, error) {
-	ctx := currentInteractiveInitPromptContextBase(session)
-	if !includeWarnings {
-		return buildInteractiveInitInventoryPromptContext(ctx), nil
-	}
-	return buildInteractiveInitPromptContext(cmd, opts, deps, ctx)
 }
 
 func currentInteractiveInitPromptContextBase(session initSessionDraft) initPromptContext {
@@ -1188,10 +1176,7 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	if prompter == nil {
 		prompter = newHuhInitPrompter(opts)
 	}
-	promptCtx, err := currentInteractiveInitPromptContext(cmd, opts, deps, session)
-	if err != nil {
-		return initSessionDraft{}, err
-	}
+	promptCtx := currentInteractiveInitInventoryPromptContext(session)
 	draft, err := prompter.Run(promptCtx)
 	if errors.Is(err, errInitNavigateBack) {
 		return session, nil
