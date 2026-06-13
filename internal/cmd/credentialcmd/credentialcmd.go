@@ -1669,6 +1669,8 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
 	if selectedReviewerEntity == "" {
 		selectedReviewerEntity = reviewerMode
+	} else {
+		selectedReviewerEntity = normalizeReviewerEntitySelectionValue(selectedReviewerEntity, prompt.Context.ReviewerEntities)
 	}
 	for {
 		choice := selectedReviewerEntity
@@ -1873,6 +1875,8 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
 		if selectedReviewerEntity == "" {
 			selectedReviewerEntity = reviewerMode
+		} else {
+			selectedReviewerEntity = normalizeReviewerEntitySelectionValue(selectedReviewerEntity, ctx.ReviewerEntities)
 		}
 		selectedLLMRuntime := ctx.ProfileLLMRuntimes[selectedProfileName]
 		if selectedLLMRuntime == "" {
@@ -2145,6 +2149,17 @@ func configuredInitReviewerEntityNames(entities map[string]initReviewerEntityDra
 
 func countConfiguredInitReviewerEntities(entities map[string]initReviewerEntityDraft) int {
 	return len(configuredInitReviewerEntityNames(entities))
+}
+
+func normalizeReviewerEntitySelectionValue(selection string, entities map[string]initReviewerEntityDraft) string {
+	entity, ok := entities[selection]
+	if !ok {
+		return selection
+	}
+	if entity.Kind == initReviewerEntityKindUseGitIdentity {
+		return string(initReviewerEntityKindUseGitIdentity)
+	}
+	return selection
 }
 
 func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
