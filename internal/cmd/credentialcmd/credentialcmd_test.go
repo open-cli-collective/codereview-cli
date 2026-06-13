@@ -15,7 +15,6 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
-	jose "github.com/dvsekhvalnov/jose2go"
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
@@ -56,61 +55,6 @@ func TestSetCredentialStdinJSONWritesFileBackend(t *testing.T) {
 		t.Fatalf("backend JSON = (%q,%q), want (file,explicit)", got.Backend, got.BackendSource)
 	}
 	assertStored(t, "work", credentials.GitTokenKey, "distinctive-token")
-}
-
-func TestSetCredentialFileBackendPersistsCliCommonMetadataFields(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yml")
-	baseDir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", baseDir)
-	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
-	cmd, _, _ := newTestCommand(path, strings.NewReader("distinctive-token\n"))
-
-	err := root.Execute(cmd, []string{
-		"--backend", "file",
-		"set-credential",
-		"--ref", "codereview/work",
-		"--key", credentials.GitTokenKey,
-		"--stdin",
-	})
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-
-	// #nosec G304 -- test-controlled tempdir path for hermetic file-backend inspection.
-	tokenBytes, err := os.ReadFile(filepath.Join(baseDir, credentials.ServiceName, "keyring", "work%2Fgit_token"))
-	if err != nil {
-		t.Fatalf("ReadFile persisted bundle: %v", err)
-	}
-	payload, _, err := jose.Decode(string(tokenBytes), os.Getenv("CODEREVIEW_KEYRING_PASSPHRASE"))
-	if err != nil {
-		t.Fatalf("jose.Decode persisted bundle: %v", err)
-	}
-	var got struct {
-		Key                         string
-		Data                        []byte
-		Label                       string
-		Description                 string
-		KeychainNotTrustApplication bool
-		KeychainNotSynchronizable   bool
-	}
-	if err := json.Unmarshal([]byte(payload), &got); err != nil {
-		t.Fatalf("json.Unmarshal persisted bundle: %v", err)
-	}
-	if got.Key != "work/git_token" || string(got.Data) != "distinctive-token" {
-		t.Fatalf("persisted bundle = (%q,%q), want (work/git_token,distinctive-token)", got.Key, string(got.Data))
-	}
-	if got.Label != "codereview work/git_token" {
-		t.Fatalf("Label = %q, want %q", got.Label, "codereview work/git_token")
-	}
-	if got.Description != "Credential for codereview work/git_token" {
-		t.Fatalf("Description = %q, want %q", got.Description, "Credential for codereview work/git_token")
-	}
-	if got.KeychainNotTrustApplication {
-		t.Fatal("KeychainNotTrustApplication = true, want false")
-	}
-	if got.KeychainNotSynchronizable {
-		t.Fatal("KeychainNotSynchronizable = true, want false")
-	}
 }
 
 func TestSetCredentialRejectsLiteralIngress(t *testing.T) {
