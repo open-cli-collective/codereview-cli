@@ -1674,7 +1674,7 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 	}
 	for {
 		choice := selectedReviewerEntity
-		options := initReviewerEntityOptions(prompt.Context.ReviewerEntities)
+		options := initReviewerEntityOptions(prompt.Context.ReviewerEntities, focusedReviewerEntityFallbackLabel(prompt.Context.ExistingProfileName))
 		pendingDeleteNames := make([]string, 0, len(prompt.Context.PendingReviewerEntityDeletes))
 		for name := range prompt.Context.PendingReviewerEntityDeletes {
 			pendingDeleteNames = append(pendingDeleteNames, name)
@@ -1688,7 +1688,7 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 			huh.NewGroup(
 				huh.NewSelect[string]().
 					Title("Reviewer entity").
-					Description("Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile.").
+					Description(reviewerEntitySelectionDescription()).
 					Options(options...).
 					Value(&choice),
 			).Title("Reviewer Entity"),
@@ -1761,14 +1761,14 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 	}
 	editForm := huh.NewForm(
 		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Reviewer entity type").
-				Options(
-					huh.NewOption("Use this profile's Git identity", string(initReviewerEntityKindUseGitIdentity)),
-					huh.NewOption("Personal access token reviewer", string(initReviewerEntityKindPAT)),
-					huh.NewOption("GitHub App reviewer", string(initReviewerEntityKindGitHubApp)),
-				).
-				Value(&reviewerMode),
+				huh.NewSelect[string]().
+					Title("Reviewer entity type").
+					Options(
+						huh.NewOption(reviewerEntityTemplateFallbackLabel(), string(initReviewerEntityKindUseGitIdentity)),
+						huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)),
+						huh.NewOption(reviewerEntityTemplateGitHubAppLabel(), string(initReviewerEntityKindGitHubApp)),
+					).
+					Value(&reviewerMode),
 			huh.NewConfirm().
 				Title("Advanced storage labels").
 				Description("Inspect or override the non-secret reviewer credential-store label.").
@@ -1887,7 +1887,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 		}
 		gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
-		reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities)
+		reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedProfileName))
 		llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
 		detailAction := initDetailActionEdit
 		detailBackLabel := "Back to main menu"
@@ -1962,7 +1962,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			huh.NewGroup(
 				huh.NewSelect[string]().
 					Title("Reviewer entity").
-					Description("Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile.").
+					Description(reviewerEntitySelectionDescription()).
 					Options(reviewerEntityOptions...).
 					Value(&selectedReviewerEntity),
 				huh.NewSelect[string]().
@@ -2120,7 +2120,7 @@ func applyGitScopeSelection(draft *initDraft, selection string, scopes map[strin
 	}
 }
 
-func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft) []huh.Option[string] {
+func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft, fallbackLabel string) []huh.Option[string] {
 	names := configuredInitReviewerEntityNames(entities)
 	sort.Strings(names)
 	options := make([]huh.Option[string], 0, len(names)+3)
@@ -2129,9 +2129,9 @@ func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft) []hu
 		options = append(options, huh.NewOption(initReviewerEntityLabel(entity), name))
 	}
 	options = append(options,
-		huh.NewOption("Use this profile's Git identity", string(initReviewerEntityKindUseGitIdentity)),
-		huh.NewOption("Personal access token reviewer", string(initReviewerEntityKindPAT)),
-		huh.NewOption("GitHub App reviewer", string(initReviewerEntityKindGitHubApp)),
+		huh.NewOption(fallbackLabel, string(initReviewerEntityKindUseGitIdentity)),
+		huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)),
+		huh.NewOption(reviewerEntityTemplateGitHubAppLabel(), string(initReviewerEntityKindGitHubApp)),
 	)
 	return dedupeInitStringOptions(options)
 }
@@ -2162,15 +2162,46 @@ func normalizeReviewerEntitySelectionValue(selection string, entities map[string
 	return selection
 }
 
+func reviewerEntitySelectionDescription() string {
+	return "Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile. Profiles with no separate reviewer entity post using their profile Git account."
+}
+
+func reviewerEntityTemplateFallbackLabel() string {
+	return "Use a profile's Git account (no separate reviewer entity)"
+}
+
+func reviewerEntityTemplatePATLabel() string {
+	return "Use a personal access token (PAT) reviewer"
+}
+
+func reviewerEntityTemplateGitHubAppLabel() string {
+	return "Use a GitHub App reviewer"
+}
+
+func profileEditorReviewerEntityFallbackLabel(profileName string) string {
+	if strings.TrimSpace(profileName) == "" {
+		return reviewerEntityTemplateFallbackLabel()
+	}
+	return "None (uses this profile's Git account; no separate reviewer entity)"
+}
+
+func focusedReviewerEntityFallbackLabel(profileName string) string {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		return reviewerEntityTemplateFallbackLabel()
+	}
+	return fmt.Sprintf("None (uses the %s profile's Git account)", profileName)
+}
+
 func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
 	var label string
 	switch entity.Kind {
 	case initReviewerEntityKindUseGitIdentity:
-		label = "Use this profile's Git identity"
+		label = "None (uses each profile's Git account)"
 	case initReviewerEntityKindGitHubApp:
 		label = "GitHub App reviewer"
 	case initReviewerEntityKindPAT:
-		label = "Personal access token reviewer"
+		label = "Personal access token (PAT) reviewer"
 	}
 	if strings.TrimSpace(entity.Name) != "" {
 		label = fmt.Sprintf("%s (%s)", label, entity.Name)

@@ -173,9 +173,9 @@ should allow that and should not deduplicate them automatically.
 
 ## Reviewer Entity Contract
 
-Interactive `init` should offer a user-facing reviewer entity option named:
+Interactive `init` should offer a user-facing reviewer entity fallback option named:
 
-- **Use this profile's Git identity**
+- **Use a profile's Git account (no separate reviewer entity)**
 
 This means:
 
@@ -185,8 +185,8 @@ This means:
 
 Interactive `init` may also offer separate reviewer entities such as:
 
-- a GitHub PAT-backed reviewer account
-- a GitHub App-backed reviewer entity
+- a personal access token (PAT) reviewer
+- a GitHub App reviewer
 
 For GitHub organizations, the UX should explain that a GitHub App is often the
 preferred team/shared reviewer path.
@@ -201,8 +201,8 @@ and saved config must stay stable:
 - **LLM runtime** maps to `profile.llm`, including the provider, auth mode,
   adapter, and any optional LLM credential ref implied by API-key auth.
 - **Reviewer entity** maps to `profile.reviewer_credentials` when separate
-  credentials are configured, or to `nil` when the user selected `Use this
-  profile's Git identity`.
+  credentials are configured, or to `nil` when the user selected `Use a
+  profile's Git account (no separate reviewer entity)`.
 - **Review profile** maps to one saved entry under `profiles.<name>`.
 
 This section is intentionally high level. The detailed field inventory and
