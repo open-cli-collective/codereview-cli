@@ -3063,6 +3063,41 @@ func TestHuhInitReviewerEntityPrompterAccessibleBackReturnsNavigateBack(t *testi
 	}
 }
 
+func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Personal access token reviewer.
+			"",  // Edit reviewer details.
+			"",  // Keep PAT reviewer type.
+			"n", // Advanced storage labels false.
+			"",  // Reviewer storage label.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}})
+	if err != nil {
+		t.Fatalf("EditReviewerEntity: %v", err)
+	}
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) {
+		t.Fatalf("draft = %#v, want PAT reviewer", draft)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Reviewer entity details") || !strings.Contains(out, "Reviewer entity type") || !strings.Contains(out, "Back to reviewer choices") {
+		t.Fatalf("stderr = %q, want reviewer details screen", out)
+	}
+}
+
 func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	draft := seedInteractiveInitDraft("work", "work", "work", nil)
@@ -4392,6 +4427,31 @@ func TestInitInteractiveGlobalKeyringBackPreservesRetentionDraft(t *testing.T) {
 	}
 	if _, ok := cfg.Profiles["work"]; !ok {
 		t.Fatalf("profiles = %#v, want work profile preserved", cfg.Profiles)
+	}
+}
+
+func TestHuhInitFinalizePrompterAccessibleBackReturnsBack(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitFinalizePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Back to main menu.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	action, err := prompter.ChooseFinalizeAction(initFinalizePrompt{
+		Profiles: []initProfileReadiness{{ProfileName: "work", Ready: true}},
+	})
+	if err != nil {
+		t.Fatalf("ChooseFinalizeAction: %v", err)
+	}
+	if action != initFinalizeActionBack {
+		t.Fatalf("action = %q, want Back", action)
+	}
+	if !strings.Contains(stderr.String(), "Back to main menu") {
+		t.Fatalf("stderr = %q, want finalize Back option", stderr.String())
 	}
 }
 
@@ -6106,6 +6166,51 @@ func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedPro
 	}
 	if work.LLM.Provider != config.LLMProviderAnthropic || work.LLM.Auth != config.LLMAuthSubscription || work.LLM.Adapter != config.LLMAdapterClaudeCLI {
 		t.Fatalf("work llm = %#v, want untouched bootstrap profile llm config", work.LLM)
+	}
+}
+
+func TestInitInteractiveMenuFinalizeBackReturnsToMenu(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionSave,
+			initMenuActionExit,
+		},
+	}
+	deps := initDeps{
+		menuPrompter: menu,
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionBack, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig should not run after finalize Back then exit")
+			return nil
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(menu.prompts) < 2 {
+		t.Fatalf("menu prompts = %#v, want main menu shown again after finalize Back", menu.prompts)
 	}
 }
 
