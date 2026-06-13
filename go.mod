@@ -7,6 +7,7 @@ require (
 	github.com/byteness/percent v0.2.2
 	github.com/charmbracelet/bubbletea v1.3.6
 	github.com/charmbracelet/huh v1.0.0
+	github.com/dvsekhvalnov/jose2go v1.8.0
 	github.com/google/uuid v1.6.0
 	github.com/open-cli-collective/cli-common v0.3.3-0.20260612213303-74c4b8e8dad3
 	github.com/spf13/cobra v1.10.2
@@ -32,7 +33,6 @@ require (
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/dvsekhvalnov/jose2go v1.8.0 // indirect
 	github.com/dylibso/observe-sdk/go v0.0.0-20240828172851-9145d8ad07e1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/extism/go-sdk v1.7.1 // indirect
