@@ -3511,10 +3511,27 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
 	}
 	out := stderr.String()
 	if !strings.Contains(out, "Template: Codex CLI subscription") ||
-		!strings.Contains(out, "LLM provider") ||
-		!strings.Contains(out, "LLM auth mode") ||
-		!strings.Contains(out, "LLM adapter") {
-		t.Fatalf("stderr = %q, want template selection to show editable details", out)
+		!strings.Contains(out, "Use this runtime") ||
+		!strings.Contains(out, "Customize runtime details") {
+		t.Fatalf("stderr = %q, want template selection to show explicit runtime actions", out)
+	}
+}
+
+func TestInitLLMRuntimeSelectionDescriptionCodexSubscriptionExplainsAdapterManagedAuth(t *testing.T) {
+	description := initLLMRuntimeSelectionDescription(initLLMRuntimeDraft{
+		Preset:   initLLMRuntimePresetCodexCLISubscription,
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterCodexCLI,
+	}, "Codex CLI check: codex-cli 0.139.0 installed.")
+	if !strings.Contains(description, "Uses your existing Codex CLI login.") {
+		t.Fatalf("description = %q, want existing Codex CLI login guidance", description)
+	}
+	if !strings.Contains(description, "does not store a Codex subscription secret") {
+		t.Fatalf("description = %q, want no-secret guidance", description)
+	}
+	if !strings.Contains(description, "Codex CLI check: codex-cli 0.139.0 installed.") {
+		t.Fatalf("description = %q, want CLI availability note", description)
 	}
 }
 
@@ -3617,7 +3634,7 @@ func TestHuhInitLLMRuntimeDetailsBackDoesNotMutateDraft(t *testing.T) {
 		stderr: &stderr,
 	}
 
-	back, deleted, err := prompter.editLLMRuntimeDetails("claude-cli", &draft, map[string]initLLMRuntimeDraft{
+	used, back, deleted, err := prompter.editLLMRuntimeDetails("claude-cli", &draft, map[string]initLLMRuntimeDraft{
 		"claude-cli": {
 			Name:     "claude-cli",
 			Preset:   initLLMRuntimePresetClaudeCLISubscription,
@@ -3631,6 +3648,9 @@ func TestHuhInitLLMRuntimeDetailsBackDoesNotMutateDraft(t *testing.T) {
 	}
 	if !back {
 		t.Fatal("back = false, want details Back")
+	}
+	if used {
+		t.Fatal("used = true, want details Back")
 	}
 	if deleted {
 		t.Fatal("deleted = true, want details Back")
@@ -3655,7 +3675,7 @@ func TestHuhInitLLMRuntimeDetailsAccessibleCanMarkConfiguredRuntimeForDeletion(t
 		stderr: &stderr,
 	}
 
-	back, deleted, err := prompter.editLLMRuntimeDetails("claude-cli", &draft, map[string]initLLMRuntimeDraft{
+	used, back, deleted, err := prompter.editLLMRuntimeDetails("claude-cli", &draft, map[string]initLLMRuntimeDraft{
 		"claude-cli": {
 			Name:     "claude-cli",
 			Preset:   initLLMRuntimePresetClaudeCLISubscription,
@@ -3669,6 +3689,9 @@ func TestHuhInitLLMRuntimeDetailsAccessibleCanMarkConfiguredRuntimeForDeletion(t
 	}
 	if back {
 		t.Fatal("back = true, want delete action")
+	}
+	if used {
+		t.Fatal("used = true, want delete action")
 	}
 	if !deleted {
 		t.Fatal("deleted = false, want configured runtime delete")
@@ -5654,6 +5677,8 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
 			},
 		},
 		openStore: func(string, bool, config.File) (initStore, error) {
@@ -5772,6 +5797,9 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
 			},
 		},
 		openStore: func(string, bool, config.File) (initStore, error) {
@@ -5849,7 +5877,10 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 			}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
 		},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(map[string]map[string]string{}), nil
@@ -5942,7 +5973,10 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 			}}}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
 		},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
@@ -6720,6 +6754,8 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
 			},
 		},
 		openStore: func(string, bool, config.File) (initStore, error) {
@@ -6892,6 +6928,7 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionSetNow,
+				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 			},
 			sources: []initSecretSource{initSecretSourcePaste},
@@ -7168,6 +7205,9 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+		},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return nil, errors.New("open failed")
 		},
