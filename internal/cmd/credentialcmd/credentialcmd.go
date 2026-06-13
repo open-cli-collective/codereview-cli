@@ -1084,7 +1084,7 @@ func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
 	prompt := initMenuPrompt{
 		HasWorkspace:        session.workspace != nil,
 		LLMRuntimeCount:     len(llmRuntimes),
-		ReviewerEntityCount: len(reviewerEntities),
+		ReviewerEntityCount: countConfiguredInitReviewerEntities(reviewerEntities),
 		ReviewProfileCount:  len(session.cfg.Profiles),
 	}
 	if session.workspace == nil {
@@ -2117,10 +2117,7 @@ func applyGitScopeSelection(draft *initDraft, selection string, scopes map[strin
 }
 
 func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft) []huh.Option[string] {
-	names := make([]string, 0, len(entities))
-	for name := range entities {
-		names = append(names, name)
-	}
+	names := configuredInitReviewerEntityNames(entities)
 	sort.Strings(names)
 	options := make([]huh.Option[string], 0, len(names)+3)
 	for _, name := range names {
@@ -2133,6 +2130,21 @@ func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft) []hu
 		huh.NewOption("GitHub App reviewer", string(initReviewerEntityKindGitHubApp)),
 	)
 	return dedupeInitStringOptions(options)
+}
+
+func configuredInitReviewerEntityNames(entities map[string]initReviewerEntityDraft) []string {
+	names := make([]string, 0, len(entities))
+	for name, entity := range entities {
+		if entity.Kind == initReviewerEntityKindUseGitIdentity {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+func countConfiguredInitReviewerEntities(entities map[string]initReviewerEntityDraft) int {
+	return len(configuredInitReviewerEntityNames(entities))
 }
 
 func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
