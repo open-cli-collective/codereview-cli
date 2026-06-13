@@ -177,6 +177,12 @@ Interactive `init` should offer a user-facing reviewer entity fallback option na
 
 - **Use a profile's Git account (no separate reviewer entity)**
 
+When the UI has additional profile context, it may render equivalent
+contextual variants of the same fallback choice, such as:
+
+- **None (uses this profile's Git account; no separate reviewer entity)**
+- **None (uses the `<profile>` profile's Git account)**
+
 This means:
 
 - the review is posted with the profile's main Git credentials
