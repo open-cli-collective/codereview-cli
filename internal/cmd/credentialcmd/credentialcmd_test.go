@@ -60,7 +60,9 @@ func TestSetCredentialStdinJSONWritesFileBackend(t *testing.T) {
 
 func TestSetCredentialFileBackendPersistsCliCommonMetadataFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	hermeticFileBackend(t)
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", baseDir)
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
 	cmd, _, _ := newTestCommand(path, strings.NewReader("distinctive-token\n"))
 
 	err := root.Execute(cmd, []string{
@@ -74,7 +76,8 @@ func TestSetCredentialFileBackendPersistsCliCommonMetadataFields(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	tokenBytes, err := os.ReadFile(filepath.Join(os.Getenv("XDG_DATA_HOME"), credentials.ServiceName, "keyring", "work%2Fgit_token"))
+	// #nosec G304 -- test-controlled tempdir path for hermetic file-backend inspection.
+	tokenBytes, err := os.ReadFile(filepath.Join(baseDir, credentials.ServiceName, "keyring", "work%2Fgit_token"))
 	if err != nil {
 		t.Fatalf("ReadFile persisted bundle: %v", err)
 	}
