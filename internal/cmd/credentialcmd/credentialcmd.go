@@ -1203,7 +1203,7 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	workspace, err = collectInteractiveInitRoutes(opts, deps, workspace)
+	nextWorkspace, err := collectInteractiveInitRoutes(opts, deps, workspace)
 	if errors.Is(err, errInitNavigateBack) {
 		session.workspace = &workspace
 		session.cfg = cloneInitConfigFile(workspace.cfg)
@@ -1214,7 +1214,8 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	workspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
+	workspace = nextWorkspace
+	nextWorkspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
 	if errors.Is(err, errInitNavigateBack) {
 		session.workspace = &workspace
 		session.cfg = cloneInitConfigFile(workspace.cfg)
@@ -1225,7 +1226,8 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	workspace, err = collectInteractiveInitAgentSources(opts, deps, workspace)
+	workspace = nextWorkspace
+	nextWorkspace, err = collectInteractiveInitAgentSources(opts, deps, workspace)
 	if errors.Is(err, errInitNavigateBack) {
 		session.workspace = &workspace
 		session.cfg = cloneInitConfigFile(workspace.cfg)
@@ -1236,7 +1238,8 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	workspace, err = collectInteractiveInitReviewPolicy(opts, deps, workspace)
+	workspace = nextWorkspace
+	nextWorkspace, err = collectInteractiveInitReviewPolicy(opts, deps, workspace)
 	if errors.Is(err, errInitNavigateBack) {
 		session.workspace = &workspace
 		session.cfg = cloneInitConfigFile(workspace.cfg)
@@ -1247,6 +1250,7 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	if err != nil {
 		return initSessionDraft{}, err
 	}
+	workspace = nextWorkspace
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
 	session.requestedProfileName = workspace.profileName
@@ -1324,7 +1328,7 @@ func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, dep
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	cfg, err = collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cfg)
+	nextCfg, err := collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cfg)
 	if errors.Is(err, errInitNavigateBack) {
 		session.cfg = cfg
 		if session.workspace != nil {
@@ -1338,6 +1342,7 @@ func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, dep
 	if err != nil {
 		return initSessionDraft{}, err
 	}
+	cfg = nextCfg
 	session.cfg = cfg
 	if session.workspace != nil {
 		workspace := *session.workspace
@@ -4299,6 +4304,9 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			}
 
 			overwriteRef := false
+			entryWrites := map[string]map[string]string{
+				entry.Ref.Ref: copyStringMap(plan.writes[entry.Ref.Ref]),
+			}
 			for _, spec := range entry.KeySpecs {
 			sourceChoices:
 				for {
@@ -4334,7 +4342,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 						if value == "" {
 							return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("clipboard supplied an empty secret"))
 						}
-						addWrite(plan.writes, entry.Ref.Ref, spec.Key, value)
+						addWrite(entryWrites, entry.Ref.Ref, spec.Key, value)
 					case initSecretSourcePaste:
 						value, err := prompter.PasteSecret(initSecretValuePrompt{
 							Entry:              entry,
@@ -4353,7 +4361,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 						if value == "" {
 							return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("pasted secret for %q is empty", spec.Key))
 						}
-						addWrite(plan.writes, entry.Ref.Ref, spec.Key, value)
+						addWrite(entryWrites, entry.Ref.Ref, spec.Key, value)
 					default:
 						return initWorkspaceDraft{}, fmt.Errorf("unsupported interactive secret source %q", source)
 					}
@@ -4363,9 +4371,14 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 					break
 				}
 			}
-			planned := plan.writes[entry.Ref.Ref]
+			planned := entryWrites[entry.Ref.Ref]
 			if !initCredentialWritePlanSatisfiesEntry(entry, targetKeys, planned) {
 				return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential ref %q still needs required keys; keep existing values or defer instead", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
+			}
+			if len(planned) == 0 {
+				delete(plan.writes, entry.Ref.Ref)
+			} else {
+				plan.writes[entry.Ref.Ref] = planned
 			}
 			if overwriteRef {
 				plan.overwriteRefs[entry.Ref.Ref] = true
@@ -4513,6 +4526,17 @@ func copyModelMap(modelMap config.ModelMap) config.ModelMap {
 	copied := make(config.ModelMap, len(modelMap))
 	for tier, model := range modelMap {
 		copied[tier] = model
+	}
+	return copied
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	copied := make(map[string]string, len(values))
+	for key, value := range values {
+		copied[key] = value
 	}
 	return copied
 }

@@ -2423,6 +2423,42 @@ func TestCollectInteractiveInitSecretsPasteBackReturnsToSourceChoices(t *testing
 	}
 }
 
+func TestCollectInteractiveInitSecretsBackAfterPartialMultiKeyWriteDiscardsScratch(t *testing.T) {
+	store := newFakeInitStore(nil)
+	prompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{
+			initCredentialSecretActionSetNow,
+			initCredentialSecretActionDefer,
+		},
+		sources: []initSecretSource{
+			initSecretSourcePaste,
+			initSecretSourceBack,
+		},
+		pastes: []string{"12345"},
+	}
+	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
+		secretPrompter:     prompter,
+		clipboardSupported: func() bool { return false },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read")
+			return "", nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+	}, testInitMultiKeySecretWorkspace())
+	if err != nil {
+		t.Fatalf("collectInteractiveInitSecrets: %v", err)
+	}
+	if got := workspace.writes["codereview/default"][credentials.GitHubAppIDKey]; got != "" {
+		t.Fatalf("partial draft write = %q, want discarded after later source Back then defer", got)
+	}
+	if workspace.satisfiedRefs["codereview/default"] {
+		t.Fatalf("satisfiedRefs = %#v, want deferred ref unsatisfied", workspace.satisfiedRefs)
+	}
+	if len(prompter.actions) != 0 || len(prompter.sources) != 0 || len(prompter.pastes) != 0 {
+		t.Fatalf("prompter queues = actions %#v sources %#v pastes %#v, want consumed", prompter.actions, prompter.sources, prompter.pastes)
+	}
+}
+
 func testInitSecretWorkspace() initWorkspaceDraft {
 	return initWorkspaceDraft{
 		cfg: config.File{Profiles: map[string]config.Profile{}},
@@ -2438,6 +2474,28 @@ func testInitSecretWorkspace() initWorkspaceDraft {
 			}},
 			MissingRequiredKeys: []string{credentials.GitTokenKey},
 			State:               initCredentialPlanStateMissingRequired,
+		}},
+	}
+}
+
+func testInitMultiKeySecretWorkspace() initWorkspaceDraft {
+	return initWorkspaceDraft{
+		cfg: config.File{Profiles: map[string]config.Profile{}},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "git",
+				Ref:     "codereview/default",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			KeySpecs: []credentials.KeySpec{
+				{Key: credentials.GitHubAppIDKey, Required: true},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			},
+			MissingRequiredKeys: []string{
+				credentials.GitHubAppIDKey,
+				credentials.GitHubAppPrivateKeyKey,
+			},
+			State: initCredentialPlanStateMissingRequired,
 		}},
 	}
 }
@@ -4217,6 +4275,123 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Back to keyring choices") {
 		t.Fatalf("stderr = %q, want keyring detail Back option", stderr.String())
+	}
+}
+
+func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionExit,
+		},
+	}
+	deps := initDeps{
+		menuPrompter: menu,
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				MakeDefault:         true,
+				GitHost:             "github.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/work",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
+			return initRoutesEdit{}, errInitNavigateBack
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig should not run after exiting without save")
+			return nil
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(menu.prompts) < 2 {
+		t.Fatalf("menu prompts = %#v, want prompt after profile subflow Back", menu.prompts)
+	}
+	got := menu.prompts[1]
+	if got.ActiveProfileName != "work" || !got.CanSave || got.ReviewProfileCount != 1 {
+		t.Fatalf("post-Back menu prompt = %#v, want active work workspace preserved", got)
+	}
+}
+
+func TestInitInteractiveGlobalKeyringBackPreservesRetentionDraft(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionGlobalSettings,
+			initMenuActionSave,
+		},
+	}
+	deps := initDeps{
+		menuPrompter: menu,
+		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+			return initRetentionEdit{
+				Apply: true,
+				Retention: config.RetentionConfig{
+					MaxAgeDays:  intPtr(45),
+					Enforcement: config.RetentionManualOnly,
+				},
+			}, nil
+		}),
+		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{}, errInitNavigateBack
+		}),
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Data.Retention.MaxAgeDaysValue() != 45 || cfg.Data.Retention.Enforcement != config.RetentionManualOnly {
+		t.Fatalf("retention = %#v, want retained 45/manual after keyring Back", cfg.Data.Retention)
+	}
+	if _, ok := cfg.Profiles["work"]; !ok {
+		t.Fatalf("profiles = %#v, want work profile preserved", cfg.Profiles)
 	}
 }
 
