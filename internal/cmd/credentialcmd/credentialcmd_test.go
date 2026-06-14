@@ -1310,6 +1310,49 @@ func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
 	}
 }
 
+func TestInitReplaceProfilePreservesReviewerDisplayNameWhenReviewerIdentityUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	existing := basicProfile("work")
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+		DisplayName:   "Work reviewer bot",
+		IdentityCache: "reviewer-cache",
+	}
+	if err := config.Save(path, config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": existing,
+		},
+	}); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	cmd, _, _ := newTestCommand(path, strings.NewReader(""))
+	err := root.Execute(cmd, []string{
+		"--profile", "work",
+		"init",
+		"--non-interactive",
+		"--replace-profile",
+		"--reviewer-auth-mode", string(config.GitAuthModePAT),
+		"--reviewer-credential-ref", "codereview/work-reviewer",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got.Profiles["work"].ReviewerCredentials == nil {
+		t.Fatal("reviewer credentials cleared unexpectedly")
+	}
+	if got.Profiles["work"].ReviewerCredentials.DisplayName != "Work reviewer bot" {
+		t.Fatalf("display_name = %q, want preserved reviewer display name", got.Profiles["work"].ReviewerCredentials.DisplayName)
+	}
+}
+
 func TestInitLLMReviewerModelTierFlags(t *testing.T) {
 	t.Run("set tier", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.yml")
@@ -3136,6 +3179,35 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 	if !strings.Contains(out, "Reviewer entity") {
 		t.Fatalf("stderr = %q, want reviewer entity prompt in create-new profile flow", out)
+	}
+}
+
+func TestProfileEditorSelectionPreservesTypedReviewerEntityLabel(t *testing.T) {
+	existing := basicProfile("work")
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+		DisplayName:   "Old label",
+	}
+	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft.ReviewerDisplayName = "New label"
+
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"work-reviewer": initReviewerEntityDraftFromConfig(existing),
+	}
+	selectedReviewerEntity := "work-reviewer"
+	typedReviewerDisplayName := normalizeOptionalDisplayName(draft.ReviewerDisplayName)
+	applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, reviewerEntities)
+	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+	applyReviewerEntitySelection(&draft, reviewerMode)
+	if reviewerMode == string(initReviewerEntityKindUseGitIdentity) {
+		draft.ReviewerDisplayName = ""
+	} else {
+		draft.ReviewerDisplayName = typedReviewerDisplayName
+	}
+
+	if got, want := draft.ReviewerDisplayName, "New label"; got != want {
+		t.Fatalf("draft.ReviewerDisplayName = %q, want %q", got, want)
 	}
 }
 

@@ -2343,6 +2343,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 			return initDraft{}, errInitNavigateBack
 		}
+		typedReviewerDisplayName := normalizeOptionalDisplayName(draft.ReviewerDisplayName)
 		applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
 		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
 		applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, ctx.LLMRuntimes)
@@ -2351,6 +2352,11 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
 		applyReviewerEntitySelection(&draft, reviewerMode)
 		applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+		if reviewerMode == string(initReviewerEntityKindUseGitIdentity) {
+			draft.ReviewerDisplayName = ""
+		} else {
+			draft.ReviewerDisplayName = typedReviewerDisplayName
+		}
 		return draft, nil
 	}
 }
@@ -3758,6 +3764,9 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			creds := *previousProfile.ReviewerCredentials
 			profile.ReviewerCredentials = &creds
 		} else if profile.ReviewerCredentials != nil && previousProfile.ReviewerCredentials != nil {
+			if initReviewerEntityDraftFromConfig(config.Profile{ReviewerCredentials: profile.ReviewerCredentials}).matchesConfig(*previousProfile.ReviewerCredentials) {
+				profile.ReviewerCredentials.DisplayName = previousProfile.ReviewerCredentials.DisplayName
+			}
 			profile.ReviewerCredentials.IdentityCache = previousProfile.ReviewerCredentials.IdentityCache
 		}
 	}
