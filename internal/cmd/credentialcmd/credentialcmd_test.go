@@ -4599,8 +4599,17 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 		t.Fatalf("routes = %#v, want preserved route", edit.Routes)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Repository routes") || !strings.Contains(out, "Edit repository routes") {
+	if !strings.Contains(out, "Repository route details") || !strings.Contains(out, "Edit repository routes") {
 		t.Fatalf("stderr = %q, want route editor prompt", out)
+	}
+	if !strings.Contains(out, "Automatic profile selection") || !strings.Contains(out, "Routes tell cr when to use this profile automatically.") {
+		t.Fatalf("stderr = %q, want route editor explanation", out)
+	}
+	if !strings.Contains(out, "Accepted route formats") || !strings.Contains(out, "One per line: host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.") {
+		t.Fatalf("stderr = %q, want route format instructions", out)
+	}
+	if !strings.Contains(out, "Route entries") {
+		t.Fatalf("stderr = %q, want route entry instructions", out)
 	}
 	if !strings.Contains(out, "Back to repository-route choices") {
 		t.Fatalf("stderr = %q, want repository-route detail Back option", out)
