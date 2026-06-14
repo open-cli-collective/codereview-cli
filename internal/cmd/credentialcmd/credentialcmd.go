@@ -1152,11 +1152,11 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 		}
 		switch action {
 		case initMenuActionLLMRuntimes:
-			session, err = editInteractiveInitLLMRuntime(cmd, opts, flags, deps, session)
+			session, err = loopInteractiveInitLLMRuntime(cmd, opts, flags, deps, session)
 		case initMenuActionReviewerEntities:
-			session, err = editInteractiveInitReviewerEntity(cmd, opts, flags, deps, session)
+			session, err = loopInteractiveInitReviewerEntity(cmd, opts, flags, deps, session)
 		case initMenuActionReviewProfiles:
-			session, err = editInteractiveInitProfile(cmd, opts, flags, deps, session)
+			session, err = loopInteractiveInitProfile(cmd, opts, flags, deps, session)
 		case initMenuActionGlobalSettings:
 			session, err = editInteractiveInitGlobalSettings(cmd, opts, deps, session)
 		case initMenuActionSave:
@@ -1177,6 +1177,25 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 }
 
 func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	session, _, err := editInteractiveInitProfileStep(cmd, opts, flags, deps, session)
+	return session, err
+}
+
+func loopInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	for {
+		var stayInCategory bool
+		var err error
+		session, stayInCategory, err = editInteractiveInitProfileStep(cmd, opts, flags, deps, session)
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+		if !stayInCategory {
+			return session, nil
+		}
+	}
+}
+
+func editInteractiveInitProfileStep(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
 	prompter := deps.prompter
 	if prompter == nil {
 		prompter = newHuhInitPrompter(opts)
@@ -1184,23 +1203,25 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	promptCtx := currentInteractiveInitInventoryPromptContext(session)
 	draft, err := prompter.Run(promptCtx)
 	if errors.Is(err, errInitNavigateBack) {
-		return session, nil
+		return session, false, nil
 	}
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	switch draft.Action {
 	case initDraftActionNone:
 	case initDraftActionDeleteProfile:
-		return deleteInteractiveInitProfile(session, draft.ActionTarget)
+		session, err := deleteInteractiveInitProfile(session, draft.ActionTarget)
+		return session, err == nil, err
 	case initDraftActionUndoDeleteProfile:
-		return undoInteractiveInitProfileDelete(session, draft.ActionTarget)
+		session, err := undoInteractiveInitProfileDelete(session, draft.ActionTarget)
+		return session, err == nil, err
 	case initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
-		return initSessionDraft{}, fmt.Errorf("unsupported review-profile draft action %q", draft.Action)
+		return initSessionDraft{}, false, fmt.Errorf("unsupported review-profile draft action %q", draft.Action)
 	}
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	nextWorkspace, err := collectInteractiveInitRoutes(opts, deps, workspace)
 	if errors.Is(err, errInitNavigateBack) {
@@ -1208,10 +1229,10 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 		session.cfg = cloneInitConfigFile(workspace.cfg)
 		session.requestedProfileName = workspace.profileName
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, nil
+		return session, false, nil
 	}
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	workspace = nextWorkspace
 	nextWorkspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
@@ -1220,10 +1241,10 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 		session.cfg = cloneInitConfigFile(workspace.cfg)
 		session.requestedProfileName = workspace.profileName
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, nil
+		return session, false, nil
 	}
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	workspace = nextWorkspace
 	nextWorkspace, err = collectInteractiveInitAgentSources(opts, deps, workspace)
@@ -1232,10 +1253,10 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 		session.cfg = cloneInitConfigFile(workspace.cfg)
 		session.requestedProfileName = workspace.profileName
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, nil
+		return session, false, nil
 	}
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	workspace = nextWorkspace
 	nextWorkspace, err = collectInteractiveInitReviewPolicy(opts, deps, workspace)
@@ -1244,10 +1265,10 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 		session.cfg = cloneInitConfigFile(workspace.cfg)
 		session.requestedProfileName = workspace.profileName
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, nil
+		return session, false, nil
 	}
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	workspace = nextWorkspace
 	session.workspace = &workspace
@@ -1257,18 +1278,32 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	if deps.menuPrompter != nil || deps.prompter == nil {
 		session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"git", "reviewer_credentials", "llm"})
 		if errors.Is(err, errInitNavigateBack) {
-			return session, nil
+			return session, false, nil
 		}
+		if err != nil {
+			return initSessionDraft{}, false, err
+		}
+	}
+	return session, true, nil
+}
+
+func loopInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	for {
+		var stayInCategory bool
+		var err error
+		session, stayInCategory, err = editInteractiveInitLLMRuntimeStep(cmd, opts, flags, deps, session)
 		if err != nil {
 			return initSessionDraft{}, err
 		}
+		if !stayInCategory {
+			return session, nil
+		}
 	}
-	return session, nil
 }
 
-func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+func editInteractiveInitLLMRuntimeStep(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
 	if session.workspace == nil {
-		return initSessionDraft{}, exitcode.Usage(errors.New("configure a review profile before editing LLM runtimes"))
+		return initSessionDraft{}, false, exitcode.Usage(errors.New("configure a review profile before editing LLM runtimes"))
 	}
 	prompter := deps.llmRuntimePrompter
 	if prompter == nil {
@@ -1277,25 +1312,27 @@ func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 	promptCtx := currentInteractiveInitInventoryPromptContext(session)
 	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: promptCtx})
 	if errors.Is(err, errInitNavigateBack) {
-		return session, nil
+		return session, false, nil
 	}
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	switch draft.Action {
 	case initDraftActionNone:
 	case initDraftActionDeleteLLMRuntime:
-		return deleteInteractiveInitLLMRuntime(session, draft.ActionTarget, initLLMRuntimeDraftFromSeedDraft(draft))
+		session, err := deleteInteractiveInitLLMRuntime(session, draft.ActionTarget, initLLMRuntimeDraftFromSeedDraft(draft))
+		return session, err == nil, err
 	case initDraftActionUndoDeleteLLMRuntime:
-		return undoInteractiveInitLLMRuntimeDelete(session, draft.ActionTarget)
+		session, err := undoInteractiveInitLLMRuntimeDelete(session, draft.ActionTarget)
+		return session, err == nil, err
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity:
-		return initSessionDraft{}, fmt.Errorf("unsupported LLM-runtime draft action %q", draft.Action)
+		return initSessionDraft{}, false, fmt.Errorf("unsupported LLM-runtime draft action %q", draft.Action)
 	}
 	previousProfileName := session.workspace.profileName
 	previousProfile := session.workspace.profile
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
@@ -1305,19 +1342,33 @@ func editInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 		if deps.menuPrompter != nil || deps.prompter == nil {
 			session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"llm"})
 			if errors.Is(err, errInitNavigateBack) {
-				return session, nil
+				return session, false, nil
 			}
 			if err != nil {
-				return initSessionDraft{}, err
+				return initSessionDraft{}, false, err
 			}
 		}
 	}
-	return session, nil
+	return session, true, nil
 }
 
-func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+func loopInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	for {
+		var stayInCategory bool
+		var err error
+		session, stayInCategory, err = editInteractiveInitReviewerEntityStep(cmd, opts, flags, deps, session)
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+		if !stayInCategory {
+			return session, nil
+		}
+	}
+}
+
+func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
 	if session.workspace == nil {
-		return initSessionDraft{}, exitcode.Usage(errors.New("configure a review profile before editing reviewer entities"))
+		return initSessionDraft{}, false, exitcode.Usage(errors.New("configure a review profile before editing reviewer entities"))
 	}
 	prompter := deps.reviewerPrompter
 	if prompter == nil {
@@ -1326,25 +1377,27 @@ func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 	promptCtx := currentInteractiveInitInventoryPromptContext(session)
 	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: promptCtx})
 	if errors.Is(err, errInitNavigateBack) {
-		return session, nil
+		return session, false, nil
 	}
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	switch draft.Action {
 	case initDraftActionNone:
 	case initDraftActionDeleteReviewerEntity:
-		return deleteInteractiveInitReviewerEntity(session, draft.ActionTarget)
+		session, err := deleteInteractiveInitReviewerEntity(session, draft.ActionTarget)
+		return session, err == nil, err
 	case initDraftActionUndoDeleteReviewerEntity:
-		return undoInteractiveInitReviewerEntityDelete(session, draft.ActionTarget)
+		session, err := undoInteractiveInitReviewerEntityDelete(session, draft.ActionTarget)
+		return session, err == nil, err
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
-		return initSessionDraft{}, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
+		return initSessionDraft{}, false, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
 	}
 	previousProfileName := session.workspace.profileName
 	previousProfile := session.workspace.profile
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
 	if err != nil {
-		return initSessionDraft{}, err
+		return initSessionDraft{}, false, err
 	}
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
@@ -1354,14 +1407,14 @@ func editInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 		if deps.menuPrompter != nil || deps.prompter == nil {
 			session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"reviewer_credentials"})
 			if errors.Is(err, errInitNavigateBack) {
-				return session, nil
+				return session, false, nil
 			}
 			if err != nil {
-				return initSessionDraft{}, err
+				return initSessionDraft{}, false, err
 			}
 		}
 	}
-	return session, nil
+	return session, true, nil
 }
 
 func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
