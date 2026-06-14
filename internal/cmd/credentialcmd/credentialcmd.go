@@ -999,6 +999,8 @@ const (
 	initUndoLLMRuntimeDeletePrefix        = "__undo_llm_runtime_delete__:"
 	initLLMRuntimeTemplateActionUse       = "use"
 	initLLMRuntimeTemplateActionCustomize = "customize"
+	initStorageLabelsStandard             = "standard"
+	initStorageLabelsCustom               = "custom"
 	initDetailActionEdit                  = "edit"
 	initDetailActionBack                  = "back"
 	initDetailActionDelete                = "delete"
@@ -2186,6 +2188,10 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				selectedLLMRuntime = selectedRuntimePreset
 			}
 		}
+		selectedStorageLabelsMode := initStorageLabelsStandard
+		if draft.AdvancedStorageLabels {
+			selectedStorageLabelsMode = initStorageLabelsCustom
+		}
 		currentRoutes := currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName)
 		selectedRepositoryRoutesAction := string(initRoutesActionPreserve)
 		gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
@@ -2261,10 +2267,14 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					huh.NewOption("Large", string(config.ModelTierLarge)),
 				).
 				Value(&draft.LLMReviewerModelTier),
-			huh.NewConfirm().
-				Title("Advanced storage labels").
-				Description("Inspect or override non-secret credential-store labels for Git, reviewer, and LLM secrets.").
-				Value(&draft.AdvancedStorageLabels),
+			huh.NewSelect[string]().
+				Title("Storage label handling").
+				Description("Choose whether to use the standard credential-store labels or override them for this profile.").
+				Options(
+					huh.NewOption("Use standard storage labels (recommended)", initStorageLabelsStandard),
+					huh.NewOption("Customize storage labels (advanced)", initStorageLabelsCustom),
+				).
+				Value(&selectedStorageLabelsMode),
 			huh.NewSelect[string]().
 				Title("Repository routes").
 				Description("Choose how cr should select this profile automatically when --profile is omitted.").
@@ -2350,7 +2360,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Value(&draft.LLMCredentialRef).
 					Validate(validateOptionalCredentialRef),
 			).WithHideFunc(func() bool {
-				return !draft.AdvancedStorageLabels
+				return selectedStorageLabelsMode != initStorageLabelsCustom
 			}).Title("Advanced Storage Labels"),
 		)
 		back, err = runBackableInitForm(form, p.stdin, p.stderr)
@@ -2364,6 +2374,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			return initDraft{}, errInitNavigateBack
 		}
 		typedReviewerDisplayName := normalizeOptionalDisplayName(draft.ReviewerDisplayName)
+		draft.AdvancedStorageLabels = selectedStorageLabelsMode == initStorageLabelsCustom
 		applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
 		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
 		applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, ctx.LLMRuntimes)
