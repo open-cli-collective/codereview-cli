@@ -251,6 +251,7 @@ type initDraft struct {
 	LLMReviewerModelTier  string
 	LLMCredentialRef      string
 	AdvancedStorageLabels bool
+	RepositoryRoutesAction string
 }
 
 type initModelMapPrompt struct {
@@ -287,6 +288,7 @@ type initRoutesPrompt struct {
 	PreviousHost string
 	HostChanged  bool
 	Routes       []configedit.RepositoryRouteSpec
+	Action       initRoutesAction
 }
 
 type initRoutesEdit struct {
@@ -1225,13 +1227,13 @@ func editInteractiveInitProfileStep(cmd *cobra.Command, opts *root.Options, flag
 	if err != nil {
 		return initSessionDraft{}, false, err
 	}
-	nextWorkspace, err := collectInteractiveInitRoutes(opts, deps, workspace)
+	nextWorkspace, err := collectInteractiveInitRoutes(opts, deps, workspace, initRoutesAction(strings.TrimSpace(draft.RepositoryRoutesAction)))
 	if errors.Is(err, errInitNavigateBack) {
 		session.workspace = &workspace
 		session.cfg = cloneInitConfigFile(workspace.cfg)
 		session.requestedProfileName = workspace.profileName
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, false, nil
+		return session, strings.TrimSpace(draft.RepositoryRoutesAction) != "", nil
 	}
 	if err != nil {
 		return initSessionDraft{}, false, err
@@ -2184,6 +2186,8 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				selectedLLMRuntime = selectedRuntimePreset
 			}
 		}
+		currentRoutes := currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName)
+		selectedRepositoryRoutesAction := string(initRoutesActionPreserve)
 		gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
 		reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedProfileName))
 		llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
@@ -2261,6 +2265,11 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				Title("Advanced storage labels").
 				Description("Inspect or override non-secret credential-store labels for Git, reviewer, and LLM secrets.").
 				Value(&draft.AdvancedStorageLabels),
+			huh.NewSelect[string]().
+				Title("Repository routes").
+				Description("Choose how cr should select this profile automatically when --profile is omitted.").
+				Options(profileRouteActionOptions(len(currentRoutes) > 0)...).
+				Value(&selectedRepositoryRoutesAction),
 		)
 
 		form := huh.NewForm(
@@ -2368,8 +2377,26 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		} else {
 			draft.ReviewerDisplayName = typedReviewerDisplayName
 		}
+		draft.RepositoryRoutesAction = selectedRepositoryRoutesAction
 		return draft, nil
 	}
+}
+
+func profileRouteActionOptions(hasRoutes bool) []huh.Option[string] {
+	if !hasRoutes {
+		return []huh.Option[string]{
+			huh.NewOption("Skip automatic profile-selection routes for now", string(initRoutesActionPreserve)),
+			huh.NewOption("Add automatic profile-selection routes", string(initRoutesActionEdit)),
+		}
+	}
+	options := []huh.Option[string]{
+		huh.NewOption("Keep current automatic profile-selection routes", string(initRoutesActionPreserve)),
+		huh.NewOption("Edit automatic profile-selection routes", string(initRoutesActionEdit)),
+	}
+	if hasRoutes {
+		options = append(options, huh.NewOption("Remove all automatic profile-selection routes for this profile", string(initRoutesActionReset)))
+	}
+	return options
 }
 
 func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDraft {
@@ -3159,39 +3186,42 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 
 func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEdit, error) {
 	for {
-		action := initRoutesActionPreserve
-		options := []huh.Option[initRoutesAction]{
-			huh.NewOption("Keep current repository routes", initRoutesActionPreserve),
-			huh.NewOption("Edit repository routes", initRoutesActionEdit),
-			huh.NewOption("Back to main menu", initRoutesActionBack),
-		}
-		if len(prompt.Routes) > 0 {
-			options = append(options, huh.NewOption("Remove all routes for this profile", initRoutesActionReset))
-		}
-		if prompt.HostChanged && len(prompt.Routes) > 0 {
-			options = []huh.Option[initRoutesAction]{
-				huh.NewOption("Reconcile repository routes", initRoutesActionEdit),
-				huh.NewOption("Remove all routes for this profile", initRoutesActionReset),
+		action := prompt.Action
+		if action == "" {
+			action = initRoutesActionPreserve
+			options := []huh.Option[initRoutesAction]{
+				huh.NewOption("Keep current repository routes", initRoutesActionPreserve),
+				huh.NewOption("Edit repository routes", initRoutesActionEdit),
 				huh.NewOption("Back to main menu", initRoutesActionBack),
 			}
-			action = initRoutesActionEdit
+			if len(prompt.Routes) > 0 {
+				options = append(options, huh.NewOption("Remove all routes for this profile", initRoutesActionReset))
+			}
+			if prompt.HostChanged && len(prompt.Routes) > 0 {
+				options = []huh.Option[initRoutesAction]{
+					huh.NewOption("Reconcile repository routes", initRoutesActionEdit),
+					huh.NewOption("Remove all routes for this profile", initRoutesActionReset),
+					huh.NewOption("Back to main menu", initRoutesActionBack),
+				}
+				action = initRoutesActionEdit
+			}
+			form := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[initRoutesAction]().
+						Title("Repository routes").
+						Options(options...).
+						Value(&action),
+				),
+			)
+			back, err := runBackableInitForm(form, p.stdin, p.stderr)
+			if err != nil {
+				return initRoutesEdit{}, err
+			}
+			if back || action == initRoutesActionBack {
+				return initRoutesEdit{}, errInitNavigateBack
+			}
 		}
 		routeText := formatInitRouteSpecs(prompt.Routes)
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[initRoutesAction]().
-					Title("Repository routes").
-					Options(options...).
-					Value(&action),
-			),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initRoutesEdit{}, err
-		}
-		if back || action == initRoutesActionBack {
-			return initRoutesEdit{}, errInitNavigateBack
-		}
 		switch action {
 		case initRoutesActionPreserve:
 			return initRoutesEdit{Apply: false}, nil
@@ -3206,6 +3236,10 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 
 		detailAction := initDetailActionEdit
 		fields := []huh.Field{}
+		detailBackLabel := "Back to repository-route choices"
+		if prompt.Action != "" {
+			detailBackLabel = "Back to review profile"
+		}
 		if prompt.HostChanged && len(prompt.Routes) > 0 {
 			fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
 		}
@@ -3215,13 +3249,13 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 				Description("One route per line. Use host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.").
 				Value(&routeText),
 		)
-		form = huh.NewForm(
+		form := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
 					Title("Repository route details").
 					Options(
 						huh.NewOption("Edit repository routes", initDetailActionEdit),
-						huh.NewOption("Back to repository-route choices", initDetailActionBack),
+						huh.NewOption(detailBackLabel, initDetailActionBack),
 					).
 					Value(&detailAction),
 			).Title("Routes"),
@@ -3229,11 +3263,14 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 				return detailAction == initDetailActionBack
 			}).Title("Routes"),
 		)
-		back, err = runBackableInitForm(form, p.stdin, p.stderr)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
 		if err != nil {
 			return initRoutesEdit{}, err
 		}
 		if back || detailAction == initDetailActionBack {
+			if prompt.Action != "" {
+				return initRoutesEdit{}, errInitNavigateBack
+			}
 			continue
 		}
 		routes, err := parseInitRouteSpecs(routeText)
@@ -4965,7 +5002,7 @@ func normalizeInitAgentSources(sources []string) ([]string, error) {
 	return normalized, nil
 }
 
-func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
+func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initWorkspaceDraft, action initRoutesAction) (initWorkspaceDraft, error) {
 	prompter := deps.routesPrompter
 	if prompter == nil {
 		if deps.prompter != nil {
@@ -4979,12 +5016,39 @@ func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initWo
 		previousHost = plan.previousProfile.Git.Host
 		hostChanged = config.NormalizeHost(previousHost) != config.NormalizeHost(plan.profile.Git.Host)
 	}
+	if action == "" {
+		action = initRoutesActionPreserve
+	}
+	if action == initRoutesActionPreserve {
+		if err := validateInitRouteHosts(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host); err == nil {
+			return plan, nil
+		}
+		// A preserved route set became invalid after the profile edit, usually
+		// because git.host changed. Fall back to the route action chooser so the
+		// user can explicitly reconcile, remove, or back out instead of silently
+		// converting "preserve" into "edit".
+		action = ""
+	}
+	if action == initRoutesActionReset {
+		nextRoutes, err := applyInitProfileRoutes(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host, nil)
+		if err != nil {
+			return initWorkspaceDraft{}, exitcode.Usage(err)
+		}
+		nextCfg := plan.cfg
+		nextCfg.RepositoryProfiles = nextRoutes
+		if err := config.Validate(nextCfg); err != nil {
+			return initWorkspaceDraft{}, cmderr.Config(err)
+		}
+		plan.cfg = nextCfg
+		return plan, nil
+	}
 	edit, err := prompter.EditRoutes(initRoutesPrompt{
 		ProfileName:  plan.profileName,
 		ProfileHost:  plan.profile.Git.Host,
 		PreviousHost: previousHost,
 		HostChanged:  hostChanged,
 		Routes:       currentProfileRouteSpecs(plan.cfg.RepositoryProfiles, plan.profileName),
+		Action:       action,
 	})
 	if err != nil {
 		return initWorkspaceDraft{}, err
