@@ -1397,14 +1397,16 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	}
 	previousProfileName := session.workspace.profileName
 	previousProfile := session.workspace.profile
+	previousCfg := cloneInitConfigFile(session.cfg)
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
 	if err != nil {
 		return initSessionDraft{}, false, err
 	}
-	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
+	session.cfg = propagateSharedReviewerEntityDisplayName(session.cfg, previousCfg, workspace.profileName, initReviewerEntityDraftFromSeedDraft(draft))
+	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
 	session.requestedProfileName = workspace.profileName
-	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, workspace.profile) {
+	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, session.workspace.profile) {
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
 		if deps.menuPrompter != nil || deps.prompter == nil {
 			session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"reviewer_credentials"})
@@ -1417,6 +1419,32 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		}
 	}
 	return session, true, nil
+}
+
+func propagateSharedReviewerEntityDisplayName(current config.File, previous config.File, activeProfileName string, entity initReviewerEntityDraft) config.File {
+	if entity.Kind == initReviewerEntityKindUseGitIdentity {
+		return current
+	}
+	identityKey := entity.identityKey()
+	displayName := normalizeOptionalDisplayName(entity.DisplayName)
+	for profileName, previousProfile := range previous.Profiles {
+		if profileName == activeProfileName {
+			continue
+		}
+		if initReviewerEntityDraftFromConfig(previousProfile).identityKey() != identityKey {
+			continue
+		}
+		profile, ok := current.Profiles[profileName]
+		if !ok || profile.ReviewerCredentials == nil {
+			continue
+		}
+		if initReviewerEntityDraftFromConfig(profile).identityKey() != identityKey {
+			continue
+		}
+		profile.ReviewerCredentials.DisplayName = displayName
+		current.Profiles[profileName] = profile
+	}
+	return current
 }
 
 func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initSessionDraft, error) {

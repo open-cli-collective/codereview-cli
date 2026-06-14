@@ -1986,6 +1986,69 @@ func TestBuildInitReviewerEntityInventoryConflictingSharedDisplayNamesFallBackTo
 	}
 }
 
+func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *testing.T) {
+	home := basicProfile("home")
+	work := basicProfile("work")
+	home.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+		DisplayName:   "Old home label",
+	}
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+		DisplayName:   "Old work label",
+	}
+	cfg := config.File{
+		DefaultProfile: "home",
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	}
+	session := initSessionDraft{
+		cfg:                  cloneInitConfigFile(cfg),
+		originalCfg:          cloneInitConfigFile(cfg),
+		requestedProfileName: "home",
+		touchedProfiles:      map[string]string{},
+		writes:               map[string]map[string]string{},
+		overwriteRefs:        map[string]bool{},
+		satisfiedRefs:        map[string]bool{},
+	}
+	session = rebuildInteractiveInitWorkspace(session, "home")
+
+	draft := seedInteractiveInitDraft("home", "home", "home", &home)
+	draft.ReviewerEnabled = true
+	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	draft.ReviewerCredentialRef = "codereview/open-cli-collective-rianjs-bot"
+	draft.ReviewerDisplayName = "OC Collective bot"
+
+	next, stayInCategory, err := editInteractiveInitReviewerEntityStep(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
+			return draft, nil
+		}),
+		prompter: initPrompterFunc(func(_ initPromptContext) (initDraft, error) {
+			t.Fatal("unexpected secret collection prompt")
+			return initDraft{}, nil
+		}),
+	}, session)
+	if err != nil {
+		t.Fatalf("editInteractiveInitReviewerEntityStep: %v", err)
+	}
+	if !stayInCategory {
+		t.Fatal("stayInCategory = false, want focused reviewer flow to stay active")
+	}
+	for _, profileName := range []string{"home", "work"} {
+		profile := next.cfg.Profiles[profileName]
+		if profile.ReviewerCredentials == nil {
+			t.Fatalf("%s reviewer credentials cleared unexpectedly", profileName)
+		}
+		if got, want := profile.ReviewerCredentials.DisplayName, "OC Collective bot"; got != want {
+			t.Fatalf("%s display name = %q, want %q", profileName, got, want)
+		}
+	}
+}
+
 func TestInitReviewerEntityOptionsUseProfileAwareFallbackLabelWhenProfileKnown(t *testing.T) {
 	options := initReviewerEntityOptions(map[string]initReviewerEntityDraft{}, focusedReviewerEntityFallbackLabel("home"))
 	if len(options) == 0 {
