@@ -3259,7 +3259,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer",
+		CredentialRef: "codereview/custom-work-reviewer",
 	}
 	cfg := config.File{
 		DefaultProfile: "home",
@@ -3275,7 +3275,9 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 			"1", // Configured: Personal access token (PAT) reviewer (reviewer-pat)
 			"",  // Edit reviewer details
 			"",  // Keep PAT reviewer type
-			"n",
+			"",  // Keep custom reviewer secret location
+			"",  // Use this reviewer secret location
+			"",  // Stage these reviewer settings
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -3295,7 +3297,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 	if err != nil {
 		t.Fatalf("EditReviewerEntity: %v", err)
 	}
-	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) || draft.ReviewerCredentialRef != "codereview/work-reviewer" {
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) || draft.ReviewerCredentialRef != "codereview/custom-work-reviewer" {
 		t.Fatalf("draft reviewer = %#v, want configured PAT reviewer to round-trip intact", draft)
 	}
 }
@@ -3811,9 +3813,8 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 			"2", // Use a personal access token (PAT) reviewer.
 			"",  // Edit reviewer details.
 			"",  // Keep PAT reviewer type.
-			"n", // Advanced storage labels false.
-			"",  // Reviewer storage label.
-			"",
+			"",  // Keep the standard reviewer secret location.
+			"",  // Stage these reviewer settings.
 		}, "\n")),
 		stderr: &stderr,
 	}
@@ -3832,8 +3833,11 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 		t.Fatalf("draft = %#v, want PAT reviewer", draft)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Reviewer entity details") || !strings.Contains(out, "Reviewer entity type") || !strings.Contains(out, "Use a personal access token (PAT) reviewer") || !strings.Contains(out, "Back to reviewer choices") {
+	if !strings.Contains(out, "Reviewer entity details") || !strings.Contains(out, "Reviewer detail action") || !strings.Contains(out, "Stage these reviewer settings") || !strings.Contains(out, "Back without changes") || !strings.Contains(out, "Reviewer entity type") || !strings.Contains(out, "Use a personal access token (PAT) reviewer") || !strings.Contains(out, "Back to reviewer choices") || !strings.Contains(out, "Reviewer secret location") || !strings.Contains(out, "Use the standard reviewer secret location") || !strings.Contains(out, "Use a custom reviewer secret location") {
 		t.Fatalf("stderr = %q, want reviewer details screen", out)
+	}
+	if strings.Contains(out, "Reviewer secret location action") || strings.Contains(out, "Use this reviewer secret location") {
+		t.Fatalf("stderr = %q, want reviewer secret location hidden until opt-in", out)
 	}
 }
 
@@ -3872,6 +3876,36 @@ func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 	}
 	if !reflect.DeepEqual(draft, want) {
 		t.Fatalf("draft mutated on details Back:\n got: %#v\nwant: %#v", draft, want)
+	}
+}
+
+func TestHuhInitReviewerEntityDetailsAccessibleHidesSecretLocationForGitIdentity(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"1", // Edit reviewer details.
+			"",  // Stage these reviewer settings.
+			"",  // Keep Use a profile's Git account.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	back, deleted, err := prompter.editReviewerEntityDetails(string(initReviewerEntityKindUseGitIdentity), &draft, nil)
+	if err != nil {
+		t.Fatalf("editReviewerEntityDetails: %v", err)
+	}
+	if back {
+		t.Fatal("back = true, want staged git-account reviewer details")
+	}
+	if deleted {
+		t.Fatal("deleted = true, want staged git-account reviewer details")
+	}
+	out := stderr.String()
+	if strings.Contains(out, "Use a custom reviewer secret location") || strings.Contains(out, "Reviewer secret location") {
+		t.Fatalf("stderr = %q, want git-account reviewer flow to hide reviewer secret-location controls", out)
 	}
 }
 
@@ -6458,6 +6492,177 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	}
 	if cfg.Keyring.Backend != "memory" || cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("global settings after reviewer rebuild = %#v / %#v, want memory + 14/at_write", cfg.Keyring, cfg.Data.Retention)
+	}
+}
+
+func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRef(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	}
+	cfg.Profiles["work"] = config.Profile{
+		Git: config.GitConfig{
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/work",
+		},
+		ReviewerCredentials: &config.ReviewerCredentials{
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: "codereview/custom-work-reviewer",
+		},
+		LLM: config.LLMConfig{
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"work": {
+					credentials.GitTokenKey: "existing-token",
+				},
+				"custom-work-reviewer": {
+					credentials.GitHubAppIDKey:         "12345",
+					credentials.GitHubAppPrivateKeyKey: "private-key",
+				},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := got.Profiles["work"]
+	if profile.ReviewerCredentials == nil {
+		t.Fatal("reviewer credentials = nil, want custom reviewer ref preserved after save")
+	}
+	if profile.ReviewerCredentials.CredentialRef != "codereview/custom-work-reviewer" {
+		t.Fatalf("reviewer credential ref = %q, want custom reviewer ref preserved after save", profile.ReviewerCredentials.CredentialRef)
+	}
+}
+
+func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRefWhenDraftClearsCustomRef(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/work",
+				},
+				ReviewerCredentials: &config.ReviewerCredentials{
+					AuthMode:      config.GitAuthModeGitHubApp,
+					CredentialRef: "codereview/custom-work-reviewer",
+				},
+				LLM: config.LLMConfig{
+					Provider: config.LLMProviderAnthropic,
+					Auth:     config.LLMAuthSubscription,
+					Adapter:  config.LLMAdapterClaudeCLI,
+				},
+			},
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			draft.ReviewerCredentialRef = ""
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"work": {
+					credentials.GitTokenKey: "existing-token",
+				},
+				"work-reviewer": {
+					credentials.GitHubAppIDKey:         "12345",
+					credentials.GitHubAppPrivateKeyKey: "private-key",
+				},
+				"custom-work-reviewer": {
+					credentials.GitHubAppIDKey:         "legacy-id",
+					credentials.GitHubAppPrivateKeyKey: "legacy-private-key",
+				},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := got.Profiles["work"]
+	if profile.ReviewerCredentials == nil {
+		t.Fatal("reviewer credentials = nil, want default reviewer ref restored after save")
+	}
+	if profile.ReviewerCredentials.CredentialRef != "codereview/work-reviewer" {
+		t.Fatalf("reviewer credential ref = %q, want generated default reviewer ref after clearing custom ref", profile.ReviewerCredentials.CredentialRef)
 	}
 }
 
