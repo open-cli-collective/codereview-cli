@@ -4607,6 +4607,35 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	}
 }
 
+func TestHuhInitRoutesPrompterIntegratedEditBackNavigatesOut(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitRoutesPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Back to review profile
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.EditRoutes(initRoutesPrompt{
+		ProfileName: "work",
+		ProfileHost: "github.com",
+		Action:      initRoutesActionEdit,
+		Routes: []configedit.RepositoryRouteSpec{{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+		}},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditRoutes error = %v, want errInitNavigateBack", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Back to review profile") {
+		t.Fatalf("stderr = %q, want integrated Back option", out)
+	}
+}
+
 func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)

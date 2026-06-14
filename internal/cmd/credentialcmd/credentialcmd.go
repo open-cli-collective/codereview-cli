@@ -3230,6 +3230,10 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 
 		detailAction := initDetailActionEdit
 		fields := []huh.Field{}
+		detailBackLabel := "Back to repository-route choices"
+		if prompt.Action != "" {
+			detailBackLabel = "Back to review profile"
+		}
 		if prompt.HostChanged && len(prompt.Routes) > 0 {
 			fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
 		}
@@ -3245,7 +3249,7 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 					Title("Repository route details").
 					Options(
 						huh.NewOption("Edit repository routes", initDetailActionEdit),
-						huh.NewOption("Back to repository-route choices", initDetailActionBack),
+						huh.NewOption(detailBackLabel, initDetailActionBack),
 					).
 					Value(&detailAction),
 			).Title("Routes"),
@@ -3258,6 +3262,9 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 			return initRoutesEdit{}, err
 		}
 		if back || detailAction == initDetailActionBack {
+			if prompt.Action != "" {
+				return initRoutesEdit{}, errInitNavigateBack
+			}
 			continue
 		}
 		routes, err := parseInitRouteSpecs(routeText)
