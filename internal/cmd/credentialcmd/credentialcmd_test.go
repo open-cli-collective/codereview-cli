@@ -4306,7 +4306,7 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 			"2", // Reviewer entity: PAT reviewer
 			"4", // LLM runtime: Anthropic API key
 			"",  // Reviewer model tier
-			"y", // Advanced storage labels
+			"2", // Storage label handling: customize
 			"",  // Repository routes
 			"",  // Git storage label
 			"",  // Reviewer storage label
@@ -4325,10 +4325,49 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 		t.Fatalf("Run: %v", err)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Advanced storage labels") || !strings.Contains(out, "Git storage label") || !strings.Contains(out, "LLM storage label") {
+	if !strings.Contains(out, "Storage label handling") || !strings.Contains(out, "Customize storage labels (advanced)") {
+		t.Fatalf("wizard output missing storage label mode prompt: %q", out)
+	}
+	if !strings.Contains(out, "Git storage label") || !strings.Contains(out, "LLM storage label") {
 		t.Fatalf("wizard output missing advanced storage label prompts: %q", out)
 	}
 	_ = draft
+}
+
+func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Git scope host
+			"", // Git scope auth mode
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Storage label handling: default recommended option
+			"", // Repository routes
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "default",
+		DefaultProfileName:   "",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Storage label handling") || !strings.Contains(out, "Use standard storage labels (recommended)") {
+		t.Fatalf("wizard output missing recommended storage label path: %q", out)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatalf("draft.AdvancedStorageLabels = true, want false on the default storage-label path")
+	}
 }
 
 func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.T) {
