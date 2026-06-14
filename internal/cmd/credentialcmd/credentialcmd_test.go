@@ -3513,7 +3513,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
 	}
 	out := stderr.String()
 	if !strings.Contains(out, "Template: Codex CLI subscription") ||
-		!strings.Contains(out, "Use this runtime") ||
+		!strings.Contains(out, "Stage this runtime") ||
 		!strings.Contains(out, "Customize runtime details") {
 		t.Fatalf("stderr = %q, want template selection to show explicit runtime actions", out)
 	}
@@ -5465,8 +5465,8 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 		"Configure reviewer entities (3)",
 		"Configure review profiles (1)",
 		"Review global settings",
-		"Save and exit",
-		"Exit without saving",
+		"Commit all changes and exit",
+		"Discard all changes and exit",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr = %q, want menu item %q", out, want)
@@ -5479,8 +5479,8 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *t
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"5", // Save and exit (disabled)
-			"6", // Exit without saving
+			"5", // Commit all changes and exit (disabled)
+			"6", // Discard all changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -5492,7 +5492,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *t
 	if action == initMenuActionSave {
 		t.Fatalf("action = %q, want disabled save selection to be rejected", action)
 	}
-	if !strings.Contains(stderr.String(), "configure a review profile before saving") {
+	if !strings.Contains(stderr.String(), "configure a review profile before committing changes") {
 		t.Fatalf("stderr = %q, want disabled-save validation message", stderr.String())
 	}
 }
@@ -5503,7 +5503,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"1", // Configure LLM runtimes (disabled)
-			"6", // Exit without saving
+			"6", // Discard all changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,

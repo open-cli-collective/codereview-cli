@@ -1407,8 +1407,8 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
 		huh.NewOption(fmt.Sprintf("Configure review profiles (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfiles),
 		huh.NewOption("Review global settings", initMenuActionGlobalSettings),
-		huh.NewOption("Save and exit", initMenuActionSave),
-		huh.NewOption("Exit without saving", initMenuActionExit),
+		huh.NewOption("Commit all changes and exit", initMenuActionSave),
+		huh.NewOption("Discard all changes and exit", initMenuActionExit),
 	}
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -1429,7 +1429,7 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 						}
 					case initMenuActionSave:
 						if !prompt.CanSave {
-							return errors.New("configure a review profile before saving")
+							return errors.New("configure a review profile before committing changes")
 						}
 					case initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
 					}
@@ -1447,7 +1447,7 @@ func initMenuDescription(prompt initMenuPrompt) string {
 	if prompt.HasWorkspace && strings.TrimSpace(prompt.ActiveProfileName) != "" {
 		return fmt.Sprintf("Active profile: %s", prompt.ActiveProfileName)
 	}
-	return "Configure the parts cr needs, then save when the active profile is ready."
+	return "Configure the parts cr needs, stage changes as you go, then commit when the active profile is ready."
 }
 
 func runBackableInitForm(form *huh.Form, stdin io.Reader, stderr io.Writer) (bool, error) {
@@ -1479,9 +1479,9 @@ func (p huhInitFinalizePrompter) ChooseFinalizeAction(prompt initFinalizePrompt)
 			huh.NewSelect[initFinalizeAction]().
 				Title("Finalize init").
 				Options(
-					huh.NewOption("Save and write config/credentials", initFinalizeActionSave),
+					huh.NewOption("Commit staged config and credential changes", initFinalizeActionSave),
 					huh.NewOption("Back to main menu", initFinalizeActionBack),
-					huh.NewOption("Cancel without saving", initFinalizeActionCancel),
+					huh.NewOption("Discard all staged changes and exit", initFinalizeActionCancel),
 				).
 				Value(&action),
 		),
@@ -1497,7 +1497,7 @@ func (p huhInitFinalizePrompter) ChooseFinalizeAction(prompt initFinalizePrompt)
 }
 
 func initFinalizeDescription(prompt initFinalizePrompt) string {
-	lines := []string{"Review readiness before writing config or credentials."}
+	lines := []string{"Review readiness before committing staged config and credential changes."}
 	for _, profile := range prompt.Profiles {
 		status := "ready"
 		if !profile.Ready {
@@ -1607,7 +1607,7 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft
 					Title("LLM runtime details").
 					Description(detailDescription).
 					Options(
-						huh.NewOption("Use this runtime", initLLMRuntimeTemplateActionUse),
+						huh.NewOption("Stage this runtime", initLLMRuntimeTemplateActionUse),
 						huh.NewOption("Customize runtime details", initLLMRuntimeTemplateActionCustomize),
 						huh.NewOption("Back to runtime choices", initDetailActionBack),
 					).
@@ -1659,7 +1659,7 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft
 			huh.NewSelect[string]().
 				Title("Runtime detail action").
 				Options(
-					huh.NewOption("Use these runtime details", initDetailActionEdit),
+					huh.NewOption("Stage these runtime details", initDetailActionEdit),
 					huh.NewOption("Back to runtime actions", initDetailActionBack),
 				).
 				Value(&editAction),
@@ -2486,9 +2486,9 @@ func initLLMRuntimeSelectionDescription(runtime initLLMRuntimeDraft, availabilit
 	case initLLMRuntimePresetPiLocal:
 		lines = append(lines, "Uses the local Pi runtime without storing an additional cr-managed secret.")
 	case initLLMRuntimePresetAnthropicAPIKey:
-		lines = append(lines, "This runtime needs an Anthropic API key. init will gather it in this runtime flow and stage the write until Save and exit.")
+		lines = append(lines, "This runtime needs an Anthropic API key. init will gather it in this runtime flow and stage the write until Commit all changes and exit.")
 	case initLLMRuntimePresetOpenAIAPIKey:
-		lines = append(lines, "This runtime needs an OpenAI API key. init will gather it in this runtime flow and stage the write until Save and exit.")
+		lines = append(lines, "This runtime needs an OpenAI API key. init will gather it in this runtime flow and stage the write until Commit all changes and exit.")
 	case initLLMRuntimePresetCustom:
 		lines = append(lines, "Customize provider, auth mode, and adapter before staging this runtime for the active profile.")
 	}

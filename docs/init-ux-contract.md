@@ -81,8 +81,8 @@ The intended top-level shape is:
 2. Configure reviewer entities
 3. Configure review profiles
 4. Review global settings
-5. Save and exit
-6. Exit without saving
+5. Commit all changes and exit
+6. Discard all changes and exit
 
 This ordering is intentional:
 
@@ -125,31 +125,33 @@ When editing an existing profile, interactive `init` should:
 - keep route reconciliation tied to Git scope changes
 - preserve the existing rename/default/route semantics owned by shared helpers
 
-## Save And Exit Semantics
+## Commit And Discard Semantics
 
 Interactive `init` is draft-driven.
 
-Until the user chooses **Save and exit**:
+Until the user chooses **Commit all changes and exit**:
 
 - no config file writes occur
 - no keyring writes occur
-- prompts mutate only in-memory draft state
+- prompts mutate only in-memory staged draft state
 - route edits and reconciliations mutate only draft route state
+- completing a subflow only stages changes in the current init session
 
 Interactive `init` must offer both:
 
-- **Save and exit**: validate the draft, collect or defer required secrets, then
-  write config and keyring state in the defined final-save order
-- **Exit without saving**: discard the draft and leave both config and keyring
-  untouched
+- **Commit all changes and exit**: validate the draft, collect or defer
+  required secrets, then write config and keyring state in the defined
+  final commit order
+- **Discard all changes and exit**: discard the draft and leave both config and
+  keyring untouched
 
-Credential collection belongs near final save, after the user has assembled the
+Credential collection belongs near final commit, after the user has assembled the
 profile shape well enough to understand why each secret is needed.
 
-If the user cancels during credential collection after choosing **Save and
-exit**, any pending secret values remain draft-only and the session returns to a
-no-write state. Until final apply begins, cancellation must still leave both
-config and keyring untouched.
+If the user cancels during credential collection after choosing **Commit all
+changes and exit**, any pending secret values remain draft-only and the session
+returns to a no-write state. Until final apply begins, cancellation must still
+leave both config and keyring untouched.
 
 ## Draft-Local Reuse Rules
 
