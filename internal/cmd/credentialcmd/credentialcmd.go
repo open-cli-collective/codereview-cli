@@ -1954,7 +1954,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 	}
 	if initReviewerEntityKind(reviewerMode) != initReviewerEntityKindUseGitIdentity {
 		labelAction := initDetailActionEdit
-		labelForm := huh.NewForm(
+		labelActionForm := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
 					Title("Reviewer label action").
@@ -1963,6 +1963,17 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 						huh.NewOption("Back without changes", initDetailActionBack),
 					).
 					Value(&labelAction),
+			).Title("Reviewer Entity Details"),
+		)
+		back, err = runBackableInitForm(labelActionForm, p.stdin, p.stderr)
+		if err != nil {
+			return false, false, err
+		}
+		if back || labelAction == initDetailActionBack {
+			return true, false, nil
+		}
+		labelInputForm := huh.NewForm(
+			huh.NewGroup(
 				huh.NewInput().
 					Title("Reviewer entity label").
 					Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
@@ -1970,11 +1981,11 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 					Validate(validateOptionalDisplayName),
 			).Title("Reviewer Entity Details"),
 		)
-		back, err = runBackableInitForm(labelForm, p.stdin, p.stderr)
+		back, err = runBackableInitForm(labelInputForm, p.stdin, p.stderr)
 		if err != nil {
 			return false, false, err
 		}
-		if back || labelAction == initDetailActionBack {
+		if back {
 			return true, false, nil
 		}
 		editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(editDraft.ReviewerDisplayName)

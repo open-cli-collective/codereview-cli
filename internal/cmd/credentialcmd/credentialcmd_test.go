@@ -1823,6 +1823,37 @@ func TestInitReviewerEntityDraftExportClearsIdentityCacheWhenShapeChanges(t *tes
 	}
 }
 
+func TestBuildInteractiveInitWorkspaceClearsReviewerDisplayNameWhenDraftLeavesItBlank(t *testing.T) {
+	existing := basicProfile("work")
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+		DisplayName:   "Old label",
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": existing,
+		},
+	}
+	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft.ReviewerEnabled = true
+	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	draft.ReviewerCredentialRef = "codereview/work-reviewer"
+	draft.ReviewerDisplayName = ""
+
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, "", cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	if workspace.profile.ReviewerCredentials == nil {
+		t.Fatal("reviewer credentials cleared unexpectedly")
+	}
+	if got := workspace.profile.ReviewerCredentials.DisplayName; got != "" {
+		t.Fatalf("display name = %q, want cleared blank value", got)
+	}
+}
+
 func TestBuildInitGitScopeInventoryDeduplicatesNormalizedGitHubEnterpriseHost(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
@@ -2025,6 +2056,35 @@ func TestBuildInitReviewerEntityInventoryConflictingSharedDisplayNamesFallBackTo
 		t.Fatalf("entity.DisplayName = %q, want cleared when shared profiles disagree", entity.DisplayName)
 	}
 	if got, want := initReviewerEntityLabel(entity), "GitHub App reviewer: open-cli-collective-rianjs-bot"; got != want {
+		t.Fatalf("label = %q, want %q", got, want)
+	}
+}
+
+func TestBuildInitReviewerEntityInventorySharedDisplayNameWinsWhenOnlyOneProfileNamesEntity(t *testing.T) {
+	home := basicProfile("home")
+	work := basicProfile("work")
+	home.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+		DisplayName:   "OC Collective bot",
+	}
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+	}
+
+	entities, profileEntityNames := buildInitReviewerEntityInventory(config.File{
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
+		},
+	})
+
+	entity := entities[profileEntityNames["home"]]
+	if got, want := entity.DisplayName, "OC Collective bot"; got != want {
+		t.Fatalf("entity.DisplayName = %q, want %q", got, want)
+	}
+	if got, want := initReviewerEntityLabel(entity), "OC Collective bot (GitHub App reviewer)"; got != want {
 		t.Fatalf("label = %q, want %q", got, want)
 	}
 }
@@ -4016,6 +4076,52 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 	}
 	if strings.Contains(out, "Reviewer secret location action") || strings.Contains(out, "Use this reviewer secret location") {
 		t.Fatalf("stderr = %q, want reviewer secret location hidden until opt-in", out)
+	}
+}
+
+func TestHuhInitReviewerEntityPrompterAccessibleShowsSeededDisplayNamePrompt(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+		DisplayName:   "Old label",
+	}
+	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft.ReviewerEnabled = true
+	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	draft.ReviewerCredentialRef = "codereview/work-reviewer"
+	draft.ReviewerDisplayName = "Old label"
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Edit reviewer details.
+			"", // Keep GitHub App reviewer type.
+			"", // Use this reviewer label.
+			"", // Keep the seeded reviewer entity label.
+			"", // Keep the standard reviewer secret location.
+			"", // Stage these reviewer settings.
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	back, deleted, err := prompter.editReviewerEntityDetails("work-reviewer", &draft, map[string]initReviewerEntityDraft{
+		"work-reviewer": initReviewerEntityDraftFromConfig(existing),
+	})
+	if err != nil {
+		t.Fatalf("editReviewerEntityDetails: %v", err)
+	}
+	if back {
+		t.Fatal("back = true, want edited reviewer details")
+	}
+	if deleted {
+		t.Fatal("deleted = true, want edited reviewer details")
+	}
+	if got, want := draft.ReviewerDisplayName, "Old label"; got != want {
+		t.Fatalf("draft.ReviewerDisplayName = %q, want %q; stderr=%q", got, want, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Reviewer entity label") {
+		t.Fatalf("stderr = %q, want reviewer entity label prompt", stderr.String())
 	}
 }
 
