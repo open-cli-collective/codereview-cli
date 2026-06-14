@@ -199,6 +199,24 @@ Interactive `init` may also offer separate reviewer entities such as:
 For GitHub organizations, the UX should explain that a GitHub App is often the
 preferred team/shared reviewer path.
 
+Separate reviewer entities should also support an optional human-friendly
+display name. When present, the configured reviewer-entity chooser should
+prefer that display name and keep the technical reviewer type as supporting
+text, for example:
+
+- **OC Collective bot (GitHub App reviewer)**
+- **Release reviewer (PAT reviewer)**
+
+When no explicit display name exists, the chooser should fall back to stable,
+deterministic identity text derived from the credential ref or equivalent
+profile context, for example:
+
+- **GitHub App reviewer: open-cli-collective-rianjs-bot**
+- **PAT reviewer: reviewer-pat**
+
+The profile-Git-account fallback is not a separately named reviewer entity and
+should not ask for a custom reviewer-entity display name.
+
 ## User-Term To Schema Mapping
 
 Interactive `init` may hide the raw schema, but the contract between user terms

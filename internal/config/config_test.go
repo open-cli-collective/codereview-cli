@@ -1049,6 +1049,36 @@ profiles:
 	}
 }
 
+func TestLoadRejectsMultilineReviewerDisplayName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeFile(t, path, `default_profile: work
+keyring: {}
+profiles:
+  work:
+    git:
+      host: github.com
+      auth_mode: github_app
+      credential_ref: codereview/work
+    reviewer_credentials:
+      auth_mode: github_app
+      credential_ref: codereview/work-reviewer
+      display_name: |
+        line one
+        line two
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`)
+	_, err := Load(path)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Load error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "reviewer_credentials.display_name") {
+		t.Fatalf("Load error = %v, want display_name validation", err)
+	}
+}
+
 func TestCredentialRefsRejectReservedGitAuthModes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1305,6 +1335,7 @@ func validFile() File {
 				ReviewerCredentials: &ReviewerCredentials{
 					AuthMode:      GitAuthModePAT,
 					CredentialRef: "codereview/work-reviewer",
+					DisplayName:   "Work reviewer bot",
 					IdentityCache: "acme-review-bot",
 				},
 				LLM: LLMConfig{

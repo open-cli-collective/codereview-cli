@@ -202,19 +202,19 @@ type initFinalizePrompter interface {
 }
 
 type initPromptContext struct {
-	RequestedProfileName    string
-	ExistingProfileName     string
-	ExistingProfile         *config.Profile
-	ExistingProfileNames    []string
-	DefaultProfileName      string
-	ExistingConfig          config.File
-	GitScopes               map[string]initGitScopeDraft
-	ProfileGitScopes        map[string]string
-	ReviewerEntities        map[string]initReviewerEntityDraft
-	ProfileReviewerEntities map[string]string
-	LLMRuntimes             map[string]initLLMRuntimeDraft
-	ProfileLLMRuntimes      map[string]string
-	ProfileWarnings         map[string][]string
+	RequestedProfileName         string
+	ExistingProfileName          string
+	ExistingProfile              *config.Profile
+	ExistingProfileNames         []string
+	DefaultProfileName           string
+	ExistingConfig               config.File
+	GitScopes                    map[string]initGitScopeDraft
+	ProfileGitScopes             map[string]string
+	ReviewerEntities             map[string]initReviewerEntityDraft
+	ProfileReviewerEntities      map[string]string
+	LLMRuntimes                  map[string]initLLMRuntimeDraft
+	ProfileLLMRuntimes           map[string]string
+	ProfileWarnings              map[string][]string
 	PendingProfileDeletes        map[string]initPendingProfileDelete
 	PendingReviewerEntityDeletes map[string]initPendingReviewerEntityDelete
 	PendingLLMRuntimeDeletes     map[string]initPendingLLMRuntimeDelete
@@ -224,12 +224,12 @@ type initDraftAction string
 
 const (
 	initDraftActionNone                     initDraftAction = ""
-	initDraftActionDeleteProfile           initDraftAction = "delete_profile"
-	initDraftActionUndoDeleteProfile       initDraftAction = "undo_delete_profile"
-	initDraftActionDeleteReviewerEntity    initDraftAction = "delete_reviewer_entity"
+	initDraftActionDeleteProfile            initDraftAction = "delete_profile"
+	initDraftActionUndoDeleteProfile        initDraftAction = "undo_delete_profile"
+	initDraftActionDeleteReviewerEntity     initDraftAction = "delete_reviewer_entity"
 	initDraftActionUndoDeleteReviewerEntity initDraftAction = "undo_delete_reviewer_entity"
-	initDraftActionDeleteLLMRuntime        initDraftAction = "delete_llm_runtime"
-	initDraftActionUndoDeleteLLMRuntime    initDraftAction = "undo_delete_llm_runtime"
+	initDraftActionDeleteLLMRuntime         initDraftAction = "delete_llm_runtime"
+	initDraftActionUndoDeleteLLMRuntime     initDraftAction = "undo_delete_llm_runtime"
 )
 
 type initDraft struct {
@@ -244,6 +244,7 @@ type initDraft struct {
 	ReviewerEnabled       bool
 	ReviewerAuth          string
 	ReviewerCredentialRef string
+	ReviewerDisplayName   string
 	LLMProvider           string
 	LLMAuth               string
 	LLMAdapter            string
@@ -439,16 +440,16 @@ type initSessionPlan struct {
 }
 
 type initSessionDraft struct {
-	path                 string
-	originalCfg          config.File
-	cfg                  config.File
-	requestedProfileName string
-	backendFlagSet       bool
-	workspace            *initWorkspaceDraft
-	touchedProfiles      map[string]string
-	writes               map[string]map[string]string
-	overwriteRefs        map[string]bool
-	satisfiedRefs        map[string]bool
+	path                         string
+	originalCfg                  config.File
+	cfg                          config.File
+	requestedProfileName         string
+	backendFlagSet               bool
+	workspace                    *initWorkspaceDraft
+	touchedProfiles              map[string]string
+	writes                       map[string]map[string]string
+	overwriteRefs                map[string]bool
+	satisfiedRefs                map[string]bool
 	pendingProfileDeletes        map[string]initPendingProfileDelete
 	pendingReviewerEntityDeletes map[string]initPendingReviewerEntityDelete
 	pendingLLMRuntimeDeletes     map[string]initPendingLLMRuntimeDelete
@@ -497,6 +498,7 @@ type initReviewerEntityDraft struct {
 	Kind          initReviewerEntityKind
 	AuthMode      config.GitAuthMode
 	CredentialRef string
+	DisplayName   string
 }
 
 type initLLMRuntimePreset string
@@ -987,17 +989,17 @@ type huhInitKeyringBackendPrompter struct {
 }
 
 const (
-	initCustomGitScopeSelection   = "__custom_git_scope__"
-	initCustomLLMRuntimeSelection = "__custom_llm_runtime__"
-	initBackSelection             = "__back__"
-	initUndoProfileDeletePrefix   = "__undo_profile_delete__:"
-	initUndoReviewerEntityDeletePrefix = "__undo_reviewer_entity_delete__:"
-	initUndoLLMRuntimeDeletePrefix = "__undo_llm_runtime_delete__:"
+	initCustomGitScopeSelection           = "__custom_git_scope__"
+	initCustomLLMRuntimeSelection         = "__custom_llm_runtime__"
+	initBackSelection                     = "__back__"
+	initUndoProfileDeletePrefix           = "__undo_profile_delete__:"
+	initUndoReviewerEntityDeletePrefix    = "__undo_reviewer_entity_delete__:"
+	initUndoLLMRuntimeDeletePrefix        = "__undo_llm_runtime_delete__:"
 	initLLMRuntimeTemplateActionUse       = "use"
 	initLLMRuntimeTemplateActionCustomize = "customize"
-	initDetailActionEdit          = "edit"
-	initDetailActionBack          = "back"
-	initDetailActionDelete        = "delete"
+	initDetailActionEdit                  = "edit"
+	initDetailActionBack                  = "back"
+	initDetailActionDelete                = "delete"
 )
 
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
@@ -1052,15 +1054,15 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 		cfg.Profiles = map[string]config.Profile{}
 	}
 	session := initSessionDraft{
-		path:                 path,
-		originalCfg:          cloneInitConfigFile(cfg),
-		cfg:                  cloneInitConfigFile(cfg),
-		requestedProfileName: profileName,
-		backendFlagSet:       cmderr.BackendFlagChanged(cmd),
-		touchedProfiles:      map[string]string{},
-		writes:               map[string]map[string]string{},
-		overwriteRefs:        map[string]bool{},
-		satisfiedRefs:        map[string]bool{},
+		path:                         path,
+		originalCfg:                  cloneInitConfigFile(cfg),
+		cfg:                          cloneInitConfigFile(cfg),
+		requestedProfileName:         profileName,
+		backendFlagSet:               cmderr.BackendFlagChanged(cmd),
+		touchedProfiles:              map[string]string{},
+		writes:                       map[string]map[string]string{},
+		overwriteRefs:                map[string]bool{},
+		satisfiedRefs:                map[string]bool{},
 		pendingProfileDeletes:        map[string]initPendingProfileDelete{},
 		pendingReviewerEntityDeletes: map[string]initPendingReviewerEntityDelete{},
 		pendingLLMRuntimeDeletes:     map[string]initPendingLLMRuntimeDelete{},
@@ -1128,12 +1130,12 @@ func currentInteractiveInitPromptContextBase(session initSessionDraft) initPromp
 		existingProfile = &profileCopy
 	}
 	return initPromptContext{
-		RequestedProfileName: session.requestedProfileName,
-		ExistingProfileName:  existingProfileName,
-		ExistingProfile:      existingProfile,
-		ExistingProfileNames: sortedProfileNames(session.cfg.Profiles),
-		DefaultProfileName:   session.cfg.DefaultProfile,
-		ExistingConfig:       session.cfg,
+		RequestedProfileName:         session.requestedProfileName,
+		ExistingProfileName:          existingProfileName,
+		ExistingProfile:              existingProfile,
+		ExistingProfileNames:         sortedProfileNames(session.cfg.Profiles),
+		DefaultProfileName:           session.cfg.DefaultProfile,
+		ExistingConfig:               session.cfg,
 		PendingProfileDeletes:        session.pendingProfileDeletes,
 		PendingReviewerEntityDeletes: session.pendingReviewerEntityDeletes,
 		PendingLLMRuntimeDeletes:     session.pendingLLMRuntimeDeletes,
@@ -1923,6 +1925,32 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 		return true, false, nil
 	}
 	if initReviewerEntityKind(reviewerMode) != initReviewerEntityKindUseGitIdentity {
+		labelAction := initDetailActionEdit
+		labelForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Reviewer label action").
+					Options(
+						huh.NewOption("Use this reviewer label", initDetailActionEdit),
+						huh.NewOption("Back without changes", initDetailActionBack),
+					).
+					Value(&labelAction),
+				huh.NewInput().
+					Title("Reviewer entity label").
+					Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
+					Value(&editDraft.ReviewerDisplayName).
+					Validate(validateOptionalDisplayName),
+			).Title("Reviewer Entity Details"),
+		)
+		back, err = runBackableInitForm(labelForm, p.stdin, p.stderr)
+		if err != nil {
+			return false, false, err
+		}
+		if back || labelAction == initDetailActionBack {
+			return true, false, nil
+		}
+		editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(editDraft.ReviewerDisplayName)
+
 		secretLocationAction := initReviewerSecretLocationActionStandard
 		if currentReviewerRefUsesCustomLocation(editDraft) {
 			secretLocationAction = initReviewerSecretLocationActionCustom
@@ -2067,7 +2095,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 			if strings.HasPrefix(choice, initUndoProfileDeletePrefix) {
 				return initDraft{
-					Action:      initDraftActionUndoDeleteProfile,
+					Action:       initDraftActionUndoDeleteProfile,
 					ActionTarget: strings.TrimPrefix(choice, initUndoProfileDeletePrefix),
 				}, nil
 			}
@@ -2159,6 +2187,43 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}, nil
 		}
 
+		reviewerProfileFields := []huh.Field{
+			huh.NewSelect[string]().
+				Title("Reviewer entity").
+				Description(reviewerEntitySelectionDescription()).
+				Options(reviewerEntityOptions...).
+				Value(&selectedReviewerEntity),
+		}
+		if selectedReviewerEntity != string(initReviewerEntityKindUseGitIdentity) {
+			reviewerProfileFields = append(reviewerProfileFields,
+				huh.NewInput().
+					Title("Reviewer entity label").
+					Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
+					Value(&draft.ReviewerDisplayName).
+					Validate(validateOptionalDisplayName),
+			)
+		}
+		reviewerProfileFields = append(reviewerProfileFields,
+			huh.NewSelect[string]().
+				Title("LLM runtime").
+				Description("Choose how reviewer agents run for this profile.").
+				Options(llmRuntimeOptions...).
+				Value(&selectedLLMRuntime),
+			huh.NewSelect[string]().
+				Title("Reviewer model tier").
+				Options(
+					huh.NewOption("Built-in default", ""),
+					huh.NewOption("Small", string(config.ModelTierSmall)),
+					huh.NewOption("Medium", string(config.ModelTierMedium)),
+					huh.NewOption("Large", string(config.ModelTierLarge)),
+				).
+				Value(&draft.LLMReviewerModelTier),
+			huh.NewConfirm().
+				Title("Advanced storage labels").
+				Description("Inspect or override non-secret credential-store labels for Git, reviewer, and LLM secrets.").
+				Value(&draft.AdvancedStorageLabels),
+		)
+
 		form := huh.NewForm(
 			huh.NewGroup(
 				huh.NewInput().
@@ -2190,31 +2255,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			).WithHideFunc(func() bool {
 				return selectedGitScope != initCustomGitScopeSelection
 			}).Title("Git Scope"),
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Reviewer entity").
-					Description(reviewerEntitySelectionDescription()).
-					Options(reviewerEntityOptions...).
-					Value(&selectedReviewerEntity),
-				huh.NewSelect[string]().
-					Title("LLM runtime").
-					Description("Choose how reviewer agents run for this profile.").
-					Options(llmRuntimeOptions...).
-					Value(&selectedLLMRuntime),
-				huh.NewSelect[string]().
-					Title("Reviewer model tier").
-					Options(
-						huh.NewOption("Built-in default", ""),
-						huh.NewOption("Small", string(config.ModelTierSmall)),
-						huh.NewOption("Medium", string(config.ModelTierMedium)),
-						huh.NewOption("Large", string(config.ModelTierLarge)),
-					).
-					Value(&draft.LLMReviewerModelTier),
-				huh.NewConfirm().
-					Title("Advanced storage labels").
-					Description("Inspect or override non-secret credential-store labels for Git, reviewer, and LLM secrets.").
-					Value(&draft.AdvancedStorageLabels),
-			).Title("Review Profile"),
+			huh.NewGroup(reviewerProfileFields...).Title("Review Profile"),
 			huh.NewGroup(
 				huh.NewSelect[string]().
 					Title("LLM provider").
@@ -2293,6 +2334,7 @@ func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDra
 	entity := initReviewerEntityDraft{
 		AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
 		CredentialRef: strings.TrimSpace(draft.ReviewerCredentialRef),
+		DisplayName:   normalizeOptionalDisplayName(draft.ReviewerDisplayName),
 	}
 	switch entity.AuthMode {
 	case config.GitAuthModeGitHubApp:
@@ -2425,19 +2467,44 @@ func focusedReviewerEntityFallbackLabel(profileName string) string {
 }
 
 func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
-	var label string
+	displayName := normalizeOptionalDisplayName(entity.DisplayName)
 	switch entity.Kind {
 	case initReviewerEntityKindUseGitIdentity:
-		label = "None (uses each profile's Git account)"
+		return "None (uses each profile's Git account)"
 	case initReviewerEntityKindGitHubApp:
-		label = "GitHub App reviewer"
+		if displayName != "" {
+			return fmt.Sprintf("%s (GitHub App reviewer)", displayName)
+		}
+		return fmt.Sprintf("GitHub App reviewer: %s", reviewerEntityFallbackIdentityLabel(entity))
 	case initReviewerEntityKindPAT:
-		label = "Personal access token (PAT) reviewer"
+		if displayName != "" {
+			return fmt.Sprintf("%s (PAT reviewer)", displayName)
+		}
+		return fmt.Sprintf("PAT reviewer: %s", reviewerEntityFallbackIdentityLabel(entity))
+	default:
+		if displayName != "" {
+			return displayName
+		}
 	}
-	if strings.TrimSpace(entity.Name) != "" {
-		label = fmt.Sprintf("%s (%s)", label, entity.Name)
+	return entity.Name
+}
+
+func reviewerEntityFallbackIdentityLabel(entity initReviewerEntityDraft) string {
+	ref := strings.TrimSpace(entity.CredentialRef)
+	if ref == "" {
+		return strings.TrimSpace(entity.Name)
 	}
-	return label
+	parsed, err := credentials.ParseRef(ref)
+	if err == nil {
+		label := strings.TrimSpace(parsed.Profile)
+		if label != "" {
+			return label
+		}
+	}
+	if slash := strings.LastIndex(ref, "/"); slash >= 0 && slash < len(ref)-1 {
+		return ref[slash+1:]
+	}
+	return ref
 }
 
 func applyReviewerEntityInventorySelection(draft *initDraft, selection string, entities map[string]initReviewerEntityDraft) {
@@ -2452,6 +2519,7 @@ func applyReviewerEntityInventorySelection(draft *initDraft, selection string, e
 	}
 	draft.ReviewerEnabled = entity.Kind != initReviewerEntityKindUseGitIdentity
 	draft.ReviewerAuth = string(entity.AuthMode)
+	draft.ReviewerDisplayName = normalizeOptionalDisplayName(entity.DisplayName)
 	if !draft.AdvancedStorageLabels {
 		draft.ReviewerCredentialRef = entity.CredentialRef
 	}
@@ -2462,6 +2530,7 @@ func applyReviewerEntitySelection(draft *initDraft, selection string) {
 	case initReviewerEntityKindUseGitIdentity:
 		draft.ReviewerEnabled = false
 		draft.ReviewerAuth = string(config.GitAuthModePAT)
+		draft.ReviewerDisplayName = ""
 		if !draft.AdvancedStorageLabels {
 			draft.ReviewerCredentialRef = ""
 		}
@@ -3352,6 +3421,21 @@ func validateOptionalCredentialRef(value string) error {
 	return err
 }
 
+func normalizeOptionalDisplayName(value string) string {
+	return strings.TrimSpace(value)
+}
+
+func validateOptionalDisplayName(value string) error {
+	trimmed := normalizeOptionalDisplayName(value)
+	if trimmed == "" {
+		return nil
+	}
+	if strings.Contains(trimmed, "\n") || strings.Contains(trimmed, "\r") {
+		return fmt.Errorf("display name must be a single line")
+	}
+	return nil
+}
+
 func validateOptionalDuration(value string) error {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -3434,6 +3518,7 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(existingProfile.ReviewerCredentials.AuthMode)
 			draft.ReviewerCredentialRef = existingProfile.ReviewerCredentials.CredentialRef
+			draft.ReviewerDisplayName = normalizeOptionalDisplayName(existingProfile.ReviewerCredentials.DisplayName)
 		}
 	}
 	return draft
@@ -4365,6 +4450,7 @@ func initReviewerEntityDraftFromConfig(profile config.Profile) initReviewerEntit
 	entity := initReviewerEntityDraft{
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
 		CredentialRef: strings.TrimSpace(profile.ReviewerCredentials.CredentialRef),
+		DisplayName:   normalizeOptionalDisplayName(profile.ReviewerCredentials.DisplayName),
 	}
 	switch profile.ReviewerCredentials.AuthMode {
 	case config.GitAuthModeGitHubApp:
@@ -4382,6 +4468,7 @@ func (entity initReviewerEntityDraft) exportConfig(previous *config.ReviewerCred
 	reviewer := &config.ReviewerCredentials{
 		AuthMode:      entity.AuthMode,
 		CredentialRef: strings.TrimSpace(entity.CredentialRef),
+		DisplayName:   normalizeOptionalDisplayName(entity.DisplayName),
 	}
 	if previous != nil && entity.matchesConfig(*previous) {
 		reviewer.IdentityCache = previous.IdentityCache
@@ -4422,10 +4509,17 @@ func buildInitReviewerEntityInventory(cfg config.File) (map[string]initReviewerE
 	entities := map[string]initReviewerEntityDraft{}
 	profileEntityNames := map[string]string{}
 	entityNamesByKey := map[string]string{}
+	displayNamesByKey := map[string]map[string]struct{}{}
 	for _, profileName := range sortedProfileNames(cfg.Profiles) {
 		profile := cfg.Profiles[profileName]
 		entity := initReviewerEntityDraftFromConfig(profile)
 		key := entity.identityKey()
+		if entity.DisplayName != "" {
+			if _, ok := displayNamesByKey[key]; !ok {
+				displayNamesByKey[key] = map[string]struct{}{}
+			}
+			displayNamesByKey[key][entity.DisplayName] = struct{}{}
+		}
 		if existingName, ok := entityNamesByKey[key]; ok {
 			profileEntityNames[profileName] = existingName
 			continue
@@ -4434,6 +4528,18 @@ func buildInitReviewerEntityInventory(cfg config.File) (map[string]initReviewerE
 		entities[entity.Name] = entity
 		entityNamesByKey[key] = entity.Name
 		profileEntityNames[profileName] = entity.Name
+	}
+	for name, entity := range entities {
+		displayNames := displayNamesByKey[entity.identityKey()]
+		if len(displayNames) != 1 {
+			entity.DisplayName = ""
+			entities[name] = entity
+			continue
+		}
+		for displayName := range displayNames {
+			entity.DisplayName = displayName
+		}
+		entities[name] = entity
 	}
 	return entities, profileEntityNames
 }
@@ -4666,6 +4772,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 		reviewer := config.ReviewerCredentials{
 			AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
 			CredentialRef: reviewerRef,
+			DisplayName:   normalizeOptionalDisplayName(draft.ReviewerDisplayName),
 		}
 		// Changing reviewer credentials can invalidate the cached reviewer identity even when the profile name stays the same.
 		if previousProfile != nil && previousProfile.ReviewerCredentials != nil && initReviewerEntityDraftFromConfig(config.Profile{ReviewerCredentials: &reviewer}).matchesConfig(*previousProfile.ReviewerCredentials) {

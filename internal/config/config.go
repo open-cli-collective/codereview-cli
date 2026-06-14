@@ -70,6 +70,7 @@ type GitConfig struct {
 type ReviewerCredentials struct {
 	AuthMode      GitAuthMode `yaml:"auth_mode" json:"auth_mode"`
 	CredentialRef string      `yaml:"credential_ref" json:"credential_ref"`
+	DisplayName   string      `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	IdentityCache string      `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
 }
 
@@ -693,6 +694,9 @@ func validateProfile(name string, profile Profile) error {
 		if profile.ReviewerCredentials.CredentialRef == profile.Git.CredentialRef {
 			return invalid("profiles.%s.reviewer_credentials.credential_ref must differ from git.credential_ref", name)
 		}
+		if err := validateOptionalSingleLine(fmt.Sprintf("profiles.%s.reviewer_credentials.display_name", name), profile.ReviewerCredentials.DisplayName); err != nil {
+			return err
+		}
 	}
 	if !profile.LLM.Provider.Valid() {
 		return invalid("profiles.%s.llm.provider %q is invalid", name, profile.LLM.Provider)
@@ -842,6 +846,17 @@ func validateCredentialRef(field, ref string) error {
 	}
 	if service != serviceName {
 		return invalid("%s must use service %q", field, serviceName)
+	}
+	return nil
+}
+
+func validateOptionalSingleLine(field, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	if strings.Contains(trimmed, "\n") || strings.Contains(trimmed, "\r") {
+		return invalid("%s must be a single line", field)
 	}
 	return nil
 }
