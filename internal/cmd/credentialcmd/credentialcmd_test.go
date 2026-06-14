@@ -4577,7 +4577,7 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 			"2",   // Edit review policy
 			"",    // Edit review policy details
 			"",    // keep comment
-			"n",   // allow self-approve false
+			"",    // keep recommended self-approve false
 			"2",   // auto resolve
 			"24h", // resolve after
 			"",
@@ -4597,12 +4597,43 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	if edit.ReviewPolicy.MajorEvent != config.ReviewMajorEventComment {
 		t.Fatalf("review policy = %#v, want default comment major_event", edit.ReviewPolicy)
 	}
+	if edit.ReviewPolicy.AllowSelfApprove {
+		t.Fatalf("review policy = %#v, want self-approve false on default path", edit.ReviewPolicy)
+	}
 	out := stderr.String()
 	if !strings.Contains(out, "Major findings event") || !strings.Contains(out, "Resolve-after duration") {
 		t.Fatalf("stderr = %q, want review-policy fields", out)
 	}
+	if !strings.Contains(out, "Do not allow self-approve (recommended)") || !strings.Contains(out, "Enable self-approve") {
+		t.Fatalf("stderr = %q, want explicit self-approve choices", out)
+	}
 	if !strings.Contains(out, "Back to review-policy choices") {
 		t.Fatalf("stderr = %q, want review-policy detail Back option", out)
+	}
+}
+
+func TestInitReviewPolicySelfApproveChoiceRoundTrip(t *testing.T) {
+	if got := initReviewPolicySelfApproveChoice(false); got != initSelfApproveDisallow {
+		t.Fatalf("choice(false) = %q, want %q", got, initSelfApproveDisallow)
+	}
+	if got := initReviewPolicySelfApproveChoice(true); got != initSelfApproveEnable {
+		t.Fatalf("choice(true) = %q, want %q", got, initSelfApproveEnable)
+	}
+	if initReviewPolicyAllowSelfApprove(initSelfApproveDisallow) {
+		t.Fatal("allow(disallow) = true, want false")
+	}
+	if !initReviewPolicyAllowSelfApprove(initSelfApproveEnable) {
+		t.Fatal("allow(enable) = false, want true")
+	}
+	options := initReviewPolicySelfApproveOptions()
+	if len(options) != 2 {
+		t.Fatalf("len(options) = %d, want 2", len(options))
+	}
+	if options[0].Key != "Do not allow self-approve (recommended)" {
+		t.Fatalf("first label = %q", options[0].Key)
+	}
+	if options[1].Key != "Enable self-approve" {
+		t.Fatalf("second label = %q", options[1].Key)
 	}
 }
 

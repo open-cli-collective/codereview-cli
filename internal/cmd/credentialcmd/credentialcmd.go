@@ -1001,6 +1001,8 @@ const (
 	initLLMRuntimeTemplateActionCustomize = "customize"
 	initStorageLabelsStandard             = "standard"
 	initStorageLabelsCustom               = "custom"
+	initSelfApproveDisallow               = "disallow"
+	initSelfApproveEnable                 = "enable"
 	initDetailActionEdit                  = "edit"
 	initDetailActionBack                  = "back"
 	initDetailActionDelete                = "delete"
@@ -3136,6 +3138,7 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 		}
 		majorEvent := policy.MajorEvent
 		selfApprove := policy.AllowSelfApprove
+		selfApproveChoice := initReviewPolicySelfApproveChoice(selfApprove)
 		resolveThreads := string(policy.ResolveThreads)
 		resolveAfter := policy.ResolveAfter
 		form = huh.NewForm(
@@ -3156,9 +3159,10 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 						huh.NewOption("Request changes", config.ReviewMajorEventRequestChanges),
 					).
 					Value(&majorEvent),
-				huh.NewConfirm().
+				huh.NewSelect[string]().
 					Title("Allow self-approve").
-					Value(&selfApprove),
+					Options(initReviewPolicySelfApproveOptions()...).
+					Value(&selfApproveChoice),
 				huh.NewSelect[string]().
 					Title("Resolve threads").
 					Options(
@@ -3183,6 +3187,7 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 		if back || detailAction == initDetailActionBack {
 			continue
 		}
+		selfApprove = initReviewPolicyAllowSelfApprove(selfApproveChoice)
 		return initReviewPolicyEdit{
 			Apply: true,
 			ReviewPolicy: config.ReviewPolicy{
@@ -3495,6 +3500,24 @@ func initModelMapInputDescription(tier config.ModelTier, builtIn string) string 
 		return fmt.Sprintf("Leave blank to use the built-in %s model: %s", tier, builtIn)
 	}
 	return "Leave blank to remove the override for this tier."
+}
+
+func initReviewPolicySelfApproveOptions() []huh.Option[string] {
+	return []huh.Option[string]{
+		huh.NewOption("Do not allow self-approve (recommended)", initSelfApproveDisallow),
+		huh.NewOption("Enable self-approve", initSelfApproveEnable),
+	}
+}
+
+func initReviewPolicySelfApproveChoice(enabled bool) string {
+	if enabled {
+		return initSelfApproveEnable
+	}
+	return initSelfApproveDisallow
+}
+
+func initReviewPolicyAllowSelfApprove(choice string) bool {
+	return choice == initSelfApproveEnable
 }
 
 func validateRequiredText(message string) func(string) error {
