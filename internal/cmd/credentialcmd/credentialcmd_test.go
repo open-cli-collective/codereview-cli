@@ -7048,6 +7048,72 @@ func TestInitInteractiveMenuFocusedLLMRuntimeStageStaysInCategoryUntilBack(t *te
 	}
 }
 
+func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoStaysInCategoryUntilBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionExit,
+		},
+	}
+	llmCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmCalls++
+			switch llmCalls {
+			case 1:
+				if _, ok := prompt.Context.LLMRuntimes["claude-cli"]; !ok {
+					t.Fatalf("LLMRuntimes = %#v, want configured claude-cli before delete", prompt.Context.LLMRuntimes)
+				}
+				return initDraft{
+					Action:       initDraftActionDeleteLLMRuntime,
+					ActionTarget: "claude-cli",
+					LLMProvider:  string(config.LLMProviderOpenAI),
+					LLMAuth:      string(config.LLMAuthSubscription),
+					LLMAdapter:   string(config.LLMAdapterCodexCLI),
+				}, nil
+			case 2:
+				if _, ok := prompt.Context.PendingLLMRuntimeDeletes["claude-cli"]; !ok {
+					t.Fatalf("PendingLLMRuntimeDeletes = %#v, want claude-cli pending delete before undo", prompt.Context.PendingLLMRuntimeDeletes)
+				}
+				return initDraft{
+					Action:       initDraftActionUndoDeleteLLMRuntime,
+					ActionTarget: "claude-cli",
+				}, nil
+			case 3:
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected LLM prompt #%d", llmCalls)
+				return initDraft{}, nil
+			}
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if llmCalls != 3 {
+		t.Fatalf("llmCalls = %d, want delete, undo, then Back in-category", llmCalls)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+	}
+}
+
 func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
@@ -7120,6 +7186,57 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 	}
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+	}
+}
+
+func TestInitInteractiveLegacyInjectedPathProfileEditRemainsOneShot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	prompterCalls := 0
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			prompterCalls++
+			return initDraft{
+				ProfileName: "default",
+				MakeDefault: true,
+				GitHost:     "github.com",
+				GitAuth:     string(config.GitAuthModePAT),
+				LLMProvider: string(config.LLMProviderAnthropic),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if prompterCalls != 1 {
+		t.Fatalf("prompterCalls = %d, want legacy injected path to remain one-shot", prompterCalls)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile != "default" {
+		t.Fatalf("default profile = %q, want default", cfg.DefaultProfile)
 	}
 }
 
