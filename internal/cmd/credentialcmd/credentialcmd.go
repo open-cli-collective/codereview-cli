@@ -1403,7 +1403,7 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		return initSessionDraft{}, false, err
 	}
 	session.cfg = cloneInitConfigFile(workspace.cfg)
-	session.cfg = propagateSharedReviewerEntityDisplayName(session.cfg, previousCfg, workspace.profileName, initReviewerEntityDraftFromSeedDraft(draft))
+	session.cfg = propagateSharedReviewerEntityDisplayName(previousCfg, session.cfg, workspace.profileName, initReviewerEntityDraftFromSeedDraft(draft))
 	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
 	session.requestedProfileName = workspace.profileName
 	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, session.workspace.profile) {
@@ -1421,20 +1421,20 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	return session, true, nil
 }
 
-func propagateSharedReviewerEntityDisplayName(current config.File, previous config.File, activeProfileName string, entity initReviewerEntityDraft) config.File {
+func propagateSharedReviewerEntityDisplayName(priorCfg config.File, updatedCfg config.File, activeProfileName string, entity initReviewerEntityDraft) config.File {
 	if entity.Kind == initReviewerEntityKindUseGitIdentity {
-		return current
+		return updatedCfg
 	}
 	identityKey := entity.identityKey()
 	displayName := normalizeOptionalDisplayName(entity.DisplayName)
-	for profileName, previousProfile := range previous.Profiles {
+	for profileName, previousProfile := range priorCfg.Profiles {
 		if profileName == activeProfileName {
 			continue
 		}
 		if initReviewerEntityDraftFromConfig(previousProfile).identityKey() != identityKey {
 			continue
 		}
-		profile, ok := current.Profiles[profileName]
+		profile, ok := updatedCfg.Profiles[profileName]
 		if !ok || profile.ReviewerCredentials == nil {
 			continue
 		}
@@ -1442,9 +1442,9 @@ func propagateSharedReviewerEntityDisplayName(current config.File, previous conf
 			continue
 		}
 		profile.ReviewerCredentials.DisplayName = displayName
-		current.Profiles[profileName] = profile
+		updatedCfg.Profiles[profileName] = profile
 	}
-	return current
+	return updatedCfg
 }
 
 func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
@@ -2541,15 +2541,16 @@ func reviewerEntityFallbackIdentityLabel(entity initReviewerEntityDraft) string 
 	}
 	parsed, err := credentials.ParseRef(ref)
 	if err == nil {
-		label := strings.TrimSpace(parsed.Profile)
-		if label != "" {
-			return label
+		profileSegment := strings.TrimSpace(parsed.Profile)
+		if profileSegment != "" {
+			return profileSegment
 		}
 	}
+	pathSegment := ref
 	if slash := strings.LastIndex(ref, "/"); slash >= 0 && slash < len(ref)-1 {
-		return ref[slash+1:]
+		pathSegment = ref[slash+1:]
 	}
-	return ref
+	return pathSegment
 }
 
 func applyReviewerEntityInventorySelection(draft *initDraft, selection string, entities map[string]initReviewerEntityDraft) {
@@ -4579,7 +4580,9 @@ func buildInitReviewerEntityInventory(cfg config.File) (map[string]initReviewerE
 	}
 	for name, entity := range entities {
 		displayNames := displayNamesByKey[entity.identityKey()]
-		if len(displayNames) != 1 {
+		noDisplayName := len(displayNames) == 0
+		conflictingDisplayNames := len(displayNames) > 1
+		if noDisplayName || conflictingDisplayNames {
 			entity.DisplayName = ""
 			entities[name] = entity
 			continue

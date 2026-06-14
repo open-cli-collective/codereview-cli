@@ -3256,6 +3256,8 @@ func TestProfileEditorSelectionPreservesTypedReviewerEntityLabel(t *testing.T) {
 		"work-reviewer": initReviewerEntityDraftFromConfig(existing),
 	}
 	selectedReviewerEntity := "work-reviewer"
+	// Mirror the production post-form sequencing so the regression stays focused on
+	// the label overwrite boundary without depending on the full accessible form.
 	typedReviewerDisplayName := normalizeOptionalDisplayName(draft.ReviewerDisplayName)
 	applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, reviewerEntities)
 	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)

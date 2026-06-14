@@ -217,6 +217,10 @@ profile context, for example:
 The profile-Git-account fallback is not a separately named reviewer entity and
 should not ask for a custom reviewer-entity display name.
 
+When multiple profiles already share the same separate reviewer identity, a
+display-name edit in interactive `init` applies to that shared identity across
+all of those profiles rather than only the active profile.
+
 ## User-Term To Schema Mapping
 
 Interactive `init` may hide the raw schema, but the contract between user terms
