@@ -3240,13 +3240,20 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 		if prompt.Action != "" {
 			detailBackLabel = "Back to review profile"
 		}
+		fields = append(fields,
+			huh.NewNote().
+				Title("Automatic profile selection").
+				Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile."),
+			huh.NewNote().
+				Title("Accepted route formats").
+				Description("One per line: host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL."),
+		)
 		if prompt.HostChanged && len(prompt.Routes) > 0 {
 			fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
 		}
 		fields = append(fields,
 			huh.NewText().
-				Title("Repository routes").
-				Description("One route per line. Use host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.").
+				Title("Route entries").
 				Value(&routeText),
 		)
 		form := huh.NewForm(
@@ -3258,10 +3265,10 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 						huh.NewOption(detailBackLabel, initDetailActionBack),
 					).
 					Value(&detailAction),
-			).Title("Routes"),
+			).Title("Repository Routes"),
 			huh.NewGroup(fields...).WithHideFunc(func() bool {
 				return detailAction == initDetailActionBack
-			}).Title("Routes"),
+			}).Title("Repository Routes"),
 		)
 		back, err := runBackableInitForm(form, p.stdin, p.stderr)
 		if err != nil {
