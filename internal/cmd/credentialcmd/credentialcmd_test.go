@@ -6931,6 +6931,67 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoStaysInCategoryUntilB
 	}
 }
 
+func TestInitInteractiveMenuFocusedReviewerEntityStageStaysInCategoryUntilBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionExit,
+		},
+	}
+	reviewerCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerCalls++
+			switch reviewerCalls {
+			case 1:
+				draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+				draft.ReviewerEnabled = true
+				draft.ReviewerAuth = string(config.GitAuthModePAT)
+				return draft, nil
+			case 2:
+				if got := prompt.Context.ProfileReviewerEntities["work"]; got != "reviewer-pat" {
+					t.Fatalf("ProfileReviewerEntities[work] = %q, want reviewer-pat after staged reviewer edit", got)
+				}
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected reviewer prompt #%d", reviewerCalls)
+				return initDraft{}, nil
+			}
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if reviewerCalls != 2 {
+		t.Fatalf("reviewerCalls = %d, want staged reviewer edit then Back in-category", reviewerCalls)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+	}
+}
+
 func TestInitInteractiveMenuFocusedLLMRuntimeStageStaysInCategoryUntilBack(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
