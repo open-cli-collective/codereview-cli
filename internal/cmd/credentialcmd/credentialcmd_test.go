@@ -8729,6 +8729,9 @@ func TestInitInteractiveReconcilesRouteHostChangeBeforeSave(t *testing.T) {
 			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
 				t.Fatalf("prompt = %#v, want host reconciliation context", prompt)
 			}
+			if prompt.Action != "" {
+				t.Fatalf("prompt.Action = %q, want empty action so the reconcile chooser can run", prompt.Action)
+			}
 			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "gitlab.com",
 				Namespace: "open-cli-collective",
@@ -8810,6 +8813,9 @@ func TestInitInteractiveReconcilesRouteHostChangeFromSelectedGitScope(t *testing
 			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
 				t.Fatalf("prompt = %#v, want selected git scope reconciliation context", prompt)
 			}
+			if prompt.Action != "" {
+				t.Fatalf("prompt.Action = %q, want empty action so the reconcile chooser can run", prompt.Action)
+			}
 			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "gitlab.com",
 				Namespace: "open-cli-collective",
@@ -8889,6 +8895,9 @@ func TestInitInteractiveReconcilesRouteHostChangeDuringRename(t *testing.T) {
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
 			if prompt.ProfileName != "office" || !prompt.HostChanged {
 				t.Fatalf("prompt = %#v, want renamed profile reconciliation context", prompt)
+			}
+			if prompt.Action != "" {
+				t.Fatalf("prompt.Action = %q, want empty action so the reconcile chooser can run", prompt.Action)
 			}
 			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "gitlab.com",

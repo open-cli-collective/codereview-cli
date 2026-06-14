@@ -5010,7 +5010,11 @@ func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initWo
 		if err := validateInitRouteHosts(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host); err == nil {
 			return plan, nil
 		}
-		action = initRoutesActionEdit
+		// A preserved route set became invalid after the profile edit, usually
+		// because git.host changed. Fall back to the route action chooser so the
+		// user can explicitly reconcile, remove, or back out instead of silently
+		// converting "preserve" into "edit".
+		action = ""
 	}
 	if action == initRoutesActionReset {
 		nextRoutes, err := applyInitProfileRoutes(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host, nil)
