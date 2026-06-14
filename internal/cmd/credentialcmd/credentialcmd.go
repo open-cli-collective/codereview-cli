@@ -1823,7 +1823,6 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 
 func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection string, draft *initDraft, entities map[string]initReviewerEntityDraft) (bool, bool, error) {
 	action := initDetailActionEdit
-	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(*draft).Kind)
 	detailOptions := []huh.Option[string]{
 		huh.NewOption("Edit reviewer details", initDetailActionEdit),
 	}
@@ -1849,36 +1848,125 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 	if action == initDetailActionDelete {
 		return false, true, nil
 	}
-	editForm := huh.NewForm(
+	editDraft := *draft
+	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(editDraft).Kind)
+	reviewerTypeForm := huh.NewForm(
 		huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Reviewer entity type").
-					Options(
-						huh.NewOption(reviewerEntityTemplateFallbackLabel(), string(initReviewerEntityKindUseGitIdentity)),
-						huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)),
-						huh.NewOption(reviewerEntityTemplateGitHubAppLabel(), string(initReviewerEntityKindGitHubApp)),
-					).
-					Value(&reviewerMode),
-			huh.NewConfirm().
-				Title("Advanced storage labels").
-				Description("Inspect or override the non-secret reviewer credential-store label.").
-				Value(&draft.AdvancedStorageLabels),
-			huh.NewInput().
-				Title("Reviewer storage label").
-				Description("Leave blank to use the standard profile-based label when using separate reviewer credentials.").
-				Value(&draft.ReviewerCredentialRef).
-				Validate(validateOptionalCredentialRef),
+			huh.NewSelect[string]().
+				Title("Reviewer entity type").
+				Options(
+					huh.NewOption(reviewerEntityTemplateFallbackLabel(), string(initReviewerEntityKindUseGitIdentity)),
+					huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)),
+					huh.NewOption(reviewerEntityTemplateGitHubAppLabel(), string(initReviewerEntityKindGitHubApp)),
+				).
+				Value(&reviewerMode),
 		).Title("Reviewer Entity Details"),
 	)
-	back, err = runBackableInitForm(editForm, p.stdin, p.stderr)
+	back, err = runBackableInitForm(reviewerTypeForm, p.stdin, p.stderr)
 	if err != nil {
 		return false, false, err
 	}
 	if back {
 		return true, false, nil
 	}
-	applyReviewerEntitySelection(draft, reviewerMode)
+	if initReviewerEntityKind(reviewerMode) != initReviewerEntityKindUseGitIdentity {
+		secretLocationAction := initReviewerSecretLocationActionStandard
+		if currentReviewerRefUsesCustomLocation(editDraft) {
+			secretLocationAction = initReviewerSecretLocationActionCustom
+		}
+		secretLocationForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Reviewer secret location").
+					Description("Most users should leave the standard secret location in place.").
+					Options(
+						huh.NewOption("Use the standard reviewer secret location", initReviewerSecretLocationActionStandard),
+						huh.NewOption("Use a custom reviewer secret location", initReviewerSecretLocationActionCustom),
+						huh.NewOption("Back without changes", initDetailActionBack),
+					).
+					Value(&secretLocationAction),
+			).Title("Reviewer Entity Details"),
+		)
+		back, err = runBackableInitForm(secretLocationForm, p.stdin, p.stderr)
+		if err != nil {
+			return false, false, err
+		}
+		if back || secretLocationAction == initDetailActionBack {
+			return true, false, nil
+		}
+		editDraft.AdvancedStorageLabels = secretLocationAction == initReviewerSecretLocationActionCustom
+		if !editDraft.AdvancedStorageLabels {
+			editDraft.ReviewerCredentialRef = ""
+		}
+		if editDraft.AdvancedStorageLabels {
+			customLocationAction := initDetailActionEdit
+			customLocationForm := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("Reviewer secret location action").
+						Options(
+							huh.NewOption("Use this reviewer secret location", initDetailActionEdit),
+							huh.NewOption("Back without changes", initDetailActionBack),
+						).
+						Value(&customLocationAction),
+					huh.NewInput().
+						Title("Reviewer secret location").
+						Description("Leave blank to use the standard profile-based secret location for this separate reviewer credential.").
+						Value(&editDraft.ReviewerCredentialRef).
+						Validate(validateOptionalCredentialRef),
+				).Title("Reviewer Entity Details"),
+			)
+			back, err = runBackableInitForm(customLocationForm, p.stdin, p.stderr)
+			if err != nil {
+				return false, false, err
+			}
+			if back || customLocationAction == initDetailActionBack {
+				return true, false, nil
+			}
+		}
+	}
+	editAction := initDetailActionEdit
+	editActionForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Reviewer detail action").
+				Options(
+					huh.NewOption("Stage these reviewer settings", initDetailActionEdit),
+					huh.NewOption("Back without changes", initDetailActionBack),
+				).
+				Value(&editAction),
+		).Title("Reviewer Entity Details"),
+	)
+	back, err = runBackableInitForm(editActionForm, p.stdin, p.stderr)
+	if err != nil {
+		return false, false, err
+	}
+	if back || editAction == initDetailActionBack {
+		return true, false, nil
+	}
+	applyReviewerEntitySelection(&editDraft, reviewerMode)
+	*draft = editDraft
 	return false, false, nil
+}
+
+const (
+	initReviewerSecretLocationActionStandard = "reviewer_secret_location_standard"
+	initReviewerSecretLocationActionCustom   = "reviewer_secret_location_custom"
+)
+
+func currentReviewerRefUsesCustomLocation(draft initDraft) bool {
+	if !draft.ReviewerEnabled {
+		return false
+	}
+	reviewerRef := strings.TrimSpace(draft.ReviewerCredentialRef)
+	if reviewerRef == "" {
+		return false
+	}
+	defaultRef, err := credentials.FormatRef(draft.ProfileName + "-reviewer")
+	if err != nil {
+		return false
+	}
+	return reviewerRef != defaultRef
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
