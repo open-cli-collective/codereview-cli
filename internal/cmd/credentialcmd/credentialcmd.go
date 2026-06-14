@@ -1233,7 +1233,7 @@ func editInteractiveInitProfileStep(cmd *cobra.Command, opts *root.Options, flag
 		session.cfg = cloneInitConfigFile(workspace.cfg)
 		session.requestedProfileName = workspace.profileName
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, false, nil
+		return session, true, nil
 	}
 	if err != nil {
 		return initSessionDraft{}, false, err
@@ -2383,6 +2383,12 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 }
 
 func profileRouteActionOptions(hasRoutes bool) []huh.Option[string] {
+	if !hasRoutes {
+		return []huh.Option[string]{
+			huh.NewOption("Skip automatic profile-selection routes for now", string(initRoutesActionPreserve)),
+			huh.NewOption("Add automatic profile-selection routes", string(initRoutesActionEdit)),
+		}
+	}
 	options := []huh.Option[string]{
 		huh.NewOption("Keep current automatic profile-selection routes", string(initRoutesActionPreserve)),
 		huh.NewOption("Edit automatic profile-selection routes", string(initRoutesActionEdit)),

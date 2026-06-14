@@ -4636,6 +4636,33 @@ func TestHuhInitRoutesPrompterIntegratedEditBackNavigatesOut(t *testing.T) {
 	}
 }
 
+func TestProfileRouteActionOptionsReflectRouteInventory(t *testing.T) {
+	gotNoRoutes := profileRouteActionOptions(false)
+	if len(gotNoRoutes) != 2 {
+		t.Fatalf("len(no routes options) = %d, want 2", len(gotNoRoutes))
+	}
+	if gotNoRoutes[0].Key != "Skip automatic profile-selection routes for now" {
+		t.Fatalf("no-routes first label = %q", gotNoRoutes[0].Key)
+	}
+	if gotNoRoutes[1].Key != "Add automatic profile-selection routes" {
+		t.Fatalf("no-routes second label = %q", gotNoRoutes[1].Key)
+	}
+
+	gotWithRoutes := profileRouteActionOptions(true)
+	if len(gotWithRoutes) != 3 {
+		t.Fatalf("len(with routes options) = %d, want 3", len(gotWithRoutes))
+	}
+	if gotWithRoutes[0].Key != "Keep current automatic profile-selection routes" {
+		t.Fatalf("with-routes first label = %q", gotWithRoutes[0].Key)
+	}
+	if gotWithRoutes[1].Key != "Edit automatic profile-selection routes" {
+		t.Fatalf("with-routes second label = %q", gotWithRoutes[1].Key)
+	}
+	if gotWithRoutes[2].Key != "Remove all automatic profile-selection routes for this profile" {
+		t.Fatalf("with-routes third label = %q", gotWithRoutes[2].Key)
+	}
+}
+
 func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
@@ -7536,6 +7563,78 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 	}
 	if profileCalls != 2 {
 		t.Fatalf("profileCalls = %d, want staged profile edit then Back in-category", profileCalls)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+	}
+}
+
+func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionExit,
+		},
+	}
+	profileCalls := 0
+	routeCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+			profileCalls++
+			switch profileCalls {
+			case 1:
+				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile)
+				draft.GitHost = "gitlab.com"
+				draft.RepositoryRoutesAction = string(initRoutesActionEdit)
+				return draft, nil
+			case 2:
+				if prompt.ExistingProfile == nil {
+					t.Fatal("ExistingProfile = nil, want staged work profile on second focused pass")
+				}
+				if got := prompt.ExistingProfile.Git.Host; got != "gitlab.com" {
+					t.Fatalf("ExistingProfile.Git.Host = %q, want staged gitlab.com host after route Back", got)
+				}
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected profile prompt #%d", profileCalls)
+				return initDraft{}, nil
+			}
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			routeCalls++
+			if routeCalls > 1 {
+				t.Fatalf("unexpected routes prompt #%d", routeCalls)
+			}
+			if prompt.Action != initRoutesActionEdit {
+				t.Fatalf("prompt.Action = %q, want edit", prompt.Action)
+			}
+			return initRoutesEdit{}, errInitNavigateBack
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if profileCalls != 2 {
+		t.Fatalf("profileCalls = %d, want route Back to reopen review-profile flow before explicit Back", profileCalls)
+	}
+	if routeCalls != 1 {
+		t.Fatalf("routeCalls = %d, want single integrated route prompt", routeCalls)
 	}
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
