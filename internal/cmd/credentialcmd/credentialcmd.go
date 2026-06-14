@@ -1233,7 +1233,7 @@ func editInteractiveInitProfileStep(cmd *cobra.Command, opts *root.Options, flag
 		session.cfg = cloneInitConfigFile(workspace.cfg)
 		session.requestedProfileName = workspace.profileName
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, true, nil
+		return session, strings.TrimSpace(draft.RepositoryRoutesAction) != "", nil
 	}
 	if err != nil {
 		return initSessionDraft{}, false, err

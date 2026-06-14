@@ -5145,6 +5145,7 @@ func TestInitInteractiveAgentSourcesCanClearToEmpty(t *testing.T) {
 				LLMProvider:         string(config.LLMProviderAnthropic),
 				LLMAuth:             string(config.LLMAuthSubscription),
 				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+				RepositoryRoutesAction: string(initRoutesActionEdit),
 			}, nil
 		}),
 		agentSourcesPrompter: initAgentSourcesPrompterFunc(func(initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
@@ -5404,7 +5405,14 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		}},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -5425,7 +5433,7 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 				OriginalProfileName: "work",
 				ProfileName:         "work",
 				MakeDefault:         true,
-				GitHost:             "github.com",
+				GitHost:             "gitlab.com",
 				GitAuth:             string(config.GitAuthModePAT),
 				GitCredentialRef:    "codereview/work",
 				LLMProvider:         string(config.LLMProviderAnthropic),
