@@ -5582,6 +5582,7 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 		MaxAgeDays:  intPtr(45),
 		Enforcement: config.RetentionManualOnly,
 	}
+	prompterCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -5594,6 +5595,10 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 			return initFinalizeActionSave, nil
 		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			prompterCalls++
+			if prompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			return initDraft{
 				ProfileName:          "default",
 				MakeDefault:          true,
@@ -5685,13 +5690,18 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 				}, nil
 			case 2:
 				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"home"}) {
-					t.Fatalf("second prompt ExistingProfileNames = %#v, want [home]", ctx.ExistingProfileNames)
+					t.Fatalf("second prompt ExistingProfileNames = %#v, want [home] before focused Back", ctx.ExistingProfileNames)
+				}
+				return initDraft{}, errInitNavigateBack
+			case 3:
+				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"home"}) {
+					t.Fatalf("third prompt ExistingProfileNames = %#v, want [home]", ctx.ExistingProfileNames)
 				}
 				if ctx.RequestedProfileName != "home" || ctx.ExistingProfileName != "home" {
-					t.Fatalf("second prompt active profile = (%q, %q), want home/home", ctx.RequestedProfileName, ctx.ExistingProfileName)
+					t.Fatalf("third prompt active profile = (%q, %q), want home/home", ctx.RequestedProfileName, ctx.ExistingProfileName)
 				}
 				if _, ok := ctx.ExistingConfig.Profiles["home"]; !ok {
-					t.Fatalf("second prompt ExistingConfig = %#v, want persisted unsaved home profile", ctx.ExistingConfig.Profiles)
+					t.Fatalf("third prompt ExistingConfig = %#v, want persisted unsaved home profile", ctx.ExistingConfig.Profiles)
 				}
 				return initDraft{
 					ProfileName: "work",
@@ -5702,6 +5712,8 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 					LLMAuth:     string(config.LLMAuthSubscription),
 					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 				}, nil
+			case 4:
+				return initDraft{}, errInitNavigateBack
 			default:
 				t.Fatalf("unexpected prompter call %d", prompterCalls)
 				return initDraft{}, nil
@@ -5779,17 +5791,19 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 				}, nil
 			case 2:
+				return initDraft{}, errInitNavigateBack
+			case 3:
 				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"work"}) {
-					t.Fatalf("second prompt ExistingProfileNames = %#v, want [work]", ctx.ExistingProfileNames)
+					t.Fatalf("third prompt ExistingProfileNames = %#v, want [work]", ctx.ExistingProfileNames)
 				}
 				if ctx.RequestedProfileName != "work" || ctx.ExistingProfileName != "work" {
-					t.Fatalf("second prompt active profile = (%q, %q), want work/work", ctx.RequestedProfileName, ctx.ExistingProfileName)
+					t.Fatalf("third prompt active profile = (%q, %q), want work/work", ctx.RequestedProfileName, ctx.ExistingProfileName)
 				}
 				if ctx.DefaultProfileName != "work" {
-					t.Fatalf("second prompt DefaultProfileName = %q, want work", ctx.DefaultProfileName)
+					t.Fatalf("third prompt DefaultProfileName = %q, want work", ctx.DefaultProfileName)
 				}
 				if ctx.ExistingConfig.Profiles["work"].Git.Host != "github.com" {
-					t.Fatalf("second prompt work profile = %#v, want first unsaved work draft in session cfg", ctx.ExistingConfig.Profiles["work"])
+					t.Fatalf("third prompt work profile = %#v, want first unsaved work draft in session cfg", ctx.ExistingConfig.Profiles["work"])
 				}
 				return initDraft{
 					ProfileName: "home",
@@ -5800,17 +5814,19 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 					LLMAuth:     string(config.LLMAuthSubscription),
 					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 				}, nil
-			case 3:
+			case 4:
+				return initDraft{}, errInitNavigateBack
+			case 5:
 				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"home", "work"}) {
-					t.Fatalf("third prompt ExistingProfileNames = %#v, want [home work]", ctx.ExistingProfileNames)
+					t.Fatalf("fifth prompt ExistingProfileNames = %#v, want [home work]", ctx.ExistingProfileNames)
 				}
 				if ctx.RequestedProfileName != "home" || ctx.ExistingProfileName != "home" {
-					t.Fatalf("third prompt active profile = (%q, %q), want home/home after switching profiles", ctx.RequestedProfileName, ctx.ExistingProfileName)
+					t.Fatalf("fifth prompt active profile = (%q, %q), want home/home after switching profiles", ctx.RequestedProfileName, ctx.ExistingProfileName)
 				}
 				work := ctx.ExistingConfig.Profiles["work"]
 				home := ctx.ExistingConfig.Profiles["home"]
 				if work.Git.Host != "github.com" || home.Git.Host != "gitlab.com" {
-					t.Fatalf("third prompt ExistingConfig = %#v, want both unsaved profiles available for resume", ctx.ExistingConfig.Profiles)
+					t.Fatalf("fifth prompt ExistingConfig = %#v, want both unsaved profiles available for resume", ctx.ExistingConfig.Profiles)
 				}
 				return initDraft{
 					OriginalProfileName: "work",
@@ -5822,6 +5838,8 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 					LLMAuth:             string(config.LLMAuthSubscription),
 					LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 				}, nil
+			case 6:
+				return initDraft{}, errInitNavigateBack
 			default:
 				t.Fatalf("unexpected prompter call %d", prompterCalls)
 				return initDraft{}, nil
@@ -5891,24 +5909,32 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 		}),
 		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
-			if prompterCalls != 1 {
+			switch prompterCalls {
+			case 1:
+				if ctx.RequestedProfileName != "work" || ctx.ExistingProfileName != "work" {
+					t.Fatalf("prompt context = %#v, want fallback bootstrap from default work profile", ctx)
+				}
+				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"work"}) {
+					t.Fatalf("prompt ExistingProfileNames = %#v, want [work] from fallback bootstrap", ctx.ExistingProfileNames)
+				}
+				return initDraft{
+					ProfileName: "home",
+					MakeDefault: false,
+					GitHost:     "github.com",
+					GitAuth:     string(config.GitAuthModePAT),
+					LLMProvider: string(config.LLMProviderAnthropic),
+					LLMAuth:     string(config.LLMAuthSubscription),
+					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				}, nil
+			case 2:
+				if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"home", "work"}) {
+					t.Fatalf("second prompt ExistingProfileNames = %#v, want [home work] before focused Back", ctx.ExistingProfileNames)
+				}
+				return initDraft{}, errInitNavigateBack
+			default:
 				t.Fatalf("unexpected prompter call %d", prompterCalls)
 			}
-			if ctx.RequestedProfileName != "work" || ctx.ExistingProfileName != "work" {
-				t.Fatalf("prompt context = %#v, want fallback bootstrap from default work profile", ctx)
-			}
-			if !reflect.DeepEqual(ctx.ExistingProfileNames, []string{"work"}) {
-				t.Fatalf("prompt ExistingProfileNames = %#v, want [work] from fallback bootstrap", ctx.ExistingProfileNames)
-			}
-			return initDraft{
-				ProfileName: "home",
-				MakeDefault: false,
-				GitHost:     "github.com",
-				GitAuth:     string(config.GitAuthModePAT),
-				LLMProvider: string(config.LLMProviderAnthropic),
-				LLMAuth:     string(config.LLMAuthSubscription),
-				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
-			}, nil
+			return initDraft{}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
@@ -5971,6 +5997,7 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	prompterCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -5982,20 +6009,32 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 			return initFinalizeActionSave, nil
 		}),
 		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
-			if ctx.ExistingProfileName != "work" {
-				t.Fatalf("prompt context = %#v, want default work profile selected for rename", ctx)
+			prompterCalls++
+			switch prompterCalls {
+			case 1:
+				if ctx.ExistingProfileName != "work" {
+					t.Fatalf("prompt context = %#v, want default work profile selected for rename", ctx)
+				}
+				return initDraft{
+					OriginalProfileName: "work",
+					ProfileName:         "office",
+					MakeDefault:         true,
+					GitHost:             "gitlab.com",
+					GitAuth:             string(config.GitAuthModePAT),
+					GitCredentialRef:    "codereview/custom-office-git",
+					LLMProvider:         string(config.LLMProviderAnthropic),
+					LLMAuth:             string(config.LLMAuthSubscription),
+					LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+				}, nil
+			case 2:
+				if ctx.ExistingProfileName != "office" {
+					t.Fatalf("second prompt ExistingProfileName = %q, want office after staged rename", ctx.ExistingProfileName)
+				}
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected prompter call %d", prompterCalls)
 			}
-			return initDraft{
-				OriginalProfileName: "work",
-				ProfileName:         "office",
-				MakeDefault:         true,
-				GitHost:             "gitlab.com",
-				GitAuth:             string(config.GitAuthModePAT),
-				GitCredentialRef:    "codereview/custom-office-git",
-				LLMProvider:         string(config.LLMProviderAnthropic),
-				LLMAuth:             string(config.LLMAuthSubscription),
-				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
-			}, nil
+			return initDraft{}, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
 			if prompt.ProfileName != "office" || !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
@@ -6057,6 +6096,8 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	prompterCalls := 0
+	llmPrompterCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -6070,6 +6111,10 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 			return initFinalizeActionSave, nil
 		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			prompterCalls++
+			if prompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			return initDraft{
 				ProfileName: "default",
 				MakeDefault: true,
@@ -6081,6 +6126,10 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 			}, nil
 		}),
 		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmPrompterCalls++
+			if llmPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
 			draft.LLMProvider = string(config.LLMProviderOpenAI)
 			draft.LLMAuth = string(config.LLMAuthAPIKey)
@@ -6173,6 +6222,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	llmPrompterCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -6184,6 +6234,10 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 			return initFinalizeActionSave, nil
 		}),
 		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmPrompterCalls++
+			if llmPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
 			draft.LLMProvider = string(config.LLMProviderOpenAI)
 			draft.LLMAuth = string(config.LLMAuthSubscription)
@@ -6258,6 +6312,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 		ConfigPath: path,
 	}
 	openStoreCalls := 0
+	llmPrompterCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -6270,6 +6325,10 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 			return initFinalizeActionSave, nil
 		}),
 		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmPrompterCalls++
+			if llmPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
 		}),
 		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
@@ -6324,6 +6383,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDoesNotOpenStoreForPromptContext(t 
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	llmPrompterCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -6332,6 +6392,10 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDoesNotOpenStoreForPromptContext(t 
 			},
 		},
 		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmPrompterCalls++
+			if llmPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
 		}),
 		openStore: func(string, bool, config.File) (initStore, error) {
@@ -6411,6 +6475,8 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	profilePrompterCalls := 0
+	reviewerPrompterCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -6424,6 +6490,10 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 			return initFinalizeActionSave, nil
 		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			profilePrompterCalls++
+			if profilePrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			return initDraft{
 				ProfileName: "default",
 				MakeDefault: true,
@@ -6435,6 +6505,10 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 			}, nil
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			if reviewerPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
@@ -6526,6 +6600,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	reviewerPrompterCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -6537,6 +6612,10 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 			return initFinalizeActionSave, nil
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			if reviewerPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
@@ -6607,6 +6686,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	reviewerPrompterCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -6618,6 +6698,10 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 			return initFinalizeActionSave, nil
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			if reviewerPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
@@ -6685,8 +6769,8 @@ func TestInitInteractiveMenuFocusedReviewerEntityDoesNotOpenStoreForPromptContex
 				initMenuActionExit,
 			},
 		},
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
-			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
+			return initDraft{}, errInitNavigateBack
 		}),
 		openStore: func(string, bool, config.File) (initStore, error) {
 			t.Fatal("openStore should not run for focused reviewer prompt context")
@@ -6758,7 +6842,7 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 			if !reflect.DeepEqual(prompt.ProfileLLMRuntimes, expectedPrompt.ProfileLLMRuntimes) {
 				t.Fatalf("ProfileLLMRuntimes = %#v, want %#v", prompt.ProfileLLMRuntimes, expectedPrompt.ProfileLLMRuntimes)
 			}
-			return seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile), nil
+			return initDraft{}, errInitNavigateBack
 		}),
 		openStore: func(string, bool, config.File) (initStore, error) {
 			t.Fatal("openStore should not run for focused review profile prompt context")
@@ -6771,6 +6855,210 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
+	}
+}
+
+func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoStaysInCategoryUntilBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.ReviewerCredentials = &config.ReviewerCredentials{
+					AuthMode:      config.GitAuthModeGitHubApp,
+					CredentialRef: "codereview/shared-reviewer",
+				}
+				return profile
+			}(),
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionExit,
+		},
+	}
+	reviewerCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerCalls++
+			switch reviewerCalls {
+			case 1:
+				if _, ok := prompt.Context.ReviewerEntities["reviewer-github-app"]; !ok {
+					t.Fatalf("ReviewerEntities = %#v, want configured reviewer-github-app before delete", prompt.Context.ReviewerEntities)
+				}
+				return initDraft{
+					Action:       initDraftActionDeleteReviewerEntity,
+					ActionTarget: "reviewer-github-app",
+				}, nil
+			case 2:
+				if _, ok := prompt.Context.PendingReviewerEntityDeletes["reviewer-github-app"]; !ok {
+					t.Fatalf("PendingReviewerEntityDeletes = %#v, want reviewer-github-app pending delete before undo", prompt.Context.PendingReviewerEntityDeletes)
+				}
+				return initDraft{
+					Action:       initDraftActionUndoDeleteReviewerEntity,
+					ActionTarget: "reviewer-github-app",
+				}, nil
+			case 3:
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected reviewer prompt #%d", reviewerCalls)
+				return initDraft{}, nil
+			}
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if reviewerCalls != 3 {
+		t.Fatalf("reviewerCalls = %d, want delete, undo, then Back in-category", reviewerCalls)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+	}
+}
+
+func TestInitInteractiveMenuFocusedLLMRuntimeStageStaysInCategoryUntilBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionExit,
+		},
+	}
+	llmCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmCalls++
+			switch llmCalls {
+			case 1:
+				draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+				draft.LLMProvider = string(config.LLMProviderOpenAI)
+				draft.LLMAuth = string(config.LLMAuthSubscription)
+				draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
+				return draft, nil
+			case 2:
+				if got := prompt.Context.ProfileLLMRuntimes["work"]; got != "codex-cli" {
+					t.Fatalf("ProfileLLMRuntimes[work] = %q, want codex-cli after staged runtime edit", got)
+				}
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected LLM prompt #%d", llmCalls)
+				return initDraft{}, nil
+			}
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if llmCalls != 2 {
+		t.Fatalf("llmCalls = %d, want staged runtime edit then Back in-category", llmCalls)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+	}
+}
+
+func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionExit,
+		},
+	}
+	profileCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+			profileCalls++
+			switch profileCalls {
+			case 1:
+				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile)
+				draft.GitHost = "gitlab.com"
+				return draft, nil
+			case 2:
+				if prompt.ExistingProfile == nil {
+					t.Fatal("ExistingProfile = nil, want updated work profile on second focused pass")
+				}
+				if got := prompt.ExistingProfile.Git.Host; got != "gitlab.com" {
+					t.Fatalf("ExistingProfile.Git.Host = %q, want staged gitlab.com host on second focused pass", got)
+				}
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected profile prompt #%d", profileCalls)
+				return initDraft{}, nil
+			}
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
+			return initRoutesEdit{Apply: false}, nil
+		}),
+		modelMapPrompter: initModelMapPrompterFunc(func(initModelMapPrompt) (initModelMapEdit, error) {
+			return initModelMapEdit{Apply: false}, nil
+		}),
+		agentSourcesPrompter: initAgentSourcesPrompterFunc(func(initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
+			return initAgentSourcesEdit{Apply: false}, nil
+		}),
+		reviewPolicyPrompter: initReviewPolicyPrompterFunc(func(initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
+			return initReviewPolicyEdit{Apply: false}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if profileCalls != 2 {
+		t.Fatalf("profileCalls = %d, want staged profile edit then Back in-category", profileCalls)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
 	}
 }
 
@@ -6803,13 +7091,14 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 	menu := &fakeInitMenuPrompter{
 		actions: []initMenuAction{
 			initMenuActionReviewProfiles,
-			initMenuActionReviewProfiles,
 			initMenuActionReviewerEntities,
 			initMenuActionLLMRuntimes,
 			initMenuActionSave,
 		},
 	}
 	profileEdits := 0
+	reviewerEdits := 0
+	llmEdits := 0
 	deps := initDeps{
 		menuPrompter:         menu,
 		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
@@ -6834,31 +7123,57 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 					Action:       initDraftActionUndoDeleteProfile,
 					ActionTarget: "work",
 				}, nil
+			case 3:
+				return initDraft{}, errInitNavigateBack
 			default:
 				t.Fatalf("unexpected extra profile prompt #%d", profileEdits)
 				return initDraft{}, nil
 			}
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
-			if _, ok := prompt.Context.ReviewerEntities["reviewer-github-app"]; !ok {
-				t.Fatalf("ReviewerEntities = %#v, want configured reviewer-github-app inventory entry", prompt.Context.ReviewerEntities)
+			reviewerEdits++
+			switch reviewerEdits {
+			case 1:
+				if _, ok := prompt.Context.ReviewerEntities["reviewer-github-app"]; !ok {
+					t.Fatalf("ReviewerEntities = %#v, want configured reviewer-github-app inventory entry", prompt.Context.ReviewerEntities)
+				}
+				return initDraft{
+					Action:       initDraftActionDeleteReviewerEntity,
+					ActionTarget: "reviewer-github-app",
+				}, nil
+			case 2:
+				if _, ok := prompt.Context.PendingReviewerEntityDeletes["reviewer-github-app"]; !ok {
+					t.Fatalf("PendingReviewerEntityDeletes = %#v, want reviewer-github-app pending delete before leaving category", prompt.Context.PendingReviewerEntityDeletes)
+				}
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected reviewer prompt #%d", reviewerEdits)
+				return initDraft{}, nil
 			}
-			return initDraft{
-				Action:       initDraftActionDeleteReviewerEntity,
-				ActionTarget: "reviewer-github-app",
-			}, nil
 		}),
 		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
-			if _, ok := prompt.Context.LLMRuntimes["claude-cli"]; !ok {
-				t.Fatalf("LLMRuntimes = %#v, want configured claude-cli runtime", prompt.Context.LLMRuntimes)
+			llmEdits++
+			switch llmEdits {
+			case 1:
+				if _, ok := prompt.Context.LLMRuntimes["claude-cli"]; !ok {
+					t.Fatalf("LLMRuntimes = %#v, want configured claude-cli runtime", prompt.Context.LLMRuntimes)
+				}
+				return initDraft{
+					Action:       initDraftActionDeleteLLMRuntime,
+					ActionTarget: "claude-cli",
+					LLMProvider:  string(config.LLMProviderOpenAI),
+					LLMAuth:      string(config.LLMAuthSubscription),
+					LLMAdapter:   string(config.LLMAdapterCodexCLI),
+				}, nil
+			case 2:
+				if _, ok := prompt.Context.PendingLLMRuntimeDeletes["claude-cli"]; !ok {
+					t.Fatalf("PendingLLMRuntimeDeletes = %#v, want claude-cli pending delete before leaving category", prompt.Context.PendingLLMRuntimeDeletes)
+				}
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected LLM prompt #%d", llmEdits)
+				return initDraft{}, nil
 			}
-			return initDraft{
-				Action:       initDraftActionDeleteLLMRuntime,
-				ActionTarget: "claude-cli",
-				LLMProvider:  string(config.LLMProviderOpenAI),
-				LLMAuth:      string(config.LLMAuthSubscription),
-				LLMAdapter:   string(config.LLMAdapterCodexCLI),
-			}, nil
 		}),
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
@@ -6879,17 +7194,17 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
 
-	if len(menu.prompts) < 5 {
-		t.Fatalf("menu prompts = %#v, want repeated menu passes through delete/undo/save flow", menu.prompts)
+	if len(menu.prompts) != 4 {
+		t.Fatalf("menu prompts = %#v, want one menu pass after each focused category", menu.prompts)
 	}
-	if got := menu.prompts[1].ReviewProfileCount; got != 1 {
-		t.Fatalf("review profile count after delete = %d, want 1 remaining profile before undo", got)
+	if got := menu.prompts[1].ReviewProfileCount; got != 2 {
+		t.Fatalf("review profile count after delete+undo category = %d, want both profiles restored", got)
 	}
-	if got := menu.prompts[3].ReviewerEntityCount; got != 0 {
+	if got := menu.prompts[2].ReviewerEntityCount; got != 0 {
 		t.Fatalf("reviewer entity count after delete = %d, want zero configured separate reviewers after fallback", got)
 	}
-	if profileEdits != 2 {
-		t.Fatalf("profileEdits = %d, want delete then undo sequence", profileEdits)
+	if profileEdits != 3 {
+		t.Fatalf("profileEdits = %d, want delete, undo, then Back sequence", profileEdits)
 	}
 
 	saved, err := config.Load(path)
@@ -6934,7 +7249,8 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
-			if prompterCalls == 1 {
+			switch prompterCalls {
+			case 1:
 				return initDraft{
 					ProfileName: "home",
 					MakeDefault: true,
@@ -6944,16 +7260,24 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 					LLMAuth:     string(config.LLMAuthSubscription),
 					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 				}, nil
+			case 2:
+				return initDraft{}, errInitNavigateBack
+			case 3:
+				return initDraft{
+					ProfileName: "work",
+					MakeDefault: false,
+					GitHost:     "gitlab.com",
+					GitAuth:     string(config.GitAuthModePAT),
+					LLMProvider: string(config.LLMProviderAnthropic),
+					LLMAuth:     string(config.LLMAuthSubscription),
+					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				}, nil
+			case 4:
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected prompter call %d", prompterCalls)
+				return initDraft{}, nil
 			}
-			return initDraft{
-				ProfileName: "work",
-				MakeDefault: false,
-				GitHost:     "gitlab.com",
-				GitAuth:     string(config.GitAuthModePAT),
-				LLMProvider: string(config.LLMProviderAnthropic),
-				LLMAuth:     string(config.LLMAuthSubscription),
-				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
-			}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
@@ -7007,6 +7331,7 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 	var stderr bytes.Buffer
 	store := newFakeInitStore(map[string]map[string]string{})
 	var finalizePrompt initFinalizePrompt
+	prompterCalls := 0
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
@@ -7025,6 +7350,10 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 			return initFinalizeActionSave, nil
 		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			prompterCalls++
+			if prompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			return initDraft{
 				ProfileName: "default",
 				MakeDefault: true,
@@ -7109,7 +7438,8 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
-			if prompterCalls == 1 {
+			switch prompterCalls {
+			case 1:
 				return initDraft{
 					ProfileName: "home",
 					MakeDefault: true,
@@ -7119,16 +7449,24 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 					LLMAuth:     string(config.LLMAuthSubscription),
 					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 				}, nil
+			case 2:
+				return initDraft{}, errInitNavigateBack
+			case 3:
+				return initDraft{
+					ProfileName: "work",
+					MakeDefault: false,
+					GitHost:     "gitlab.com",
+					GitAuth:     string(config.GitAuthModePAT),
+					LLMProvider: string(config.LLMProviderAnthropic),
+					LLMAuth:     string(config.LLMAuthSubscription),
+					LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				}, nil
+			case 4:
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected prompter call %d", prompterCalls)
+				return initDraft{}, nil
 			}
-			return initDraft{
-				ProfileName: "work",
-				MakeDefault: false,
-				GitHost:     "gitlab.com",
-				GitAuth:     string(config.GitAuthModePAT),
-				LLMProvider: string(config.LLMProviderAnthropic),
-				LLMAuth:     string(config.LLMAuthSubscription),
-				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
-			}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
@@ -7330,6 +7668,7 @@ func TestInitInteractiveMenuFinalizeBackReturnsToMenu(t *testing.T) {
 
 func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t *testing.T) {
 	store := newFakeInitStore(nil)
+	prompterCalls := 0
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
 		Stdout:     &bytes.Buffer{},
@@ -7347,6 +7686,10 @@ func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t
 			return initFinalizeActionCancel, nil
 		}),
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			prompterCalls++
+			if prompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
 			return initDraft{
 				ProfileName: "default",
 				MakeDefault: true,
