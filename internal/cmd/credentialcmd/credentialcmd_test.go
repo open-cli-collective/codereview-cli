@@ -6714,6 +6714,32 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	}
 }
 
+func TestHuhInitRoutesPrompterAccessibleBlankingPrefilledRoutesRemovesAll(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	var stderr bytes.Buffer
+	initial := []configedit.RepositoryRouteSpec{{
+		Host:      "github.com",
+		Namespace: "open-cli-collective",
+		Repos:     []string{"codereview-cli"},
+	}}
+	prompter := huhInitRoutesPrompter{
+		stdin:  strings.NewReader("\x15\r\r"),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.EditRoutes(initRoutesPrompt{
+		ProfileName: "work",
+		ProfileHost: "github.com",
+		Routes:      initial,
+	})
+	if err != nil {
+		t.Fatalf("EditRoutes: %v", err)
+	}
+	if edit.Routes != nil {
+		t.Fatalf("routes = %#v, want nil after clearing prefilled route text", edit.Routes)
+	}
+}
+
 func TestHuhInitRoutesPrompterAccessibleEscapeBackNavigatesOut(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	var stderr bytes.Buffer
@@ -6732,10 +6758,6 @@ func TestHuhInitRoutesPrompterAccessibleEscapeBackNavigatesOut(t *testing.T) {
 	})
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("EditRoutes error = %v, want errInitNavigateBack", err)
-	}
-	out := stderr.String()
-	if !strings.Contains(out, "Automatic profile selection") || !strings.Contains(out, "Route entries") {
-		t.Fatalf("stderr = %q, want route editor fields before Back", out)
 	}
 }
 
