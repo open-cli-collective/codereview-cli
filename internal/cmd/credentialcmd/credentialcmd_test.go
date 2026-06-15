@@ -2240,6 +2240,32 @@ func TestInitReviewerEntityOptionsExposeLiteralCreateLabels(t *testing.T) {
 	}
 }
 
+func TestInitReviewerEntityProfileOptionsOmitCreateActions(t *testing.T) {
+	options := initReviewerEntityProfileOptions(
+		map[string]initReviewerEntityDraft{
+			"reviewer-pat": {
+				Name:          "reviewer-pat",
+				Kind:          initReviewerEntityKindPAT,
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/reviewer-pat",
+			},
+		},
+		"Post using this profile's Git account (GitHub PAT)",
+	)
+
+	got := make([]huh.Option[string], 0, len(options))
+	for _, option := range options {
+		got = append(got, huh.NewOption(option.Key, option.Value))
+	}
+	want := []huh.Option[string]{
+		huh.NewOption("reviewer-pat (PAT reviewer)", "reviewer-pat"),
+		huh.NewOption("Post using this profile's Git account (GitHub PAT)", string(initReviewerEntityKindUseGitIdentity)),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("options = %#v, want %#v", got, want)
+	}
+}
+
 func TestDefaultProfileSelectionOptionsExistingDefault(t *testing.T) {
 	got := defaultProfileSelectionOptions("work")
 	want := []huh.Option[bool]{
@@ -2735,7 +2761,7 @@ func TestProfileEditorReviewerEntityFallbackLabelUsesExplicitGitAccountFallbackL
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			options := initReviewerEntityOptions(map[string]initReviewerEntityDraft{}, profileEditorReviewerEntityFallbackLabel(tc.git, tc.existing))
+			options := initReviewerEntityProfileOptions(map[string]initReviewerEntityDraft{}, profileEditorReviewerEntityFallbackLabel(tc.git, tc.existing))
 			if len(options) == 0 {
 				t.Fatal("options = empty, want fallback option")
 			}
@@ -3786,6 +3812,78 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 	}
 }
 
+func TestHuhInitPrompterAccessibleConfiguredReviewerHidesInlineReviewerEntityEditing(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work-reviewer",
+		DisplayName:   "Work reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": work,
+		},
+	}
+	gitScopes, profileGitScopes := buildInitGitScopeInventory(cfg)
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Storage label handling
+			"", // Repository routes
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName:    "work",
+		ExistingProfileName:     "work",
+		ExistingProfile:         &work,
+		ExistingProfileNames:    []string{"work"},
+		DefaultProfileName:      "work",
+		ExistingConfig:          cfg,
+		GitScopes:               gitScopes,
+		ProfileGitScopes:        profileGitScopes,
+		ReviewerEntities:        reviewerEntities,
+		ProfileReviewerEntities: profileReviewerEntities,
+		LLMRuntimes:             llmRuntimes,
+		ProfileLLMRuntimes:      profileLLMRuntimes,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !draft.ReviewerEnabled {
+		t.Fatalf("draft reviewer = %#v, want configured reviewer entity to stay selected", draft)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Work reviewer (PAT reviewer)") {
+		t.Fatalf("stderr = %q, want configured reviewer label in profile editor", out)
+	}
+	if strings.Contains(out, "Reviewer entity label") || strings.Contains(out, "Configure new personal access token (PAT) reviewer") || strings.Contains(out, "Configure new GitHub App reviewer") {
+		t.Fatalf("stderr = %q, want profile editor to select existing reviewers without inline create/edit controls", out)
+	}
+}
+
 func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
@@ -3924,7 +4022,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDef
 	}
 }
 
-func TestProfileEditorSelectionPreservesTypedReviewerEntityLabel(t *testing.T) {
+func TestProfileEditorSelectionPreservesSelectedReviewerEntityLabel(t *testing.T) {
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
@@ -3932,25 +4030,16 @@ func TestProfileEditorSelectionPreservesTypedReviewerEntityLabel(t *testing.T) {
 		DisplayName:   "Old label",
 	}
 	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
-	draft.ReviewerDisplayName = "New label"
 
 	reviewerEntities := map[string]initReviewerEntityDraft{
 		"work-reviewer": initReviewerEntityDraftFromConfig(existing),
 	}
 	selectedReviewerEntity := "work-reviewer"
-	// Mirror the production post-form sequencing so the regression stays focused on
-	// the label overwrite boundary without depending on the full accessible form.
-	typedReviewerDisplayName := normalizeOptionalDisplayName(draft.ReviewerDisplayName)
 	applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, reviewerEntities)
 	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
 	applyReviewerEntitySelection(&draft, reviewerMode)
-	if reviewerMode == string(initReviewerEntityKindUseGitIdentity) {
-		draft.ReviewerDisplayName = ""
-	} else {
-		draft.ReviewerDisplayName = typedReviewerDisplayName
-	}
 
-	if got, want := draft.ReviewerDisplayName, "New label"; got != want {
+	if got, want := draft.ReviewerDisplayName, "Old label"; got != want {
 		t.Fatalf("draft.ReviewerDisplayName = %q, want %q", got, want)
 	}
 }
