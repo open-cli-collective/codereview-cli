@@ -3731,6 +3731,16 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if !strings.Contains(out, "Choose a profile to edit or create") || !strings.Contains(out, "Git scope host") || !strings.Contains(out, "Reviewer entity") || !strings.Contains(out, "LLM runtime") {
 		t.Fatalf("wizard output missing expected prompts: %q", out)
 	}
+	if !strings.Contains(out, "Minimum reviewer model tier") ||
+		!strings.Contains(out, "Built-in baseline (small)") ||
+		!strings.Contains(out, "Small baseline") ||
+		!strings.Contains(out, "Medium baseline") ||
+		!strings.Contains(out, "Large baseline") {
+		t.Fatalf("wizard output missing reviewer model-tier baseline guidance: %q", out)
+	}
+	if strings.Contains(out, "Reviewer model tier") || strings.Contains(out, "Built-in default") {
+		t.Fatalf("wizard output still contains legacy reviewer model-tier copy: %q", out)
+	}
 	if strings.Contains(out, "Git credential ref") || strings.Contains(out, "LLM credential ref") {
 		t.Fatalf("wizard output unexpectedly exposed raw credential refs on the primary path: %q", out)
 	}
@@ -4176,6 +4186,9 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) {
 		t.Fatalf("llm draft = %#v, want create-new profile to select the existing runtime inventory by default", draft)
+	}
+	if draft.LLMReviewerModelTier != "" {
+		t.Fatalf("draft.LLMReviewerModelTier = %q, want built-in baseline selection to serialize as empty", draft.LLMReviewerModelTier)
 	}
 	out := stderr.String()
 	if !strings.Contains(out, "Post using this profile's Git account (GitHub PAT)") {
@@ -6256,6 +6269,32 @@ func TestProfileRouteActionOptionsReflectRouteInventory(t *testing.T) {
 	}
 	if gotWithRoutes[2].Key != "Remove all automatic profile-selection routes for this profile" {
 		t.Fatalf("with-routes third label = %q", gotWithRoutes[2].Key)
+	}
+}
+
+func TestInitReviewerModelTierCopy(t *testing.T) {
+	if initReviewerModelTierTitle != "Minimum reviewer model tier" {
+		t.Fatalf("title = %q", initReviewerModelTierTitle)
+	}
+	if initReviewerModelTierDescription != "Sets the minimum model tier for reviewer agents. Agents that require a higher tier still use their higher configured tier." {
+		t.Fatalf("description = %q", initReviewerModelTierDescription)
+	}
+
+	got := initReviewerModelTierOptions()
+	if len(got) != 4 {
+		t.Fatalf("len(options) = %d, want 4", len(got))
+	}
+	if got[0].Key != "Built-in baseline (small)" || got[0].Value != "" {
+		t.Fatalf("option[0] = %#v, want built-in small baseline", got[0])
+	}
+	if got[1].Key != "Small baseline" || got[1].Value != string(config.ModelTierSmall) {
+		t.Fatalf("option[1] = %#v, want small baseline", got[1])
+	}
+	if got[2].Key != "Medium baseline" || got[2].Value != string(config.ModelTierMedium) {
+		t.Fatalf("option[2] = %#v, want medium baseline", got[2])
+	}
+	if got[3].Key != "Large baseline" || got[3].Value != string(config.ModelTierLarge) {
+		t.Fatalf("option[3] = %#v, want large baseline", got[3])
 	}
 }
 
