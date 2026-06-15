@@ -351,6 +351,59 @@ func TestRESTRead422DoesNotMapStaleSHA(t *testing.T) {
 	}
 }
 
+func TestRESTDiffTooLargeMapsErrDiffTooLarge(t *testing.T) {
+	ref := testPRRef()
+	secret := "ghp_diff_too_large_no_leak_canary_0003" // #nosec G101 -- distinctive test canary, not a real token.
+	// GitHub answers the diff/compare endpoints with HTTP 406 once the diff
+	// exceeds its line cap; the body mirrors that real response.
+	body := `{"message":"Sorry, the diff exceeded the maximum number of lines (20000) ` + secret +
+		`","errors":[{"resource":"PullRequest","field":"diff","code":"too_large"}],"status":"406"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotAcceptable)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: secret, BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	// Diff operations map the 406 to the typed ErrDiffTooLarge, not the generic
+	// validation error.
+	diffOps := map[string]func() error{
+		"GetDiff": func() error {
+			_, err := client.GetDiff(context.Background(), ref)
+			return err
+		},
+		"GetDiffBetweenRefs": func() error {
+			_, err := client.GetDiffBetweenRefs(context.Background(), ref, "base-sha", "head-sha")
+			return err
+		},
+	}
+	for name, call := range diffOps {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			if !errors.Is(err, gitprovider.ErrDiffTooLarge) {
+				t.Fatalf("%s 406 error = %v, want ErrDiffTooLarge", name, err)
+			}
+			if errors.Is(err, ErrValidation) {
+				t.Fatalf("%s 406 error = %v, did not want ErrValidation", name, err)
+			}
+			if leakErr := credstore.NoLeakAssertion([]byte(err.Error()), secret); leakErr != nil {
+				t.Fatalf("%s error leaked canary: %v", name, leakErr)
+			}
+		})
+	}
+
+	// A 406 on a non-diff operation keeps the existing validation classification.
+	t.Run("non-diff op stays validation", func(t *testing.T) {
+		_, err := client.GetPR(context.Background(), ref)
+		if !errors.Is(err, ErrValidation) {
+			t.Fatalf("GetPR 406 error = %v, want ErrValidation", err)
+		}
+		if errors.Is(err, gitprovider.ErrDiffTooLarge) {
+			t.Fatalf("GetPR 406 error = %v, did not want ErrDiffTooLarge", err)
+		}
+	})
+}
+
 func requestHostURL(r *http.Request) string {
 	return "http://" + r.Host
 }

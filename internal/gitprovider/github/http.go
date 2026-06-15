@@ -195,6 +195,15 @@ func mapHTTPStatus(op gitprovider.Operation, status int, body []byte) error {
 		return gitprovider.WrapError(gitprovider.ErrConflict, op, err)
 	case http.StatusUnprocessableEntity:
 		return fmt.Errorf("%w: %w", ErrValidation, err)
+	case http.StatusNotAcceptable:
+		// GitHub returns 406 on the diff/compare endpoints when the diff
+		// exceeds its size limit. Surface that as a typed, actionable error
+		// instead of a generic validation failure. Other operations keep the
+		// validation classification.
+		if isDiffOperation(op) {
+			return gitprovider.WrapError(gitprovider.ErrDiffTooLarge, op, err)
+		}
+		return fmt.Errorf("%w: %w", ErrValidation, err)
 	case http.StatusTooManyRequests:
 		return gitprovider.WrapError(gitprovider.ErrRetryable, op, err)
 	default:
@@ -218,6 +227,10 @@ func mapWriteHTTPStatus(op gitprovider.Operation, status int, body []byte) error
 
 func isCommitBoundWriteOperation(op gitprovider.Operation) bool {
 	return op == gitprovider.OperationPostInlineComment || op == gitprovider.OperationSubmitReview
+}
+
+func isDiffOperation(op gitprovider.Operation) bool {
+	return op == gitprovider.OperationGetDiff || op == gitprovider.OperationGetDiffBetweenRefs
 }
 
 func isStaleSHABody(body []byte) bool {
