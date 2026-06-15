@@ -3875,6 +3875,9 @@ func TestHuhInitPrompterAccessibleConfiguredReviewerHidesInlineReviewerEntityEdi
 	if !draft.ReviewerEnabled {
 		t.Fatalf("draft reviewer = %#v, want configured reviewer entity to stay selected", draft)
 	}
+	if got, want := draft.ReviewerDisplayName, "Work reviewer"; got != want {
+		t.Fatalf("draft.ReviewerDisplayName = %q, want %q", got, want)
+	}
 	out := stderr.String()
 	if !strings.Contains(out, "Work reviewer (PAT reviewer)") {
 		t.Fatalf("stderr = %q, want configured reviewer label in profile editor", out)
