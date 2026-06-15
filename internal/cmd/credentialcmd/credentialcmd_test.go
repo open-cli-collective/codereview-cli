@@ -2012,8 +2012,8 @@ func TestInitReviewerEntityOptionsExcludeConfiguredGitIdentityFallback(t *testin
 	if configuredPATLabel == "" {
 		t.Fatal("configured PAT reviewer option missing")
 	}
-	if !strings.Contains(configuredPATLabel, "PAT reviewer: reviewer-pat") {
-		t.Fatalf("configuredPATLabel = %q, want clearer PAT fallback wording", configuredPATLabel)
+	if got, want := configuredPATLabel, "reviewer-pat (PAT reviewer)"; got != want {
+		t.Fatalf("configuredPATLabel = %q, want %q", got, want)
 	}
 }
 
@@ -2055,8 +2055,64 @@ func TestBuildInitReviewerEntityInventoryConflictingSharedDisplayNamesFallBackTo
 	if entity.DisplayName != "" {
 		t.Fatalf("entity.DisplayName = %q, want cleared when shared profiles disagree", entity.DisplayName)
 	}
-	if got, want := initReviewerEntityLabel(entity), "GitHub App reviewer: open-cli-collective-rianjs-bot"; got != want {
+	if got, want := initReviewerEntityLabel(entity), "open-cli-collective-rianjs-bot (GitHub App reviewer)"; got != want {
 		t.Fatalf("label = %q, want %q", got, want)
+	}
+}
+
+func TestInitReviewerEntityInventoryRowsUseNameFirstConfiguredLabels(t *testing.T) {
+	rows := initReviewerEntityInventoryRows(initPromptContext{
+		ExistingProfileName: "home",
+		ReviewerEntities: map[string]initReviewerEntityDraft{
+			"reviewer-app": {
+				Name:          "reviewer-app",
+				Kind:          initReviewerEntityKindGitHubApp,
+				AuthMode:      config.GitAuthModeGitHubApp,
+				CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+			},
+			"reviewer-pat": {
+				Name:          "reviewer-pat",
+				Kind:          initReviewerEntityKindPAT,
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/default-reviewer",
+			},
+		},
+	})
+
+	var configuredTitles []string
+	var commandTitles []string
+	var commandIDs []string
+	for _, row := range rows {
+		switch row.Kind {
+		case initInventoryRowKindActive:
+			configuredTitles = append(configuredTitles, row.Title)
+		case initInventoryRowKindPending:
+			// No staged-delete rows are expected in this direct inventory rendering case.
+		case initInventoryRowKindCommand:
+			commandIDs = append(commandIDs, row.ID)
+			commandTitles = append(commandTitles, row.Title)
+		}
+	}
+	if got, want := configuredTitles, []string{
+		"open-cli-collective-rianjs-bot (GitHub App reviewer)",
+		"default-reviewer (PAT reviewer)",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("configuredTitles = %#v, want %#v", got, want)
+	}
+	if got, want := commandIDs, []string{
+		string(initReviewerEntityKindUseGitIdentity),
+		string(initReviewerEntityKindPAT),
+		string(initReviewerEntityKindGitHubApp),
+		initBackSelection,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("commandIDs = %#v, want %#v", got, want)
+	}
+	if got, want := commandTitles[1:], []string{
+		reviewerEntityTemplatePATLabel(),
+		reviewerEntityTemplateGitHubAppLabel(),
+		"Back to main menu",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("commandTitles[1:] = %#v, want %#v", got, want)
 	}
 }
 
@@ -3495,12 +3551,12 @@ func TestHuhInitReviewerEntityDetailsAccessibleCanMarkConfiguredEntityForDeletio
 	prompter := huhInitReviewerEntityPrompter{
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "GitHub App reviewer: reviewer-github-app\n")
+			_, _ = io.WriteString(out, "reviewer-github-app (GitHub App reviewer)\n")
 			return initInventoryResult{
 				Action: initInventoryActionStageDelete,
 				Row: initInventoryRow{
 					ID:    "reviewer-github-app",
-					Title: "GitHub App reviewer: reviewer-github-app",
+					Title: "reviewer-github-app (GitHub App reviewer)",
 				},
 			}, nil
 		},
@@ -3527,7 +3583,7 @@ func TestHuhInitReviewerEntityDetailsAccessibleCanMarkConfiguredEntityForDeletio
 	if draft.Action != initDraftActionDeleteReviewerEntity || draft.ActionTarget != "reviewer-github-app" {
 		t.Fatalf("draft delete action = %#v, want reviewer-github-app delete", draft)
 	}
-	if !strings.Contains(stderr.String(), "GitHub App reviewer: reviewer-github-app") {
+	if !strings.Contains(stderr.String(), "reviewer-github-app (GitHub App reviewer)") {
 		t.Fatalf("stderr = %q, want reviewer inventory label", stderr.String())
 	}
 }
@@ -3658,12 +3714,12 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 		}, "\n")),
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "PAT reviewer: custom-work-reviewer\n")
+			_, _ = io.WriteString(out, "custom-work-reviewer (PAT reviewer)\n")
 			return initInventoryResult{
 				Action: initInventoryActionEdit,
 				Row: initInventoryRow{
 					ID:    "reviewer-pat",
-					Title: "PAT reviewer: custom-work-reviewer",
+					Title: "custom-work-reviewer (PAT reviewer)",
 				},
 			}, nil
 		},

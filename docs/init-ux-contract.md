@@ -211,8 +211,8 @@ When no explicit display name exists, the chooser should fall back to stable,
 deterministic identity text derived from the credential ref or equivalent
 profile context, for example:
 
-- **GitHub App reviewer: open-cli-collective-rianjs-bot**
-- **PAT reviewer: reviewer-pat**
+- **open-cli-collective-rianjs-bot (GitHub App reviewer)**
+- **reviewer-pat (PAT reviewer)**
 
 The profile-Git-account fallback is not a separately named reviewer entity and
 should not ask for a custom reviewer-entity display name.
