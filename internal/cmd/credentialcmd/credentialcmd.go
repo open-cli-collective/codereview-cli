@@ -2176,18 +2176,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			for name, runtime := range stagedLLMRuntimes {
 				llmRuntimes[name] = runtime
 			}
-			llmRuntimeOptions := initLLMRuntimeSelectionOptions(llmRuntimes)
-			selectedLLMRuntime := ctx.ProfileLLMRuntimes[selectedProfileName]
-			if selectedLLMRuntime == "" {
-				currentRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
-				for name, runtime := range llmRuntimes {
-					if runtime.identityKey() == currentRuntime.identityKey() {
-						selectedLLMRuntime = name
-						break
-					}
-				}
-			}
-			selectedLLMRuntime = normalizeInitStringSelectionValue(selectedLLMRuntime, llmRuntimeOptions)
+			llmRuntimeOptions, selectedLLMRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, ctx.ProfileLLMRuntimes[selectedProfileName], draft)
 
 			reviewerProfileFields := []huh.Field{
 				huh.NewSelect[string]().
@@ -2716,6 +2705,21 @@ func initLLMRuntimeSelectionOptions(runtimes map[string]initLLMRuntimeDraft) []h
 		options = append(options, huh.NewOption("Configured: "+initLLMRuntimeLabel(runtime), name))
 	}
 	return dedupeInitStringOptions(options)
+}
+
+func initProfileEditorLLMRuntimeSelection(runtimes map[string]initLLMRuntimeDraft, profileRuntimeName string, draft initDraft) ([]huh.Option[string], string) {
+	options := initLLMRuntimeSelectionOptions(runtimes)
+	selected := profileRuntimeName
+	if selected == "" {
+		currentRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
+		for name, runtime := range runtimes {
+			if runtime.identityKey() == currentRuntime.identityKey() {
+				selected = name
+				break
+			}
+		}
+	}
+	return options, normalizeInitStringSelectionValue(selected, options)
 }
 
 func configuredInitLLMRuntimeNames(runtimes map[string]initLLMRuntimeDraft) []string {

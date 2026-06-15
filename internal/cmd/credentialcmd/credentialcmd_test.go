@@ -4030,6 +4030,71 @@ func TestHuhInitPrompterAccessibleProfileEditorBootstrapsNewLLMRuntimeWhenNoneCo
 	}
 }
 
+func TestHuhInitPrompterAccessibleCreateNewProfileFallsBackToFirstConfiguredRuntimeWithoutProfileMapping(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Git scope host
+			"", // Git scope auth mode
+			"", // Reviewer entity
+			"", // LLM runtime: default to first configured runtime
+			"", // Reviewer model tier
+			"", // Storage label handling
+			"", // Repository routes
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "default",
+		DefaultProfileName:   "",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+		LLMRuntimes: map[string]initLLMRuntimeDraft{
+			"alpha-runtime": {
+				Name:          "alpha-runtime",
+				Preset:        initLLMRuntimePresetAnthropicAPIKey,
+				Provider:      config.LLMProviderAnthropic,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterAnthropicAPI,
+				CredentialRef: "codereview/alpha-llm",
+			},
+			"zeta-runtime": {
+				Name:          "zeta-runtime",
+				Preset:        initLLMRuntimePresetOpenAIAPIKey,
+				Provider:      config.LLMProviderOpenAI,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterOpenAIAPI,
+				CredentialRef: "codereview/zeta-llm",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.LLMProvider != string(config.LLMProviderAnthropic) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterAnthropicAPI) || draft.LLMCredentialRef != "codereview/alpha-llm" {
+		t.Fatalf("draft llm = %#v, want create-new profile fallback to select the first configured runtime when no profile mapping exists", draft)
+	}
+	if !strings.Contains(stderr.String(), "Configured: Anthropic API key") || !strings.Contains(stderr.String(), "Configured: OpenAI API key") {
+		t.Fatalf("stderr = %q, want both configured runtimes shown in create-new fallback flow", stderr.String())
+	}
+}
+
 func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
@@ -5639,6 +5704,68 @@ func TestInitLLMRuntimeSelectionOptionsOmitTemplateActions(t *testing.T) {
 	}
 	if strings.Contains(options[0].Key, "Template:") || strings.Contains(options[0].Key, "Custom compatible runtime") {
 		t.Fatalf("options[0].Key = %q, want configured runtime label only", options[0].Key)
+	}
+}
+
+func TestInitProfileEditorLLMRuntimeSelectionPrefersMatchingDraftRuntime(t *testing.T) {
+	runtimes := map[string]initLLMRuntimeDraft{
+		"alpha-runtime": {
+			Name:          "alpha-runtime",
+			Preset:        initLLMRuntimePresetAnthropicAPIKey,
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/alpha-llm",
+		},
+		"codex-cli": {
+			Name:     "codex-cli",
+			Preset:   initLLMRuntimePresetCodexCLISubscription,
+			Provider: config.LLMProviderOpenAI,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterCodexCLI,
+		},
+	}
+	draft := seedInteractiveInitDraft("default", "", "", nil)
+	draft.LLMProvider = string(config.LLMProviderOpenAI)
+	draft.LLMAuth = string(config.LLMAuthSubscription)
+	draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
+
+	options, selected := initProfileEditorLLMRuntimeSelection(runtimes, "", draft)
+	if got, want := selected, "codex-cli"; got != want {
+		t.Fatalf("selected = %q, want %q from matching staged runtime identity", got, want)
+	}
+	if len(options) != 2 {
+		t.Fatalf("len(options) = %d, want 2 configured runtime options", len(options))
+	}
+}
+
+func TestInitProfileEditorLLMRuntimeSelectionFallsBackToFirstConfiguredRuntimeWithoutProfileMapping(t *testing.T) {
+	runtimes := map[string]initLLMRuntimeDraft{
+		"alpha-runtime": {
+			Name:          "alpha-runtime",
+			Preset:        initLLMRuntimePresetAnthropicAPIKey,
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/alpha-llm",
+		},
+		"zeta-runtime": {
+			Name:          "zeta-runtime",
+			Preset:        initLLMRuntimePresetOpenAIAPIKey,
+			Provider:      config.LLMProviderOpenAI,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterOpenAIAPI,
+			CredentialRef: "codereview/zeta-llm",
+		},
+	}
+	draft := seedInteractiveInitDraft("default", "", "", nil)
+
+	options, selected := initProfileEditorLLMRuntimeSelection(runtimes, "", draft)
+	if got, want := selected, "alpha-runtime"; got != want {
+		t.Fatalf("selected = %q, want deterministic first configured runtime fallback %q", got, want)
+	}
+	if len(options) != 2 {
+		t.Fatalf("len(options) = %d, want 2 configured runtime options", len(options))
 	}
 }
 
