@@ -2624,9 +2624,13 @@ func initLLMStorageLabelRelevant(selection string, runtimes map[string]initLLMRu
 	switch initLLMRuntimePreset(selection) {
 	case initLLMRuntimePresetAnthropicAPIKey, initLLMRuntimePresetOpenAIAPIKey:
 		return true
-	default:
+	case initLLMRuntimePresetClaudeCLISubscription,
+		initLLMRuntimePresetCodexCLISubscription,
+		initLLMRuntimePresetPiLocal,
+		initLLMRuntimePresetCustom:
 		return false
 	}
+	return false
 }
 
 func initStandardLLMCredentialRef(profileName, selection string, runtimes map[string]initLLMRuntimeDraft) (string, error) {
