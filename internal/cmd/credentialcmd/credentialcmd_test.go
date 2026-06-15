@@ -3887,6 +3887,149 @@ func TestHuhInitPrompterAccessibleConfiguredReviewerHidesInlineReviewerEntityEdi
 	}
 }
 
+func TestHuhInitPrompterAccessibleConfiguredLLMRuntimeHidesInlineRuntimeEditing(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	work := apiKeyProfile("work", config.LLMProviderOpenAI)
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": work,
+		},
+	}
+	gitScopes, profileGitScopes := buildInitGitScopeInventory(cfg)
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Storage label handling
+			"", // Repository routes
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName:    "work",
+		ExistingProfileName:     "work",
+		ExistingProfile:         &work,
+		ExistingProfileNames:    []string{"work"},
+		DefaultProfileName:      "work",
+		ExistingConfig:          cfg,
+		GitScopes:               gitScopes,
+		ProfileGitScopes:        profileGitScopes,
+		ReviewerEntities:        reviewerEntities,
+		ProfileReviewerEntities: profileReviewerEntities,
+		LLMRuntimes:             llmRuntimes,
+		ProfileLLMRuntimes:      profileLLMRuntimes,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) {
+		t.Fatalf("draft llm = %#v, want existing runtime retained", draft)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Configured: OpenAI API key") {
+		t.Fatalf("stderr = %q, want configured runtime label in profile editor", out)
+	}
+	if strings.Contains(out, "Template: Claude CLI subscription") ||
+		strings.Contains(out, "Template: Codex CLI subscription") ||
+		strings.Contains(out, "Custom compatible runtime") ||
+		strings.Contains(out, "LLM provider") ||
+		strings.Contains(out, "LLM auth mode") ||
+		strings.Contains(out, "LLM adapter") {
+		t.Fatalf("stderr = %q, want profile editor to select existing runtimes without inline runtime setup controls", out)
+	}
+}
+
+func TestHuhInitPrompterAccessibleProfileEditorBootstrapsNewLLMRuntimeWhenNoneConfigured(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	llmPrompterCalled := false
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Git scope host
+			"", // Git scope auth mode
+			"", // Reviewer entity
+			"", // LLM runtime bootstrap action
+			"", // Reviewer model tier
+			"", // Storage label handling
+			"", // Repository routes
+			"", // Profile name (rerender after runtime setup)
+			"", // Make default
+			"", // Git scope host
+			"", // Git scope auth mode
+			"", // Reviewer entity
+			"", // LLM runtime (new staged runtime selected)
+			"", // Reviewer model tier
+			"", // Storage label handling
+			"", // Repository routes
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmPrompterCalled = true
+			if len(prompt.Context.LLMRuntimes) != 0 {
+				t.Fatalf("prompt.Context.LLMRuntimes = %#v, want empty first-run bootstrap inventory", prompt.Context.LLMRuntimes)
+			}
+			draft := seedInteractiveInitDraft("default", "", "", nil)
+			draft.LLMProvider = string(config.LLMProviderOpenAI)
+			draft.LLMAuth = string(config.LLMAuthSubscription)
+			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
+			return draft, nil
+		}),
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "default",
+		DefaultProfileName:   "",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !llmPrompterCalled {
+		t.Fatal("llmPrompterCalled = false, want profile editor bootstrap action to enter runtime setup")
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthSubscription) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
+		t.Fatalf("draft llm = %#v, want configured bootstrap runtime applied", draft)
+	}
+	if !strings.Contains(stderr.String(), "Configure a new LLM runtime first") {
+		t.Fatalf("stderr = %q, want explicit first-run runtime bootstrap action", stderr.String())
+	}
+}
+
 func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
@@ -3966,8 +4109,8 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	if draft.ReviewerEnabled {
 		t.Fatalf("reviewer draft = %#v, want create-new seed to avoid inherited separate reviewer", draft)
 	}
-	if draft.LLMProvider != string(config.LLMProviderAnthropic) || draft.LLMAuth != string(config.LLMAuthSubscription) || draft.LLMAdapter != string(config.LLMAdapterClaudeCLI) {
-		t.Fatalf("llm draft = %#v, want fresh llm defaults for create-new seed", draft)
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) {
+		t.Fatalf("llm draft = %#v, want create-new profile to select the existing runtime inventory by default", draft)
 	}
 	out := stderr.String()
 	if !strings.Contains(out, "Post using this profile's Git account (GitHub PAT)") {
@@ -3975,6 +4118,9 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 	if !strings.Contains(out, "Reviewer entity") {
 		t.Fatalf("stderr = %q, want reviewer entity prompt in create-new profile flow", out)
+	}
+	if !strings.Contains(out, "Configured: OpenAI API key") {
+		t.Fatalf("stderr = %q, want create-new profile flow to show existing runtime inventory", out)
 	}
 }
 
@@ -5472,6 +5618,27 @@ func TestInitLLMRuntimeOptionsDistinguishConfiguredAndTemplateLabels(t *testing.
 	}
 	if configuredLabel == templateLabel {
 		t.Fatalf("configured/template labels = %q / %q, want distinct labels", configuredLabel, templateLabel)
+	}
+}
+
+func TestInitLLMRuntimeSelectionOptionsOmitTemplateActions(t *testing.T) {
+	options := initLLMRuntimeSelectionOptions(map[string]initLLMRuntimeDraft{
+		"claude-cli": {
+			Name:     "claude-cli",
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	})
+	if len(options) != 1 {
+		t.Fatalf("len(options) = %d, want 1 configured-only option", len(options))
+	}
+	if got, want := options[0].Value, "claude-cli"; got != want {
+		t.Fatalf("options[0].Value = %q, want %q", got, want)
+	}
+	if strings.Contains(options[0].Key, "Template:") || strings.Contains(options[0].Key, "Custom compatible runtime") {
+		t.Fatalf("options[0].Key = %q, want configured runtime label only", options[0].Key)
 	}
 }
 

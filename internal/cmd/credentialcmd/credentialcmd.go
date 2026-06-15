@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"reflect"
@@ -862,9 +863,10 @@ func runInjectedInteractiveInit(cmd *cobra.Command, opts *root.Options, flags in
 }
 
 type huhInitPrompter struct {
-	stdin           io.Reader
-	stderr          io.Writer
-	inventoryRunner initInventoryRunner
+	stdin              io.Reader
+	stderr             io.Writer
+	inventoryRunner    initInventoryRunner
+	llmRuntimePrompter initLLMRuntimePrompter
 }
 
 type huhInitMenuPrompter struct {
@@ -891,7 +893,11 @@ type huhInitFinalizePrompter struct {
 }
 
 func newHuhInitPrompter(opts *root.Options) initPrompter {
-	return huhInitPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	return huhInitPrompter{
+		stdin:              opts.Stdin,
+		stderr:             opts.Stderr,
+		llmRuntimePrompter: newHuhInitLLMRuntimePrompter(opts),
+	}
 }
 
 func newHuhInitMenuPrompter(opts *root.Options) initMenuPrompter {
@@ -952,6 +958,7 @@ type huhInitKeyringBackendPrompter struct {
 const (
 	initCustomGitScopeSelection           = "__custom_git_scope__"
 	initCustomLLMRuntimeSelection         = "__custom_llm_runtime__"
+	initConfigureNewLLMRuntimeSelection   = "__configure_new_llm_runtime__"
 	initBackSelection                     = "__back__"
 	initUndoProfileDeletePrefix           = "__undo_profile_delete__:"
 	initUndoReviewerEntityDeletePrefix    = "__undo_reviewer_entity_delete__:"
@@ -2130,185 +2137,198 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 			_, _ = fmt.Fprintln(p.stderr)
 		}
-		reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
-		llmRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
-		selectedRuntimePreset := string(llmRuntime.Preset)
-		reviewerMode := string(reviewerEntity.Kind)
-		selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
-		if selectedGitScope == "" {
-			selectedGitScope = initCustomGitScopeSelection
-		}
-		selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
-		if selectedReviewerEntity == "" {
-			selectedReviewerEntity = reviewerMode
-		} else {
-			selectedReviewerEntity = normalizeReviewerEntitySelectionValue(selectedReviewerEntity, ctx.ReviewerEntities)
-		}
-		selectedLLMRuntime := ctx.ProfileLLMRuntimes[selectedProfileName]
-		if selectedLLMRuntime == "" {
-			if selectedRuntimePreset == string(initLLMRuntimePresetCustom) {
-				selectedLLMRuntime = initCustomLLMRuntimeSelection
+		stagedLLMRuntimes := map[string]initLLMRuntimeDraft{}
+		for {
+			reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
+			reviewerMode := string(reviewerEntity.Kind)
+			selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
+			if selectedGitScope == "" {
+				selectedGitScope = initCustomGitScopeSelection
+			}
+			selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
+			if selectedReviewerEntity == "" {
+				selectedReviewerEntity = reviewerMode
 			} else {
-				selectedLLMRuntime = selectedRuntimePreset
+				selectedReviewerEntity = normalizeReviewerEntitySelectionValue(selectedReviewerEntity, ctx.ReviewerEntities)
 			}
-		}
-		selectedStorageLabelsMode := initStorageLabelsStandard
-		if draft.AdvancedStorageLabels {
-			selectedStorageLabelsMode = initStorageLabelsCustom
-		}
-		currentRoutes := currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName)
-		selectedRepositoryRoutesAction := string(initRoutesActionPreserve)
-		gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
-		selectedGit := initGitScopeDraft{
-			Host:          draft.GitHost,
-			AuthMode:      config.GitAuthMode(draft.GitAuth),
-			CredentialRef: strings.TrimSpace(draft.GitCredentialRef),
-		}
-		if scopeName := ctx.ProfileGitScopes[selectedProfileName]; scopeName != "" {
-			if scope, ok := ctx.GitScopes[scopeName]; ok {
-				selectedGit = scope
+			selectedStorageLabelsMode := initStorageLabelsStandard
+			if draft.AdvancedStorageLabels {
+				selectedStorageLabelsMode = initStorageLabelsCustom
 			}
-		}
-		reviewerEntityOptions := initReviewerEntitySelectionOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
-		llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
+			currentRoutes := currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName)
+			selectedRepositoryRoutesAction := string(initRoutesActionPreserve)
+			gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
+			selectedGit := initGitScopeDraft{
+				Host:          draft.GitHost,
+				AuthMode:      config.GitAuthMode(draft.GitAuth),
+				CredentialRef: strings.TrimSpace(draft.GitCredentialRef),
+			}
+			if scopeName := ctx.ProfileGitScopes[selectedProfileName]; scopeName != "" {
+				if scope, ok := ctx.GitScopes[scopeName]; ok {
+					selectedGit = scope
+				}
+			}
+			reviewerEntityOptions := initReviewerEntitySelectionOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
+			llmRuntimes := maps.Clone(ctx.LLMRuntimes)
+			if llmRuntimes == nil {
+				llmRuntimes = map[string]initLLMRuntimeDraft{}
+			}
+			for name, runtime := range stagedLLMRuntimes {
+				llmRuntimes[name] = runtime
+			}
+			llmRuntimeOptions := initLLMRuntimeSelectionOptions(llmRuntimes)
+			selectedLLMRuntime := ctx.ProfileLLMRuntimes[selectedProfileName]
+			if selectedLLMRuntime == "" {
+				currentRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
+				for name, runtime := range llmRuntimes {
+					if runtime.identityKey() == currentRuntime.identityKey() {
+						selectedLLMRuntime = name
+						break
+					}
+				}
+			}
+			selectedLLMRuntime = normalizeInitStringSelectionValue(selectedLLMRuntime, llmRuntimeOptions)
 
-		reviewerProfileFields := []huh.Field{
-			huh.NewSelect[string]().
-				Title("Reviewer entity").
-				Description(reviewerEntitySelectionDescription()).
-				Options(reviewerEntityOptions...).
-				Value(&selectedReviewerEntity),
-		}
-		reviewerProfileFields = append(reviewerProfileFields,
-			huh.NewSelect[string]().
-				Title("LLM runtime").
-				Description("Choose how reviewer agents run for this profile.").
-				Options(llmRuntimeOptions...).
-				Value(&selectedLLMRuntime),
-			huh.NewSelect[string]().
-				Title("Reviewer model tier").
-				Options(
-					huh.NewOption("Built-in default", ""),
-					huh.NewOption("Small", string(config.ModelTierSmall)),
-					huh.NewOption("Medium", string(config.ModelTierMedium)),
-					huh.NewOption("Large", string(config.ModelTierLarge)),
-				).
-				Value(&draft.LLMReviewerModelTier),
-			huh.NewSelect[string]().
-				Title("Storage label handling").
-				Description("Choose whether to use the standard credential-store labels or override them for this profile.").
-				Options(
-					huh.NewOption("Use standard storage labels (recommended)", initStorageLabelsStandard),
-					huh.NewOption("Customize storage labels (advanced)", initStorageLabelsCustom),
-				).
-				Value(&selectedStorageLabelsMode),
-			huh.NewSelect[string]().
-				Title("Repository routes").
-				Description("Choose how cr should select this profile automatically when --profile is omitted.").
-				Options(profileRouteActionOptions(len(currentRoutes) > 0)...).
-				Value(&selectedRepositoryRoutesAction),
-		)
+			reviewerProfileFields := []huh.Field{
+				huh.NewSelect[string]().
+					Title("Reviewer entity").
+					Description(reviewerEntitySelectionDescription()).
+					Options(reviewerEntityOptions...).
+					Value(&selectedReviewerEntity),
+			}
+			reviewerProfileFields = append(reviewerProfileFields,
+				huh.NewSelect[string]().
+					Title("LLM runtime").
+					Description("Choose how reviewer agents run for this profile.").
+					Options(llmRuntimeOptions...).
+					Value(&selectedLLMRuntime),
+				huh.NewSelect[string]().
+					Title("Reviewer model tier").
+					Options(
+						huh.NewOption("Built-in default", ""),
+						huh.NewOption("Small", string(config.ModelTierSmall)),
+						huh.NewOption("Medium", string(config.ModelTierMedium)),
+						huh.NewOption("Large", string(config.ModelTierLarge)),
+					).
+					Value(&draft.LLMReviewerModelTier),
+				huh.NewSelect[string]().
+					Title("Storage label handling").
+					Description("Choose whether to use the standard credential-store labels or override them for this profile.").
+					Options(
+						huh.NewOption("Use standard storage labels (recommended)", initStorageLabelsStandard),
+						huh.NewOption("Customize storage labels (advanced)", initStorageLabelsCustom),
+					).
+					Value(&selectedStorageLabelsMode),
+				huh.NewSelect[string]().
+					Title("Repository routes").
+					Description("Choose how cr should select this profile automatically when --profile is omitted.").
+					Options(profileRouteActionOptions(len(currentRoutes) > 0)...).
+					Value(&selectedRepositoryRoutesAction),
+			)
 
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Profile name").
-					Value(&draft.ProfileName).
-					Validate(validateProfileName),
-				huh.NewSelect[bool]().
-					Title("Make this the default profile").
-					Options(defaultProfileSelectionOptions(ctx.DefaultProfileName)...).
-					Value(&draft.MakeDefault),
-			).Title("Profile"),
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Git scope").
-					Description("Choose an existing Git scope for this profile or configure a custom one.").
-					Options(gitScopeOptions...).
-					Value(&selectedGitScope),
-				huh.NewInput().
-					Title("Git scope host").
-					Description("The Git host this review profile applies to, such as github.com or github.mycompany.com.").
-					Value(&draft.GitHost).
-					Validate(validateRequiredText("git host is required")),
-				huh.NewSelect[string]().
-					Title("Git scope auth mode").
-					Options(
-						huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
-						huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
-					).
-					Value(&draft.GitAuth),
-			).WithHideFunc(func() bool {
-				return selectedGitScope != initCustomGitScopeSelection
-			}).Title("Git Scope"),
-			huh.NewGroup(reviewerProfileFields...).Title("Review Profile"),
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("LLM provider").
-					Options(
-						huh.NewOption("Anthropic", string(config.LLMProviderAnthropic)),
-						huh.NewOption("OpenAI", string(config.LLMProviderOpenAI)),
-						huh.NewOption("Pi", string(config.LLMProviderPi)),
-					).
-					Value(&draft.LLMProvider),
-				huh.NewSelect[string]().
-					Title("LLM auth mode").
-					Options(
-						huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
-						huh.NewOption("API key", string(config.LLMAuthAPIKey)),
-					).
-					Value(&draft.LLMAuth),
-				huh.NewSelect[string]().
-					Title("LLM adapter").
-					Options(
-						huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
-						huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
-						huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
-						huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
-						huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
-					).
-					Value(&draft.LLMAdapter),
-			).WithHideFunc(func() bool {
-				return selectedLLMRuntime != initCustomLLMRuntimeSelection
-			}).Title("LLM Runtime Details"),
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Git storage label").
-					Description("Leave blank to use the standard profile-based label.").
-					Value(&draft.GitCredentialRef).
-					Validate(validateOptionalCredentialRef),
-				huh.NewInput().
-					Title("Reviewer storage label").
-					Description("Leave blank to use the standard profile-based label when using separate reviewer credentials.").
-					Value(&draft.ReviewerCredentialRef).
-					Validate(validateOptionalCredentialRef),
-				huh.NewInput().
-					Title("LLM storage label").
-					Description("Leave blank to use the standard profile-based label when using an API-key runtime.").
-					Value(&draft.LLMCredentialRef).
-					Validate(validateOptionalCredentialRef),
-			).WithHideFunc(func() bool {
-				return selectedStorageLabelsMode != initStorageLabelsCustom
-			}).Title("Advanced Storage Labels"),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initDraft{}, err
+			form := huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().
+						Title("Profile name").
+						Value(&draft.ProfileName).
+						Validate(validateProfileName),
+					huh.NewSelect[bool]().
+						Title("Make this the default profile").
+						Options(defaultProfileSelectionOptions(ctx.DefaultProfileName)...).
+						Value(&draft.MakeDefault),
+				).Title("Profile"),
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("Git scope").
+						Description("Choose an existing Git scope for this profile or configure a custom one.").
+						Options(gitScopeOptions...).
+						Value(&selectedGitScope),
+					huh.NewInput().
+						Title("Git scope host").
+						Description("The Git host this review profile applies to, such as github.com or github.mycompany.com.").
+						Value(&draft.GitHost).
+						Validate(validateRequiredText("git host is required")),
+					huh.NewSelect[string]().
+						Title("Git scope auth mode").
+						Options(
+							huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
+							huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
+						).
+						Value(&draft.GitAuth),
+				).WithHideFunc(func() bool {
+					return selectedGitScope != initCustomGitScopeSelection
+				}).Title("Git Scope"),
+				huh.NewGroup(reviewerProfileFields...).Title("Review Profile"),
+				huh.NewGroup(
+					huh.NewInput().
+						Title("Git storage label").
+						Description("Leave blank to use the standard profile-based label.").
+						Value(&draft.GitCredentialRef).
+						Validate(validateOptionalCredentialRef),
+					huh.NewInput().
+						Title("Reviewer storage label").
+						Description("Leave blank to use the standard profile-based label when using separate reviewer credentials.").
+						Value(&draft.ReviewerCredentialRef).
+						Validate(validateOptionalCredentialRef),
+					huh.NewInput().
+						Title("LLM storage label").
+						Description("Leave blank to use the standard profile-based label when using an API-key runtime.").
+						Value(&draft.LLMCredentialRef).
+						Validate(validateOptionalCredentialRef),
+				).WithHideFunc(func() bool {
+					return selectedStorageLabelsMode != initStorageLabelsCustom
+				}).Title("Advanced Storage Labels"),
+			)
+			back, err := runBackableInitForm(form, p.stdin, p.stderr)
+			if err != nil {
+				return initDraft{}, err
+			}
+			if back {
+				break
+			}
+			if selectedLLMRuntime == initConfigureNewLLMRuntimeSelection {
+				llmRuntimePrompter := p.llmRuntimePrompter
+				if llmRuntimePrompter == nil {
+					llmRuntimePrompter = huhInitLLMRuntimePrompter{
+						stdin:           p.stdin,
+						stderr:          p.stderr,
+						checker:         defaultInitLLMRuntimeAvailabilityNote,
+						inventoryRunner: p.inventoryRunner,
+					}
+				}
+				runtimePromptCtx := ctx
+				runtimePromptCtx.LLMRuntimes = llmRuntimes
+				runtimeDraft, err := llmRuntimePrompter.EditLLMRuntime(initLLMRuntimePrompt{Context: runtimePromptCtx})
+				if errors.Is(err, errInitNavigateBack) {
+					continue
+				}
+				if err != nil {
+					return initDraft{}, err
+				}
+				stagedRuntime := initLLMRuntimeDraftFromSeedDraft(runtimeDraft)
+				stagedRuntime.Name = uniqueInitLLMRuntimeName(llmRuntimes, stagedRuntime.suggestedName())
+				stagedLLMRuntimes = map[string]initLLMRuntimeDraft{stagedRuntime.Name: stagedRuntime}
+				draft.LLMProvider = runtimeDraft.LLMProvider
+				draft.LLMAuth = runtimeDraft.LLMAuth
+				draft.LLMAdapter = runtimeDraft.LLMAdapter
+				if !draft.AdvancedStorageLabels {
+					draft.LLMCredentialRef = runtimeDraft.LLMCredentialRef
+				}
+				continue
+			}
+			draft.AdvancedStorageLabels = selectedStorageLabelsMode == initStorageLabelsCustom
+			applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
+			applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
+			applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, llmRuntimes)
+			// Inventory selections fill provider/auth/ref fields; rerunning the mode finalizers applies side effects like clearing refs for self-reviewers or subscription runtimes.
+			reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+			selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+			applyReviewerEntitySelection(&draft, reviewerMode)
+			applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+			draft.RepositoryRoutesAction = selectedRepositoryRoutesAction
+			return draft, nil
 		}
-		if back {
-			continue
-		}
-		draft.AdvancedStorageLabels = selectedStorageLabelsMode == initStorageLabelsCustom
-		applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
-		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
-		applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, ctx.LLMRuntimes)
-		// Inventory selections fill provider/auth/ref fields; rerunning the mode finalizers applies side effects like clearing refs for self-reviewers or subscription runtimes.
-		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
-		selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
-		applyReviewerEntitySelection(&draft, reviewerMode)
-		applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
-		draft.RepositoryRoutesAction = selectedRepositoryRoutesAction
-		return draft, nil
+		continue
 	}
 }
 
@@ -2683,6 +2703,21 @@ func initLLMRuntimeOptions(runtimes map[string]initLLMRuntimeDraft) []huh.Option
 	return dedupeInitStringOptions(options)
 }
 
+func initLLMRuntimeSelectionOptions(runtimes map[string]initLLMRuntimeDraft) []huh.Option[string] {
+	names := configuredInitLLMRuntimeNames(runtimes)
+	if len(names) == 0 {
+		return []huh.Option[string]{
+			huh.NewOption("Configure a new LLM runtime first", initConfigureNewLLMRuntimeSelection),
+		}
+	}
+	options := make([]huh.Option[string], 0, len(names))
+	for _, name := range names {
+		runtime := runtimes[name]
+		options = append(options, huh.NewOption("Configured: "+initLLMRuntimeLabel(runtime), name))
+	}
+	return dedupeInitStringOptions(options)
+}
+
 func configuredInitLLMRuntimeNames(runtimes map[string]initLLMRuntimeDraft) []string {
 	names := make([]string, 0, len(runtimes))
 	for name := range runtimes {
@@ -2790,6 +2825,20 @@ func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runti
 		return
 	}
 	applyLLMRuntimeSelection(draft, selection)
+}
+
+func normalizeInitStringSelectionValue(selection string, options []huh.Option[string]) string {
+	if len(options) == 0 {
+		return selection
+	}
+	if selection != "" {
+		for _, option := range options {
+			if option.Value == selection {
+				return selection
+			}
+		}
+	}
+	return options[0].Value
 }
 
 func dedupeInitStringOptions(options []huh.Option[string]) []huh.Option[string] {
