@@ -972,6 +972,8 @@ const (
 	initDetailActionEdit                  = "edit"
 	initDetailActionBack                  = "back"
 	initDetailActionDelete                = "delete"
+	initReviewerModelTierTitle            = "Minimum reviewer model tier"
+	initReviewerModelTierDescription      = "Sets the minimum model tier for reviewer agents. Agents that require a higher tier still use their higher configured tier."
 )
 
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
@@ -2192,14 +2194,9 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Options(llmRuntimeOptions...).
 					Value(&selectedLLMRuntime),
 				huh.NewSelect[string]().
-					Title("Minimum reviewer model tier").
-					Description("Sets the minimum model tier for reviewer agents. Agents that require a higher tier still use their higher configured tier.").
-					Options(
-						huh.NewOption("Built-in baseline (small)", ""),
-						huh.NewOption("Small baseline", string(config.ModelTierSmall)),
-						huh.NewOption("Medium baseline", string(config.ModelTierMedium)),
-						huh.NewOption("Large baseline", string(config.ModelTierLarge)),
-					).
+					Title(initReviewerModelTierTitle).
+					Description(initReviewerModelTierDescription).
+					Options(initReviewerModelTierOptions()...).
 					Value(&draft.LLMReviewerModelTier),
 				huh.NewSelect[string]().
 					Title("Storage label handling").
@@ -2527,6 +2524,15 @@ func defaultProfileSelectionOptions(defaultProfileName string) []huh.Option[bool
 	}
 	options = append(options, huh.NewOption("No, keep the current default profile", false))
 	return options
+}
+
+func initReviewerModelTierOptions() []huh.Option[string] {
+	return []huh.Option[string]{
+		huh.NewOption("Built-in baseline (small)", ""),
+		huh.NewOption("Small baseline", string(config.ModelTierSmall)),
+		huh.NewOption("Medium baseline", string(config.ModelTierMedium)),
+		huh.NewOption("Large baseline", string(config.ModelTierLarge)),
+	}
 }
 
 func reviewerEntityTemplateFallbackLabel() string {
