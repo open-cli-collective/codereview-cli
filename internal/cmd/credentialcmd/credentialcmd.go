@@ -1374,7 +1374,11 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		return initSessionDraft{}, false, err
 	}
 	session.cfg = cloneInitConfigFile(workspace.cfg)
-	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, initReviewerEntityDraftFromSeedDraft(draft))
+	nextEntity := initReviewerEntityDraft{}
+	if profile, ok := session.cfg.Profiles[workspace.profileName]; ok {
+		nextEntity = initReviewerEntityDraftFromConfig(profile)
+	}
+	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, nextEntity)
 	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
 	session.requestedProfileName = workspace.profileName
 	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, session.workspace.profile) {
