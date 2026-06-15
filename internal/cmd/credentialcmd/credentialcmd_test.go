@@ -3877,6 +3877,53 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 }
 
+func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDefaultExists(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default: keep seeded yes selection
+			"", // Git scope host
+			"", // Git scope auth mode
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Storage label handling
+			"", // Repository routes
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "default",
+		DefaultProfileName:   "",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !draft.MakeDefault {
+		t.Fatalf("draft.MakeDefault = false, want no-default interactive flow to preserve seeded true selection")
+	}
+	if !strings.Contains(stderr.String(), "Yes, make this the default profile") {
+		t.Fatalf("stderr = %q, want default-profile select copy in no-default flow", stderr.String())
+	}
+}
+
 func TestProfileEditorSelectionPreservesTypedReviewerEntityLabel(t *testing.T) {
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
