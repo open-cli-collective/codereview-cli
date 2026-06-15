@@ -233,24 +233,24 @@ const (
 )
 
 type initDraft struct {
-	Action                initDraftAction
-	ActionTarget          string
-	OriginalProfileName   string
-	ProfileName           string
-	MakeDefault           bool
-	GitHost               string
-	GitAuth               string
-	GitCredentialRef      string
-	ReviewerEnabled       bool
-	ReviewerAuth          string
-	ReviewerCredentialRef string
-	ReviewerDisplayName   string
-	LLMProvider           string
-	LLMAuth               string
-	LLMAdapter            string
-	LLMReviewerModelTier  string
-	LLMCredentialRef      string
-	AdvancedStorageLabels bool
+	Action                 initDraftAction
+	ActionTarget           string
+	OriginalProfileName    string
+	ProfileName            string
+	MakeDefault            bool
+	GitHost                string
+	GitAuth                string
+	GitCredentialRef       string
+	ReviewerEnabled        bool
+	ReviewerAuth           string
+	ReviewerCredentialRef  string
+	ReviewerDisplayName    string
+	LLMProvider            string
+	LLMAuth                string
+	LLMAdapter             string
+	LLMReviewerModelTier   string
+	LLMCredentialRef       string
+	AdvancedStorageLabels  bool
 	RepositoryRoutesAction string
 }
 
@@ -3883,7 +3883,9 @@ func resolveHistoricProfileName(session initSessionDraft, currentName string, dr
 func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraft) (initSessionPlan, error) {
 	profileNames := sortedTouchedProfileNames(session)
 	profileRefs := make(map[string][]config.CredentialRef, len(profileNames))
+	plannedWriteKeys := projectInitPlannedWriteKeys(session.writes)
 	entriesByKey := map[string]initCredentialPlanEntry{}
+	activeRefs := map[string]bool{}
 	for _, profileName := range profileNames {
 		profile, ok := session.cfg.Profiles[profileName]
 		if !ok {
@@ -3895,19 +3897,15 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 		}
 		profileRefs[profileName] = append([]config.CredentialRef(nil), refs...)
 		for _, ref := range refs {
-			key := initCredentialEntryKey(ref)
-			if _, exists := entriesByKey[key]; exists {
-				continue
-			}
-			specs, err := credentials.KeySpecsForPurpose(ref)
-			if err != nil {
-				return initSessionPlan{}, cmderr.Config(err)
-			}
-			entriesByKey[key] = initCredentialPlanEntry{
-				Ref:      ref,
-				KeySpecs: append([]credentials.KeySpec(nil), specs...),
-				State:    initCredentialPlanStateDefer,
-			}
+			activeRefs[ref.Ref] = true
+		}
+		previousProfile := touchedInteractiveInitPreviousProfile(session, profileName)
+		entries, err := planInitCredentials(previousProfile, profile, plannedWriteKeys)
+		if err != nil {
+			return initSessionPlan{}, cmderr.Config(err)
+		}
+		for _, entry := range entries {
+			mergeInteractiveInitSessionPlanEntry(entriesByKey, entry)
 		}
 	}
 	entryKeys := make([]string, 0, len(entriesByKey))
@@ -3916,11 +3914,8 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 	}
 	sort.Strings(entryKeys)
 	entries := make([]initCredentialPlanEntry, 0, len(entryKeys))
-	activeRefs := map[string]bool{}
 	for _, key := range entryKeys {
-		entry := entriesByKey[key]
-		activeRefs[entry.Ref.Ref] = true
-		entries = append(entries, entry)
+		entries = append(entries, entriesByKey[key])
 	}
 	writes := filterInitWritesByRefs(session.writes, activeRefs)
 	overwriteRefs := filterInitBoolMapByRefs(session.overwriteRefs, activeRefs)
@@ -3938,6 +3933,31 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 		backendFlagSet: session.backendFlagSet,
 		backendArg:     interactiveInitBackendArg(opts, session.backendFlagSet, session.cfg),
 	}, nil
+}
+
+func touchedInteractiveInitPreviousProfile(session initSessionDraft, profileName string) *config.Profile {
+	originalName := strings.TrimSpace(session.touchedProfiles[profileName])
+	if originalName == "" {
+		originalName = profileName
+	}
+	previousProfile, ok := session.originalCfg.Profiles[originalName]
+	if !ok {
+		return nil
+	}
+	profileCopy := previousProfile
+	return &profileCopy
+}
+
+func mergeInteractiveInitSessionPlanEntry(entriesByKey map[string]initCredentialPlanEntry, entry initCredentialPlanEntry) {
+	key := initCredentialEntryKey(entry.Ref)
+	existing, ok := entriesByKey[key]
+	if !ok {
+		entriesByKey[key] = entry
+		return
+	}
+	if existing.State == initCredentialPlanStateClearRef && entry.State != initCredentialPlanStateClearRef {
+		entriesByKey[key] = entry
+	}
 }
 
 func collectInteractiveInitSessionWorkspaceSecrets(opts *root.Options, deps initDeps, session initSessionDraft, purposes []string) (initSessionDraft, error) {
@@ -5334,10 +5354,11 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 func loadInteractiveCredentialPlanState(entries []initCredentialPlanEntry, openStore func() (initStore, error)) ([]initCredentialPlanEntry, error) {
 	var needsStore bool
 	for _, entry := range entries {
-		if entry.State != initCredentialPlanStateClearRef {
-			needsStore = true
-			break
+		if entry.State == initCredentialPlanStateClearRef || entry.State == initCredentialPlanStateKeepExisting || len(entry.PlannedWriteKeys) > 0 {
+			continue
 		}
+		needsStore = true
+		break
 	}
 	if !needsStore {
 		return entries, nil

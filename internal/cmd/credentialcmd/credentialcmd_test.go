@@ -867,6 +867,44 @@ func TestPlanInitCredentials(t *testing.T) {
 	})
 }
 
+func TestLoadInteractiveCredentialPlanStateSkipsStoreForSettledEntries(t *testing.T) {
+	previous := basicProfile("work")
+	keepEntries, err := planInitCredentials(&previous, previous, nil)
+	if err != nil {
+		t.Fatalf("planInitCredentials keep: %v", err)
+	}
+	writeEntries, err := planInitCredentials(nil, basicProfile("office"), map[string][]string{
+		"codereview/office": {credentials.GitTokenKey},
+	})
+	if err != nil {
+		t.Fatalf("planInitCredentials write: %v", err)
+	}
+	entries := []initCredentialPlanEntry{
+		keepEntries[0],
+		{
+			Ref: config.CredentialRef{
+				Purpose:  "reviewer_credentials",
+				Ref:      "codereview/work-reviewer",
+				Mode:     string(config.GitAuthModeGitHubApp),
+				Provider: "github",
+			},
+			State: initCredentialPlanStateClearRef,
+		},
+		writeEntries[0],
+	}
+
+	got, err := loadInteractiveCredentialPlanState(entries, func() (initStore, error) {
+		t.Fatal("openStore should not run for settled keep_existing/clear_ref/write entries")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("loadInteractiveCredentialPlanState: %v", err)
+	}
+	if !reflect.DeepEqual(got, entries) {
+		t.Fatalf("entries = %#v, want unchanged %#v", got, entries)
+	}
+}
+
 func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
@@ -3386,19 +3424,19 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Profile name
-			"",  // Make default
-			"",  // Git host
-			"",  // Git auth
-			"",  // Git ref
-			"",  // Configure reviewer creds
-			"",  // Reviewer auth
-			"",  // Reviewer ref
-			"",  // LLM provider
-			"",  // LLM auth
-			"",  // LLM adapter
-			"",  // Reviewer model tier
-			"",  // LLM ref
+			"", // Profile name
+			"", // Make default
+			"", // Git host
+			"", // Git auth
+			"", // Git ref
+			"", // Configure reviewer creds
+			"", // Reviewer auth
+			"", // Reviewer ref
+			"", // LLM provider
+			"", // LLM auth
+			"", // LLM adapter
+			"", // Reviewer model tier
+			"", // LLM ref
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -3490,13 +3528,13 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Profile name
-			"",  // Make default
-			"",  // Reviewer entity
-			"",  // LLM runtime
-			"",  // Reviewer model tier
-			"",  // Advanced storage labels
-			"",  // Repository routes
+			"", // Profile name
+			"", // Make default
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Advanced storage labels
+			"", // Repository routes
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -3550,15 +3588,15 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Profile name
-			"",  // Make default
-			"",  // Git host
-			"",  // Git auth
-			"",  // Reviewer entity
-			"",  // LLM runtime
-			"",  // Reviewer model tier
-			"",  // Advanced storage labels
-			"",  // Repository routes
+			"", // Profile name
+			"", // Make default
+			"", // Git host
+			"", // Git auth
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Advanced storage labels
+			"", // Repository routes
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -3931,9 +3969,9 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Entity label
-			"",  // Keep current reviewer secret location
-			"",  // Stage reviewer settings
+			"", // Entity label
+			"", // Keep current reviewer secret location
+			"", // Stage reviewer settings
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -4023,15 +4061,15 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Profile name
-			"",  // Make default
-			"",  // Git host
-			"",  // Git auth
-			"",  // Reviewer entity
-			"",  // LLM runtime
-			"",  // Reviewer model tier
-			"",  // Advanced storage labels
-			"",  // Repository routes
+			"", // Profile name
+			"", // Make default
+			"", // Git host
+			"", // Git auth
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Advanced storage labels
+			"", // Repository routes
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -4239,7 +4277,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsAvailabilityNote(t *tes
 			"", // Keep subscription auth default
 			"", // Keep Codex CLI adapter default
 		}, "\n")),
-		stderr:  &stderr,
+		stderr: &stderr,
 		checker: func(preset initLLMRuntimePreset) string {
 			if preset == initLLMRuntimePresetCodexCLISubscription {
 				checkerCalled = true
@@ -5320,10 +5358,10 @@ func TestHuhInitModelMapPrompterAccessibleKeepsExistingOverrideWhenLeftBlank(t *
 	t.Setenv("TERM", "dumb")
 	prompter := huhInitModelMapPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Stage model-map settings
-			"",  // small stays blank
-			"",  // medium keeps existing prefilled value
-			"",  // large stays blank
+			"", // Stage model-map settings
+			"", // small stays blank
+			"", // medium keeps existing prefilled value
+			"", // large stays blank
 			"",
 		}, "\n")),
 		stderr: &bytes.Buffer{},
@@ -5375,9 +5413,9 @@ func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitAgentSourcesPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Stage agent source settings
-			"",  // keep first prefilled path
-			"",  // no additional paths
+			"", // Stage agent source settings
+			"", // keep first prefilled path
+			"", // no additional paths
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -5476,8 +5514,8 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitRoutesPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Stage repository-route settings
-			"",  // keep existing route text
+			"", // Stage repository-route settings
+			"", // keep existing route text
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -6048,15 +6086,15 @@ func TestInitInteractiveAgentSourcesCanClearToEmpty(t *testing.T) {
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName: "work",
-				ProfileName:         "work",
-				MakeDefault:         true,
-				GitHost:             "github.com",
-				GitAuth:             string(config.GitAuthModePAT),
-				GitCredentialRef:    "codereview/work",
-				LLMProvider:         string(config.LLMProviderAnthropic),
-				LLMAuth:             string(config.LLMAuthSubscription),
-				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+				OriginalProfileName:    "work",
+				ProfileName:            "work",
+				MakeDefault:            true,
+				GitHost:                "github.com",
+				GitAuth:                string(config.GitAuthModePAT),
+				GitCredentialRef:       "codereview/work",
+				LLMProvider:            string(config.LLMProviderAnthropic),
+				LLMAuth:                string(config.LLMAuthSubscription),
+				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
 				RepositoryRoutesAction: string(initRoutesActionEdit),
 			}, nil
 		}),
@@ -7986,6 +8024,91 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 	}
 }
 
+func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/work",
+				},
+				ReviewerCredentials: &config.ReviewerCredentials{
+					AuthMode:      config.GitAuthModeGitHubApp,
+					CredentialRef: "codereview/work-reviewer",
+					DisplayName:   "Old label",
+				},
+				LLM: config.LLMConfig{
+					Provider: config.LLMProviderAnthropic,
+					Auth:     config.LLMAuthSubscription,
+					Adapter:  config.LLMAdapterClaudeCLI,
+				},
+			},
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	reviewerPrompterCalls := 0
+	openStoreCalls := 0
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			if reviewerPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			draft.ReviewerDisplayName = "OC Collective bot"
+			return draft, nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			openStoreCalls++
+			return newFakeInitStore(nil), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if openStoreCalls != 0 {
+		t.Fatalf("openStoreCalls = %d, want 0 for reviewer label-only save", openStoreCalls)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := got.Profiles["work"]
+	if profile.ReviewerCredentials == nil {
+		t.Fatal("reviewer credentials = nil, want reviewer still configured")
+	}
+	if got, want := profile.ReviewerCredentials.DisplayName, "OC Collective bot"; got != want {
+		t.Fatalf("reviewer display name = %q, want %q", got, want)
+	}
+	if got, want := profile.ReviewerCredentials.CredentialRef, "codereview/work-reviewer"; got != want {
+		t.Fatalf("reviewer credential ref = %q, want %q", got, want)
+	}
+}
+
 func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRefWhenDraftClearsCustomRef(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
@@ -8017,6 +8140,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 		ConfigPath: path,
 	}
 	reviewerPrompterCalls := 0
+	openStoreCalls := 0
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -8045,6 +8169,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 			},
 		},
 		openStore: func(string, bool, config.File) (initStore, error) {
+			openStoreCalls++
 			return newFakeInitStore(map[string]map[string]string{
 				"work": {
 					credentials.GitTokenKey: "existing-token",
@@ -8066,6 +8191,9 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if openStoreCalls == 0 {
+		t.Fatal("openStoreCalls = 0, want credential-shape change to inspect the store")
 	}
 	got, err := config.Load(path)
 	if err != nil {
@@ -9552,7 +9680,7 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 		want           []config.RepositoryProfile
 	}{
 		{
-			name: "create from pr url",
+			name:   "create from pr url",
 			action: string(initRoutesActionEdit),
 			edit: initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "github.com",
@@ -9569,7 +9697,7 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 			}},
 		},
 		{
-			name: "edit and preserve unrelated",
+			name:   "edit and preserve unrelated",
 			action: string(initRoutesActionEdit),
 			existingRoutes: []config.RepositoryProfile{
 				{
@@ -9611,7 +9739,7 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 			},
 		},
 		{
-			name: "remove all",
+			name:   "remove all",
 			action: string(initRoutesActionReset),
 			existingRoutes: []config.RepositoryProfile{{
 				Profile: "work",
@@ -9645,15 +9773,15 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 			deps := initDeps{
 				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 					return initDraft{
-						OriginalProfileName: "work",
-						ProfileName:         "work",
-						MakeDefault:         true,
-						GitHost:             "github.com",
-						GitAuth:             string(config.GitAuthModePAT),
-						GitCredentialRef:    "codereview/work",
-						LLMProvider:         string(config.LLMProviderAnthropic),
-						LLMAuth:             string(config.LLMAuthSubscription),
-						LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+						OriginalProfileName:    "work",
+						ProfileName:            "work",
+						MakeDefault:            true,
+						GitHost:                "github.com",
+						GitAuth:                string(config.GitAuthModePAT),
+						GitCredentialRef:       "codereview/work",
+						LLMProvider:            string(config.LLMProviderAnthropic),
+						LLMAuth:                string(config.LLMAuthSubscription),
+						LLMAdapter:             string(config.LLMAdapterClaudeCLI),
 						RepositoryRoutesAction: tt.action,
 					}, nil
 				}),
@@ -9705,16 +9833,16 @@ func TestInitInteractiveRoutePreserveSkipsStandaloneRouteChooser(t *testing.T) {
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName:      "work",
-				ProfileName:              "work",
-				MakeDefault:              true,
-				GitHost:                  "github.com",
-				GitAuth:                  string(config.GitAuthModePAT),
-				GitCredentialRef:         "codereview/work",
-				LLMProvider:              string(config.LLMProviderAnthropic),
-				LLMAuth:                  string(config.LLMAuthSubscription),
-				LLMAdapter:               string(config.LLMAdapterClaudeCLI),
-				RepositoryRoutesAction:   string(initRoutesActionPreserve),
+				OriginalProfileName:    "work",
+				ProfileName:            "work",
+				MakeDefault:            true,
+				GitHost:                "github.com",
+				GitAuth:                string(config.GitAuthModePAT),
+				GitCredentialRef:       "codereview/work",
+				LLMProvider:            string(config.LLMProviderAnthropic),
+				LLMAuth:                string(config.LLMAuthSubscription),
+				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
+				RepositoryRoutesAction: string(initRoutesActionPreserve),
 			}, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
@@ -9792,14 +9920,14 @@ func TestInitInteractiveReconcilesRouteHostChangeBeforeSave(t *testing.T) {
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName: "work",
-				ProfileName:         "work",
-				GitHost:             "gitlab.com",
-				GitAuth:             string(config.GitAuthModePAT),
-				GitCredentialRef:    "codereview/work",
-				LLMProvider:         string(config.LLMProviderAnthropic),
-				LLMAuth:             string(config.LLMAuthSubscription),
-				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+				OriginalProfileName:    "work",
+				ProfileName:            "work",
+				GitHost:                "gitlab.com",
+				GitAuth:                string(config.GitAuthModePAT),
+				GitCredentialRef:       "codereview/work",
+				LLMProvider:            string(config.LLMProviderAnthropic),
+				LLMAuth:                string(config.LLMAuthSubscription),
+				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
 				RepositoryRoutesAction: string(initRoutesActionPreserve),
 			}, nil
 		}),
@@ -9959,14 +10087,14 @@ func TestInitInteractiveReconcilesRouteHostChangeDuringRename(t *testing.T) {
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName: "work",
-				ProfileName:         "office",
-				GitHost:             "gitlab.com",
-				GitAuth:             string(config.GitAuthModePAT),
-				GitCredentialRef:    "codereview/custom-office-git",
-				LLMProvider:         string(config.LLMProviderAnthropic),
-				LLMAuth:             string(config.LLMAuthSubscription),
-				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+				OriginalProfileName:    "work",
+				ProfileName:            "office",
+				GitHost:                "gitlab.com",
+				GitAuth:                string(config.GitAuthModePAT),
+				GitCredentialRef:       "codereview/custom-office-git",
+				LLMProvider:            string(config.LLMProviderAnthropic),
+				LLMAuth:                string(config.LLMAuthSubscription),
+				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
 				RepositoryRoutesAction: string(initRoutesActionPreserve),
 			}, nil
 		}),
@@ -10030,14 +10158,14 @@ func TestInitInteractiveRejectsPreservedMismatchedRoutesAfterHostChange(t *testi
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName: "work",
-				ProfileName:         "work",
-				GitHost:             "gitlab.com",
-				GitAuth:             string(config.GitAuthModePAT),
-				GitCredentialRef:    "codereview/work",
-				LLMProvider:         string(config.LLMProviderAnthropic),
-				LLMAuth:             string(config.LLMAuthSubscription),
-				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+				OriginalProfileName:    "work",
+				ProfileName:            "work",
+				GitHost:                "gitlab.com",
+				GitAuth:                string(config.GitAuthModePAT),
+				GitCredentialRef:       "codereview/work",
+				LLMProvider:            string(config.LLMProviderAnthropic),
+				LLMAuth:                string(config.LLMAuthSubscription),
+				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
 				RepositoryRoutesAction: string(initRoutesActionPreserve),
 			}, nil
 		}),
