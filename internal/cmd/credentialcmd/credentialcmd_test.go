@@ -3782,13 +3782,22 @@ func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeShowsDetails(t *tes
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"1",
-			"",
-			"",
-			"",
-			"",
+			"", // Stage these runtime details
+			"", // Keep Anthropic provider
+			"", // Keep subscription auth
+			"", // Keep Claude CLI adapter
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "Configured: Claude CLI subscription (claude-cli)\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "claude-cli",
+					Title: "Configured: Claude CLI subscription (claude-cli)",
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
@@ -3807,14 +3816,11 @@ func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeShowsDetails(t *tes
 		t.Fatalf("draft = %#v, want existing claude runtime", draft)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") || !strings.Contains(out, "Custom compatible runtime") {
-		t.Fatalf("stderr = %q, want mixed configured/custom runtime options", out)
-	}
-	if !strings.Contains(out, "LLM provider") || !strings.Contains(out, "LLM auth mode") || !strings.Contains(out, "LLM adapter") {
+	if !strings.Contains(out, "LLM provider") || !strings.Contains(out, "LLM auth mode") || !strings.Contains(out, "LLM adapter") || !strings.Contains(out, "Runtime detail action") || !strings.Contains(out, "Stage these runtime details") {
 		t.Fatalf("stderr = %q, want configured runtime flow to show editable details", out)
 	}
-	if !strings.Contains(out, "Back to main menu") {
-		t.Fatalf("stderr = %q, want focused runtime Back option", out)
+	if strings.Contains(out, "Edit runtime details") || strings.Contains(out, "Mark runtime for deletion") || strings.Contains(out, "Back to runtime choices") {
+		t.Fatalf("stderr = %q, want configured runtime flow without intermediate runtime action menu", out)
 	}
 }
 
@@ -3829,13 +3835,23 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"3", // Template: Codex CLI subscription.
-			"",  // Keep OpenAI provider default from the selected template.
-			"",  // Keep subscription auth default.
-			"",  // Keep Codex CLI adapter default.
-			"",
+			"", // Stage these runtime details
+			"", // Keep OpenAI provider default
+			"", // Keep subscription auth default
+			"", // Keep Codex CLI adapter default
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "Template: Codex CLI subscription\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            string(initLLMRuntimePresetCodexCLISubscription),
+					Title:         "Template: Codex CLI subscription",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
@@ -3855,9 +3871,62 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
 	}
 	out := stderr.String()
 	if !strings.Contains(out, "Template: Codex CLI subscription") ||
-		!strings.Contains(out, "Stage this runtime") ||
-		!strings.Contains(out, "Customize runtime details") {
-		t.Fatalf("stderr = %q, want template selection to show explicit runtime actions", out)
+		!strings.Contains(out, "Runtime detail action") ||
+		!strings.Contains(out, "Stage these runtime details") {
+		t.Fatalf("stderr = %q, want template selection to land on flattened runtime details", out)
+	}
+	if strings.Contains(out, "Stage this runtime") || strings.Contains(out, "Customize runtime details") || strings.Contains(out, "Back to runtime choices") {
+		t.Fatalf("stderr = %q, want template selection without intermediate runtime action menu", out)
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsAvailabilityNote(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	checkerCalled := false
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Stage these runtime details
+			"", // Keep OpenAI provider default
+			"", // Keep subscription auth default
+			"", // Keep Codex CLI adapter default
+		}, "\n")),
+		stderr:  &stderr,
+		checker: func(preset initLLMRuntimePreset) string {
+			if preset == initLLMRuntimePresetCodexCLISubscription {
+				checkerCalled = true
+			}
+			return "Codex CLI check: codex-cli 0.139.0 installed."
+		},
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "Template: Codex CLI subscription\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            string(initLLMRuntimePresetCodexCLISubscription),
+					Title:         "Template: Codex CLI subscription",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
+	}
+
+	_, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}})
+	if err != nil {
+		t.Fatalf("EditLLMRuntime: %v", err)
+	}
+	if !checkerCalled {
+		t.Fatal("checkerCalled = false, want template selection to consult runtime availability checker")
+	}
+	if !strings.Contains(stderr.String(), "Runtime detail action") || !strings.Contains(stderr.String(), "Codex CLI check: codex-cli 0.139.0 installed.") {
+		t.Fatalf("stderr = %q, want flattened runtime detail screen with runtime availability note", stderr.String())
 	}
 }
 
@@ -3894,13 +3963,23 @@ func TestHuhInitLLMRuntimePrompterAccessibleCustomRuntimeShowsCustomFields(t *te
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",
-			"2",
-			"2",
-			"4",
-			"",
+			"",  // Stage these runtime details
+			"2", // OpenAI provider
+			"2", // API key auth
+			"4", // OpenAI API adapter
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "Custom compatible runtime\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCustomLLMRuntimeSelection,
+					Title:         "Custom compatible runtime",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
@@ -3927,9 +4006,6 @@ func TestHuhInitLLMRuntimePrompterAccessibleCustomRuntimeShowsCustomFields(t *te
 		t.Fatalf("draft.ProfileName = %q, want work", draft.ProfileName)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") || !strings.Contains(out, "Custom compatible runtime") {
-		t.Fatalf("stderr = %q, want mixed configured/custom runtime options", out)
-	}
 	if !strings.Contains(out, "LLM provider") || !strings.Contains(out, "LLM auth mode") || !strings.Contains(out, "LLM adapter") {
 		t.Fatalf("stderr = %q, want custom runtime fields", out)
 	}
@@ -3940,11 +4016,18 @@ func TestHuhInitLLMRuntimePrompterAccessibleBackReturnsNavigateBack(t *testing.T
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"7", // Back to main menu.
-			"",
-		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "Back to main menu\n")
+			return initInventoryResult{
+				Action: initInventoryActionBack,
+				Row: initInventoryRow{
+					ID:            initBackSelection,
+					Title:         "Back to main menu",
+					PrimaryAction: initInventoryActionBack,
+				},
+			}, nil
+		},
 	}
 
 	_, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
@@ -3972,79 +4055,73 @@ func TestHuhInitLLMRuntimeDetailsBackDoesNotMutateDraft(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"3", // Back to runtime choices.
-			"",
+			"2", // Back without staging
+			"",  // Keep provider
+			"",  // Keep auth
+			"",  // Keep adapter
 		}, "\n")),
 		stderr: &stderr,
 	}
 
-	used, back, deleted, err := prompter.editLLMRuntimeDetails("claude-cli", &draft, map[string]initLLMRuntimeDraft{
-		"claude-cli": {
-			Name:     "claude-cli",
-			Preset:   initLLMRuntimePresetClaudeCLISubscription,
-			Provider: config.LLMProviderAnthropic,
-			Auth:     config.LLMAuthSubscription,
-			Adapter:  config.LLMAdapterClaudeCLI,
-		},
-	})
+	_, back, err := prompter.editLLMRuntimeDetails(draft)
 	if err != nil {
 		t.Fatalf("editLLMRuntimeDetails: %v", err)
 	}
 	if !back {
 		t.Fatal("back = false, want details Back")
 	}
-	if used {
-		t.Fatal("used = true, want details Back")
-	}
-	if deleted {
-		t.Fatal("deleted = true, want details Back")
-	}
 	if !reflect.DeepEqual(draft, want) {
 		t.Fatalf("draft mutated on details Back:\n got: %#v\nwant: %#v", draft, want)
 	}
 }
 
-func TestHuhInitLLMRuntimeDetailsAccessibleCanMarkConfiguredRuntimeForDeletion(t *testing.T) {
+func TestHuhInitLLMRuntimePrompterAccessibleCanMarkConfiguredRuntimeForDeletion(t *testing.T) {
 	t.Setenv("TERM", "dumb")
-	draft := seedInteractiveInitDraft("work", "work", "work", nil)
-	draft.LLMProvider = string(config.LLMProviderAnthropic)
-	draft.LLMAuth = string(config.LLMAuthSubscription)
-	draft.LLMAdapter = string(config.LLMAdapterClaudeCLI)
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Mark runtime for deletion.
+			"2", // Replacement: Template Codex CLI subscription
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "Configured: Claude CLI subscription (claude-cli)\n")
+			return initInventoryResult{
+				Action: initInventoryActionStageDelete,
+				Row: initInventoryRow{
+					ID:    "claude-cli",
+					Title: "Configured: Claude CLI subscription (claude-cli)",
+				},
+			}, nil
+		},
 	}
 
-	used, back, deleted, err := prompter.editLLMRuntimeDetails("claude-cli", &draft, map[string]initLLMRuntimeDraft{
-		"claude-cli": {
-			Name:     "claude-cli",
-			Preset:   initLLMRuntimePresetClaudeCLISubscription,
-			Provider: config.LLMProviderAnthropic,
-			Auth:     config.LLMAuthSubscription,
-			Adapter:  config.LLMAdapterClaudeCLI,
-		},
-	})
+	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}})
 	if err != nil {
-		t.Fatalf("editLLMRuntimeDetails: %v", err)
+		t.Fatalf("EditLLMRuntime: %v", err)
 	}
-	if back {
-		t.Fatal("back = true, want delete action")
+	if draft.Action != initDraftActionDeleteLLMRuntime || draft.ActionTarget != "claude-cli" {
+		t.Fatalf("draft delete action = %#v, want claude-cli delete", draft)
 	}
-	if used {
-		t.Fatal("used = true, want delete action")
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthSubscription) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
+		t.Fatalf("draft replacement = %#v, want codex subscription replacement", draft)
 	}
-	if !deleted {
-		t.Fatal("deleted = false, want configured runtime delete")
-	}
-	if !strings.Contains(stderr.String(), "Mark runtime for deletion") {
-		t.Fatalf("stderr = %q, want runtime delete label", stderr.String())
-	}
-	if strings.Contains(stderr.String(), "LLM provider") || strings.Contains(stderr.String(), "LLM auth mode") || strings.Contains(stderr.String(), "LLM adapter") {
-		t.Fatalf("stderr = %q, want delete flow to skip runtime edit fields", stderr.String())
+	if !strings.Contains(stderr.String(), "Replacement LLM runtime") {
+		t.Fatalf("stderr = %q, want runtime replacement prompt", stderr.String())
 	}
 }
 
@@ -4085,16 +4162,60 @@ func TestHuhInitLLMRuntimePrompterReplacementChoosesConfiguredTemplate(t *testin
 	}
 }
 
+func TestHuhInitLLMRuntimePrompterReplacementBackExcludesDeletedRuntime(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"7", // Back to runtime details
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.chooseLLMRuntimeDeleteReplacement(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}}, "claude-cli", seedInteractiveInitDraft("work", "work", "work", &existing))
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("chooseLLMRuntimeDeleteReplacement error = %v, want errInitNavigateBack", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Replacement LLM runtime") || !strings.Contains(out, "Template: Codex CLI subscription") {
+		t.Fatalf("stderr = %q, want replacement runtime prompt with replacement options", out)
+	}
+	if strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") {
+		t.Fatalf("stderr = %q, want deleted runtime excluded from replacement choices", out)
+	}
+}
+
 func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"7", // Restore LLM runtime claude-cli (staged for deletion)
-			"",
-		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "Restore LLM runtime claude-cli (staged for deletion)\n")
+			return initInventoryResult{
+				Action: initInventoryActionRestore,
+				Row: initInventoryRow{
+					ID:    "claude-cli",
+					Title: "Restore LLM runtime claude-cli (staged for deletion)",
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{

@@ -916,9 +916,10 @@ type huhInitMenuPrompter struct {
 }
 
 type huhInitLLMRuntimePrompter struct {
-	stdin   io.Reader
-	stderr  io.Writer
-	checker func(initLLMRuntimePreset) string
+	stdin           io.Reader
+	stderr          io.Writer
+	checker         func(initLLMRuntimePreset) string
+	inventoryRunner initInventoryRunner
 }
 
 type huhInitReviewerEntityPrompter struct {
@@ -1613,153 +1614,79 @@ func initFinalizeDescription(prompt initFinalizePrompt) string {
 
 func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
 	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
-	selectedRuntime := prompt.Context.ProfileLLMRuntimes[prompt.Context.ExistingProfileName]
-	seedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
-	if selectedRuntime == "" {
-		if seedRuntimePreset == string(initLLMRuntimePresetCustom) {
-			selectedRuntime = initCustomLLMRuntimeSelection
-		} else {
-			selectedRuntime = seedRuntimePreset
-		}
-	}
 	for {
-		choice := selectedRuntime
-		options := initLLMRuntimeOptions(prompt.Context.LLMRuntimes)
-		pendingDeleteNames := make([]string, 0, len(prompt.Context.PendingLLMRuntimeDeletes))
-		for name := range prompt.Context.PendingLLMRuntimeDeletes {
-			pendingDeleteNames = append(pendingDeleteNames, name)
-		}
-		sort.Strings(pendingDeleteNames)
-		for _, name := range pendingDeleteNames {
-			options = append(options, huh.NewOption(llmRuntimeDeletePendingLabel(name), initUndoLLMRuntimeDeletePrefix+name))
-		}
-		options = append(options, huh.NewOption("Back to main menu", initBackSelection))
-		selectForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("LLM runtime").
-					Description("Choose how reviewer agents run for this profile.").
-					Options(options...).
-					Value(&choice),
-			).Title("LLM Runtime"),
-		)
-		back, err := runBackableInitForm(selectForm, p.stdin, p.stderr)
+		result, err := p.runInventory(initInventoryPrompt{
+			Title:       "LLM Runtime",
+			Description: "Choose how reviewer agents run for this profile.",
+			Rows:        initLLMRuntimeInventoryRows(prompt.Context),
+			Width:       80,
+			Height:      20,
+		})
 		if err != nil {
 			return initDraft{}, err
 		}
-		if back || choice == initBackSelection {
+		switch result.Action {
+		case initInventoryActionBack:
 			return initDraft{}, errInitNavigateBack
-		}
-		if strings.HasPrefix(choice, initUndoLLMRuntimeDeletePrefix) {
+		case initInventoryActionRestore:
 			return initDraft{
 				Action:       initDraftActionUndoDeleteLLMRuntime,
-				ActionTarget: strings.TrimPrefix(choice, initUndoLLMRuntimeDeletePrefix),
+				ActionTarget: result.Row.ID,
 			}, nil
-		}
-
-		candidateDraft := draft
-		if choice != initCustomLLMRuntimeSelection {
-			applyLLMRuntimeInventorySelection(&candidateDraft, choice, prompt.Context.LLMRuntimes)
-			resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(candidateDraft).Preset)
-			applyLLMRuntimeSelection(&candidateDraft, resolvedRuntimePreset)
-		}
-		detailDraft := candidateDraft
-		usedSelection, back, deleted, err := p.editLLMRuntimeDetails(choice, &detailDraft, prompt.Context.LLMRuntimes)
-		if err != nil {
-			return initDraft{}, err
-		}
-		if usedSelection {
-			return detailDraft, nil
-		}
-		if back {
-			selectedRuntime = choice
-			continue
-		}
-		if deleted {
-			replacementDraft, err := p.chooseLLMRuntimeDeleteReplacement(prompt, choice, draft)
+		case initInventoryActionStageDelete:
+			replacementDraft, err := p.chooseLLMRuntimeDeleteReplacement(prompt, result.Row.ID, draft)
 			if err != nil {
 				if errors.Is(err, errInitNavigateBack) {
-					selectedRuntime = choice
 					continue
 				}
 				return initDraft{}, err
 			}
 			replacementDraft.Action = initDraftActionDeleteLLMRuntime
-			replacementDraft.ActionTarget = choice
+			replacementDraft.ActionTarget = result.Row.ID
 			return replacementDraft, nil
+		case initInventoryActionEdit, initInventoryActionCommand:
+			nextDraft, back, err := p.editSelectedLLMRuntime(prompt.Context, result.Row.ID, draft)
+			if err != nil {
+				return initDraft{}, err
+			}
+			if back {
+				continue
+			}
+			return nextDraft, nil
+		case initInventoryActionNone:
+			continue
+		default:
+			return initDraft{}, fmt.Errorf("unsupported llm-runtime inventory action %q", result.Action)
 		}
-		resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(detailDraft).Preset)
-		applyLLMRuntimeSelection(&detailDraft, resolvedRuntimePreset)
-		return detailDraft, nil
 	}
 }
 
-func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft *initDraft, runtimes map[string]initLLMRuntimeDraft) (bool, bool, bool, error) {
-	runtime := initLLMRuntimeDraftFromSeedDraft(*draft)
+func (p huhInitLLMRuntimePrompter) editSelectedLLMRuntime(ctx initPromptContext, selection string, seed initDraft) (initDraft, bool, error) {
+	candidateDraft := seed
+	if selection != initCustomLLMRuntimeSelection {
+		applyLLMRuntimeInventorySelection(&candidateDraft, selection, ctx.LLMRuntimes)
+		resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(candidateDraft).Preset)
+		applyLLMRuntimeSelection(&candidateDraft, resolvedRuntimePreset)
+	}
+	return p.editLLMRuntimeDetails(candidateDraft)
+}
+
+func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(seed initDraft) (initDraft, bool, error) {
+	draft := seed
+	runtime := initLLMRuntimeDraftFromSeedDraft(draft)
 	detailTitle := "LLM Runtime Details"
 	detailDescription := initLLMRuntimeSelectionDescription(runtime, p.runtimeAvailabilityNote(runtime.Preset))
-	if _, ok := runtimes[selection]; !ok && selection != initCustomLLMRuntimeSelection {
-		action := initLLMRuntimeTemplateActionUse
-		actionForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("LLM runtime details").
-					Description(detailDescription).
-					Options(
-						huh.NewOption("Stage this runtime", initLLMRuntimeTemplateActionUse),
-						huh.NewOption("Customize runtime details", initLLMRuntimeTemplateActionCustomize),
-						huh.NewOption("Back to runtime choices", initDetailActionBack),
-					).
-					Value(&action),
-			).Title(detailTitle),
-		)
-		back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
-		if err != nil {
-			return false, false, false, err
-		}
-		if back || action == initDetailActionBack {
-			return false, true, false, nil
-		}
-		if action == initLLMRuntimeTemplateActionUse {
-			return true, false, false, nil
-		}
-	}
-
-	action := initDetailActionEdit
-	detailOptions := []huh.Option[string]{
-		huh.NewOption("Edit runtime details", initDetailActionEdit),
-	}
-	if _, ok := runtimes[selection]; ok {
-		detailOptions = append(detailOptions, huh.NewOption("Mark runtime for deletion", initDetailActionDelete))
-	}
-	detailOptions = append(detailOptions, huh.NewOption("Back to runtime choices", initDetailActionBack))
-	actionForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("LLM runtime details").
-				Description(detailDescription).
-				Options(detailOptions...).
-				Value(&action),
-		).Title(detailTitle),
-	)
-	back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
-	if err != nil {
-		return false, false, false, err
-	}
-	if back || action == initDetailActionBack {
-		return false, true, false, nil
-	}
-	if action == initDetailActionDelete {
-		return false, false, true, nil
-	}
 	editAction := initDetailActionEdit
 	editForm := huh.NewForm(
 		huh.NewGroup(
+			huh.NewNote().
+				Title("Runtime details").
+				Description(detailDescription),
 			huh.NewSelect[string]().
 				Title("Runtime detail action").
 				Options(
 					huh.NewOption("Stage these runtime details", initDetailActionEdit),
-					huh.NewOption("Back to runtime actions", initDetailActionBack),
+					huh.NewOption("Back without staging", initDetailActionBack),
 				).
 				Value(&editAction),
 			huh.NewSelect[string]().
@@ -1789,14 +1716,16 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(selection string, draft
 				Value(&draft.LLMAdapter),
 		).Title(detailTitle),
 	)
-	back, err = runBackableInitForm(editForm, p.stdin, p.stderr)
+	back, err := runBackableInitForm(editForm, p.stdin, p.stderr)
 	if err != nil {
-		return false, false, false, err
+		return initDraft{}, false, err
 	}
 	if back || editAction == initDetailActionBack {
-		return false, true, false, nil
+		return initDraft{}, true, nil
 	}
-	return false, false, false, nil
+	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+	applyLLMRuntimeSelection(&draft, resolvedRuntimePreset)
+	return draft, false, nil
 }
 
 func (p huhInitLLMRuntimePrompter) chooseLLMRuntimeDeleteReplacement(prompt initLLMRuntimePrompt, deletedRuntimeName string, seed initDraft) (initDraft, error) {
@@ -1832,17 +1761,105 @@ func (p huhInitLLMRuntimePrompter) chooseLLMRuntimeDeleteReplacement(prompt init
 		applyLLMRuntimeSelection(&replacementDraft, resolvedRuntimePreset)
 		return replacementDraft, nil
 	}
-	customDraft := replacementDraft
-	usedSelection, back, deleted, err := p.editLLMRuntimeDetails(choice, &customDraft, prompt.Context.LLMRuntimes)
+	customDraft, back, err := p.editLLMRuntimeDetails(replacementDraft)
 	if err != nil {
 		return initDraft{}, err
 	}
-	if usedSelection || back || deleted {
+	if back {
 		return initDraft{}, errInitNavigateBack
 	}
-	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(customDraft).Preset)
-	applyLLMRuntimeSelection(&customDraft, resolvedRuntimePreset)
 	return customDraft, nil
+}
+
+func (p huhInitLLMRuntimePrompter) runInventory(prompt initInventoryPrompt) (initInventoryResult, error) {
+	runner := p.inventoryRunner
+	if runner == nil {
+		runner = runInitInventory
+	}
+	return runner(prompt, p.stdin, p.stderr)
+}
+
+func initLLMRuntimeInventoryRows(ctx initPromptContext) []initInventoryRow {
+	names := configuredInitLLMRuntimeNames(ctx.LLMRuntimes)
+	sort.Strings(names)
+	rows := make([]initInventoryRow, 0, len(names)+len(ctx.PendingLLMRuntimeDeletes)+8)
+	for _, name := range names {
+		runtime := ctx.LLMRuntimes[name]
+		label := "Configured: " + initLLMRuntimeLabel(runtime)
+		rows = append(rows, initInventoryRow{
+			ID:          name,
+			Title:       label,
+			Kind:        initInventoryRowKindActive,
+			Selectable:  true,
+			Deletable:   true,
+			FilterValue: strings.TrimSpace(strings.Join([]string{name, label, string(runtime.Provider), string(runtime.Auth), string(runtime.Adapter), runtime.CredentialRef}, " ")),
+		})
+	}
+	pendingDeleteNames := make([]string, 0, len(ctx.PendingLLMRuntimeDeletes))
+	for name := range ctx.PendingLLMRuntimeDeletes {
+		pendingDeleteNames = append(pendingDeleteNames, name)
+	}
+	sort.Strings(pendingDeleteNames)
+	for _, name := range pendingDeleteNames {
+		rows = append(rows, initInventoryRow{
+			ID:         name,
+			Title:      llmRuntimeDeletePendingLabel(name),
+			Kind:       initInventoryRowKindPending,
+			Restorable: true,
+		})
+	}
+	rows = append(rows,
+		initInventoryRow{
+			ID:            string(initLLMRuntimePresetClaudeCLISubscription),
+			Title:         "Template: Claude CLI subscription",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            string(initLLMRuntimePresetCodexCLISubscription),
+			Title:         "Template: Codex CLI subscription",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            string(initLLMRuntimePresetPiLocal),
+			Title:         "Template: Pi local runtime",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            string(initLLMRuntimePresetAnthropicAPIKey),
+			Title:         "Template: Anthropic API key",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            string(initLLMRuntimePresetOpenAIAPIKey),
+			Title:         "Template: OpenAI API key",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            initCustomLLMRuntimeSelection,
+			Title:         "Custom compatible runtime",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            initBackSelection,
+			Title:         "Back to main menu",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionBack,
+			Selectable:    true,
+		},
+	)
+	return rows
 }
 
 func (p huhInitLLMRuntimePrompter) runtimeAvailabilityNote(preset initLLMRuntimePreset) string {
@@ -2663,11 +2680,7 @@ func initLLMRuntimeDraftFromSeedDraft(draft initDraft) initLLMRuntimeDraft {
 }
 
 func initLLMRuntimeOptions(runtimes map[string]initLLMRuntimeDraft) []huh.Option[string] {
-	names := make([]string, 0, len(runtimes))
-	for name := range runtimes {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := configuredInitLLMRuntimeNames(runtimes)
 	options := make([]huh.Option[string], 0, len(names)+6)
 	for _, name := range names {
 		runtime := runtimes[name]
@@ -2682,6 +2695,15 @@ func initLLMRuntimeOptions(runtimes map[string]initLLMRuntimeDraft) []huh.Option
 		huh.NewOption("Custom compatible runtime", initCustomLLMRuntimeSelection),
 	)
 	return dedupeInitStringOptions(options)
+}
+
+func configuredInitLLMRuntimeNames(runtimes map[string]initLLMRuntimeDraft) []string {
+	names := make([]string, 0, len(runtimes))
+	for name := range runtimes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func initLLMRuntimeLabel(runtime initLLMRuntimeDraft) string {
