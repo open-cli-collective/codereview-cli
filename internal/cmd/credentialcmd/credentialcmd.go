@@ -2514,11 +2514,11 @@ func reviewerEntityTemplateFallbackLabel() string {
 }
 
 func reviewerEntityTemplatePATLabel() string {
-	return "Use a personal access token (PAT) reviewer"
+	return "Configure new personal access token (PAT) reviewer"
 }
 
 func reviewerEntityTemplateGitHubAppLabel() string {
-	return "Use a GitHub App reviewer"
+	return "Configure new GitHub App reviewer"
 }
 
 func profileEditorReviewerEntityFallbackLabel(git initGitScopeDraft, existingProfile *config.Profile) string {

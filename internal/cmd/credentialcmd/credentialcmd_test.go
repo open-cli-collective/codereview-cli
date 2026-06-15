@@ -4821,7 +4821,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 		}, "\n")),
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Use a personal access token (PAT) reviewer\n")
+			_, _ = io.WriteString(out, "Configure new personal access token (PAT) reviewer\n")
 			return initInventoryResult{
 				Action: initInventoryActionCommand,
 				Row: initInventoryRow{
@@ -4872,7 +4872,7 @@ func TestHuhInitReviewerEntityPrompterNewTemplateDoesNotInheritCustomSecretLocat
 		}, "\n")),
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Use a GitHub App reviewer\n")
+			_, _ = io.WriteString(out, "Configure new GitHub App reviewer\n")
 			return initInventoryResult{
 				Action: initInventoryActionCommand,
 				Row: initInventoryRow{
