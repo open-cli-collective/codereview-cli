@@ -81,8 +81,8 @@ The intended top-level shape is:
 2. Configure reviewer entities
 3. Configure review profiles
 4. Review global settings
-5. Commit all changes and exit
-6. Discard all changes and exit
+5. Commit staged changes and exit
+6. Discard staged changes and exit
 
 This ordering is intentional:
 
@@ -129,7 +129,7 @@ When editing an existing profile, interactive `init` should:
 
 Interactive `init` is draft-driven.
 
-Until the user chooses **Commit all changes and exit**:
+Until the user chooses **Commit staged changes and exit**:
 
 - no config file writes occur
 - no keyring writes occur
@@ -139,18 +139,18 @@ Until the user chooses **Commit all changes and exit**:
 
 Interactive `init` must offer both:
 
-- **Commit all changes and exit**: validate the draft, collect or defer
+- **Commit staged changes and exit**: validate the draft, collect or defer
   required secrets, then write config and keyring state in the defined
   final commit order
-- **Discard all changes and exit**: discard the draft and leave both config and
+- **Discard staged changes and exit**: discard the draft and leave both config and
   keyring untouched
 
 Credential collection belongs near final commit, after the user has assembled the
 profile shape well enough to understand why each secret is needed.
 
-If the user cancels during credential collection after choosing **Commit all
+If the user cancels during credential collection after choosing **Commit staged
 changes and exit**, any pending secret values remain draft-only and the session
-returns to a no-write state. Until final apply begins, cancellation must still
+returns to a no-write state. Until final commit begins, cancellation must still
 leave both config and keyring untouched.
 
 ## Draft-Local Reuse Rules
@@ -287,7 +287,7 @@ Use this document for:
 - interaction model
 - user-facing terminology
 - sequencing
-- save/exit semantics
+- staging/commit semantics
 - draft-local reuse rules
 
 Use `docs/init-config-surface.md` for:
