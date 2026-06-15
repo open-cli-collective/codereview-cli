@@ -2215,32 +2215,6 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Options(profileRouteActionOptions(len(currentRoutes) > 0)...).
 					Value(&selectedRepositoryRoutesAction),
 			)
-			storageLabelFields := []huh.Field{
-				huh.NewInput().
-					Title("Git storage label").
-					Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default.").
-					Value(&gitStorageLabel).
-					Validate(validateOptionalCredentialRef),
-			}
-			if initReviewerStorageLabelRelevant(selectedReviewerEntity, ctx.ReviewerEntities) {
-				storageLabelFields = append(storageLabelFields,
-					huh.NewInput().
-						Title("Reviewer storage label").
-						Description("Edit only if this profile should use a different reviewer secret location than the selected reviewer entity's default.").
-						Value(&reviewerStorageLabel).
-						Validate(validateOptionalCredentialRef),
-				)
-			}
-			if initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes) {
-				storageLabelFields = append(storageLabelFields,
-					huh.NewInput().
-						Title("LLM storage label").
-						Description("Edit only if this profile should use a different LLM secret location than the selected runtime's default API-key label.").
-						Value(&llmStorageLabel).
-						Validate(validateOptionalCredentialRef),
-				)
-			}
-
 			form := huh.NewForm(
 				huh.NewGroup(
 					huh.NewInput().
@@ -2274,7 +2248,31 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					return selectedGitScope != initCustomGitScopeSelection
 				}).Title("Git Scope"),
 				huh.NewGroup(reviewerProfileFields...).Title("Review Profile"),
-				huh.NewGroup(storageLabelFields...).Title("Storage Labels"),
+				huh.NewGroup(
+					huh.NewInput().
+						Title("Git storage label").
+						Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default.").
+						Value(&gitStorageLabel).
+						Validate(validateOptionalCredentialRef),
+				).Title("Storage Labels"),
+				huh.NewGroup(
+					huh.NewInput().
+						Title("Reviewer storage label").
+						Description("Edit only if this profile should use a different reviewer secret location than the selected reviewer entity's default.").
+						Value(&reviewerStorageLabel).
+						Validate(validateOptionalCredentialRef),
+				).WithHideFunc(func() bool {
+					return !initReviewerStorageLabelRelevant(selectedReviewerEntity, ctx.ReviewerEntities)
+				}),
+				huh.NewGroup(
+					huh.NewInput().
+						Title("LLM storage label").
+						Description("Edit only if this profile should use a different LLM secret location than the selected runtime's default API-key label.").
+						Value(&llmStorageLabel).
+						Validate(validateOptionalCredentialRef),
+				).WithHideFunc(func() bool {
+					return !initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes)
+				}),
 			)
 			back, err := runBackableInitForm(form, p.stdin, p.stderr)
 			if err != nil {
