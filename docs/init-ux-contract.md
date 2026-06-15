@@ -182,8 +182,9 @@ Interactive `init` should offer a user-facing reviewer entity fallback option na
 When the UI has additional profile context, it may render equivalent
 contextual variants of the same fallback choice, such as:
 
-- **None (uses this profile's Git account; no separate reviewer entity)**
-- **None (uses the `<profile>` profile's Git account)**
+- **Post as rianjs (GitHub PAT)**
+- **Post as acme-review-bot (GitHub App)**
+- **Post using this profile's Git account (GitHub PAT)**
 
 This means:
 
@@ -216,6 +217,13 @@ profile context, for example:
 
 The profile-Git-account fallback is not a separately named reviewer entity and
 should not ask for a custom reviewer-entity display name.
+
+When the profile Git identity is known, fallback labels should prefer that
+discovered identity plus the auth mode, for example `Post as rianjs (GitHub
+PAT)`. When the identity is not yet known, the fallback should still make the
+posting path explicit with `Post using this profile's Git account (<auth
+mode>)`. This wording is derived from profile Git context such as
+`git.identity_cache`; it does not create a separate reviewer entity label.
 
 When multiple profiles already share the same separate reviewer identity, a
 display-name edit in interactive `init` applies to that shared identity across
