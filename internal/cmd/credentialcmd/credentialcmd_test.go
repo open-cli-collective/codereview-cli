@@ -2241,30 +2241,24 @@ func TestInitReviewerEntityOptionsExposeLiteralCreateLabels(t *testing.T) {
 }
 
 func TestDefaultProfileSelectionOptionsExistingDefault(t *testing.T) {
-	var got []string
-	for _, option := range defaultProfileSelectionOptions("work") {
-		got = append(got, option.Key)
-	}
-	want := []string{
-		"Yes, make this the default profile",
-		"No, keep the current default profile",
+	got := defaultProfileSelectionOptions("work")
+	want := []huh.Option[bool]{
+		huh.NewOption("Yes, make this the default profile", true),
+		huh.NewOption("No, keep the current default profile", false),
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("option labels = %#v, want %#v", got, want)
+		t.Fatalf("options = %#v, want %#v", got, want)
 	}
 }
 
 func TestDefaultProfileSelectionOptionsNoCurrentDefault(t *testing.T) {
-	var got []string
-	for _, option := range defaultProfileSelectionOptions("") {
-		got = append(got, option.Key)
-	}
-	want := []string{
-		"Yes, make this the default profile",
-		"No, use the standard first-profile default behavior",
+	got := defaultProfileSelectionOptions("")
+	want := []huh.Option[bool]{
+		huh.NewOption("Yes, make this the default profile", true),
+		huh.NewOption("No, use the standard first-profile default behavior", false),
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("option labels = %#v, want %#v", got, want)
+		t.Fatalf("options = %#v, want %#v", got, want)
 	}
 }
 
@@ -3861,6 +3855,9 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 	if draft.ProfileName != credstore.DefaultProfile {
 		t.Fatalf("draft.ProfileName = %q, want fresh default profile seed", draft.ProfileName)
+	}
+	if draft.MakeDefault {
+		t.Fatalf("draft.MakeDefault = true, want create-new seed to preserve false selection when an existing default profile is present")
 	}
 	if draft.GitHost != "github.com" || draft.GitAuth != string(config.GitAuthModePAT) {
 		t.Fatalf("git draft = %#v, want fresh defaults for create-new seed", draft)
