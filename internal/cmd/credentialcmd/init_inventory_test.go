@@ -308,6 +308,41 @@ func TestInitReviewerEntityInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	}
 }
 
+func TestInitLLMRuntimeInventoryRowsSetExpectedCapabilities(t *testing.T) {
+	rows := initLLMRuntimeInventoryRows(initPromptContext{
+		LLMRuntimes: map[string]initLLMRuntimeDraft{
+			"claude-cli": {
+				Name:     "claude-cli",
+				Preset:   initLLMRuntimePresetClaudeCLISubscription,
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+		},
+		PendingLLMRuntimeDeletes: map[string]initPendingLLMRuntimeDelete{
+			"codex-cli": {RuntimeName: "codex-cli"},
+		},
+	})
+
+	if len(rows) != 9 {
+		t.Fatalf("len(rows) = %d, want 9", len(rows))
+	}
+	if got := rows[0]; got.Kind != initInventoryRowKindActive || !got.Selectable || !got.Deletable || got.Restorable || got.PrimaryAction != initInventoryActionNone {
+		t.Fatalf("active row = %#v, want selectable+deletable active llm runtime", got)
+	}
+	if got := rows[1]; got.Kind != initInventoryRowKindPending || got.Selectable || got.Deletable || !got.Restorable || got.PrimaryAction != initInventoryActionNone {
+		t.Fatalf("pending row = %#v, want restorable pending llm runtime", got)
+	}
+	for i := 2; i <= 7; i++ {
+		if got := rows[i]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
+			t.Fatalf("command row %d = %#v, want selectable command runtime row", i, got)
+		}
+	}
+	if got := rows[8]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionBack {
+		t.Fatalf("back row = %#v, want selectable Back command", got)
+	}
+}
+
 func TestInitInventoryViewShowsHelpBindings(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:       "Reviewer entity",
