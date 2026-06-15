@@ -2349,12 +2349,168 @@ func TestEditInteractiveInitReviewerEntityStepSelectingFallbackDoesNotPropagateS
 }
 
 func TestInitReviewerEntityOptionsUseProfileAwareFallbackLabelWhenProfileKnown(t *testing.T) {
-	options := initReviewerEntityOptions(map[string]initReviewerEntityDraft{}, focusedReviewerEntityFallbackLabel("home"))
+	profile := basicProfile("home")
+	options := initReviewerEntityOptions(map[string]initReviewerEntityDraft{}, focusedReviewerEntityFallbackLabel(&profile))
 	if len(options) == 0 {
 		t.Fatal("options = empty, want fallback option")
 	}
-	if got := options[0].Key; got != "None (uses the home profile's Git account)" {
+	if got := options[0].Key; got != "Post using this profile's Git account (GitHub PAT)" {
 		t.Fatalf("fallback label = %q, want focused profile-specific fallback label", got)
+	}
+}
+
+func TestReviewerEntityGitAccountFallbackLabelUsesKnownIdentityPAT(t *testing.T) {
+	if got, want := reviewerEntityGitAccountFallbackLabel(config.GitAuthModePAT, "rianjs"), "Post as rianjs (GitHub PAT)"; got != want {
+		t.Fatalf("fallback label = %q, want %q", got, want)
+	}
+}
+
+func TestReviewerEntityGitAccountFallbackLabelUsesKnownIdentityGitHubApp(t *testing.T) {
+	if got, want := reviewerEntityGitAccountFallbackLabel(config.GitAuthModeGitHubApp, "review-bot"), "Post as review-bot (GitHub App)"; got != want {
+		t.Fatalf("fallback label = %q, want %q", got, want)
+	}
+}
+
+func TestReviewerEntityGitAccountFallbackLabelUsesUnknownIdentityPAT(t *testing.T) {
+	if got, want := reviewerEntityGitAccountFallbackLabel(config.GitAuthModePAT, ""), "Post using this profile's Git account (GitHub PAT)"; got != want {
+		t.Fatalf("fallback label = %q, want %q", got, want)
+	}
+}
+
+func TestReviewerEntityGitAccountFallbackLabelUsesUnknownIdentityGitHubApp(t *testing.T) {
+	if got, want := reviewerEntityGitAccountFallbackLabel(config.GitAuthModeGitHubApp, ""), "Post using this profile's Git account (GitHub App)"; got != want {
+		t.Fatalf("fallback label = %q, want %q", got, want)
+	}
+}
+
+func TestInitReviewerEntityInventoryRowsUseExplicitGitAccountFallbackLabels(t *testing.T) {
+	cases := []struct {
+		name     string
+		git      config.GitConfig
+		wantText string
+	}{
+		{
+			name: "known PAT identity",
+			git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/home",
+				IdentityCache: "rianjs",
+			},
+			wantText: "Post as rianjs (GitHub PAT)",
+		},
+		{
+			name: "known GitHub App identity",
+			git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				CredentialRef: "codereview/home-app",
+				IdentityCache: "review-bot",
+			},
+			wantText: "Post as review-bot (GitHub App)",
+		},
+		{
+			name: "unknown PAT identity",
+			git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/home",
+			},
+			wantText: "Post using this profile's Git account (GitHub PAT)",
+		},
+		{
+			name: "unknown GitHub App identity",
+			git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				CredentialRef: "codereview/home-app",
+			},
+			wantText: "Post using this profile's Git account (GitHub App)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := basicProfile("home")
+			profile.Git = tc.git
+			rows := initReviewerEntityInventoryRows(initPromptContext{
+				ExistingProfile: &profile,
+			})
+			if len(rows) == 0 {
+				t.Fatal("rows = empty, want fallback command row")
+			}
+			if got := rows[0].Title; got != tc.wantText {
+				t.Fatalf("fallback row = %q, want %q", got, tc.wantText)
+			}
+		})
+	}
+}
+
+func TestProfileEditorReviewerEntityFallbackLabelUsesExplicitGitAccountFallbackLabels(t *testing.T) {
+	cases := []struct {
+		name     string
+		git      initGitScopeDraft
+		existing *config.Profile
+		wantText string
+	}{
+		{
+			name: "known PAT identity",
+			git: initGitScopeDraft{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/home",
+			},
+			existing: &config.Profile{
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/home",
+					IdentityCache: "rianjs",
+				},
+			},
+			wantText: "Post as rianjs (GitHub PAT)",
+		},
+		{
+			name: "unknown GitHub App identity",
+			git: initGitScopeDraft{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				CredentialRef: "codereview/home-app",
+			},
+			existing: &config.Profile{
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModeGitHubApp,
+					CredentialRef: "codereview/home-app",
+				},
+			},
+			wantText: "Post using this profile's Git account (GitHub App)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			options := initReviewerEntityOptions(map[string]initReviewerEntityDraft{}, profileEditorReviewerEntityFallbackLabel(tc.git, tc.existing))
+			if len(options) == 0 {
+				t.Fatal("options = empty, want fallback option")
+			}
+			if got := options[0].Key; got != tc.wantText {
+				t.Fatalf("fallback option = %q, want %q", got, tc.wantText)
+			}
+		})
+	}
+}
+
+func TestProfileEditorReviewerEntityFallbackLabelIgnoresStaleIdentityCacheWhenGitScopeChanges(t *testing.T) {
+	existing := basicProfile("work")
+	existing.Git.IdentityCache = "rianjs"
+	label := profileEditorReviewerEntityFallbackLabel(initGitScopeDraft{
+		Host:          "github.mycompany.com",
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-app",
+	}, &existing)
+	if got, want := label, "Post using this profile's Git account (GitHub App)"; got != want {
+		t.Fatalf("fallback label = %q, want %q", got, want)
 	}
 }
 
@@ -3315,6 +3471,7 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	home := basicProfile("home")
+	home.Git.IdentityCache = "rianjs"
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
@@ -3376,7 +3533,7 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 	if draft.ReviewerEnabled {
 		t.Fatalf("draft reviewer = %#v, want fallback profile to remain on git identity", draft)
 	}
-	if !strings.Contains(stderr.String(), "None (uses this profile's Git account; no separate reviewer entity)") {
+	if !strings.Contains(stderr.String(), "Post as rianjs (GitHub PAT)") {
 		t.Fatalf("stderr = %q, want profile-editor fallback label", stderr.String())
 	}
 }
@@ -3461,8 +3618,8 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 		t.Fatalf("llm draft = %#v, want fresh llm defaults for create-new seed", draft)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Use a profile's Git account (no separate reviewer entity)") {
-		t.Fatalf("stderr = %q, want generic fallback label for create-new profile flow", out)
+	if !strings.Contains(out, "Post using this profile's Git account (GitHub PAT)") {
+		t.Fatalf("stderr = %q, want explicit fallback label for create-new profile flow", out)
 	}
 	if !strings.Contains(out, "Reviewer entity") {
 		t.Fatalf("stderr = %q, want reviewer entity prompt in create-new profile flow", out)
@@ -3699,6 +3856,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t
 func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInventory(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	home := basicProfile("home")
+	home.Git.IdentityCache = "rianjs"
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
@@ -3720,12 +3878,12 @@ func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInve
 		}, "\n")),
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "None (uses the home profile's Git account)\n")
+			_, _ = io.WriteString(out, "Post as rianjs (GitHub PAT)\n")
 			return initInventoryResult{
 				Action: initInventoryActionCommand,
 				Row: initInventoryRow{
 					ID:            string(initReviewerEntityKindUseGitIdentity),
-					Title:         "None (uses the home profile's Git account)",
+					Title:         "Post as rianjs (GitHub PAT)",
 					PrimaryAction: initInventoryActionCommand,
 				},
 			}, nil
@@ -3749,7 +3907,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInve
 	if draft.ReviewerEnabled {
 		t.Fatalf("draft reviewer = %#v, want focused reviewer flow to preserve git-identity fallback", draft)
 	}
-	if !strings.Contains(stderr.String(), "None (uses the home profile's Git account)") {
+	if !strings.Contains(stderr.String(), "Post as rianjs (GitHub PAT)") {
 		t.Fatalf("stderr = %q, want focused fallback label", stderr.String())
 	}
 }

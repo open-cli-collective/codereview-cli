@@ -2038,7 +2038,7 @@ func initReviewerEntityInventoryRows(ctx initPromptContext) []initInventoryRow {
 	rows = append(rows,
 		initInventoryRow{
 			ID:            string(initReviewerEntityKindUseGitIdentity),
-			Title:         focusedReviewerEntityFallbackLabel(ctx.ExistingProfileName),
+			Title:         focusedReviewerEntityFallbackLabel(ctx.ExistingProfile),
 			Kind:          initInventoryRowKindCommand,
 			PrimaryAction: initInventoryActionCommand,
 			Selectable:    true,
@@ -2159,7 +2159,17 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		currentRoutes := currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName)
 		selectedRepositoryRoutesAction := string(initRoutesActionPreserve)
 		gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
-		reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedProfileName))
+		selectedGit := initGitScopeDraft{
+			Host:          draft.GitHost,
+			AuthMode:      config.GitAuthMode(draft.GitAuth),
+			CredentialRef: strings.TrimSpace(draft.GitCredentialRef),
+		}
+		if scopeName := ctx.ProfileGitScopes[selectedProfileName]; scopeName != "" {
+			if scope, ok := ctx.GitScopes[scopeName]; ok {
+				selectedGit = scope
+			}
+		}
+		reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
 		llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
 
 		reviewerProfileFields := []huh.Field{
@@ -2511,26 +2521,25 @@ func reviewerEntityTemplateGitHubAppLabel() string {
 	return "Use a GitHub App reviewer"
 }
 
-func profileEditorReviewerEntityFallbackLabel(profileName string) string {
-	if strings.TrimSpace(profileName) == "" {
+func profileEditorReviewerEntityFallbackLabel(git initGitScopeDraft, existingProfile *config.Profile) string {
+	if strings.TrimSpace(git.Host) == "" && git.AuthMode == "" {
 		return reviewerEntityTemplateFallbackLabel()
 	}
-	return "None (uses this profile's Git account; no separate reviewer entity)"
+	return reviewerEntityGitAccountFallbackLabel(git.AuthMode, matchingGitIdentityCache(git, existingProfile))
 }
 
-func focusedReviewerEntityFallbackLabel(profileName string) string {
-	profileName = strings.TrimSpace(profileName)
-	if profileName == "" {
+func focusedReviewerEntityFallbackLabel(existingProfile *config.Profile) string {
+	if existingProfile == nil {
 		return reviewerEntityTemplateFallbackLabel()
 	}
-	return fmt.Sprintf("None (uses the %s profile's Git account)", profileName)
+	return reviewerEntityGitAccountFallbackLabel(existingProfile.Git.AuthMode, existingProfile.Git.IdentityCache)
 }
 
 func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
 	displayName := normalizeOptionalDisplayName(entity.DisplayName)
 	switch entity.Kind {
 	case initReviewerEntityKindUseGitIdentity:
-		return "None (uses each profile's Git account)"
+		return "Post using each profile's Git account"
 	case initReviewerEntityKindGitHubApp:
 		return fmt.Sprintf("%s (GitHub App reviewer)", firstNonEmpty(displayName, reviewerEntityFallbackIdentityLabel(entity)))
 	case initReviewerEntityKindPAT:
@@ -2560,6 +2569,36 @@ func reviewerEntityFallbackIdentityLabel(entity initReviewerEntityDraft) string 
 		pathSegment = ref[slash+1:]
 	}
 	return pathSegment
+}
+
+func reviewerEntityGitAccountFallbackLabel(authMode config.GitAuthMode, identityCache string) string {
+	authLabel := reviewerEntityGitAccountAuthLabel(authMode)
+	identityCache = strings.TrimSpace(identityCache)
+	if identityCache != "" {
+		return fmt.Sprintf("Post as %s (%s)", identityCache, authLabel)
+	}
+	return fmt.Sprintf("Post using this profile's Git account (%s)", authLabel)
+}
+
+func reviewerEntityGitAccountAuthLabel(authMode config.GitAuthMode) string {
+	switch authMode {
+	case config.GitAuthModeGitHubApp:
+		return "GitHub App"
+	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
+		return "GitHub PAT"
+	default:
+		return "GitHub PAT"
+	}
+}
+
+func matchingGitIdentityCache(git initGitScopeDraft, existingProfile *config.Profile) string {
+	if existingProfile == nil {
+		return ""
+	}
+	if !git.matchesConfig(existingProfile.Git) {
+		return ""
+	}
+	return existingProfile.Git.IdentityCache
 }
 
 func firstNonEmpty(values ...string) string {
