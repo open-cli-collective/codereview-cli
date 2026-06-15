@@ -2169,7 +2169,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				selectedGit = scope
 			}
 		}
-		reviewerEntityOptions := initReviewerEntityProfileOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
+		reviewerEntityOptions := initReviewerEntitySelectionOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
 		llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
 
 		reviewerProfileFields := []huh.Field{
@@ -2465,7 +2465,7 @@ func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft, fall
 	return dedupeInitStringOptions(options)
 }
 
-func initReviewerEntityProfileOptions(entities map[string]initReviewerEntityDraft, fallbackLabel string) []huh.Option[string] {
+func initReviewerEntitySelectionOptions(entities map[string]initReviewerEntityDraft, fallbackLabel string) []huh.Option[string] {
 	names := configuredInitReviewerEntityNames(entities)
 	sort.Strings(names)
 	options := make([]huh.Option[string], 0, len(names)+1)

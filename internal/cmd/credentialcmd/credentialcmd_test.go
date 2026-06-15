@@ -2240,8 +2240,8 @@ func TestInitReviewerEntityOptionsExposeLiteralCreateLabels(t *testing.T) {
 	}
 }
 
-func TestInitReviewerEntityProfileOptionsOmitCreateActions(t *testing.T) {
-	options := initReviewerEntityProfileOptions(
+func TestInitReviewerEntitySelectionOptionsOmitCreateActions(t *testing.T) {
+	options := initReviewerEntitySelectionOptions(
 		map[string]initReviewerEntityDraft{
 			"reviewer-pat": {
 				Name:          "reviewer-pat",
@@ -2761,7 +2761,7 @@ func TestProfileEditorReviewerEntityFallbackLabelUsesExplicitGitAccountFallbackL
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			options := initReviewerEntityProfileOptions(map[string]initReviewerEntityDraft{}, profileEditorReviewerEntityFallbackLabel(tc.git, tc.existing))
+			options := initReviewerEntitySelectionOptions(map[string]initReviewerEntityDraft{}, profileEditorReviewerEntityFallbackLabel(tc.git, tc.existing))
 			if len(options) == 0 {
 				t.Fatal("options = empty, want fallback option")
 			}
