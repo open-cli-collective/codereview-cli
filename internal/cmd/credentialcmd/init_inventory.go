@@ -198,12 +198,12 @@ func initInventoryFilterRanks(term string, rows []initInventoryRow) []list.Rank 
 	ranks := make([]list.Rank, 0, len(rows))
 	for i, row := range rows {
 		switch row.Kind {
-		case initInventoryRowKindPending, initInventoryRowKindCommand:
-			ranks = append(ranks, list.Rank{Index: i})
-		default:
+		case initInventoryRowKindActive:
 			if normalized == "" || strings.Contains(strings.ToLower(initInventoryItem{row: row}.FilterValue()), normalized) {
 				ranks = append(ranks, list.Rank{Index: i})
 			}
+		case initInventoryRowKindPending, initInventoryRowKindCommand:
+			ranks = append(ranks, list.Rank{Index: i})
 		}
 	}
 	return ranks
