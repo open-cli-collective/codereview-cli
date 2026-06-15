@@ -1862,6 +1862,32 @@ func TestBuildInteractiveInitWorkspaceDoesNotMutateInputConfig(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveInitWorkspaceKeepsFirstProfileDefaultWhenDraftDoesNotOptIn(t *testing.T) {
+	opts := &root.Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	cfg := config.File{Profiles: map[string]config.Profile{}}
+	draft := initDraft{
+		ProfileName: "default",
+		MakeDefault: false,
+		GitHost:     "github.com",
+		GitAuth:     string(config.GitAuthModePAT),
+		LLMProvider: string(config.LLMProviderAnthropic),
+		LLMAuth:     string(config.LLMAuthSubscription),
+		LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+	}
+
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, opts, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	if got, want := workspace.cfg.DefaultProfile, "default"; got != want {
+		t.Fatalf("default profile = %q, want %q", got, want)
+	}
+}
+
 func TestInitGitScopeDraftRoundTripPreservesIdentityCacheFromPreviousProfile(t *testing.T) {
 	git := config.GitConfig{
 		Host:          "https://github.mycompany.com/",
@@ -2211,6 +2237,28 @@ func TestInitReviewerEntityOptionsExposeLiteralCreateLabels(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("option labels = %#v, want %#v", got, want)
+	}
+}
+
+func TestDefaultProfileSelectionOptionsExistingDefault(t *testing.T) {
+	got := defaultProfileSelectionOptions("work")
+	want := []huh.Option[bool]{
+		huh.NewOption("Yes, make this the default profile", true),
+		huh.NewOption("No, keep the current default profile", false),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("options = %#v, want %#v", got, want)
+	}
+}
+
+func TestDefaultProfileSelectionOptionsNoCurrentDefault(t *testing.T) {
+	got := defaultProfileSelectionOptions("")
+	want := []huh.Option[bool]{
+		huh.NewOption("Yes, make this the default profile", true),
+		huh.NewOption("No, use the standard first-profile default behavior", false),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("options = %#v, want %#v", got, want)
 	}
 }
 
@@ -3663,6 +3711,9 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if strings.Contains(strings.ToLower(out), "paste a secret") {
 		t.Fatalf("wizard output unexpectedly requested secret ingress: %q", out)
 	}
+	if !strings.Contains(out, "Yes, make this the default profile") || !strings.Contains(out, "No, keep the current default profile") {
+		t.Fatalf("wizard output missing default-profile select copy: %q", out)
+	}
 }
 
 func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(t *testing.T) {
@@ -3805,6 +3856,9 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	if draft.ProfileName != credstore.DefaultProfile {
 		t.Fatalf("draft.ProfileName = %q, want fresh default profile seed", draft.ProfileName)
 	}
+	if draft.MakeDefault {
+		t.Fatalf("draft.MakeDefault = true, want create-new seed to preserve false selection when an existing default profile is present")
+	}
 	if draft.GitHost != "github.com" || draft.GitAuth != string(config.GitAuthModePAT) {
 		t.Fatalf("git draft = %#v, want fresh defaults for create-new seed", draft)
 	}
@@ -3820,6 +3874,53 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 	if !strings.Contains(out, "Reviewer entity") {
 		t.Fatalf("stderr = %q, want reviewer entity prompt in create-new profile flow", out)
+	}
+}
+
+func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDefaultExists(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default: keep seeded yes selection
+			"", // Git scope host
+			"", // Git scope auth mode
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Storage label handling
+			"", // Repository routes
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "default",
+		DefaultProfileName:   "",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !draft.MakeDefault {
+		t.Fatalf("draft.MakeDefault = false, want no-default interactive flow to preserve seeded true selection")
+	}
+	if !strings.Contains(stderr.String(), "Yes, make this the default profile") {
+		t.Fatalf("stderr = %q, want default-profile select copy in no-default flow", stderr.String())
 	}
 }
 
