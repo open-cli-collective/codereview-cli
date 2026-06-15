@@ -6520,6 +6520,7 @@ func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
 
 func TestHuhInitModelMapPrompterAccessibleLeavesBuiltInsOutOfOverrides(t *testing.T) {
 	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
 	prompter := huhInitModelMapPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // keep built-in small model
@@ -6527,7 +6528,7 @@ func TestHuhInitModelMapPrompterAccessibleLeavesBuiltInsOutOfOverrides(t *testin
 			"", // keep built-in large model
 			"",
 		}, "\n")),
-		stderr: &bytes.Buffer{},
+		stderr: &stderr,
 	}
 
 	edit, err := prompter.EditModelMap(initModelMapPrompt{
@@ -6579,6 +6580,31 @@ func TestInitEffectiveModelMapInputValuePrefersConfiguredOverride(t *testing.T) 
 	got := initEffectiveModelMapInputValue(config.EffectiveModelMap(llm), config.ModelTierMedium)
 	if got != "claude-custom" {
 		t.Fatalf("initEffectiveModelMapInputValue = %q, want configured override", got)
+	}
+}
+
+func TestInitEffectiveModelMapLLMUsesPromptModelMapOverrides(t *testing.T) {
+	llm := config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterClaudeCLI,
+	}
+	effective := config.EffectiveModelMap(initEffectiveModelMapLLM(llm, config.ModelMap{"medium": "claude-custom"}))
+	got := initEffectiveModelMapInputValue(effective, config.ModelTierMedium)
+	if got != "claude-custom" {
+		t.Fatalf("effective input value = %q, want prompt override applied even when llm.ModelMap is nil", got)
+	}
+}
+
+func TestInitModelMapInputDescriptionReflectsMappingSource(t *testing.T) {
+	if got := initModelMapInputDescription(config.ModelTierMedium, "", "gpt-5.4"); !strings.Contains(got, "Built-in medium model for this runtime: gpt-5.4.") {
+		t.Fatalf("built-in description = %q", got)
+	}
+	if got := initModelMapInputDescription(config.ModelTierMedium, "claude-custom", "claude-sonnet-4-6"); !strings.Contains(got, "Configured override for the medium tier.") {
+		t.Fatalf("override description = %q", got)
+	}
+	if got := initModelMapInputDescription(config.ModelTierSmall, "", ""); !strings.Contains(got, "No built-in small model for this runtime.") {
+		t.Fatalf("unmapped description = %q", got)
 	}
 }
 

@@ -3161,7 +3161,7 @@ func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initMo
 	existing := copyModelMap(prompt.ModelMap)
 	values := map[config.ModelTier]*string{}
 	fields := make([]huh.Field, 0, len(config.ModelTiers()))
-	effective := config.EffectiveModelMap(prompt.LLM)
+	effective := config.EffectiveModelMap(initEffectiveModelMapLLM(prompt.LLM, existing))
 	builtIns := config.BuiltInModelMap(prompt.LLM.Provider, prompt.LLM.Adapter)
 	for _, tier := range config.ModelTiers() {
 		value := initEffectiveModelMapInputValue(effective, tier)
@@ -3493,6 +3493,18 @@ func initEffectiveModelMapInputValue(effective map[config.ModelTier]config.Model
 		return ""
 	}
 	return strings.TrimSpace(resolution.Model)
+}
+
+func initEffectiveModelMapLLM(llm config.LLMConfig, modelMap config.ModelMap) config.LLMConfig {
+	if len(llm.ModelMap) > 0 {
+		cloned := make(config.ModelMap, len(llm.ModelMap))
+		for tier, model := range llm.ModelMap {
+			cloned[tier] = model
+		}
+		llm.ModelMap = cloned
+	}
+	llm.ModelMap = copyModelMap(modelMap)
+	return llm
 }
 
 func initModelMapInputDescription(tier config.ModelTier, override string, builtIn string) string {
