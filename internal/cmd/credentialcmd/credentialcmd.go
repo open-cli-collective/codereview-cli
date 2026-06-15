@@ -1374,7 +1374,11 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		return initSessionDraft{}, false, err
 	}
 	session.cfg = cloneInitConfigFile(workspace.cfg)
-	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, initReviewerEntityDraftFromSeedDraft(draft))
+	nextEntity := initReviewerEntityDraft{}
+	if profile, ok := session.cfg.Profiles[workspace.profileName]; ok {
+		nextEntity = initReviewerEntityDraftFromConfig(profile)
+	}
+	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, nextEntity)
 	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
 	session.requestedProfileName = workspace.profileName
 	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, session.workspace.profile) {
@@ -1886,20 +1890,16 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 }
 
 func (p huhInitReviewerEntityPrompter) editExistingReviewerEntity(entity initReviewerEntityDraft, seed initDraft) (initDraft, bool, error) {
-	return p.editReviewerEntityFields(entity.Kind, seed, strings.TrimSpace(entity.CredentialRef), true)
+	return p.editReviewerEntityFields(entity, seed, true)
 }
 
 func (p huhInitReviewerEntityPrompter) editNewReviewerEntity(kind initReviewerEntityKind, seed initDraft) (initDraft, bool, error) {
-	return p.editReviewerEntityFields(kind, seed, "", false)
+	return p.editReviewerEntityFields(initReviewerEntityDraft{Kind: kind}, seed, false)
 }
 
-const (
-	initReviewerSecretLocationActionStandard = "reviewer_secret_location_standard"
-	initReviewerSecretLocationActionCustom   = "reviewer_secret_location_custom"
-)
-
-func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewerEntityKind, seed initDraft, standardReviewerRef string, preserveCurrentLocation bool) (initDraft, bool, error) {
+func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
 	editDraft := seed
+	kind := entity.Kind
 	applyReviewerEntitySelection(&editDraft, string(kind))
 	if kind == initReviewerEntityKindUseGitIdentity {
 		action := initDetailActionEdit
@@ -1924,17 +1924,22 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewe
 		return editDraft, false, nil
 	}
 
-	secretLocationMode := initReviewerSecretLocationActionStandard
-	customSecretLocation := ""
-	if preserveCurrentLocation && currentReviewerRefUsesCustomLocation(editDraft) {
-		secretLocationMode = initReviewerSecretLocationActionCustom
-		customSecretLocation = strings.TrimSpace(editDraft.ReviewerCredentialRef)
+	standardReviewerRef, err := standardReviewerCredentialRef(editDraft.ProfileName)
+	if err != nil {
+		return initDraft{}, false, err
 	}
-	secretLocationDescription := "Keep the standard reviewer secret location unless you need an advanced custom location."
-	standardLocationLabel := "Use the standard reviewer secret location (recommended)"
+	labelInput, explicitDisplayName, fallbackLabelSeed := reviewerEntityEditorLabelSeed(entity)
+	if !preserveCurrentLocation {
+		// New entities start from a blank editable label even when the kind has a fallback display shape.
+		labelInput = ""
+	}
+	reviewerSecretLocation := ""
 	if preserveCurrentLocation {
-		secretLocationDescription = "Keep this reviewer entity's current secret location unless you need an advanced custom location."
-		standardLocationLabel = "Keep this reviewer entity's current secret location (recommended)"
+		if currentRef := strings.TrimSpace(editDraft.ReviewerCredentialRef); currentRef != "" {
+			reviewerSecretLocation = currentRef
+		} else {
+			reviewerSecretLocation = standardReviewerRef
+		}
 	}
 	action := initDetailActionEdit
 	form := huh.NewForm(
@@ -1942,16 +1947,13 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewe
 			huh.NewInput().
 				Title("Entity label").
 				Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
-				Value(&editDraft.ReviewerDisplayName).
+				Value(&labelInput).
 				Validate(validateOptionalDisplayName),
-			huh.NewSelect[string]().
+			huh.NewInput().
 				Title("Reviewer secret location").
-				Description(secretLocationDescription).
-				Options(
-					huh.NewOption(standardLocationLabel, initReviewerSecretLocationActionStandard),
-					huh.NewOption("Use a custom reviewer secret location (advanced)", initReviewerSecretLocationActionCustom),
-				).
-				Value(&secretLocationMode),
+				Description("Leave blank to use the standard reviewer secret location for this profile. Replace the value only if you need a custom location.").
+				Value(&reviewerSecretLocation).
+				Validate(validateOptionalCredentialRef),
 			huh.NewSelect[string]().
 				Title("Reviewer detail action").
 				Options(
@@ -1968,45 +1970,33 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewe
 	if back || action == initDetailActionBack {
 		return initDraft{}, true, nil
 	}
-	if secretLocationMode == initReviewerSecretLocationActionCustom {
-		customAction := initDetailActionEdit
-		customForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Custom reviewer secret location").
-					Description("Advanced: enter a custom reviewer secret location. Leave blank when using the standard location.").
-					Value(&customSecretLocation).
-					Validate(func(value string) error {
-						if strings.TrimSpace(value) == "" {
-							return fmt.Errorf("custom reviewer secret location is required")
-						}
-						return validateOptionalCredentialRef(value)
-					}),
-				huh.NewSelect[string]().
-					Title("Custom secret location action").
-					Options(
-						huh.NewOption("Stage reviewer settings", initDetailActionEdit),
-						huh.NewOption("Back without staging", initDetailActionBack),
-					).
-					Value(&customAction),
-			).Title("Reviewer Entity Details"),
-		)
-		back, err = runBackableInitForm(customForm, p.stdin, p.stderr)
-		if err != nil {
-			return initDraft{}, false, err
-		}
-		if back || customAction == initDetailActionBack {
-			return initDraft{}, true, nil
-		}
-	}
-	editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(editDraft.ReviewerDisplayName)
-	editDraft.AdvancedStorageLabels = secretLocationMode == initReviewerSecretLocationActionCustom
-	if editDraft.AdvancedStorageLabels {
-		editDraft.ReviewerCredentialRef = strings.TrimSpace(customSecretLocation)
-	} else {
-		editDraft.ReviewerCredentialRef = standardReviewerRef
-	}
+	finalizeReviewerEntityEditorDraft(&editDraft, explicitDisplayName, fallbackLabelSeed, labelInput, reviewerSecretLocation, standardReviewerRef, preserveCurrentLocation)
 	return editDraft, false, nil
+}
+
+func finalizeReviewerEntityEditorDraft(editDraft *initDraft, explicitDisplayName string, fallbackLabelSeed string, labelInput string, reviewerSecretLocation string, standardReviewerRef string, preserveCurrentLocation bool) {
+	editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(labelInput)
+	userAcceptedFallbackLabelUnchanged := preserveCurrentLocation && explicitDisplayName == "" && editDraft.ReviewerDisplayName == fallbackLabelSeed
+	if userAcceptedFallbackLabelUnchanged {
+		// Keep inferred fallback labels as UI-only seeds; only persist labels the user explicitly set or changed.
+		editDraft.ReviewerDisplayName = ""
+	}
+	reviewerSecretLocation = strings.TrimSpace(reviewerSecretLocation)
+	editDraft.AdvancedStorageLabels = reviewerSecretLocation != "" && reviewerSecretLocation != standardReviewerRef
+	if editDraft.AdvancedStorageLabels {
+		editDraft.ReviewerCredentialRef = reviewerSecretLocation
+	} else {
+		editDraft.ReviewerCredentialRef = ""
+	}
+}
+
+func reviewerEntityEditorLabelSeed(entity initReviewerEntityDraft) (labelInput string, explicitDisplayName string, fallbackLabelSeed string) {
+	explicitDisplayName = normalizeOptionalDisplayName(entity.DisplayName)
+	if explicitDisplayName != "" {
+		return explicitDisplayName, explicitDisplayName, ""
+	}
+	fallbackLabelSeed = reviewerEntityFallbackIdentityLabel(entity)
+	return fallbackLabelSeed, "", fallbackLabelSeed
 }
 
 func (p huhInitReviewerEntityPrompter) runInventory(prompt initInventoryPrompt) (initInventoryResult, error) {
@@ -2078,19 +2068,8 @@ func initReviewerEntityInventoryRows(ctx initPromptContext) []initInventoryRow {
 	return rows
 }
 
-func currentReviewerRefUsesCustomLocation(draft initDraft) bool {
-	if !draft.ReviewerEnabled {
-		return false
-	}
-	reviewerRef := strings.TrimSpace(draft.ReviewerCredentialRef)
-	if reviewerRef == "" {
-		return false
-	}
-	defaultRef, err := credentials.FormatRef(draft.ProfileName + "-reviewer")
-	if err != nil {
-		return false
-	}
-	return reviewerRef != defaultRef
+func standardReviewerCredentialRef(profileName string) (string, error) {
+	return credentials.FormatRef(profileName + "-reviewer")
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -4665,6 +4644,8 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	if draft.ReviewerEnabled {
 		reviewerRef := strings.TrimSpace(draft.ReviewerCredentialRef)
 		if reviewerRef == "" {
+			// A blank draft ref means "use this profile's standard reviewer secret location";
+			// expand it here so renames and shared-entity propagation can re-derive consistently.
 			reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
 			if err != nil {
 				return config.Profile{}, exitcode.Usage(err)
