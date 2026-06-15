@@ -1645,28 +1645,30 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 			replacementDraft.ActionTarget = result.Row.ID
 			return replacementDraft, nil
 		case initInventoryActionEdit, initInventoryActionCommand:
+			nextDraft, back, err := p.editSelectedLLMRuntime(prompt.Context, result.Row.ID, draft)
+			if err != nil {
+				return initDraft{}, err
+			}
+			if back {
+				continue
+			}
+			return nextDraft, nil
 		case initInventoryActionNone:
 			continue
 		default:
 			return initDraft{}, fmt.Errorf("unsupported llm-runtime inventory action %q", result.Action)
 		}
-
-		choice := result.Row.ID
-		candidateDraft := draft
-		if choice != initCustomLLMRuntimeSelection {
-			applyLLMRuntimeInventorySelection(&candidateDraft, choice, prompt.Context.LLMRuntimes)
-			resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(candidateDraft).Preset)
-			applyLLMRuntimeSelection(&candidateDraft, resolvedRuntimePreset)
-		}
-		detailDraft, back, err := p.editLLMRuntimeDetails(candidateDraft)
-		if err != nil {
-			return initDraft{}, err
-		}
-		if back {
-			continue
-		}
-		return detailDraft, nil
 	}
+}
+
+func (p huhInitLLMRuntimePrompter) editSelectedLLMRuntime(ctx initPromptContext, selection string, seed initDraft) (initDraft, bool, error) {
+	candidateDraft := seed
+	if selection != initCustomLLMRuntimeSelection {
+		applyLLMRuntimeInventorySelection(&candidateDraft, selection, ctx.LLMRuntimes)
+		resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(candidateDraft).Preset)
+		applyLLMRuntimeSelection(&candidateDraft, resolvedRuntimePreset)
+	}
+	return p.editLLMRuntimeDetails(candidateDraft)
 }
 
 func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(seed initDraft) (initDraft, bool, error) {
