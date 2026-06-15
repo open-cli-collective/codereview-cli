@@ -3776,7 +3776,7 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -3916,7 +3916,7 @@ func TestHuhInitPrompterAccessibleConfiguredLLMRuntimeHidesInlineRuntimeEditing(
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Storage label handling
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -3976,33 +3976,36 @@ func TestHuhInitPrompterAccessibleProfileEditorBootstrapsNewLLMRuntimeWhenNoneCo
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // Profile name
 			"", // Make default
+			"", // Git scope
 			"", // Git scope host
 			"", // Git scope auth mode
 			"", // Reviewer entity
 			"", // LLM runtime bootstrap action
 			"", // Reviewer model tier
-			"", // Storage label handling
 			"", // Repository routes
+			"", // Git storage label
 			"", // Profile name (rerender after runtime setup)
 			"", // Make default
+			"", // Git scope
 			"", // Git scope host
 			"", // Git scope auth mode
 			"", // Reviewer entity
 			"", // LLM runtime (new staged runtime selected)
 			"", // Reviewer model tier
-			"", // Storage label handling
 			"", // Repository routes
+			"", // Git storage label
 			"",
 		}, "\n")),
 		stderr: &stderr,
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
-			_, _ = io.WriteString(out, "work\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
 			return initInventoryResult{
-				Action: initInventoryActionEdit,
+				Action: initInventoryActionCommand,
 				Row: initInventoryRow{
-					ID:    "work",
-					Title: "work",
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
 				},
 			}, nil
 		},
@@ -4045,24 +4048,26 @@ func TestHuhInitPrompterAccessibleCreateNewProfileFallsBackToFirstConfiguredRunt
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // Profile name
 			"", // Make default
+			"", // Git scope
 			"", // Git scope host
 			"", // Git scope auth mode
 			"", // Reviewer entity
 			"", // LLM runtime: default to first configured runtime
 			"", // Reviewer model tier
-			"", // Storage label handling
 			"", // Repository routes
+			"", // Git storage label
 			"",
 		}, "\n")),
 		stderr: &stderr,
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
-			_, _ = io.WriteString(out, "work\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
 			return initInventoryResult{
-				Action: initInventoryActionEdit,
+				Action: initInventoryActionCommand,
 				Row: initInventoryRow{
-					ID:    "work",
-					Title: "work",
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
 				},
 			}, nil
 		},
@@ -4121,7 +4126,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -4211,7 +4216,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDef
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Storage label handling
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -4591,7 +4596,7 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -4641,7 +4646,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -6112,7 +6117,7 @@ func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -6162,7 +6167,7 @@ func TestHuhInitPrompterAccessibleHidesReviewerEntityLabelForProfileGitAccount(t
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
