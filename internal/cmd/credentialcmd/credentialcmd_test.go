@@ -2123,7 +2123,7 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *tes
 	draft := seedInteractiveInitDraft("home", "home", "home", &home)
 	draft.ReviewerEnabled = true
 	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
-	draft.ReviewerCredentialRef = "codereview/open-cli-collective-rianjs-bot"
+	draft.ReviewerCredentialRef = "codereview/open-cli-collective-rianjs-bot-renamed"
 	draft.ReviewerDisplayName = "OC Collective bot"
 
 	next, stayInCategory, err := editInteractiveInitReviewerEntityStep(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{
@@ -2146,6 +2146,12 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *tes
 		profile := next.cfg.Profiles[profileName]
 		if profile.ReviewerCredentials == nil {
 			t.Fatalf("%s reviewer credentials cleared unexpectedly", profileName)
+		}
+		if got, want := profile.ReviewerCredentials.AuthMode, config.GitAuthModeGitHubApp; got != want {
+			t.Fatalf("%s auth mode = %q, want %q", profileName, got, want)
+		}
+		if got, want := profile.ReviewerCredentials.CredentialRef, "codereview/open-cli-collective-rianjs-bot-renamed"; got != want {
+			t.Fatalf("%s credential ref = %q, want %q", profileName, got, want)
 		}
 		if got, want := profile.ReviewerCredentials.DisplayName, "OC Collective bot"; got != want {
 			t.Fatalf("%s display name = %q, want %q", profileName, got, want)
@@ -4243,6 +4249,48 @@ func TestHuhInitReviewerEntityPrompterNewTemplateDoesNotInheritCustomSecretLocat
 	}
 	if strings.Contains(stderr.String(), "Custom reviewer secret location") {
 		t.Fatalf("stderr = %q, want custom secret location hidden on standard path", stderr.String())
+	}
+}
+
+func TestHuhInitReviewerEntityPrompterExistingReviewerCustomSecretLocationPersists(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/custom-work-reviewer",
+		DisplayName:   "Old reviewer",
+	}
+	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"",                               // Entity label
+			"",                               // Keep the current custom reviewer secret location selected
+			"",                               // Stage reviewer settings
+			"codereview/custom-reviewer-ref", // Custom reviewer secret location
+			"",                               // Stage reviewer settings
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	nextDraft, back, err := prompter.editExistingReviewerEntity(initReviewerEntityDraftFromConfig(existing), draft)
+	if err != nil {
+		t.Fatalf("editExistingReviewerEntity: %v", err)
+	}
+	if back {
+		t.Fatal("back = true, want staged custom reviewer secret location")
+	}
+	if !nextDraft.ReviewerEnabled || nextDraft.ReviewerAuth != string(config.GitAuthModePAT) {
+		t.Fatalf("draft = %#v, want PAT reviewer", nextDraft)
+	}
+	if !nextDraft.AdvancedStorageLabels {
+		t.Fatalf("draft.AdvancedStorageLabels = false, want true for custom reviewer secret location; stderr=%q", stderr.String())
+	}
+	if got, want := nextDraft.ReviewerCredentialRef, "codereview/custom-work-reviewer"; got != want {
+		t.Fatalf("draft.ReviewerCredentialRef = %q, want %q; stderr=%q", got, want, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Custom reviewer secret location") {
+		t.Fatalf("stderr = %q, want custom secret location prompt", stderr.String())
 	}
 }
 
