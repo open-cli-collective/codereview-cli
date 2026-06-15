@@ -2224,8 +2224,9 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Title("Profile name").
 					Value(&draft.ProfileName).
 					Validate(validateProfileName),
-				huh.NewConfirm().
+				huh.NewSelect[bool]().
 					Title("Make this the default profile").
+					Options(defaultProfileSelectionOptions(ctx.DefaultProfileName)...).
 					Value(&draft.MakeDefault),
 			).Title("Profile"),
 			huh.NewGroup(
@@ -2507,6 +2508,18 @@ func normalizeReviewerEntitySelectionValue(selection string, entities map[string
 
 func reviewerEntitySelectionDescription() string {
 	return "Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile. Profiles with no separate reviewer entity post using their profile Git account."
+}
+
+func defaultProfileSelectionOptions(defaultProfileName string) []huh.Option[bool] {
+	options := []huh.Option[bool]{
+		huh.NewOption("Yes, make this the default profile", true),
+	}
+	if strings.TrimSpace(defaultProfileName) == "" {
+		options = append(options, huh.NewOption("No, use the standard first-profile default behavior", false))
+		return options
+	}
+	options = append(options, huh.NewOption("No, keep the current default profile", false))
+	return options
 }
 
 func reviewerEntityTemplateFallbackLabel() string {

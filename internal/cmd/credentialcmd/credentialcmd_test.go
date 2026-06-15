@@ -1862,6 +1862,32 @@ func TestBuildInteractiveInitWorkspaceDoesNotMutateInputConfig(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveInitWorkspaceKeepsFirstProfileDefaultWhenDraftDoesNotOptIn(t *testing.T) {
+	opts := &root.Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	cfg := config.File{Profiles: map[string]config.Profile{}}
+	draft := initDraft{
+		ProfileName: "default",
+		MakeDefault: false,
+		GitHost:     "github.com",
+		GitAuth:     string(config.GitAuthModePAT),
+		LLMProvider: string(config.LLMProviderAnthropic),
+		LLMAuth:     string(config.LLMAuthSubscription),
+		LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+	}
+
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, opts, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	if got, want := workspace.cfg.DefaultProfile, "default"; got != want {
+		t.Fatalf("default profile = %q, want %q", got, want)
+	}
+}
+
 func TestInitGitScopeDraftRoundTripPreservesIdentityCacheFromPreviousProfile(t *testing.T) {
 	git := config.GitConfig{
 		Host:          "https://github.mycompany.com/",
@@ -2208,6 +2234,34 @@ func TestInitReviewerEntityOptionsExposeLiteralCreateLabels(t *testing.T) {
 		"Use a profile's Git account (no separate reviewer entity)",
 		"Configure new personal access token (PAT) reviewer",
 		"Configure new GitHub App reviewer",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("option labels = %#v, want %#v", got, want)
+	}
+}
+
+func TestDefaultProfileSelectionOptionsExistingDefault(t *testing.T) {
+	var got []string
+	for _, option := range defaultProfileSelectionOptions("work") {
+		got = append(got, option.Key)
+	}
+	want := []string{
+		"Yes, make this the default profile",
+		"No, keep the current default profile",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("option labels = %#v, want %#v", got, want)
+	}
+}
+
+func TestDefaultProfileSelectionOptionsNoCurrentDefault(t *testing.T) {
+	var got []string
+	for _, option := range defaultProfileSelectionOptions("") {
+		got = append(got, option.Key)
+	}
+	want := []string{
+		"Yes, make this the default profile",
+		"No, use the standard first-profile default behavior",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("option labels = %#v, want %#v", got, want)
@@ -3662,6 +3716,9 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(out), "paste a secret") {
 		t.Fatalf("wizard output unexpectedly requested secret ingress: %q", out)
+	}
+	if !strings.Contains(out, "Yes, make this the default profile") || !strings.Contains(out, "No, keep the current default profile") {
+		t.Fatalf("wizard output missing default-profile select copy: %q", out)
 	}
 }
 
