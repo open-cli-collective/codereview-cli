@@ -1410,8 +1410,6 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		if entity, ok := promptCtx.ReviewerEntities[draft.ActionTarget]; ok {
 			previousEntity = entity
 		}
-	} else {
-		previousEntity = initReviewerEntityDraftFromConfig(session.workspace.profile)
 	}
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
 	if err != nil {
@@ -1954,8 +1952,9 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewe
 
 	secretLocationMode := initReviewerSecretLocationActionStandard
 	customSecretLocation := ""
-	if !preserveCurrentLocation && currentReviewerRefUsesCustomLocation(editDraft) {
+	if preserveCurrentLocation && currentReviewerRefUsesCustomLocation(editDraft) {
 		secretLocationMode = initReviewerSecretLocationActionCustom
+		customSecretLocation = strings.TrimSpace(editDraft.ReviewerCredentialRef)
 	}
 	secretLocationDescription := "Keep the standard reviewer secret location unless you need an advanced custom location."
 	standardLocationLabel := "Use the standard reviewer secret location (recommended)"
@@ -1979,19 +1978,6 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewe
 					huh.NewOption("Use a custom reviewer secret location (advanced)", initReviewerSecretLocationActionCustom),
 				).
 				Value(&secretLocationMode),
-			huh.NewInput().
-				Title("Custom reviewer secret location").
-				Description("Advanced: enter a custom reviewer secret location. Leave blank when using the standard location.").
-				Value(&customSecretLocation).
-				Validate(func(value string) error {
-					if secretLocationMode != initReviewerSecretLocationActionCustom {
-						return nil
-					}
-					if strings.TrimSpace(value) == "" {
-						return fmt.Errorf("custom reviewer secret location is required")
-					}
-					return validateOptionalCredentialRef(value)
-				}),
 			huh.NewSelect[string]().
 				Title("Reviewer detail action").
 				Options(
@@ -2007,6 +1993,37 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewe
 	}
 	if back || action == initDetailActionBack {
 		return initDraft{}, true, nil
+	}
+	if secretLocationMode == initReviewerSecretLocationActionCustom {
+		customAction := initDetailActionEdit
+		customForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Custom reviewer secret location").
+					Description("Advanced: enter a custom reviewer secret location. Leave blank when using the standard location.").
+					Value(&customSecretLocation).
+					Validate(func(value string) error {
+						if strings.TrimSpace(value) == "" {
+							return fmt.Errorf("custom reviewer secret location is required")
+						}
+						return validateOptionalCredentialRef(value)
+					}),
+				huh.NewSelect[string]().
+					Title("Custom secret location action").
+					Options(
+						huh.NewOption("Stage reviewer settings", initDetailActionEdit),
+						huh.NewOption("Back without staging", initDetailActionBack),
+					).
+					Value(&customAction),
+			).Title("Reviewer Entity Details"),
+		)
+		back, err = runBackableInitForm(customForm, p.stdin, p.stderr)
+		if err != nil {
+			return initDraft{}, false, err
+		}
+		if back || customAction == initDetailActionBack {
+			return initDraft{}, true, nil
+		}
 	}
 	editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(editDraft.ReviewerDisplayName)
 	editDraft.AdvancedStorageLabels = secretLocationMode == initReviewerSecretLocationActionCustom
