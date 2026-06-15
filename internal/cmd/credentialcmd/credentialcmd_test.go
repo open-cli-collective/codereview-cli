@@ -3338,7 +3338,7 @@ func TestHuhInitPrompterAccessibleCanRestorePendingDeletedProfile(t *testing.T) 
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Restore work (will delete on save)
+			"2", // Restore work (staged for deletion)
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -3364,7 +3364,7 @@ func TestHuhInitPrompterAccessibleCanRestorePendingDeletedProfile(t *testing.T) 
 	if draft.Action != initDraftActionUndoDeleteProfile || draft.ActionTarget != "work" {
 		t.Fatalf("draft undo action = %#v, want restore work", draft)
 	}
-	if !strings.Contains(stderr.String(), "Restore work (will delete on save)") {
+	if !strings.Contains(stderr.String(), "Restore work (staged for deletion)") {
 		t.Fatalf("stderr = %q, want restore label", stderr.String())
 	}
 }
@@ -3415,7 +3415,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"4", // Restore reviewer entity reviewer-github-app (will delete on save)
+			"4", // Restore reviewer entity reviewer-github-app (staged for deletion)
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -3440,7 +3440,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t
 	if draft.Action != initDraftActionUndoDeleteReviewerEntity || draft.ActionTarget != "reviewer-github-app" {
 		t.Fatalf("draft undo reviewer action = %#v, want reviewer-github-app restore", draft)
 	}
-	if !strings.Contains(stderr.String(), "Restore reviewer entity reviewer-github-app (will delete on save)") {
+	if !strings.Contains(stderr.String(), "Restore reviewer entity reviewer-github-app (staged for deletion)") {
 		t.Fatalf("stderr = %q, want reviewer restore label", stderr.String())
 	}
 }
@@ -3993,7 +3993,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *t
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"7", // Restore LLM runtime claude-cli (will delete on save)
+			"7", // Restore LLM runtime claude-cli (staged for deletion)
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -4016,7 +4016,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *t
 	if draft.Action != initDraftActionUndoDeleteLLMRuntime || draft.ActionTarget != "claude-cli" {
 		t.Fatalf("draft undo runtime action = %#v, want claude-cli restore", draft)
 	}
-	if !strings.Contains(stderr.String(), "Restore LLM runtime claude-cli (will delete on save)") {
+	if !strings.Contains(stderr.String(), "Restore LLM runtime claude-cli (staged for deletion)") {
 		t.Fatalf("stderr = %q, want runtime restore label", stderr.String())
 	}
 }
@@ -4077,7 +4077,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 		t.Fatalf("draft = %#v, want PAT reviewer", draft)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Reviewer entity details") || !strings.Contains(out, "Reviewer detail action") || !strings.Contains(out, "Stage these reviewer settings") || !strings.Contains(out, "Back without changes") || !strings.Contains(out, "Reviewer entity type") || !strings.Contains(out, "Use a personal access token (PAT) reviewer") || !strings.Contains(out, "Back to reviewer choices") || !strings.Contains(out, "Reviewer secret location") || !strings.Contains(out, "Use the standard reviewer secret location") || !strings.Contains(out, "Use a custom reviewer secret location") {
+	if !strings.Contains(out, "Reviewer entity details") || !strings.Contains(out, "Reviewer detail action") || !strings.Contains(out, "Stage these reviewer settings") || !strings.Contains(out, "Back without staging") || !strings.Contains(out, "Reviewer entity type") || !strings.Contains(out, "Use a personal access token (PAT) reviewer") || !strings.Contains(out, "Back to reviewer choices") || !strings.Contains(out, "Reviewer secret location") || !strings.Contains(out, "Use the standard reviewer secret location") || !strings.Contains(out, "Use a custom reviewer secret location") {
 		t.Fatalf("stderr = %q, want reviewer details screen", out)
 	}
 	if strings.Contains(out, "Reviewer secret location action") || strings.Contains(out, "Use this reviewer secret location") {
@@ -5932,8 +5932,8 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 		"Configure reviewer entities (3)",
 		"Configure review profiles (1)",
 		"Review global settings",
-		"Commit all changes and exit",
-		"Discard all changes and exit",
+		"Commit staged changes and exit",
+		"Discard staged changes and exit",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr = %q, want menu item %q", out, want)
@@ -5946,8 +5946,8 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *t
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"5", // Commit all changes and exit (disabled)
-			"6", // Discard all changes and exit
+			"5", // Commit staged changes and exit (disabled)
+			"6", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -5970,7 +5970,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"1", // Configure LLM runtimes (disabled)
-			"6", // Discard all changes and exit
+			"6", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,

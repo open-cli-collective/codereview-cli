@@ -1496,8 +1496,8 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
 		huh.NewOption(fmt.Sprintf("Configure review profiles (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfiles),
 		huh.NewOption("Review global settings", initMenuActionGlobalSettings),
-		huh.NewOption("Commit all changes and exit", initMenuActionSave),
-		huh.NewOption("Discard all changes and exit", initMenuActionExit),
+		huh.NewOption("Commit staged changes and exit", initMenuActionSave),
+		huh.NewOption("Discard staged changes and exit", initMenuActionExit),
 	}
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -1568,9 +1568,9 @@ func (p huhInitFinalizePrompter) ChooseFinalizeAction(prompt initFinalizePrompt)
 			huh.NewSelect[initFinalizeAction]().
 				Title("Finalize init").
 				Options(
-					huh.NewOption("Commit staged config and credential changes", initFinalizeActionSave),
+					huh.NewOption("Commit staged changes and exit", initFinalizeActionSave),
 					huh.NewOption("Back to main menu", initFinalizeActionBack),
-					huh.NewOption("Discard all staged changes and exit", initFinalizeActionCancel),
+					huh.NewOption("Discard staged changes and exit", initFinalizeActionCancel),
 				).
 				Value(&action),
 		),
@@ -1966,7 +1966,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 					Title("Reviewer label action").
 					Options(
 						huh.NewOption("Use this reviewer label", initDetailActionEdit),
-						huh.NewOption("Back without changes", initDetailActionBack),
+						huh.NewOption("Back without staging", initDetailActionBack),
 					).
 					Value(&labelAction),
 			).Title("Reviewer Entity Details"),
@@ -2008,7 +2008,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 					Options(
 						huh.NewOption("Use the standard reviewer secret location", initReviewerSecretLocationActionStandard),
 						huh.NewOption("Use a custom reviewer secret location", initReviewerSecretLocationActionCustom),
-						huh.NewOption("Back without changes", initDetailActionBack),
+						huh.NewOption("Back without staging", initDetailActionBack),
 					).
 					Value(&secretLocationAction),
 			).Title("Reviewer Entity Details"),
@@ -2032,7 +2032,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 						Title("Reviewer secret location action").
 						Options(
 							huh.NewOption("Use this reviewer secret location", initDetailActionEdit),
-							huh.NewOption("Back without changes", initDetailActionBack),
+							huh.NewOption("Back without staging", initDetailActionBack),
 						).
 						Value(&customLocationAction),
 					huh.NewInput().
@@ -2058,7 +2058,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection strin
 				Title("Reviewer detail action").
 				Options(
 					huh.NewOption("Stage these reviewer settings", initDetailActionEdit),
-					huh.NewOption("Back without changes", initDetailActionBack),
+					huh.NewOption("Back without staging", initDetailActionBack),
 				).
 				Value(&editAction),
 		).Title("Reviewer Entity Details"),
@@ -2694,9 +2694,9 @@ func initLLMRuntimeSelectionDescription(runtime initLLMRuntimeDraft, availabilit
 	case initLLMRuntimePresetPiLocal:
 		lines = append(lines, "Uses the local Pi runtime without storing an additional cr-managed secret.")
 	case initLLMRuntimePresetAnthropicAPIKey:
-		lines = append(lines, "This runtime needs an Anthropic API key. init will gather it in this runtime flow and stage the write until Commit all changes and exit.")
+		lines = append(lines, "This runtime needs an Anthropic API key. init will gather it in this runtime flow and stage the write until Commit staged changes and exit.")
 	case initLLMRuntimePresetOpenAIAPIKey:
-		lines = append(lines, "This runtime needs an OpenAI API key. init will gather it in this runtime flow and stage the write until Commit all changes and exit.")
+		lines = append(lines, "This runtime needs an OpenAI API key. init will gather it in this runtime flow and stage the write until Commit staged changes and exit.")
 	case initLLMRuntimePresetCustom:
 		lines = append(lines, "Customize provider, auth mode, and adapter before staging this runtime for the active profile.")
 	}
@@ -2733,15 +2733,15 @@ func defaultInitLLMRuntimeAvailabilityNote(preset initLLMRuntimePreset) string {
 }
 
 func profileDeletePendingLabel(name string) string {
-	return fmt.Sprintf("Restore %s (will delete on save)", name)
+	return fmt.Sprintf("Restore %s (staged for deletion)", name)
 }
 
 func reviewerEntityDeletePendingLabel(name string) string {
-	return fmt.Sprintf("Restore reviewer entity %s (will delete on save)", name)
+	return fmt.Sprintf("Restore reviewer entity %s (staged for deletion)", name)
 }
 
 func llmRuntimeDeletePendingLabel(name string) string {
-	return fmt.Sprintf("Restore LLM runtime %s (will delete on save)", name)
+	return fmt.Sprintf("Restore LLM runtime %s (staged for deletion)", name)
 }
 
 func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runtimes map[string]initLLMRuntimeDraft) {
