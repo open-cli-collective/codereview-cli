@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
 )
 
 func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *testing.T) {
@@ -264,6 +265,46 @@ func TestInitInventoryDeterministicRunnerReturnsCommandAction(t *testing.T) {
 	}
 	if result.Action != initInventoryActionBack || result.Row.ID != "back" {
 		t.Fatalf("result = %#v, want deterministic back command", result)
+	}
+}
+
+func TestInitReviewerEntityInventoryRowsSetExpectedCapabilities(t *testing.T) {
+	rows := initReviewerEntityInventoryRows(initPromptContext{
+		ExistingProfileName: "work",
+		ReviewerEntities: map[string]initReviewerEntityDraft{
+			"reviewer-github-app": {
+				Name:          "reviewer-github-app",
+				Kind:          initReviewerEntityKindGitHubApp,
+				AuthMode:      config.GitAuthModeGitHubApp,
+				CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+				DisplayName:   "OC Collective bot",
+			},
+		},
+		PendingReviewerEntityDeletes: map[string]initPendingReviewerEntityDelete{
+			"reviewer-pat": {EntityName: "reviewer-pat"},
+		},
+	})
+
+	if len(rows) != 6 {
+		t.Fatalf("len(rows) = %d, want 6", len(rows))
+	}
+	if got := rows[0]; got.Kind != initInventoryRowKindActive || !got.Selectable || !got.Deletable || got.Restorable || got.PrimaryAction != initInventoryActionNone {
+		t.Fatalf("active row = %#v, want selectable+deletable active reviewer entity", got)
+	}
+	if got := rows[1]; got.Kind != initInventoryRowKindPending || got.Selectable || got.Deletable || !got.Restorable || got.PrimaryAction != initInventoryActionNone {
+		t.Fatalf("pending row = %#v, want restorable pending reviewer entity", got)
+	}
+	if got := rows[2]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
+		t.Fatalf("fallback row = %#v, want selectable command fallback", got)
+	}
+	if got := rows[3]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
+		t.Fatalf("pat row = %#v, want selectable command PAT template", got)
+	}
+	if got := rows[4]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
+		t.Fatalf("github app row = %#v, want selectable command GitHub App template", got)
+	}
+	if got := rows[5]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionBack {
+		t.Fatalf("back row = %#v, want selectable Back command", got)
 	}
 }
 
