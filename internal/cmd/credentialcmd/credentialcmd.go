@@ -1928,22 +1928,16 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(entity initRevie
 	if err != nil {
 		return initDraft{}, false, err
 	}
-	explicitDisplayName := normalizeOptionalDisplayName(entity.DisplayName)
-	fallbackLabelSeed := ""
-	labelInput := ""
+	labelInput, explicitDisplayName, fallbackLabelSeed := reviewerEntityEditorLabelSeed(entity)
 	reviewerSecretLocation := ""
 	if preserveCurrentLocation {
-		if explicitDisplayName != "" {
-			labelInput = explicitDisplayName
-		} else {
-			fallbackLabelSeed = reviewerEntityFallbackIdentityLabel(entity)
-			labelInput = fallbackLabelSeed
-		}
 		if currentRef := strings.TrimSpace(editDraft.ReviewerCredentialRef); currentRef != "" {
 			reviewerSecretLocation = currentRef
 		} else {
 			reviewerSecretLocation = standardReviewerRef
 		}
+	} else {
+		labelInput = ""
 	}
 	action := initDetailActionEdit
 	form := huh.NewForm(
@@ -1990,6 +1984,15 @@ func finalizeReviewerEntityEditorDraft(editDraft *initDraft, explicitDisplayName
 	} else {
 		editDraft.ReviewerCredentialRef = ""
 	}
+}
+
+func reviewerEntityEditorLabelSeed(entity initReviewerEntityDraft) (labelInput string, explicitDisplayName string, fallbackLabelSeed string) {
+	explicitDisplayName = normalizeOptionalDisplayName(entity.DisplayName)
+	if explicitDisplayName != "" {
+		return explicitDisplayName, explicitDisplayName, ""
+	}
+	fallbackLabelSeed = reviewerEntityFallbackIdentityLabel(entity)
+	return fallbackLabelSeed, "", fallbackLabelSeed
 }
 
 func (p huhInitReviewerEntityPrompter) runInventory(prompt initInventoryPrompt) (initInventoryResult, error) {

@@ -2225,6 +2225,7 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesConcreteSharedReviewerRe
 	work.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
 		CredentialRef: "codereview/home-reviewer",
+		DisplayName:   "Old work label",
 	}
 	cfg := config.File{
 		DefaultProfile: "home",
@@ -4592,6 +4593,39 @@ func TestFinalizeReviewerEntityEditorDraftPersistsCustomSecretLocation(t *testin
 	}
 	if got := draft.ReviewerDisplayName; got != "" {
 		t.Fatalf("draft.ReviewerDisplayName = %q, want empty", got)
+	}
+}
+
+func TestReviewerEntityEditorLabelSeedUsesExplicitDisplayNameWhenPresent(t *testing.T) {
+	labelInput, explicitDisplayName, fallbackLabelSeed := reviewerEntityEditorLabelSeed(initReviewerEntityDraft{
+		Kind:          initReviewerEntityKindGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+		DisplayName:   "OC Collective bot",
+	})
+	if got, want := labelInput, "OC Collective bot"; got != want {
+		t.Fatalf("labelInput = %q, want %q", got, want)
+	}
+	if got, want := explicitDisplayName, "OC Collective bot"; got != want {
+		t.Fatalf("explicitDisplayName = %q, want %q", got, want)
+	}
+	if got := fallbackLabelSeed; got != "" {
+		t.Fatalf("fallbackLabelSeed = %q, want empty", got)
+	}
+}
+
+func TestReviewerEntityEditorLabelSeedUsesFallbackIdentityWhenDisplayNameMissing(t *testing.T) {
+	labelInput, explicitDisplayName, fallbackLabelSeed := reviewerEntityEditorLabelSeed(initReviewerEntityDraft{
+		Kind:          initReviewerEntityKindGitHubApp,
+		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+	})
+	if got, want := labelInput, "open-cli-collective-rianjs-bot"; got != want {
+		t.Fatalf("labelInput = %q, want %q", got, want)
+	}
+	if got := explicitDisplayName; got != "" {
+		t.Fatalf("explicitDisplayName = %q, want empty", got)
+	}
+	if got, want := fallbackLabelSeed, "open-cli-collective-rianjs-bot"; got != want {
+		t.Fatalf("fallbackLabelSeed = %q, want %q", got, want)
 	}
 }
 
