@@ -2169,7 +2169,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				selectedGit = scope
 			}
 		}
-		reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
+		reviewerEntityOptions := initReviewerEntitySelectionOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
 		llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
 
 		reviewerProfileFields := []huh.Field{
@@ -2178,15 +2178,6 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				Description(reviewerEntitySelectionDescription()).
 				Options(reviewerEntityOptions...).
 				Value(&selectedReviewerEntity),
-		}
-		if selectedReviewerEntity != string(initReviewerEntityKindUseGitIdentity) {
-			reviewerProfileFields = append(reviewerProfileFields,
-				huh.NewInput().
-					Title("Reviewer entity label").
-					Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
-					Value(&draft.ReviewerDisplayName).
-					Validate(validateOptionalDisplayName),
-			)
 		}
 		reviewerProfileFields = append(reviewerProfileFields,
 			huh.NewSelect[string]().
@@ -2307,7 +2298,6 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		if back {
 			continue
 		}
-		typedReviewerDisplayName := normalizeOptionalDisplayName(draft.ReviewerDisplayName)
 		draft.AdvancedStorageLabels = selectedStorageLabelsMode == initStorageLabelsCustom
 		applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
 		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
@@ -2317,11 +2307,6 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
 		applyReviewerEntitySelection(&draft, reviewerMode)
 		applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
-		if reviewerMode == string(initReviewerEntityKindUseGitIdentity) {
-			draft.ReviewerDisplayName = ""
-		} else {
-			draft.ReviewerDisplayName = typedReviewerDisplayName
-		}
 		draft.RepositoryRoutesAction = selectedRepositoryRoutesAction
 		return draft, nil
 	}
@@ -2477,6 +2462,18 @@ func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft, fall
 		huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)),
 		huh.NewOption(reviewerEntityTemplateGitHubAppLabel(), string(initReviewerEntityKindGitHubApp)),
 	)
+	return dedupeInitStringOptions(options)
+}
+
+func initReviewerEntitySelectionOptions(entities map[string]initReviewerEntityDraft, fallbackLabel string) []huh.Option[string] {
+	names := configuredInitReviewerEntityNames(entities)
+	sort.Strings(names)
+	options := make([]huh.Option[string], 0, len(names)+1)
+	for _, name := range names {
+		entity := entities[name]
+		options = append(options, huh.NewOption(initReviewerEntityLabel(entity), name))
+	}
+	options = append(options, huh.NewOption(fallbackLabel, string(initReviewerEntityKindUseGitIdentity)))
 	return dedupeInitStringOptions(options)
 }
 
