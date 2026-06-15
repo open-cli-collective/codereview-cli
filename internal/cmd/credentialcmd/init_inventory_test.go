@@ -1,6 +1,7 @@
 package credentialcmd
 
 import (
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -35,6 +36,34 @@ func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *t
 	}
 }
 
+func TestInitInventoryReordersRowsIntoActivePendingAndCommandSections(t *testing.T) {
+	model := newInitInventoryModel(initInventoryPrompt{
+		Title:  "Reviewer entity",
+		Width:  80,
+		Height: 20,
+		Rows: []initInventoryRow{
+			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
+			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
+		},
+	})
+
+	var got []string
+	for _, row := range model.rows {
+		got = append(got, row.ID)
+	}
+	want := []string{"pat", "restore-app", "back"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ordered row ids = %#v, want %#v", got, want)
+	}
+	if model.rows[1].Description != "Pending deletion" {
+		t.Fatalf("pending description = %q, want Pending deletion", model.rows[1].Description)
+	}
+	if model.rows[2].Description != "Actions" {
+		t.Fatalf("command description = %q, want Actions", model.rows[2].Description)
+	}
+}
+
 func TestInitInventoryDeleteKeyStagesDeletionForDeletableRow(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:  "LLM runtime",
@@ -57,6 +86,26 @@ func TestInitInventoryDeleteKeyStagesDeletionForDeletableRow(t *testing.T) {
 	}
 }
 
+func TestInitInventoryDeleteKeyIgnoresNonDeletableRow(t *testing.T) {
+	model := newInitInventoryModel(initInventoryPrompt{
+		Title:  "LLM runtime",
+		Width:  80,
+		Height: 20,
+		Rows: []initInventoryRow{
+			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
+		},
+	})
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	resultModel := next.(initInventoryModel)
+	if resultModel.Result().Action != initInventoryActionNone {
+		t.Fatalf("result = %#v, want no action for non-deletable row", resultModel.Result())
+	}
+	if resultModel.QuitRequested() {
+		t.Fatal("quit requested = true, want false for ignored delete")
+	}
+}
+
 func TestInitInventoryRestoreKeyRestoresPendingRow(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:  "Review profile",
@@ -73,6 +122,34 @@ func TestInitInventoryRestoreKeyRestoresPendingRow(t *testing.T) {
 	got := resultModel.Result()
 	if got.Action != initInventoryActionRestore || got.Row.ID != "work" {
 		t.Fatalf("result = %#v, want restore work", got)
+	}
+}
+
+func TestInitInventoryFilterAppliedStillAllowsEnterAndRestore(t *testing.T) {
+	model := newInitInventoryModel(initInventoryPrompt{
+		Title:  "Reviewer entity",
+		Width:  80,
+		Height: 20,
+		Rows: []initInventoryRow{
+			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
+			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
+		},
+	})
+
+	model.list.SetFilterText("default")
+	enterNext, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	enterResult := enterNext.(initInventoryModel).Result()
+	if enterResult.Action != initInventoryActionEdit || enterResult.Row.ID != "pat" {
+		t.Fatalf("enter result after filter = %#v, want edit pat", enterResult)
+	}
+
+	model.list.SetFilterText("default")
+	model.list.Select(1)
+	restoreNext, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	restoreResult := restoreNext.(initInventoryModel).Result()
+	if restoreResult.Action != initInventoryActionRestore || restoreResult.Row.ID != "restore-app" {
+		t.Fatalf("restore result after filter = %#v, want restore restore-app", restoreResult)
 	}
 }
 
@@ -126,6 +203,29 @@ func TestInitInventoryBackKeyReturnsBackAction(t *testing.T) {
 	}
 }
 
+func TestInitInventoryDeterministicRunnerReturnsCommandAction(t *testing.T) {
+	result, err := runInitInventory(initInventoryPrompt{
+		Title:  "Reviewer entity",
+		Width:  80,
+		Height: 20,
+		Mode:   initInventoryModeDeterministic,
+		Messages: []tea.Msg{
+			tea.KeyMsg{Type: tea.KeyDown},
+			tea.KeyMsg{Type: tea.KeyEnter},
+		},
+		Rows: []initInventoryRow{
+			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
+			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
+		},
+	}, strings.NewReader(""), io.Discard)
+	if err != nil {
+		t.Fatalf("runInitInventory: %v", err)
+	}
+	if result.Action != initInventoryActionBack || result.Row.ID != "back" {
+		t.Fatalf("result = %#v, want deterministic back command", result)
+	}
+}
+
 func TestInitInventoryViewShowsHelpBindings(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:       "Reviewer entity",
@@ -150,6 +250,8 @@ func TestInitInventoryViewShowsHelpBindings(t *testing.T) {
 		"restore",
 		"esc",
 		"back",
+		"Pending deletion",
+		"Actions",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("view = %q, want %q", out, want)

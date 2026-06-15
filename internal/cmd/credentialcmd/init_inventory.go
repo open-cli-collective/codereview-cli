@@ -28,6 +28,13 @@ const (
 	initInventoryActionBack        initInventoryAction = "back"
 )
 
+type initInventoryMode string
+
+const (
+	initInventoryModeProgram       initInventoryMode = "program"
+	initInventoryModeDeterministic initInventoryMode = "deterministic"
+)
+
 type initInventoryRow struct {
 	ID            string
 	Title         string
@@ -51,6 +58,8 @@ type initInventoryPrompt struct {
 	Rows        []initInventoryRow
 	Width       int
 	Height      int
+	Mode        initInventoryMode
+	Messages    []tea.Msg
 }
 
 type initInventoryItem struct {
@@ -112,13 +121,14 @@ type initInventoryModel struct {
 }
 
 func newInitInventoryModel(prompt initInventoryPrompt) initInventoryModel {
-	items := make([]list.Item, 0, len(prompt.Rows))
-	for _, row := range prompt.Rows {
+	rows := orderInitInventoryRows(prompt.Rows)
+	items := make([]list.Item, 0, len(rows))
+	for _, row := range rows {
 		items = append(items, initInventoryItem{row: row})
 	}
 	delegate := list.NewDefaultDelegate()
-	delegate.ShowDescription = false
-	delegate.SetHeight(1)
+	delegate.ShowDescription = true
+	delegate.SetHeight(2)
 	delegate.SetSpacing(0)
 
 	l := list.New(items, delegate, prompt.Width, prompt.Height)
@@ -128,7 +138,7 @@ func newInitInventoryModel(prompt initInventoryPrompt) initInventoryModel {
 	l.SetShowPagination(false)
 	l.SetStatusBarItemName("row", "rows")
 	l.Filter = func(term string, _ []string) []list.Rank {
-		return initInventoryFilterRanks(term, prompt.Rows)
+		return initInventoryFilterRanks(term, rows)
 	}
 
 	if prompt.Width == 0 {
@@ -149,9 +159,38 @@ func newInitInventoryModel(prompt initInventoryPrompt) initInventoryModel {
 		title: prompt.Title,
 		desc:  strings.TrimSpace(prompt.Description),
 		list:  l,
-		rows:  append([]initInventoryRow(nil), prompt.Rows...),
+		rows:  rows,
 		keys:  keys,
 	}
+}
+
+func orderInitInventoryRows(rows []initInventoryRow) []initInventoryRow {
+	grouped := map[initInventoryRowKind][]initInventoryRow{
+		initInventoryRowKindActive:  {},
+		initInventoryRowKindPending: {},
+		initInventoryRowKindCommand: {},
+	}
+	for _, row := range rows {
+		grouped[row.Kind] = append(grouped[row.Kind], row)
+	}
+	ordered := make([]initInventoryRow, 0, len(rows))
+	ordered = append(ordered, grouped[initInventoryRowKindActive]...)
+	ordered = append(ordered, withSectionDescription(grouped[initInventoryRowKindPending], "Pending deletion")...)
+	ordered = append(ordered, withSectionDescription(grouped[initInventoryRowKindCommand], "Actions")...)
+	return ordered
+}
+
+func withSectionDescription(rows []initInventoryRow, section string) []initInventoryRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := append([]initInventoryRow(nil), rows...)
+	if strings.TrimSpace(out[0].Description) == "" {
+		out[0].Description = section
+	} else {
+		out[0].Description = section + "\n" + out[0].Description
+	}
+	return out
 }
 
 func initInventoryFilterRanks(term string, rows []initInventoryRow) []list.Rank {
@@ -176,7 +215,7 @@ func (m initInventoryModel) Init() tea.Cmd {
 
 func (m initInventoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
-		if m.list.FilterState() == list.Unfiltered {
+		if m.list.FilterState() != list.Filtering {
 			switch {
 			case key.Matches(keyMsg, m.keys.Back):
 				m.result = initInventoryResult{Action: initInventoryActionBack}
@@ -246,6 +285,9 @@ func (m initInventoryModel) QuitRequested() bool {
 }
 
 func runInitInventory(prompt initInventoryPrompt, stdin io.Reader, stdout io.Writer) (initInventoryResult, error) {
+	if prompt.Mode == initInventoryModeDeterministic {
+		return runInitInventoryDeterministic(prompt), nil
+	}
 	model := newInitInventoryModel(prompt)
 	program := tea.NewProgram(model, tea.WithInput(stdin), tea.WithOutput(stdout))
 	finalModel, err := program.Run()
@@ -257,4 +299,16 @@ func runInitInventory(prompt initInventoryPrompt, stdin io.Reader, stdout io.Wri
 		return initInventoryResult{}, nil
 	}
 	return resultModel.Result(), nil
+}
+
+func runInitInventoryDeterministic(prompt initInventoryPrompt) initInventoryResult {
+	model := newInitInventoryModel(prompt)
+	for _, msg := range prompt.Messages {
+		nextModel, _ := model.Update(msg)
+		model = nextModel.(initInventoryModel)
+		if model.QuitRequested() {
+			break
+		}
+	}
+	return model.Result()
 }
