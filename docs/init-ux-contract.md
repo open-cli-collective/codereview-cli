@@ -41,7 +41,8 @@ Supporting language is allowed when it helps teach the model:
 - A profile is the saved result.
 - A Git scope is the thing the user chooses while assembling that profile.
 - `credential_ref` remains an implementation term. User-facing prompts should
-  prefer **advanced storage labels**.
+  prefer **storage labels** and explain them in terms of the selected Git
+  scope, reviewer entity, or LLM runtime.
 
 ## Core Mental Model
 
@@ -246,16 +247,20 @@ and saved config must stay stable:
 This section is intentionally high level. The detailed field inventory and
 mutation rules still live in `docs/init-config-surface.md`.
 
-## Advanced Storage Labels
+## Storage Labels
 
-Interactive `init` should treat credential refs as an advanced concept.
+Interactive `init` should treat credential refs as an advanced concept without
+forcing the user through a separate mode selector before they can see the
+relevant values.
 
 Primary-path users should not be asked for `credential_ref` values directly.
 Instead:
 
 - defaults should be generated automatically
-- advanced users may inspect or override them through an **advanced storage
-  labels** path
+- users who need an override may edit the relevant inline **storage label**
+  fields for Git, reviewer, or LLM secrets
+- irrelevant reviewer/LLM storage-label fields should stay hidden when the
+  profile is using its Git account or a subscription runtime
 - any advanced path should still explain that these labels are non-secret
   pointers to keyring entries, not the secrets themselves
 

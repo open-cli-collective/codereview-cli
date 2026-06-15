@@ -3659,16 +3659,13 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // Profile name
 			"", // Make default
-			"", // Git host
-			"", // Git auth
-			"", // Git ref
-			"", // Configure reviewer creds
-			"", // Reviewer auth
-			"", // Reviewer ref
-			"", // LLM provider
-			"", // LLM auth
-			"", // LLM adapter
+			"", // Git scope
+			"", // Reviewer entity
+			"", // LLM runtime
 			"", // Reviewer model tier
+			"", // Repository routes
+			"", // Git storage label
+			"", // Reviewer storage label
 			"", // LLM ref
 			"",
 		}, "\n")),
@@ -3779,7 +3776,7 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -3844,11 +3841,13 @@ func TestHuhInitPrompterAccessibleConfiguredReviewerHidesInlineReviewerEntityEdi
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // Profile name
 			"", // Make default
+			"", // Git scope
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Storage label handling
 			"", // Repository routes
+			"", // Git storage label
+			"", // Reviewer storage label
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -3917,7 +3916,7 @@ func TestHuhInitPrompterAccessibleConfiguredLLMRuntimeHidesInlineRuntimeEditing(
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Storage label handling
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -3977,22 +3976,24 @@ func TestHuhInitPrompterAccessibleProfileEditorBootstrapsNewLLMRuntimeWhenNoneCo
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // Profile name
 			"", // Make default
+			"", // Git scope
 			"", // Git scope host
 			"", // Git scope auth mode
 			"", // Reviewer entity
 			"", // LLM runtime bootstrap action
 			"", // Reviewer model tier
-			"", // Storage label handling
 			"", // Repository routes
+			"", // Git storage label
 			"", // Profile name (rerender after runtime setup)
 			"", // Make default
+			"", // Git scope
 			"", // Git scope host
 			"", // Git scope auth mode
 			"", // Reviewer entity
 			"", // LLM runtime (new staged runtime selected)
 			"", // Reviewer model tier
-			"", // Storage label handling
 			"", // Repository routes
+			"", // Git storage label
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -4047,13 +4048,14 @@ func TestHuhInitPrompterAccessibleCreateNewProfileFallsBackToFirstConfiguredRunt
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // Profile name
 			"", // Make default
+			"", // Git scope
 			"", // Git scope host
 			"", // Git scope auth mode
 			"", // Reviewer entity
 			"", // LLM runtime: default to first configured runtime
 			"", // Reviewer model tier
-			"", // Storage label handling
 			"", // Repository routes
+			"", // Git storage label
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -4124,7 +4126,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -4214,7 +4216,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDef
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Storage label handling
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -4594,7 +4596,7 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -4644,7 +4646,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -5784,17 +5786,200 @@ func TestInitProfileEditorLLMRuntimeSelectionFallsBackToFirstConfiguredRuntimeWi
 
 func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testing.T) {
 	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	existing.Git.CredentialRef = "codereview/work"
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/shared-reviewer",
+	}
+	existing.LLM.Provider = config.LLMProviderAnthropic
+	existing.LLM.Auth = config.LLMAuthAPIKey
+	existing.LLM.Adapter = config.LLMAdapterAnthropicAPI
+	existing.LLM.CredentialRef = "codereview/shared-llm"
+	runtimes := map[string]initLLMRuntimeDraft{
+		"anthropic-runtime": {
+			Name:          "anthropic-runtime",
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/shared-llm",
+		},
+	}
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"pat-reviewer": {
+			Name:          "pat-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/shared-reviewer",
+		},
+	}
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Git scope: custom
+			"", // Git scope host
+			"", // Git scope auth mode
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Repository routes
+			"", // Git storage label
+			"", // Reviewer storage label
+			"", // LLM storage label
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
+		ReviewerEntities:     reviewerEntities,
+		ProfileReviewerEntities: map[string]string{
+			"work": "pat-reviewer",
+		},
+		LLMRuntimes: runtimes,
+		ProfileLLMRuntimes: map[string]string{
+			"work": "anthropic-runtime",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := stderr.String()
+	if strings.Contains(out, "Storage label handling") || strings.Contains(out, "Customize storage labels (advanced)") {
+		t.Fatalf("wizard output still shows legacy storage label mode prompt: %q", out)
+	}
+	if !strings.Contains(out, "Git storage label") || !strings.Contains(out, "Reviewer storage label") || !strings.Contains(out, "LLM storage label") {
+		t.Fatalf("wizard output missing flattened storage label prompts: %q", out)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatalf("draft.AdvancedStorageLabels = true, want false when the flattened fields keep their selected defaults")
+	}
+}
+
+func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	work := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": work,
+		},
+	}
+	gitScopes, profileGitScopes := buildInitGitScopeInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Git scope
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Repository routes
+			"", // Git storage label
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &work,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		GitScopes:            gitScopes,
+		ProfileGitScopes:     profileGitScopes,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := stderr.String()
+	if strings.Contains(out, "Storage label handling") {
+		t.Fatalf("wizard output still shows legacy storage label mode prompt: %q", out)
+	}
+	if !strings.Contains(out, "Git storage label") {
+		t.Fatalf("wizard output missing inline git storage label: %q", out)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatalf("draft.AdvancedStorageLabels = true, want false on the default storage-label path")
+	}
+}
+
+func TestHuhInitPrompterAccessibleStorageLabelsRespondToProfileSelections(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	work := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": work,
+		},
+	}
+	gitScopes, profileGitScopes := buildInitGitScopeInventory(cfg)
+	runtimes := map[string]initLLMRuntimeDraft{
+		"a-claude-runtime": {
+			Name:     "a-claude-runtime",
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		"z-api-runtime": {
+			Name:          "z-api-runtime",
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/shared-llm",
+		},
+	}
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"pat-reviewer": {
+			Name:          "pat-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/shared-reviewer",
+		},
+	}
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"",  // Profile name
 			"",  // Make default
-			"",  // Git scope host
-			"",  // Git scope auth mode
-			"2", // Reviewer entity: PAT reviewer
-			"4", // LLM runtime: Anthropic API key
+			"",  // Git scope
+			"1", // Reviewer entity: pat-reviewer
+			"2", // LLM runtime: z-api-runtime
 			"",  // Reviewer model tier
-			"2", // Storage label handling: customize
 			"",  // Repository routes
 			"",  // Git storage label
 			"",  // Reviewer storage label
@@ -5804,81 +5989,401 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 		stderr: &stderr,
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
-			_, _ = io.WriteString(out, "Create new profile\n")
+			_, _ = io.WriteString(out, "work\n")
 			return initInventoryResult{
-				Action: initInventoryActionCommand,
+				Action: initInventoryActionEdit,
 				Row: initInventoryRow{
-					ID:            initCreateProfileSentinel,
-					Title:         "Create new profile",
-					PrimaryAction: initInventoryActionCommand,
+					ID:    "work",
+					Title: "work",
 				},
 			}, nil
 		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
-		RequestedProfileName: "default",
-		DefaultProfileName:   "",
-		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &work,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		GitScopes:            gitScopes,
+		ProfileGitScopes:     profileGitScopes,
+		ReviewerEntities:     reviewerEntities,
+		LLMRuntimes:          runtimes,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Storage label handling") || !strings.Contains(out, "Customize storage labels (advanced)") {
-		t.Fatalf("wizard output missing storage label mode prompt: %q", out)
-	}
-	if !strings.Contains(out, "Git storage label") || !strings.Contains(out, "LLM storage label") {
-		t.Fatalf("wizard output missing advanced storage label prompts: %q", out)
+	if !strings.Contains(out, "Reviewer storage label") || !strings.Contains(out, "LLM storage label") {
+		t.Fatalf("stderr = %q, want inline storage labels to respond to reviewer/runtime changes in the same form", out)
 	}
 	_ = draft
 }
 
-func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
+func TestInitProfileStorageLabelSelectionTransitionFollowsChangedDefaults(t *testing.T) {
+	draft := initDraft{
+		ProfileName:           "work",
+		GitAuth:               string(config.GitAuthModePAT),
+		GitCredentialRef:      "codereview/old-git",
+		ReviewerEnabled:       true,
+		ReviewerAuth:          string(config.GitAuthModePAT),
+		ReviewerCredentialRef: "codereview/old-reviewer",
+		LLMProvider:           string(config.LLMProviderAnthropic),
+		LLMAuth:               string(config.LLMAuthAPIKey),
+		LLMAdapter:            string(config.LLMAdapterAnthropicAPI),
+		LLMCredentialRef:      "codereview/old-llm",
+	}
+	gitScopes := map[string]initGitScopeDraft{
+		"a-old-git": {
+			Name:          "a-old-git",
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-git",
+		},
+		"z-new-git": {
+			Name:          "z-new-git",
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-git",
+		},
+	}
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"a-old-reviewer": {
+			Name:          "a-old-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-reviewer",
+		},
+		"z-new-reviewer": {
+			Name:          "z-new-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-reviewer",
+		},
+	}
+	runtimes := map[string]initLLMRuntimeDraft{
+		"a-old-runtime": {
+			Name:          "a-old-runtime",
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/old-llm",
+		},
+		"z-new-runtime": {
+			Name:          "z-new-runtime",
+			Provider:      config.LLMProviderOpenAI,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterOpenAIAPI,
+			CredentialRef: "codereview/new-llm",
+		},
+	}
+
+	standardGitRef, err := initStandardGitCredentialRef(draft.ProfileName, "a-old-git", gitScopes)
+	if err != nil {
+		t.Fatalf("initStandardGitCredentialRef: %v", err)
+	}
+	standardReviewerRef, err := initStandardReviewerCredentialRef(draft.ProfileName, "a-old-reviewer", reviewerEntities)
+	if err != nil {
+		t.Fatalf("initStandardReviewerCredentialRef: %v", err)
+	}
+	standardLLMRef, err := initStandardLLMCredentialRef(draft.ProfileName, "a-old-runtime", runtimes)
+	if err != nil {
+		t.Fatalf("initStandardLLMCredentialRef: %v", err)
+	}
+	gitValue := initEffectiveStorageLabelValue(draft.GitCredentialRef, standardGitRef)
+	reviewerValue := initEffectiveStorageLabelValue(draft.ReviewerCredentialRef, standardReviewerRef)
+	llmValue := initEffectiveStorageLabelValue(draft.LLMCredentialRef, standardLLMRef)
+	gitUsesDefaultBeforeSelection := initStorageLabelUsesDefault(gitValue, standardGitRef)
+	reviewerUsesDefaultBeforeSelection := initStorageLabelUsesDefault(reviewerValue, standardReviewerRef)
+	llmUsesDefaultBeforeSelection := initStorageLabelUsesDefault(llmValue, standardLLMRef)
+
+	draft.AdvancedStorageLabels = true
+	applyGitScopeSelection(&draft, "z-new-git", gitScopes)
+	applyReviewerEntityInventorySelection(&draft, "z-new-reviewer", reviewerEntities)
+	applyLLMRuntimeInventorySelection(&draft, "z-new-runtime", runtimes)
+	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+	selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+	applyReviewerEntitySelection(&draft, reviewerMode)
+	applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+	err = normalizeInitProfileStorageLabels(&draft, "z-new-git", "z-new-reviewer", "z-new-runtime", gitScopes, reviewerEntities, runtimes, initStorageLabelNormalizationInput{
+		Git: initStorageLabelFieldState{
+			Value:       gitValue,
+			UsesDefault: gitUsesDefaultBeforeSelection,
+		},
+		Reviewer: initStorageLabelFieldState{
+			Value:       reviewerValue,
+			UsesDefault: reviewerUsesDefaultBeforeSelection,
+		},
+		LLM: initStorageLabelFieldState{
+			Value:       llmValue,
+			UsesDefault: llmUsesDefaultBeforeSelection,
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/new-git" {
+		t.Fatalf("git ref = %q, want changed selection default", draft.GitCredentialRef)
+	}
+	if draft.ReviewerCredentialRef != "codereview/new-reviewer" {
+		t.Fatalf("reviewer ref = %q, want changed selection default", draft.ReviewerCredentialRef)
+	}
+	if draft.LLMCredentialRef != "codereview/new-llm" {
+		t.Fatalf("llm ref = %q, want changed selection default", draft.LLMCredentialRef)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = true, want false when inline values keep following changed defaults")
+	}
+}
+
+func TestHuhInitPrompterAccessibleStorageLabelsKeepCustomOverridesAcrossSelections(t *testing.T) {
 	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	existing.Git.CredentialRef = "codereview/custom-git"
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/custom-reviewer",
+	}
+	existing.LLM.Provider = config.LLMProviderAnthropic
+	existing.LLM.Auth = config.LLMAuthAPIKey
+	existing.LLM.Adapter = config.LLMAdapterAnthropicAPI
+	existing.LLM.CredentialRef = "codereview/custom-llm"
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": existing,
+		},
+	}
+	gitScopes := map[string]initGitScopeDraft{
+		"a-old-git": {
+			Name:          "a-old-git",
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-git",
+		},
+		"z-new-git": {
+			Name:          "z-new-git",
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-git",
+		},
+	}
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"a-old-reviewer": {
+			Name:          "a-old-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-reviewer",
+		},
+		"z-new-reviewer": {
+			Name:          "z-new-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-reviewer",
+		},
+	}
+	runtimes := map[string]initLLMRuntimeDraft{
+		"a-old-runtime": {
+			Name:          "a-old-runtime",
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/old-llm",
+		},
+		"z-new-runtime": {
+			Name:          "z-new-runtime",
+			Provider:      config.LLMProviderOpenAI,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterOpenAIAPI,
+			CredentialRef: "codereview/new-llm",
+		},
+	}
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"", // Profile name
-			"", // Make default
-			"", // Git scope host
-			"", // Git scope auth mode
-			"", // Reviewer entity
-			"", // LLM runtime
-			"", // Reviewer model tier
-			"", // Storage label handling: default recommended option
-			"", // Repository routes
+			"",  // Profile name
+			"1", // Make default: keep current default
+			"2", // Git scope: z-new-git
+			"",  // Git scope host
+			"1", // Git scope auth mode: personal access token
+			"2", // Reviewer entity: z-new-reviewer
+			"2", // LLM runtime: z-new-runtime
+			"1", // Reviewer model tier: built-in baseline
+			"1", // Repository routes: keep current
+			"",  // Git storage label
+			"",  // Reviewer storage label
+			"",  // LLM storage label
 			"",
 		}, "\n")),
 		stderr: &stderr,
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
-			_, _ = io.WriteString(out, "Create new profile\n")
+			_, _ = io.WriteString(out, "work\n")
 			return initInventoryResult{
-				Action: initInventoryActionCommand,
+				Action: initInventoryActionEdit,
 				Row: initInventoryRow{
-					ID:            initCreateProfileSentinel,
-					Title:         "Create new profile",
-					PrimaryAction: initInventoryActionCommand,
+					ID:    "work",
+					Title: "work",
 				},
 			}, nil
 		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
-		RequestedProfileName: "default",
-		DefaultProfileName:   "",
-		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+		RequestedProfileName:    "work",
+		ExistingProfileName:     "work",
+		ExistingProfile:         &existing,
+		ExistingProfileNames:    []string{"work"},
+		DefaultProfileName:      "work",
+		ExistingConfig:          cfg,
+		GitScopes:               gitScopes,
+		ProfileGitScopes:        map[string]string{"work": "a-old-git"},
+		ReviewerEntities:        reviewerEntities,
+		ProfileReviewerEntities: map[string]string{"work": "a-old-reviewer"},
+		LLMRuntimes:             runtimes,
+		ProfileLLMRuntimes:      map[string]string{"work": "a-old-runtime"},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	out := stderr.String()
-	if !strings.Contains(out, "Storage label handling") || !strings.Contains(out, "Use standard storage labels (recommended)") {
-		t.Fatalf("wizard output missing recommended storage label path: %q", out)
+	if draft.GitCredentialRef != "codereview/custom-git" {
+		t.Fatalf("git ref = %q, want preserved custom override", draft.GitCredentialRef)
+	}
+	if draft.ReviewerCredentialRef != "codereview/custom-reviewer" {
+		t.Fatalf("reviewer ref = %q, want preserved custom override", draft.ReviewerCredentialRef)
+	}
+	if draft.LLMCredentialRef != "codereview/custom-llm" {
+		t.Fatalf("llm ref = %q, want preserved custom override", draft.LLMCredentialRef)
+	}
+	if !draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = false, want true when custom inline overrides remain in place")
+	}
+}
+
+func TestNormalizeInitProfileStorageLabelsUsesSelectedDefaultsForBlankInputs(t *testing.T) {
+	draft := initDraft{
+		ProfileName:           "work",
+		GitAuth:               string(config.GitAuthModePAT),
+		ReviewerEnabled:       true,
+		ReviewerAuth:          string(config.GitAuthModePAT),
+		LLMAuth:               string(config.LLMAuthAPIKey),
+		LLMProvider:           string(config.LLMProviderAnthropic),
+		LLMAdapter:            string(config.LLMAdapterAnthropicAPI),
+		GitCredentialRef:      "codereview/old-git",
+		ReviewerCredentialRef: "codereview/old-reviewer",
+		LLMCredentialRef:      "codereview/old-llm",
+	}
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"pat-reviewer": {
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/shared-reviewer",
+		},
+	}
+	runtimes := map[string]initLLMRuntimeDraft{
+		"anthropic-runtime": {
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/shared-llm",
+		},
+	}
+
+	err := normalizeInitProfileStorageLabels(&draft, initCustomGitScopeSelection, "pat-reviewer", "anthropic-runtime", nil, reviewerEntities, runtimes, initStorageLabelNormalizationInput{
+		Git:      initStorageLabelFieldState{UsesDefault: true},
+		Reviewer: initStorageLabelFieldState{UsesDefault: true},
+		LLM:      initStorageLabelFieldState{UsesDefault: true},
+	})
+	if err != nil {
+		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/work" {
+		t.Fatalf("git ref = %q, want standard profile git ref", draft.GitCredentialRef)
+	}
+	if draft.ReviewerCredentialRef != "codereview/shared-reviewer" {
+		t.Fatalf("reviewer ref = %q, want selected reviewer default ref", draft.ReviewerCredentialRef)
+	}
+	if draft.LLMCredentialRef != "codereview/shared-llm" {
+		t.Fatalf("llm ref = %q, want selected runtime default ref", draft.LLMCredentialRef)
 	}
 	if draft.AdvancedStorageLabels {
-		t.Fatalf("draft.AdvancedStorageLabels = true, want false on the default storage-label path")
+		t.Fatal("draft.AdvancedStorageLabels = true, want false when blank inputs follow selected defaults")
+	}
+}
+
+func TestNormalizeInitProfileStorageLabelsFollowsChangedGitScopeDefault(t *testing.T) {
+	draft := initDraft{
+		ProfileName:      "work",
+		GitAuth:          string(config.GitAuthModePAT),
+		GitCredentialRef: "codereview/old-git",
+	}
+	scopes := map[string]initGitScopeDraft{
+		"old-git": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-git",
+		},
+		"new-git": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-git",
+		},
+	}
+
+	err := normalizeInitProfileStorageLabels(&draft, "new-git", string(initReviewerEntityKindUseGitIdentity), "", scopes, nil, nil, initStorageLabelNormalizationInput{
+		Git:      initStorageLabelFieldState{Value: "codereview/old-git", UsesDefault: true},
+		Reviewer: initStorageLabelFieldState{UsesDefault: true},
+		LLM:      initStorageLabelFieldState{UsesDefault: true},
+	})
+	if err != nil {
+		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/new-git" {
+		t.Fatalf("git ref = %q, want changed git-scope default", draft.GitCredentialRef)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = true, want false when the git label keeps following the changed scope default")
+	}
+}
+
+func TestNormalizeInitProfileStorageLabelsClearsHiddenReviewerAndLLMOverrides(t *testing.T) {
+	draft := initDraft{
+		ProfileName:           "work",
+		GitAuth:               string(config.GitAuthModePAT),
+		ReviewerEnabled:       false,
+		ReviewerAuth:          string(config.GitAuthModePAT),
+		LLMAuth:               string(config.LLMAuthSubscription),
+		LLMProvider:           string(config.LLMProviderAnthropic),
+		LLMAdapter:            string(config.LLMAdapterClaudeCLI),
+		GitCredentialRef:      "codereview/work",
+		ReviewerCredentialRef: "codereview/custom-reviewer",
+		LLMCredentialRef:      "codereview/custom-llm",
+	}
+	runtimes := map[string]initLLMRuntimeDraft{
+		"claude-runtime": {
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	}
+
+	err := normalizeInitProfileStorageLabels(&draft, initCustomGitScopeSelection, string(initReviewerEntityKindUseGitIdentity), "claude-runtime", nil, nil, runtimes, initStorageLabelNormalizationInput{
+		Git:      initStorageLabelFieldState{Value: "codereview/work", UsesDefault: true},
+		Reviewer: initStorageLabelFieldState{Value: "codereview/custom-reviewer", UsesDefault: false},
+		LLM:      initStorageLabelFieldState{Value: "codereview/custom-llm", UsesDefault: false},
+	})
+	if err != nil {
+		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
+	}
+	if draft.ReviewerCredentialRef != "" {
+		t.Fatalf("reviewer ref = %q, want cleared when reviewer label input is hidden", draft.ReviewerCredentialRef)
+	}
+	if draft.LLMCredentialRef != "" {
+		t.Fatalf("llm ref = %q, want cleared when llm label input is hidden", draft.LLMCredentialRef)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = true, want false after hidden reviewer/llm overrides are cleared")
 	}
 }
 
@@ -5895,7 +6400,7 @@ func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
@@ -5945,7 +6450,7 @@ func TestHuhInitPrompterAccessibleHidesReviewerEntityLabelForProfileGitAccount(t
 			"", // Reviewer entity
 			"", // LLM runtime
 			"", // Reviewer model tier
-			"", // Advanced storage labels
+			"", // Git storage label
 			"", // Repository routes
 			"",
 		}, "\n")),
