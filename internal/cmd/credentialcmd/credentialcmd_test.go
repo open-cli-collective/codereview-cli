@@ -3880,6 +3880,56 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
 	}
 }
 
+func TestHuhInitLLMRuntimePrompterAccessibleTemplateConsultsAvailabilityChecker(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	checkerCalled := false
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Stage these runtime details
+			"", // Keep OpenAI provider default
+			"", // Keep subscription auth default
+			"", // Keep Codex CLI adapter default
+		}, "\n")),
+		stderr:  &stderr,
+		checker: func(preset initLLMRuntimePreset) string {
+			if preset == initLLMRuntimePresetCodexCLISubscription {
+				checkerCalled = true
+			}
+			return "Codex CLI check: codex-cli 0.139.0 installed."
+		},
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "Template: Codex CLI subscription\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            string(initLLMRuntimePresetCodexCLISubscription),
+					Title:         "Template: Codex CLI subscription",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
+	}
+
+	_, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}})
+	if err != nil {
+		t.Fatalf("EditLLMRuntime: %v", err)
+	}
+	if !checkerCalled {
+		t.Fatal("checkerCalled = false, want template selection to consult runtime availability checker")
+	}
+	if !strings.Contains(stderr.String(), "Runtime detail action") {
+		t.Fatalf("stderr = %q, want flattened runtime detail screen", stderr.String())
+	}
+}
+
 func TestInitLLMRuntimeSelectionDescriptionCodexSubscriptionExplainsAdapterManagedAuth(t *testing.T) {
 	description := initLLMRuntimeSelectionDescription(initLLMRuntimeDraft{
 		Preset:   initLLMRuntimePresetCodexCLISubscription,
