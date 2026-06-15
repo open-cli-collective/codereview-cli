@@ -2086,6 +2086,8 @@ func TestInitReviewerEntityInventoryRowsUseNameFirstConfiguredLabels(t *testing.
 		switch row.Kind {
 		case initInventoryRowKindActive:
 			configuredTitles = append(configuredTitles, row.Title)
+		case initInventoryRowKindPending:
+			// No staged-delete rows are expected in this direct inventory rendering case.
 		case initInventoryRowKindCommand:
 			commandIDs = append(commandIDs, row.ID)
 			commandTitles = append(commandTitles, row.Title)
