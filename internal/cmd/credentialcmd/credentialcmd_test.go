@@ -2080,9 +2080,13 @@ func TestInitReviewerEntityInventoryRowsUseNameFirstConfiguredLabels(t *testing.
 	})
 
 	var configuredTitles []string
+	var commandTitles []string
 	for _, row := range rows {
-		if row.Kind == initInventoryRowKindActive {
+		switch row.Kind {
+		case initInventoryRowKindActive:
 			configuredTitles = append(configuredTitles, row.Title)
+		case initInventoryRowKindCommand:
+			commandTitles = append(commandTitles, row.Title)
 		}
 	}
 	if got, want := configuredTitles, []string{
@@ -2090,6 +2094,14 @@ func TestInitReviewerEntityInventoryRowsUseNameFirstConfiguredLabels(t *testing.
 		"default-reviewer (PAT reviewer)",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("configuredTitles = %#v, want %#v", got, want)
+	}
+	if got, want := commandTitles, []string{
+		"None (uses the home profile's Git account)",
+		reviewerEntityTemplatePATLabel(),
+		reviewerEntityTemplateGitHubAppLabel(),
+		"Back to main menu",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("commandTitles = %#v, want %#v", got, want)
 	}
 }
 
