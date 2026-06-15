@@ -6021,6 +6021,233 @@ func TestHuhInitPrompterAccessibleStorageLabelsRespondToProfileSelections(t *tes
 	_ = draft
 }
 
+func TestInitProfileStorageLabelSelectionTransitionFollowsChangedDefaults(t *testing.T) {
+	draft := initDraft{
+		ProfileName:          "work",
+		GitAuth:              string(config.GitAuthModePAT),
+		GitCredentialRef:     "codereview/old-git",
+		ReviewerEnabled:      true,
+		ReviewerAuth:         string(config.GitAuthModePAT),
+		ReviewerCredentialRef:"codereview/old-reviewer",
+		LLMProvider:          string(config.LLMProviderAnthropic),
+		LLMAuth:              string(config.LLMAuthAPIKey),
+		LLMAdapter:           string(config.LLMAdapterAnthropicAPI),
+		LLMCredentialRef:     "codereview/old-llm",
+	}
+	gitScopes := map[string]initGitScopeDraft{
+		"a-old-git": {
+			Name:          "a-old-git",
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-git",
+		},
+		"z-new-git": {
+			Name:          "z-new-git",
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-git",
+		},
+	}
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"a-old-reviewer": {
+			Name:          "a-old-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-reviewer",
+		},
+		"z-new-reviewer": {
+			Name:          "z-new-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-reviewer",
+		},
+	}
+	runtimes := map[string]initLLMRuntimeDraft{
+		"a-old-runtime": {
+			Name:          "a-old-runtime",
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/old-llm",
+		},
+		"z-new-runtime": {
+			Name:          "z-new-runtime",
+			Provider:      config.LLMProviderOpenAI,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterOpenAIAPI,
+			CredentialRef: "codereview/new-llm",
+		},
+	}
+
+	standardGitRef, err := initStandardGitCredentialRef(draft.ProfileName, "a-old-git", gitScopes)
+	if err != nil {
+		t.Fatalf("initStandardGitCredentialRef: %v", err)
+	}
+	standardReviewerRef, err := initStandardReviewerCredentialRef(draft.ProfileName, "a-old-reviewer", reviewerEntities)
+	if err != nil {
+		t.Fatalf("initStandardReviewerCredentialRef: %v", err)
+	}
+	standardLLMRef, err := initStandardLLMCredentialRef(draft.ProfileName, "a-old-runtime", runtimes)
+	if err != nil {
+		t.Fatalf("initStandardLLMCredentialRef: %v", err)
+	}
+	gitValue := initEffectiveStorageLabelValue(draft.GitCredentialRef, standardGitRef)
+	reviewerValue := initEffectiveStorageLabelValue(draft.ReviewerCredentialRef, standardReviewerRef)
+	llmValue := initEffectiveStorageLabelValue(draft.LLMCredentialRef, standardLLMRef)
+	gitUsesDefaultBeforeSelection := initStorageLabelUsesDefault(gitValue, standardGitRef)
+	reviewerUsesDefaultBeforeSelection := initStorageLabelUsesDefault(reviewerValue, standardReviewerRef)
+	llmUsesDefaultBeforeSelection := initStorageLabelUsesDefault(llmValue, standardLLMRef)
+
+	draft.AdvancedStorageLabels = true
+	applyGitScopeSelection(&draft, "z-new-git", gitScopes)
+	applyReviewerEntityInventorySelection(&draft, "z-new-reviewer", reviewerEntities)
+	applyLLMRuntimeInventorySelection(&draft, "z-new-runtime", runtimes)
+	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+	selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+	applyReviewerEntitySelection(&draft, reviewerMode)
+	applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+	err = normalizeInitProfileStorageLabels(&draft, "z-new-git", "z-new-reviewer", "z-new-runtime", gitScopes, reviewerEntities, runtimes, gitValue, reviewerValue, llmValue, gitUsesDefaultBeforeSelection, reviewerUsesDefaultBeforeSelection, llmUsesDefaultBeforeSelection)
+	if err != nil {
+		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/new-git" {
+		t.Fatalf("git ref = %q, want changed selection default", draft.GitCredentialRef)
+	}
+	if draft.ReviewerCredentialRef != "codereview/new-reviewer" {
+		t.Fatalf("reviewer ref = %q, want changed selection default", draft.ReviewerCredentialRef)
+	}
+	if draft.LLMCredentialRef != "codereview/new-llm" {
+		t.Fatalf("llm ref = %q, want changed selection default", draft.LLMCredentialRef)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = true, want false when inline values keep following changed defaults")
+	}
+}
+
+func TestHuhInitPrompterAccessibleStorageLabelsKeepCustomOverridesAcrossSelections(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	existing.Git.CredentialRef = "codereview/custom-git"
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/custom-reviewer",
+	}
+	existing.LLM.Provider = config.LLMProviderAnthropic
+	existing.LLM.Auth = config.LLMAuthAPIKey
+	existing.LLM.Adapter = config.LLMAdapterAnthropicAPI
+	existing.LLM.CredentialRef = "codereview/custom-llm"
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": existing,
+		},
+	}
+	gitScopes := map[string]initGitScopeDraft{
+		"a-old-git": {
+			Name:          "a-old-git",
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-git",
+		},
+		"z-new-git": {
+			Name:          "z-new-git",
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-git",
+		},
+	}
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"a-old-reviewer": {
+			Name:          "a-old-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-reviewer",
+		},
+		"z-new-reviewer": {
+			Name:          "z-new-reviewer",
+			Kind:          initReviewerEntityKindPAT,
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-reviewer",
+		},
+	}
+	runtimes := map[string]initLLMRuntimeDraft{
+		"a-old-runtime": {
+			Name:          "a-old-runtime",
+			Provider:      config.LLMProviderAnthropic,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterAnthropicAPI,
+			CredentialRef: "codereview/old-llm",
+		},
+		"z-new-runtime": {
+			Name:          "z-new-runtime",
+			Provider:      config.LLMProviderOpenAI,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterOpenAIAPI,
+			CredentialRef: "codereview/new-llm",
+		},
+	}
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"",  // Profile name
+			"1", // Make default: keep current default
+			"2", // Git scope: z-new-git
+			"",  // Git scope host
+			"1", // Git scope auth mode: personal access token
+			"2", // Reviewer entity: z-new-reviewer
+			"2", // LLM runtime: z-new-runtime
+			"1", // Reviewer model tier: built-in baseline
+			"1", // Repository routes: keep current
+			"",  // Git storage label
+			"",  // Reviewer storage label
+			"",  // LLM storage label
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName:    "work",
+		ExistingProfileName:     "work",
+		ExistingProfile:         &existing,
+		ExistingProfileNames:    []string{"work"},
+		DefaultProfileName:      "work",
+		ExistingConfig:          cfg,
+		GitScopes:               gitScopes,
+		ProfileGitScopes:        map[string]string{"work": "a-old-git"},
+		ReviewerEntities:        reviewerEntities,
+		ProfileReviewerEntities: map[string]string{"work": "a-old-reviewer"},
+		LLMRuntimes:             runtimes,
+		ProfileLLMRuntimes:      map[string]string{"work": "a-old-runtime"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/custom-git" {
+		t.Fatalf("git ref = %q, want preserved custom override", draft.GitCredentialRef)
+	}
+	if draft.ReviewerCredentialRef != "codereview/custom-reviewer" {
+		t.Fatalf("reviewer ref = %q, want preserved custom override", draft.ReviewerCredentialRef)
+	}
+	if draft.LLMCredentialRef != "codereview/custom-llm" {
+		t.Fatalf("llm ref = %q, want preserved custom override", draft.LLMCredentialRef)
+	}
+	if !draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = false, want true when custom inline overrides remain in place")
+	}
+}
+
 func TestNormalizeInitProfileStorageLabelsUsesSelectedDefaultsForBlankInputs(t *testing.T) {
 	draft := initDraft{
 		ProfileName:          "work",
@@ -6065,6 +6292,37 @@ func TestNormalizeInitProfileStorageLabelsUsesSelectedDefaultsForBlankInputs(t *
 	}
 	if draft.AdvancedStorageLabels {
 		t.Fatal("draft.AdvancedStorageLabels = true, want false when blank inputs follow selected defaults")
+	}
+}
+
+func TestNormalizeInitProfileStorageLabelsFollowsChangedGitScopeDefault(t *testing.T) {
+	draft := initDraft{
+		ProfileName:      "work",
+		GitAuth:          string(config.GitAuthModePAT),
+		GitCredentialRef: "codereview/old-git",
+	}
+	scopes := map[string]initGitScopeDraft{
+		"old-git": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-git",
+		},
+		"new-git": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-git",
+		},
+	}
+
+	err := normalizeInitProfileStorageLabels(&draft, "new-git", string(initReviewerEntityKindUseGitIdentity), "", scopes, nil, nil, "codereview/old-git", "", "", true, true, true)
+	if err != nil {
+		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/new-git" {
+		t.Fatalf("git ref = %q, want changed git-scope default", draft.GitCredentialRef)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = true, want false when the git label keeps following the changed scope default")
 	}
 }
 
