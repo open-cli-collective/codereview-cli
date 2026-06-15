@@ -905,6 +905,144 @@ func TestLoadInteractiveCredentialPlanStateSkipsStoreForSettledEntries(t *testin
 	}
 }
 
+func TestLoadInteractiveCredentialPlanStatePreservesSettledEntriesWhenMixedPlanNeedsStore(t *testing.T) {
+	keepEntries, err := planInitCredentials(nil, basicProfile("work"), nil)
+	if err != nil {
+		t.Fatalf("planInitCredentials keep seed: %v", err)
+	}
+	keepEntries[0].State = initCredentialPlanStateKeepExisting
+
+	writeEntries, err := planInitCredentials(nil, basicProfile("office"), map[string][]string{
+		"codereview/office": {credentials.GitTokenKey},
+	})
+	if err != nil {
+		t.Fatalf("planInitCredentials write: %v", err)
+	}
+
+	deferredProfile := apiKeyProfile("lab", config.LLMProviderAnthropic)
+	deferredEntries, err := planInitCredentials(nil, deferredProfile, nil)
+	if err != nil {
+		t.Fatalf("planInitCredentials deferred: %v", err)
+	}
+	var llmEntry initCredentialPlanEntry
+	for _, entry := range deferredEntries {
+		if entry.Ref.Purpose == "llm" {
+			llmEntry = entry
+			break
+		}
+	}
+	if llmEntry.Ref.Ref == "" {
+		t.Fatal("llm entry missing from deferred profile")
+	}
+
+	entries := []initCredentialPlanEntry{
+		keepEntries[0],
+		{
+			Ref: config.CredentialRef{
+				Purpose:  "reviewer_credentials",
+				Ref:      "codereview/work-reviewer",
+				Mode:     string(config.GitAuthModeGitHubApp),
+				Provider: "github",
+			},
+			State: initCredentialPlanStateClearRef,
+		},
+		writeEntries[0],
+		llmEntry,
+	}
+
+	openStoreCalls := 0
+	got, err := loadInteractiveCredentialPlanState(entries, func() (initStore, error) {
+		openStoreCalls++
+		return newFakeInitStore(map[string]map[string]string{
+			"lab-llm": {
+				credentials.AnthropicAPIKeyKey: "existing-llm-token",
+			},
+		}), nil
+	})
+	if err != nil {
+		t.Fatalf("loadInteractiveCredentialPlanState: %v", err)
+	}
+	if openStoreCalls != 1 {
+		t.Fatalf("openStoreCalls = %d, want 1 for mixed plan with deferred entry", openStoreCalls)
+	}
+	if got[0].State != initCredentialPlanStateKeepExisting {
+		t.Fatalf("keep entry state = %s, want keep_existing", got[0].State)
+	}
+	if got[1].State != initCredentialPlanStateClearRef {
+		t.Fatalf("clear entry state = %s, want clear_ref", got[1].State)
+	}
+	if got[2].State != initCredentialPlanStateWrite {
+		t.Fatalf("write entry state = %s, want write", got[2].State)
+	}
+	if got[3].State != initCredentialPlanStateKeepExisting {
+		t.Fatalf("deferred llm state = %s, want keep_existing after store inspection", got[3].State)
+	}
+}
+
+func TestBuildInteractiveInitSessionPlanUsesOriginalProfileForRenamedTouchedProfile(t *testing.T) {
+	original := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/work",
+				},
+				ReviewerCredentials: &config.ReviewerCredentials{
+					AuthMode:      config.GitAuthModeGitHubApp,
+					CredentialRef: "codereview/work-reviewer",
+					DisplayName:   "Old label",
+				},
+				LLM: config.LLMConfig{
+					Provider: config.LLMProviderAnthropic,
+					Auth:     config.LLMAuthSubscription,
+					Adapter:  config.LLMAdapterClaudeCLI,
+				},
+			},
+		},
+	}
+	renamed, changed, err := configedit.RenameProfile(original, "work", "office")
+	if err != nil {
+		t.Fatalf("RenameProfile: %v", err)
+	}
+	if !changed {
+		t.Fatal("RenameProfile changed = false, want true")
+	}
+	profile := renamed.Profiles["office"]
+	profile.ReviewerCredentials.DisplayName = "OC Collective bot"
+	renamed.Profiles["office"] = profile
+
+	plan, err := buildInteractiveInitSessionPlan(&root.Options{}, initSessionDraft{
+		originalCfg:     original,
+		cfg:             renamed,
+		touchedProfiles: map[string]string{"office": "work"},
+	})
+	if err != nil {
+		t.Fatalf("buildInteractiveInitSessionPlan: %v", err)
+	}
+
+	var reviewerEntry *initCredentialPlanEntry
+	for i := range plan.credentialPlan {
+		if plan.credentialPlan[i].Ref.Purpose == "reviewer_credentials" {
+			reviewerEntry = &plan.credentialPlan[i]
+			break
+		}
+	}
+	if reviewerEntry == nil {
+		t.Fatal("reviewer credential entry missing from session plan")
+	}
+	if reviewerEntry.State != initCredentialPlanStateKeepExisting {
+		t.Fatalf("reviewer entry state = %s, want keep_existing for label-only renamed profile edit", reviewerEntry.State)
+	}
+	if reviewerEntry.PreviousRef == nil || reviewerEntry.PreviousRef.Ref != "codereview/work-reviewer" {
+		t.Fatalf("reviewer previous ref = %#v, want codereview/work-reviewer", reviewerEntry.PreviousRef)
+	}
+	if got := plan.profileRefs["office"]; len(got) == 0 {
+		t.Fatalf("profileRefs[office] = %#v, want populated refs for renamed profile", got)
+	}
+}
+
 func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cmd, _, errOut := newTestCommand(path, strings.NewReader(""))
