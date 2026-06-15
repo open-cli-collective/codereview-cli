@@ -569,32 +569,6 @@ const (
 	initCredentialSecretActionBack   initCredentialSecretAction = "back"
 )
 
-type initModelMapAction string
-
-const (
-	initModelMapActionPreserve initModelMapAction = "preserve"
-	initModelMapActionEdit     initModelMapAction = "edit"
-	initModelMapActionReset    initModelMapAction = "reset"
-	initModelMapActionBack     initModelMapAction = "back"
-)
-
-type initAgentSourcesAction string
-
-const (
-	initAgentSourcesActionPreserve initAgentSourcesAction = "preserve"
-	initAgentSourcesActionEdit     initAgentSourcesAction = "edit"
-	initAgentSourcesActionReset    initAgentSourcesAction = "reset"
-	initAgentSourcesActionBack     initAgentSourcesAction = "back"
-)
-
-type initReviewPolicyAction string
-
-const (
-	initReviewPolicyActionPreserve initReviewPolicyAction = "preserve"
-	initReviewPolicyActionEdit     initReviewPolicyAction = "edit"
-	initReviewPolicyActionBack     initReviewPolicyAction = "back"
-)
-
 type initRoutesAction string
 
 const (
@@ -604,30 +578,12 @@ const (
 	initRoutesActionBack     initRoutesAction = "back"
 )
 
-type initRetentionAction string
-
-const (
-	initRetentionActionPreserve initRetentionAction = "preserve"
-	initRetentionActionEdit     initRetentionAction = "edit"
-	initRetentionActionReset    initRetentionAction = "reset"
-	initRetentionActionBack     initRetentionAction = "back"
-)
-
 type initRetentionMaxAgeMode string
 
 const (
 	initRetentionMaxAgeDefault initRetentionMaxAgeMode = "default"
 	initRetentionMaxAgeForever initRetentionMaxAgeMode = "forever"
 	initRetentionMaxAgeCustom  initRetentionMaxAgeMode = "custom"
-)
-
-type initKeyringBackendAction string
-
-const (
-	initKeyringBackendActionPreserve initKeyringBackendAction = "preserve"
-	initKeyringBackendActionEdit     initKeyringBackendAction = "edit"
-	initKeyringBackendActionReset    initKeyringBackendAction = "reset"
-	initKeyringBackendActionBack     initKeyringBackendAction = "back"
 )
 
 type initSecretSource string
@@ -2961,584 +2917,352 @@ func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string
 }
 
 func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initModelMapEdit, error) {
-	for {
-		action := initModelMapActionPreserve
-		options := []huh.Option[initModelMapAction]{
-			huh.NewOption("Keep current model-map overrides", initModelMapActionPreserve),
-			huh.NewOption("Edit tier mappings", initModelMapActionEdit),
-			huh.NewOption("Back to main menu", initModelMapActionBack),
-		}
-		if len(prompt.ModelMap) > 0 {
-			options = append(options, huh.NewOption("Reset all overrides to built-in defaults", initModelMapActionReset))
-		}
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[initModelMapAction]().
-					Title("Model-map overrides").
-					Options(options...).
-					Value(&action),
-			),
+	action := initDetailActionEdit
+	existing := copyModelMap(prompt.ModelMap)
+	values := map[config.ModelTier]*string{}
+	fields := make([]huh.Field, 0, len(config.ModelTiers()))
+	builtIns := config.BuiltInModelMap(prompt.LLM.Provider, prompt.LLM.Adapter)
+	for _, tier := range config.ModelTiers() {
+		value := strings.TrimSpace(existing[string(tier)])
+		values[tier] = &value
+		description := initModelMapInputDescription(tier, builtIns[string(tier)])
+		fields = append(fields,
+			huh.NewInput().
+				Title(fmt.Sprintf("%s model", tier)).
+				Description(description).
+				Value(values[tier]),
 		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initModelMapEdit{}, err
-		}
-		if back || action == initModelMapActionBack {
-			return initModelMapEdit{}, errInitNavigateBack
-		}
-		switch action {
-		case initModelMapActionPreserve:
-			return initModelMapEdit{Apply: false}, nil
-		case initModelMapActionReset:
-			return initModelMapEdit{Apply: true, ModelMap: nil}, nil
-		case initModelMapActionEdit:
-		case initModelMapActionBack:
-			return initModelMapEdit{}, errInitNavigateBack
-		default:
-			return initModelMapEdit{}, fmt.Errorf("unsupported model-map action %q", action)
-		}
-
-		detailAction := initDetailActionEdit
-		existing := copyModelMap(prompt.ModelMap)
-		values := map[config.ModelTier]*string{}
-		fields := make([]huh.Field, 0, len(config.ModelTiers()))
-		builtIns := config.BuiltInModelMap(prompt.LLM.Provider, prompt.LLM.Adapter)
-		for _, tier := range config.ModelTiers() {
-			value := strings.TrimSpace(existing[string(tier)])
-			values[tier] = &value
-			description := initModelMapInputDescription(tier, builtIns[string(tier)])
-			fields = append(fields,
-				huh.NewInput().
-					Title(fmt.Sprintf("%s model", tier)).
-					Description(description).
-					Value(values[tier]),
-			)
-		}
-		form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Model tier details").
-					Options(
-						huh.NewOption("Edit tier mappings", initDetailActionEdit),
-						huh.NewOption("Back to model-map choices", initDetailActionBack),
-					).
-					Value(&detailAction),
-			).Title("Model Tiers"),
-			huh.NewGroup(fields...).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack
-			}).Title("Model Tiers"),
-		)
-		back, err = runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initModelMapEdit{}, err
-		}
-		if back || detailAction == initDetailActionBack {
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Model-map action").
+				Options(
+					huh.NewOption("Stage model-map settings", initDetailActionEdit),
+					huh.NewOption("Back without staging", initDetailActionBack),
+				).
+				Value(&action),
+		).Title("Model Tiers"),
+		huh.NewGroup(fields...).WithHideFunc(func() bool {
+			return action == initDetailActionBack
+		}).Title("Model Tiers"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return initModelMapEdit{}, err
+	}
+	if back || action == initDetailActionBack {
+		return initModelMapEdit{}, errInitNavigateBack
+	}
+	edited := config.ModelMap{}
+	for _, tier := range config.ModelTiers() {
+		value := strings.TrimSpace(*values[tier])
+		if value == "" {
 			continue
 		}
-		edited := config.ModelMap{}
-		for _, tier := range config.ModelTiers() {
-			value := strings.TrimSpace(*values[tier])
-			if value == "" {
-				continue
-			}
-			edited[string(tier)] = value
-		}
-		if len(edited) == 0 {
-			edited = nil
-		}
-		return initModelMapEdit{Apply: true, ModelMap: edited}, nil
+		edited[string(tier)] = value
 	}
+	if len(edited) == 0 {
+		edited = nil
+	}
+	return initModelMapEdit{Apply: true, ModelMap: edited}, nil
 }
 
 func (p huhInitAgentSourcesPrompter) EditAgentSources(prompt initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
-	for {
-		action := initAgentSourcesActionPreserve
-		options := []huh.Option[initAgentSourcesAction]{
-			huh.NewOption("Keep current agent source paths", initAgentSourcesActionPreserve),
-			huh.NewOption("Edit agent source paths", initAgentSourcesActionEdit),
-			huh.NewOption("Back to main menu", initAgentSourcesActionBack),
-		}
-		if len(prompt.Sources) > 0 {
-			options = append(options, huh.NewOption("Reset all agent source paths", initAgentSourcesActionReset))
-		}
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[initAgentSourcesAction]().
-					Title("Agent source paths").
-					Options(options...).
-					Value(&action),
-			),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initAgentSourcesEdit{}, err
-		}
-		if back || action == initAgentSourcesActionBack {
-			return initAgentSourcesEdit{}, errInitNavigateBack
-		}
-		switch action {
-		case initAgentSourcesActionPreserve:
-			return initAgentSourcesEdit{Apply: false}, nil
-		case initAgentSourcesActionReset:
-			return initAgentSourcesEdit{Apply: true, Sources: nil}, nil
-		case initAgentSourcesActionEdit:
-		case initAgentSourcesActionBack:
-			return initAgentSourcesEdit{}, errInitNavigateBack
-		default:
-			return initAgentSourcesEdit{}, fmt.Errorf("unsupported agent-sources action %q", action)
-		}
-
-		detailAction := initDetailActionEdit
-		values := make([]string, len(prompt.Sources))
-		fields := make([]huh.Field, 0, len(values)+1)
-		for i := range prompt.Sources {
-			values[i] = prompt.Sources[i]
-			fields = append(fields,
-				huh.NewInput().
-					Title(fmt.Sprintf("Agent source %d", i+1)).
-					Description("Leave blank to remove this path. Paths are normalized before save.").
-					Value(&values[i]),
-			)
-		}
-		var additions string
+	action := initDetailActionEdit
+	values := make([]string, len(prompt.Sources))
+	fields := make([]huh.Field, 0, len(values)+1)
+	for i := range prompt.Sources {
+		values[i] = prompt.Sources[i]
 		fields = append(fields,
 			huh.NewInput().
-				Title("Add agent sources").
-				Description("Optional. Enter comma-separated paths to append.").
-				Value(&additions),
+				Title(fmt.Sprintf("Agent source %d", i+1)).
+				Description("Leave blank to remove this path. Paths are normalized before save.").
+				Value(&values[i]),
 		)
-		form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Agent source details").
-					Options(
-						huh.NewOption("Edit agent source paths", initDetailActionEdit),
-						huh.NewOption("Back to agent-source choices", initDetailActionBack),
-					).
-					Value(&detailAction),
-			).Title("Agent Sources"),
-			huh.NewGroup(fields...).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack
-			}).Title("Agent Sources"),
-		)
-		back, err = runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initAgentSourcesEdit{}, err
-		}
-		if back || detailAction == initDetailActionBack {
+	}
+	var additions string
+	fields = append(fields,
+		huh.NewInput().
+			Title("Add agent sources").
+			Description("Optional. Enter comma-separated paths to append.").
+			Value(&additions),
+	)
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Agent source action").
+				Options(
+					huh.NewOption("Stage agent source settings", initDetailActionEdit),
+					huh.NewOption("Back without staging", initDetailActionBack),
+				).
+				Value(&action),
+		).Title("Agent Sources"),
+		huh.NewGroup(fields...).WithHideFunc(func() bool {
+			return action == initDetailActionBack
+		}).Title("Agent Sources"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return initAgentSourcesEdit{}, err
+	}
+	if back || action == initDetailActionBack {
+		return initAgentSourcesEdit{}, errInitNavigateBack
+	}
+	edited := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
 			continue
 		}
-		edited := make([]string, 0, len(values))
-		for _, value := range values {
-			if strings.TrimSpace(value) == "" {
-				continue
-			}
-			edited = append(edited, value)
-		}
-		for _, value := range strings.Split(additions, ",") {
-			if strings.TrimSpace(value) == "" {
-				continue
-			}
-			edited = append(edited, value)
-		}
-		if len(edited) == 0 {
-			edited = nil
-		}
-		return initAgentSourcesEdit{Apply: true, Sources: edited}, nil
+		edited = append(edited, value)
 	}
+	for _, value := range strings.Split(additions, ",") {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		edited = append(edited, value)
+	}
+	if len(edited) == 0 {
+		edited = nil
+	}
+	return initAgentSourcesEdit{Apply: true, Sources: edited}, nil
 }
 
 func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
-	for {
-		action := initReviewPolicyActionPreserve
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[initReviewPolicyAction]().
-					Title("Review policy").
-					Options(
-						huh.NewOption("Keep current review policy", initReviewPolicyActionPreserve),
-						huh.NewOption("Edit review policy", initReviewPolicyActionEdit),
-						huh.NewOption("Back to main menu", initReviewPolicyActionBack),
-					).
-					Value(&action),
-			),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initReviewPolicyEdit{}, err
-		}
-		if back || action == initReviewPolicyActionBack {
-			return initReviewPolicyEdit{}, errInitNavigateBack
-		}
-		if action == initReviewPolicyActionPreserve {
-			return initReviewPolicyEdit{Apply: false}, nil
-		}
-		if action != initReviewPolicyActionEdit {
-			return initReviewPolicyEdit{}, fmt.Errorf("unsupported review-policy action %q", action)
-		}
-
-		detailAction := initDetailActionEdit
-		policy := prompt.ReviewPolicy
-		if policy.MajorEvent == "" {
-			policy.MajorEvent = config.ReviewMajorEventComment
-		}
-		majorEvent := policy.MajorEvent
-		selfApprove := policy.AllowSelfApprove
-		selfApproveChoice := initReviewPolicySelfApproveChoice(selfApprove)
-		resolveThreads := string(policy.ResolveThreads)
-		resolveAfter := policy.ResolveAfter
-		form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Review policy details").
-					Options(
-						huh.NewOption("Edit review policy", initDetailActionEdit),
-						huh.NewOption("Back to review-policy choices", initDetailActionBack),
-					).
-					Value(&detailAction),
-			).Title("Review Policy"),
-			huh.NewGroup(
-				huh.NewSelect[config.ReviewMajorEvent]().
-					Title("Major findings event").
-					Options(
-						huh.NewOption("Comment", config.ReviewMajorEventComment),
-						huh.NewOption("Request changes", config.ReviewMajorEventRequestChanges),
-					).
-					Value(&majorEvent),
-				huh.NewSelect[string]().
-					Title("Allow self-approve").
-					Options(initReviewPolicySelfApproveOptions()...).
-					Value(&selfApproveChoice),
-				huh.NewSelect[string]().
-					Title("Resolve threads").
-					Options(
-						huh.NewOption("Use built-in default", ""),
-						huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
-						huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
-					).
-					Value(&resolveThreads),
-				huh.NewInput().
-					Title("Resolve-after duration").
-					Description("Optional. Leave blank to clear. Example: 24h or 30m.").
-					Value(&resolveAfter).
-					Validate(validateOptionalDuration),
-			).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack
-			}).Title("Review Policy"),
-		)
-		back, err = runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initReviewPolicyEdit{}, err
-		}
-		if back || detailAction == initDetailActionBack {
-			continue
-		}
-		selfApprove = initReviewPolicyAllowSelfApprove(selfApproveChoice)
-		return initReviewPolicyEdit{
-			Apply: true,
-			ReviewPolicy: config.ReviewPolicy{
-				MajorEvent:       majorEvent,
-				AllowSelfApprove: selfApprove,
-				ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(resolveThreads)),
-				ResolveAfter:     strings.TrimSpace(resolveAfter),
-			},
-		}, nil
+	action := initDetailActionEdit
+	policy := prompt.ReviewPolicy
+	if policy.MajorEvent == "" {
+		policy.MajorEvent = config.ReviewMajorEventComment
 	}
+	majorEvent := policy.MajorEvent
+	selfApprove := policy.AllowSelfApprove
+	selfApproveChoice := initReviewPolicySelfApproveChoice(selfApprove)
+	resolveThreads := string(policy.ResolveThreads)
+	resolveAfter := policy.ResolveAfter
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Review policy action").
+				Options(
+					huh.NewOption("Stage review-policy settings", initDetailActionEdit),
+					huh.NewOption("Back without staging", initDetailActionBack),
+				).
+				Value(&action),
+		).Title("Review Policy"),
+		huh.NewGroup(
+			huh.NewSelect[config.ReviewMajorEvent]().
+				Title("Major findings event").
+				Options(
+					huh.NewOption("Comment", config.ReviewMajorEventComment),
+					huh.NewOption("Request changes", config.ReviewMajorEventRequestChanges),
+				).
+				Value(&majorEvent),
+			huh.NewSelect[string]().
+				Title("Allow self-approve").
+				Options(initReviewPolicySelfApproveOptions()...).
+				Value(&selfApproveChoice),
+			huh.NewSelect[string]().
+				Title("Resolve threads").
+				Options(
+					huh.NewOption("Use built-in default", ""),
+					huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
+					huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
+				).
+				Value(&resolveThreads),
+			huh.NewInput().
+				Title("Resolve-after duration").
+				Description("Optional. Leave blank to clear. Example: 24h or 30m.").
+				Value(&resolveAfter).
+				Validate(validateOptionalDuration),
+		).WithHideFunc(func() bool {
+			return action == initDetailActionBack
+		}).Title("Review Policy"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return initReviewPolicyEdit{}, err
+	}
+	if back || action == initDetailActionBack {
+		return initReviewPolicyEdit{}, errInitNavigateBack
+	}
+	selfApprove = initReviewPolicyAllowSelfApprove(selfApproveChoice)
+	return initReviewPolicyEdit{
+		Apply: true,
+		ReviewPolicy: config.ReviewPolicy{
+			MajorEvent:       majorEvent,
+			AllowSelfApprove: selfApprove,
+			ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(resolveThreads)),
+			ResolveAfter:     strings.TrimSpace(resolveAfter),
+		},
+	}, nil
 }
 
 func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEdit, error) {
-	for {
-		action := prompt.Action
-		if action == "" {
-			action = initRoutesActionPreserve
-			options := []huh.Option[initRoutesAction]{
-				huh.NewOption("Keep current repository routes", initRoutesActionPreserve),
-				huh.NewOption("Edit repository routes", initRoutesActionEdit),
-				huh.NewOption("Back to main menu", initRoutesActionBack),
-			}
-			if len(prompt.Routes) > 0 {
-				options = append(options, huh.NewOption("Remove all routes for this profile", initRoutesActionReset))
-			}
-			if prompt.HostChanged && len(prompt.Routes) > 0 {
-				options = []huh.Option[initRoutesAction]{
-					huh.NewOption("Reconcile repository routes", initRoutesActionEdit),
-					huh.NewOption("Remove all routes for this profile", initRoutesActionReset),
-					huh.NewOption("Back to main menu", initRoutesActionBack),
-				}
-				action = initRoutesActionEdit
-			}
-			form := huh.NewForm(
-				huh.NewGroup(
-					huh.NewSelect[initRoutesAction]().
-						Title("Repository routes").
-						Options(options...).
-						Value(&action),
-				),
-			)
-			back, err := runBackableInitForm(form, p.stdin, p.stderr)
-			if err != nil {
-				return initRoutesEdit{}, err
-			}
-			if back || action == initRoutesActionBack {
-				return initRoutesEdit{}, errInitNavigateBack
-			}
-		}
-		routeText := formatInitRouteSpecs(prompt.Routes)
-		switch action {
-		case initRoutesActionPreserve:
-			return initRoutesEdit{Apply: false}, nil
-		case initRoutesActionReset:
-			return initRoutesEdit{Apply: true, Routes: nil}, nil
-		case initRoutesActionEdit:
-		case initRoutesActionBack:
-			return initRoutesEdit{}, errInitNavigateBack
-		default:
-			return initRoutesEdit{}, fmt.Errorf("unsupported routes action %q", action)
-		}
-
-		detailAction := initDetailActionEdit
-		fields := []huh.Field{}
-		detailBackLabel := "Back to repository-route choices"
-		if prompt.Action != "" {
-			detailBackLabel = "Back to review profile"
-		}
-		fields = append(fields,
-			huh.NewNote().
-				Title("Automatic profile selection").
-				Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile."),
-			huh.NewNote().
-				Title("Accepted route formats").
-				Description("One per line: host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL."),
-		)
-		if prompt.HostChanged && len(prompt.Routes) > 0 {
-			fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
-		}
-		fields = append(fields,
-			huh.NewText().
-				Title("Route entries").
-				Value(&routeText),
-		)
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Repository route details").
-					Options(
-						huh.NewOption("Edit repository routes", initDetailActionEdit),
-						huh.NewOption(detailBackLabel, initDetailActionBack),
-					).
-					Value(&detailAction),
-			).Title("Repository Routes"),
-			huh.NewGroup(fields...).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack
-			}).Title("Repository Routes"),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initRoutesEdit{}, err
-		}
-		if back || detailAction == initDetailActionBack {
-			if prompt.Action != "" {
-				return initRoutesEdit{}, errInitNavigateBack
-			}
-			continue
-		}
-		routes, err := parseInitRouteSpecs(routeText)
-		if err != nil {
-			return initRoutesEdit{}, err
-		}
-		return initRoutesEdit{Apply: true, Routes: routes}, nil
+	action := prompt.Action
+	if action == "" {
+		action = initRoutesActionEdit
 	}
+	routeText := formatInitRouteSpecs(prompt.Routes)
+	fields := []huh.Field{
+		huh.NewNote().
+			Title("Automatic profile selection").
+			Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile."),
+		huh.NewNote().
+			Title("Accepted route formats").
+			Description("One per line: host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL."),
+	}
+	if prompt.HostChanged && len(prompt.Routes) > 0 {
+		fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
+	}
+	fields = append(fields,
+		huh.NewText().
+			Title("Route entries").
+			Description("Leave blank to remove all routes for this profile.").
+			Value(&routeText),
+	)
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[initRoutesAction]().
+				Title("Repository route action").
+				Options(
+					huh.NewOption("Stage repository-route settings", initRoutesActionEdit),
+					huh.NewOption("Back without staging", initRoutesActionBack),
+				).
+				Value(&action),
+		).Title("Repository Routes"),
+		huh.NewGroup(fields...).WithHideFunc(func() bool {
+			return action == initRoutesActionBack
+		}).Title("Repository Routes"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return initRoutesEdit{}, err
+	}
+	if back || action == initRoutesActionBack {
+		return initRoutesEdit{}, errInitNavigateBack
+	}
+	routes, err := parseInitRouteSpecs(routeText)
+	if err != nil {
+		return initRoutesEdit{}, err
+	}
+	return initRoutesEdit{Apply: true, Routes: routes}, nil
 }
 
 func (p huhInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
-	for {
-		action := initRetentionActionPreserve
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[initRetentionAction]().
-					Title("Data retention").
-					Options(
-						huh.NewOption("Keep current retention settings", initRetentionActionPreserve),
-						huh.NewOption("Edit retention settings", initRetentionActionEdit),
-						huh.NewOption("Reset retention to defaults", initRetentionActionReset),
-						huh.NewOption("Back to main menu", initRetentionActionBack),
-					).
-					Value(&action),
-			),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initRetentionEdit{}, err
-		}
-		if back || action == initRetentionActionBack {
-			return initRetentionEdit{}, errInitNavigateBack
-		}
-		switch action {
-		case initRetentionActionPreserve:
-			return initRetentionEdit{Apply: false}, nil
-		case initRetentionActionReset:
-			return initRetentionEdit{Apply: true, Retention: config.DefaultRetentionConfig()}, nil
-		case initRetentionActionEdit:
-		case initRetentionActionBack:
-			return initRetentionEdit{}, errInitNavigateBack
-		default:
-			return initRetentionEdit{}, fmt.Errorf("unsupported retention action %q", action)
-		}
-
-		detailAction := initDetailActionEdit
-		retention := prompt.Retention
-		mode := initRetentionMaxAgeDefault
-		customDays := ""
-		switch {
-		case retention.MaxAgeDays != nil && *retention.MaxAgeDays == 0:
-			mode = initRetentionMaxAgeForever
-		case retention.MaxAgeDays != nil && *retention.MaxAgeDays != config.DefaultRetentionConfig().MaxAgeDaysValue():
-			mode = initRetentionMaxAgeCustom
-			customDays = fmt.Sprintf("%d", *retention.MaxAgeDays)
-		}
-		enforcement := string(retention.Enforcement)
-		if enforcement == "" {
-			enforcement = string(config.RetentionAtWrite)
-		}
-		form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Retention details").
-					Options(
-						huh.NewOption("Edit retention settings", initDetailActionEdit),
-						huh.NewOption("Back to retention choices", initDetailActionBack),
-					).
-					Value(&detailAction),
-			).Title("Retention"),
-			huh.NewGroup(
-				huh.NewSelect[initRetentionMaxAgeMode]().
-					Title("Maximum run-data age").
-					Options(
-						huh.NewOption("Default 90 days", initRetentionMaxAgeDefault),
-						huh.NewOption("Keep forever", initRetentionMaxAgeForever),
-						huh.NewOption("Custom days", initRetentionMaxAgeCustom),
-					).
-					Value(&mode),
-				huh.NewInput().
-					Title("Custom max age in days").
-					Description("Required only when using a custom max age. Use 0 from the mode selector for keep forever.").
-					Value(&customDays).
-					Validate(func(value string) error {
-						if mode != initRetentionMaxAgeCustom {
-							return nil
-						}
-						return validateRetentionMaxAgeDays(value)
-					}),
-				huh.NewSelect[string]().
-					Title("Retention enforcement").
-					Options(
-						huh.NewOption("At write", string(config.RetentionAtWrite)),
-						huh.NewOption("Manual only", string(config.RetentionManualOnly)),
-					).
-					Value(&enforcement),
-			).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack
-			}).Title("Retention"),
-		)
-		back, err = runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initRetentionEdit{}, err
-		}
-		if back || detailAction == initDetailActionBack {
-			continue
-		}
-		next := config.RetentionConfig{
-			Enforcement: config.RetentionEnforcement(strings.TrimSpace(enforcement)),
-		}
-		switch mode {
-		case initRetentionMaxAgeDefault:
-			defaultDays := config.DefaultRetentionConfig().MaxAgeDaysValue()
-			next.MaxAgeDays = &defaultDays
-		case initRetentionMaxAgeForever:
-			keepForever := 0
-			next.MaxAgeDays = &keepForever
-		case initRetentionMaxAgeCustom:
-			days, err := parseInteractiveRetentionMaxAgeDays(customDays)
-			if err != nil {
-				return initRetentionEdit{}, err
-			}
-			next.MaxAgeDays = &days
-		default:
-			return initRetentionEdit{}, fmt.Errorf("unsupported retention max-age mode %q", mode)
-		}
-		return initRetentionEdit{Apply: true, Retention: next}, nil
+	action := initDetailActionEdit
+	retention := prompt.Retention
+	mode := initRetentionMaxAgeDefault
+	customDays := ""
+	switch {
+	case retention.MaxAgeDays != nil && *retention.MaxAgeDays == 0:
+		mode = initRetentionMaxAgeForever
+	case retention.MaxAgeDays != nil && *retention.MaxAgeDays != config.DefaultRetentionConfig().MaxAgeDaysValue():
+		mode = initRetentionMaxAgeCustom
+		customDays = fmt.Sprintf("%d", *retention.MaxAgeDays)
 	}
+	enforcement := string(retention.Enforcement)
+	if enforcement == "" {
+		enforcement = string(config.RetentionAtWrite)
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Retention action").
+				Options(
+					huh.NewOption("Stage retention settings", initDetailActionEdit),
+					huh.NewOption("Back without staging", initDetailActionBack),
+				).
+				Value(&action),
+		).Title("Retention"),
+		huh.NewGroup(
+			huh.NewSelect[initRetentionMaxAgeMode]().
+				Title("Maximum run-data age").
+				Options(
+					huh.NewOption("Default 90 days", initRetentionMaxAgeDefault),
+					huh.NewOption("Keep forever", initRetentionMaxAgeForever),
+					huh.NewOption("Custom days", initRetentionMaxAgeCustom),
+				).
+				Value(&mode),
+			huh.NewInput().
+				Title("Custom max age in days").
+				Description("Required only when using a custom max age. Use 0 from the mode selector for keep forever.").
+				Value(&customDays).
+				Validate(func(value string) error {
+					if mode != initRetentionMaxAgeCustom {
+						return nil
+					}
+					return validateRetentionMaxAgeDays(value)
+				}),
+			huh.NewSelect[string]().
+				Title("Retention enforcement").
+				Options(
+					huh.NewOption("At write", string(config.RetentionAtWrite)),
+					huh.NewOption("Manual only", string(config.RetentionManualOnly)),
+				).
+				Value(&enforcement),
+		).WithHideFunc(func() bool {
+			return action == initDetailActionBack
+		}).Title("Retention"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return initRetentionEdit{}, err
+	}
+	if back || action == initDetailActionBack {
+		return initRetentionEdit{}, errInitNavigateBack
+	}
+	next := config.RetentionConfig{
+		Enforcement: config.RetentionEnforcement(strings.TrimSpace(enforcement)),
+	}
+	switch mode {
+	case initRetentionMaxAgeDefault:
+		defaultDays := config.DefaultRetentionConfig().MaxAgeDaysValue()
+		next.MaxAgeDays = &defaultDays
+	case initRetentionMaxAgeForever:
+		keepForever := 0
+		next.MaxAgeDays = &keepForever
+	case initRetentionMaxAgeCustom:
+		days, err := parseInteractiveRetentionMaxAgeDays(customDays)
+		if err != nil {
+			return initRetentionEdit{}, err
+		}
+		next.MaxAgeDays = &days
+	default:
+		return initRetentionEdit{}, fmt.Errorf("unsupported retention max-age mode %q", mode)
+	}
+	return initRetentionEdit{Apply: true, Retention: next}, nil
 }
 
 func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
-	for {
-		action := initKeyringBackendActionPreserve
-		options := []huh.Option[initKeyringBackendAction]{
-			huh.NewOption("Keep current keyring backend", initKeyringBackendActionPreserve),
-			huh.NewOption("Set keyring backend", initKeyringBackendActionEdit),
-			huh.NewOption("Back to main menu", initKeyringBackendActionBack),
-		}
-		if strings.TrimSpace(prompt.Backend) != "" {
-			options = append(options, huh.NewOption("Reset backend to auto selection", initKeyringBackendActionReset))
-		}
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[initKeyringBackendAction]().
-					Title("Keyring backend").
-					Options(options...).
-					Value(&action),
-			),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initKeyringBackendEdit{}, err
-		}
-		if back || action == initKeyringBackendActionBack {
-			return initKeyringBackendEdit{}, errInitNavigateBack
-		}
-		switch action {
-		case initKeyringBackendActionPreserve:
-			return initKeyringBackendEdit{Apply: false}, nil
-		case initKeyringBackendActionReset:
-			return initKeyringBackendEdit{Apply: true, Backend: ""}, nil
-		case initKeyringBackendActionEdit:
-		case initKeyringBackendActionBack:
-			return initKeyringBackendEdit{}, errInitNavigateBack
-		default:
-			return initKeyringBackendEdit{}, fmt.Errorf("unsupported keyring-backend action %q", action)
-		}
-
-		detailAction := initDetailActionEdit
-		backend := strings.TrimSpace(prompt.Backend)
-		form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Keyring backend details").
-					Options(
-						huh.NewOption("Set keyring backend", initDetailActionEdit),
-						huh.NewOption("Back to keyring choices", initDetailActionBack),
-					).
-					Value(&detailAction),
-			).Title("Keyring"),
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Persistent keyring backend").
-					Description("Examples include file or memory. Leave runtime-only --backend choices out unless you want them saved.").
-					Value(&backend).
-					Validate(validateRequiredText("keyring backend is required")),
-			).WithHideFunc(func() bool {
-				return detailAction == initDetailActionBack
-			}).Title("Keyring"),
-		)
-		back, err = runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initKeyringBackendEdit{}, err
-		}
-		if back || detailAction == initDetailActionBack {
-			continue
-		}
-		return initKeyringBackendEdit{Apply: true, Backend: strings.TrimSpace(backend)}, nil
+	action := initDetailActionEdit
+	backend := strings.TrimSpace(prompt.Backend)
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Keyring backend action").
+				Options(
+					huh.NewOption("Stage keyring-backend settings", initDetailActionEdit),
+					huh.NewOption("Back without staging", initDetailActionBack),
+				).
+				Value(&action),
+		).Title("Keyring"),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Persistent keyring backend").
+				Description("Examples include file or memory. Leave blank to use auto selection. Leave runtime-only --backend choices out unless you want them saved.").
+				Value(&backend),
+		).WithHideFunc(func() bool {
+			return action == initDetailActionBack
+		}).Title("Keyring"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return initKeyringBackendEdit{}, err
 	}
+	if back || action == initDetailActionBack {
+		return initKeyringBackendEdit{}, errInitNavigateBack
+	}
+	return initKeyringBackendEdit{Apply: true, Backend: strings.TrimSpace(backend)}, nil
 }
 
 func initModelMapInputDescription(tier config.ModelTier, builtIn string) string {

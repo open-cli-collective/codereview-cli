@@ -4757,8 +4757,7 @@ func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitModelMapPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2",          // Edit tier mappings
-			"",           // Edit model tier details
+			"",           // Stage model-map settings
 			"",           // small stays blank
 			"gpt-custom", // medium override
 			"",           // large stays blank
@@ -4784,8 +4783,8 @@ func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
 	if !strings.Contains(out, "small model") || !strings.Contains(out, "medium model") || !strings.Contains(out, "large model") {
 		t.Fatalf("stderr = %q, want tier input prompts", out)
 	}
-	if !strings.Contains(out, "Back to model-map choices") {
-		t.Fatalf("stderr = %q, want model-map detail Back option", out)
+	if !strings.Contains(out, "Back without staging") {
+		t.Fatalf("stderr = %q, want model-map Back option", out)
 	}
 }
 
@@ -4793,8 +4792,7 @@ func TestHuhInitModelMapPrompterAccessibleKeepsExistingOverrideWhenLeftBlank(t *
 	t.Setenv("TERM", "dumb")
 	prompter := huhInitModelMapPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Edit tier mappings
-			"",  // Edit model tier details
+			"",  // Stage model-map settings
 			"",  // small stays blank
 			"",  // medium keeps existing prefilled value
 			"",  // large stays blank
@@ -4818,29 +4816,29 @@ func TestHuhInitModelMapPrompterAccessibleKeepsExistingOverrideWhenLeftBlank(t *
 	}
 }
 
-func TestHuhInitModelMapPrompterAccessibleShowsResetOptionForExistingOverrides(t *testing.T) {
+func TestHuhInitModelMapPrompterAccessibleBackWithoutStagingNavigatesOut(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitModelMapPrompter{
-		stdin:  strings.NewReader("\n"),
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Back without staging
+			"",
+		}, "\n")),
 		stderr: &stderr,
 	}
 
-	edit, err := prompter.EditModelMap(initModelMapPrompt{
+	_, err := prompter.EditModelMap(initModelMapPrompt{
 		LLM: config.LLMConfig{
 			Provider: config.LLMProviderAnthropic,
 			Adapter:  config.LLMAdapterClaudeCLI,
 		},
 		ModelMap: config.ModelMap{"medium": "claude-custom"},
 	})
-	if err != nil {
-		t.Fatalf("EditModelMap: %v", err)
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditModelMap error = %v, want errInitNavigateBack", err)
 	}
-	if edit.Apply {
-		t.Fatalf("edit.Apply = %v, want preserve path", edit.Apply)
-	}
-	if !strings.Contains(stderr.String(), "Reset all overrides to built-in defaults") {
-		t.Fatalf("stderr = %q, want reset option when overrides exist", stderr.String())
+	if !strings.Contains(stderr.String(), "small model") || !strings.Contains(stderr.String(), "Back without staging") {
+		t.Fatalf("stderr = %q, want model-map fields and Back option", stderr.String())
 	}
 }
 
@@ -4849,8 +4847,7 @@ func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitAgentSourcesPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Edit agent source paths
-			"",  // Edit agent source details
+			"",  // Stage agent source settings
 			"",  // keep first prefilled path
 			"",  // no additional paths
 			"",
@@ -4874,8 +4871,8 @@ func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
 	if !strings.Contains(out, "Agent source 1") || !strings.Contains(out, "Add agent sources") {
 		t.Fatalf("stderr = %q, want editable agent source inputs", out)
 	}
-	if !strings.Contains(out, "Back to agent-source choices") {
-		t.Fatalf("stderr = %q, want agent-source detail Back option", out)
+	if !strings.Contains(out, "Back without staging") {
+		t.Fatalf("stderr = %q, want agent-source Back option", out)
 	}
 }
 
@@ -4884,8 +4881,7 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitReviewPolicyPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2",   // Edit review policy
-			"",    // Edit review policy details
+			"",    // Stage review-policy settings
 			"",    // keep comment
 			"",    // keep recommended self-approve false
 			"2",   // auto resolve
@@ -4917,8 +4913,8 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	if !strings.Contains(out, "Do not allow self-approve (recommended)") || !strings.Contains(out, "Enable self-approve") {
 		t.Fatalf("stderr = %q, want explicit self-approve choices", out)
 	}
-	if !strings.Contains(out, "Back to review-policy choices") {
-		t.Fatalf("stderr = %q, want review-policy detail Back option", out)
+	if !strings.Contains(out, "Back without staging") {
+		t.Fatalf("stderr = %q, want review-policy Back option", out)
 	}
 }
 
@@ -4952,8 +4948,7 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitRoutesPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Edit repository routes
-			"",  // Edit repository route details
+			"",  // Stage repository-route settings
 			"",  // keep existing route text
 			"",
 		}, "\n")),
@@ -4979,7 +4974,7 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 		t.Fatalf("routes = %#v, want preserved route", edit.Routes)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Repository route details") || !strings.Contains(out, "Edit repository routes") {
+	if !strings.Contains(out, "Repository route action") || !strings.Contains(out, "Stage repository-route settings") {
 		t.Fatalf("stderr = %q, want route editor prompt", out)
 	}
 	if !strings.Contains(out, "Automatic profile selection") || !strings.Contains(out, "Routes tell cr when to use this profile automatically.") {
@@ -4991,8 +4986,8 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	if !strings.Contains(out, "Route entries") {
 		t.Fatalf("stderr = %q, want route entry instructions", out)
 	}
-	if !strings.Contains(out, "Back to repository-route choices") {
-		t.Fatalf("stderr = %q, want repository-route detail Back option", out)
+	if !strings.Contains(out, "Back without staging") {
+		t.Fatalf("stderr = %q, want repository-route Back option", out)
 	}
 }
 
@@ -5020,7 +5015,7 @@ func TestHuhInitRoutesPrompterIntegratedEditBackNavigatesOut(t *testing.T) {
 		t.Fatalf("EditRoutes error = %v, want errInitNavigateBack", err)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Back to review profile") {
+	if !strings.Contains(out, "Back without staging") {
 		t.Fatalf("stderr = %q, want integrated Back option", out)
 	}
 }
@@ -5736,8 +5731,7 @@ func TestHuhInitRetentionPrompterAccessibleShowsFields(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitRetentionPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Edit retention settings
-			"",  // Edit retention details
+			"",  // Stage retention settings
 			"",  // keep default 90 days
 			"",  // custom days unused
 			"2", // manual only
@@ -5757,8 +5751,8 @@ func TestHuhInitRetentionPrompterAccessibleShowsFields(t *testing.T) {
 	if !strings.Contains(out, "Maximum run-data age") || !strings.Contains(out, "Retention enforcement") {
 		t.Fatalf("stderr = %q, want retention fields", out)
 	}
-	if !strings.Contains(out, "Back to retention choices") {
-		t.Fatalf("stderr = %q, want retention detail Back option", out)
+	if !strings.Contains(out, "Back without staging") {
+		t.Fatalf("stderr = %q, want retention Back option", out)
 	}
 }
 
@@ -5767,8 +5761,7 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitKeyringBackendPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2",    // Set keyring backend
-			"",     // Set keyring backend details
+			"",     // Stage keyring-backend settings
 			"file", // Persistent backend
 			"",
 		}, "\n")),
@@ -5785,8 +5778,8 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Persistent keyring backend") {
 		t.Fatalf("stderr = %q, want backend input prompt", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "Back to keyring choices") {
-		t.Fatalf("stderr = %q, want keyring detail Back option", stderr.String())
+	if !strings.Contains(stderr.String(), "Back without staging") {
+		t.Fatalf("stderr = %q, want keyring Back option", stderr.String())
 	}
 }
 
