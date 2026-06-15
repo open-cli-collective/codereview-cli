@@ -1929,6 +1929,10 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(entity initRevie
 		return initDraft{}, false, err
 	}
 	labelInput, explicitDisplayName, fallbackLabelSeed := reviewerEntityEditorLabelSeed(entity)
+	if !preserveCurrentLocation {
+		// New entities start from a blank editable label even when the kind has a fallback display shape.
+		labelInput = ""
+	}
 	reviewerSecretLocation := ""
 	if preserveCurrentLocation {
 		if currentRef := strings.TrimSpace(editDraft.ReviewerCredentialRef); currentRef != "" {
@@ -1936,8 +1940,6 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(entity initRevie
 		} else {
 			reviewerSecretLocation = standardReviewerRef
 		}
-	} else {
-		labelInput = ""
 	}
 	action := initDetailActionEdit
 	form := huh.NewForm(
@@ -1974,7 +1976,9 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(entity initRevie
 
 func finalizeReviewerEntityEditorDraft(editDraft *initDraft, explicitDisplayName string, fallbackLabelSeed string, labelInput string, reviewerSecretLocation string, standardReviewerRef string, preserveCurrentLocation bool) {
 	editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(labelInput)
-	if preserveCurrentLocation && explicitDisplayName == "" && editDraft.ReviewerDisplayName == fallbackLabelSeed {
+	userAcceptedFallbackLabelUnchanged := preserveCurrentLocation && explicitDisplayName == "" && editDraft.ReviewerDisplayName == fallbackLabelSeed
+	if userAcceptedFallbackLabelUnchanged {
+		// Keep inferred fallback labels as UI-only seeds; only persist labels the user explicitly set or changed.
 		editDraft.ReviewerDisplayName = ""
 	}
 	reviewerSecretLocation = strings.TrimSpace(reviewerSecretLocation)
@@ -4640,6 +4644,8 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	if draft.ReviewerEnabled {
 		reviewerRef := strings.TrimSpace(draft.ReviewerCredentialRef)
 		if reviewerRef == "" {
+			// A blank draft ref means "use this profile's standard reviewer secret location";
+			// expand it here so renames and shared-entity propagation can re-derive consistently.
 			reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
 			if err != nil {
 				return config.Profile{}, exitcode.Usage(err)
