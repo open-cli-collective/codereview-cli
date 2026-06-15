@@ -2314,7 +2314,6 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			gitUsesDefaultBeforeSelection := initStorageLabelUsesDefault(gitStorageLabel, standardGitCredentialRef)
 			reviewerUsesDefaultBeforeSelection := initStorageLabelUsesDefault(reviewerStorageLabel, standardReviewerCredentialRef)
 			llmUsesDefaultBeforeSelection := initStorageLabelUsesDefault(llmStorageLabel, standardLLMCredentialRef)
-			draft.AdvancedStorageLabels = true
 			applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
 			applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
 			applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, llmRuntimes)
@@ -2323,7 +2322,21 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
 			applyReviewerEntitySelection(&draft, reviewerMode)
 			applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
-			if err := normalizeInitProfileStorageLabels(&draft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime, ctx.GitScopes, ctx.ReviewerEntities, llmRuntimes, gitStorageLabel, reviewerStorageLabel, llmStorageLabel, gitUsesDefaultBeforeSelection, reviewerUsesDefaultBeforeSelection, llmUsesDefaultBeforeSelection); err != nil {
+			labels := initStorageLabelNormalizationInput{
+				Git: initStorageLabelFieldState{
+					Value:       gitStorageLabel,
+					UsesDefault: gitUsesDefaultBeforeSelection,
+				},
+				Reviewer: initStorageLabelFieldState{
+					Value:       reviewerStorageLabel,
+					UsesDefault: reviewerUsesDefaultBeforeSelection,
+				},
+				LLM: initStorageLabelFieldState{
+					Value:       llmStorageLabel,
+					UsesDefault: llmUsesDefaultBeforeSelection,
+				},
+			}
+			if err := normalizeInitProfileStorageLabels(&draft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime, ctx.GitScopes, ctx.ReviewerEntities, llmRuntimes, labels); err != nil {
 				return initDraft{}, err
 			}
 			draft.RepositoryRoutesAction = selectedRepositoryRoutesAction
@@ -2563,6 +2576,17 @@ func initStorageLabelUsesDefault(value, standard string) bool {
 	return value == "" || value == standard
 }
 
+type initStorageLabelFieldState struct {
+	Value       string
+	UsesDefault bool
+}
+
+type initStorageLabelNormalizationInput struct {
+	Git      initStorageLabelFieldState
+	Reviewer initStorageLabelFieldState
+	LLM      initStorageLabelFieldState
+}
+
 func initStandardGitCredentialRef(profileName, selection string, scopes map[string]initGitScopeDraft) (string, error) {
 	if selection != initCustomGitScopeSelection {
 		if scope, ok := scopes[selection]; ok && strings.TrimSpace(scope.CredentialRef) != "" {
@@ -2615,7 +2639,7 @@ func initStandardLLMCredentialRef(profileName, selection string, runtimes map[st
 	return credentials.FormatRef(profileName + "-llm")
 }
 
-func normalizeInitProfileStorageLabels(draft *initDraft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime string, scopes map[string]initGitScopeDraft, entities map[string]initReviewerEntityDraft, runtimes map[string]initLLMRuntimeDraft, gitValue, reviewerValue, llmValue string, gitUsesDefaultBeforeSelection, reviewerUsesDefaultBeforeSelection, llmUsesDefaultBeforeSelection bool) error {
+func normalizeInitProfileStorageLabels(draft *initDraft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime string, scopes map[string]initGitScopeDraft, entities map[string]initReviewerEntityDraft, runtimes map[string]initLLMRuntimeDraft, labels initStorageLabelNormalizationInput) error {
 	standardGitRef, err := initStandardGitCredentialRef(draft.ProfileName, selectedGitScope, scopes)
 	if err != nil {
 		return err
@@ -2629,32 +2653,32 @@ func normalizeInitProfileStorageLabels(draft *initDraft, selectedGitScope, selec
 		return err
 	}
 
-	if gitUsesDefaultBeforeSelection {
+	if labels.Git.UsesDefault {
 		draft.GitCredentialRef = standardGitRef
 	} else {
-		draft.GitCredentialRef = strings.TrimSpace(gitValue)
+		draft.GitCredentialRef = strings.TrimSpace(labels.Git.Value)
 	}
 
 	if !draft.ReviewerEnabled || !initReviewerStorageLabelRelevant(selectedReviewerEntity, entities) {
 		draft.ReviewerCredentialRef = ""
-	} else if reviewerUsesDefaultBeforeSelection {
+	} else if labels.Reviewer.UsesDefault {
 		draft.ReviewerCredentialRef = standardReviewerRef
 	} else {
-		draft.ReviewerCredentialRef = strings.TrimSpace(reviewerValue)
+		draft.ReviewerCredentialRef = strings.TrimSpace(labels.Reviewer.Value)
 	}
 
 	if config.LLMAuth(draft.LLMAuth) != config.LLMAuthAPIKey || !initLLMStorageLabelRelevant(selectedLLMRuntime, runtimes) {
 		draft.LLMCredentialRef = ""
-	} else if llmUsesDefaultBeforeSelection {
+	} else if labels.LLM.UsesDefault {
 		draft.LLMCredentialRef = standardLLMRef
 	} else {
-		draft.LLMCredentialRef = strings.TrimSpace(llmValue)
+		draft.LLMCredentialRef = strings.TrimSpace(labels.LLM.Value)
 	}
 
-	draft.AdvancedStorageLabels =
-		strings.TrimSpace(draft.GitCredentialRef) != strings.TrimSpace(standardGitRef) ||
-			(draft.ReviewerEnabled && strings.TrimSpace(draft.ReviewerCredentialRef) != strings.TrimSpace(standardReviewerRef)) ||
-			(config.LLMAuth(draft.LLMAuth) == config.LLMAuthAPIKey && strings.TrimSpace(draft.LLMCredentialRef) != strings.TrimSpace(standardLLMRef))
+	gitDeviatesFromStandard := strings.TrimSpace(draft.GitCredentialRef) != strings.TrimSpace(standardGitRef)
+	reviewerDeviatesFromStandard := draft.ReviewerEnabled && strings.TrimSpace(draft.ReviewerCredentialRef) != strings.TrimSpace(standardReviewerRef)
+	llmDeviatesFromStandard := config.LLMAuth(draft.LLMAuth) == config.LLMAuthAPIKey && strings.TrimSpace(draft.LLMCredentialRef) != strings.TrimSpace(standardLLMRef)
+	draft.AdvancedStorageLabels = gitDeviatesFromStandard || reviewerDeviatesFromStandard || llmDeviatesFromStandard
 	return nil
 }
 

@@ -6023,16 +6023,16 @@ func TestHuhInitPrompterAccessibleStorageLabelsRespondToProfileSelections(t *tes
 
 func TestInitProfileStorageLabelSelectionTransitionFollowsChangedDefaults(t *testing.T) {
 	draft := initDraft{
-		ProfileName:          "work",
-		GitAuth:              string(config.GitAuthModePAT),
-		GitCredentialRef:     "codereview/old-git",
-		ReviewerEnabled:      true,
-		ReviewerAuth:         string(config.GitAuthModePAT),
-		ReviewerCredentialRef:"codereview/old-reviewer",
-		LLMProvider:          string(config.LLMProviderAnthropic),
-		LLMAuth:              string(config.LLMAuthAPIKey),
-		LLMAdapter:           string(config.LLMAdapterAnthropicAPI),
-		LLMCredentialRef:     "codereview/old-llm",
+		ProfileName:           "work",
+		GitAuth:               string(config.GitAuthModePAT),
+		GitCredentialRef:      "codereview/old-git",
+		ReviewerEnabled:       true,
+		ReviewerAuth:          string(config.GitAuthModePAT),
+		ReviewerCredentialRef: "codereview/old-reviewer",
+		LLMProvider:           string(config.LLMProviderAnthropic),
+		LLMAuth:               string(config.LLMAuthAPIKey),
+		LLMAdapter:            string(config.LLMAdapterAnthropicAPI),
+		LLMCredentialRef:      "codereview/old-llm",
 	}
 	gitScopes := map[string]initGitScopeDraft{
 		"a-old-git": {
@@ -6106,7 +6106,20 @@ func TestInitProfileStorageLabelSelectionTransitionFollowsChangedDefaults(t *tes
 	selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
 	applyReviewerEntitySelection(&draft, reviewerMode)
 	applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
-	err = normalizeInitProfileStorageLabels(&draft, "z-new-git", "z-new-reviewer", "z-new-runtime", gitScopes, reviewerEntities, runtimes, gitValue, reviewerValue, llmValue, gitUsesDefaultBeforeSelection, reviewerUsesDefaultBeforeSelection, llmUsesDefaultBeforeSelection)
+	err = normalizeInitProfileStorageLabels(&draft, "z-new-git", "z-new-reviewer", "z-new-runtime", gitScopes, reviewerEntities, runtimes, initStorageLabelNormalizationInput{
+		Git: initStorageLabelFieldState{
+			Value:       gitValue,
+			UsesDefault: gitUsesDefaultBeforeSelection,
+		},
+		Reviewer: initStorageLabelFieldState{
+			Value:       reviewerValue,
+			UsesDefault: reviewerUsesDefaultBeforeSelection,
+		},
+		LLM: initStorageLabelFieldState{
+			Value:       llmValue,
+			UsesDefault: llmUsesDefaultBeforeSelection,
+		},
+	})
 	if err != nil {
 		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
 	}
@@ -6250,16 +6263,16 @@ func TestHuhInitPrompterAccessibleStorageLabelsKeepCustomOverridesAcrossSelectio
 
 func TestNormalizeInitProfileStorageLabelsUsesSelectedDefaultsForBlankInputs(t *testing.T) {
 	draft := initDraft{
-		ProfileName:          "work",
-		GitAuth:              string(config.GitAuthModePAT),
-		ReviewerEnabled:      true,
-		ReviewerAuth:         string(config.GitAuthModePAT),
-		LLMAuth:              string(config.LLMAuthAPIKey),
-		LLMProvider:          string(config.LLMProviderAnthropic),
-		LLMAdapter:           string(config.LLMAdapterAnthropicAPI),
-		GitCredentialRef:     "codereview/old-git",
-		ReviewerCredentialRef:"codereview/old-reviewer",
-		LLMCredentialRef:     "codereview/old-llm",
+		ProfileName:           "work",
+		GitAuth:               string(config.GitAuthModePAT),
+		ReviewerEnabled:       true,
+		ReviewerAuth:          string(config.GitAuthModePAT),
+		LLMAuth:               string(config.LLMAuthAPIKey),
+		LLMProvider:           string(config.LLMProviderAnthropic),
+		LLMAdapter:            string(config.LLMAdapterAnthropicAPI),
+		GitCredentialRef:      "codereview/old-git",
+		ReviewerCredentialRef: "codereview/old-reviewer",
+		LLMCredentialRef:      "codereview/old-llm",
 	}
 	reviewerEntities := map[string]initReviewerEntityDraft{
 		"pat-reviewer": {
@@ -6277,7 +6290,11 @@ func TestNormalizeInitProfileStorageLabelsUsesSelectedDefaultsForBlankInputs(t *
 		},
 	}
 
-	err := normalizeInitProfileStorageLabels(&draft, initCustomGitScopeSelection, "pat-reviewer", "anthropic-runtime", nil, reviewerEntities, runtimes, "", "", "", true, true, true)
+	err := normalizeInitProfileStorageLabels(&draft, initCustomGitScopeSelection, "pat-reviewer", "anthropic-runtime", nil, reviewerEntities, runtimes, initStorageLabelNormalizationInput{
+		Git:      initStorageLabelFieldState{UsesDefault: true},
+		Reviewer: initStorageLabelFieldState{UsesDefault: true},
+		LLM:      initStorageLabelFieldState{UsesDefault: true},
+	})
 	if err != nil {
 		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
 	}
@@ -6314,7 +6331,11 @@ func TestNormalizeInitProfileStorageLabelsFollowsChangedGitScopeDefault(t *testi
 		},
 	}
 
-	err := normalizeInitProfileStorageLabels(&draft, "new-git", string(initReviewerEntityKindUseGitIdentity), "", scopes, nil, nil, "codereview/old-git", "", "", true, true, true)
+	err := normalizeInitProfileStorageLabels(&draft, "new-git", string(initReviewerEntityKindUseGitIdentity), "", scopes, nil, nil, initStorageLabelNormalizationInput{
+		Git:      initStorageLabelFieldState{Value: "codereview/old-git", UsesDefault: true},
+		Reviewer: initStorageLabelFieldState{UsesDefault: true},
+		LLM:      initStorageLabelFieldState{UsesDefault: true},
+	})
 	if err != nil {
 		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
 	}
@@ -6347,7 +6368,11 @@ func TestNormalizeInitProfileStorageLabelsClearsHiddenReviewerAndLLMOverrides(t 
 		},
 	}
 
-	err := normalizeInitProfileStorageLabels(&draft, initCustomGitScopeSelection, string(initReviewerEntityKindUseGitIdentity), "claude-runtime", nil, nil, runtimes, "codereview/work", "codereview/custom-reviewer", "codereview/custom-llm", true, false, false)
+	err := normalizeInitProfileStorageLabels(&draft, initCustomGitScopeSelection, string(initReviewerEntityKindUseGitIdentity), "claude-runtime", nil, nil, runtimes, initStorageLabelNormalizationInput{
+		Git:      initStorageLabelFieldState{Value: "codereview/work", UsesDefault: true},
+		Reviewer: initStorageLabelFieldState{Value: "codereview/custom-reviewer", UsesDefault: false},
+		LLM:      initStorageLabelFieldState{Value: "codereview/custom-llm", UsesDefault: false},
+	})
 	if err != nil {
 		t.Fatalf("normalizeInitProfileStorageLabels: %v", err)
 	}
