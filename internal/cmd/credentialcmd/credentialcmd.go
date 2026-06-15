@@ -922,8 +922,9 @@ type huhInitLLMRuntimePrompter struct {
 }
 
 type huhInitReviewerEntityPrompter struct {
-	stdin  io.Reader
-	stderr io.Writer
+	stdin           io.Reader
+	stderr          io.Writer
+	inventoryRunner initInventoryRunner
 }
 
 type huhInitFinalizePrompter struct {
@@ -1404,12 +1405,20 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	previousProfileName := session.workspace.profileName
 	previousProfile := session.workspace.profile
 	previousCfg := cloneInitConfigFile(session.cfg)
+	previousEntity := initReviewerEntityDraft{}
+	if draft.ActionTarget != "" {
+		if entity, ok := promptCtx.ReviewerEntities[draft.ActionTarget]; ok {
+			previousEntity = entity
+		}
+	} else {
+		previousEntity = initReviewerEntityDraftFromConfig(session.workspace.profile)
+	}
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
 	if err != nil {
 		return initSessionDraft{}, false, err
 	}
 	session.cfg = cloneInitConfigFile(workspace.cfg)
-	session.cfg = propagateSharedReviewerEntityDisplayName(previousCfg, session.cfg, workspace.profileName, initReviewerEntityDraftFromSeedDraft(draft))
+	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, initReviewerEntityDraftFromSeedDraft(draft))
 	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
 	session.requestedProfileName = workspace.profileName
 	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, session.workspace.profile) {
@@ -1427,12 +1436,13 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	return session, true, nil
 }
 
-func propagateSharedReviewerEntityDisplayName(priorCfg config.File, updatedCfg config.File, activeProfileName string, entity initReviewerEntityDraft) config.File {
-	if entity.Kind == initReviewerEntityKindUseGitIdentity {
+func propagateSharedReviewerEntityChanges(priorCfg config.File, updatedCfg config.File, activeProfileName string, previousEntity initReviewerEntityDraft, nextEntity initReviewerEntityDraft) config.File {
+	if previousEntity.Kind == initReviewerEntityKindUseGitIdentity || previousEntity.identityKey() == "" {
 		return updatedCfg
 	}
-	identityKey := entity.identityKey()
-	displayName := normalizeOptionalDisplayName(entity.DisplayName)
+	identityKey := previousEntity.identityKey()
+	displayName := normalizeOptionalDisplayName(nextEntity.DisplayName)
+	credentialRef := strings.TrimSpace(nextEntity.CredentialRef)
 	for profileName, previousProfile := range priorCfg.Profiles {
 		if profileName == activeProfileName {
 			continue
@@ -1447,6 +1457,8 @@ func propagateSharedReviewerEntityDisplayName(priorCfg config.File, updatedCfg c
 		if initReviewerEntityDraftFromConfig(profile).identityKey() != identityKey {
 			continue
 		}
+		profile.ReviewerCredentials.AuthMode = nextEntity.AuthMode
+		profile.ReviewerCredentials.CredentialRef = credentialRef
 		profile.ReviewerCredentials.DisplayName = displayName
 		updatedCfg.Profiles[profileName] = profile
 	}
@@ -1844,241 +1856,236 @@ func (p huhInitLLMRuntimePrompter) runtimeAvailabilityNote(preset initLLMRuntime
 
 func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
 	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
-	selectedReviewerEntity := prompt.Context.ProfileReviewerEntities[prompt.Context.ExistingProfileName]
-	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
-	if selectedReviewerEntity == "" {
-		selectedReviewerEntity = reviewerMode
-	} else {
-		selectedReviewerEntity = normalizeReviewerEntitySelectionValue(selectedReviewerEntity, prompt.Context.ReviewerEntities)
-	}
 	for {
-		choice := selectedReviewerEntity
-		options := initReviewerEntityOptions(prompt.Context.ReviewerEntities, focusedReviewerEntityFallbackLabel(prompt.Context.ExistingProfileName))
-		pendingDeleteNames := make([]string, 0, len(prompt.Context.PendingReviewerEntityDeletes))
-		for name := range prompt.Context.PendingReviewerEntityDeletes {
-			pendingDeleteNames = append(pendingDeleteNames, name)
-		}
-		sort.Strings(pendingDeleteNames)
-		for _, name := range pendingDeleteNames {
-			options = append(options, huh.NewOption(reviewerEntityDeletePendingLabel(name), initUndoReviewerEntityDeletePrefix+name))
-		}
-		options = append(options, huh.NewOption("Back to main menu", initBackSelection))
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Reviewer entity").
-					Description(reviewerEntitySelectionDescription()).
-					Options(options...).
-					Value(&choice),
-			).Title("Reviewer Entity"),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		result, err := p.runInventory(initInventoryPrompt{
+			Title:       "Reviewer Entity",
+			Description: reviewerEntitySelectionDescription(),
+			Rows:        initReviewerEntityInventoryRows(prompt.Context),
+			Width:       80,
+			Height:      20,
+		})
 		if err != nil {
 			return initDraft{}, err
 		}
-		if back || choice == initBackSelection {
+		switch result.Action {
+		case initInventoryActionBack:
 			return initDraft{}, errInitNavigateBack
-		}
-		if strings.HasPrefix(choice, initUndoReviewerEntityDeletePrefix) {
+		case initInventoryActionRestore:
 			return initDraft{
 				Action:       initDraftActionUndoDeleteReviewerEntity,
-				ActionTarget: strings.TrimPrefix(choice, initUndoReviewerEntityDeletePrefix),
+				ActionTarget: result.Row.ID,
 			}, nil
+		case initInventoryActionStageDelete:
+			return initDraft{
+				Action:       initDraftActionDeleteReviewerEntity,
+				ActionTarget: result.Row.ID,
+			}, nil
+		case initInventoryActionEdit, initInventoryActionCommand:
+		case initInventoryActionNone:
+			continue
+		default:
+			return initDraft{}, fmt.Errorf("unsupported reviewer inventory action %q", result.Action)
 		}
+
+		selection := result.Row.ID
 		candidateDraft := draft
-		applyReviewerEntityInventorySelection(&candidateDraft, choice, prompt.Context.ReviewerEntities)
-		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(candidateDraft).Kind)
-		applyReviewerEntitySelection(&candidateDraft, reviewerMode)
-		detailDraft := candidateDraft
-		back, deleted, err := p.editReviewerEntityDetails(choice, &detailDraft, prompt.Context.ReviewerEntities)
+		applyReviewerEntityInventorySelection(&candidateDraft, selection, prompt.Context.ReviewerEntities)
+		entity, existingEntity := prompt.Context.ReviewerEntities[selection]
+		if existingEntity {
+			detailDraft, back, err := p.editExistingReviewerEntity(entity, candidateDraft)
+			if err != nil {
+				return initDraft{}, err
+			}
+			if back {
+				continue
+			}
+			detailDraft.ActionTarget = selection
+			return detailDraft, nil
+		}
+		detailDraft, back, err := p.editNewReviewerEntity(initReviewerEntityKind(selection), candidateDraft)
 		if err != nil {
 			return initDraft{}, err
 		}
 		if back {
-			selectedReviewerEntity = choice
 			continue
 		}
-		if deleted {
-			return initDraft{
-				Action:       initDraftActionDeleteReviewerEntity,
-				ActionTarget: choice,
-			}, nil
-		}
-		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(detailDraft).Kind)
-		applyReviewerEntitySelection(&detailDraft, reviewerMode)
 		return detailDraft, nil
 	}
 }
 
-func (p huhInitReviewerEntityPrompter) editReviewerEntityDetails(selection string, draft *initDraft, entities map[string]initReviewerEntityDraft) (bool, bool, error) {
-	action := initDetailActionEdit
-	detailOptions := []huh.Option[string]{
-		huh.NewOption("Edit reviewer details", initDetailActionEdit),
-	}
-	if _, ok := entities[selection]; ok {
-		detailOptions = append(detailOptions, huh.NewOption("Mark reviewer entity for deletion", initDetailActionDelete))
-	}
-	detailOptions = append(detailOptions, huh.NewOption("Back to reviewer choices", initDetailActionBack))
-	actionForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Reviewer entity details").
-				Options(detailOptions...).
-				Value(&action),
-		).Title("Reviewer Entity Details"),
-	)
-	back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
-	if err != nil {
-		return false, false, err
-	}
-	if back || action == initDetailActionBack {
-		return true, false, nil
-	}
-	if action == initDetailActionDelete {
-		return false, true, nil
-	}
-	editDraft := *draft
-	reviewerMode := string(initReviewerEntityDraftFromSeedDraft(editDraft).Kind)
-	reviewerTypeForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Reviewer entity type").
-				Options(
-					huh.NewOption(reviewerEntityTemplateFallbackLabel(), string(initReviewerEntityKindUseGitIdentity)),
-					huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)),
-					huh.NewOption(reviewerEntityTemplateGitHubAppLabel(), string(initReviewerEntityKindGitHubApp)),
-				).
-				Value(&reviewerMode),
-		).Title("Reviewer Entity Details"),
-	)
-	back, err = runBackableInitForm(reviewerTypeForm, p.stdin, p.stderr)
-	if err != nil {
-		return false, false, err
-	}
-	if back {
-		return true, false, nil
-	}
-	if initReviewerEntityKind(reviewerMode) != initReviewerEntityKindUseGitIdentity {
-		labelAction := initDetailActionEdit
-		labelActionForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Reviewer label action").
-					Options(
-						huh.NewOption("Use this reviewer label", initDetailActionEdit),
-						huh.NewOption("Back without staging", initDetailActionBack),
-					).
-					Value(&labelAction),
-			).Title("Reviewer Entity Details"),
-		)
-		back, err = runBackableInitForm(labelActionForm, p.stdin, p.stderr)
-		if err != nil {
-			return false, false, err
-		}
-		if back || labelAction == initDetailActionBack {
-			return true, false, nil
-		}
-		labelInputForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Reviewer entity label").
-					Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
-					Value(&editDraft.ReviewerDisplayName).
-					Validate(validateOptionalDisplayName),
-			).Title("Reviewer Entity Details"),
-		)
-		back, err = runBackableInitForm(labelInputForm, p.stdin, p.stderr)
-		if err != nil {
-			return false, false, err
-		}
-		if back {
-			return true, false, nil
-		}
-		editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(editDraft.ReviewerDisplayName)
+func (p huhInitReviewerEntityPrompter) editExistingReviewerEntity(entity initReviewerEntityDraft, seed initDraft) (initDraft, bool, error) {
+	return p.editReviewerEntityFields(entity.Kind, seed, strings.TrimSpace(entity.CredentialRef), true)
+}
 
-		secretLocationAction := initReviewerSecretLocationActionStandard
-		if currentReviewerRefUsesCustomLocation(editDraft) {
-			secretLocationAction = initReviewerSecretLocationActionCustom
-		}
-		secretLocationForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Reviewer secret location").
-					Description("Most users should leave the standard secret location in place.").
-					Options(
-						huh.NewOption("Use the standard reviewer secret location", initReviewerSecretLocationActionStandard),
-						huh.NewOption("Use a custom reviewer secret location", initReviewerSecretLocationActionCustom),
-						huh.NewOption("Back without staging", initDetailActionBack),
-					).
-					Value(&secretLocationAction),
-			).Title("Reviewer Entity Details"),
-		)
-		back, err = runBackableInitForm(secretLocationForm, p.stdin, p.stderr)
-		if err != nil {
-			return false, false, err
-		}
-		if back || secretLocationAction == initDetailActionBack {
-			return true, false, nil
-		}
-		editDraft.AdvancedStorageLabels = secretLocationAction == initReviewerSecretLocationActionCustom
-		if !editDraft.AdvancedStorageLabels {
-			editDraft.ReviewerCredentialRef = ""
-		}
-		if editDraft.AdvancedStorageLabels {
-			customLocationAction := initDetailActionEdit
-			customLocationForm := huh.NewForm(
-				huh.NewGroup(
-					huh.NewSelect[string]().
-						Title("Reviewer secret location action").
-						Options(
-							huh.NewOption("Use this reviewer secret location", initDetailActionEdit),
-							huh.NewOption("Back without staging", initDetailActionBack),
-						).
-						Value(&customLocationAction),
-					huh.NewInput().
-						Title("Reviewer secret location").
-						Description("Leave blank to use the standard profile-based secret location for this separate reviewer credential.").
-						Value(&editDraft.ReviewerCredentialRef).
-						Validate(validateOptionalCredentialRef),
-				).Title("Reviewer Entity Details"),
-			)
-			back, err = runBackableInitForm(customLocationForm, p.stdin, p.stderr)
-			if err != nil {
-				return false, false, err
-			}
-			if back || customLocationAction == initDetailActionBack {
-				return true, false, nil
-			}
-		}
-	}
-	editAction := initDetailActionEdit
-	editActionForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Reviewer detail action").
-				Options(
-					huh.NewOption("Stage these reviewer settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&editAction),
-		).Title("Reviewer Entity Details"),
-	)
-	back, err = runBackableInitForm(editActionForm, p.stdin, p.stderr)
-	if err != nil {
-		return false, false, err
-	}
-	if back || editAction == initDetailActionBack {
-		return true, false, nil
-	}
-	applyReviewerEntitySelection(&editDraft, reviewerMode)
-	*draft = editDraft
-	return false, false, nil
+func (p huhInitReviewerEntityPrompter) editNewReviewerEntity(kind initReviewerEntityKind, seed initDraft) (initDraft, bool, error) {
+	return p.editReviewerEntityFields(kind, seed, "", false)
 }
 
 const (
 	initReviewerSecretLocationActionStandard = "reviewer_secret_location_standard"
 	initReviewerSecretLocationActionCustom   = "reviewer_secret_location_custom"
 )
+
+func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewerEntityKind, seed initDraft, standardReviewerRef string, preserveCurrentLocation bool) (initDraft, bool, error) {
+	editDraft := seed
+	applyReviewerEntitySelection(&editDraft, string(kind))
+	if kind == initReviewerEntityKindUseGitIdentity {
+		action := initDetailActionEdit
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Reviewer detail action").
+					Options(
+						huh.NewOption("Stage reviewer settings", initDetailActionEdit),
+						huh.NewOption("Back without staging", initDetailActionBack),
+					).
+					Value(&action),
+			).Title("Reviewer Entity Details"),
+		)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
+		if err != nil {
+			return initDraft{}, false, err
+		}
+		if back || action == initDetailActionBack {
+			return initDraft{}, true, nil
+		}
+		return editDraft, false, nil
+	}
+
+	secretLocationMode := initReviewerSecretLocationActionStandard
+	customSecretLocation := ""
+	if !preserveCurrentLocation && currentReviewerRefUsesCustomLocation(editDraft) {
+		secretLocationMode = initReviewerSecretLocationActionCustom
+	}
+	secretLocationDescription := "Keep the standard reviewer secret location unless you need an advanced custom location."
+	standardLocationLabel := "Use the standard reviewer secret location (recommended)"
+	if preserveCurrentLocation {
+		secretLocationDescription = "Keep this reviewer entity's current secret location unless you need an advanced custom location."
+		standardLocationLabel = "Keep this reviewer entity's current secret location (recommended)"
+	}
+	action := initDetailActionEdit
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Entity label").
+				Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
+				Value(&editDraft.ReviewerDisplayName).
+				Validate(validateOptionalDisplayName),
+			huh.NewSelect[string]().
+				Title("Reviewer secret location").
+				Description(secretLocationDescription).
+				Options(
+					huh.NewOption(standardLocationLabel, initReviewerSecretLocationActionStandard),
+					huh.NewOption("Use a custom reviewer secret location (advanced)", initReviewerSecretLocationActionCustom),
+				).
+				Value(&secretLocationMode),
+			huh.NewInput().
+				Title("Custom reviewer secret location").
+				Description("Advanced: enter a custom reviewer secret location. Leave blank when using the standard location.").
+				Value(&customSecretLocation).
+				Validate(func(value string) error {
+					if secretLocationMode != initReviewerSecretLocationActionCustom {
+						return nil
+					}
+					if strings.TrimSpace(value) == "" {
+						return fmt.Errorf("custom reviewer secret location is required")
+					}
+					return validateOptionalCredentialRef(value)
+				}),
+			huh.NewSelect[string]().
+				Title("Reviewer detail action").
+				Options(
+					huh.NewOption("Stage reviewer settings", initDetailActionEdit),
+					huh.NewOption("Back without staging", initDetailActionBack),
+				).
+				Value(&action),
+		).Title("Reviewer Entity Details"),
+	)
+	back, err := runBackableInitForm(form, p.stdin, p.stderr)
+	if err != nil {
+		return initDraft{}, false, err
+	}
+	if back || action == initDetailActionBack {
+		return initDraft{}, true, nil
+	}
+	editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(editDraft.ReviewerDisplayName)
+	editDraft.AdvancedStorageLabels = secretLocationMode == initReviewerSecretLocationActionCustom
+	if editDraft.AdvancedStorageLabels {
+		editDraft.ReviewerCredentialRef = strings.TrimSpace(customSecretLocation)
+	} else {
+		editDraft.ReviewerCredentialRef = standardReviewerRef
+	}
+	return editDraft, false, nil
+}
+
+func (p huhInitReviewerEntityPrompter) runInventory(prompt initInventoryPrompt) (initInventoryResult, error) {
+	runner := p.inventoryRunner
+	if runner == nil {
+		runner = runInitInventory
+	}
+	return runner(prompt, p.stdin, p.stderr)
+}
+
+func initReviewerEntityInventoryRows(ctx initPromptContext) []initInventoryRow {
+	names := configuredInitReviewerEntityNames(ctx.ReviewerEntities)
+	sort.Strings(names)
+	rows := make([]initInventoryRow, 0, len(names)+len(ctx.PendingReviewerEntityDeletes)+4)
+	for _, name := range names {
+		entity := ctx.ReviewerEntities[name]
+		rows = append(rows, initInventoryRow{
+			ID:          name,
+			Title:       initReviewerEntityLabel(entity),
+			Kind:        initInventoryRowKindActive,
+			Selectable:  true,
+			Deletable:   true,
+			FilterValue: strings.TrimSpace(strings.Join([]string{name, initReviewerEntityLabel(entity), entity.CredentialRef, entity.DisplayName}, " ")),
+		})
+	}
+	pendingDeleteNames := make([]string, 0, len(ctx.PendingReviewerEntityDeletes))
+	for name := range ctx.PendingReviewerEntityDeletes {
+		pendingDeleteNames = append(pendingDeleteNames, name)
+	}
+	sort.Strings(pendingDeleteNames)
+	for _, name := range pendingDeleteNames {
+		rows = append(rows, initInventoryRow{
+			ID:         name,
+			Title:      reviewerEntityDeletePendingLabel(name),
+			Kind:       initInventoryRowKindPending,
+			Restorable: true,
+		})
+	}
+	rows = append(rows,
+		initInventoryRow{
+			ID:            string(initReviewerEntityKindUseGitIdentity),
+			Title:         focusedReviewerEntityFallbackLabel(ctx.ExistingProfileName),
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            string(initReviewerEntityKindPAT),
+			Title:         reviewerEntityTemplatePATLabel(),
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            string(initReviewerEntityKindGitHubApp),
+			Title:         reviewerEntityTemplateGitHubAppLabel(),
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            initBackSelection,
+			Title:         "Back to main menu",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionBack,
+			Selectable:    true,
+		},
+	)
+	return rows
+}
 
 func currentReviewerRefUsesCustomLocation(draft initDraft) bool {
 	if !draft.ReviewerEnabled {

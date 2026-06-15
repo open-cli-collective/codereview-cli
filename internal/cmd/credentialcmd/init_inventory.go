@@ -62,6 +62,8 @@ type initInventoryPrompt struct {
 	Messages    []tea.Msg
 }
 
+type initInventoryRunner func(initInventoryPrompt, io.Reader, io.Writer) (initInventoryResult, error)
+
 type initInventoryItem struct {
 	row initInventoryRow
 }
