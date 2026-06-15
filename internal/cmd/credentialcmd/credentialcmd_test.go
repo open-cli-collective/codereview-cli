@@ -5629,6 +5629,38 @@ func TestHuhInitFinalizePrompterAccessibleBackReturnsBack(t *testing.T) {
 	}
 }
 
+func TestHuhInitFinalizePrompterAccessibleShowsCommitAndDiscardOptions(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitFinalizePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Back to main menu.
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	action, err := prompter.ChooseFinalizeAction(initFinalizePrompt{
+		Profiles: []initProfileReadiness{{ProfileName: "work", Ready: true}},
+	})
+	if err != nil {
+		t.Fatalf("ChooseFinalizeAction: %v", err)
+	}
+	if action != initFinalizeActionBack {
+		t.Fatalf("action = %q, want Back", action)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Commit staged changes and exit",
+		"Discard staged changes and exit",
+		"Back to main menu",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr = %q, want finalize option %q", out, want)
+		}
+	}
+}
+
 func TestInitInteractiveRetentionPreserveEditResetAndExplicitZero(t *testing.T) {
 	keepForever := 0
 	tests := []struct {
