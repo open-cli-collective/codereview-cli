@@ -4264,11 +4264,11 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCustomSecretLocationPersis
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",                               // Entity label
-			"",                               // Keep the current custom reviewer secret location selected
-			"",                               // Stage reviewer settings
-			"codereview/custom-reviewer-ref", // Custom reviewer secret location
-			"",                               // Stage reviewer settings
+			"", // Entity label
+			"", // Keep the current custom reviewer secret location selected
+			"", // Stage reviewer settings
+			"", // Keep the existing custom reviewer secret location
+			"", // Stage reviewer settings
 		}, "\n")),
 		stderr: &stderr,
 	}
