@@ -2383,6 +2383,19 @@ func TestReviewerEntityGitAccountFallbackLabelUsesUnknownIdentityGitHubApp(t *te
 	}
 }
 
+func TestProfileEditorReviewerEntityFallbackLabelIgnoresStaleIdentityCacheWhenGitScopeChanges(t *testing.T) {
+	existing := basicProfile("work")
+	existing.Git.IdentityCache = "rianjs"
+	label := profileEditorReviewerEntityFallbackLabel(initGitScopeDraft{
+		Host:          "github.mycompany.com",
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-app",
+	}, &existing)
+	if got, want := label, "Post using this profile's Git account (GitHub App)"; got != want {
+		t.Fatalf("fallback label = %q, want %q", got, want)
+	}
+}
+
 func TestSharedGitScopeAndReviewerEntityDoNotDriftIdentityCacheAcrossProfiles(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
