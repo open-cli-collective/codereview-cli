@@ -150,7 +150,7 @@ profile shape well enough to understand why each secret is needed.
 
 If the user cancels during credential collection after choosing **Commit staged
 changes and exit**, any pending secret values remain draft-only and the session
-returns to a no-write state. Until final apply begins, cancellation must still
+returns to a no-write state. Until final commit begins, cancellation must still
 leave both config and keyring untouched.
 
 ## Draft-Local Reuse Rules

@@ -1169,7 +1169,7 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 			session, err = editInteractiveInitGlobalSettings(cmd, opts, deps, session)
 		case initMenuActionSave:
 			if session.workspace == nil {
-				return initSessionDraft{}, exitcode.Usage(errors.New("save requires at least one configured profile"))
+				return initSessionDraft{}, exitcode.Usage(errors.New("commit requires at least one configured profile"))
 			}
 			return session, nil
 		case initMenuActionExit:
