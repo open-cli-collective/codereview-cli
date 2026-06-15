@@ -20,7 +20,7 @@ func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *t
 			{ID: "app", Title: "GitHub App reviewer: org-bot", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
 			{ID: "pat", Title: "PAT reviewer", FilterValue: "default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
 			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
-			{ID: "create-pat", Title: "Use a personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
+			{ID: "create-pat", Title: "Configure new personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
@@ -181,7 +181,7 @@ func TestInitInventoryEnterSelectsActiveAndCommandRows(t *testing.T) {
 		Height: 20,
 		Rows: []initInventoryRow{
 			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-			{ID: "create-pat", Title: "Use a personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
+			{ID: "create-pat", Title: "Configure new personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
@@ -297,11 +297,20 @@ func TestInitReviewerEntityInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	if got := rows[2]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
 		t.Fatalf("fallback row = %#v, want selectable command fallback", got)
 	}
+	if got, want := rows[2].Title, "Use a profile's Git account (no separate reviewer entity)"; got != want {
+		t.Fatalf("fallback row title = %q, want %q", got, want)
+	}
 	if got := rows[3]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
 		t.Fatalf("pat row = %#v, want selectable command PAT template", got)
 	}
+	if got, want := rows[3].Title, "Configure new personal access token (PAT) reviewer"; got != want {
+		t.Fatalf("pat row title = %q, want %q", got, want)
+	}
 	if got := rows[4]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
 		t.Fatalf("github app row = %#v, want selectable command GitHub App template", got)
+	}
+	if got, want := rows[4].Title, "Configure new GitHub App reviewer"; got != want {
+		t.Fatalf("github app row title = %q, want %q", got, want)
 	}
 	if got := rows[5]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionBack {
 		t.Fatalf("back row = %#v, want selectable Back command", got)

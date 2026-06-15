@@ -2193,6 +2193,27 @@ func TestInitReviewerEntityOptionsExcludeConfiguredGitIdentityFallback(t *testin
 	}
 }
 
+func TestInitReviewerEntityOptionsExposeLiteralCreateLabels(t *testing.T) {
+	options := initReviewerEntityOptions(
+		map[string]initReviewerEntityDraft{},
+		"Use a profile's Git account (no separate reviewer entity)",
+	)
+
+	var got []string
+	for _, option := range options {
+		got = append(got, option.Key)
+	}
+
+	want := []string{
+		"Use a profile's Git account (no separate reviewer entity)",
+		"Configure new personal access token (PAT) reviewer",
+		"Configure new GitHub App reviewer",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("option labels = %#v, want %#v", got, want)
+	}
+}
+
 func TestInitReviewerEntityLabelUsesExplicitDisplayName(t *testing.T) {
 	label := initReviewerEntityLabel(initReviewerEntityDraft{
 		Name:          "reviewer-github-app",
@@ -4821,7 +4842,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 		}, "\n")),
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Use a personal access token (PAT) reviewer\n")
+			_, _ = io.WriteString(out, "Configure new personal access token (PAT) reviewer\n")
 			return initInventoryResult{
 				Action: initInventoryActionCommand,
 				Row: initInventoryRow{
@@ -4872,7 +4893,7 @@ func TestHuhInitReviewerEntityPrompterNewTemplateDoesNotInheritCustomSecretLocat
 		}, "\n")),
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Use a GitHub App reviewer\n")
+			_, _ = io.WriteString(out, "Configure new GitHub App reviewer\n")
 			return initInventoryResult{
 				Action: initInventoryActionCommand,
 				Row: initInventoryRow{
