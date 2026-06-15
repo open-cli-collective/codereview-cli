@@ -4162,6 +4162,44 @@ func TestHuhInitLLMRuntimePrompterReplacementChoosesConfiguredTemplate(t *testin
 	}
 }
 
+func TestHuhInitLLMRuntimePrompterReplacementBackExcludesDeletedRuntime(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"7", // Back to runtime details
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.chooseLLMRuntimeDeleteReplacement(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}}, "claude-cli", seedInteractiveInitDraft("work", "work", "work", &existing))
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("chooseLLMRuntimeDeleteReplacement error = %v, want errInitNavigateBack", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Replacement LLM runtime") || !strings.Contains(out, "Template: Codex CLI subscription") {
+		t.Fatalf("stderr = %q, want replacement runtime prompt with replacement options", out)
+	}
+	if strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") {
+		t.Fatalf("stderr = %q, want deleted runtime excluded from replacement choices", out)
+	}
+}
+
 func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")

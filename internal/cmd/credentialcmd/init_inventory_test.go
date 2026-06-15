@@ -327,6 +327,15 @@ func TestInitLLMRuntimeInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	if len(rows) != 9 {
 		t.Fatalf("len(rows) = %d, want 9", len(rows))
 	}
+	if got, want := rows[0].Title, "Configured: Claude CLI subscription (claude-cli)"; got != want {
+		t.Fatalf("rows[0].Title = %q, want %q", got, want)
+	}
+	if got, want := rows[1].Title, "Restore LLM runtime codex-cli (staged for deletion)"; got != want {
+		t.Fatalf("rows[1].Title = %q, want %q", got, want)
+	}
+	if !strings.Contains(rows[0].FilterValue, "claude-cli") || !strings.Contains(rows[0].FilterValue, "Claude CLI subscription") {
+		t.Fatalf("rows[0].FilterValue = %q, want runtime id and label content", rows[0].FilterValue)
+	}
 	if got := rows[0]; got.Kind != initInventoryRowKindActive || !got.Selectable || !got.Deletable || got.Restorable || got.PrimaryAction != initInventoryActionNone {
 		t.Fatalf("active row = %#v, want selectable+deletable active llm runtime", got)
 	}
@@ -340,6 +349,41 @@ func TestInitLLMRuntimeInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	}
 	if got := rows[8]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionBack {
 		t.Fatalf("back row = %#v, want selectable Back command", got)
+	}
+}
+
+func TestInitLLMRuntimeInventoryDeterministicRunnerReturnsRestoreAction(t *testing.T) {
+	rows := initLLMRuntimeInventoryRows(initPromptContext{
+		LLMRuntimes: map[string]initLLMRuntimeDraft{
+			"claude-cli": {
+				Name:     "claude-cli",
+				Preset:   initLLMRuntimePresetClaudeCLISubscription,
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+		},
+		PendingLLMRuntimeDeletes: map[string]initPendingLLMRuntimeDelete{
+			"codex-cli": {RuntimeName: "codex-cli"},
+		},
+	})
+
+	result, err := runInitInventory(initInventoryPrompt{
+		Title:  "LLM runtime",
+		Width:  80,
+		Height: 20,
+		Mode:   initInventoryModeDeterministic,
+		Messages: []tea.Msg{
+			tea.KeyMsg{Type: tea.KeyDown},
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")},
+		},
+		Rows: rows,
+	}, strings.NewReader(""), io.Discard)
+	if err != nil {
+		t.Fatalf("runInitInventory: %v", err)
+	}
+	if result.Action != initInventoryActionRestore || result.Row.ID != "codex-cli" {
+		t.Fatalf("result = %#v, want deterministic restore action for pending LLM runtime", result)
 	}
 }
 
