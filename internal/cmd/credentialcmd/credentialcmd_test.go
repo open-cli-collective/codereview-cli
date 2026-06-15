@@ -2383,6 +2383,124 @@ func TestReviewerEntityGitAccountFallbackLabelUsesUnknownIdentityGitHubApp(t *te
 	}
 }
 
+func TestInitReviewerEntityInventoryRowsUseExplicitGitAccountFallbackLabels(t *testing.T) {
+	cases := []struct {
+		name     string
+		git      config.GitConfig
+		wantText string
+	}{
+		{
+			name: "known PAT identity",
+			git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/home",
+				IdentityCache: "rianjs",
+			},
+			wantText: "Post as rianjs (GitHub PAT)",
+		},
+		{
+			name: "known GitHub App identity",
+			git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				CredentialRef: "codereview/home-app",
+				IdentityCache: "review-bot",
+			},
+			wantText: "Post as review-bot (GitHub App)",
+		},
+		{
+			name: "unknown PAT identity",
+			git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/home",
+			},
+			wantText: "Post using this profile's Git account (GitHub PAT)",
+		},
+		{
+			name: "unknown GitHub App identity",
+			git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				CredentialRef: "codereview/home-app",
+			},
+			wantText: "Post using this profile's Git account (GitHub App)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := basicProfile("home")
+			profile.Git = tc.git
+			rows := initReviewerEntityInventoryRows(initPromptContext{
+				ExistingProfile: &profile,
+			})
+			if len(rows) == 0 {
+				t.Fatal("rows = empty, want fallback command row")
+			}
+			if got := rows[0].Title; got != tc.wantText {
+				t.Fatalf("fallback row = %q, want %q", got, tc.wantText)
+			}
+		})
+	}
+}
+
+func TestProfileEditorReviewerEntityFallbackLabelUsesExplicitGitAccountFallbackLabels(t *testing.T) {
+	cases := []struct {
+		name     string
+		git      initGitScopeDraft
+		existing *config.Profile
+		wantText string
+	}{
+		{
+			name: "known PAT identity",
+			git: initGitScopeDraft{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/home",
+			},
+			existing: &config.Profile{
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/home",
+					IdentityCache: "rianjs",
+				},
+			},
+			wantText: "Post as rianjs (GitHub PAT)",
+		},
+		{
+			name: "unknown GitHub App identity",
+			git: initGitScopeDraft{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				CredentialRef: "codereview/home-app",
+			},
+			existing: &config.Profile{
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModeGitHubApp,
+					CredentialRef: "codereview/home-app",
+				},
+			},
+			wantText: "Post using this profile's Git account (GitHub App)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			options := initReviewerEntityOptions(map[string]initReviewerEntityDraft{}, profileEditorReviewerEntityFallbackLabel(tc.git, tc.existing))
+			if len(options) == 0 {
+				t.Fatal("options = empty, want fallback option")
+			}
+			if got := options[0].Key; got != tc.wantText {
+				t.Fatalf("fallback option = %q, want %q", got, tc.wantText)
+			}
+		})
+	}
+}
+
 func TestProfileEditorReviewerEntityFallbackLabelIgnoresStaleIdentityCacheWhenGitScopeChanges(t *testing.T) {
 	existing := basicProfile("work")
 	existing.Git.IdentityCache = "rianjs"
