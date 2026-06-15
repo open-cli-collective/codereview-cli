@@ -2553,15 +2553,9 @@ func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
 	case initReviewerEntityKindUseGitIdentity:
 		return "None (uses each profile's Git account)"
 	case initReviewerEntityKindGitHubApp:
-		if displayName != "" {
-			return fmt.Sprintf("%s (GitHub App reviewer)", displayName)
-		}
-		return fmt.Sprintf("GitHub App reviewer: %s", reviewerEntityFallbackIdentityLabel(entity))
+		return fmt.Sprintf("%s (GitHub App reviewer)", firstNonEmpty(displayName, reviewerEntityFallbackIdentityLabel(entity)))
 	case initReviewerEntityKindPAT:
-		if displayName != "" {
-			return fmt.Sprintf("%s (PAT reviewer)", displayName)
-		}
-		return fmt.Sprintf("PAT reviewer: %s", reviewerEntityFallbackIdentityLabel(entity))
+		return fmt.Sprintf("%s (PAT reviewer)", firstNonEmpty(displayName, reviewerEntityFallbackIdentityLabel(entity)))
 	default:
 		if displayName != "" {
 			return displayName
@@ -2587,6 +2581,15 @@ func reviewerEntityFallbackIdentityLabel(entity initReviewerEntityDraft) string 
 		pathSegment = ref[slash+1:]
 	}
 	return pathSegment
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func applyReviewerEntityInventorySelection(draft *initDraft, selection string, entities map[string]initReviewerEntityDraft) {
