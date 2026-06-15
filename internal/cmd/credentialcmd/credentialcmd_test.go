@@ -6714,6 +6714,31 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	}
 }
 
+func TestHuhInitRoutesPrompterAccessibleEscapeBackNavigatesOut(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	var stderr bytes.Buffer
+	prompter := huhInitRoutesPrompter{
+		stdin:  strings.NewReader("\x1b"),
+		stderr: &stderr,
+	}
+
+	_, err := prompter.EditRoutes(initRoutesPrompt{
+		ProfileName: "work",
+		ProfileHost: "github.com",
+		Routes: []configedit.RepositoryRouteSpec{{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+		}},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditRoutes error = %v, want errInitNavigateBack", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Automatic profile selection") || !strings.Contains(out, "Route entries") {
+		t.Fatalf("stderr = %q, want route editor fields before Back", out)
+	}
+}
+
 func TestInitReviewerModelTierCopy(t *testing.T) {
 	if initReviewerModelTierTitle != "Minimum reviewer model tier" {
 		t.Fatalf("title = %q", initReviewerModelTierTitle)
@@ -11278,6 +11303,63 @@ func TestInitInteractiveReconcilesRouteHostChangeDuringRename(t *testing.T) {
 	}
 	if cfg.RepositoryProfiles[0].Profile != "office" || cfg.RepositoryProfiles[0].Match.Host != "gitlab.com" {
 		t.Fatalf("RepositoryProfiles = %#v, want renamed reconciled route", cfg.RepositoryProfiles)
+	}
+}
+
+func TestInitInteractiveRejectsUnchangedStaleRoutesAfterHostChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		}},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				GitHost:             "gitlab.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/work",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
+				t.Fatalf("prompt = %#v, want host reconciliation context", prompt)
+			}
+			return initRoutesEdit{Routes: prompt.Routes}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if !strings.Contains(err.Error(), `route host "github.com" does not match selected profile host "gitlab.com"`) {
+		t.Fatalf("error = %v, want mismatched route host rejection", err)
 	}
 }
 
