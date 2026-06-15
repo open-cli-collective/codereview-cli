@@ -6678,7 +6678,6 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitRoutesPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"", // Stage repository-route settings
 			"", // keep existing route text
 			"",
 		}, "\n")),
@@ -6697,15 +6696,12 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EditRoutes: %v", err)
 	}
-	if !edit.Apply {
-		t.Fatal("edit.Apply = false, want true")
-	}
 	if len(edit.Routes) != 1 || edit.Routes[0].Namespace != "open-cli-collective" {
 		t.Fatalf("routes = %#v, want preserved route", edit.Routes)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Repository route action") || !strings.Contains(out, "Stage repository-route settings") {
-		t.Fatalf("stderr = %q, want route editor prompt", out)
+	if strings.Contains(out, "Repository route action") || strings.Contains(out, "Stage repository-route settings") {
+		t.Fatalf("stderr = %q, want flattened route editor without action preflight", out)
 	}
 	if !strings.Contains(out, "Automatic profile selection") || !strings.Contains(out, "Routes tell cr when to use this profile automatically.") {
 		t.Fatalf("stderr = %q, want route editor explanation", out)
@@ -6716,26 +6712,45 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	if !strings.Contains(out, "Route entries") {
 		t.Fatalf("stderr = %q, want route entry instructions", out)
 	}
-	if !strings.Contains(out, "Back without staging") {
-		t.Fatalf("stderr = %q, want repository-route Back option", out)
+}
+
+func TestHuhInitRoutesPrompterAccessibleBlankingPrefilledRoutesRemovesAll(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	var stderr bytes.Buffer
+	initial := []configedit.RepositoryRouteSpec{{
+		Host:      "github.com",
+		Namespace: "open-cli-collective",
+		Repos:     []string{"codereview-cli"},
+	}}
+	prompter := huhInitRoutesPrompter{
+		stdin:  strings.NewReader("\x15\r\r"),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.EditRoutes(initRoutesPrompt{
+		ProfileName: "work",
+		ProfileHost: "github.com",
+		Routes:      initial,
+	})
+	if err != nil {
+		t.Fatalf("EditRoutes: %v", err)
+	}
+	if edit.Routes != nil {
+		t.Fatalf("routes = %#v, want nil after clearing prefilled route text", edit.Routes)
 	}
 }
 
-func TestHuhInitRoutesPrompterIntegratedEditBackNavigatesOut(t *testing.T) {
-	t.Setenv("TERM", "dumb")
+func TestHuhInitRoutesPrompterAccessibleEscapeBackNavigatesOut(t *testing.T) {
+	t.Setenv("TERM", "xterm")
 	var stderr bytes.Buffer
 	prompter := huhInitRoutesPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Back to review profile
-			"",
-		}, "\n")),
+		stdin:  strings.NewReader("\x1b"),
 		stderr: &stderr,
 	}
 
 	_, err := prompter.EditRoutes(initRoutesPrompt{
 		ProfileName: "work",
 		ProfileHost: "github.com",
-		Action:      initRoutesActionEdit,
 		Routes: []configedit.RepositoryRouteSpec{{
 			Host:      "github.com",
 			Namespace: "open-cli-collective",
@@ -6743,37 +6758,6 @@ func TestHuhInitRoutesPrompterIntegratedEditBackNavigatesOut(t *testing.T) {
 	})
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("EditRoutes error = %v, want errInitNavigateBack", err)
-	}
-	out := stderr.String()
-	if !strings.Contains(out, "Back without staging") {
-		t.Fatalf("stderr = %q, want integrated Back option", out)
-	}
-}
-
-func TestProfileRouteActionOptionsReflectRouteInventory(t *testing.T) {
-	gotNoRoutes := profileRouteActionOptions(false)
-	if len(gotNoRoutes) != 2 {
-		t.Fatalf("len(no routes options) = %d, want 2", len(gotNoRoutes))
-	}
-	if gotNoRoutes[0].Key != "Skip automatic profile-selection routes for now" {
-		t.Fatalf("no-routes first label = %q", gotNoRoutes[0].Key)
-	}
-	if gotNoRoutes[1].Key != "Add automatic profile-selection routes" {
-		t.Fatalf("no-routes second label = %q", gotNoRoutes[1].Key)
-	}
-
-	gotWithRoutes := profileRouteActionOptions(true)
-	if len(gotWithRoutes) != 3 {
-		t.Fatalf("len(with routes options) = %d, want 3", len(gotWithRoutes))
-	}
-	if gotWithRoutes[0].Key != "Keep current automatic profile-selection routes" {
-		t.Fatalf("with-routes first label = %q", gotWithRoutes[0].Key)
-	}
-	if gotWithRoutes[1].Key != "Edit automatic profile-selection routes" {
-		t.Fatalf("with-routes second label = %q", gotWithRoutes[1].Key)
-	}
-	if gotWithRoutes[2].Key != "Remove all automatic profile-selection routes for this profile" {
-		t.Fatalf("with-routes third label = %q", gotWithRoutes[2].Key)
 	}
 }
 
@@ -7285,7 +7269,6 @@ func TestInitInteractiveAgentSourcesCanClearToEmpty(t *testing.T) {
 				LLMProvider:            string(config.LLMProviderAnthropic),
 				LLMAuth:                string(config.LLMAuthSubscription),
 				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
-				RepositoryRoutesAction: string(initRoutesActionEdit),
 			}, nil
 		}),
 		agentSourcesPrompter: initAgentSourcesPrompterFunc(func(initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
@@ -7564,22 +7547,46 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 			initMenuActionExit,
 		},
 	}
+	profileCalls := 0
+	routeCalls := 0
 	deps := initDeps{
 		menuPrompter: menu,
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				OriginalProfileName: "work",
-				ProfileName:         "work",
-				MakeDefault:         true,
-				GitHost:             "gitlab.com",
-				GitAuth:             string(config.GitAuthModePAT),
-				GitCredentialRef:    "codereview/work",
-				LLMProvider:         string(config.LLMProviderAnthropic),
-				LLMAuth:             string(config.LLMAuthSubscription),
-				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
-			}, nil
+		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+			profileCalls++
+			switch profileCalls {
+			case 1:
+				return initDraft{
+					OriginalProfileName: "work",
+					ProfileName:         "work",
+					MakeDefault:         true,
+					GitHost:             "gitlab.com",
+					GitAuth:             string(config.GitAuthModePAT),
+					GitCredentialRef:    "codereview/work",
+					LLMProvider:         string(config.LLMProviderAnthropic),
+					LLMAuth:             string(config.LLMAuthSubscription),
+					LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+				}, nil
+			case 2:
+				if prompt.ExistingProfile == nil {
+					t.Fatal("ExistingProfile = nil, want staged work profile after route Back")
+				}
+				if got := prompt.ExistingProfile.Git.Host; got != "gitlab.com" {
+					t.Fatalf("ExistingProfile.Git.Host = %q, want staged gitlab.com host after route Back", got)
+				}
+				return initDraft{}, errInitNavigateBack
+			default:
+				t.Fatalf("unexpected profile prompt #%d", profileCalls)
+				return initDraft{}, nil
+			}
 		}),
-		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			routeCalls++
+			if routeCalls > 1 {
+				t.Fatalf("unexpected routes prompt #%d", routeCalls)
+			}
+			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
+				t.Fatalf("prompt = %#v, want integrated route reconciliation before Back", prompt)
+			}
 			return initRoutesEdit{}, errInitNavigateBack
 		}),
 		configPath: func(*root.Options) (string, error) { return path, nil },
@@ -7595,6 +7602,12 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 	}
 	if len(menu.prompts) < 2 {
 		t.Fatalf("menu prompts = %#v, want prompt after profile subflow Back", menu.prompts)
+	}
+	if profileCalls != 2 {
+		t.Fatalf("profileCalls = %d, want staged profile pass then explicit Back", profileCalls)
+	}
+	if routeCalls != 1 {
+		t.Fatalf("routeCalls = %d, want single integrated route prompt before Back", routeCalls)
 	}
 	got := menu.prompts[1]
 	if got.ActiveProfileName != "work" || !got.CanSave || got.ReviewProfileCount != 1 {
@@ -8598,7 +8611,7 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 			if prompt.ProfileName != "office" || !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
 				t.Fatalf("prompt = %#v, want renamed default profile reconciliation context", prompt)
 			}
-			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+			return initRoutesEdit{Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "gitlab.com",
 				Namespace: "open-cli-collective",
 			}}}, nil
@@ -9781,6 +9794,7 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 		},
 	}
 	profileCalls := 0
+	routeCalls := 0
 	deps := initDeps{
 		menuPrompter: menu,
 		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
@@ -9803,8 +9817,15 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 				return initDraft{}, nil
 			}
 		}),
-		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
-			return initRoutesEdit{Apply: false}, nil
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			routeCalls++
+			if routeCalls > 1 {
+				t.Fatalf("unexpected routes prompt #%d", routeCalls)
+			}
+			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
+				t.Fatalf("prompt = %#v, want integrated route reconciliation before Back", prompt)
+			}
+			return initRoutesEdit{}, errInitNavigateBack
 		}),
 		modelMapPrompter: initModelMapPrompterFunc(func(initModelMapPrompt) (initModelMapEdit, error) {
 			return initModelMapEdit{Apply: false}, nil
@@ -9831,6 +9852,9 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 	}
 	if profileCalls != 2 {
 		t.Fatalf("profileCalls = %d, want staged profile edit then Back in-category", profileCalls)
+	}
+	if routeCalls != 1 {
+		t.Fatalf("routeCalls = %d, want single integrated route prompt before Back", routeCalls)
 	}
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
@@ -9865,7 +9889,6 @@ func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *test
 			case 1:
 				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile)
 				draft.GitHost = "gitlab.com"
-				draft.RepositoryRoutesAction = string(initRoutesActionEdit)
 				return draft, nil
 			case 2:
 				if prompt.ExistingProfile == nil {
@@ -9880,13 +9903,10 @@ func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *test
 				return initDraft{}, nil
 			}
 		}),
-		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+		routesPrompter: initRoutesPrompterFunc(func(_ initRoutesPrompt) (initRoutesEdit, error) {
 			routeCalls++
 			if routeCalls > 1 {
 				t.Fatalf("unexpected routes prompt #%d", routeCalls)
-			}
-			if prompt.Action != initRoutesActionEdit {
-				t.Fatalf("prompt.Action = %q, want edit", prompt.Action)
 			}
 			return initRoutesEdit{}, errInitNavigateBack
 		}),
@@ -10865,14 +10885,12 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 	tests := []struct {
 		name           string
 		existingRoutes []config.RepositoryProfile
-		action         string
 		edit           initRoutesEdit
 		want           []config.RepositoryProfile
 	}{
 		{
 			name:   "create from pr url",
-			action: string(initRoutesActionEdit),
-			edit: initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+			edit: initRoutesEdit{Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "github.com",
 				Namespace: "open-cli-collective",
 				Repos:     []string{"codereview-cli"},
@@ -10888,7 +10906,6 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 		},
 		{
 			name:   "edit and preserve unrelated",
-			action: string(initRoutesActionEdit),
 			existingRoutes: []config.RepositoryProfile{
 				{
 					Profile: "work",
@@ -10905,7 +10922,7 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 					},
 				},
 			},
-			edit: initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+			edit: initRoutesEdit{Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "github.com",
 				Namespace: "open-cli-collective",
 				Repos:     []string{"codereview-cli", "cli-common"},
@@ -10930,7 +10947,6 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 		},
 		{
 			name:   "remove all",
-			action: string(initRoutesActionReset),
 			existingRoutes: []config.RepositoryProfile{{
 				Profile: "work",
 				Match: config.RepositoryProfileMatch{
@@ -10938,7 +10954,7 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 					Namespace: "open-cli-collective",
 				},
 			}},
-			edit: initRoutesEdit{Apply: true, Routes: nil},
+			edit: initRoutesEdit{Routes: nil},
 			want: nil,
 		},
 	}
@@ -10972,7 +10988,6 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 						LLMProvider:            string(config.LLMProviderAnthropic),
 						LLMAuth:                string(config.LLMAuthSubscription),
 						LLMAdapter:             string(config.LLMAdapterClaudeCLI),
-						RepositoryRoutesAction: tt.action,
 					}, nil
 				}),
 				routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
@@ -10998,7 +11013,7 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 	}
 }
 
-func TestInitInteractiveRoutePreserveSkipsStandaloneRouteChooser(t *testing.T) {
+func TestInitInteractiveRouteEditorPreservesExistingRoutesWhenLeftUnchanged(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	wantRoutes := []config.RepositoryProfile{{
 		Profile: "work",
@@ -11032,12 +11047,13 @@ func TestInitInteractiveRoutePreserveSkipsStandaloneRouteChooser(t *testing.T) {
 				LLMProvider:            string(config.LLMProviderAnthropic),
 				LLMAuth:                string(config.LLMAuthSubscription),
 				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
-				RepositoryRoutesAction: string(initRoutesActionPreserve),
 			}, nil
 		}),
-		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
-			t.Fatal("routesPrompter should not run when preserving unchanged routes")
-			return initRoutesEdit{}, nil
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			if !reflect.DeepEqual(prompt.Routes, currentProfileRouteSpecs(wantRoutes, "work")) {
+				t.Fatalf("prompt.Routes = %#v, want prefilled current routes", prompt.Routes)
+			}
+			return initRoutesEdit{Routes: prompt.Routes}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
@@ -11118,17 +11134,13 @@ func TestInitInteractiveReconcilesRouteHostChangeBeforeSave(t *testing.T) {
 				LLMProvider:            string(config.LLMProviderAnthropic),
 				LLMAuth:                string(config.LLMAuthSubscription),
 				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
-				RepositoryRoutesAction: string(initRoutesActionPreserve),
 			}, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
 			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
 				t.Fatalf("prompt = %#v, want host reconciliation context", prompt)
 			}
-			if prompt.Action != "" {
-				t.Fatalf("prompt.Action = %q, want empty action so the reconcile chooser can run", prompt.Action)
-			}
-			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+			return initRoutesEdit{Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "gitlab.com",
 				Namespace: "open-cli-collective",
 				Repos:     []string{"codereview-cli"},
@@ -11202,17 +11214,13 @@ func TestInitInteractiveReconcilesRouteHostChangeFromSelectedGitScope(t *testing
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			draft := seedInteractiveInitDraft("work", "work", "work", &work)
 			applyGitScopeSelection(&draft, profileScopeNames["office"], scopes)
-			draft.RepositoryRoutesAction = string(initRoutesActionPreserve)
 			return draft, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
 			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
 				t.Fatalf("prompt = %#v, want selected git scope reconciliation context", prompt)
 			}
-			if prompt.Action != "" {
-				t.Fatalf("prompt.Action = %q, want empty action so the reconcile chooser can run", prompt.Action)
-			}
-			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+			return initRoutesEdit{Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "gitlab.com",
 				Namespace: "open-cli-collective",
 				Repos:     []string{"codereview-cli"},
@@ -11285,17 +11293,13 @@ func TestInitInteractiveReconcilesRouteHostChangeDuringRename(t *testing.T) {
 				LLMProvider:            string(config.LLMProviderAnthropic),
 				LLMAuth:                string(config.LLMAuthSubscription),
 				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
-				RepositoryRoutesAction: string(initRoutesActionPreserve),
 			}, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
 			if prompt.ProfileName != "office" || !prompt.HostChanged {
 				t.Fatalf("prompt = %#v, want renamed profile reconciliation context", prompt)
 			}
-			if prompt.Action != "" {
-				t.Fatalf("prompt.Action = %q, want empty action so the reconcile chooser can run", prompt.Action)
-			}
-			return initRoutesEdit{Apply: true, Routes: []configedit.RepositoryRouteSpec{{
+			return initRoutesEdit{Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "gitlab.com",
 				Namespace: "open-cli-collective",
 			}}}, nil
@@ -11324,7 +11328,7 @@ func TestInitInteractiveReconcilesRouteHostChangeDuringRename(t *testing.T) {
 	}
 }
 
-func TestInitInteractiveRejectsPreservedMismatchedRoutesAfterHostChange(t *testing.T) {
+func TestInitInteractiveRejectsUnchangedStaleRoutesAfterHostChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -11348,19 +11352,21 @@ func TestInitInteractiveRejectsPreservedMismatchedRoutesAfterHostChange(t *testi
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName:    "work",
-				ProfileName:            "work",
-				GitHost:                "gitlab.com",
-				GitAuth:                string(config.GitAuthModePAT),
-				GitCredentialRef:       "codereview/work",
-				LLMProvider:            string(config.LLMProviderAnthropic),
-				LLMAuth:                string(config.LLMAuthSubscription),
-				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
-				RepositoryRoutesAction: string(initRoutesActionPreserve),
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				GitHost:             "gitlab.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/work",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
-		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
-			return initRoutesEdit{Apply: false}, nil
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
+				t.Fatalf("prompt = %#v, want host reconciliation context", prompt)
+			}
+			return initRoutesEdit{Routes: prompt.Routes}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
@@ -11374,8 +11380,8 @@ func TestInitInteractiveRejectsPreservedMismatchedRoutesAfterHostChange(t *testi
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
 	}
-	if !strings.Contains(err.Error(), "edit routes to reconcile the host change") {
-		t.Fatalf("error = %v, want host reconciliation rejection", err)
+	if !strings.Contains(err.Error(), `route host "github.com" does not match selected profile host "gitlab.com"`) {
+		t.Fatalf("error = %v, want mismatched route host rejection", err)
 	}
 }
 
