@@ -1679,9 +1679,11 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(seed initDraft) (initDr
 	editAction := initDetailActionEdit
 	editForm := huh.NewForm(
 		huh.NewGroup(
+			huh.NewNote().
+				Title("Runtime details").
+				Description(detailDescription),
 			huh.NewSelect[string]().
 				Title("Runtime detail action").
-				Description(detailDescription).
 				Options(
 					huh.NewOption("Stage these runtime details", initDetailActionEdit),
 					huh.NewOption("Back without staging", initDetailActionBack),

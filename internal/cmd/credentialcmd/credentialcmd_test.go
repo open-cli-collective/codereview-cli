@@ -3880,7 +3880,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
 	}
 }
 
-func TestHuhInitLLMRuntimePrompterAccessibleTemplateConsultsAvailabilityChecker(t *testing.T) {
+func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsAvailabilityNote(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
@@ -3925,8 +3925,8 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateConsultsAvailabilityChecker(
 	if !checkerCalled {
 		t.Fatal("checkerCalled = false, want template selection to consult runtime availability checker")
 	}
-	if !strings.Contains(stderr.String(), "Runtime detail action") {
-		t.Fatalf("stderr = %q, want flattened runtime detail screen", stderr.String())
+	if !strings.Contains(stderr.String(), "Runtime detail action") || !strings.Contains(stderr.String(), "Codex CLI check: codex-cli 0.139.0 installed.") {
+		t.Fatalf("stderr = %q, want flattened runtime detail screen with runtime availability note", stderr.String())
 	}
 }
 
