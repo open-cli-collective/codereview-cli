@@ -3108,7 +3108,6 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"1", // Edit work
 			"",  // Profile name
 			"",  // Make default
 			"",  // Git host
@@ -3125,6 +3124,17 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
@@ -3201,8 +3211,6 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"1", // Edit home
-			"",  // Edit profile details
 			"",  // Profile name
 			"",  // Make default
 			"",  // Reviewer entity
@@ -3213,6 +3221,17 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "home\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "home",
+					Title: "home",
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
@@ -3252,8 +3271,6 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Create new profile
-			"",  // Edit profile details
 			"",  // Profile name
 			"",  // Make default
 			"",  // Git host
@@ -3266,6 +3283,18 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
@@ -3354,11 +3383,17 @@ func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Mark profile for deletion
-			"",
-		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionStageDelete,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
@@ -3377,11 +3412,8 @@ func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T
 	if draft.Action != initDraftActionDeleteProfile || draft.ActionTarget != "work" {
 		t.Fatalf("draft delete action = %#v, want delete work", draft)
 	}
-	if !strings.Contains(stderr.String(), "Mark profile for deletion") {
-		t.Fatalf("stderr = %q, want deletion action label", stderr.String())
-	}
-	if strings.Contains(stderr.String(), "Profile name") || strings.Contains(stderr.String(), "Git scope") || strings.Contains(stderr.String(), "Reviewer entity") {
-		t.Fatalf("stderr = %q, want delete flow to skip profile edit fields", stderr.String())
+	if !strings.Contains(stderr.String(), "work") {
+		t.Fatalf("stderr = %q, want profile inventory label", stderr.String())
 	}
 }
 
@@ -3389,11 +3421,19 @@ func TestHuhInitPrompterAccessibleNewProfileFlowShowsBackOption(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Back to main menu
-			"",
-		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\nBack to main menu\n")
+			return initInventoryResult{
+				Action: initInventoryActionBack,
+				Row: initInventoryRow{
+					ID:            initBackSelection,
+					Title:         "Back to main menu",
+					PrimaryAction: initInventoryActionBack,
+				},
+			}, nil
+		},
 	}
 
 	_, err := prompter.Run(initPromptContext{ExistingConfig: config.File{Profiles: map[string]config.Profile{}}})
@@ -3401,7 +3441,7 @@ func TestHuhInitPrompterAccessibleNewProfileFlowShowsBackOption(t *testing.T) {
 		t.Fatalf("Run error = %v, want errInitNavigateBack", err)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Edit profile details") || !strings.Contains(out, "Back to main menu") {
+	if !strings.Contains(out, "Create new profile") || !strings.Contains(out, "Back to main menu") {
 		t.Fatalf("stderr = %q, want visible back option for new-profile flow", out)
 	}
 }
@@ -3411,11 +3451,17 @@ func TestHuhInitPrompterAccessibleCanRestorePendingDeletedProfile(t *testing.T) 
 	home := basicProfile("home")
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Restore work (staged for deletion)
-			"",
-		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, "Restore work (staged for deletion)\n")
+			return initInventoryResult{
+				Action: initInventoryActionRestore,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "Restore work (staged for deletion)",
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
@@ -3647,7 +3693,6 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"", // Edit profile details
 			"", // Profile name
 			"", // Make default
 			"", // Git host
@@ -3660,6 +3705,18 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\nBack to main menu\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
@@ -3686,8 +3743,6 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Create new profile
-			"",  // Edit profile details
 			"",  // Profile name
 			"",  // Make default
 			"",  // Git host
@@ -3700,6 +3755,18 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
@@ -4140,6 +4207,18 @@ func TestHuhInitLLMRuntimePrompterReplacementChoosesConfiguredTemplate(t *testin
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.chooseLLMRuntimeDeleteReplacement(initLLMRuntimePrompt{Context: initPromptContext{
@@ -4624,6 +4703,18 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
@@ -4661,6 +4752,18 @@ func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
 	}
 
 	draft, err := prompter.Run(initPromptContext{
@@ -4698,6 +4801,17 @@ func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
 	}
 
 	_, err := prompter.Run(initPromptContext{
@@ -4737,6 +4851,18 @@ func TestHuhInitPrompterAccessibleHidesReviewerEntityLabelForProfileGitAccount(t
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
 	}
 
 	_, err := prompter.Run(initPromptContext{

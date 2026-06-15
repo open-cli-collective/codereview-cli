@@ -906,8 +906,9 @@ func runInjectedInteractiveInit(cmd *cobra.Command, opts *root.Options, flags in
 }
 
 type huhInitPrompter struct {
-	stdin  io.Reader
-	stderr io.Writer
+	stdin           io.Reader
+	stderr          io.Writer
+	inventoryRunner initInventoryRunner
 }
 
 type huhInitMenuPrompter struct {
@@ -2138,65 +2139,50 @@ func currentReviewerRefUsesCustomLocation(draft initDraft) bool {
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 	for {
-		selectedProfileName := ctx.ExistingProfileName
-		selectedExistingProfile := ctx.ExistingProfile
-		selectedCreateNewProfile := false
-		hasProfileChooser := len(ctx.ExistingProfileNames) > 0
-		if len(ctx.ExistingProfileNames) > 0 {
-			choice := initCreateProfileSentinel
-			options := make([]huh.Option[string], 0, len(ctx.ExistingProfileNames)+len(ctx.PendingProfileDeletes)+2)
-			for _, name := range ctx.ExistingProfileNames {
-				options = append(options, huh.NewOption("Edit "+name, name))
-				if name == ctx.ExistingProfileName {
-					choice = name
-				}
-			}
-			pendingDeleteNames := make([]string, 0, len(ctx.PendingProfileDeletes))
-			for name := range ctx.PendingProfileDeletes {
-				pendingDeleteNames = append(pendingDeleteNames, name)
-			}
-			sort.Strings(pendingDeleteNames)
-			for _, name := range pendingDeleteNames {
-				options = append(options, huh.NewOption(profileDeletePendingLabel(name), initUndoProfileDeletePrefix+name))
-			}
-			if ctx.ExistingProfile == nil {
-				choice = initCreateProfileSentinel
-			}
-			options = append(options, huh.NewOption("Create new profile", initCreateProfileSentinel))
-			options = append(options, huh.NewOption("Back to main menu", initBackSelection))
-			form := huh.NewForm(
-				huh.NewGroup(
-					huh.NewSelect[string]().
-						Title("Choose a profile to edit or create").
-						Options(options...).
-						Value(&choice),
-				),
-			)
-			back, err := runBackableInitForm(form, p.stdin, p.stderr)
-			if err != nil {
-				return initDraft{}, err
-			}
-			if back || choice == initBackSelection {
-				return initDraft{}, errInitNavigateBack
-			}
-			if strings.HasPrefix(choice, initUndoProfileDeletePrefix) {
-				return initDraft{
-					Action:       initDraftActionUndoDeleteProfile,
-					ActionTarget: strings.TrimPrefix(choice, initUndoProfileDeletePrefix),
-				}, nil
-			}
-			if choice == initCreateProfileSentinel {
-				selectedProfileName = ""
-				selectedExistingProfile = nil
-				selectedCreateNewProfile = true
-			} else {
-				selectedProfileName = choice
-				profile := ctx.ExistingConfig.Profiles[choice]
-				profileCopy := profile
-				selectedExistingProfile = &profileCopy
-			}
+		result, err := p.runInventory(initInventoryPrompt{
+			Title:       "Review Profile",
+			Description: "Choose a profile to edit or create.",
+			Rows:        initProfileInventoryRows(ctx),
+			Width:       80,
+			Height:      20,
+		})
+		if err != nil {
+			return initDraft{}, err
+		}
+		switch result.Action {
+		case initInventoryActionBack:
+			return initDraft{}, errInitNavigateBack
+		case initInventoryActionRestore:
+			return initDraft{
+				Action:       initDraftActionUndoDeleteProfile,
+				ActionTarget: result.Row.ID,
+			}, nil
+		case initInventoryActionStageDelete:
+			return initDraft{
+				Action:       initDraftActionDeleteProfile,
+				ActionTarget: result.Row.ID,
+			}, nil
+		case initInventoryActionEdit, initInventoryActionCommand:
+		case initInventoryActionNone:
+			continue
+		default:
+			return initDraft{}, fmt.Errorf("unsupported profile inventory action %q", result.Action)
 		}
 
+		selectedProfileName := ""
+		var selectedExistingProfile *config.Profile
+		selectedCreateNewProfile := false
+		selection := result.Row.ID
+		if selection == initCreateProfileSentinel {
+			selectedProfileName = ""
+			selectedExistingProfile = nil
+			selectedCreateNewProfile = true
+		} else {
+			selectedProfileName = selection
+			profile := ctx.ExistingConfig.Profiles[selection]
+			profileCopy := profile
+			selectedExistingProfile = &profileCopy
+		}
 		requestedProfileName := ctx.RequestedProfileName
 		if selectedCreateNewProfile && ctx.ExistingProfile != nil {
 			requestedProfileName = ""
@@ -2240,44 +2226,6 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
 		reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedProfileName))
 		llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
-		detailAction := initDetailActionEdit
-		detailBackLabel := "Back to main menu"
-		if hasProfileChooser {
-			detailBackLabel = "Back to profile choices"
-		}
-
-		detailOptions := []huh.Option[string]{
-			huh.NewOption("Edit profile details", initDetailActionEdit),
-		}
-		if selectedExistingProfile != nil {
-			detailOptions = append(detailOptions, huh.NewOption("Mark profile for deletion", initDetailActionDelete))
-		}
-		detailOptions = append(detailOptions, huh.NewOption(detailBackLabel, initDetailActionBack))
-
-		actionForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Review profile details").
-					Options(detailOptions...).
-					Value(&detailAction),
-			).Title("Review Profile"),
-		)
-		back, err := runBackableInitForm(actionForm, p.stdin, p.stderr)
-		if err != nil {
-			return initDraft{}, err
-		}
-		if back || detailAction == initDetailActionBack {
-			if hasProfileChooser {
-				continue
-			}
-			return initDraft{}, errInitNavigateBack
-		}
-		if detailAction == initDetailActionDelete {
-			return initDraft{
-				Action:       initDraftActionDeleteProfile,
-				ActionTarget: selectedProfileName,
-			}, nil
-		}
 
 		reviewerProfileFields := []huh.Field{
 			huh.NewSelect[string]().
@@ -2406,15 +2354,12 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				return selectedStorageLabelsMode != initStorageLabelsCustom
 			}).Title("Advanced Storage Labels"),
 		)
-		back, err = runBackableInitForm(form, p.stdin, p.stderr)
+		back, err := runBackableInitForm(form, p.stdin, p.stderr)
 		if err != nil {
 			return initDraft{}, err
 		}
 		if back {
-			if hasProfileChooser {
-				continue
-			}
-			return initDraft{}, errInitNavigateBack
+			continue
 		}
 		typedReviewerDisplayName := normalizeOptionalDisplayName(draft.ReviewerDisplayName)
 		draft.AdvancedStorageLabels = selectedStorageLabelsMode == initStorageLabelsCustom
@@ -2434,6 +2379,60 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		draft.RepositoryRoutesAction = selectedRepositoryRoutesAction
 		return draft, nil
 	}
+}
+
+func (p huhInitPrompter) runInventory(prompt initInventoryPrompt) (initInventoryResult, error) {
+	runner := p.inventoryRunner
+	if runner == nil {
+		runner = runInitInventory
+	}
+	return runner(prompt, p.stdin, p.stderr)
+}
+
+func initProfileInventoryRows(ctx initPromptContext) []initInventoryRow {
+	names := append([]string(nil), ctx.ExistingProfileNames...)
+	sort.Strings(names)
+	rows := make([]initInventoryRow, 0, len(names)+len(ctx.PendingProfileDeletes)+2)
+	for _, name := range names {
+		rows = append(rows, initInventoryRow{
+			ID:          name,
+			Title:       name,
+			Kind:        initInventoryRowKindActive,
+			Selectable:  true,
+			Deletable:   true,
+			FilterValue: strings.TrimSpace(strings.Join([]string{name, ctx.ExistingConfig.Profiles[name].Git.Host}, " ")),
+		})
+	}
+	pendingDeleteNames := make([]string, 0, len(ctx.PendingProfileDeletes))
+	for name := range ctx.PendingProfileDeletes {
+		pendingDeleteNames = append(pendingDeleteNames, name)
+	}
+	sort.Strings(pendingDeleteNames)
+	for _, name := range pendingDeleteNames {
+		rows = append(rows, initInventoryRow{
+			ID:         name,
+			Title:      profileDeletePendingLabel(name),
+			Kind:       initInventoryRowKindPending,
+			Restorable: true,
+		})
+	}
+	rows = append(rows,
+		initInventoryRow{
+			ID:            initCreateProfileSentinel,
+			Title:         "Create new profile",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
+			ID:            initBackSelection,
+			Title:         "Back to main menu",
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionBack,
+			Selectable:    true,
+		},
+	)
+	return rows
 }
 
 func profileRouteActionOptions(hasRoutes bool) []huh.Option[string] {

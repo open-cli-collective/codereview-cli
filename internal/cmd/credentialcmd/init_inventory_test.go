@@ -352,6 +352,45 @@ func TestInitLLMRuntimeInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	}
 }
 
+func TestInitProfileInventoryRowsSetExpectedCapabilities(t *testing.T) {
+	rows := initProfileInventoryRows(initPromptContext{
+		ExistingProfileNames: []string{"home"},
+		ExistingConfig: config.File{
+			Profiles: map[string]config.Profile{
+				"home": {Git: config.GitConfig{Host: "github.com"}},
+			},
+		},
+		PendingProfileDeletes: map[string]initPendingProfileDelete{
+			"work": {ProfileName: "work"},
+		},
+	})
+
+	if len(rows) != 4 {
+		t.Fatalf("len(rows) = %d, want 4", len(rows))
+	}
+	if got, want := rows[0].Title, "home"; got != want {
+		t.Fatalf("rows[0].Title = %q, want %q", got, want)
+	}
+	if got, want := rows[1].Title, "Restore work (staged for deletion)"; got != want {
+		t.Fatalf("rows[1].Title = %q, want %q", got, want)
+	}
+	if !strings.Contains(rows[0].FilterValue, "home") || !strings.Contains(rows[0].FilterValue, "github.com") {
+		t.Fatalf("rows[0].FilterValue = %q, want profile name and host content", rows[0].FilterValue)
+	}
+	if got := rows[0]; got.Kind != initInventoryRowKindActive || !got.Selectable || !got.Deletable || got.Restorable || got.PrimaryAction != initInventoryActionNone {
+		t.Fatalf("active row = %#v, want selectable+deletable active profile", got)
+	}
+	if got := rows[1]; got.Kind != initInventoryRowKindPending || got.Selectable || got.Deletable || !got.Restorable || got.PrimaryAction != initInventoryActionNone {
+		t.Fatalf("pending row = %#v, want restorable pending profile", got)
+	}
+	if got := rows[2]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
+		t.Fatalf("create row = %#v, want selectable Create new profile command", got)
+	}
+	if got := rows[3]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionBack {
+		t.Fatalf("back row = %#v, want selectable Back command", got)
+	}
+}
+
 func TestInitLLMRuntimeInventoryDeterministicRunnerReturnsRestoreAction(t *testing.T) {
 	rows := initLLMRuntimeInventoryRows(initPromptContext{
 		LLMRuntimes: map[string]initLLMRuntimeDraft{
