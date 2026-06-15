@@ -4187,6 +4187,9 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) {
 		t.Fatalf("llm draft = %#v, want create-new profile to select the existing runtime inventory by default", draft)
 	}
+	if draft.LLMReviewerModelTier != "" {
+		t.Fatalf("draft.LLMReviewerModelTier = %q, want built-in baseline selection to serialize as empty", draft.LLMReviewerModelTier)
+	}
 	out := stderr.String()
 	if !strings.Contains(out, "Post using this profile's Git account (GitHub PAT)") {
 		t.Fatalf("stderr = %q, want explicit fallback label for create-new profile flow", out)
