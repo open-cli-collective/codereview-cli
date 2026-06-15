@@ -3731,6 +3731,15 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if !strings.Contains(out, "Choose a profile to edit or create") || !strings.Contains(out, "Git scope host") || !strings.Contains(out, "Reviewer entity") || !strings.Contains(out, "LLM runtime") {
 		t.Fatalf("wizard output missing expected prompts: %q", out)
 	}
+	if !strings.Contains(out, "Minimum reviewer model tier") ||
+		!strings.Contains(out, "Built-in baseline (small)") ||
+		!strings.Contains(out, "Medium baseline") ||
+		!strings.Contains(out, "Large baseline") {
+		t.Fatalf("wizard output missing reviewer model-tier baseline guidance: %q", out)
+	}
+	if strings.Contains(out, "Reviewer model tier") || strings.Contains(out, "Built-in default") {
+		t.Fatalf("wizard output still contains legacy reviewer model-tier copy: %q", out)
+	}
 	if strings.Contains(out, "Git credential ref") || strings.Contains(out, "LLM credential ref") {
 		t.Fatalf("wizard output unexpectedly exposed raw credential refs on the primary path: %q", out)
 	}

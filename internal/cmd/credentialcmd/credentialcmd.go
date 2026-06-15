@@ -2192,12 +2192,13 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Options(llmRuntimeOptions...).
 					Value(&selectedLLMRuntime),
 				huh.NewSelect[string]().
-					Title("Reviewer model tier").
+					Title("Minimum reviewer model tier").
+					Description("Sets the minimum model tier for reviewer agents. Agents that require a higher tier still use their higher configured tier.").
 					Options(
-						huh.NewOption("Built-in default", ""),
-						huh.NewOption("Small", string(config.ModelTierSmall)),
-						huh.NewOption("Medium", string(config.ModelTierMedium)),
-						huh.NewOption("Large", string(config.ModelTierLarge)),
+						huh.NewOption("Built-in baseline (small)", ""),
+						huh.NewOption("Small baseline", string(config.ModelTierSmall)),
+						huh.NewOption("Medium baseline", string(config.ModelTierMedium)),
+						huh.NewOption("Large baseline", string(config.ModelTierLarge)),
 					).
 					Value(&draft.LLMReviewerModelTier),
 				huh.NewSelect[string]().
