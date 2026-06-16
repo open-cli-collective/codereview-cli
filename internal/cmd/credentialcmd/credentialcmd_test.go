@@ -10022,6 +10022,152 @@ func TestInitProfileV2AgentSourcesEnterMovesFocusWithoutDestroyingNavigation(t *
 	}
 }
 
+func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/monit",
+		true,
+		nil,
+		initCustomGitScopeSelection,
+	), 160, 24)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewMajorEvent, string(config.ReviewMajorEventRequestChanges))
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldSelfApprove, initSelfApproveEnable)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldResolveThreads, string(config.ResolveThreadsAuto))
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldResolveAfter)
+	model = typeInitProfileV2Text(t, model, "24h")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.ReviewPolicySet {
+		t.Fatal("draft.ReviewPolicySet = false, want review-policy edits staged")
+	}
+	want := config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsAuto,
+		ResolveAfter:     "24h",
+	}
+	if !reflect.DeepEqual(draft.ReviewPolicy, want) {
+		t.Fatalf("draft.ReviewPolicy = %#v, want %#v", draft.ReviewPolicy, want)
+	}
+}
+
+func TestInitProfileV2ReviewPolicyRejectsInvalidDuration(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/monit",
+		true,
+		nil,
+		initCustomGitScopeSelection,
+	), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldResolveAfter)
+	model = typeInitProfileV2Text(t, model, "tomorrow")
+
+	if !strings.Contains(model.View(), "invalid duration") {
+		t.Fatalf("view missing duration validation error:\n%s", model.View())
+	}
+	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "invalid duration") {
+		t.Fatalf("validatedDraft error = %v, want duration validation", err)
+	}
+}
+
+func TestInitProfileV2GitStorageLabelDraftsCustomLabel(t *testing.T) {
+	gitScopes := map[string]initGitScopeDraft{
+		"github-work": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/monit",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/monit",
+		true,
+		gitScopes,
+		"github-work",
+	), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitStorageLabel)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "codereview/custom-monit-git")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/custom-monit-git" {
+		t.Fatalf("draft.GitCredentialRef = %q, want custom label", draft.GitCredentialRef)
+	}
+	if !draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = false, want true for custom Git label")
+	}
+}
+
+func TestInitProfileV2GitStorageLabelRejectsInvalidCredentialRef(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/monit",
+		true,
+		nil,
+		initCustomGitScopeSelection,
+	), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitStorageLabel)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "not-a-ref")
+
+	if !strings.Contains(model.View(), "credential ref") {
+		t.Fatalf("view missing credential-ref validation error:\n%s", model.View())
+	}
+	if _, err := model.validatedDraft(); err == nil {
+		t.Fatal("validatedDraft error = nil, want credential-ref validation")
+	}
+}
+
+func TestInitProfileV2GitStorageLabelFollowsChangedScopeDefaultWhenUnedited(t *testing.T) {
+	gitScopes := map[string]initGitScopeDraft{
+		"old-git": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-git",
+		},
+		"new-git": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-git",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/old-git",
+		true,
+		gitScopes,
+		"old-git",
+	), 160, 24)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldGitScope, "new-git")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/new-git" {
+		t.Fatalf("draft.GitCredentialRef = %q, want changed Git scope default", draft.GitCredentialRef)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = true, want false for unchanged default label")
+	}
+}
+
 func updateInitProfileV2ReadOnlyModel(t *testing.T, model initProfileV2ReadOnlyModel, msg tea.Msg) initProfileV2ReadOnlyModel {
 	t.Helper()
 	updated, _ := model.Update(msg)
@@ -10186,6 +10332,37 @@ func newTestInitProfileV2EditorWithAgentSources(profileName string, routeText st
 	return initProfileV2Editor{
 		Draft:    draft,
 		Document: document,
+	}
+}
+
+func newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(profileName string, routeText string, policy config.ReviewPolicy, gitStorageLabel string, gitLabelUsesDefault bool, gitScopes map[string]initGitScopeDraft, selectedGitScope string) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		GitCredentialRef:    strings.TrimSpace(gitStorageLabel),
+		LLMProvider:         string(config.LLMProviderAnthropic),
+		LLMAuth:             string(config.LLMAuthSubscription),
+		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+		ReviewPolicy:        policy,
+	}
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	if selectedGitScope != "" && selectedGitScope != initCustomGitScopeSelection {
+		initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(gitScopes), draft, true)
+	}
+	initProfileV2AppendReviewPolicySection(&document, policy)
+	initProfileV2AppendGitStorageSection(&document, gitStorageLabel)
+	return initProfileV2Editor{
+		Draft:                      draft,
+		GitScopes:                  gitScopes,
+		SelectedGitScope:           selectedGitScope,
+		InitialGitStorageLabel:     gitStorageLabel,
+		GitStorageLabelUsesDefault: gitLabelUsesDefault,
+		Document:                   document,
 	}
 }
 
