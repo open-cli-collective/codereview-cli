@@ -597,6 +597,25 @@ func TestConfigSecretsProfileSetRejectsIncompatibleOnePasswordFlags(t *testing.T
 	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
 		t.Fatalf("incompatible 1password flags error = %v, want usage error", err)
 	}
+
+	cfg := testConfig()
+	cfg.Secrets = config.SecretsConfig{
+		Profiles: map[string]config.SecretsProfile{
+			"personal-keychain": {
+				Label:   "Personal Keychain",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)},
+			},
+		},
+	}
+	path = saveTestConfig(t, cfg)
+	cmd, _ = newTestCommand(path)
+	err = root.Execute(cmd, []string{
+		"config", "secrets-profile", "set", "personal-keychain",
+		"--op-vault-id", "vault-123",
+	})
+	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
+		t.Fatalf("non-1password profile accepted op flags: %v", err)
+	}
 }
 
 func TestConfigSecretsProfileDefaultSetUnsetAndRemove(t *testing.T) {

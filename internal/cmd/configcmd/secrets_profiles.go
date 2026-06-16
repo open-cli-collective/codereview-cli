@@ -312,6 +312,9 @@ func buildSecretsProfileBackendPatch(cmd *cobra.Command, existing config.Secrets
 	if strings.TrimSpace(string(next.Kind)) == "" {
 		return nil, configedit.ErrSecretsProfileBackendRequired
 	}
+	if err := validateSecretsProfileBackendFlags(cmd, next.Kind); err != nil {
+		return nil, err
+	}
 	if !config.IsOnePasswordSecretsBackend(next.Kind) {
 		next.OnePassword = nil
 		return &next, nil
@@ -348,9 +351,6 @@ func buildSecretsProfileBackendPatch(cmd *cobra.Command, existing config.Secrets
 	}
 	if cmd.Flags().Changed("op-desktop-account-id") {
 		next.OnePassword.DesktopAccountID, _ = cmd.Flags().GetString("op-desktop-account-id")
-	}
-	if err := validateSecretsProfileBackendFlags(cmd, next.Kind); err != nil {
-		return nil, err
 	}
 	return &next, nil
 }
