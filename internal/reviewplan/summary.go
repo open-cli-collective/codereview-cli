@@ -151,18 +151,24 @@ func aggregateUsage(workstreams []WorkstreamUsage) AggregateUsage {
 		CacheRead:         sumInts(workstreams, func(w WorkstreamUsage) *int { return w.CacheRead }),
 		CacheCreate:       sumInts(workstreams, func(w WorkstreamUsage) *int { return w.CacheCreate }),
 		CostUSD:           sumFloats(workstreams, func(w WorkstreamUsage) *float64 { return w.CostUSD }),
-		CostEstimated:     anyCostEstimated(workstreams),
+		CostEstimated:     allCostEstimated(workstreams),
 		ComputeDurationMS: sumDurations(workstreams, func(w WorkstreamUsage) *int64 { return w.DurationMS }),
 	}
 }
 
-func anyCostEstimated(workstreams []WorkstreamUsage) bool {
+// allCostEstimated reports whether every workstream's cost was estimated, so the
+// aggregate is marked an estimate only when it is fully estimated — a mostly-real
+// total is not labelled "(est.)".
+func allCostEstimated(workstreams []WorkstreamUsage) bool {
+	if len(workstreams) == 0 {
+		return false
+	}
 	for _, w := range workstreams {
-		if w.CostEstimated {
-			return true
+		if !w.CostEstimated {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func sumInts(workstreams []WorkstreamUsage, field func(WorkstreamUsage) *int) *int {
@@ -309,11 +315,10 @@ func formatTokens(value *int) string {
 	}
 }
 
+// formatUSD renders a real (adapter-reported) dollar amount. Estimated costs go
+// through formatUSDEst, so there is a single rendering path.
 func formatUSD(value *float64) string {
-	if value == nil {
-		return unavailableValue
-	}
-	return fmt.Sprintf("$%.2f", *value)
+	return formatUSDEst(value, false)
 }
 
 // formatUSDEst renders a dollar amount, marking it as an estimate

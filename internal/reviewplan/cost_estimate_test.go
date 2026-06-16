@@ -26,11 +26,14 @@ func TestWriteRunFooterRealCostUnmarked(t *testing.T) {
 	}
 }
 
-func TestAnyCostEstimated(t *testing.T) {
-	if !anyCostEstimated([]WorkstreamUsage{{CostEstimated: false}, {CostEstimated: true}}) {
-		t.Fatal("want true when any workstream is estimated")
+func TestAllCostEstimated(t *testing.T) {
+	if allCostEstimated([]WorkstreamUsage{{CostEstimated: true}, {CostEstimated: false}}) {
+		t.Fatal("partially estimated should not mark the aggregate")
 	}
-	if anyCostEstimated([]WorkstreamUsage{{CostEstimated: false}}) {
-		t.Fatal("want false when none are estimated")
+	if !allCostEstimated([]WorkstreamUsage{{CostEstimated: true}, {CostEstimated: true}}) {
+		t.Fatal("fully estimated should mark the aggregate")
+	}
+	if allCostEstimated(nil) {
+		t.Fatal("empty should be false")
 	}
 }
