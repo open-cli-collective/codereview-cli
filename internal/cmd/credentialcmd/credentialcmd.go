@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
@@ -224,6 +225,9 @@ type initPromptContext struct {
 	ProfileGitScopes             map[string]string
 	ReviewerEntities             map[string]initReviewerEntityDraft
 	ProfileReviewerEntities      map[string]string
+	SecretsProfiles              []config.EffectiveSecretsProfile
+	ProfileSecretsProfiles       map[string]string
+	BrokenProfileSecretsProfiles map[string]string
 	LLMRuntimes                  map[string]initLLMRuntimeDraft
 	ProfileLLMRuntimes           map[string]string
 	ProfileWarnings              map[string][]string
@@ -257,6 +261,7 @@ type initDraft struct {
 	ReviewerAuth          string
 	ReviewerCredentialRef string
 	ReviewerDisplayName   string
+	SecretsProfile        string
 	LLMProvider           string
 	LLMAuth               string
 	LLMAdapter            string
@@ -969,6 +974,8 @@ const (
 	initCustomGitScopeSelection           = "__custom_git_scope__"
 	initCustomLLMRuntimeSelection         = "__custom_llm_runtime__"
 	initConfigureNewLLMRuntimeSelection   = "__configure_new_llm_runtime__"
+	initSecretsProfileDefaultSelection    = "__init_secrets_profile_default__"
+	initMissingSecretsProfilePrefix       = "__missing_secrets_profile__:"
 	initBackSelection                     = "__back__"
 	initUndoProfileDeletePrefix           = "__undo_profile_delete__:"
 	initUndoReviewerEntityDeletePrefix    = "__undo_reviewer_entity_delete__:"
@@ -1017,6 +1024,7 @@ func newHuhInitKeyringBackendPrompter(opts *root.Options) initKeyringBackendProm
 func buildInteractiveInitInventoryPromptContext(ctx initPromptContext) initPromptContext {
 	ctx.GitScopes, ctx.ProfileGitScopes = buildInitGitScopeInventory(ctx.ExistingConfig)
 	ctx.ReviewerEntities, ctx.ProfileReviewerEntities = buildInitReviewerEntityInventory(ctx.ExistingConfig)
+	ctx.SecretsProfiles, ctx.ProfileSecretsProfiles, ctx.BrokenProfileSecretsProfiles = buildInitSecretsProfileInventory(ctx.ExistingConfig)
 	ctx.LLMRuntimes, ctx.ProfileLLMRuntimes = buildInitLLMRuntimeInventory(ctx.ExistingConfig)
 	return ctx
 }
@@ -2181,6 +2189,13 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				}
 			}
 			reviewerEntityOptions := initReviewerEntitySelectionOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
+			secretsProfileOptions, selectedSecretsProfile := initProfileEditorSecretsProfileSelection(
+				ctx.SecretsProfiles,
+				ctx.ProfileSecretsProfiles[selectedProfileName],
+				ctx.BrokenProfileSecretsProfiles[selectedProfileName],
+				initSecretsProfileDefaultOptionLabel(ctx.ExistingConfig),
+				draft,
+			)
 			llmRuntimes := maps.Clone(ctx.LLMRuntimes)
 			if llmRuntimes == nil {
 				llmRuntimes = map[string]initLLMRuntimeDraft{}
@@ -2211,6 +2226,11 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Description(reviewerEntitySelectionDescription()).
 					Options(reviewerEntityOptions...).
 					Value(&selectedReviewerEntity),
+				huh.NewSelect[string]().
+					Title("Secrets management").
+					Description(initSecretsProfileSelectionDescription()).
+					Options(secretsProfileOptions...).
+					Value(&selectedSecretsProfile),
 			}
 			reviewerProfileFields = append(reviewerProfileFields,
 				huh.NewSelect[string]().
@@ -2325,6 +2345,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			llmUsesDefaultBeforeSelection := initStorageLabelUsesDefault(llmStorageLabel, standardLLMCredentialRef)
 			applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
 			applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
+			applySecretsProfileSelection(&draft, selectedSecretsProfile)
 			applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, llmRuntimes)
 			// Inventory selections fill provider/auth/ref fields; rerunning the mode finalizers applies side effects like clearing refs for self-reviewers or subscription runtimes.
 			reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
@@ -2530,6 +2551,102 @@ func normalizeReviewerEntitySelectionValue(selection string, entities map[string
 
 func reviewerEntitySelectionDescription() string {
 	return "Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile. Profiles with no separate reviewer entity post using their profile Git account."
+}
+
+func buildInitSecretsProfileInventory(cfg config.File) ([]config.EffectiveSecretsProfile, map[string]string, map[string]string) {
+	profiles := make([]config.EffectiveSecretsProfile, 0, len(cfg.Secrets.Profiles))
+	for _, profile := range config.EffectiveSecretsProfiles(cfg) {
+		if profile.Source != config.EffectiveSecretsProfileSourceConfigured {
+			continue
+		}
+		profiles = append(profiles, profile)
+	}
+	selectedByProfile := make(map[string]string, len(cfg.Profiles))
+	brokenByProfile := map[string]string{}
+	for name, profile := range cfg.Profiles {
+		selection := strings.TrimSpace(profile.SecretsProfile)
+		selectedByProfile[name] = selection
+		if selection == "" {
+			continue
+		}
+		if _, ok := cfg.Secrets.Profiles[selection]; ok {
+			continue
+		}
+		brokenByProfile[name] = selection
+	}
+	return profiles, selectedByProfile, brokenByProfile
+}
+
+func initSecretsProfileSelectionOptions(profiles []config.EffectiveSecretsProfile, missingSelection string, defaultLabel string) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(profiles)+2)
+	if missingSelection != "" {
+		options = append(options, huh.NewOption(initMissingSecretsProfileLabel(missingSelection), initMissingSecretsProfileSelection(missingSelection)))
+	}
+	options = append(options, huh.NewOption(defaultLabel, initSecretsProfileDefaultSelection))
+	for _, profile := range profiles {
+		options = append(options, huh.NewOption(initSecretsProfileLabel(profile), profile.ID))
+	}
+	return dedupeInitStringOptions(options)
+}
+
+func initProfileEditorSecretsProfileSelection(profiles []config.EffectiveSecretsProfile, explicitSelection string, missingSelection string, defaultLabel string, draft initDraft) ([]huh.Option[string], string) {
+	options := initSecretsProfileSelectionOptions(profiles, missingSelection, defaultLabel)
+	selected := strings.TrimSpace(explicitSelection)
+	if selected == "" {
+		selected = strings.TrimSpace(draft.SecretsProfile)
+	}
+	if selected == "" {
+		selected = initSecretsProfileDefaultSelection
+	}
+	if missingSelection != "" && selected == missingSelection {
+		selected = initMissingSecretsProfileSelection(missingSelection)
+	}
+	return options, normalizeInitStringSelectionValue(selected, options)
+}
+
+func initSecretsProfileSelectionDescription() string {
+	return "Choose where this review profile stores and retrieves tokens and API keys."
+}
+
+func initSecretsProfileDefaultOptionLabel(cfg config.File) string {
+	if profile, ok := config.EffectiveDefaultSecretsProfile(cfg); ok {
+		return fmt.Sprintf("Use built-in default (%s)", initSecretsProfileLabel(profile))
+	}
+	return "Use built-in default"
+}
+
+func initSecretsProfileLabel(profile config.EffectiveSecretsProfile) string {
+	displayName := strings.TrimSpace(profile.Label)
+	if displayName == "" {
+		displayName = strings.TrimSpace(profile.ID)
+	}
+	backend := strings.TrimSpace(profile.Backend)
+	if backend == "" {
+		return displayName
+	}
+	if item, ok := initSecretsBackendByKind(config.SecretsBackendKind(backend)); ok {
+		backend = item.Label
+	}
+	return fmt.Sprintf("%s (%s)", displayName, backend)
+}
+
+func initMissingSecretsProfileSelection(id string) string {
+	return initMissingSecretsProfilePrefix + strings.TrimSpace(id)
+}
+
+func initMissingSecretsProfileLabel(id string) string {
+	return fmt.Sprintf("Missing configured profile: %s (choose another option to repair)", strings.TrimSpace(id))
+}
+
+func applySecretsProfileSelection(draft *initDraft, selection string) {
+	switch {
+	case selection == initSecretsProfileDefaultSelection:
+		draft.SecretsProfile = ""
+	case strings.HasPrefix(selection, initMissingSecretsProfilePrefix):
+		draft.SecretsProfile = strings.TrimSpace(strings.TrimPrefix(selection, initMissingSecretsProfilePrefix))
+	default:
+		draft.SecretsProfile = strings.TrimSpace(selection)
+	}
 }
 
 func defaultProfileSelectionOptions(defaultProfileName string) []huh.Option[bool] {
@@ -3057,7 +3174,9 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 	choice := options[0].Value
 	title := fmt.Sprintf("How should init handle %s credentials?", initCredentialPurposeLabel(prompt.Entry.Ref.Purpose))
 	if prompt.Entry.Ref.Ref != "" {
-		title = fmt.Sprintf("%s (%s)", title, prompt.Entry.Ref.Ref)
+		title = fmt.Sprintf("%s (%s%s)", title, prompt.Entry.Ref.Ref, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))
+	} else if suffix := initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile); suffix != "" {
+		title += suffix
 	}
 	if prompt.TargetHasAnyKeys && !prompt.TargetHasRequired {
 		title = fmt.Sprintf("%s Existing values were found; choose set-now to review them key by key.", title)
@@ -3097,7 +3216,7 @@ func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) 
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[initSecretSource]().
-				Title(fmt.Sprintf("How should init get %s?", prompt.Key)).
+				Title(fmt.Sprintf("How should init get %s%s?", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))).
 				Options(options...).
 				Value(&choice),
 		),
@@ -3116,7 +3235,7 @@ func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string
 	var value string
 	action := initDetailActionEdit
 	field := huh.NewInput().
-		Title(fmt.Sprintf("Paste %s", prompt.Key)).
+		Title(fmt.Sprintf("Paste %s%s", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))).
 		Description("Secret input is hidden.").
 		Value(&value).
 		EchoMode(huh.EchoModePassword).
@@ -3530,6 +3649,7 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		draft.LLMAdapter = string(existingProfile.LLM.Adapter)
 		draft.LLMReviewerModelTier = string(existingProfile.LLM.ReviewerModelTier)
 		draft.LLMCredentialRef = existingProfile.LLM.CredentialRef
+		draft.SecretsProfile = strings.TrimSpace(existingProfile.SecretsProfile)
 		if existingProfile.ReviewerCredentials != nil {
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(existingProfile.ReviewerCredentials.AuthMode)
@@ -3882,7 +4002,7 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 			return initWorkspaceDraft{}, cmderr.Config(err)
 		}
 	}
-	if err := config.Validate(initValidationConfigForProfileHost(working, profileName, previousProfile, profile.Git.Host)); err != nil {
+	if err := validateInteractiveInitConfig(initValidationConfigForProfileHost(working, profileName, previousProfile, profile.Git.Host)); err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 
@@ -4847,6 +4967,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	} else {
 		profile.LLM.CredentialRef = ""
 	}
+	profile.SecretsProfile = strings.TrimSpace(draft.SecretsProfile)
 	return profile, nil
 }
 
@@ -5175,6 +5296,17 @@ func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDep
 	return nextCfg, nil
 }
 
+func validateInteractiveInitConfig(cfg config.File) error {
+	err := config.Validate(cfg)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, config.ErrSecretsProfileNotFound) {
+		return nil
+	}
+	return err
+}
+
 func validateInteractiveInitGlobalConfig(cfg config.File) error {
 	if len(cfg.Profiles) == 0 || strings.TrimSpace(cfg.DefaultProfile) == "" {
 		if err := config.ValidateKeyring(cfg.Keyring); err != nil {
@@ -5182,7 +5314,7 @@ func validateInteractiveInitGlobalConfig(cfg config.File) error {
 		}
 		return config.ValidateRetention(cfg.Data.Retention)
 	}
-	return config.Validate(cfg)
+	return validateInteractiveInitConfig(cfg)
 }
 
 func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, cfg config.File) string {
@@ -5904,6 +6036,13 @@ func initCredentialPurposeLabel(purpose string) string {
 	}
 }
 
+func initSecretsProfilePromptSuffix(resolved credentials.ResolvedSecretsProfile) string {
+	if !resolved.IsNamed() {
+		return ""
+	}
+	return fmt.Sprintf(" via %s", resolved.DisplayName())
+}
+
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
 	var store initStore
 	var primaryResolved credentials.ResolvedSecretsProfile
@@ -6237,7 +6376,41 @@ func loadConfigForInit(path string) (config.File, bool, error) {
 	if errors.Is(err, config.ErrNotConfigured) {
 		return config.File{Profiles: map[string]config.Profile{}}, false, nil
 	}
+	if err != nil && errors.Is(err, config.ErrSecretsProfileNotFound) {
+		recovered, recoverErr := loadConfigForInteractiveInitRecovery(path)
+		if recoverErr != nil {
+			return config.File{}, true, recoverErr
+		}
+		return recovered, true, nil
+	}
 	return cfg, true, err
+}
+
+func loadConfigForInteractiveInitRecovery(path string) (config.File, error) {
+	// #nosec G304 -- path is the resolved cr config path or an injected test path.
+	file, err := os.Open(path)
+	if err != nil {
+		return config.File{}, err
+	}
+	defer file.Close()
+
+	decoder := yaml.NewDecoder(file)
+	decoder.KnownFields(true)
+	var cfg config.File
+	if err := decoder.Decode(&cfg); err != nil {
+		return config.File{}, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != nil && !errors.Is(err, io.EOF) {
+		return config.File{}, err
+	} else if err == nil {
+		return config.File{}, fmt.Errorf("config: multiple YAML documents are not supported")
+	}
+	cfg = config.Normalize(cfg)
+	if err := validateInteractiveInitConfig(cfg); err != nil {
+		return config.File{}, err
+	}
+	return cfg, nil
 }
 
 func configPath(opts *root.Options) (string, error) {
