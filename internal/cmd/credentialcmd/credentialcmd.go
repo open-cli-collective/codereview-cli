@@ -234,24 +234,24 @@ const (
 )
 
 type initDraft struct {
-	Action                 initDraftAction
-	ActionTarget           string
-	OriginalProfileName    string
-	ProfileName            string
-	MakeDefault            bool
-	GitHost                string
-	GitAuth                string
-	GitCredentialRef       string
-	ReviewerEnabled        bool
-	ReviewerAuth           string
-	ReviewerCredentialRef  string
-	ReviewerDisplayName    string
-	LLMProvider            string
-	LLMAuth                string
-	LLMAdapter             string
-	LLMReviewerModelTier   string
-	LLMCredentialRef       string
-	AdvancedStorageLabels  bool
+	Action                initDraftAction
+	ActionTarget          string
+	OriginalProfileName   string
+	ProfileName           string
+	MakeDefault           bool
+	GitHost               string
+	GitAuth               string
+	GitCredentialRef      string
+	ReviewerEnabled       bool
+	ReviewerAuth          string
+	ReviewerCredentialRef string
+	ReviewerDisplayName   string
+	LLMProvider           string
+	LLMAuth               string
+	LLMAdapter            string
+	LLMReviewerModelTier  string
+	LLMCredentialRef      string
+	AdvancedStorageLabels bool
 }
 
 type initModelMapPrompt struct {
@@ -333,12 +333,13 @@ type initFinalizePrompt struct {
 type initMenuAction string
 
 const (
-	initMenuActionLLMRuntimes      initMenuAction = "llm_runtimes"
-	initMenuActionReviewerEntities initMenuAction = "reviewer_entities"
-	initMenuActionReviewProfiles   initMenuAction = "review_profiles"
-	initMenuActionGlobalSettings   initMenuAction = "global_settings"
-	initMenuActionSave             initMenuAction = "save"
-	initMenuActionExit             initMenuAction = "exit"
+	initMenuActionLLMRuntimes       initMenuAction = "llm_runtimes"
+	initMenuActionReviewerEntities  initMenuAction = "reviewer_entities"
+	initMenuActionReviewProfiles    initMenuAction = "review_profiles"
+	initMenuActionGlobalSettings    initMenuAction = "global_settings"
+	initMenuActionSecretsManagement initMenuAction = "secrets_management"
+	initMenuActionSave              initMenuAction = "save"
+	initMenuActionExit              initMenuAction = "exit"
 )
 
 var (
@@ -1115,6 +1116,8 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 			session, err = loopInteractiveInitProfile(cmd, opts, flags, deps, session)
 		case initMenuActionGlobalSettings:
 			session, err = editInteractiveInitGlobalSettings(cmd, opts, deps, session)
+		case initMenuActionSecretsManagement:
+			session, err = editInteractiveInitSecretsManagement(cmd, opts, deps, session)
 		case initMenuActionSave:
 			if session.workspace == nil {
 				return initSessionDraft{}, exitcode.Usage(errors.New("commit requires at least one configured profile"))
@@ -1422,26 +1425,29 @@ func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, dep
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	nextCfg, err := collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cfg)
-	if errors.Is(err, errInitNavigateBack) {
-		session.cfg = cfg
-		if session.workspace != nil {
-			workspace := *session.workspace
-			workspace.cfg = cloneInitConfigFile(cfg)
-			workspace.backendArg = interactiveInitBackendArg(opts, workspace.backendFlagSet, cfg)
-			session.workspace = &workspace
-		}
-		return session, nil
-	}
-	if err != nil {
-		return initSessionDraft{}, err
-	}
-	cfg = nextCfg
 	session.cfg = cfg
 	if session.workspace != nil {
 		workspace := *session.workspace
 		workspace.cfg = cloneInitConfigFile(cfg)
 		workspace.backendArg = interactiveInitBackendArg(opts, workspace.backendFlagSet, cfg)
+		session.workspace = &workspace
+	}
+	return session, nil
+}
+
+func editInteractiveInitSecretsManagement(_ *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	nextCfg, err := collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cloneInitConfigFile(session.cfg))
+	if errors.Is(err, errInitNavigateBack) {
+		return session, nil
+	}
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	session.cfg = nextCfg
+	if session.workspace != nil {
+		workspace := *session.workspace
+		workspace.cfg = cloneInitConfigFile(nextCfg)
+		workspace.backendArg = interactiveInitBackendArg(opts, workspace.backendFlagSet, nextCfg)
 		session.workspace = &workspace
 	}
 	return session, nil
@@ -1456,7 +1462,8 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 		huh.NewOption(fmt.Sprintf("Configure LLM runtimes (%d)", prompt.LLMRuntimeCount), initMenuActionLLMRuntimes),
 		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
 		huh.NewOption(fmt.Sprintf("Configure review profiles (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfiles),
-		huh.NewOption("Review global settings", initMenuActionGlobalSettings),
+		huh.NewOption("Configure global settings", initMenuActionGlobalSettings),
+		huh.NewOption("Configure secrets management", initMenuActionSecretsManagement),
 		huh.NewOption("Commit staged changes and exit", initMenuActionSave),
 		huh.NewOption("Discard staged changes and exit", initMenuActionExit),
 	}
@@ -1481,7 +1488,7 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 						if !prompt.CanSave {
 							return errors.New("configure a review profile before committing changes")
 						}
-					case initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+					case initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionSecretsManagement, initMenuActionExit:
 					}
 					return nil
 				}),
@@ -3329,21 +3336,21 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
-				Title("Keyring backend action").
+				Title("Secrets management action").
 				Options(
-					huh.NewOption("Stage keyring-backend settings", initDetailActionEdit),
+					huh.NewOption("Stage legacy secrets-management settings", initDetailActionEdit),
 					huh.NewOption("Back without staging", initDetailActionBack),
 				).
 				Value(&action),
-		).Title("Keyring"),
+		).Title("Secrets management"),
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Persistent keyring backend").
-				Description("Examples include file or memory. Leave blank to use auto selection. Leave runtime-only --backend choices out unless you want them saved.").
+				Title("Legacy persistent backend").
+				Description("This transitional setting still edits config.keyring.backend. Examples include file or memory. Leave blank to use auto selection. Leave runtime-only --backend choices out unless you want them saved.").
 				Value(&backend),
 		).WithHideFunc(func() bool {
 			return action == initDetailActionBack
-		}).Title("Keyring"),
+		}).Title("Secrets management"),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {

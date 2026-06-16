@@ -7420,15 +7420,15 @@ func TestInitInteractiveAgentSourcesCanClearToEmpty(t *testing.T) {
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName:    "work",
-				ProfileName:            "work",
-				MakeDefault:            true,
-				GitHost:                "github.com",
-				GitAuth:                string(config.GitAuthModePAT),
-				GitCredentialRef:       "codereview/work",
-				LLMProvider:            string(config.LLMProviderAnthropic),
-				LLMAuth:                string(config.LLMAuthSubscription),
-				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				MakeDefault:         true,
+				GitHost:             "github.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/work",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
 		agentSourcesPrompter: initAgentSourcesPrompterFunc(func(initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
@@ -7667,7 +7667,7 @@ func TestHuhInitRetentionPrompterXtermBlankResetsToDefault(t *testing.T) {
 	thirty := 30
 	edit, err := prompter.EditRetention(initRetentionPrompt{
 		Retention: config.RetentionConfig{
-			MaxAgeDays: &thirty,
+			MaxAgeDays:  &thirty,
 			Enforcement: config.RetentionManualOnly,
 		},
 	})
@@ -7766,11 +7766,14 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	if !edit.Apply {
 		t.Fatalf("edit = %#v, want apply edit path", edit)
 	}
-	if !strings.Contains(stderr.String(), "Persistent keyring backend") {
+	if !strings.Contains(stderr.String(), "Legacy persistent backend") {
 		t.Fatalf("stderr = %q, want backend input prompt", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "Back without staging") {
 		t.Fatalf("stderr = %q, want keyring Back option", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Stage legacy secrets-management settings") {
+		t.Fatalf("stderr = %q, want transitional secrets-management wording", stderr.String())
 	}
 }
 
@@ -7867,7 +7870,7 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 	}
 }
 
-func TestInitInteractiveGlobalKeyringBackPreservesRetentionDraft(t *testing.T) {
+func TestInitInteractiveSecretsManagementBackPreservesEarlierRetentionDraft(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -7882,6 +7885,7 @@ func TestInitInteractiveGlobalKeyringBackPreservesRetentionDraft(t *testing.T) {
 	menu := &fakeInitMenuPrompter{
 		actions: []initMenuAction{
 			initMenuActionGlobalSettings,
+			initMenuActionSecretsManagement,
 			initMenuActionSave,
 		},
 	}
@@ -7921,7 +7925,7 @@ func TestInitInteractiveGlobalKeyringBackPreservesRetentionDraft(t *testing.T) {
 		t.Fatalf("Load config: %v", err)
 	}
 	if cfg.Data.Retention.MaxAgeDaysValue() != 45 || cfg.Data.Retention.Enforcement != config.RetentionManualOnly {
-		t.Fatalf("retention = %#v, want retained 45/manual after keyring Back", cfg.Data.Retention)
+		t.Fatalf("retention = %#v, want retained 45/manual after secrets-management Back", cfg.Data.Retention)
 	}
 	if _, ok := cfg.Profiles["work"]; !ok {
 		t.Fatalf("profiles = %#v, want work profile preserved", cfg.Profiles)
@@ -8267,7 +8271,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("6\n"),
+		stdin:  strings.NewReader("7\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{
@@ -8287,7 +8291,8 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 		"Configure LLM runtimes (2)",
 		"Configure reviewer entities (3)",
 		"Configure review profiles (1)",
-		"Review global settings",
+		"Configure global settings",
+		"Configure secrets management",
 		"Commit staged changes and exit",
 		"Discard staged changes and exit",
 	} {
@@ -8302,8 +8307,8 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *t
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"5", // Commit staged changes and exit (disabled)
-			"6", // Discard staged changes and exit
+			"6", // Commit staged changes and exit (disabled)
+			"7", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -8326,7 +8331,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"1", // Configure LLM runtimes (disabled)
-			"6", // Discard staged changes and exit
+			"7", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -8410,6 +8415,7 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
 				initMenuActionGlobalSettings,
+				initMenuActionSecretsManagement,
 				initMenuActionReviewProfiles,
 				initMenuActionSave,
 			},
@@ -8925,6 +8931,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
 				initMenuActionGlobalSettings,
+				initMenuActionSecretsManagement,
 				initMenuActionReviewProfiles,
 				initMenuActionLLMRuntimes,
 				initMenuActionSave,
@@ -9140,6 +9147,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
 				initMenuActionGlobalSettings,
+				initMenuActionSecretsManagement,
 				initMenuActionLLMRuntimes,
 				initMenuActionSave,
 			},
@@ -9304,6 +9312,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
 				initMenuActionGlobalSettings,
+				initMenuActionSecretsManagement,
 				initMenuActionReviewProfiles,
 				initMenuActionReviewerEntities,
 				initMenuActionSave,
@@ -10770,14 +10779,89 @@ func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedPro
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.Keyring.Backend != "file" {
-		t.Fatalf("keyring.backend = %q, want file", cfg.Keyring.Backend)
+	if cfg.Keyring.Backend != "memory" {
+		t.Fatalf("keyring.backend = %q, want preserved memory", cfg.Keyring.Backend)
 	}
 	if cfg.Data.Retention.MaxAgeDaysValue() != 30 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 30/at_write", cfg.Data.Retention)
 	}
 	if got := sortedProfileNames(cfg.Profiles); !reflect.DeepEqual(got, []string{"work"}) {
 		t.Fatalf("profiles = %#v, want only existing work profile", got)
+	}
+	work := cfg.Profiles["work"]
+	if work.Git.Host != "github.com" || work.Git.AuthMode != config.GitAuthModePAT || work.Git.CredentialRef != "codereview/work" {
+		t.Fatalf("work git = %#v, want untouched bootstrap profile git config", work.Git)
+	}
+	if work.ReviewerCredentials != nil {
+		t.Fatalf("reviewer credentials = %#v, want nil for untouched profile", work.ReviewerCredentials)
+	}
+	if work.LLM.Provider != config.LLMProviderAnthropic || work.LLM.Auth != config.LLMAuthSubscription || work.LLM.Adapter != config.LLMAdapterClaudeCLI {
+		t.Fatalf("work llm = %#v, want untouched bootstrap profile llm config", work.LLM)
+	}
+}
+
+func TestInitInteractiveMenuSecretsManagementOnlySaveDoesNotFinalizeBootstrappedProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	finalizeCalls := 0
+	openStoreCalls := 0
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionSecretsManagement,
+				initMenuActionSave,
+			},
+		},
+		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{
+				Apply:   true,
+				Backend: "file",
+			}, nil
+		}),
+		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+			finalizeCalls++
+			if len(prompt.Profiles) != 0 {
+				t.Fatalf("finalize prompt = %#v, want no profile readiness for untouched bootstrap profile", prompt)
+			}
+			return initFinalizeActionSave, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			openStoreCalls++
+			return newFakeInitStore(nil), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if finalizeCalls != 1 {
+		t.Fatalf("finalizeCalls = %d, want 1", finalizeCalls)
+	}
+	if openStoreCalls != 0 {
+		t.Fatalf("openStoreCalls = %d, want 0 when no touched profiles require credential handling", openStoreCalls)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Keyring.Backend != "file" {
+		t.Fatalf("keyring.backend = %q, want file", cfg.Keyring.Backend)
 	}
 	work := cfg.Profiles["work"]
 	if work.Git.Host != "github.com" || work.Git.AuthMode != config.GitAuthModePAT || work.Git.CredentialRef != "codereview/work" {
@@ -11141,7 +11225,7 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 		want           []config.RepositoryProfile
 	}{
 		{
-			name:   "create from pr url",
+			name: "create from pr url",
 			edit: initRoutesEdit{Routes: []configedit.RepositoryRouteSpec{{
 				Host:      "github.com",
 				Namespace: "open-cli-collective",
@@ -11157,7 +11241,7 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 			}},
 		},
 		{
-			name:   "edit and preserve unrelated",
+			name: "edit and preserve unrelated",
 			existingRoutes: []config.RepositoryProfile{
 				{
 					Profile: "work",
@@ -11198,7 +11282,7 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 			},
 		},
 		{
-			name:   "remove all",
+			name: "remove all",
 			existingRoutes: []config.RepositoryProfile{{
 				Profile: "work",
 				Match: config.RepositoryProfileMatch{
@@ -11231,15 +11315,15 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 			deps := initDeps{
 				prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 					return initDraft{
-						OriginalProfileName:    "work",
-						ProfileName:            "work",
-						MakeDefault:            true,
-						GitHost:                "github.com",
-						GitAuth:                string(config.GitAuthModePAT),
-						GitCredentialRef:       "codereview/work",
-						LLMProvider:            string(config.LLMProviderAnthropic),
-						LLMAuth:                string(config.LLMAuthSubscription),
-						LLMAdapter:             string(config.LLMAdapterClaudeCLI),
+						OriginalProfileName: "work",
+						ProfileName:         "work",
+						MakeDefault:         true,
+						GitHost:             "github.com",
+						GitAuth:             string(config.GitAuthModePAT),
+						GitCredentialRef:    "codereview/work",
+						LLMProvider:         string(config.LLMProviderAnthropic),
+						LLMAuth:             string(config.LLMAuthSubscription),
+						LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 					}, nil
 				}),
 				routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
@@ -11290,15 +11374,15 @@ func TestInitInteractiveRouteEditorPreservesExistingRoutesWhenLeftUnchanged(t *t
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName:    "work",
-				ProfileName:            "work",
-				MakeDefault:            true,
-				GitHost:                "github.com",
-				GitAuth:                string(config.GitAuthModePAT),
-				GitCredentialRef:       "codereview/work",
-				LLMProvider:            string(config.LLMProviderAnthropic),
-				LLMAuth:                string(config.LLMAuthSubscription),
-				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				MakeDefault:         true,
+				GitHost:             "github.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/work",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
@@ -11378,14 +11462,14 @@ func TestInitInteractiveReconcilesRouteHostChangeBeforeSave(t *testing.T) {
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName:    "work",
-				ProfileName:            "work",
-				GitHost:                "gitlab.com",
-				GitAuth:                string(config.GitAuthModePAT),
-				GitCredentialRef:       "codereview/work",
-				LLMProvider:            string(config.LLMProviderAnthropic),
-				LLMAuth:                string(config.LLMAuthSubscription),
-				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
+				OriginalProfileName: "work",
+				ProfileName:         "work",
+				GitHost:             "gitlab.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/work",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
@@ -11537,14 +11621,14 @@ func TestInitInteractiveReconcilesRouteHostChangeDuringRename(t *testing.T) {
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				OriginalProfileName:    "work",
-				ProfileName:            "office",
-				GitHost:                "gitlab.com",
-				GitAuth:                string(config.GitAuthModePAT),
-				GitCredentialRef:       "codereview/custom-office-git",
-				LLMProvider:            string(config.LLMProviderAnthropic),
-				LLMAuth:                string(config.LLMAuthSubscription),
-				LLMAdapter:             string(config.LLMAdapterClaudeCLI),
+				OriginalProfileName: "work",
+				ProfileName:         "office",
+				GitHost:             "gitlab.com",
+				GitAuth:             string(config.GitAuthModePAT),
+				GitCredentialRef:    "codereview/custom-office-git",
+				LLMProvider:         string(config.LLMProviderAnthropic),
+				LLMAuth:             string(config.LLMAuthSubscription),
+				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
