@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -52,6 +53,47 @@ func TestSetCredentialStdinJSONWritesFileBackend(t *testing.T) {
 	}
 	if got.Backend != "file" || got.BackendSource != "explicit" {
 		t.Fatalf("backend JSON = (%q,%q), want (file,explicit)", got.Backend, got.BackendSource)
+	}
+	assertStored(t, "work", credentials.GitTokenKey, "distinctive-token")
+}
+
+func TestSetCredentialUsesSelectedSecretsProfileStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	hermeticFileBackend(t)
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "work-file",
+			Profiles: map[string]config.SecretsProfile{
+				"work-file": {
+					Label:   "Work File Store",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	cmd, out, _ := newTestCommand(path, strings.NewReader("distinctive-token\n"))
+
+	err := root.Execute(cmd, []string{
+		"set-credential",
+		"--ref", "codereview/work",
+		"--key", credentials.GitTokenKey,
+		"--stdin",
+		"--json",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.CredentialWrite
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Backend != "file" || got.BackendSource != "secrets_profile" {
+		t.Fatalf("backend JSON = (%q,%q), want (file,secrets_profile)", got.Backend, got.BackendSource)
 	}
 	assertStored(t, "work", credentials.GitTokenKey, "distinctive-token")
 }
@@ -156,6 +198,52 @@ func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
 	}
 	assertFileBundleKeys(t, "work-llm", []string{credentials.AnthropicAPIKeyKey})
 	assertStored(t, "work-llm", credentials.AnthropicAPIKeyKey, "anthropic-token")
+}
+
+func TestSetCredentialRejectsAmbiguousRefAcrossSecretsProfilesBeforeIngress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "home",
+		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "work-file",
+			Profiles: map[string]config.SecretsProfile{
+				"personal-keychain": {
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)},
+				},
+				"work-file": {
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"home": func() config.Profile {
+				p := basicProfile("home")
+				p.Git.CredentialRef = "codereview/shared"
+				p.SecretsProfile = "personal-keychain"
+				return p
+			}(),
+			"work": func() config.Profile {
+				p := basicProfile("work")
+				p.Git.CredentialRef = "codereview/shared"
+				return p
+			}(),
+		},
+	})
+	cmd, _, _ := newTestCommand(path, failReader{})
+
+	err := root.Execute(cmd, []string{
+		"set-credential",
+		"--ref", "codereview/shared",
+		"--key", credentials.GitTokenKey,
+		"--stdin",
+	})
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.AuthConfigError, err)
+	}
+	if strings.Contains(err.Error(), "secret ingress was read") {
+		t.Fatalf("set-credential read secret ingress before rejecting ambiguity: %v", err)
+	}
 }
 
 func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
@@ -3542,6 +3630,110 @@ func TestCollectInteractiveInitSecretsBackAfterPartialMultiKeyWriteDiscardsScrat
 	}
 	if len(prompter.actions) != 0 || len(prompter.sources) != 0 || len(prompter.pastes) != 0 {
 		t.Fatalf("prompter queues = actions %#v sources %#v pastes %#v, want consumed", prompter.actions, prompter.sources, prompter.pastes)
+	}
+}
+
+func TestCollectInteractiveInitSecretsMapsNamedSecretsProfileOpenConflictAsConfigError(t *testing.T) {
+	workspace := testInitSecretWorkspace()
+	workspace.credentialPlan[0].SecretsProfile = credentials.ResolvedSecretsProfile{
+		ID:      "work-file",
+		Label:   "Work File Store",
+		Backend: string(credstore.BackendFile),
+		Source:  config.EffectiveSecretsProfileSourceConfigured,
+	}
+	workspace.backendFlagSet = true
+	prompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+	}
+
+	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{Backend: "memory"}, initDeps{
+		secretPrompter:     prompter,
+		clipboardSupported: func() bool { return false },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read")
+			return "", nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("legacy openStore should not be used for named secrets profile")
+			return nil, nil
+		},
+		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+			return nil, fmt.Errorf("%w: named secrets-management profile conflict", config.ErrInvalid)
+		},
+	}, workspace)
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("collectInteractiveInitSecrets error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestCollectInteractiveInitSessionSecretsMapsNamedSecretsProfileLoadConflictAsConfigError(t *testing.T) {
+	plan := initSessionPlan{
+		cfg: config.File{},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "git",
+				Ref:     "codereview/default",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			State: initCredentialPlanStateMissingRequired,
+			SecretsProfile: credentials.ResolvedSecretsProfile{
+				ID:      "work-file",
+				Label:   "Work File Store",
+				Backend: string(credstore.BackendFile),
+				Source:  config.EffectiveSecretsProfileSourceConfigured,
+			},
+		}},
+	}
+
+	_, err := collectInteractiveInitSessionSecrets(&root.Options{Backend: "memory"}, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("legacy openStore should not be used for named secrets profile")
+			return nil, nil
+		},
+		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+			return nil, fmt.Errorf("%w: named secrets-management profile conflict", config.ErrInvalid)
+		},
+	}, plan)
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("collectInteractiveInitSessionSecrets error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestMergeInteractiveInitSessionPlanEntryRejectsSameRefAcrossDifferentSecretsProfiles(t *testing.T) {
+	entriesByKey := map[string]initCredentialPlanEntry{}
+	first := initCredentialPlanEntry{
+		Ref:   config.CredentialRef{Purpose: "git", Ref: "codereview/shared", Mode: string(config.GitAuthModePAT)},
+		State: initCredentialPlanStateMissingRequired,
+		SecretsProfile: credentials.ResolvedSecretsProfile{
+			ID:      "personal-memory",
+			Backend: string(credstore.BackendMemory),
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+	}
+	if err := mergeInteractiveInitSessionPlanEntry(entriesByKey, first); err != nil {
+		t.Fatalf("merge first entry: %v", err)
+	}
+
+	err := mergeInteractiveInitSessionPlanEntry(entriesByKey, initCredentialPlanEntry{
+		Ref:   config.CredentialRef{Purpose: "git", Ref: "codereview/shared", Mode: string(config.GitAuthModePAT)},
+		State: initCredentialPlanStateMissingRequired,
+		SecretsProfile: credentials.ResolvedSecretsProfile{
+			ID:      "work-file",
+			Backend: string(credstore.BackendFile),
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+	})
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("merge conflicting entry error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "multiple secrets-management profiles") {
+		t.Fatalf("merge conflicting entry error = %v, want conflict detail", err)
 	}
 }
 
@@ -11199,6 +11391,90 @@ func TestApplyInteractiveInitSessionPlanOverwriteConflictFailsBeforeWrite(t *tes
 	}
 	if got := store.bundles["default"][credentials.GitTokenKey]; got != "existing-token" {
 		t.Fatalf("stored git token = %q, want existing-token preserved on conflict", got)
+	}
+}
+
+func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsProfilesIndependently(t *testing.T) {
+	homeStore := newFakeInitStore(nil)
+	workStore := newFakeInitStore(nil)
+	opts := &root.Options{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	cfg := config.File{
+		DefaultProfile: "home",
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "work-file",
+			Profiles: map[string]config.SecretsProfile{
+				"personal-memory": {
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
+				},
+				"work-file": {
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"home": func() config.Profile {
+				p := basicProfile("home")
+				p.SecretsProfile = "personal-memory"
+				return p
+			}(),
+			"work": basicProfile("work"),
+		},
+	}
+	homeResolved, err := credentials.ResolveSecretsProfileForProfile(cfg, cfg.Profiles["home"])
+	if err != nil {
+		t.Fatalf("Resolve home secrets profile: %v", err)
+	}
+	workResolved, err := credentials.ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	if err != nil {
+		t.Fatalf("Resolve work secrets profile: %v", err)
+	}
+	plan := initSessionPlan{
+		path:         filepath.Join(t.TempDir(), "config.yml"),
+		cfg:          cfg,
+		profileNames: []string{"home", "work"},
+		writes: map[string]map[string]string{
+			"codereview/home": {credentials.GitTokenKey: "home-token"},
+			"codereview/work": {credentials.GitTokenKey: "work-token"},
+		},
+		credentialPlan: []initCredentialPlanEntry{
+			{Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/home", Mode: string(config.GitAuthModePAT)}, SecretsProfile: homeResolved},
+			{Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)}, SecretsProfile: workResolved},
+		},
+	}
+	var opened []string
+	err = applyInteractiveInitSessionPlan(opts, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("legacy openStore called for named secrets-profile writes")
+			return nil, nil
+		},
+		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, _ string, _ bool, _ config.File) (initStore, error) {
+			opened = append(opened, resolved.ID)
+			switch resolved.ID {
+			case "personal-memory":
+				return homeStore, nil
+			case "work-file":
+				return workStore, nil
+			default:
+				t.Fatalf("unexpected resolved secrets profile %q", resolved.ID)
+				return nil, nil
+			}
+		},
+		saveConfig: func(string, config.File) error { return nil },
+	}, plan)
+	if err != nil {
+		t.Fatalf("applyInteractiveInitSessionPlan: %v", err)
+	}
+	if !reflect.DeepEqual(opened, []string{"personal-memory", "work-file"}) {
+		t.Fatalf("opened secrets profiles = %#v, want home then work", opened)
+	}
+	if got := homeStore.bundles["home"][credentials.GitTokenKey]; got != "home-token" {
+		t.Fatalf("home store token = %q, want home-token", got)
+	}
+	if got := workStore.bundles["work"][credentials.GitTokenKey]; got != "work-token" {
+		t.Fatalf("work store token = %q, want work-token", got)
 	}
 }
 

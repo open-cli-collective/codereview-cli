@@ -266,6 +266,104 @@ func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.
 	}
 }
 
+func TestResolveSecretsProfileForProfileAndRef(t *testing.T) {
+	cfg := config.File{
+		DefaultProfile: "home",
+		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "work-file",
+			Profiles: map[string]config.SecretsProfile{
+				"personal-keychain": {
+					Label:   "Personal Keychain",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)},
+				},
+				"work-file": {
+					Label:   "Work File Store",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"home": func() config.Profile {
+				p := matrixProfile("codereview/shared-git", "codereview/home-llm", config.LLMProviderAnthropic)
+				p.SecretsProfile = "personal-keychain"
+				return p
+			}(),
+			"work": func() config.Profile {
+				p := matrixProfile("codereview/shared-git", "codereview/work-llm", config.LLMProviderOpenAI)
+				return p
+			}(),
+		},
+	}
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("Validate config: %v", err)
+	}
+
+	homeResolved, err := ResolveSecretsProfileForProfile(cfg, cfg.Profiles["home"])
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile(home): %v", err)
+	}
+	wantHome := ResolvedSecretsProfile{
+		ID:              "personal-keychain",
+		Label:           "Personal Keychain",
+		Backend:         "keychain",
+		Source:          config.EffectiveSecretsProfileSourceConfigured,
+		SelectionSource: SecretsProfileSelectionExplicit,
+	}
+	if !reflect.DeepEqual(homeResolved, wantHome) {
+		t.Fatalf("home resolved secrets profile = %#v, want %#v", homeResolved, wantHome)
+	}
+
+	workResolved, err := ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile(work): %v", err)
+	}
+	wantWork := ResolvedSecretsProfile{
+		ID:              "work-file",
+		Label:           "Work File Store",
+		Backend:         "file",
+		Source:          config.EffectiveSecretsProfileSourceConfigured,
+		SelectionSource: SecretsProfileSelectionDefault,
+	}
+	if !reflect.DeepEqual(workResolved, wantWork) {
+		t.Fatalf("work resolved secrets profile = %#v, want %#v", workResolved, wantWork)
+	}
+
+	if _, err := ResolveSecretsProfileForRef(cfg, "codereview/shared-git", ""); !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("ResolveSecretsProfileForRef(shared-git) error = %v, want ErrInvalid ambiguity", err)
+	}
+	selectedResolved, err := ResolveSecretsProfileForRef(cfg, "codereview/shared-git", "home")
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForRef(shared-git, home): %v", err)
+	}
+	if !reflect.DeepEqual(selectedResolved, wantHome) {
+		t.Fatalf("selected resolved secrets profile = %#v, want %#v", selectedResolved, wantHome)
+	}
+	undeclaredResolved, err := ResolveSecretsProfileForRef(cfg, "codereview/custom-ref", "work")
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForRef(custom-ref, work): %v", err)
+	}
+	if !reflect.DeepEqual(undeclaredResolved, wantWork) {
+		t.Fatalf("undeclared resolved secrets profile = %#v, want %#v", undeclaredResolved, wantWork)
+	}
+
+	cfg.Secrets.DefaultProfile = ""
+	legacyResolved, err := ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile(work legacy): %v", err)
+	}
+	wantLegacy := ResolvedSecretsProfile{
+		ID:              config.LegacyProjectedSecretsProfileID,
+		Label:           "Legacy default",
+		Backend:         "memory",
+		Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
+		SelectionSource: SecretsProfileSelectionLegacyDefault,
+	}
+	if !reflect.DeepEqual(legacyResolved, wantLegacy) {
+		t.Fatalf("legacy resolved secrets profile = %#v, want %#v", legacyResolved, wantLegacy)
+	}
+}
+
 func TestAllowedKeyMemoryRoundTrip(t *testing.T) {
 	store, err := OpenStore("memory", true, config.File{})
 	if err != nil {

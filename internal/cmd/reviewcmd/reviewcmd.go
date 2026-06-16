@@ -651,6 +651,7 @@ func mapRunError(err error) error {
 	case errors.Is(err, config.ErrInvalid),
 		errors.Is(err, config.ErrNotConfigured),
 		errors.Is(err, config.ErrProfileNotFound),
+		errors.Is(err, config.ErrSecretsProfileNotFound),
 		errors.Is(err, config.ErrUnsupported):
 		return cmderr.Config(err)
 	case errors.Is(err, agents.ErrUnsafeSource):
@@ -680,9 +681,13 @@ func mapRunError(err error) error {
 }
 
 func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
-	store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
+	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
 	if err != nil {
-		return Runtime{}, cmderr.Credential(err)
+		return Runtime{}, mapRunError(err)
+	}
+	store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
+	if err != nil {
+		return Runtime{}, mapRunError(err)
 	}
 	cleanup := func() { _ = store.Close() }
 	providerGit := gitConfigForReviewerAuth(profile)

@@ -106,6 +106,7 @@ type EffectiveSecretsProfile struct {
 // Profile is one named review profile.
 type Profile struct {
 	Git                 GitConfig            `yaml:"git" json:"git"`
+	SecretsProfile      string               `yaml:"secrets_profile,omitempty" json:"secrets_profile,omitempty"`
 	ReviewerCredentials *ReviewerCredentials `yaml:"reviewer_credentials,omitempty" json:"reviewer_credentials,omitempty"`
 	LLM                 LLMConfig            `yaml:"llm" json:"llm"`
 	AgentSources        []string             `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
@@ -555,7 +556,11 @@ func Validate(cfg File) error {
 		if strings.TrimSpace(name) == "" {
 			return invalid("profile name is required")
 		}
-		if err := validateProfile(name, profile.normalized()); err != nil {
+		profile = profile.normalized()
+		if err := validateProfile(name, profile); err != nil {
+			return err
+		}
+		if err := validateProfileSecretsProfileSelection(cfg.Secrets, name, profile); err != nil {
 			return err
 		}
 	}
@@ -877,6 +882,20 @@ func validateProfile(name string, profile Profile) error {
 	return nil
 }
 
+func validateProfileSecretsProfileSelection(secrets SecretsConfig, name string, profile Profile) error {
+	selection := strings.TrimSpace(profile.SecretsProfile)
+	if selection == "" {
+		return nil
+	}
+	if selection == LegacyProjectedSecretsProfileID {
+		return invalid("profiles.%s.secrets_profile %q is reserved", name, LegacyProjectedSecretsProfileID)
+	}
+	if _, ok := secrets.Profiles[selection]; !ok {
+		return fmt.Errorf("%w: profiles.%s.secrets_profile %q", ErrSecretsProfileNotFound, name, selection)
+	}
+	return nil
+}
+
 func validateRepositoryProfiles(cfg File) error {
 	namespaceRoutes := map[string]int{}
 	repoRoutes := map[string]int{}
@@ -1083,6 +1102,7 @@ func (b SecretsProfileBackend) normalized() SecretsProfileBackend {
 }
 
 func (p Profile) normalized() Profile {
+	p.SecretsProfile = strings.TrimSpace(p.SecretsProfile)
 	p.LLM = p.LLM.normalized()
 	p.ReviewPolicy = p.ReviewPolicy.normalized()
 	return p

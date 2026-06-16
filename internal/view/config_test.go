@@ -122,6 +122,30 @@ func TestRenderConfigTextSecretsManagementProfiles(t *testing.T) {
 	}
 }
 
+func TestRenderConfigTextSelectedSecretsManagement(t *testing.T) {
+	var out bytes.Buffer
+	show := NewConfigShow("work", workProfile(), dataConfig(), nil)
+	show.ActiveSecretsProfile = &ConfigSecretsProfile{
+		ID:      "work-file",
+		Label:   "Work File Store",
+		Backend: "file",
+		Source:  "configured",
+	}
+
+	if err := RenderConfigText(&out, show); err != nil {
+		t.Fatalf("RenderConfigText: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Selected secrets management: Work File Store (file)",
+		"Selected secrets management source: configured",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRenderConfigTextAgentSourceStatus(t *testing.T) {
 	var out bytes.Buffer
 	show := NewConfigShow("home", homeProfile(), dataConfig(), nil)
@@ -682,6 +706,33 @@ func TestRenderConfigClearTextIncludesDryRun(t *testing.T) {
 	}
 	if strings.Contains(got, "Cleared credentials:") {
 		t.Fatalf("dry-run text included mutating heading:\n%s", got)
+	}
+}
+
+func TestRenderConfigClearTextIncludesSelectedSecretsManagement(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigClear{
+		Backend:       "file",
+		BackendSource: "secrets_profile",
+		ActiveSecretsProfile: &ConfigSecretsProfile{
+			ID:      "work-file",
+			Label:   "Work File Store",
+			Backend: "file",
+			Source:  "configured",
+		},
+	}
+
+	if err := RenderConfigClearText(&out, result); err != nil {
+		t.Fatalf("RenderConfigClearText: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Selected secrets management: Work File Store (file)",
+		"Selected secrets management source: configured",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text output missing %q:\n%s", want, got)
+		}
 	}
 }
 

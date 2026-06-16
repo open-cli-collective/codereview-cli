@@ -69,20 +69,27 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return cmderr.Config(err)
 			}
+			resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+			if err != nil {
+				return cmderr.Config(err)
+			}
 			refs, err := config.CredentialRefs(profile)
 			if err != nil {
 				return cmderr.Config(err)
 			}
 			backendFlagSet := cmderr.BackendFlagChanged(cmd)
-			store, err := credentials.OpenStore(opts.Backend, backendFlagSet, cfg)
+			store, err := credentials.OpenResolvedStore(opts.Backend, backendFlagSet, cfg, resolvedSecretsProfile)
 			var storeErr error
 			if err != nil {
+				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+					return cmderr.Config(err)
+				}
 				storeErr = err
 			}
 			if store != nil {
 				defer store.Close()
 			}
-			backend, source, err := backendMetadata(store, opts.Backend, backendFlagSet, cfg)
+			backend, source, err := backendMetadata(store, opts.Backend, backendFlagSet, cfg, resolvedSecretsProfile)
 			if err != nil {
 				return cmderr.Credential(err)
 			}
@@ -93,6 +100,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			show := view.NewConfigShow(profileName, profile, cfg.Data, statuses)
 			show.Backend = string(backend)
 			show.BackendSource = string(source)
+			show.ActiveSecretsProfile = resolvedSecretsProfileViewPtr(resolvedSecretsProfile)
 			show.SecretsProfiles = config.EffectiveSecretsProfiles(cfg)
 			show.AgentSources = agents.InspectProfileSources(profile.AgentSources)
 			if jsonOutput {
@@ -486,6 +494,10 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return cmderr.Config(err)
 			}
+			resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+			if err != nil {
+				return cmderr.Config(err)
+			}
 			refs, err := config.CredentialRefs(profile)
 			if err != nil {
 				return cmderr.Config(err)
@@ -494,15 +506,22 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return cmderr.Credential(err)
 			}
-			store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
+			store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
 			if err != nil {
+				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+					return cmderr.Config(err)
+				}
 				return cmderr.Credential(err)
 			}
 			defer store.Close()
-			backend, source := store.Backend()
+			backend, source, err := backendMetadata(store, opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
+			if err != nil {
+				return cmderr.Credential(err)
+			}
 			result := view.ConfigClear{
 				Backend:       string(backend),
 				BackendSource: string(source),
+				ActiveSecretsProfile: resolvedSecretsProfileViewPtr(resolvedSecretsProfile),
 				DryRun:        clearDryRun,
 			}
 			for _, profile := range profiles {
@@ -1104,10 +1123,20 @@ func configPath(opts *root.Options) (string, error) {
 	return config.Path()
 }
 
-func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg config.File) (credstore.Backend, credstore.Source, error) {
+func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg config.File, resolvedSecretsProfile credentials.ResolvedSecretsProfile) (credstore.Backend, credstore.Source, error) {
 	if store != nil {
 		backend, source := store.Backend()
+		if resolvedSecretsProfile.IsNamed() {
+			return backend, credentials.BackendSourceSecretsProfile, nil
+		}
 		return backend, source, nil
+	}
+	if resolvedSecretsProfile.IsNamed() {
+		backend, err := credstore.ParseBackend(resolvedSecretsProfile.Backend)
+		if err != nil {
+			return "", "", fmt.Errorf("%w: %w", credentials.ErrInvalidBackendSelection, err)
+		}
+		return backend, credentials.BackendSourceSecretsProfile, nil
 	}
 	return credentials.BackendMetadata(flagValue, flagSet, cfg)
 }
@@ -1178,6 +1207,15 @@ func clearCredentialBundle(store *credstore.Store, profile string, dryRun bool) 
 		return store.ListBundle(profile)
 	}
 	return store.DeleteBundle(profile)
+}
+
+func resolvedSecretsProfileViewPtr(resolved credentials.ResolvedSecretsProfile) *view.ConfigSecretsProfile {
+	return &view.ConfigSecretsProfile{
+		ID:      resolved.ID,
+		Label:   resolved.Label,
+		Backend: resolved.Backend,
+		Source:  string(resolved.Source),
+	}
 }
 
 func clearProfileFromConfig(path string, cfg config.File, profileName string, dryRun bool) (configClearChange, error) {

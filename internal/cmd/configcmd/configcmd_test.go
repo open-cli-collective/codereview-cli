@@ -1375,8 +1375,11 @@ func TestConfigShowSeparatesRuntimeBackendFromConfiguredSecretsProfiles(t *testi
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.Backend != "memory" || got.BackendSource != "config" {
-		t.Fatalf("backend = (%q,%q), want legacy runtime compatibility backend (memory,config)", got.Backend, got.BackendSource)
+	if got.Backend != "file" || got.BackendSource != "secrets_profile" {
+		t.Fatalf("backend = (%q,%q), want selected secrets-profile backend (file,secrets_profile)", got.Backend, got.BackendSource)
+	}
+	if got.ActiveSecretsProfile == nil || got.ActiveSecretsProfile.ID != "work-file" || got.ActiveSecretsProfile.Label != "Work File Store" {
+		t.Fatalf("active_secrets_profile = %#v, want work-file", got.ActiveSecretsProfile)
 	}
 	want := []config.EffectiveSecretsProfile{
 		{
@@ -1395,6 +1398,30 @@ func TestConfigShowSeparatesRuntimeBackendFromConfiguredSecretsProfiles(t *testi
 	}
 	if !reflect.DeepEqual(got.SecretsProfiles, want) {
 		t.Fatalf("secrets_profiles = %#v, want %#v", got.SecretsProfiles, want)
+	}
+}
+
+func TestConfigShowRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"--backend", "memory", "config", "show", "--json"})
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("Execute error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
 	}
 }
 
