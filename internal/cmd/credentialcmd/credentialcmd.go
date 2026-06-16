@@ -2295,9 +2295,9 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 			actionFields := []huh.Field{
 				huh.NewSelect[string]().
-					Title("Review policy action").
+					Title("Profile action").
 					Options(
-						huh.NewOption("Stage review-policy settings", initDetailActionEdit),
+						huh.NewOption("Stage profile settings", initDetailActionEdit),
 						huh.NewOption("Back without staging", initDetailActionBack),
 					).
 					Value(&profileAction),

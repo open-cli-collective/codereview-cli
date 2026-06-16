@@ -6723,6 +6723,12 @@ func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
 	if !strings.Contains(out, "Git secrets storage label") {
 		t.Fatalf("wizard output missing inline git secrets storage label: %q", out)
 	}
+	if !strings.Contains(out, "Profile action") || !strings.Contains(out, "Stage profile settings") {
+		t.Fatalf("wizard output missing profile-level staging action: %q", out)
+	}
+	if strings.Contains(out, "Review policy action") || strings.Contains(out, "Stage review-policy settings") {
+		t.Fatalf("wizard output still shows review-policy-only staging action: %q", out)
+	}
 	if draft.AdvancedStorageLabels {
 		t.Fatalf("draft.AdvancedStorageLabels = true, want false on the default storage-label path")
 	}
