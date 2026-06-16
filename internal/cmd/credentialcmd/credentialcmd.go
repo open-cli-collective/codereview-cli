@@ -6069,10 +6069,7 @@ func initSecretsProfilePromptSuffix(resolved credentials.ResolvedSecretsProfile)
 }
 
 func initSecretsProfileHintLabel(resolved credentials.ResolvedSecretsProfile) string {
-	if !resolved.IsNamed() {
-		return ""
-	}
-	return fmt.Sprintf(" via %s", resolved.DisplayName())
+	return initSecretsProfilePromptSuffix(resolved)
 }
 
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
@@ -6193,12 +6190,12 @@ func writeInitCredentialPlanHints(w io.Writer, backendArg string, entry initCred
 			keys = append(keys, spec.Key)
 		}
 	}
-	prefix := "Next"
+	hintPrefix := "Next"
 	if hintLabel := initSecretsProfileHintLabel(entry.SecretsProfile); hintLabel != "" {
-		prefix += hintLabel
+		hintPrefix += hintLabel
 	}
 	for _, key := range keys {
-		if _, err := fmt.Fprintf(w, "%s: cr%s set-credential --ref %s --key %s --stdin\n", prefix, backendArg, entry.Ref.Ref, key); err != nil {
+		if _, err := fmt.Fprintf(w, "%s: cr%s set-credential --ref %s --key %s --stdin\n", hintPrefix, backendArg, entry.Ref.Ref, key); err != nil {
 			return err
 		}
 	}
