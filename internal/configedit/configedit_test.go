@@ -413,7 +413,7 @@ func TestCredentialRefAndOptionalResetHelpers(t *testing.T) {
 func TestSecretsProfileHelpers(t *testing.T) {
 	t.Run("set creates, updates, clears label, and preserves omitted fields", func(t *testing.T) {
 		cfg := testConfig()
-		backend := config.SecretsBackendKind("keychain")
+		backend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("keychain")}
 		label := " Personal Keychain "
 		updated, changed, created, err := configedit.SetSecretsProfile(cfg, " personal ", configedit.SecretsProfilePatch{
 			Backend: &backend,
@@ -426,14 +426,14 @@ func TestSecretsProfileHelpers(t *testing.T) {
 			t.Fatalf("SetSecretsProfile create = changed:%t created:%t, want true,true", changed, created)
 		}
 		got := updated.Secrets.Profiles["personal"]
-		if got.Label != "Personal Keychain" || got.Backend.Kind != backend {
+		if got.Label != "Personal Keychain" || got.Backend.Kind != backend.Kind {
 			t.Fatalf("created profile = %#v, want trimmed label + backend", got)
 		}
 		if len(cfg.Secrets.Profiles) != 0 {
 			t.Fatalf("original cfg mutated on create: %#v", cfg.Secrets.Profiles)
 		}
 
-		nextBackend := config.SecretsBackendKind("file")
+		nextBackend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")}
 		updated2, changed, created, err := configedit.SetSecretsProfile(updated, "personal", configedit.SecretsProfilePatch{
 			Backend: &nextBackend,
 		})
@@ -444,7 +444,7 @@ func TestSecretsProfileHelpers(t *testing.T) {
 			t.Fatalf("SetSecretsProfile backend update = changed:%t created:%t, want true,false", changed, created)
 		}
 		got = updated2.Secrets.Profiles["personal"]
-		if got.Label != "Personal Keychain" || got.Backend.Kind != nextBackend {
+		if got.Label != "Personal Keychain" || got.Backend.Kind != nextBackend.Kind {
 			t.Fatalf("updated profile = %#v, want preserved label + new backend", got)
 		}
 
@@ -457,14 +457,69 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		if !changed || created {
 			t.Fatalf("SetSecretsProfile clear label = changed:%t created:%t, want true,false", changed, created)
 		}
-		if got := updated3.Secrets.Profiles["personal"]; got.Label != "" || got.Backend.Kind != nextBackend {
+		if got := updated3.Secrets.Profiles["personal"]; got.Label != "" || got.Backend.Kind != nextBackend.Kind {
 			t.Fatalf("cleared label profile = %#v, want empty label + preserved backend", got)
+		}
+	})
+
+	t.Run("set replaces 1password backend payloads", func(t *testing.T) {
+		cfg := testConfig()
+		backend := config.SecretsProfileBackend{
+			Kind: config.SecretsBackendKind("op-connect"),
+			OnePassword: &config.SecretsProfileOnePasswordConfig{
+				VaultID:         "vault-123",
+				ConnectHost:     "https://connect.example",
+				ConnectTokenEnv: "CUSTOM_CONNECT_TOKEN",
+			},
+		}
+		updated, changed, created, err := configedit.SetSecretsProfile(cfg, "work-op", configedit.SecretsProfilePatch{Backend: &backend})
+		if err != nil {
+			t.Fatalf("SetSecretsProfile 1password create: %v", err)
+		}
+		if !changed || !created {
+			t.Fatalf("SetSecretsProfile 1password create = changed:%t created:%t, want true,true", changed, created)
+		}
+		got := updated.Secrets.Profiles["work-op"]
+		if got.Backend.OnePassword == nil || got.Backend.OnePassword.ConnectHost != "https://connect.example" {
+			t.Fatalf("created 1password profile = %#v, want connect host payload", got)
+		}
+
+		replacement := config.SecretsProfileBackend{
+			Kind: config.SecretsBackendKind("op"),
+			OnePassword: &config.SecretsProfileOnePasswordConfig{
+				VaultID:         "vault-123",
+				ServiceTokenEnv: "CUSTOM_SERVICE_TOKEN",
+			},
+		}
+		updated, changed, created, err = configedit.SetSecretsProfile(updated, "work-op", configedit.SecretsProfilePatch{Backend: &replacement})
+		if err != nil {
+			t.Fatalf("SetSecretsProfile 1password replace: %v", err)
+		}
+		if !changed || created {
+			t.Fatalf("SetSecretsProfile 1password replace = changed:%t created:%t, want true,false", changed, created)
+		}
+		got = updated.Secrets.Profiles["work-op"]
+		if got.Backend.OnePassword == nil || got.Backend.OnePassword.ServiceTokenEnv != "CUSTOM_SERVICE_TOKEN" {
+			t.Fatalf("replaced 1password profile = %#v, want service token env payload", got)
+		}
+
+		downgraded := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")}
+		updated, changed, created, err = configedit.SetSecretsProfile(updated, "work-op", configedit.SecretsProfilePatch{Backend: &downgraded})
+		if err != nil {
+			t.Fatalf("SetSecretsProfile 1password downgrade: %v", err)
+		}
+		if !changed || created {
+			t.Fatalf("SetSecretsProfile 1password downgrade = changed:%t created:%t, want true,false", changed, created)
+		}
+		got = updated.Secrets.Profiles["work-op"]
+		if got.Backend.Kind != "file" || got.Backend.OnePassword != nil {
+			t.Fatalf("downgraded profile = %#v, want file backend without 1password payload", got)
 		}
 	})
 
 	t.Run("set validates edge cases", func(t *testing.T) {
 		cfg := testConfig()
-		backend := config.SecretsBackendKind("keychain")
+		backend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("keychain")}
 		label := "name"
 		spaceLabel := "   "
 		tests := []struct {
@@ -489,7 +544,7 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		}
 
 		cfg.Secrets.Profiles = map[string]config.SecretsProfile{
-			"personal": {Backend: config.SecretsProfileBackend{Kind: backend}},
+			"personal": {Backend: config.SecretsProfileBackend{Kind: backend.Kind}},
 		}
 		_, _, _, err := configedit.SetSecretsProfile(cfg, "personal", configedit.SecretsProfilePatch{})
 		if !errors.Is(err, configedit.ErrSecretsProfileMutationRequired) {
@@ -498,9 +553,9 @@ func TestSecretsProfileHelpers(t *testing.T) {
 
 		cfg = testConfig()
 		cfg.Secrets.Profiles = map[string]config.SecretsProfile{
-			"personal": {Backend: config.SecretsProfileBackend{Kind: backend}},
+			"personal": {Backend: config.SecretsProfileBackend{Kind: backend.Kind}},
 		}
-		invalidBackend := config.SecretsBackendKind("bogus")
+		invalidBackend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("bogus")}
 		before := cfg.Secrets.Profiles["personal"]
 		_, _, _, err = configedit.SetSecretsProfile(cfg, "personal", configedit.SecretsProfilePatch{Backend: &invalidBackend})
 		if !errors.Is(err, config.ErrInvalid) {

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 
@@ -70,10 +71,10 @@ type SecretsProfileSelectionSource string
 const (
 	// SecretsProfileSelectionExplicit means the active profile selected a named
 	// secrets-management profile directly.
-	SecretsProfileSelectionExplicit      SecretsProfileSelectionSource = "profile"
+	SecretsProfileSelectionExplicit SecretsProfileSelectionSource = "profile"
 	// SecretsProfileSelectionDefault means the configured global default
 	// secrets-management profile selected the store.
-	SecretsProfileSelectionDefault       SecretsProfileSelectionSource = "default_profile"
+	SecretsProfileSelectionDefault SecretsProfileSelectionSource = "default_profile"
 	// SecretsProfileSelectionLegacyDefault means no named secrets-management
 	// profile applied, so legacy backend fallback rules selected the store.
 	SecretsProfileSelectionLegacyDefault SecretsProfileSelectionSource = "legacy_fallback"
@@ -185,14 +186,25 @@ func StoreOptionsForResolvedProfile(flagValue string, flagSet bool, cfg config.F
 		if flagSet {
 			return credstore.Options{}, fmt.Errorf("%w: --backend conflicts with named secrets-management profile %q", config.ErrInvalid, resolved.DisplayName())
 		}
+		profile, ok := cfg.Secrets.Profiles[resolved.ID]
+		if !ok {
+			return credstore.Options{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, resolved.ID)
+		}
 		backend, err := credstore.ParseBackend(resolved.Backend)
 		if err != nil {
 			return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
 		}
-		return credstore.Options{
+		options := credstore.Options{
 			AllowedKeys: AllowedKeys(),
 			Backend:     backend,
-		}, nil
+		}
+		if config.IsOnePasswordSecretsBackend(profile.Backend.Kind) {
+			options.OnePassword, err = onePasswordOptionsFromConfig(profile.Backend)
+			if err != nil {
+				return credstore.Options{}, fmt.Errorf("%w: %w", config.ErrInvalid, err)
+			}
+		}
+		return options, nil
 	}
 	return StoreOptions(flagValue, flagSet, cfg)
 }
@@ -216,6 +228,23 @@ func StoreOptions(flagValue string, flagSet bool, cfg config.File) (credstore.Op
 	if err := credstore.BindBackendFlag(&opts, flagValue, flagSet, cfg.Keyring.Backend); err != nil {
 		return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
 	}
+	if err := rejectLegacyOnePasswordBackend(opts.Backend); err != nil {
+		return credstore.Options{}, err
+	}
+	if err := rejectLegacyOnePasswordBackend(opts.ConfigBackend); err != nil {
+		return credstore.Options{}, err
+	}
+	if opts.Backend == "" {
+		if value := os.Getenv(BackendEnvVar()); value != "" {
+			backend, err := credstore.ParseBackend(value)
+			if err != nil {
+				return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+			}
+			if err := rejectLegacyOnePasswordBackend(backend); err != nil {
+				return credstore.Options{}, err
+			}
+		}
+	}
 	return opts, nil
 }
 
@@ -230,6 +259,34 @@ func OpenStore(flagValue string, flagSet bool, cfg config.File) (*credstore.Stor
 		return nil, err
 	}
 	return store, nil
+}
+
+func onePasswordOptionsFromConfig(backend config.SecretsProfileBackend) (*credstore.OnePasswordOptions, error) {
+	if !config.IsOnePasswordSecretsBackend(backend.Kind) {
+		return nil, nil
+	}
+	onePasswordCfg := backend.OnePassword
+	if onePasswordCfg == nil {
+		onePasswordCfg = &config.SecretsProfileOnePasswordConfig{}
+	}
+	options := &credstore.OnePasswordOptions{
+		VaultID:          strings.TrimSpace(onePasswordCfg.VaultID),
+		ItemTitlePrefix:  strings.TrimSpace(onePasswordCfg.ItemTitlePrefix),
+		ItemTag:          strings.TrimSpace(onePasswordCfg.ItemTag),
+		ItemFieldTitle:   strings.TrimSpace(onePasswordCfg.ItemFieldTitle),
+		ConnectHost:      strings.TrimSpace(onePasswordCfg.ConnectHost),
+		ConnectTokenEnv:  strings.TrimSpace(onePasswordCfg.ConnectTokenEnv),
+		ServiceTokenEnv:  strings.TrimSpace(onePasswordCfg.ServiceTokenEnv),
+		DesktopAccountID: strings.TrimSpace(onePasswordCfg.DesktopAccountID),
+	}
+	if strings.TrimSpace(onePasswordCfg.Timeout) != "" {
+		timeout, err := time.ParseDuration(onePasswordCfg.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid 1Password timeout %q: %w", onePasswordCfg.Timeout, err)
+		}
+		options.Timeout = timeout
+	}
+	return options, nil
 }
 
 func resolvedSecretsProfileFromEffective(profile config.EffectiveSecretsProfile, selectionSource SecretsProfileSelectionSource) ResolvedSecretsProfile {
@@ -326,12 +383,18 @@ func BackendMetadata(flagValue string, flagSet bool, cfg config.File) (credstore
 		if err != nil {
 			return "", "", fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
 		}
+		if err := rejectLegacyOnePasswordBackend(backend); err != nil {
+			return "", "", err
+		}
 		return backend, credstore.SourceEnv, nil
 	}
 	if opts.ConfigBackend != "" {
 		backend, err := credstore.ParseBackend(string(opts.ConfigBackend))
 		if err != nil {
 			return "", "", fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+		}
+		if err := rejectLegacyOnePasswordBackend(backend); err != nil {
+			return "", "", err
 		}
 		return backend, credstore.SourceConfig, nil
 	}
@@ -345,6 +408,13 @@ func BackendMetadata(flagValue string, flagSet bool, cfg config.File) (credstore
 	default:
 		return "", "", credstore.ErrBackendNotImplemented
 	}
+}
+
+func rejectLegacyOnePasswordBackend(kind credstore.Backend) error {
+	if !config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kind)) {
+		return nil
+	}
+	return fmt.Errorf("%w: backend %q is only supported through named secrets-management profiles", ErrInvalidBackendSelection, kind)
 }
 
 // KeyStatus reports the presence state for one declared keyring key.

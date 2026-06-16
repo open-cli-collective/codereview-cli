@@ -16,9 +16,9 @@ builds:
   - id: cr-darwin
     main: ./cmd/cr
     binary: cr
-    # Standard keyring opt-out tags (cli-common working-with-secrets.md §1.10).
+    # Standard shipped build tags: enable 1Password support, disable passage.
     flags:
-      - -tags=keyring_no1password,keyring_nopassage
+      - -tags=keyring_nopassage
     env:
       - CGO_ENABLED=1
     goos:
@@ -55,7 +55,7 @@ builds:
     main: ./cmd/cr
     binary: cr
     flags:
-      - -tags=keyring_no1password,keyring_nopassage
+      - -tags=keyring_nopassage
     env:
       - CGO_ENABLED=0
     goos:

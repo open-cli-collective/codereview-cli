@@ -243,7 +243,7 @@ Owns:
 
 - `cr config secrets-profile list [--json]`
 - `cr config secrets-profile get <id> [--json]`
-- `cr config secrets-profile set <id> [--backend <kind>] [--label <text>] [--clear-label]`
+- `cr config secrets-profile set <id> [--backend <kind>] [--label <text>] [--clear-label] [--op-timeout <duration>] [--op-vault-id <id>] [--op-item-title-prefix <text>] [--op-item-tag <text>] [--op-item-field-title <text>] [--op-connect-host <url>] [--op-connect-token-env <name>] [--op-service-token-env <name>] [--op-desktop-account-id <id>]`
 - `cr config secrets-profile default get [--json]`
 - `cr config secrets-profile default set <id>`
 - `cr config secrets-profile default unset`
@@ -267,6 +267,7 @@ Required semantics:
   - `--label` plus `--clear-label` is a usage error
   - whitespace-only `--label` is rejected
   - update requires at least one mutation flag
+  - `--backend op`, `--backend op-connect`, and `--backend op-desktop` also require `--op-vault-id`; `op-connect` additionally requires `--op-connect-host`
 - `remove` is idempotent for already-absent configured profiles, but rejects `legacy-default` and blocks removing the configured default profile until it is unset or moved
 - backend validation must reuse shared credstore metadata rather than duplicating backend-name knowledge in command code
 - this ticket is config-only: mixed configs with both `keyring.backend` and `secrets.*` keep legacy runtime backend behavior until the later resolver ticket changes credential selection

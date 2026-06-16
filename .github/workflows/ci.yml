@@ -12,9 +12,9 @@ concurrency:
 permissions:
   contents: read
 
-# Standard keyring opt-out tags (cli-common working-with-secrets.md §1.10).
+# Standard keyring tags for shipped builds: enable 1Password, disable passage.
 env:
-  GOFLAGS: -tags=keyring_no1password,keyring_nopassage
+  GOFLAGS: -tags=keyring_nopassage
 
 jobs:
   build-platform:                          # OS matrix — NOT a required check
@@ -47,6 +47,28 @@ jobs:
       - uses: open-cli-collective/.github/actions/go-test@v1
         with:
           go-version-file: go.mod
+
+  test-no1password-optout:
+    runs-on: ubuntu-latest
+    env:
+      GOFLAGS: -tags=keyring_nopassage,keyring_no1password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-cli-collective/.github/actions/go-test@v1
+        with:
+          go-version-file: go.mod
+
+  static-smoke:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+      GOFLAGS: -tags=keyring_nopassage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-cli-collective/.github/actions/go-test@v1
+        with:
+          go-version-file: go.mod
+          target: test-static-smoke
 
   lint:
     runs-on: ubuntu-latest

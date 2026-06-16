@@ -1,8 +1,8 @@
-.PHONY: all build test test-cover lint fmt tidy deps check install snapshot package-render-check release clean
+.PHONY: all build test test-cover test-static-smoke lint fmt tidy deps check install snapshot package-render-check release clean
 
-# Standard keyring opt-out tags (cli-common working-with-secrets.md §1.10):
-# exclude the 1Password and passage backends credstore never exposes.
-export GOFLAGS := -tags=keyring_no1password,keyring_nopassage
+# Standard keyring tags: enable 1Password support, keep passage disabled.
+GOFLAGS ?= -tags=keyring_nopassage
+export GOFLAGS
 
 all: check
 
@@ -14,6 +14,9 @@ test:
 
 test-cover:
 	go test -coverprofile=coverage.out ./...
+
+test-static-smoke:
+	go test -v ./internal/... ./cmd/... -count=1
 
 lint:
 	golangci-lint run

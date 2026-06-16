@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 
@@ -59,6 +60,33 @@ func TestStoreOptionsBackendPrecedenceMetadata(t *testing.T) {
 	if backend != credstore.BackendMemory || source != credstore.SourceEnv {
 		t.Fatalf("Backend = (%s,%s), want (memory,env)", backend, source)
 	}
+}
+
+func TestStoreOptionsRejectsLegacyOnePasswordBackends(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		flag    string
+		flagSet bool
+		cfg     config.File
+	}{
+		{name: "flag", flag: "op", flagSet: true, cfg: config.File{}},
+		{name: "config", cfg: config.File{Keyring: config.KeyringConfig{Backend: "op-connect"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := StoreOptions(tc.flag, tc.flagSet, tc.cfg)
+			if !errors.Is(err, ErrInvalidBackendSelection) {
+				t.Fatalf("StoreOptions error = %v, want ErrInvalidBackendSelection", err)
+			}
+		})
+	}
+
+	t.Run("env", func(t *testing.T) {
+		t.Setenv(BackendEnvVar(), "op-desktop")
+		_, err := StoreOptions("", false, config.File{})
+		if !errors.Is(err, ErrInvalidBackendSelection) {
+			t.Fatalf("StoreOptions env error = %v, want ErrInvalidBackendSelection", err)
+		}
+	})
 }
 
 func TestStoreOptionsInvalidBackendFlag(t *testing.T) {
@@ -383,6 +411,126 @@ func TestAllowedKeyMemoryRoundTrip(t *testing.T) {
 	}
 	if err := store.Set("work", "bad_key", "token"); !errors.Is(err, credstore.ErrKeyNotAllowed) {
 		t.Fatalf("Set disallowed key error = %v, want ErrKeyNotAllowed", err)
+	}
+}
+
+func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
+	tests := []struct {
+		name        string
+		backendKind credstore.Backend
+		profile     config.SecretsProfile
+		assert      func(*testing.T, *credstore.OnePasswordOptions)
+	}{
+		{
+			name:        "service account",
+			backendKind: credstore.BackendOP,
+			profile: config.SecretsProfile{
+				Label: "Work 1Password",
+				Backend: config.SecretsProfileBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendOP),
+					OnePassword: &config.SecretsProfileOnePasswordConfig{
+						Timeout:         "7s",
+						VaultID:         "vault-123",
+						ItemTitlePrefix: "cr",
+						ItemTag:         "codereview",
+						ItemFieldTitle:  "credential",
+					},
+				},
+			},
+			assert: func(t *testing.T, got *credstore.OnePasswordOptions) {
+				t.Helper()
+				if got.Timeout != 7*time.Second || got.VaultID != "vault-123" || got.ServiceTokenEnv != credstore.DefaultOnePasswordServiceTokenEnv {
+					t.Fatalf("OnePassword = %#v, want service-account defaults", got)
+				}
+			},
+		},
+		{
+			name:        "connect",
+			backendKind: credstore.BackendOPConnect,
+			profile: config.SecretsProfile{
+				Label: "Work 1Password",
+				Backend: config.SecretsProfileBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendOPConnect),
+					OnePassword: &config.SecretsProfileOnePasswordConfig{
+						Timeout:         "7s",
+						VaultID:         "vault-123",
+						ItemTitlePrefix: "cr",
+						ItemTag:         "codereview",
+						ItemFieldTitle:  "credential",
+						ConnectHost:     "https://connect.example",
+						ConnectTokenEnv: "CUSTOM_CONNECT_TOKEN",
+					},
+				},
+			},
+			assert: func(t *testing.T, got *credstore.OnePasswordOptions) {
+				t.Helper()
+				if got.Timeout != 7*time.Second || got.VaultID != "vault-123" || got.ConnectHost != "https://connect.example" || got.ConnectTokenEnv != "CUSTOM_CONNECT_TOKEN" {
+					t.Fatalf("OnePassword = %#v, want connect mapping", got)
+				}
+			},
+		},
+		{
+			name:        "desktop",
+			backendKind: credstore.BackendOPDesktop,
+			profile: config.SecretsProfile{
+				Label: "Work 1Password",
+				Backend: config.SecretsProfileBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
+					OnePassword: &config.SecretsProfileOnePasswordConfig{
+						Timeout:          "9s",
+						VaultID:          "vault-123",
+						ItemTitlePrefix:  "cr",
+						ItemTag:          "codereview",
+						ItemFieldTitle:   "credential",
+						DesktopAccountID: "desktop-account",
+					},
+				},
+			},
+			assert: func(t *testing.T, got *credstore.OnePasswordOptions) {
+				t.Helper()
+				if got.Timeout != 9*time.Second || got.VaultID != "vault-123" || got.DesktopAccountID != "desktop-account" {
+					t.Fatalf("OnePassword = %#v, want desktop mapping", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.File{
+				DefaultProfile: "home",
+				Secrets: config.SecretsConfig{
+					Profiles: map[string]config.SecretsProfile{
+						"work-op": tt.profile,
+					},
+				},
+				Profiles: map[string]config.Profile{
+					"home": matrixProfile("codereview/shared-git", "codereview/home-llm", config.LLMProviderAnthropic),
+				},
+			}
+			cfg = config.Normalize(cfg)
+			if err := config.Validate(cfg); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+
+			resolved := ResolvedSecretsProfile{
+				ID:      "work-op",
+				Label:   "Work 1Password",
+				Backend: string(tt.backendKind),
+				Source:  config.EffectiveSecretsProfileSourceConfigured,
+			}
+			got, err := StoreOptionsForResolvedProfile("", false, cfg, resolved)
+			if err != nil {
+				t.Fatalf("StoreOptionsForResolvedProfile: %v", err)
+			}
+			if got.Backend != tt.backendKind {
+				t.Fatalf("Backend = %q, want %q", got.Backend, tt.backendKind)
+			}
+			if got.OnePassword == nil {
+				t.Fatal("OnePassword = nil, want populated options")
+			}
+			tt.assert(t, got.OnePassword)
+		})
 	}
 }
 
