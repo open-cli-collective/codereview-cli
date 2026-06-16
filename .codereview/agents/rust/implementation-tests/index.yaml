@@ -11,4 +11,5 @@ file_globs:
   - "rust-toolchain.toml"
 applies_when:
   - A change touches Rust source, crate or workspace dependencies, build scripts, or behavior that should be proven by Rust tests.
+  - Do not select for changes a dedicated style, security, or architecture reviewer already covers, or for non-Rust changes.
 needs_full_file_content: false
