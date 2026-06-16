@@ -269,6 +269,8 @@ type initDraft struct {
 	LLMReviewerModelTier  string
 	LLMCredentialRef      string
 	AdvancedStorageLabels bool
+	RoutesSet             bool
+	Routes                []configedit.RepositoryRouteSpec
 }
 
 type initModelMapPrompt struct {
@@ -1220,19 +1222,26 @@ func editInteractiveInitProfileStep(cmd *cobra.Command, opts *root.Options, flag
 	if err != nil {
 		return initSessionDraft{}, false, err
 	}
-	nextWorkspace, err := collectInteractiveInitRoutes(opts, deps, workspace)
-	if errors.Is(err, errInitNavigateBack) {
-		session.workspace = &workspace
-		session.cfg = cloneInitConfigFile(workspace.cfg)
-		session.requestedProfileName = workspace.profileName
-		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, true, nil
+	if draft.RoutesSet {
+		workspace, err = applyInteractiveInitWorkspaceRoutes(workspace, draft.Routes)
+		if err != nil {
+			return initSessionDraft{}, false, err
+		}
+	} else {
+		nextWorkspace, err := collectInteractiveInitRoutes(opts, deps, workspace)
+		if errors.Is(err, errInitNavigateBack) {
+			session.workspace = &workspace
+			session.cfg = cloneInitConfigFile(workspace.cfg)
+			session.requestedProfileName = workspace.profileName
+			session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+			return session, true, nil
+		}
+		if err != nil {
+			return initSessionDraft{}, false, err
+		}
+		workspace = nextWorkspace
 	}
-	if err != nil {
-		return initSessionDraft{}, false, err
-	}
-	workspace = nextWorkspace
-	nextWorkspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
+	nextWorkspace, err := collectInteractiveInitModelMap(opts, deps, workspace)
 	if errors.Is(err, errInitNavigateBack) {
 		session.workspace = &workspace
 		session.cfg = cloneInitConfigFile(workspace.cfg)
@@ -2164,6 +2173,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 			_, _ = fmt.Fprintln(p.stderr)
 		}
+		routeText := formatInitRouteSpecs(currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName))
 		stagedLLMRuntimes := map[string]initLLMRuntimeDraft{}
 		for {
 			reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
@@ -2190,6 +2200,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				}
 			}
 			reviewerEntityOptions := initReviewerEntitySelectionOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
+			showSecretsProfileSelection := initProfileEditorSecretsProfileSelectionVisible(ctx.SecretsProfiles, ctx.BrokenProfileSecretsProfiles[selectedProfileName])
 			secretsProfileOptions, selectedSecretsProfile := initProfileEditorSecretsProfileSelection(
 				ctx.SecretsProfiles,
 				ctx.ProfileSecretsProfiles[selectedProfileName],
@@ -2227,11 +2238,13 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Description(reviewerEntitySelectionDescription()).
 					Options(reviewerEntityOptions...).
 					Value(&selectedReviewerEntity),
-				huh.NewSelect[string]().
+			}
+			if showSecretsProfileSelection {
+				reviewerProfileFields = append(reviewerProfileFields, huh.NewSelect[string]().
 					Title("Secrets management").
 					Description(initSecretsProfileSelectionDescription()).
 					Options(secretsProfileOptions...).
-					Value(&selectedSecretsProfile),
+					Value(&selectedSecretsProfile))
 			}
 			reviewerProfileFields = append(reviewerProfileFields,
 				huh.NewSelect[string]().
@@ -2277,6 +2290,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				).WithHideFunc(func() bool {
 					return selectedGitScope != initCustomGitScopeSelection
 				}).Title("Git Scope"),
+				huh.NewGroup(initRouteEditorFields(&routeText, false)...).Title("Automatic profile selection"),
 				huh.NewGroup(reviewerProfileFields...).Title("Review Profile"),
 				huh.NewGroup(
 					huh.NewInput().
@@ -2341,6 +2355,10 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				}
 				continue
 			}
+			routes, err := parseInitRouteSpecs(routeText)
+			if err != nil {
+				return initDraft{}, err
+			}
 			gitUsesDefaultBeforeSelection := initStorageLabelUsesDefault(gitStorageLabel, standardGitCredentialRef)
 			reviewerUsesDefaultBeforeSelection := initStorageLabelUsesDefault(reviewerStorageLabel, standardReviewerCredentialRef)
 			llmUsesDefaultBeforeSelection := initStorageLabelUsesDefault(llmStorageLabel, standardLLMCredentialRef)
@@ -2370,6 +2388,8 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			if err := normalizeInitProfileStorageLabels(&draft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime, ctx.GitScopes, ctx.ReviewerEntities, llmRuntimes, labels); err != nil {
 				return initDraft{}, err
 			}
+			draft.RoutesSet = true
+			draft.Routes = routes
 			return draft, nil
 		}
 		continue
@@ -2651,6 +2671,10 @@ func initProfileEditorSecretsProfileSelection(profiles []config.EffectiveSecrets
 		selected = initMissingSecretsProfileSelection(missingSelection)
 	}
 	return options, normalizeInitStringSelectionValue(selected, options)
+}
+
+func initProfileEditorSecretsProfileSelectionVisible(profiles []config.EffectiveSecretsProfile, missingSelection string) bool {
+	return len(profiles) > 0 || strings.TrimSpace(missingSelection) != ""
 }
 
 func initSecretsProfileSelectionDescription() string {
@@ -3453,23 +3477,10 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 
 func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEdit, error) {
 	routeText := formatInitRouteSpecs(prompt.Routes)
-	fields := []huh.Field{
-		huh.NewNote().
-			Title("Automatic profile selection").
-			Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile."),
-		huh.NewNote().
-			Title("Accepted route formats").
-			Description("host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;. Newline-separated pastes are also accepted."),
-	}
+	fields := initRouteEditorFields(&routeText, true)
 	if prompt.HostChanged && len(prompt.Routes) > 0 {
 		fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
 	}
-	fields = append(fields,
-		huh.NewText().
-			Title("Route entries").
-			Description("Separate multiple entries with ;. Newline-separated pastes are also accepted.").
-			Value(&routeText),
-	)
 	form := huh.NewForm(huh.NewGroup(fields...).Title("Repository Routes"))
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
@@ -3483,6 +3494,24 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 		return initRoutesEdit{}, err
 	}
 	return initRoutesEdit{Routes: routes}, nil
+}
+
+func initRouteEditorFields(routeText *string, includeIntroTitle bool) []huh.Field {
+	intro := huh.NewNote().
+		Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile.")
+	if includeIntroTitle {
+		intro = intro.Title("Automatic profile selection")
+	}
+	return []huh.Field{
+		intro,
+		huh.NewNote().
+			Title("Accepted route formats").
+			Description("host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;. Newline-separated pastes are also accepted."),
+		huh.NewText().
+			Title("Route entries").
+			Description("Separate multiple entries with ;. Newline-separated pastes are also accepted.").
+			Value(routeText),
+	}
 }
 
 func (p huhInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
@@ -5204,7 +5233,11 @@ func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initWo
 	if err != nil {
 		return initWorkspaceDraft{}, err
 	}
-	nextRoutes, err := applyInitProfileRoutes(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host, edit.Routes)
+	return applyInteractiveInitWorkspaceRoutes(plan, edit.Routes)
+}
+
+func applyInteractiveInitWorkspaceRoutes(plan initWorkspaceDraft, routes []configedit.RepositoryRouteSpec) (initWorkspaceDraft, error) {
+	nextRoutes, err := applyInitProfileRoutes(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host, routes)
 	if err != nil {
 		return initWorkspaceDraft{}, exitcode.Usage(err)
 	}

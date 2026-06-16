@@ -3885,7 +3885,15 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 		DefaultProfileName:   "work",
 		ExistingConfig: config.File{
 			DefaultProfile: "work",
-			Profiles:       map[string]config.Profile{"work": existing},
+			RepositoryProfiles: []config.RepositoryProfile{{
+				Profile: "work",
+				Match: config.RepositoryProfileMatch{
+					Host:      "gitlab.com",
+					Namespace: "open-cli-collective",
+					Repos:     []string{"codereview-cli"},
+				},
+			}},
+			Profiles: map[string]config.Profile{"work": existing},
 		},
 		GitScopes: map[string]initGitScopeDraft{
 			"gitlab-scope": initGitScopeDraftFromConfig(existing.Git),
@@ -3918,9 +3926,27 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMReviewerModelTier != string(config.ModelTierMedium) || draft.LLMCredentialRef != "codereview/work-llm" {
 		t.Fatalf("llm draft = %#v, want existing api-key openai values", draft)
 	}
+	if !draft.RoutesSet {
+		t.Fatalf("draft.RoutesSet = false, want profile form to own route edits")
+	}
+	if !reflect.DeepEqual(draft.Routes, []configedit.RepositoryRouteSpec{{
+		Host:      "gitlab.com",
+		Namespace: "open-cli-collective",
+		Repos:     []string{"codereview-cli"},
+	}}) {
+		t.Fatalf("draft.Routes = %#v, want prefilled route from inline editor", draft.Routes)
+	}
 	out := stderr.String()
 	if !strings.Contains(out, "Choose a profile to edit or create") || !strings.Contains(out, "Git scope host") || !strings.Contains(out, "Reviewer entity") || !strings.Contains(out, "LLM runtime") {
 		t.Fatalf("wizard output missing expected prompts: %q", out)
+	}
+	routeIndex := strings.Index(out, "Routes tell cr when to use this profile automatically.")
+	reviewerIndex := strings.Index(out, "Reviewer entity")
+	if routeIndex < 0 || reviewerIndex < 0 || routeIndex > reviewerIndex {
+		t.Fatalf("wizard output order = %q, want automatic profile selection before reviewer entity", out)
+	}
+	if strings.Contains(out, "Secrets management") {
+		t.Fatalf("wizard output unexpectedly showed inert secrets management selector: %q", out)
 	}
 	if !strings.Contains(out, "Minimum reviewer model tier") ||
 		!strings.Contains(out, "Built-in baseline (small)") ||
@@ -3940,6 +3966,82 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	}
 	if !strings.Contains(out, "Yes, make this the default profile") || !strings.Contains(out, "No, keep the current default profile") {
 		t.Fatalf("wizard output missing default-profile select copy: %q", out)
+	}
+}
+
+func TestHuhInitPrompterAccessibleShowsSecretsManagementWhenConfiguredProfilesExist(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	work := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"team-vault": {
+					Label: "Team Vault",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendFile),
+					},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"work": work,
+		},
+	}
+	gitScopes, profileGitScopes := buildInitGitScopeInventory(cfg)
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	secretsProfiles, profileSecretsProfiles, brokenProfileSecretsProfiles := buildInitSecretsProfileInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Route entries
+			"", // Reviewer entity
+			"", // Secrets management
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Git storage label
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
+	}
+
+	_, err := prompter.Run(initPromptContext{
+		RequestedProfileName:         "work",
+		ExistingProfileName:          "work",
+		ExistingProfile:              &work,
+		ExistingProfileNames:         []string{"work"},
+		DefaultProfileName:           "work",
+		ExistingConfig:               cfg,
+		GitScopes:                    gitScopes,
+		ProfileGitScopes:             profileGitScopes,
+		ReviewerEntities:             reviewerEntities,
+		ProfileReviewerEntities:      profileReviewerEntities,
+		SecretsProfiles:              secretsProfiles,
+		ProfileSecretsProfiles:       profileSecretsProfiles,
+		BrokenProfileSecretsProfiles: brokenProfileSecretsProfiles,
+		LLMRuntimes:                  llmRuntimes,
+		ProfileLLMRuntimes:           profileLLMRuntimes,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "Secrets management") || !strings.Contains(out, "Team Vault") {
+		t.Fatalf("stderr = %q, want configured secrets-management selector", out)
 	}
 }
 
@@ -6107,6 +6209,22 @@ func TestInitProfileEditorSecretsProfileSelectionKeepsBrokenReferenceSelectable(
 	}
 	if got := options[0].Key; !strings.Contains(got, "Missing configured profile: missing-vault") {
 		t.Fatalf("options[0].Key = %q, want missing profile recovery label", got)
+	}
+}
+
+func TestInitProfileEditorSecretsProfileSelectionVisibleOnlyWhenMeaningful(t *testing.T) {
+	if initProfileEditorSecretsProfileSelectionVisible(nil, "") {
+		t.Fatal("visible = true, want inert built-in default selector hidden")
+	}
+	if !initProfileEditorSecretsProfileSelectionVisible([]config.EffectiveSecretsProfile{{
+		ID:      "team-vault",
+		Backend: string(credstore.BackendFile),
+		Source:  config.EffectiveSecretsProfileSourceConfigured,
+	}}, "") {
+		t.Fatal("visible = false, want configured secrets profile selector shown")
+	}
+	if !initProfileEditorSecretsProfileSelectionVisible(nil, "missing-vault") {
+		t.Fatal("visible = false, want broken secrets profile selector shown for repair")
 	}
 }
 
@@ -12294,6 +12412,69 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 				t.Fatalf("RepositoryProfiles = %#v, want %#v", cfg.RepositoryProfiles, tt.want)
 			}
 		})
+	}
+}
+
+func TestInitInteractiveProfileDraftRoutesSkipRouteSubprompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			draft := seedInteractiveInitDraft("work", "work", "work", nil)
+			draft.GitHost = "github.com"
+			draft.GitAuth = string(config.GitAuthModePAT)
+			draft.GitCredentialRef = "codereview/work"
+			draft.LLMProvider = string(config.LLMProviderAnthropic)
+			draft.LLMAuth = string(config.LLMAuthSubscription)
+			draft.LLMAdapter = string(config.LLMAdapterClaudeCLI)
+			draft.RoutesSet = true
+			draft.Routes = []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			}}
+			return draft, nil
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
+			t.Fatal("routesPrompter called despite inline profile routes")
+			return initRoutesEdit{}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	wantRoutes := []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+	}}
+	if !reflect.DeepEqual(cfg.RepositoryProfiles, wantRoutes) {
+		t.Fatalf("RepositoryProfiles = %#v, want inline draft routes applied", cfg.RepositoryProfiles)
 	}
 }
 
