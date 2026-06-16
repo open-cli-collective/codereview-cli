@@ -8842,10 +8842,9 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 		},
 	}
 	profileCalls := 0
-	routeCalls := 0
 	deps := initDeps{
 		menuPrompter: menu,
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileCalls++
 			switch profileCalls {
 			case 1:
@@ -8859,6 +8858,11 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 					LLMProvider:         string(config.LLMProviderAnthropic),
 					LLMAuth:             string(config.LLMAuthSubscription),
 					LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					RoutesSet:           true,
+					Routes: []configedit.RepositoryRouteSpec{{
+						Host:      "gitlab.com",
+						Namespace: "open-cli-collective",
+					}},
 				}, nil
 			case 2:
 				if prompt.ExistingProfile == nil {
@@ -8874,14 +8878,8 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 			}
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
-			routeCalls++
-			if routeCalls > 1 {
-				t.Fatalf("unexpected routes prompt #%d", routeCalls)
-			}
-			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
-				t.Fatalf("prompt = %#v, want integrated route reconciliation before Back", prompt)
-			}
-			return initRoutesEdit{}, errInitNavigateBack
+			t.Fatalf("routes prompter should not run from v2 profile editor path: %#v", prompt)
+			return initRoutesEdit{}, nil
 		}),
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -8899,9 +8897,6 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 	}
 	if profileCalls != 2 {
 		t.Fatalf("profileCalls = %d, want staged profile pass then explicit Back", profileCalls)
-	}
-	if routeCalls != 1 {
-		t.Fatalf("routeCalls = %d, want single integrated route prompt before Back", routeCalls)
 	}
 	got := menu.prompts[1]
 	if got.ActiveProfileName != "work" || !got.CanSave || got.ReviewProfileCount != 1 {
@@ -9479,7 +9474,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("8\n"),
+		stdin:  strings.NewReader("7\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{
@@ -9499,7 +9494,6 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 		"Configure LLM runtimes (2)",
 		"Configure reviewer entities (3)",
 		"Configure review profiles (1)",
-		"Configure review profiles v2 (1)",
 		"Configure global settings",
 		"Configure secrets management",
 		"Commit staged changes and exit",
@@ -9509,13 +9503,19 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 			t.Fatalf("stderr = %q, want menu item %q", out, want)
 		}
 	}
+	if strings.Count(out, "Configure review profiles") != 1 {
+		t.Fatalf("stderr = %q, want exactly one review-profile menu item", out)
+	}
+	if strings.Contains(out, "Configure review profiles v2") {
+		t.Fatalf("stderr = %q, want temporary v2 menu item removed", out)
+	}
 }
 
 func TestHuhInitMenuPrompterAccessibleSelectsSecretsManagement(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("6\n"),
+		stdin:  strings.NewReader("5\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{
@@ -9540,8 +9540,8 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *t
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"7", // Commit staged changes and exit (disabled)
-			"8", // Discard staged changes and exit
+			"6", // Commit staged changes and exit (disabled)
+			"7", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -9564,7 +9564,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"1", // Configure LLM runtimes (disabled)
-			"8", // Discard staged changes and exit
+			"7", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -9581,11 +9581,11 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	}
 }
 
-func TestHuhInitMenuPrompterAccessibleSelectsReviewProfilesV2(t *testing.T) {
+func TestHuhInitMenuPrompterAccessibleSelectsReviewProfiles(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("4\n"),
+		stdin:  strings.NewReader("3\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{
@@ -9600,11 +9600,14 @@ func TestHuhInitMenuPrompterAccessibleSelectsReviewProfilesV2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChooseAction: %v", err)
 	}
-	if action != initMenuActionReviewProfilesV2 {
-		t.Fatalf("action = %q, want review profiles v2", action)
+	if action != initMenuActionReviewProfiles {
+		t.Fatalf("action = %q, want review profiles", action)
 	}
-	if !strings.Contains(stderr.String(), "Configure review profiles v2 (1)") {
-		t.Fatalf("stderr = %q, want temporary v2 menu entry", stderr.String())
+	if !strings.Contains(stderr.String(), "Configure review profiles (1)") {
+		t.Fatalf("stderr = %q, want review profile menu entry", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Configure review profiles v2") {
+		t.Fatalf("stderr = %q, want temporary v2 menu entry removed", stderr.String())
 	}
 }
 
@@ -10844,7 +10847,7 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -10922,7 +10925,7 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -11027,7 +11030,7 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -11157,7 +11160,7 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -11258,7 +11261,7 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -11275,6 +11278,11 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 					LLMProvider:         string(config.LLMProviderAnthropic),
 					LLMAuth:             string(config.LLMAuthSubscription),
 					LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					RoutesSet:           true,
+					Routes: []configedit.RepositoryRouteSpec{{
+						Host:      "gitlab.com",
+						Namespace: "open-cli-collective",
+					}},
 				}, nil
 			case 2:
 				if ctx.ExistingProfileName != "office" {
@@ -11287,13 +11295,8 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 			return initDraft{}, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
-			if prompt.ProfileName != "office" || !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
-				t.Fatalf("prompt = %#v, want renamed default profile reconciliation context", prompt)
-			}
-			return initRoutesEdit{Routes: []configedit.RepositoryRouteSpec{{
-				Host:      "gitlab.com",
-				Namespace: "open-cli-collective",
-			}}}, nil
+			t.Fatalf("routes prompter should not run from v2 profile editor path: %#v", prompt)
+			return initRoutesEdit{}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
@@ -11361,7 +11364,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -11742,7 +11745,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			profilePrompterCalls++
 			if profilePrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -12158,7 +12161,7 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 				initMenuActionExit,
 			},
 		},
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			if prompt.RequestedProfileName != expectedPrompt.RequestedProfileName ||
 				prompt.ExistingProfileName != expectedPrompt.ExistingProfileName ||
 				prompt.DefaultProfileName != expectedPrompt.DefaultProfileName {
@@ -12476,15 +12479,19 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 		},
 	}
 	profileCalls := 0
-	routeCalls := 0
 	deps := initDeps{
 		menuPrompter: menu,
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileCalls++
 			switch profileCalls {
 			case 1:
 				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile)
 				draft.GitHost = "gitlab.com"
+				draft.RoutesSet = true
+				draft.Routes = []configedit.RepositoryRouteSpec{{
+					Host:      "gitlab.com",
+					Namespace: "open-cli-collective",
+				}}
 				return draft, nil
 			case 2:
 				if prompt.ExistingProfile == nil {
@@ -12500,14 +12507,8 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 			}
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
-			routeCalls++
-			if routeCalls > 1 {
-				t.Fatalf("unexpected routes prompt #%d", routeCalls)
-			}
-			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
-				t.Fatalf("prompt = %#v, want integrated route reconciliation before Back", prompt)
-			}
-			return initRoutesEdit{}, errInitNavigateBack
+			t.Fatalf("routes prompter should not run from v2 profile editor path: %#v", prompt)
+			return initRoutesEdit{}, nil
 		}),
 		modelMapPrompter: initModelMapPrompterFunc(func(initModelMapPrompt) (initModelMapEdit, error) {
 			return initModelMapEdit{Apply: false}, nil
@@ -12535,15 +12536,12 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 	if profileCalls != 2 {
 		t.Fatalf("profileCalls = %d, want staged profile edit then Back in-category", profileCalls)
 	}
-	if routeCalls != 1 {
-		t.Fatalf("routeCalls = %d, want single integrated route prompt before Back", routeCalls)
-	}
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
 	}
 }
 
-func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *testing.T) {
+func TestInitInteractiveMenuFocusedReviewProfileDoesNotRunRouteSubprompt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -12562,15 +12560,19 @@ func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *test
 		},
 	}
 	profileCalls := 0
-	routeCalls := 0
 	deps := initDeps{
 		menuPrompter: menu,
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileCalls++
 			switch profileCalls {
 			case 1:
 				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile)
 				draft.GitHost = "gitlab.com"
+				draft.RoutesSet = true
+				draft.Routes = []configedit.RepositoryRouteSpec{{
+					Host:      "gitlab.com",
+					Namespace: "open-cli-collective",
+				}}
 				return draft, nil
 			case 2:
 				if prompt.ExistingProfile == nil {
@@ -12585,12 +12587,9 @@ func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *test
 				return initDraft{}, nil
 			}
 		}),
-		routesPrompter: initRoutesPrompterFunc(func(_ initRoutesPrompt) (initRoutesEdit, error) {
-			routeCalls++
-			if routeCalls > 1 {
-				t.Fatalf("unexpected routes prompt #%d", routeCalls)
-			}
-			return initRoutesEdit{}, errInitNavigateBack
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			t.Fatalf("routes prompter should not run from v2 profile editor path: %#v", prompt)
+			return initRoutesEdit{}, nil
 		}),
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -12601,10 +12600,7 @@ func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *test
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
 	if profileCalls != 2 {
-		t.Fatalf("profileCalls = %d, want route Back to reopen review-profile flow before explicit Back", profileCalls)
-	}
-	if routeCalls != 1 {
-		t.Fatalf("routeCalls = %d, want single integrated route prompt", routeCalls)
+		t.Fatalf("profileCalls = %d, want v2 stage to reopen review-profile flow before explicit Back", profileCalls)
 	}
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
@@ -12701,7 +12697,7 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 	llmEdits := 0
 	deps := initDeps{
 		menuPrompter: menu,
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileEdits++
 			switch profileEdits {
 			case 1:
@@ -12847,7 +12843,7 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 			finalizePrompt = prompt
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -12949,7 +12945,7 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 			finalizePrompt = prompt
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -13036,7 +13032,7 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 			finalizePrompt = prompt
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -13360,7 +13356,7 @@ func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionCancel, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -13417,7 +13413,7 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 			t.Fatal("finalize prompt should not run after keyring open failure")
 			return "", nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
 				MakeDefault: true,

@@ -366,7 +366,6 @@ const (
 	initMenuActionLLMRuntimes       initMenuAction = "llm_runtimes"
 	initMenuActionReviewerEntities  initMenuAction = "reviewer_entities"
 	initMenuActionReviewProfiles    initMenuAction = "review_profiles"
-	initMenuActionReviewProfilesV2  initMenuAction = "review_profiles_v2"
 	initMenuActionGlobalSettings    initMenuAction = "global_settings"
 	initMenuActionSecretsManagement initMenuAction = "secrets_management"
 	initMenuActionSave              initMenuAction = "save"
@@ -1161,8 +1160,6 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 		case initMenuActionReviewerEntities:
 			session, err = loopInteractiveInitReviewerEntity(cmd, opts, flags, deps, session)
 		case initMenuActionReviewProfiles:
-			session, err = loopInteractiveInitProfile(cmd, opts, flags, deps, session)
-		case initMenuActionReviewProfilesV2:
 			session, err = loopInteractiveInitProfileV2(cmd, opts, flags, deps, session)
 		case initMenuActionGlobalSettings:
 			session, err = editInteractiveInitGlobalSettings(cmd, opts, deps, session)
@@ -1191,13 +1188,15 @@ func loopInteractiveInitProfileV2(cmd *cobra.Command, opts *root.Options, flags 
 		prompter = newBubbleTeaInitProfileV2Prompter(opts)
 	}
 	for {
-		draft, err := prompter.Run(currentInteractiveInitInventoryPromptContext(session))
+		promptCtx := currentInteractiveInitInventoryPromptContext(session)
+		draft, err := prompter.Run(promptCtx)
 		if errors.Is(err, errInitNavigateBack) {
 			return session, nil
 		}
 		if err != nil {
 			return initSessionDraft{}, err
 		}
+		draft = completeInteractiveInitProfileV2Draft(promptCtx, draft)
 		var stayInCategory bool
 		session, stayInCategory, err = applyInteractiveInitProfileDraft(cmd, opts, flags, deps, session, draft)
 		if err != nil {
@@ -1207,6 +1206,45 @@ func loopInteractiveInitProfileV2(cmd *cobra.Command, opts *root.Options, flags 
 			return session, nil
 		}
 	}
+}
+
+func completeInteractiveInitProfileV2Draft(ctx initPromptContext, draft initDraft) initDraft {
+	if draft.Action != initDraftActionNone {
+		return draft
+	}
+	if !draft.RoutesSet {
+		profileName := draft.OriginalProfileName
+		if profileName == "" {
+			profileName = ctx.ExistingProfileName
+		}
+		if profileName == "" {
+			profileName = draft.ProfileName
+		}
+		draft.Routes = currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, profileName)
+		draft.RoutesSet = true
+	}
+	if !draft.ModelMapSet {
+		if ctx.ExistingProfile != nil {
+			draft.ModelMap = copyModelMap(ctx.ExistingProfile.LLM.ModelMap)
+		}
+		draft.ModelMapSet = true
+	}
+	if !draft.AgentSourcesSet {
+		if ctx.ExistingProfile != nil {
+			draft.AgentSources = append([]string(nil), ctx.ExistingProfile.AgentSources...)
+		}
+		draft.AgentSourcesSet = true
+	}
+	if !draft.ReviewPolicySet {
+		if ctx.ExistingProfile != nil {
+			draft.ReviewPolicy = ctx.ExistingProfile.ReviewPolicy
+		}
+		if draft.ReviewPolicy.MajorEvent == "" {
+			draft.ReviewPolicy.MajorEvent = config.ReviewMajorEventComment
+		}
+		draft.ReviewPolicySet = true
+	}
+	return draft
 }
 
 func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
@@ -1553,7 +1591,6 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 		huh.NewOption(fmt.Sprintf("Configure LLM runtimes (%d)", prompt.LLMRuntimeCount), initMenuActionLLMRuntimes),
 		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
 		huh.NewOption(fmt.Sprintf("Configure review profiles (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfiles),
-		huh.NewOption(fmt.Sprintf("Configure review profiles v2 (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfilesV2),
 		huh.NewOption("Configure global settings", initMenuActionGlobalSettings),
 		huh.NewOption("Configure secrets management", initMenuActionSecretsManagement),
 		huh.NewOption("Commit staged changes and exit", initMenuActionSave),
@@ -1580,7 +1617,7 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 						if !prompt.CanSave {
 							return errors.New("configure a review profile before committing changes")
 						}
-					case initMenuActionReviewProfiles, initMenuActionReviewProfilesV2, initMenuActionGlobalSettings, initMenuActionSecretsManagement, initMenuActionExit:
+					case initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionSecretsManagement, initMenuActionExit:
 					}
 					return nil
 				}),
