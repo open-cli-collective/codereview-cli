@@ -897,6 +897,22 @@ func TestValidateSecretsProfiles(t *testing.T) {
 			wantMsg: `secrets.default_profile "missing"`,
 		},
 		{
+			name: "configured default secrets profile trims surrounding whitespace",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					DefaultProfile: " work-vault ",
+					Profiles: map[string]SecretsProfile{
+						"work-vault": {
+							Label: "Work File Store",
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendFile),
+							},
+						},
+					},
+				}
+			},
+		},
+		{
 			name: "invalid secrets backend kind",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{

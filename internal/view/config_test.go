@@ -82,6 +82,46 @@ func TestRenderConfigTextOpenAIAPIKeyStatus(t *testing.T) {
 	}
 }
 
+func TestRenderConfigTextSecretsManagementProfiles(t *testing.T) {
+	var out bytes.Buffer
+	show := NewConfigShow("work", workProfile(), dataConfig(), nil)
+	show.Backend = "memory"
+	show.BackendSource = "config"
+	show.SecretsProfiles = []config.EffectiveSecretsProfile{
+		{
+			ID:        config.LegacyProjectedSecretsProfileID,
+			Label:     "Legacy default",
+			Backend:   "memory",
+			IsDefault: true,
+			Source:    config.EffectiveSecretsProfileSourceProjectedLegacy,
+		},
+		{
+			ID:      "personal-keychain",
+			Label:   "Personal Keychain",
+			Backend: "keychain",
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+	}
+
+	if err := RenderConfigText(&out, show); err != nil {
+		t.Fatalf("RenderConfigText: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Keyring backend: memory",
+		"Keyring backend source: config",
+		"Secrets management profiles:",
+		"  - legacy-default: Legacy default (memory) [default]",
+		"    Source: projected_legacy",
+		"  - personal-keychain: Personal Keychain (keychain)",
+		"    Source: configured",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRenderConfigTextAgentSourceStatus(t *testing.T) {
 	var out bytes.Buffer
 	show := NewConfigShow("home", homeProfile(), dataConfig(), nil)
