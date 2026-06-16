@@ -6570,6 +6570,52 @@ func TestHuhInitModelMapPrompterAccessibleEscapeBackNavigatesOut(t *testing.T) {
 	}
 }
 
+func TestHuhInitModelMapPrompterXtermKeepsPrefilledOverrideWithBuiltIns(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitModelMapPrompter{
+		stdin:  strings.NewReader("\r\r\r\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	edit, err := prompter.EditModelMap(initModelMapPrompt{
+		LLM: config.LLMConfig{
+			Provider: config.LLMProviderOpenAI,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterCodexCLI,
+		},
+		ModelMap: config.ModelMap{"medium": "gpt-custom"},
+	})
+	if err != nil {
+		t.Fatalf("EditModelMap: %v", err)
+	}
+	if !reflect.DeepEqual(edit.ModelMap, config.ModelMap{"medium": "gpt-custom"}) {
+		t.Fatalf("edit.ModelMap = %#v, want preserved configured override with built-ins present", edit.ModelMap)
+	}
+}
+
+func TestHuhInitModelMapPrompterXtermClearsPrefilledOverrideBackToBuiltIn(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitModelMapPrompter{
+		stdin:  strings.NewReader("\t" + strings.Repeat("\x7f", 20) + "\r\t\r\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	edit, err := prompter.EditModelMap(initModelMapPrompt{
+		LLM: config.LLMConfig{
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		ModelMap: config.ModelMap{"medium": "claude-custom"},
+	})
+	if err != nil {
+		t.Fatalf("EditModelMap: %v", err)
+	}
+	if edit.ModelMap != nil {
+		t.Fatalf("edit.ModelMap = %#v, want cleared override to fall back to built-in mappings only", edit.ModelMap)
+	}
+}
+
 func TestInitEffectiveModelMapInputValuePrefersConfiguredOverride(t *testing.T) {
 	llm := config.LLMConfig{
 		Provider: config.LLMProviderAnthropic,
