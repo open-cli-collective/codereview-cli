@@ -6659,9 +6659,6 @@ func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitAgentSourcesPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"", // Stage agent source settings
-			"", // keep first prefilled path
-			"", // no additional paths
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -6680,11 +6677,81 @@ func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
 		t.Fatalf("edit.Sources = %#v, want preserved source", edit.Sources)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Agent source 1") || !strings.Contains(out, "Add agent sources") {
-		t.Fatalf("stderr = %q, want editable agent source inputs", out)
+	if !strings.Contains(out, "Additional trusted reviewer-agent directories") {
+		t.Fatalf("stderr = %q, want trusted reviewer-agent label", out)
 	}
-	if !strings.Contains(out, "Back without staging") {
-		t.Fatalf("stderr = %q, want agent-source Back option", out)
+	if !strings.Contains(out, ".codereview/agents") || !strings.Contains(out, "Most users should leave this empty") {
+		t.Fatalf("stderr = %q, want explanatory agent-source copy", out)
+	}
+	if !strings.Contains(out, "Only configure directories you trust and expect to stay stable.") {
+		t.Fatalf("stderr = %q, want trust/stability guidance", out)
+	}
+}
+
+func TestHuhInitAgentSourcesPrompterXtermAcceptsMultilinePaths(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitAgentSourcesPrompter{
+		stdin:  strings.NewReader("/tmp/agents-alpha\x0a/tmp/agents-beta\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	edit, err := prompter.EditAgentSources(initAgentSourcesPrompt{})
+	if err != nil {
+		t.Fatalf("EditAgentSources: %v", err)
+	}
+	if !reflect.DeepEqual(edit.Sources, []string{"/tmp/agents-alpha", "/tmp/agents-beta"}) {
+		t.Fatalf("edit.Sources = %#v, want newline-separated trusted directories", edit.Sources)
+	}
+}
+
+func TestHuhInitAgentSourcesPrompterXtermEditsPrefilledMultilinePaths(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitAgentSourcesPrompter{
+		stdin:  strings.NewReader("\x0a/tmp/agents-beta\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	edit, err := prompter.EditAgentSources(initAgentSourcesPrompt{
+		Sources: []string{"/tmp/agents-alpha"},
+	})
+	if err != nil {
+		t.Fatalf("EditAgentSources: %v", err)
+	}
+	if !reflect.DeepEqual(edit.Sources, []string{"/tmp/agents-alpha", "/tmp/agents-beta"}) {
+		t.Fatalf("edit.Sources = %#v, want preserved prefilled path plus appended multiline entry", edit.Sources)
+	}
+}
+
+func TestHuhInitAgentSourcesPrompterXtermClearsPrefilledPaths(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitAgentSourcesPrompter{
+		stdin:  strings.NewReader("\x15\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	edit, err := prompter.EditAgentSources(initAgentSourcesPrompt{
+		Sources: []string{"/tmp/agents-alpha"},
+	})
+	if err != nil {
+		t.Fatalf("EditAgentSources: %v", err)
+	}
+	if edit.Sources != nil {
+		t.Fatalf("edit.Sources = %#v, want nil after clearing prefilled trusted directories", edit.Sources)
+	}
+}
+
+func TestHuhInitAgentSourcesPrompterBackReturnsNavigateBack(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitAgentSourcesPrompter{
+		stdin:  strings.NewReader("\x1b"),
+		stderr: &bytes.Buffer{},
+	}
+
+	_, err := prompter.EditAgentSources(initAgentSourcesPrompt{
+		Sources: []string{"/tmp/agents"},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditAgentSources error = %v, want errInitNavigateBack", err)
 	}
 }
 
