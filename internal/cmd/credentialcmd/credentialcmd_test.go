@@ -6487,7 +6487,6 @@ func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitModelMapPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",           // Stage model-map settings
 			"",           // small stays blank
 			"gpt-custom", // medium override
 			"",           // large stays blank
@@ -6498,8 +6497,9 @@ func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
 
 	edit, err := prompter.EditModelMap(initModelMapPrompt{
 		LLM: config.LLMConfig{
-			Provider: config.LLMProviderOpenAI,
-			Adapter:  config.LLMAdapterCodexCLI,
+			Provider: config.LLMProviderPi,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterPiRPC,
 		},
 		ModelMap: nil,
 	})
@@ -6513,53 +6513,54 @@ func TestHuhInitModelMapPrompterAccessibleShowsTierInputs(t *testing.T) {
 	if !strings.Contains(out, "small model") || !strings.Contains(out, "medium model") || !strings.Contains(out, "large model") {
 		t.Fatalf("stderr = %q, want tier input prompts", out)
 	}
-	if !strings.Contains(out, "Back without staging") {
-		t.Fatalf("stderr = %q, want model-map Back option", out)
+	if strings.Contains(out, "Model-map action") || strings.Contains(out, "Stage model-map settings") || strings.Contains(out, "Back without staging") {
+		t.Fatalf("stderr = %q, want flattened model-map editor without action preflight", out)
 	}
 }
 
-func TestHuhInitModelMapPrompterAccessibleKeepsExistingOverrideWhenLeftBlank(t *testing.T) {
-	t.Setenv("TERM", "dumb")
-	prompter := huhInitModelMapPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Stage model-map settings
-			"", // small stays blank
-			"", // medium keeps existing prefilled value
-			"", // large stays blank
-			"",
-		}, "\n")),
-		stderr: &bytes.Buffer{},
-	}
-
-	edit, err := prompter.EditModelMap(initModelMapPrompt{
-		LLM: config.LLMConfig{
-			Provider: config.LLMProviderAnthropic,
-			Adapter:  config.LLMAdapterClaudeCLI,
-		},
-		ModelMap: config.ModelMap{"medium": "claude-custom"},
-	})
-	if err != nil {
-		t.Fatalf("EditModelMap: %v", err)
-	}
-	if !reflect.DeepEqual(edit.ModelMap, config.ModelMap{"medium": "claude-custom"}) {
-		t.Fatalf("edit.ModelMap = %#v, want preserved existing override", edit.ModelMap)
-	}
-}
-
-func TestHuhInitModelMapPrompterAccessibleBackWithoutStagingNavigatesOut(t *testing.T) {
+func TestHuhInitModelMapPrompterAccessibleLeavesBuiltInsOutOfOverrides(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitModelMapPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Back without staging
+			"", // keep built-in small model
+			"", // keep built-in medium model
+			"", // keep built-in large model
 			"",
 		}, "\n")),
 		stderr: &stderr,
 	}
 
+	edit, err := prompter.EditModelMap(initModelMapPrompt{
+		LLM: config.LLMConfig{
+			Provider: config.LLMProviderOpenAI,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterCodexCLI,
+		},
+		ModelMap: nil,
+	})
+	if err != nil {
+		t.Fatalf("EditModelMap: %v", err)
+	}
+	if edit.Apply != true {
+		t.Fatal("edit.Apply = false, want true")
+	}
+	if edit.ModelMap != nil {
+		t.Fatalf("edit.ModelMap = %#v, want built-in effective values omitted from overrides", edit.ModelMap)
+	}
+}
+
+func TestHuhInitModelMapPrompterAccessibleEscapeBackNavigatesOut(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitModelMapPrompter{
+		stdin:  strings.NewReader("\x1b"),
+		stderr: &bytes.Buffer{},
+	}
+
 	_, err := prompter.EditModelMap(initModelMapPrompt{
 		LLM: config.LLMConfig{
 			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
 			Adapter:  config.LLMAdapterClaudeCLI,
 		},
 		ModelMap: config.ModelMap{"medium": "claude-custom"},
@@ -6567,8 +6568,89 @@ func TestHuhInitModelMapPrompterAccessibleBackWithoutStagingNavigatesOut(t *test
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("EditModelMap error = %v, want errInitNavigateBack", err)
 	}
-	if !strings.Contains(stderr.String(), "small model") || !strings.Contains(stderr.String(), "Back without staging") {
-		t.Fatalf("stderr = %q, want model-map fields and Back option", stderr.String())
+}
+
+func TestHuhInitModelMapPrompterXtermKeepsPrefilledOverrideWithBuiltIns(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitModelMapPrompter{
+		stdin:  strings.NewReader("\r\r\r\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	edit, err := prompter.EditModelMap(initModelMapPrompt{
+		LLM: config.LLMConfig{
+			Provider: config.LLMProviderOpenAI,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterCodexCLI,
+		},
+		ModelMap: config.ModelMap{"medium": "gpt-custom"},
+	})
+	if err != nil {
+		t.Fatalf("EditModelMap: %v", err)
+	}
+	if !reflect.DeepEqual(edit.ModelMap, config.ModelMap{"medium": "gpt-custom"}) {
+		t.Fatalf("edit.ModelMap = %#v, want preserved configured override with built-ins present", edit.ModelMap)
+	}
+}
+
+func TestHuhInitModelMapPrompterXtermClearsPrefilledOverrideBackToBuiltIn(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitModelMapPrompter{
+		stdin:  strings.NewReader("\t" + strings.Repeat("\x7f", 20) + "\r\t\r\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	edit, err := prompter.EditModelMap(initModelMapPrompt{
+		LLM: config.LLMConfig{
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		ModelMap: config.ModelMap{"medium": "claude-custom"},
+	})
+	if err != nil {
+		t.Fatalf("EditModelMap: %v", err)
+	}
+	if edit.ModelMap != nil {
+		t.Fatalf("edit.ModelMap = %#v, want cleared override to fall back to built-in mappings only", edit.ModelMap)
+	}
+}
+
+func TestInitEffectiveModelMapInputValuePrefersConfiguredOverride(t *testing.T) {
+	llm := config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterClaudeCLI,
+		ModelMap: config.ModelMap{"medium": "claude-custom"},
+	}
+	got := initEffectiveModelMapInputValue(config.EffectiveModelMap(llm), config.ModelTierMedium)
+	if got != "claude-custom" {
+		t.Fatalf("initEffectiveModelMapInputValue = %q, want configured override", got)
+	}
+}
+
+func TestApplyModelMapToLLMUsesPromptModelMapOverrides(t *testing.T) {
+	llm := config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterClaudeCLI,
+	}
+	effective := config.EffectiveModelMap(applyModelMapToLLM(llm, config.ModelMap{"medium": "claude-custom"}))
+	got := initEffectiveModelMapInputValue(effective, config.ModelTierMedium)
+	if got != "claude-custom" {
+		t.Fatalf("effective input value = %q, want prompt override applied even when llm.ModelMap is nil", got)
+	}
+}
+
+func TestInitModelMapInputDescriptionReflectsMappingSource(t *testing.T) {
+	if got := initModelMapInputDescription(config.ModelTierMedium, "", "gpt-5.4"); !strings.Contains(got, "Built-in medium model for this runtime: gpt-5.4.") {
+		t.Fatalf("built-in description = %q", got)
+	}
+	if got := initModelMapInputDescription(config.ModelTierMedium, "claude-custom", "claude-sonnet-4-6"); !strings.Contains(got, "Configured override for the medium tier.") {
+		t.Fatalf("override description = %q", got)
+	}
+	if got := initModelMapInputDescription(config.ModelTierSmall, "", ""); !strings.Contains(got, "No built-in small model for this runtime.") {
+		t.Fatalf("unmapped description = %q", got)
 	}
 }
 
@@ -7086,11 +7168,6 @@ func TestInitInteractiveModelMapRejectsInvalidEntries(t *testing.T) {
 		want string
 	}{
 		{
-			name: "blank model",
-			edit: initModelMapEdit{Apply: true, ModelMap: config.ModelMap{"medium": " \t "}},
-			want: "model_map.medium is required",
-		},
-		{
 			name: "invalid tier",
 			edit: initModelMapEdit{Apply: true, ModelMap: config.ModelMap{"flagship": "gpt"}},
 			want: `tier "flagship" is invalid`,
@@ -7148,6 +7225,22 @@ func TestInitInteractiveModelMapRejectsInvalidEntries(t *testing.T) {
 				t.Fatalf("saved model_map = %#v, want unchanged %#v", cfg.Profiles["work"].LLM.ModelMap, existing.LLM.ModelMap)
 			}
 		})
+	}
+}
+
+func TestNormalizeInitModelMapDropsBuiltInsAndBlanks(t *testing.T) {
+	llm := config.LLMConfig{
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterCodexCLI,
+	}
+	got := normalizeInitModelMap(llm, config.ModelMap{
+		"small":  "gpt-5.4-mini",
+		"medium": " custom-medium ",
+		"large":  " \t ",
+	})
+	if !reflect.DeepEqual(got, config.ModelMap{"medium": "custom-medium"}) {
+		t.Fatalf("normalizeInitModelMap = %#v, want only explicit non-built-in overrides", got)
 	}
 }
 

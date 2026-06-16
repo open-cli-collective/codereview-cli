@@ -3121,15 +3121,15 @@ func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string
 }
 
 func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initModelMapEdit, error) {
-	action := initDetailActionEdit
 	existing := copyModelMap(prompt.ModelMap)
 	values := map[config.ModelTier]*string{}
 	fields := make([]huh.Field, 0, len(config.ModelTiers()))
+	effective := config.EffectiveModelMap(applyModelMapToLLM(prompt.LLM, existing))
 	builtIns := config.BuiltInModelMap(prompt.LLM.Provider, prompt.LLM.Adapter)
 	for _, tier := range config.ModelTiers() {
-		value := strings.TrimSpace(existing[string(tier)])
+		value := initEffectiveModelMapInputValue(effective, tier)
 		values[tier] = &value
-		description := initModelMapInputDescription(tier, builtIns[string(tier)])
+		description := initModelMapInputDescription(tier, strings.TrimSpace(existing[string(tier)]), strings.TrimSpace(builtIns[string(tier)]))
 		fields = append(fields,
 			huh.NewInput().
 				Title(fmt.Sprintf("%s model", tier)).
@@ -3137,39 +3137,20 @@ func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initMo
 				Value(values[tier]),
 		)
 	}
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Model-map action").
-				Options(
-					huh.NewOption("Stage model-map settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
-		).Title("Model Tiers"),
-		huh.NewGroup(fields...).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("Model Tiers"),
-	)
+	form := huh.NewForm(huh.NewGroup(fields...).Title("Model Tiers"))
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
 		return initModelMapEdit{}, err
 	}
-	if back || action == initDetailActionBack {
+	if back {
 		return initModelMapEdit{}, errInitNavigateBack
 	}
 	edited := config.ModelMap{}
 	for _, tier := range config.ModelTiers() {
 		value := strings.TrimSpace(*values[tier])
-		if value == "" {
-			continue
-		}
 		edited[string(tier)] = value
 	}
-	if len(edited) == 0 {
-		edited = nil
-	}
-	return initModelMapEdit{Apply: true, ModelMap: edited}, nil
+	return initModelMapEdit{Apply: true, ModelMap: normalizeInitModelMap(prompt.LLM, edited)}, nil
 }
 
 func (p huhInitAgentSourcesPrompter) EditAgentSources(prompt initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
@@ -3452,11 +3433,32 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 	return initKeyringBackendEdit{Apply: true, Backend: strings.TrimSpace(backend)}, nil
 }
 
-func initModelMapInputDescription(tier config.ModelTier, builtIn string) string {
-	if builtIn = strings.TrimSpace(builtIn); builtIn != "" {
-		return fmt.Sprintf("Leave blank to use the built-in %s model: %s", tier, builtIn)
+func initEffectiveModelMapInputValue(effective map[config.ModelTier]config.ModelMapResolution, tier config.ModelTier) string {
+	resolution, ok := effective[tier]
+	if !ok {
+		return ""
 	}
-	return "Leave blank to remove the override for this tier."
+	return strings.TrimSpace(resolution.Model)
+}
+
+func applyModelMapToLLM(llm config.LLMConfig, modelMap config.ModelMap) config.LLMConfig {
+	llm.ModelMap = copyModelMap(modelMap)
+	return llm
+}
+
+func initModelMapInputDescription(tier config.ModelTier, override string, builtIn string) string {
+	override = strings.TrimSpace(override)
+	builtIn = strings.TrimSpace(builtIn)
+	switch {
+	case override != "" && builtIn != "":
+		return fmt.Sprintf("Configured override for the %s tier. Clear to use the built-in %s model: %s", tier, tier, builtIn)
+	case override != "":
+		return fmt.Sprintf("Configured override for the %s tier. Clear to leave this tier unmapped.", tier)
+	case builtIn != "":
+		return fmt.Sprintf("Built-in %s model for this runtime: %s. Leave unchanged to keep the built-in mapping, or enter a different model to override it.", tier, builtIn)
+	default:
+		return fmt.Sprintf("No built-in %s model for this runtime. Leave blank to keep this tier unmapped, or enter a model to configure it.", tier)
+	}
 }
 
 func initReviewPolicySelfApproveOptions() []huh.Option[string] {
@@ -4928,7 +4930,7 @@ func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan init
 		return plan, nil
 	}
 	nextProfile := plan.profile
-	nextProfile.LLM.ModelMap = normalizeInitModelMap(edit.ModelMap)
+	nextProfile.LLM.ModelMap = normalizeInitModelMap(nextProfile.LLM, edit.ModelMap)
 	nextCfg := plan.cfg
 	nextCfg.Profiles[plan.profileName] = nextProfile
 	if err := config.Validate(nextCfg); err != nil {
@@ -5639,23 +5641,36 @@ func filterInitBoolMapByRefs(values map[string]bool, activeRefs map[string]bool)
 	return filtered
 }
 
-func normalizeInitModelMap(modelMap config.ModelMap) config.ModelMap {
+func normalizeInitModelMap(llm config.LLMConfig, modelMap config.ModelMap) config.ModelMap {
 	if len(modelMap) == 0 {
 		return nil
 	}
+	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
 	normalized := config.ModelMap{}
 	for _, tier := range config.ModelTiers() {
 		model, ok := modelMap[string(tier)]
 		if !ok {
 			continue
 		}
-		normalized[string(tier)] = strings.TrimSpace(model)
+		model = strings.TrimSpace(model)
+		builtIn := strings.TrimSpace(builtIns[string(tier)])
+		isRedundantOverride := model == "" || model == builtIn
+		if isRedundantOverride {
+			continue
+		}
+		normalized[string(tier)] = model
 	}
 	for tier, model := range modelMap {
 		if _, seen := normalized[tier]; seen {
 			continue
 		}
-		normalized[tier] = strings.TrimSpace(model)
+		model = strings.TrimSpace(model)
+		builtIn := strings.TrimSpace(builtIns[tier])
+		isRedundantOverride := model == "" || model == builtIn
+		if isRedundantOverride {
+			continue
+		}
+		normalized[tier] = model
 	}
 	if len(normalized) == 0 {
 		return nil
