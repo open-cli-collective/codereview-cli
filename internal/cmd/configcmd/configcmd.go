@@ -555,7 +555,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
+	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newSecretsProfileCommand(opts), newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
 }
 
@@ -921,14 +921,22 @@ func configAgentSourcesView(profileName string, sources []string) view.ConfigAge
 	return result
 }
 
-func loadActiveProfile(opts *root.Options) (string, config.File, string, config.Profile, error) {
+func loadConfig(opts *root.Options) (string, config.File, error) {
 	path, err := configPath(opts)
 	if err != nil {
-		return "", config.File{}, "", config.Profile{}, exitcode.AuthConfig(err)
+		return "", config.File{}, exitcode.AuthConfig(err)
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
-		return "", config.File{}, "", config.Profile{}, cmderr.Config(err)
+		return "", config.File{}, cmderr.Config(err)
+	}
+	return path, cfg, nil
+}
+
+func loadActiveProfile(opts *root.Options) (string, config.File, string, config.Profile, error) {
+	path, cfg, err := loadConfig(opts)
+	if err != nil {
+		return "", config.File{}, "", config.Profile{}, err
 	}
 	profileName, profile, err := config.ResolveProfile(cfg, opts.Profile)
 	if err != nil {

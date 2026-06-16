@@ -30,6 +30,8 @@ var (
 	ErrNotConfigured = errors.New("config: not configured")
 	// ErrProfileNotFound means the requested profile is absent.
 	ErrProfileNotFound = errors.New("config: profile not found")
+	// ErrSecretsProfileNotFound means the requested secrets-management profile is absent.
+	ErrSecretsProfileNotFound = errors.New("config: secrets-management profile not found")
 	// ErrInvalid means the config file is malformed or violates the schema.
 	ErrInvalid = errors.New("config: invalid")
 	// ErrUnsupported means the config uses a known v2-only option.
@@ -613,6 +615,16 @@ func EffectiveSecretsProfiles(cfg File) []EffectiveSecretsProfile {
 		})
 	}
 	return profiles
+}
+
+// EffectiveDefaultSecretsProfile returns the effective default secrets profile, if any.
+func EffectiveDefaultSecretsProfile(cfg File) (EffectiveSecretsProfile, bool) {
+	for _, profile := range EffectiveSecretsProfiles(cfg) {
+		if profile.IsDefault {
+			return profile, true
+		}
+	}
+	return EffectiveSecretsProfile{}, false
 }
 
 // ResolveProfile returns the requested profile, or the default profile when

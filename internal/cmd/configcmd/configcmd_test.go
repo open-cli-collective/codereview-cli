@@ -19,6 +19,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
@@ -303,6 +304,187 @@ func TestConfigDefaultSetRejectsBlankProfile(t *testing.T) {
 	}
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestConfigSecretsProfileListTextProjectedLegacy(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = config.SecretsConfig{}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "list"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := "Secrets management profiles:\n  - legacy-default: Legacy default (memory, projected_legacy) [default]\n"
+	if out.String() != want {
+		t.Fatalf("stdout = %q, want %q", out.String(), want)
+	}
+}
+
+func TestConfigSecretsProfileGetAndDefaultGetJSON(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"personal-keychain": {
+				Label:   "Personal Keychain",
+				Backend: config.SecretsProfileBackend{Kind: "keychain"},
+			},
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: "file"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+
+	cmd, out := newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "get", "work-file", "--json"}); err != nil {
+		t.Fatalf("Execute get: %v", err)
+	}
+	var got view.ConfigSecretsProfile
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal get JSON: %v\n%s", err, out.String())
+	}
+	want := view.ConfigSecretsProfile{ID: "work-file", Label: "Work File Store", Backend: "file", Source: "configured", IsDefault: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("get JSON = %#v, want %#v", got, want)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get", "--json"}); err != nil {
+		t.Fatalf("Execute default get: %v", err)
+	}
+	got = view.ConfigSecretsProfile{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal default JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("default get JSON = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfigSecretsProfileSetCreateUpdateAndPreserveUnrelatedConfig(t *testing.T) {
+	cfg := testConfig()
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal-keychain", "--backend", "keychain", "--label", " Personal Keychain "}); err != nil {
+		t.Fatalf("Execute create: %v", err)
+	}
+	wantText := "Secrets profile: personal-keychain\nLabel: Personal Keychain\nBackend: keychain\nSource: configured\nDefault: false\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout after create = %q, want %q", out.String(), wantText)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after create: %v", err)
+	}
+	if got := saved.Secrets.Profiles["personal-keychain"]; got.Label != "Personal Keychain" || got.Backend.Kind != "keychain" {
+		t.Fatalf("saved secrets profile = %#v, want trimmed label + backend", got)
+	}
+	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) || !reflect.DeepEqual(saved.Data, cfg.Data) || !reflect.DeepEqual(saved.Keyring, cfg.Keyring) {
+		t.Fatalf("unrelated config changed: profiles=%#v data=%#v keyring=%#v", saved.Profiles, saved.Data, saved.Keyring)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal-keychain", "--backend", "file", "--clear-label"}); err != nil {
+		t.Fatalf("Execute update: %v", err)
+	}
+	wantText = "Secrets profile: personal-keychain\nBackend: file\nSource: configured\nDefault: false\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout after update = %q, want %q", out.String(), wantText)
+	}
+	saved, err = config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after update: %v", err)
+	}
+	if got := saved.Secrets.Profiles["personal-keychain"]; got.Label != "" || got.Backend.Kind != "file" {
+		t.Fatalf("updated secrets profile = %#v, want cleared label + file backend", got)
+	}
+}
+
+func TestConfigSecretsProfileSetRejectsLabelEdgeCases(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal", "--backend", "keychain", "--label", "name", "--clear-label"})
+	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
+		t.Fatalf("conflicting label flags error = %v, want usage error", err)
+	}
+
+	cmd, _ = newTestCommand(path)
+	err = root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal", "--backend", "keychain", "--label", "   "})
+	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
+		t.Fatalf("blank label error = %v, want usage error", err)
+	}
+}
+
+func TestConfigSecretsProfileDefaultSetUnsetAndRemove(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = config.SecretsConfig{
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {Label: "Work File Store", Backend: config.SecretsProfileBackend{Kind: "file"}},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "set", " work-file "}); err != nil {
+		t.Fatalf("Execute default set: %v", err)
+	}
+	wantText := "Secrets profile: work-file\nLabel: Work File Store\nBackend: file\nSource: configured\nDefault: true\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout after default set = %q, want %q", out.String(), wantText)
+	}
+
+	cmd, _ = newTestCommand(path)
+	err := root.Execute(cmd, []string{"config", "secrets-profile", "remove", "work-file"})
+	if !errors.Is(err, configedit.ErrSecretsProfileDefaultConfigured) {
+		t.Fatalf("remove default error = %v, want ErrSecretsProfileDefaultConfigured", err)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "unset"}); err != nil {
+		t.Fatalf("Execute default unset: %v", err)
+	}
+	wantText = "Secrets management profiles:\n  - work-file: Work File Store (file, configured)\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout after default unset = %q, want %q", out.String(), wantText)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "remove", "work-file"}); err != nil {
+		t.Fatalf("Execute remove existing: %v", err)
+	}
+	wantText = "Secrets management profiles:\n  - legacy-default: Legacy default (memory, projected_legacy) [default]\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout after remove existing = %q, want %q", out.String(), wantText)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "remove", "work-file"}); err != nil {
+		t.Fatalf("Execute remove absent: %v", err)
+	}
+	if out.String() != wantText {
+		t.Fatalf("stdout after remove absent = %q, want %q", out.String(), wantText)
+	}
+}
+
+func TestConfigSecretsProfileReservedAndInvalidBackendErrors(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "set", "legacy-default"})
+	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
+		t.Fatalf("default set reserved error = %v, want usage error", err)
+	}
+
+	cmd, _ = newTestCommand(path)
+	err = root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal", "--backend", "bogus"})
+	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
+		t.Fatalf("invalid backend error = %v, want usage error", err)
 	}
 }
 

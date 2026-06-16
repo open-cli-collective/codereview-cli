@@ -377,6 +377,84 @@ func TestRenderConfigRoutesJSON(t *testing.T) {
 	}
 }
 
+func TestRenderConfigSecretsProfilesText(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigSecretsProfiles{
+		Profiles: []ConfigSecretsProfile{
+			{ID: "legacy-default", Label: "Legacy default", Backend: "memory", Source: "projected_legacy", IsDefault: true},
+			{ID: "work", Label: "Work Keychain", Backend: "keychain", Source: "configured"},
+		},
+	}
+
+	if err := RenderConfigSecretsProfilesText(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsProfilesText: %v", err)
+	}
+	want := "Secrets management profiles:\n  - legacy-default: Legacy default (memory, projected_legacy) [default]\n  - work: Work Keychain (keychain, configured)\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigSecretsProfilesJSON(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigSecretsProfiles{
+		Profiles: []ConfigSecretsProfile{
+			{ID: "work", Label: "Work Keychain", Backend: "keychain", Source: "configured"},
+		},
+	}
+
+	if err := RenderConfigSecretsProfilesJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsProfilesJSON: %v", err)
+	}
+	var decoded ConfigSecretsProfiles
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
+func TestRenderConfigSecretsProfileText(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigSecretsProfile{
+		ID:        "legacy-default",
+		Label:     "Legacy default",
+		Backend:   "memory",
+		Source:    "projected_legacy",
+		IsDefault: true,
+	}
+
+	if err := RenderConfigSecretsProfileText(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsProfileText: %v", err)
+	}
+	want := "Secrets profile: legacy-default\nLabel: Legacy default\nBackend: memory\nSource: projected_legacy\nDefault: true\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigSecretsProfileJSON(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigSecretsProfile{
+		ID:      "work",
+		Label:   "Work Keychain",
+		Backend: "keychain",
+		Source:  "configured",
+	}
+
+	if err := RenderConfigSecretsProfileJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsProfileJSON: %v", err)
+	}
+	var decoded ConfigSecretsProfile
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
 func TestRenderConfigResolveProfileText(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigResolveProfile{
