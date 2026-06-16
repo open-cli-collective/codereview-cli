@@ -817,6 +817,10 @@ func runInjectedInteractiveInit(cmd *cobra.Command, opts *root.Options, flags in
 	if err != nil {
 		return initSessionDraft{}, err
 	}
+	// The injected legacy path remains a direct test seam for older prompt
+	// dependencies; it intentionally preserves the pre-menu sequencing here even
+	// though the user-facing menu now exposes retention and secrets management as
+	// separate top-level categories.
 	if deps.retentionPrompter != nil {
 		session.cfg, err = collectInteractiveInitRetentionConfig(opts, deps, cloneInitConfigFile(session.cfg))
 		if err != nil {

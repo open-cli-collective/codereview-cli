@@ -233,7 +233,7 @@ The following flags are intentionally not durable init configuration.
 - #181: interactive secret ingress and safe keyring writes.
 - #182: interactive `llm.model_map`.
 - #183: interactive `agent_sources` and `review_policy`.
-- #184: interactive global `data.retention` and `keyring.backend`.
+- #184: interactive global `data.retention` and legacy secrets-management `keyring.backend`.
 - #185: interactive repository routes and host reconciliation.
 - #186: scripted installer documentation.
 - #187: maintainable non-interactive init parity flags.
