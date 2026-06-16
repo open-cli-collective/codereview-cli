@@ -4368,8 +4368,8 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	if draft.OriginalProfileName != "" {
 		t.Fatalf("draft.OriginalProfileName = %q, want blank for create-new seed", draft.OriginalProfileName)
 	}
-	if draft.ProfileName != credstore.DefaultProfile {
-		t.Fatalf("draft.ProfileName = %q, want fresh default profile seed", draft.ProfileName)
+	if draft.ProfileName != "new-profile" {
+		t.Fatalf("draft.ProfileName = %q, want non-conflicting create-new profile seed", draft.ProfileName)
 	}
 	if draft.MakeDefault {
 		t.Fatalf("draft.MakeDefault = true, want create-new seed to preserve false selection when an existing default profile is present")
@@ -4442,6 +4442,86 @@ func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDef
 	}
 	if !strings.Contains(stderr.String(), "Yes, make this the default profile") {
 		t.Fatalf("stderr = %q, want default-profile select copy in no-default flow", stderr.String())
+	}
+}
+
+func TestHuhInitPrompterAccessibleCreateNewProfileAvoidsExistingDefaultProfileName(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile(credstore.DefaultProfile)
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Git host
+			"", // Git auth
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Git storage label
+			"", // Repository routes
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: credstore.DefaultProfile,
+		ExistingProfileName:  credstore.DefaultProfile,
+		ExistingProfile:      &existing,
+		ExistingProfileNames: []string{credstore.DefaultProfile},
+		DefaultProfileName:   credstore.DefaultProfile,
+		ExistingConfig: config.File{
+			DefaultProfile: credstore.DefaultProfile,
+			Profiles:       map[string]config.Profile{credstore.DefaultProfile: existing},
+		},
+		LLMRuntimes: map[string]initLLMRuntimeDraft{
+			"default-runtime": initLLMRuntimeDraftFromConfig(existing.LLM),
+		},
+		ProfileLLMRuntimes: map[string]string{credstore.DefaultProfile: "default-runtime"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.OriginalProfileName != "" {
+		t.Fatalf("draft.OriginalProfileName = %q, want blank for create-new seed", draft.OriginalProfileName)
+	}
+	if draft.ProfileName != "new-profile" {
+		t.Fatalf("draft.ProfileName = %q, want create-new seed to avoid existing default profile", draft.ProfileName)
+	}
+	if draft.MakeDefault {
+		t.Fatalf("draft.MakeDefault = true, want existing default profile to remain default")
+	}
+}
+
+func TestInitCreateProfileSeedNameUsesNextAvailableGeneratedName(t *testing.T) {
+	got := initCreateProfileSeedName(initPromptContext{
+		RequestedProfileName: credstore.DefaultProfile,
+		ExistingProfileNames: []string{credstore.DefaultProfile, "new-profile"},
+		ExistingConfig: config.File{
+			Profiles: map[string]config.Profile{
+				credstore.DefaultProfile: {},
+				"new-profile":            {},
+			},
+		},
+		PendingProfileDeletes: map[string]initPendingProfileDelete{
+			"new-profile-2": {ProfileName: "new-profile-2"},
+		},
+	})
+	if got != "new-profile-3" {
+		t.Fatalf("initCreateProfileSeedName = %q, want next available generated name", got)
 	}
 }
 
@@ -5981,16 +6061,16 @@ func TestInitProfileEditorLLMRuntimeSelectionFallsBackToFirstConfiguredRuntimeWi
 func TestInitSecretsProfileSelectionOptionsShowConfiguredProfilesAndBuiltInDefault(t *testing.T) {
 	profiles := []config.EffectiveSecretsProfile{
 		{
-			ID:     "personal-keychain",
-			Label:  "Personal macOS Keychain",
+			ID:      "personal-keychain",
+			Label:   "Personal macOS Keychain",
 			Backend: string(credstore.BackendKeychain),
-			Source: config.EffectiveSecretsProfileSourceConfigured,
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
 		},
 		{
-			ID:     "work-1password",
-			Label:  "Work 1Password",
+			ID:      "work-1password",
+			Label:   "Work 1Password",
 			Backend: string(credstore.BackendOPDesktop),
-			Source: config.EffectiveSecretsProfileSourceConfigured,
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
 		},
 	}
 	options := initSecretsProfileSelectionOptions(profiles, "", "Use built-in default (Legacy default (In-memory store))")

@@ -2152,8 +2152,8 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			selectedExistingProfile = &profileCopy
 		}
 		requestedProfileName := ctx.RequestedProfileName
-		if selectedCreateNewProfile && ctx.ExistingProfile != nil {
-			requestedProfileName = ""
+		if selectedCreateNewProfile {
+			requestedProfileName = initCreateProfileSeedName(ctx)
 		}
 		draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
 		if warnings := ctx.ProfileWarnings[selectedProfileName]; len(warnings) > 0 {
@@ -3706,6 +3706,48 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		}
 	}
 	return draft
+}
+
+func initCreateProfileSeedName(ctx initPromptContext) string {
+	requestedProfileName := strings.TrimSpace(ctx.RequestedProfileName)
+	if requestedProfileName != "" && !initProfileNameOccupied(ctx, requestedProfileName) {
+		return requestedProfileName
+	}
+	return uniqueInitProfileName(ctx, "new-profile")
+}
+
+func initProfileNameOccupied(ctx initPromptContext, profileName string) bool {
+	if profileName == "" {
+		return false
+	}
+	if _, ok := ctx.ExistingConfig.Profiles[profileName]; ok {
+		return true
+	}
+	for _, existingProfileName := range ctx.ExistingProfileNames {
+		if existingProfileName == profileName {
+			return true
+		}
+	}
+	if _, ok := ctx.PendingProfileDeletes[profileName]; ok {
+		return true
+	}
+	return false
+}
+
+func uniqueInitProfileName(ctx initPromptContext, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "profile"
+	}
+	if !initProfileNameOccupied(ctx, base) {
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", base, suffix)
+		if !initProfileNameOccupied(ctx, candidate) {
+			return candidate
+		}
+	}
 }
 
 func sortedProfileNames(profiles map[string]config.Profile) []string {
