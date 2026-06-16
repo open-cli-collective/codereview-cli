@@ -9315,7 +9315,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("7\n"),
+		stdin:  strings.NewReader("8\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{
@@ -9335,6 +9335,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 		"Configure LLM runtimes (2)",
 		"Configure reviewer entities (3)",
 		"Configure review profiles (1)",
+		"Configure review profiles v2 (1)",
 		"Configure global settings",
 		"Configure secrets management",
 		"Commit staged changes and exit",
@@ -9350,7 +9351,7 @@ func TestHuhInitMenuPrompterAccessibleSelectsSecretsManagement(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("5\n"),
+		stdin:  strings.NewReader("6\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{
@@ -9375,8 +9376,8 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *t
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"6", // Commit staged changes and exit (disabled)
-			"7", // Discard staged changes and exit
+			"7", // Commit staged changes and exit (disabled)
+			"8", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -9399,7 +9400,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"1", // Configure LLM runtimes (disabled)
-			"7", // Discard staged changes and exit
+			"8", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -9414,6 +9415,151 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	if !strings.Contains(stderr.String(), "configure a review profile before editing LLM runtimes") {
 		t.Fatalf("stderr = %q, want disabled-llm validation message", stderr.String())
 	}
+}
+
+func TestHuhInitMenuPrompterAccessibleSelectsReviewProfilesV2(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitMenuPrompter{
+		stdin:  strings.NewReader("4\n"),
+		stderr: &stderr,
+	}
+	action, err := prompter.ChooseAction(initMenuPrompt{
+		HasWorkspace:         true,
+		LLMRuntimeCount:      2,
+		ReviewerEntityCount:  3,
+		ReviewProfileCount:   1,
+		CanConfigureLLM:      true,
+		CanConfigureReviewer: true,
+		CanSave:              true,
+	})
+	if err != nil {
+		t.Fatalf("ChooseAction: %v", err)
+	}
+	if action != initMenuActionReviewProfilesV2 {
+		t.Fatalf("action = %q, want review profiles v2", action)
+	}
+	if !strings.Contains(stderr.String(), "Configure review profiles v2 (1)") {
+		t.Fatalf("stderr = %q, want temporary v2 menu entry", stderr.String())
+	}
+}
+
+func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T) {
+	profile := basicProfile("open-cli-collective")
+	reviewerRef, err := credentials.FormatRef("occ-reviewer")
+	if err != nil {
+		t.Fatalf("FormatRef: %v", err)
+	}
+	profile.Git.Host = "github.enterprise"
+	profile.Git.AuthMode = config.GitAuthModeGitHubApp
+	profile.Git.CredentialRef = "codereview/custom-git"
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: reviewerRef,
+		DisplayName:   "OCC reviewer",
+	}
+	profile.LLM.ModelMap = config.ModelMap{
+		string(config.ModelTierLarge): "claude-opus-4-7",
+	}
+	profile.AgentSources = []string{"/opt/codereview/agents"}
+	profile.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsAuto,
+		ResolveAfter:     "24h",
+	}
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"open-cli-collective": profile,
+		},
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "open-cli-collective",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		}},
+	}
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+
+	content, err := initProfileV2ReadOnlyContent(initPromptContext{
+		RequestedProfileName:    "open-cli-collective",
+		ExistingProfileName:     "open-cli-collective",
+		ExistingProfile:         &profile,
+		ExistingProfileNames:    []string{"open-cli-collective"},
+		ExistingConfig:          cfg,
+		ReviewerEntities:        reviewerEntities,
+		ProfileReviewerEntities: profileReviewerEntities,
+		LLMRuntimes:             llmRuntimes,
+		ProfileLLMRuntimes:      profileLLMRuntimes,
+	}, "open-cli-collective")
+	if err != nil {
+		t.Fatalf("initProfileV2ReadOnlyContent: %v", err)
+	}
+
+	for _, want := range []string{
+		"Profile name",
+		"> open-cli-collective",
+		"Automatic profile selection",
+		"github.com/open-cli-collective",
+		"Git scope",
+		"Git scope host",
+		"> github.enterprise",
+		"Reviewer entity",
+		"OCC reviewer (GitHub App reviewer)",
+		"LLM runtime",
+		"Configured: Claude CLI subscription",
+		"Minimum reviewer model tier",
+		"Model tier mapping",
+		"large model",
+		"> claude-opus-4-7",
+		"Additional reviewer-agent directories (optional)",
+		"/opt/codereview/agents",
+		"Review Policy",
+		"> Request changes",
+		"> Enable self-approve",
+		"> Auto-resolve",
+		"> 24h",
+		"Git secrets storage label",
+		"> codereview/custom-git",
+		"Profile action",
+		"Stage profile settings",
+		"> Back without staging",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("content missing %q:\n%s", want, content)
+		}
+	}
+
+	assertContentOrder := func(parts ...string) {
+		t.Helper()
+		previous := -1
+		for _, part := range parts {
+			index := strings.Index(content, part)
+			if index < 0 {
+				t.Fatalf("content missing %q:\n%s", part, content)
+			}
+			if index <= previous {
+				t.Fatalf("content order wrong for %q:\n%s", part, content)
+			}
+			previous = index
+		}
+	}
+	assertContentOrder(
+		"Profile name",
+		"Automatic profile selection",
+		"Route entries",
+		"Git scope",
+		"Reviewer entity",
+		"LLM runtime",
+		"Minimum reviewer model tier",
+		"Model tier mapping",
+		"Additional reviewer-agent directories (optional)",
+		"Review Policy",
+		"Git secrets storage label",
+		"Profile action",
+	)
 }
 
 func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
