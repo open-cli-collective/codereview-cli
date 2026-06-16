@@ -608,6 +608,49 @@ func TestConfigSecretsProfileSetShowsNormalizedOnePasswordDefaults(t *testing.T)
 	}
 }
 
+func TestConfigSecretsProfileBackendSwitchClearsOnePasswordPayload(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = config.SecretsConfig{
+		Profiles: map[string]config.SecretsProfile{
+			"work-op": {
+				Backend: config.SecretsProfileBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendOPConnect),
+					OnePassword: &config.SecretsProfileOnePasswordConfig{
+						VaultID:         "vault-123",
+						ConnectHost:     "https://connect.example",
+						ConnectTokenEnv: "CUSTOM_CONNECT_TOKEN",
+					},
+				},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{
+		"config", "secrets-profile", "set", "work-op",
+		"--backend", "file",
+	}); err != nil {
+		t.Fatalf("Execute backend downgrade: %v", err)
+	}
+	wantText := "" +
+		"Secrets profile: work-op\n" +
+		"Backend: file\n" +
+		"Source: configured\n" +
+		"Default: false\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout after backend downgrade = %q, want %q", out.String(), wantText)
+	}
+
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after backend downgrade: %v", err)
+	}
+	if got := saved.Secrets.Profiles["work-op"]; got.Backend.OnePassword != nil {
+		t.Fatalf("saved backend still has 1password payload: %#v", got.Backend)
+	}
+}
+
 func TestConfigSecretsProfileSetRejectsIncompatibleOnePasswordFlags(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)

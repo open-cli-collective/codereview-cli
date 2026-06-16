@@ -458,6 +458,37 @@ func TestRenderConfigSecretsProfileText(t *testing.T) {
 	}
 }
 
+func TestRenderConfigSecretsProfileTextWithOnePasswordDetails(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigSecretsProfile{
+		ID:      "work-op",
+		Backend: "op",
+		BackendInfo: &ConfigSecretsProfileBackendDetails{
+			OnePassword: &ConfigSecretsProfileOnePassword{
+				Timeout:                "5s",
+				VaultID:                "vault-123",
+				ServiceAccountTokenEnv: "OP_SERVICE_ACCOUNT_TOKEN",
+			},
+		},
+		Source: "configured",
+	}
+
+	if err := RenderConfigSecretsProfileText(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsProfileText with 1Password: %v", err)
+	}
+	want := "" +
+		"Secrets profile: work-op\n" +
+		"Backend: op\n" +
+		"1Password timeout: 5s\n" +
+		"1Password vault id: vault-123\n" +
+		"1Password service token env: OP_SERVICE_ACCOUNT_TOKEN\n" +
+		"Source: configured\n" +
+		"Default: false\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
 func TestRenderConfigSecretsProfileJSON(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigSecretsProfile{
@@ -469,6 +500,33 @@ func TestRenderConfigSecretsProfileJSON(t *testing.T) {
 
 	if err := RenderConfigSecretsProfileJSON(&out, result); err != nil {
 		t.Fatalf("RenderConfigSecretsProfileJSON: %v", err)
+	}
+	var decoded ConfigSecretsProfile
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
+func TestRenderConfigSecretsProfileJSONWithOnePasswordDetails(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigSecretsProfile{
+		ID:      "work-op",
+		Backend: "op-desktop",
+		BackendInfo: &ConfigSecretsProfileBackendDetails{
+			OnePassword: &ConfigSecretsProfileOnePassword{
+				Timeout:           "5s",
+				VaultID:           "vault-123",
+				DesktopAccountEnv: "OP_DESKTOP_ACCOUNT_ID",
+			},
+		},
+		Source: "configured",
+	}
+
+	if err := RenderConfigSecretsProfileJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsProfileJSON with 1Password: %v", err)
 	}
 	var decoded ConfigSecretsProfile
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
