@@ -2743,15 +2743,16 @@ func initProfileIsCurrentDefault(profileName string, defaultProfileName string) 
 }
 
 func defaultProfileSelectionOptions(defaultProfileName string) []huh.Option[bool] {
-	options := []huh.Option[bool]{
+	if strings.TrimSpace(defaultProfileName) == "" {
+		return []huh.Option[bool]{
+			huh.NewOption("Yes, make this profile the default", true),
+			huh.NewOption("No, use the standard first-profile default behavior", false),
+		}
+	}
+	return []huh.Option[bool]{
+		huh.NewOption(fmt.Sprintf("No, keep %s as the default profile", strings.TrimSpace(defaultProfileName)), false),
 		huh.NewOption("Yes, make this profile the default", true),
 	}
-	if strings.TrimSpace(defaultProfileName) == "" {
-		options = append(options, huh.NewOption("No, use the standard first-profile default behavior", false))
-		return options
-	}
-	options = append(options, huh.NewOption(fmt.Sprintf("No, keep %s as the default profile", strings.TrimSpace(defaultProfileName)), false))
-	return options
 }
 
 func initReviewerModelTierOptions() []huh.Option[string] {
