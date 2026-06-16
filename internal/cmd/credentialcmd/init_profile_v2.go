@@ -40,11 +40,11 @@ func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, e
 		case initInventoryActionBack:
 			return initDraft{}, errInitNavigateBack
 		case initInventoryActionEdit, initInventoryActionCommand:
-			document, err := initProfileV2ReadOnlyDocument(ctx, result.Row.ID)
+			editor, err := initProfileV2ReadOnlyEditor(ctx, result.Row.ID)
 			if err != nil {
 				return initDraft{}, err
 			}
-			if err := p.runReadOnlyEditor(document); err != nil {
+			if err := p.runReadOnlyEditor(editor); err != nil {
 				return initDraft{}, err
 			}
 		case initInventoryActionNone:
@@ -65,8 +65,8 @@ func (p bubbleTeaInitProfileV2Prompter) runInventory(prompt initInventoryPrompt)
 	return runner(prompt, p.stdin, p.stderr)
 }
 
-func (p bubbleTeaInitProfileV2Prompter) runReadOnlyEditor(document initProfileV2Document) error {
-	program := tea.NewProgram(newInitProfileV2ReadOnlyModel(document, 100, 28), tea.WithInput(p.stdin), tea.WithOutput(p.stderr))
+func (p bubbleTeaInitProfileV2Prompter) runReadOnlyEditor(editor initProfileV2Editor) error {
+	program := tea.NewProgram(newInitProfileV2ReadOnlyModel(editor, 100, 28), tea.WithInput(p.stdin), tea.WithOutput(p.stderr))
 	_, err := program.Run()
 	return err
 }
@@ -82,13 +82,14 @@ func initProfileV2InventoryRows(ctx initPromptContext) []initInventoryRow {
 
 type initProfileV2ReadOnlyModel struct {
 	viewport viewport.Model
+	draft    initDraft
 	document initProfileV2Document
 	layout   initProfileV2Layout
 	focused  int
 	quitting bool
 }
 
-func newInitProfileV2ReadOnlyModel(document initProfileV2Document, width, height int) initProfileV2ReadOnlyModel {
+func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int) initProfileV2ReadOnlyModel {
 	if width <= 0 {
 		width = 100
 	}
@@ -98,9 +99,11 @@ func newInitProfileV2ReadOnlyModel(document initProfileV2Document, width, height
 	vp := viewport.New(width, max(height-2, 1))
 	model := initProfileV2ReadOnlyModel{
 		viewport: vp,
-		document: document,
-		focused:  document.firstFocusableField(),
+		draft:    editor.Draft,
+		document: editor.Document,
+		focused:  editor.Document.firstFocusableField(),
 	}
+	model.validateAll()
 	model.relayout()
 	model.ensureFocusedVisible()
 	return model
@@ -119,6 +122,11 @@ func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureFocusedVisible()
 		return m, nil
 	case tea.KeyMsg:
+		if m.handleFocusedInputKey(msg) {
+			m.relayout()
+			m.ensureFocusedVisible()
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
 			m.quitting = true
@@ -172,6 +180,14 @@ func initProfileV2ReadOnlyContent(ctx initPromptContext, selection string) (stri
 }
 
 func initProfileV2ReadOnlyDocument(ctx initPromptContext, selection string) (initProfileV2Document, error) {
+	editor, err := initProfileV2ReadOnlyEditor(ctx, selection)
+	if err != nil {
+		return nil, err
+	}
+	return editor.Document, nil
+}
+
+func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initProfileV2Editor, error) {
 	selectedProfileName, selectedExistingProfile, requestedProfileName := initProfileV2Selection(ctx, selection)
 	draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
 	routeText := formatInitRouteSpecs(currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName))
@@ -209,13 +225,13 @@ func initProfileV2ReadOnlyDocument(ctx initPromptContext, selection string) (ini
 
 	standardGitCredentialRef, err := initStandardGitCredentialRef(draft.ProfileName, selectedGitScope, ctx.GitScopes)
 	if err != nil {
-		return nil, err
+		return initProfileV2Editor{}, err
 	}
 	gitStorageLabel := initEffectiveStorageLabelValue(draft.GitCredentialRef, standardGitCredentialRef)
 
 	var document initProfileV2Document
 	document.addSection("Profile", "")
-	document.addInput("Profile name", "", draft.ProfileName)
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", draft.ProfileName, validateProfileName)
 	initProfileV2AppendRouteSection(&document, routeText)
 	if selectedGitScope == initCustomGitScopeSelection {
 		initProfileV2AppendCustomGitScopeSection(&document, draft)
@@ -231,7 +247,7 @@ func initProfileV2ReadOnlyDocument(ctx initPromptContext, selection string) (ini
 		huh.NewOption("Stage profile settings", initDetailActionEdit),
 		huh.NewOption("Back without staging", initDetailActionBack),
 	}, initDetailActionBack)
-	return document, nil
+	return initProfileV2Editor{Draft: draft, Document: document}, nil
 }
 
 func initProfileV2Selection(ctx initPromptContext, selection string) (string, *config.Profile, string) {
@@ -244,6 +260,7 @@ func initProfileV2Selection(ctx initPromptContext, selection string) (string, *c
 }
 
 type initProfileV2FieldKind string
+type initProfileV2FieldID string
 
 const (
 	initProfileV2FieldSection initProfileV2FieldKind = "section"
@@ -251,16 +268,30 @@ const (
 	initProfileV2FieldSelect  initProfileV2FieldKind = "select"
 )
 
+const (
+	initProfileV2FieldProfileName initProfileV2FieldID = "profile_name"
+	initProfileV2FieldRoutes      initProfileV2FieldID = "routes"
+)
+
+type initProfileV2Editor struct {
+	Draft    initDraft
+	Document initProfileV2Document
+}
+
 type initProfileV2Document []initProfileV2Field
 
 type initProfileV2Field struct {
+	ID          initProfileV2FieldID
 	Kind        initProfileV2FieldKind
 	Title       string
 	Description string
 	Value       string
+	Cursor      int
 	Options     []initProfileV2Option
 	Focusable   bool
+	Editable    bool
 	Error       string
+	Validate    func(string) error
 }
 
 type initProfileV2Option struct {
@@ -282,7 +313,7 @@ type initProfileV2FieldBounds struct {
 func initProfileV2AppendRouteSection(document *initProfileV2Document, routeText string) {
 	document.addSection("Automatic profile selection", "Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile.")
 	document.addSection("Accepted route formats", "host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;.")
-	document.addInput("Route entries", "", routeText)
+	document.addEditableInput(initProfileV2FieldRoutes, "Route entries", "", routeText, validateInitProfileV2RouteText)
 }
 
 func initProfileV2AppendCustomGitScopeSection(document *initProfileV2Document, draft initDraft) {
@@ -343,12 +374,24 @@ func (d *initProfileV2Document) addSection(title, description string) {
 }
 
 func (d *initProfileV2Document) addInput(title, description, value string) {
+	d.addInputField("", title, description, value, false, nil)
+}
+
+func (d *initProfileV2Document) addEditableInput(id initProfileV2FieldID, title, description, value string, validate func(string) error) {
+	d.addInputField(id, title, description, value, true, validate)
+}
+
+func (d *initProfileV2Document) addInputField(id initProfileV2FieldID, title, description, value string, editable bool, validate func(string) error) {
 	*d = append(*d, initProfileV2Field{
 		Kind:        initProfileV2FieldInput,
+		ID:          id,
 		Title:       title,
 		Description: description,
 		Value:       value,
+		Cursor:      len([]rune(value)),
 		Focusable:   true,
+		Editable:    editable,
+		Validate:    validate,
 	})
 }
 
@@ -414,6 +457,100 @@ func (d initProfileV2Document) fieldIndexByTitle(title string) int {
 	return -1
 }
 
+func (d initProfileV2Document) fieldIndexByID(id initProfileV2FieldID) int {
+	for index, field := range d {
+		if field.ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func (d initProfileV2Document) fieldValue(id initProfileV2FieldID) string {
+	index := d.fieldIndexByID(id)
+	if index < 0 {
+		return ""
+	}
+	return d[index].Value
+}
+
+func (m *initProfileV2ReadOnlyModel) handleFocusedInputKey(msg tea.KeyMsg) bool {
+	if m.focused < 0 || m.focused >= len(m.document) {
+		return false
+	}
+	field := &m.document[m.focused]
+	if field.Kind != initProfileV2FieldInput || !field.Editable {
+		return false
+	}
+	key := tea.Key(msg)
+	//nolint:exhaustive // The text input consumes only editing keys; all other keys fall through to form navigation.
+	switch key.Type {
+	case tea.KeyRunes:
+		if msg.Alt {
+			return false
+		}
+		field.Value = initProfileV2InsertRunes(field.Value, field.Cursor, key.Runes)
+		field.Cursor += len(key.Runes)
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		field.Value, field.Cursor = initProfileV2DeleteBeforeCursor(field.Value, field.Cursor)
+	case tea.KeyDelete, tea.KeyCtrlD:
+		field.Value = initProfileV2DeleteAtCursor(field.Value, field.Cursor)
+	case tea.KeyLeft, tea.KeyCtrlB:
+		field.Cursor = max(field.Cursor-1, 0)
+	case tea.KeyRight, tea.KeyCtrlF:
+		field.Cursor = min(field.Cursor+1, len([]rune(field.Value)))
+	case tea.KeyCtrlA:
+		field.Cursor = 0
+	case tea.KeyCtrlE:
+		field.Cursor = len([]rune(field.Value))
+	case tea.KeyCtrlU:
+		field.Value = ""
+		field.Cursor = 0
+	case tea.KeyCtrlK:
+		field.Value = initProfileV2DeleteAfterCursor(field.Value, field.Cursor)
+	default:
+		return false
+	}
+	m.validateField(m.focused)
+	return true
+}
+
+func (m *initProfileV2ReadOnlyModel) validateAll() {
+	for index := range m.document {
+		m.validateField(index)
+	}
+}
+
+func (m *initProfileV2ReadOnlyModel) validateField(index int) {
+	if index < 0 || index >= len(m.document) {
+		return
+	}
+	field := &m.document[index]
+	field.Error = ""
+	if field.Validate == nil {
+		return
+	}
+	if err := field.Validate(field.Value); err != nil {
+		field.Error = err.Error()
+	}
+}
+
+func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
+	draft := m.draft
+	profileName := m.document.fieldValue(initProfileV2FieldProfileName)
+	if err := validateProfileName(profileName); err != nil {
+		return draft, err
+	}
+	routes, err := parseInitRouteSpecs(m.document.fieldValue(initProfileV2FieldRoutes))
+	if err != nil {
+		return draft, err
+	}
+	draft.ProfileName = profileName
+	draft.RoutesSet = true
+	draft.Routes = routes
+	return draft, nil
+}
+
 func (m *initProfileV2ReadOnlyModel) relayout() {
 	m.layout = initProfileV2LayoutDocument(m.document, m.viewport.Width, m.focused)
 	m.viewport.SetContent(m.layout.Content)
@@ -474,7 +611,11 @@ func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, fo
 	switch field.Kind {
 	case initProfileV2FieldSection:
 	case initProfileV2FieldInput:
-		valueLines := strings.Split(field.Value, "\n")
+		value := field.Value
+		if focused && field.Editable {
+			value = initProfileV2ValueWithCursor(value, field.Cursor)
+		}
+		valueLines := strings.Split(value, "\n")
 		if len(valueLines) == 0 {
 			valueLines = []string{""}
 		}
@@ -523,4 +664,59 @@ func initProfileV2AppendWrappedWithPrefix(lines *[]string, prefix string, text s
 		available = max(width-len(prefix), 1)
 	}
 	*lines = append(*lines, prefix+remaining)
+}
+
+func validateInitProfileV2RouteText(value string) error {
+	_, err := parseInitRouteSpecs(value)
+	return err
+}
+
+func initProfileV2InsertRunes(value string, cursor int, runes []rune) string {
+	existing := []rune(value)
+	cursor = min(max(cursor, 0), len(existing))
+	next := make([]rune, 0, len(existing)+len(runes))
+	next = append(next, existing[:cursor]...)
+	next = append(next, runes...)
+	next = append(next, existing[cursor:]...)
+	return string(next)
+}
+
+func initProfileV2DeleteBeforeCursor(value string, cursor int) (string, int) {
+	existing := []rune(value)
+	cursor = min(max(cursor, 0), len(existing))
+	if cursor == 0 {
+		return value, cursor
+	}
+	next := make([]rune, 0, len(existing)-1)
+	next = append(next, existing[:cursor-1]...)
+	next = append(next, existing[cursor:]...)
+	return string(next), cursor - 1
+}
+
+func initProfileV2DeleteAtCursor(value string, cursor int) string {
+	existing := []rune(value)
+	cursor = min(max(cursor, 0), len(existing))
+	if cursor >= len(existing) {
+		return value
+	}
+	next := make([]rune, 0, len(existing)-1)
+	next = append(next, existing[:cursor]...)
+	next = append(next, existing[cursor+1:]...)
+	return string(next)
+}
+
+func initProfileV2DeleteAfterCursor(value string, cursor int) string {
+	existing := []rune(value)
+	cursor = min(max(cursor, 0), len(existing))
+	return string(existing[:cursor])
+}
+
+func initProfileV2ValueWithCursor(value string, cursor int) string {
+	existing := []rune(value)
+	cursor = min(max(cursor, 0), len(existing))
+	next := make([]rune, 0, len(existing)+1)
+	next = append(next, existing[:cursor]...)
+	next = append(next, '|')
+	next = append(next, existing[cursor:]...)
+	return string(next)
 }

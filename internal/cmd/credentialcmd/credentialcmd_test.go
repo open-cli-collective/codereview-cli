@@ -9585,7 +9585,7 @@ func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *test
 		{name: "down", key: tea.KeyDown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			model := newInitProfileV2ReadOnlyModel(document, 240, 19)
+			model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 240, 19)
 			model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tc.key})
 
 			if model.focused != routeIndex {
@@ -9633,12 +9633,81 @@ func TestInitProfileV2LayoutWrapsAndMeasuresSmallViewport(t *testing.T) {
 		}
 	}
 
-	model := newInitProfileV2ReadOnlyModel(document, 32, 6)
+	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 32, 6)
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyEnd})
 	bounds := model.layout.Bounds[model.focused]
 	if bounds.Start < model.viewport.YOffset || bounds.Start >= model.viewport.YOffset+model.viewport.Height {
 		t.Fatalf("focused field start line %d not visible in viewport [%d,%d)", bounds.Start, model.viewport.YOffset, model.viewport.YOffset+model.viewport.Height)
 	}
+}
+
+func TestInitProfileV2TextInputsDraftProfileNameAndRoutes(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT; github.com/OtherMonitOrg"), 160, 24)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "monit-next")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.ProfileName != "monit-next" {
+		t.Fatalf("ProfileName = %q, want monit-next", draft.ProfileName)
+	}
+	if !draft.RoutesSet {
+		t.Fatal("RoutesSet = false, want true")
+	}
+	wantRoutes := []configedit.RepositoryRouteSpec{
+		{Host: "github.com", Namespace: "SignalFT"},
+		{Host: "github.com", Namespace: "OtherMonitOrg"},
+	}
+	if !reflect.DeepEqual(draft.Routes, wantRoutes) {
+		t.Fatalf("Routes = %#v, want %#v", draft.Routes, wantRoutes)
+	}
+}
+
+func TestInitProfileV2TextInputsClearRoutes(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT"), 160, 24)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.RoutesSet {
+		t.Fatal("RoutesSet = false, want true")
+	}
+	if len(draft.Routes) != 0 {
+		t.Fatalf("Routes = %#v, want cleared routes", draft.Routes)
+	}
+}
+
+func TestInitProfileV2TextInputsShowLocalErrors(t *testing.T) {
+	t.Run("profile name", func(t *testing.T) {
+		model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT"), 160, 24)
+		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+
+		if !strings.Contains(model.View(), "profile name is required") {
+			t.Fatalf("view missing profile name validation error:\n%s", model.View())
+		}
+		if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "profile name is required") {
+			t.Fatalf("validatedDraft error = %v, want profile name validation", err)
+		}
+	})
+
+	t.Run("routes", func(t *testing.T) {
+		model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT"), 160, 24)
+		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+		model = typeInitProfileV2Text(t, model, "not-a-route")
+
+		if !strings.Contains(model.View(), "must be host/namespace") {
+			t.Fatalf("view missing route validation error:\n%s", model.View())
+		}
+		if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "must be host/namespace") {
+			t.Fatalf("validatedDraft error = %v, want route validation", err)
+		}
+	})
 }
 
 func updateInitProfileV2ReadOnlyModel(t *testing.T, model initProfileV2ReadOnlyModel, msg tea.Msg) initProfileV2ReadOnlyModel {
@@ -9649,6 +9718,28 @@ func updateInitProfileV2ReadOnlyModel(t *testing.T, model initProfileV2ReadOnlyM
 		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
 	}
 	return next
+}
+
+func typeInitProfileV2Text(t *testing.T, model initProfileV2ReadOnlyModel, text string) initProfileV2ReadOnlyModel {
+	t.Helper()
+	for _, r := range text {
+		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	return model
+}
+
+func newTestInitProfileV2Editor(profileName string, routeText string) initProfileV2Editor {
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	return initProfileV2Editor{
+		Draft: initDraft{
+			OriginalProfileName: profileName,
+			ProfileName:         profileName,
+		},
+		Document: document,
+	}
 }
 
 func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
