@@ -79,6 +79,14 @@ func TestStoreOptionsRejectsLegacyOnePasswordBackends(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("env", func(t *testing.T) {
+		t.Setenv(BackendEnvVar(), "op-desktop")
+		_, err := StoreOptions("", false, config.File{})
+		if !errors.Is(err, ErrInvalidBackendSelection) {
+			t.Fatalf("StoreOptions env error = %v, want ErrInvalidBackendSelection", err)
+		}
+	})
 }
 
 func TestStoreOptionsInvalidBackendFlag(t *testing.T) {

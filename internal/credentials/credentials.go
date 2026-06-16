@@ -234,6 +234,17 @@ func StoreOptions(flagValue string, flagSet bool, cfg config.File) (credstore.Op
 	if err := rejectLegacyOnePasswordBackend(opts.ConfigBackend); err != nil {
 		return credstore.Options{}, err
 	}
+	if opts.Backend == "" {
+		if value := os.Getenv(BackendEnvVar()); value != "" {
+			backend, err := credstore.ParseBackend(value)
+			if err != nil {
+				return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+			}
+			if err := rejectLegacyOnePasswordBackend(backend); err != nil {
+				return credstore.Options{}, err
+			}
+		}
+	}
 	return opts, nil
 }
 
