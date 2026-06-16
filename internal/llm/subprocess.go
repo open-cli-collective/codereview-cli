@@ -573,7 +573,12 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 			detail = strings.TrimSpace(string(launchStdout))
 		}
 		if detail != "" {
-			result.err = fmt.Errorf("llm subprocess: Claude bg launch failed: %w: %s", waitErr, detail)
+			launchErr := fmt.Errorf("llm subprocess: Claude bg launch failed: %w: %s", waitErr, detail)
+			if isTransientCLIDetail(detail) {
+				result.err = fmt.Errorf("%w: %w", ErrTransient, launchErr)
+			} else {
+				result.err = launchErr
+			}
 		} else {
 			result.err = waitErr
 		}
@@ -957,7 +962,12 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 				if stateName == "done" {
 					return state, nil
 				}
-				return state, fmt.Errorf("llm subprocess: Claude background job %s: %s", stateName, claudeBGStateDetail(state))
+				detail := claudeBGStateDetail(state)
+				jobErr := fmt.Errorf("llm subprocess: Claude background job %s: %s", stateName, detail)
+				if isTransientCLIDetail(detail) {
+					return state, fmt.Errorf("%w: %w", ErrTransient, jobErr)
+				}
+				return state, jobErr
 			}
 		}
 
