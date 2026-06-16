@@ -404,6 +404,79 @@ func TestRESTDiffTooLargeMapsErrDiffTooLarge(t *testing.T) {
 	})
 }
 
+func TestGetDiffFallsBackToFilesWhenDiffTooLarge(t *testing.T) {
+	ref := testPRRef()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.EscapedPath() == "/repos/open%20cli/repo+name/pulls/42" && r.Header.Get("Accept") == acceptDiff:
+			w.WriteHeader(http.StatusNotAcceptable)
+			_, _ = w.Write([]byte(`{"message":"Sorry, the diff exceeded the maximum number of lines (20000)","status":"406"}`))
+		case r.URL.EscapedPath() == "/repos/open%20cli/repo+name/pulls/42/files":
+			if got := r.Header.Get("Accept"); got != acceptJSON {
+				t.Fatalf("files Accept = %q, want %q", got, acceptJSON)
+			}
+			if r.URL.Query().Get("page") == "2" {
+				writeJSON(t, w, []pullFileResponse{
+					{Filename: "gone.go", Status: "removed", Patch: "@@ -1,2 +0,0 @@\n-old line 1\n-old line 2"},
+					{Filename: "assets/logo.png", Status: "modified"},
+				})
+				return
+			}
+			w.Header().Set("Link", `<`+requestHostURL(r)+`/repos/open%20cli/repo+name/pulls/42/files?page=2>; rel="next"`)
+			writeJSON(t, w, []pullFileResponse{
+				{Filename: "added.go", Status: "added", Patch: "@@ -0,0 +1,2 @@\n+new line 1\n+new line 2"},
+				{Filename: "renamed_new.go", PreviousFilename: "renamed_old.go", Status: "renamed", Patch: "@@ -1 +1 @@\n-a\n+b"},
+			})
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	diff, err := client.GetDiff(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("GetDiff fallback: %v", err)
+	}
+	// The fallback walks both pages and rebuilds standard git-format text for
+	// added, renamed, removed, and patch-less (binary) files.
+	wantBlocks := []string{
+		"diff --git a/added.go b/added.go\n--- /dev/null\n+++ b/added.go\n@@ -0,0 +1,2 @@\n+new line 1\n+new line 2\n",
+		"diff --git a/renamed_old.go b/renamed_new.go\nrename from renamed_old.go\nrename to renamed_new.go\n--- a/renamed_old.go\n+++ b/renamed_new.go\n@@ -1 +1 @@\n-a\n+b\n",
+		"diff --git a/gone.go b/gone.go\n--- a/gone.go\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-old line 1\n-old line 2\n",
+		"diff --git a/assets/logo.png b/assets/logo.png\nBinary files a/assets/logo.png and b/assets/logo.png differ\n",
+	}
+	for _, want := range wantBlocks {
+		if !strings.Contains(diff.Raw, want) {
+			t.Fatalf("reconstructed diff missing block:\n%s\n--- full ---\n%s", want, diff.Raw)
+		}
+	}
+}
+
+func TestReconstructUnifiedDiff(t *testing.T) {
+	got := reconstructUnifiedDiff([]pullFileResponse{
+		{Filename: "", Status: "modified", Patch: "@@ -1 +1 @@\n-x\n+y"}, // no filename: skipped
+		{Filename: "mod.go", Status: "modified", Patch: "@@ -1,2 +1,2 @@\n line\n-old\n+new"},
+		{Filename: "rn.go", PreviousFilename: "ro.go", Status: "renamed"}, // pure rename: no patch
+		{Filename: "bin.dat", Status: "added"},                            // added, no patch: binary
+	})
+	cases := []struct {
+		substr string
+		want   bool
+	}{
+		{"diff --git a/mod.go b/mod.go\n--- a/mod.go\n+++ b/mod.go\n@@ -1,2 +1,2 @@", true},
+		{"diff --git a/ro.go b/rn.go\nrename from ro.go\nrename to rn.go\n", true},
+		{"Binary files a/ro.go", false}, // a pure rename must not be marked binary
+		{"diff --git a/bin.dat b/bin.dat\nBinary files a/bin.dat and b/bin.dat differ\n", true},
+		{"+y", false}, // the empty-filename entry must be dropped entirely
+	}
+	for _, c := range cases {
+		if strings.Contains(got, c.substr) != c.want {
+			t.Fatalf("contains(%q) = %v, want %v\n--- got ---\n%s", c.substr, !c.want, c.want, got)
+		}
+	}
+}
+
 func requestHostURL(r *http.Request) string {
 	return "http://" + r.Host
 }
