@@ -81,6 +81,9 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			store, err := credentials.OpenResolvedStore(opts.Backend, backendFlagSet, cfg, resolvedSecretsProfile)
 			var storeErr error
 			if err != nil {
+				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+					return cmderr.Config(err)
+				}
 				storeErr = err
 			}
 			if store != nil {
@@ -505,6 +508,9 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			}
 			store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
 			if err != nil {
+				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+					return cmderr.Config(err)
+				}
 				return cmderr.Credential(err)
 			}
 			defer store.Close()

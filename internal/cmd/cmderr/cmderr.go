@@ -18,7 +18,10 @@ func Config(err error) error {
 	switch {
 	case errors.Is(err, config.ErrInvalid):
 		return exitcode.Usage(err)
-	case errors.Is(err, config.ErrNotConfigured), errors.Is(err, config.ErrProfileNotFound), errors.Is(err, config.ErrUnsupported):
+	case errors.Is(err, config.ErrNotConfigured),
+		errors.Is(err, config.ErrProfileNotFound),
+		errors.Is(err, config.ErrSecretsProfileNotFound),
+		errors.Is(err, config.ErrUnsupported):
 		return exitcode.AuthConfig(err)
 	default:
 		return err

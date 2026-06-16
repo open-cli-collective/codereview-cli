@@ -95,6 +95,56 @@ func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 	}
 }
 
+func TestMeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing.T) {
+	const token = "named-secrets-profile-token"
+	store := openFileStore(t)
+	defer store.Close()
+	if _, err := store.SetBundle("home", map[string]string{credentials.GitTokenKey: token}, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle home: %v", err)
+	}
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths = append(auths, r.Header.Get("Authorization"))
+		writeJSON(t, w, map[string]any{"login": "live-home", "id": 1})
+	}))
+	defer server.Close()
+	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
+		return &githubResolver{
+			cfg: cfg,
+			options: githubprovider.Options{
+				BaseURL:    server.URL,
+				GraphQLURL: server.URL + "/graphql",
+			},
+		}, nil, nil
+	})
+
+	if err := root.Execute(cmd, []string{"me", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(auths) != 1 || auths[0] != "Bearer "+token {
+		t.Fatalf("auths = %#v, want file-backed named secrets profile token", auths)
+	}
+	var got view.MeResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if len(got.Profiles) != 1 || got.Profiles[0].Login != "live-home" {
+		t.Fatalf("JSON = %#v, want resolved named-store identity", got)
+	}
+}
+
 func TestMeProfileUsesReviewerCredentials(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{

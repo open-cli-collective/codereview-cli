@@ -1401,6 +1401,30 @@ func TestConfigShowSeparatesRuntimeBackendFromConfiguredSecretsProfiles(t *testi
 	}
 }
 
+func TestConfigShowRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"--backend", "memory", "config", "show", "--json"})
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("Execute error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
 func TestConfigShowOpenAIAPIKeyStatus(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	work := cfg.Profiles["work"]
