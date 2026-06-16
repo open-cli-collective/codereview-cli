@@ -8408,7 +8408,7 @@ func TestInitInteractiveKeyringBackendRejectsDefaultNamedSecretsProfileWhenRunti
 
 	_, err := collectInteractiveInitKeyringBackendConfig(opts, initDeps{
 		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
-			return initKeyringBackendEdit{Apply: true, Config: cfg}, nil
+			return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: cfg}, nil
 		}),
 	}, true, cfg)
 	if err == nil {

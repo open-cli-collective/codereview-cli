@@ -322,9 +322,10 @@ type initKeyringBackendPrompt struct {
 }
 
 type initKeyringBackendEdit struct {
-	Apply   bool
-	Backend string
-	Config  config.File
+	Apply         bool
+	HasConfigEdit bool
+	Backend       string
+	Config        config.File
 }
 
 type initFinalizeAction string
@@ -5151,7 +5152,7 @@ func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDep
 		return cfg, nil
 	}
 	nextCfg := cfg
-	if !reflect.DeepEqual(edit.Config, config.File{}) {
+	if edit.HasConfigEdit {
 		nextCfg = config.Normalize(edit.Config)
 	} else {
 		nextCfg.Keyring.Backend = strings.TrimSpace(edit.Backend)

@@ -71,6 +71,12 @@ CI still runs an explicit `keyring_no1password` opt-out test path plus a
 `CGO_ENABLED=0` smoke test so unsupported build modes fail intentionally rather
 than drifting unnoticed.
 
+Use the `keyring_no1password` build tag for distributions that must exclude
+1Password integration entirely, such as FIPS-constrained, air-gapped, or
+otherwise compliance-scoped builds. In that mode the named secrets-management
+workflow hides all 1Password backends and validation rejects 1Password-backed
+config up front instead of failing later at runtime.
+
 ## Release Secrets
 
 `auto-release.yml` passes `RELEASE_TAG_TOKEN` to the shared auto-release
