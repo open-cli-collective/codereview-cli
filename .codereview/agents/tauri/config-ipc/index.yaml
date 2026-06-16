@@ -1,0 +1,14 @@
+name: config-ipc
+description: Reviews Tauri configuration, IPC commands, and capability/permission boundaries for security and correctness.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/tauri.conf.json"
+  - "**/tauri.conf.json5"
+  - "**/tauri.conf.toml"
+  - "src-tauri/**"
+  - "**/capabilities/**"
+  - "**/permissions/**"
+applies_when:
+  - A change edits Tauri configuration, the src-tauri backend, command or IPC handlers, capabilities, permissions, allowlist, CSP, or updater settings.
+needs_full_file_content: false
