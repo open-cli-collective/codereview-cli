@@ -93,6 +93,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			show := view.NewConfigShow(profileName, profile, cfg.Data, statuses)
 			show.Backend = string(backend)
 			show.BackendSource = string(source)
+			show.SecretsProfiles = config.EffectiveSecretsProfiles(cfg)
 			show.AgentSources = agents.InspectProfileSources(profile.AgentSources)
 			if jsonOutput {
 				return view.RenderConfigJSON(opts.Stdout, show)

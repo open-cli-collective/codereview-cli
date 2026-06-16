@@ -1036,6 +1036,83 @@ func TestConfigShowReportsUnknownPresenceWhenKeyringCannotBeQueried(t *testing.T
 	}
 }
 
+func TestConfigShowReportsProjectedLegacySecretsProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "show", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigShow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Backend != "memory" || got.BackendSource != "config" {
+		t.Fatalf("backend = (%q,%q), want (memory,config)", got.Backend, got.BackendSource)
+	}
+	want := []config.EffectiveSecretsProfile{{
+		ID:        config.LegacyProjectedSecretsProfileID,
+		Label:     "Legacy default",
+		Backend:   "memory",
+		IsDefault: true,
+		Source:    config.EffectiveSecretsProfileSourceProjectedLegacy,
+	}}
+	if !reflect.DeepEqual(got.SecretsProfiles, want) {
+		t.Fatalf("secrets_profiles = %#v, want %#v", got.SecretsProfiles, want)
+	}
+}
+
+func TestConfigShowSeparatesRuntimeBackendFromConfiguredSecretsProfiles(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"personal-keychain": {
+				Label:   "Personal Keychain",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("keychain")},
+			},
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "show", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.ConfigShow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Backend != "memory" || got.BackendSource != "config" {
+		t.Fatalf("backend = (%q,%q), want legacy runtime compatibility backend (memory,config)", got.Backend, got.BackendSource)
+	}
+	want := []config.EffectiveSecretsProfile{
+		{
+			ID:      "personal-keychain",
+			Label:   "Personal Keychain",
+			Backend: "keychain",
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+		{
+			ID:        "work-file",
+			Label:     "Work File Store",
+			Backend:   "file",
+			IsDefault: true,
+			Source:    config.EffectiveSecretsProfileSourceConfigured,
+		},
+	}
+	if !reflect.DeepEqual(got.SecretsProfiles, want) {
+		t.Fatalf("secrets_profiles = %#v, want %#v", got.SecretsProfiles, want)
+	}
+}
+
 func TestConfigShowOpenAIAPIKeyStatus(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	work := cfg.Profiles["work"]
@@ -1246,18 +1323,21 @@ func TestConfigAgentSourceRemoveMutatesSelectedProfileOnly(t *testing.T) {
 
 func TestConfigAgentSourcePreservesUnrelatedProfileFields(t *testing.T) {
 	cfg := testConfig()
-	want := cfg
 	home := cfg.Profiles["home"]
 	home.AgentSources = []string{"home-agents"}
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
 	cmd, _ := newTestCommand(path)
+	want, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load baseline: %v", err)
+	}
 
 	if err := root.Execute(cmd, []string{"config", "agent-source", "add", "./team/agents"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	cfg, err := config.Load(path)
+	cfg, err = config.Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

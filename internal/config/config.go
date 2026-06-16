@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ var (
 type File struct {
 	DefaultProfile     string              `yaml:"default_profile" json:"default_profile"`
 	Keyring            KeyringConfig       `yaml:"keyring,omitempty" json:"keyring"`
+	Secrets            SecretsConfig       `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	RepositoryProfiles []RepositoryProfile `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
 	Profiles           map[string]Profile  `yaml:"profiles" json:"profiles"`
 	Data               DataConfig          `yaml:"data,omitempty" json:"data"`
@@ -47,6 +49,56 @@ type File struct {
 // KeyringConfig carries non-secret keyring backend preferences.
 type KeyringConfig struct {
 	Backend string `yaml:"backend,omitempty" json:"backend,omitempty"`
+}
+
+// SecretsConfig carries named secrets-management profile configuration.
+type SecretsConfig struct {
+	DefaultProfile string                    `yaml:"default_profile,omitempty" json:"default_profile,omitempty"`
+	Profiles       map[string]SecretsProfile `yaml:"profiles,omitempty" json:"profiles,omitempty"`
+}
+
+// SecretsProfile is one named secrets-management profile.
+type SecretsProfile struct {
+	Label   string               `yaml:"label,omitempty" json:"label,omitempty"`
+	Backend SecretsProfileBackend `yaml:"backend" json:"backend"`
+}
+
+// SecretsProfileBackend carries one typed backend choice.
+type SecretsProfileBackend struct {
+	Kind SecretsBackendKind `yaml:"kind" json:"kind"`
+}
+
+// SecretsBackendKind is the durable non-secret backend selector for a
+// named secrets-management profile.
+type SecretsBackendKind string
+
+// EffectiveSecretsProfileSource distinguishes configured profiles from the
+// read-only projected legacy compatibility entry.
+type EffectiveSecretsProfileSource string
+
+const (
+	// LegacyProjectedSecretsProfileID is the reserved effective id used when an
+	// old config still relies on legacy keyring.backend behavior.
+	LegacyProjectedSecretsProfileID = "legacy-default"
+	// ProjectedLegacySecretsBackendKind is the effective backend summary when the
+	// old config omits keyring.backend and still relies on auto/env resolution.
+	ProjectedLegacySecretsBackendKind = "auto"
+)
+
+// Effective secrets-profile inventory sources.
+const (
+	EffectiveSecretsProfileSourceConfigured      EffectiveSecretsProfileSource = "configured"
+	EffectiveSecretsProfileSourceProjectedLegacy EffectiveSecretsProfileSource = "projected_legacy"
+)
+
+// EffectiveSecretsProfile is the presentation-safe effective secrets-management
+// inventory shape used by callers that need to summarize the config.
+type EffectiveSecretsProfile struct {
+	ID        string                        `json:"id"`
+	Label     string                        `json:"label,omitempty"`
+	Backend   string                        `json:"backend"`
+	IsDefault bool                          `json:"is_default,omitempty"`
+	Source    EffectiveSecretsProfileSource `json:"source"`
 }
 
 // Profile is one named review profile.
@@ -514,10 +566,53 @@ func Validate(cfg File) error {
 	if err := ValidateKeyring(cfg.Keyring); err != nil {
 		return err
 	}
+	if err := ValidateSecrets(cfg.Secrets); err != nil {
+		return err
+	}
 	if err := ValidateRetention(cfg.Data.Retention); err != nil {
 		return err
 	}
 	return nil
+}
+
+// EffectiveSecretsProfiles returns the configured secrets-management profiles or
+// a projected read-only legacy profile when config still relies on the old
+// keyring.backend model.
+func EffectiveSecretsProfiles(cfg File) []EffectiveSecretsProfile {
+	cfg = cfg.normalized()
+	if len(cfg.Secrets.Profiles) == 0 {
+		backend := strings.TrimSpace(cfg.Keyring.Backend)
+		if backend == "" {
+			backend = ProjectedLegacySecretsBackendKind
+		}
+		return []EffectiveSecretsProfile{{
+			ID:        LegacyProjectedSecretsProfileID,
+			Label:     "Legacy default",
+			Backend:   backend,
+			IsDefault: true,
+			Source:    EffectiveSecretsProfileSourceProjectedLegacy,
+		}}
+	}
+
+	ids := make([]string, 0, len(cfg.Secrets.Profiles))
+	for id := range cfg.Secrets.Profiles {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	profiles := make([]EffectiveSecretsProfile, 0, len(ids))
+	for _, id := range ids {
+		profile := cfg.Secrets.Profiles[id]
+		label := strings.TrimSpace(profile.Label)
+		profiles = append(profiles, EffectiveSecretsProfile{
+			ID:        id,
+			Label:     label,
+			Backend:   string(profile.Backend.Kind),
+			IsDefault: strings.TrimSpace(cfg.Secrets.DefaultProfile) == id,
+			Source:    EffectiveSecretsProfileSourceConfigured,
+		})
+	}
+	return profiles
 }
 
 // ResolveProfile returns the requested profile, or the default profile when
@@ -839,6 +934,38 @@ func ValidateKeyring(keyring KeyringConfig) error {
 	return nil
 }
 
+// ValidateSecrets checks non-secret named secrets-management profile config.
+func ValidateSecrets(secrets SecretsConfig) error {
+	secrets = secrets.normalized()
+	if strings.TrimSpace(secrets.DefaultProfile) != "" {
+		if _, ok := secrets.Profiles[secrets.DefaultProfile]; !ok {
+			return fmt.Errorf("%w: secrets.default_profile %q", ErrProfileNotFound, secrets.DefaultProfile)
+		}
+	}
+	for id, profile := range secrets.Profiles {
+		if strings.TrimSpace(id) == "" {
+			return invalid("secrets.profiles key is required")
+		}
+		if err := validateSecretsProfile(id, profile); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSecretsProfile(id string, profile SecretsProfile) error {
+	if err := validateOptionalSingleLine(fmt.Sprintf("secrets.profiles.%s.label", id), profile.Label); err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(profile.Backend.Kind)) == "" {
+		return invalid("secrets.profiles.%s.backend.kind is required", id)
+	}
+	if _, err := credstore.ParseBackend(string(profile.Backend.Kind)); err != nil {
+		return fmt.Errorf("%w: secrets.profiles.%s.backend.kind %q is invalid: %w", ErrInvalid, id, profile.Backend.Kind, err)
+	}
+	return nil
+}
+
 func validateCredentialRef(field, ref string) error {
 	service, _, err := credstore.ParseRef(ref)
 	if err != nil {
@@ -905,7 +1032,32 @@ func (cfg File) normalized() File {
 		cfg.RepositoryProfiles = routes
 	}
 	cfg.Data.Retention = cfg.Data.Retention.normalized()
+	cfg.Secrets = cfg.Secrets.normalized()
 	return cfg
+}
+
+func (s SecretsConfig) normalized() SecretsConfig {
+	s.DefaultProfile = strings.TrimSpace(s.DefaultProfile)
+	if s.Profiles == nil {
+		s.Profiles = map[string]SecretsProfile{}
+	}
+	profiles := make(map[string]SecretsProfile, len(s.Profiles))
+	for id, profile := range s.Profiles {
+		profiles[strings.TrimSpace(id)] = profile.normalized()
+	}
+	s.Profiles = profiles
+	return s
+}
+
+func (p SecretsProfile) normalized() SecretsProfile {
+	p.Label = strings.TrimSpace(p.Label)
+	p.Backend = p.Backend.normalized()
+	return p
+}
+
+func (b SecretsProfileBackend) normalized() SecretsProfileBackend {
+	b.Kind = SecretsBackendKind(strings.TrimSpace(string(b.Kind)))
+	return b
 }
 
 func (p Profile) normalized() Profile {

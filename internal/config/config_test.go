@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedirtest"
 )
 
@@ -864,6 +865,163 @@ func TestValidateRejectsMissingDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestValidateSecretsProfiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*File)
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name: "valid configured secrets profile",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					DefaultProfile: "personal",
+					Profiles: map[string]SecretsProfile{
+						"personal": {
+							Label: "Personal Keychain",
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendKeychain),
+							},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "missing configured default secrets profile",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{DefaultProfile: "missing"}
+			},
+			wantErr: ErrProfileNotFound,
+			wantMsg: `secrets.default_profile "missing"`,
+		},
+		{
+			name: "invalid secrets backend kind",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Backend: SecretsProfileBackend{Kind: "bogus"},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `secrets.profiles.broken.backend.kind "bogus" is invalid`,
+		},
+		{
+			name: "multiline label invalid",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Label:   "line one\nline two",
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "secrets.profiles.broken.label must be a single line",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			tt.mutate(&cfg)
+			err := Validate(cfg)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("Validate: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Fatalf("Validate error = %v, want message containing %q", err, tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestEffectiveSecretsProfiles(t *testing.T) {
+	t.Run("configured secrets profiles win inventory", func(t *testing.T) {
+		cfg := validFile()
+		cfg.Keyring.Backend = string(credstore.BackendMemory)
+		cfg.Secrets = SecretsConfig{
+			DefaultProfile: "work-vault",
+			Profiles: map[string]SecretsProfile{
+				"personal": {
+					Label:   "Personal Keychain",
+					Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendKeychain)},
+				},
+				"work-vault": {
+					Label:   "Work File Store",
+					Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		}
+
+		got := EffectiveSecretsProfiles(cfg)
+		want := []EffectiveSecretsProfile{
+			{
+				ID:      "personal",
+				Label:   "Personal Keychain",
+				Backend: string(credstore.BackendKeychain),
+				Source:  EffectiveSecretsProfileSourceConfigured,
+			},
+			{
+				ID:        "work-vault",
+				Label:     "Work File Store",
+				Backend:   string(credstore.BackendFile),
+				IsDefault: true,
+				Source:    EffectiveSecretsProfileSourceConfigured,
+			},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("EffectiveSecretsProfiles = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("legacy keyring backend projects deterministic default", func(t *testing.T) {
+		cfg := validFile()
+		cfg.Keyring.Backend = string(credstore.BackendMemory)
+
+		got := EffectiveSecretsProfiles(cfg)
+		want := []EffectiveSecretsProfile{{
+			ID:        LegacyProjectedSecretsProfileID,
+			Label:     "Legacy default",
+			Backend:   string(credstore.BackendMemory),
+			IsDefault: true,
+			Source:    EffectiveSecretsProfileSourceProjectedLegacy,
+		}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("EffectiveSecretsProfiles = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("omitted legacy backend still projects auto default", func(t *testing.T) {
+		cfg := validFile()
+		cfg.Keyring.Backend = ""
+
+		got := EffectiveSecretsProfiles(cfg)
+		want := []EffectiveSecretsProfile{{
+			ID:        LegacyProjectedSecretsProfileID,
+			Label:     "Legacy default",
+			Backend:   ProjectedLegacySecretsBackendKind,
+			IsDefault: true,
+			Source:    EffectiveSecretsProfileSourceProjectedLegacy,
+		}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("EffectiveSecretsProfiles = %#v, want %#v", got, want)
+		}
+	})
+}
+
 func TestKeyringBackendRoundTripAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := validFile()
@@ -882,6 +1040,30 @@ func TestKeyringBackendRoundTripAndValidation(t *testing.T) {
 	cfg.Keyring.Backend = "bogus"
 	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("Validate invalid backend error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestSaveLegacyConfigDoesNotPersistProjectedSecretsProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := validFile()
+	cfg.Keyring.Backend = string(credstore.BackendMemory)
+
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Secrets.Profiles) != 0 {
+		t.Fatalf("secrets.profiles = %#v, want omitted explicit profiles for legacy config", got.Secrets.Profiles)
+	}
+	if got.Secrets.DefaultProfile != "" {
+		t.Fatalf("secrets.default_profile = %q, want empty for legacy config", got.Secrets.DefaultProfile)
+	}
+	effective := EffectiveSecretsProfiles(got)
+	if len(effective) != 1 || effective[0].ID != LegacyProjectedSecretsProfileID || effective[0].Source != EffectiveSecretsProfileSourceProjectedLegacy {
+		t.Fatalf("EffectiveSecretsProfiles = %#v, want projected legacy default", effective)
 	}
 }
 
