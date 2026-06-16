@@ -14,6 +14,11 @@ var (
 	ErrRetryable  = errors.New("gitprovider: retryable upstream error")
 	ErrConflict   = errors.New("gitprovider: already exists")
 	ErrStaleSHA   = errors.New("gitprovider: pinned SHA is no longer current")
+	// ErrDiffTooLarge indicates the host declined to return a diff because it
+	// exceeds the host API's size limit. GitHub, for example, responds with
+	// HTTP 406 for pull request diffs beyond its line cap instead of returning
+	// a truncated diff.
+	ErrDiffTooLarge = errors.New("gitprovider: diff too large for host API")
 )
 
 // ProviderError annotates a typed provider failure with the operation that

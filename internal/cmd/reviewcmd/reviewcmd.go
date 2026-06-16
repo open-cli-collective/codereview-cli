@@ -661,7 +661,8 @@ func mapRunError(err error) error {
 		errors.Is(err, gitprovider.ErrRetryable),
 		errors.Is(err, gitprovider.ErrNotFound),
 		errors.Is(err, gitprovider.ErrConflict),
-		errors.Is(err, gitprovider.ErrStaleSHA):
+		errors.Is(err, gitprovider.ErrStaleSHA),
+		errors.Is(err, gitprovider.ErrDiffTooLarge):
 		return cmderr.Provider(err)
 	case errors.Is(err, credentials.ErrInvalidBackendSelection),
 		errors.Is(err, credentials.ErrWrongService),

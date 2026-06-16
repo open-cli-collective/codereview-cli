@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -55,6 +56,13 @@ type issueCommentResponse struct {
 	HTMLURL   string       `json:"html_url"`
 	CreatedAt time.Time    `json:"created_at"`
 	UpdatedAt time.Time    `json:"updated_at"`
+}
+
+type pullFileResponse struct {
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previous_filename"`
+	Status           string `json:"status"`
+	Patch            string `json:"patch"`
 }
 
 // WhoAmI returns the identity for the supplied credential.
@@ -111,9 +119,88 @@ func (c *Client) GetDiff(ctx context.Context, ref gitprovider.PRRef) (gitprovide
 	endpoint := restURL(c.baseURL, "repos", ref.Owner, ref.Repo, "pulls", fmt.Sprint(ref.Number))
 	body, _, err := c.doREST(ctx, gitprovider.OperationGetDiff, http.MethodGet, endpoint, acceptDiff, nil)
 	if err != nil {
+		// GitHub returns 406 from the diff endpoint once a diff exceeds its
+		// size limit. The paginated files endpoint still serves per-file
+		// patches, so reconstruct a unified diff from those instead of failing.
+		if errors.Is(err, gitprovider.ErrDiffTooLarge) {
+			return c.reconstructPullDiff(ctx, ref)
+		}
 		return gitprovider.UnifiedDiff{}, err
 	}
 	return gitprovider.UnifiedDiff{Raw: string(body)}, nil
+}
+
+// reconstructPullDiff rebuilds a unified diff from the paginated pull request
+// files endpoint when the diff endpoint reports the diff is too large.
+//
+// This is a best-effort representation of the change:
+//   - Files whose patch GitHub omits (binary blobs or individually oversized
+//     files) are emitted as a header-only entry rather than hunks.
+//   - GitHub caps this listing at 3000 files; pull requests larger than that are
+//     still truncated.
+//
+// The result is standard git-format unified diff text so the existing diff
+// parser and reviewers consume it unchanged.
+func (c *Client) reconstructPullDiff(ctx context.Context, ref gitprovider.PRRef) (gitprovider.UnifiedDiff, error) {
+	endpoint := restURL(c.baseURL, "repos", ref.Owner, ref.Repo, "pulls", fmt.Sprint(ref.Number), "files") + "?per_page=100"
+	files, err := doRESTPages[pullFileResponse](ctx, c, gitprovider.OperationGetDiff, endpoint, acceptJSON)
+	if err != nil {
+		return gitprovider.UnifiedDiff{}, err
+	}
+	raw := reconstructUnifiedDiff(files)
+	if raw == "" {
+		return gitprovider.UnifiedDiff{}, gitprovider.WrapError(gitprovider.ErrDiffTooLarge, gitprovider.OperationGetDiff,
+			errors.New("github: diff exceeds the host size limit and the files endpoint returned no patches"))
+	}
+	return gitprovider.UnifiedDiff{Raw: raw}, nil
+}
+
+// reconstructUnifiedDiff synthesizes standard git-format unified diff text from
+// the pull request files listing. GitHub's per-file patch omits the
+// "diff --git"/"---"/"+++" header lines, so they are rebuilt here from the file
+// status and (for renames) the previous filename.
+func reconstructUnifiedDiff(files []pullFileResponse) string {
+	var b strings.Builder
+	for _, f := range files {
+		newPath := f.Filename
+		if newPath == "" {
+			continue
+		}
+		oldPath := f.PreviousFilename
+		if oldPath == "" {
+			oldPath = newPath
+		}
+		fmt.Fprintf(&b, "diff --git a/%s b/%s\n", oldPath, newPath)
+		if f.Status == "renamed" {
+			fmt.Fprintf(&b, "rename from %s\n", oldPath)
+			fmt.Fprintf(&b, "rename to %s\n", newPath)
+		}
+		if f.Patch == "" {
+			// A pure rename has no patch and is already fully described above.
+			// Anything else without a patch is a binary or oversized file; mark
+			// it so the change stays visible even though there are no hunks.
+			if f.Status != "renamed" {
+				fmt.Fprintf(&b, "Binary files a/%s and b/%s differ\n", oldPath, newPath)
+			}
+			continue
+		}
+		switch f.Status {
+		case "added":
+			b.WriteString("--- /dev/null\n")
+			fmt.Fprintf(&b, "+++ b/%s\n", newPath)
+		case "removed":
+			fmt.Fprintf(&b, "--- a/%s\n", oldPath)
+			b.WriteString("+++ /dev/null\n")
+		default:
+			fmt.Fprintf(&b, "--- a/%s\n", oldPath)
+			fmt.Fprintf(&b, "+++ b/%s\n", newPath)
+		}
+		b.WriteString(f.Patch)
+		if !strings.HasSuffix(f.Patch, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // GetDiffBetweenRefs returns the raw unified diff between two git refs in the
