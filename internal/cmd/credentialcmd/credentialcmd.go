@@ -3496,13 +3496,6 @@ func initEffectiveModelMapInputValue(effective map[config.ModelTier]config.Model
 }
 
 func initEffectiveModelMapLLM(llm config.LLMConfig, modelMap config.ModelMap) config.LLMConfig {
-	if len(llm.ModelMap) > 0 {
-		cloned := make(config.ModelMap, len(llm.ModelMap))
-		for tier, model := range llm.ModelMap {
-			cloned[tier] = model
-		}
-		llm.ModelMap = cloned
-	}
 	llm.ModelMap = copyModelMap(modelMap)
 	return llm
 }
