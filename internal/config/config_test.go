@@ -925,7 +925,35 @@ func TestValidateSecretsProfiles(t *testing.T) {
 			wantErr: ErrInvalid,
 			wantMsg: "secrets.profiles.broken.label must be a single line",
 		},
-	}
+		{
+			name: "reserved projected legacy id is rejected",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						LegacyProjectedSecretsProfileID: {
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `secrets.profiles.legacy-default is reserved`,
+		},
+		{
+			name: "surrounding whitespace in id is rejected",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						" work ": {
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `secrets.profiles. work  id must not contain surrounding whitespace`,
+		},
+		}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

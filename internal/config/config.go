@@ -938,13 +938,23 @@ func ValidateKeyring(keyring KeyringConfig) error {
 func ValidateSecrets(secrets SecretsConfig) error {
 	secrets = secrets.normalized()
 	if strings.TrimSpace(secrets.DefaultProfile) != "" {
+		if secrets.DefaultProfile == LegacyProjectedSecretsProfileID {
+			return invalid("secrets.default_profile %q is reserved", LegacyProjectedSecretsProfileID)
+		}
 		if _, ok := secrets.Profiles[secrets.DefaultProfile]; !ok {
 			return fmt.Errorf("%w: secrets.default_profile %q", ErrProfileNotFound, secrets.DefaultProfile)
 		}
 	}
 	for id, profile := range secrets.Profiles {
-		if strings.TrimSpace(id) == "" {
+		trimmedID := strings.TrimSpace(id)
+		if trimmedID == "" {
 			return invalid("secrets.profiles key is required")
+		}
+		if trimmedID != id {
+			return invalid("secrets.profiles.%s id must not contain surrounding whitespace", id)
+		}
+		if id == LegacyProjectedSecretsProfileID {
+			return invalid("secrets.profiles.%s is reserved", LegacyProjectedSecretsProfileID)
 		}
 		if err := validateSecretsProfile(id, profile); err != nil {
 			return err
@@ -1043,7 +1053,7 @@ func (s SecretsConfig) normalized() SecretsConfig {
 	}
 	profiles := make(map[string]SecretsProfile, len(s.Profiles))
 	for id, profile := range s.Profiles {
-		profiles[strings.TrimSpace(id)] = profile.normalized()
+		profiles[id] = profile.normalized()
 	}
 	s.Profiles = profiles
 	return s
