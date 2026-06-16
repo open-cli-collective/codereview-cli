@@ -3154,59 +3154,32 @@ func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initMo
 }
 
 func (p huhInitAgentSourcesPrompter) EditAgentSources(prompt initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
-	action := initDetailActionEdit
-	values := make([]string, len(prompt.Sources))
-	fields := make([]huh.Field, 0, len(values)+1)
-	for i := range prompt.Sources {
-		values[i] = prompt.Sources[i]
-		fields = append(fields,
-			huh.NewInput().
-				Title(fmt.Sprintf("Agent source %d", i+1)).
-				Description("Leave blank to remove this path. Paths are normalized before save.").
-				Value(&values[i]),
-		)
-	}
-	var additions string
-	fields = append(fields,
-		huh.NewInput().
-			Title("Add agent sources").
-			Description("Optional. Enter comma-separated paths to append.").
-			Value(&additions),
-	)
+	agentSourceText := strings.Join(prompt.Sources, "\n")
 	form := huh.NewForm(
 		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Agent source action").
-				Options(
-					huh.NewOption("Stage agent source settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
+			huh.NewNote().
+				Title("Additional trusted reviewer-agent directories").
+				Description("Optional. Add stable local directories that contain custom reviewer agent definitions for this profile. Most users should leave this empty."),
+			huh.NewNote().
+				Title("How agent sources are resolved").
+				Description("These profile-specific directories are loaded alongside repo-local agents under .codereview/agents and any per-run --agents-dir sources."),
+			huh.NewNote().
+				Title("Trust requirement").
+				Description("Only configure directories you trust and expect to stay stable. PR review execution rejects mutable or ambiguous profile agent sources."),
+			huh.NewText().
+				Title("Additional trusted reviewer-agent directories").
+				Description("One directory per line. Leave blank to use no additional profile-specific agent directories. Existing paths are normalized before save.").
+				Value(&agentSourceText),
 		).Title("Agent Sources"),
-		huh.NewGroup(fields...).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("Agent Sources"),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
 		return initAgentSourcesEdit{}, err
 	}
-	if back || action == initDetailActionBack {
+	if back {
 		return initAgentSourcesEdit{}, errInitNavigateBack
 	}
-	edited := make([]string, 0, len(values))
-	for _, value := range values {
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		edited = append(edited, value)
-	}
-	for _, value := range strings.Split(additions, ",") {
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		edited = append(edited, value)
-	}
+	edited := strings.FieldsFunc(agentSourceText, func(r rune) bool { return r == '\n' || r == '\r' })
 	if len(edited) == 0 {
 		edited = nil
 	}
