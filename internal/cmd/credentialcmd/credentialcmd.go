@@ -2259,16 +2259,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					Value(&draft.LLMReviewerModelTier),
 			)
 			form := huh.NewForm(
-				huh.NewGroup(
-					huh.NewInput().
-						Title("Profile name").
-						Value(&draft.ProfileName).
-						Validate(validateProfileName),
-					huh.NewSelect[bool]().
-						Title("Make this the default profile").
-						Options(defaultProfileSelectionOptions(ctx.DefaultProfileName)...).
-						Value(&draft.MakeDefault),
-				).Title("Profile"),
+				huh.NewGroup(initProfileIdentityFields(&draft, selectedProfileName, ctx.DefaultProfileName)...).Title("Profile"),
 				huh.NewGroup(
 					huh.NewSelect[string]().
 						Title("Git scope").
@@ -2293,9 +2284,12 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				huh.NewGroup(initRouteEditorFields(&routeText, false)...).Title("Automatic profile selection"),
 				huh.NewGroup(reviewerProfileFields...).Title("Review Profile"),
 				huh.NewGroup(
+					huh.NewNote().
+						Title("Advanced Git secrets storage").
+						Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure."),
 					huh.NewInput().
-						Title("Git storage label").
-						Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default.").
+						Title("Git secrets storage label").
+						Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure.").
 						Value(&gitStorageLabel).
 						Validate(validateOptionalCredentialRef),
 				).Title("Storage Labels"),
@@ -2722,15 +2716,41 @@ func applySecretsProfileSelection(draft *initDraft, selection string) {
 	}
 }
 
+func initProfileIdentityFields(draft *initDraft, existingProfileName string, defaultProfileName string) []huh.Field {
+	fields := []huh.Field{
+		huh.NewInput().
+			Title("Profile name").
+			Value(&draft.ProfileName).
+			Validate(validateProfileName),
+	}
+	if initProfileIsCurrentDefault(existingProfileName, defaultProfileName) {
+		fields = append(fields, huh.NewNote().
+			Title("Default profile").
+			Description("This profile is already the default profile."))
+		return fields
+	}
+	fields = append(fields, huh.NewSelect[bool]().
+		Title("Default profile").
+		Options(defaultProfileSelectionOptions(defaultProfileName)...).
+		Value(&draft.MakeDefault))
+	return fields
+}
+
+func initProfileIsCurrentDefault(profileName string, defaultProfileName string) bool {
+	profileName = strings.TrimSpace(profileName)
+	defaultProfileName = strings.TrimSpace(defaultProfileName)
+	return profileName != "" && profileName == defaultProfileName
+}
+
 func defaultProfileSelectionOptions(defaultProfileName string) []huh.Option[bool] {
 	options := []huh.Option[bool]{
-		huh.NewOption("Yes, make this the default profile", true),
+		huh.NewOption("Yes, make this profile the default", true),
 	}
 	if strings.TrimSpace(defaultProfileName) == "" {
 		options = append(options, huh.NewOption("No, use the standard first-profile default behavior", false))
 		return options
 	}
-	options = append(options, huh.NewOption("No, keep the current default profile", false))
+	options = append(options, huh.NewOption(fmt.Sprintf("No, keep %s as the default profile", strings.TrimSpace(defaultProfileName)), false))
 	return options
 }
 

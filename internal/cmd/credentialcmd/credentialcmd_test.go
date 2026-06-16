@@ -2359,8 +2359,8 @@ func TestInitReviewerEntitySelectionOptionsOmitCreateActions(t *testing.T) {
 func TestDefaultProfileSelectionOptionsExistingDefault(t *testing.T) {
 	got := defaultProfileSelectionOptions("work")
 	want := []huh.Option[bool]{
-		huh.NewOption("Yes, make this the default profile", true),
-		huh.NewOption("No, keep the current default profile", false),
+		huh.NewOption("Yes, make this profile the default", true),
+		huh.NewOption("No, keep work as the default profile", false),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("options = %#v, want %#v", got, want)
@@ -2370,7 +2370,7 @@ func TestDefaultProfileSelectionOptionsExistingDefault(t *testing.T) {
 func TestDefaultProfileSelectionOptionsNoCurrentDefault(t *testing.T) {
 	got := defaultProfileSelectionOptions("")
 	want := []huh.Option[bool]{
-		huh.NewOption("Yes, make this the default profile", true),
+		huh.NewOption("Yes, make this profile the default", true),
 		huh.NewOption("No, use the standard first-profile default behavior", false),
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -3964,8 +3964,11 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if strings.Contains(strings.ToLower(out), "paste a secret") {
 		t.Fatalf("wizard output unexpectedly requested secret ingress: %q", out)
 	}
-	if !strings.Contains(out, "Yes, make this the default profile") || !strings.Contains(out, "No, keep the current default profile") {
-		t.Fatalf("wizard output missing default-profile select copy: %q", out)
+	if !strings.Contains(out, "Default profile") || !strings.Contains(out, "This profile is already the default profile.") {
+		t.Fatalf("wizard output missing already-default profile copy: %q", out)
+	}
+	if strings.Contains(out, "Make this the default profile") || strings.Contains(out, "No, keep the current default profile") {
+		t.Fatalf("wizard output contains stale default-profile select copy: %q", out)
 	}
 }
 
@@ -4542,7 +4545,7 @@ func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDef
 	if !draft.MakeDefault {
 		t.Fatalf("draft.MakeDefault = false, want no-default interactive flow to preserve seeded true selection")
 	}
-	if !strings.Contains(stderr.String(), "Yes, make this the default profile") {
+	if !strings.Contains(stderr.String(), "Yes, make this profile the default") {
 		t.Fatalf("stderr = %q, want default-profile select copy in no-default flow", stderr.String())
 	}
 }
@@ -6644,8 +6647,11 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 	if strings.Contains(out, "Storage label handling") || strings.Contains(out, "Customize storage labels (advanced)") {
 		t.Fatalf("wizard output still shows legacy storage label mode prompt: %q", out)
 	}
-	if !strings.Contains(out, "Git storage label") || !strings.Contains(out, "Reviewer storage label") || !strings.Contains(out, "LLM storage label") {
+	if !strings.Contains(out, "Git secrets storage label") || !strings.Contains(out, "Reviewer storage label") || !strings.Contains(out, "LLM storage label") {
 		t.Fatalf("wizard output missing flattened storage label prompts: %q", out)
+	}
+	if !strings.Contains(out, "Useful for advanced deployment scenarios. Leave unchanged if you're unsure.") {
+		t.Fatalf("wizard output missing advanced Git storage-label guidance: %q", out)
 	}
 	if draft.AdvancedStorageLabels {
 		t.Fatalf("draft.AdvancedStorageLabels = true, want false when the flattened fields keep their selected defaults")
@@ -6708,8 +6714,8 @@ func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
 	if strings.Contains(out, "Storage label handling") {
 		t.Fatalf("wizard output still shows legacy storage label mode prompt: %q", out)
 	}
-	if !strings.Contains(out, "Git storage label") {
-		t.Fatalf("wizard output missing inline git storage label: %q", out)
+	if !strings.Contains(out, "Git secrets storage label") {
+		t.Fatalf("wizard output missing inline git secrets storage label: %q", out)
 	}
 	if draft.AdvancedStorageLabels {
 		t.Fatalf("draft.AdvancedStorageLabels = true, want false on the default storage-label path")
