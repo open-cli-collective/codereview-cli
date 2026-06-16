@@ -148,7 +148,27 @@ func decodeStructured[T any](decode Decoder[T], data []byte) (T, error) {
 	return extractedValue, nil
 }
 
+// runOnceWithSession runs a single attempt and retries transient provider
+// failures with bounded jittered exponential backoff. A non-transient error, a
+// canceled context, or exhausting the retry budget returns the last error
+// (still wrapping ErrTransient when applicable, so a give-up remains
+// classifiable). Decode-validation retries are handled one layer up.
 func runOnceWithSession(ctx context.Context, adapter Adapter, resumeSessionID string, req Request) (string, Response, error) {
+	for attempt := 0; ; attempt++ {
+		sid, resp, err := runOnceAttempt(ctx, adapter, resumeSessionID, req)
+		if err == nil {
+			return sid, resp, nil
+		}
+		if attempt >= activeRetryPolicy.MaxRetries || !errors.Is(err, ErrTransient) || ctx.Err() != nil {
+			return sid, resp, err
+		}
+		if waitErr := sleepBackoff(ctx, activeRetryPolicy, attempt); waitErr != nil {
+			return sid, resp, err
+		}
+	}
+}
+
+func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string, req Request) (string, Response, error) {
 	var (
 		stream Stream
 		err    error

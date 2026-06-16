@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -315,6 +316,54 @@ func TestFakeAdapterQuotaAndResume(t *testing.T) {
 	resumes := adapter.Resumes()
 	if len(resumes) != 1 || resumes[0].SessionID != "old" || resumes[0].Request.Prompt != "resume" {
 		t.Fatalf("Resumes = %#v, want captured session and request", resumes)
+	}
+}
+
+func TestRunStructuredRetriesTransientError(t *testing.T) {
+	restore := activeRetryPolicy
+	activeRetryPolicy.Base = 0
+	t.Cleanup(func() { activeRetryPolicy = restore })
+
+	adapter := &FakeAdapter{}
+	adapter.Queue(FakeResult{WaitErr: fmt.Errorf("%w: provider overloaded", ErrTransient)})
+	adapter.Queue(FakeResult{SessionID: "s1", Response: Response{StructuredOutput: []byte(`"ok"`)}})
+
+	got, _, err := RunStructured(context.Background(), adapter, Request{Model: "model", Prompt: "prompt"}, func(data []byte) (string, error) {
+		if string(data) != `"ok"` {
+			return "", errors.New("bad json")
+		}
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("RunStructured after transient retry: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("RunStructured = %q, want ok", got)
+	}
+	if calls := len(adapter.Requests()); calls != 2 {
+		t.Fatalf("Start calls = %d, want 2 (one failure then a retry)", calls)
+	}
+}
+
+func TestRunStructuredDoesNotRetryNonTransientError(t *testing.T) {
+	restore := activeRetryPolicy
+	activeRetryPolicy.Base = 0
+	t.Cleanup(func() { activeRetryPolicy = restore })
+
+	adapter := &FakeAdapter{}
+	adapter.Queue(FakeResult{WaitErr: errors.New("invalid prompt")})
+
+	_, _, err := RunStructured(context.Background(), adapter, Request{Model: "model", Prompt: "prompt"}, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	if err == nil {
+		t.Fatal("RunStructured: expected non-transient error, got nil")
+	}
+	if errors.Is(err, ErrTransient) {
+		t.Fatalf("RunStructured error = %v, want non-transient", err)
+	}
+	if calls := len(adapter.Requests()); calls != 1 {
+		t.Fatalf("Start calls = %d, want 1 (no retry for non-transient error)", calls)
 	}
 }
 
