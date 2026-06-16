@@ -3972,7 +3972,7 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	}
 }
 
-func TestHuhInitPrompterAccessibleShowsSecretsManagementWhenConfiguredProfilesExist(t *testing.T) {
+func TestHuhInitPrompterAccessibleOmitsSecretsManagementFromProfileEditor(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	work := basicProfile("work")
 	cfg := config.File{
@@ -4022,7 +4022,7 @@ func TestHuhInitPrompterAccessibleShowsSecretsManagementWhenConfiguredProfilesEx
 		},
 	}
 
-	_, err := prompter.Run(initPromptContext{
+	draft, err := prompter.Run(initPromptContext{
 		RequestedProfileName:         "work",
 		ExistingProfileName:          "work",
 		ExistingProfile:              &work,
@@ -4043,8 +4043,11 @@ func TestHuhInitPrompterAccessibleShowsSecretsManagementWhenConfiguredProfilesEx
 		t.Fatalf("Run: %v", err)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Secrets management") || !strings.Contains(out, "Team Vault") {
-		t.Fatalf("stderr = %q, want configured secrets-management selector", out)
+	if strings.Contains(out, "Secrets management") || strings.Contains(out, "Team Vault") {
+		t.Fatalf("stderr = %q, want profile editor to omit secrets-management selector", out)
+	}
+	if draft.SecretsProfile != "" {
+		t.Fatalf("draft.SecretsProfile = %q, want unchanged default secrets profile", draft.SecretsProfile)
 	}
 }
 
@@ -6647,8 +6650,11 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 	if strings.Contains(out, "Storage label handling") || strings.Contains(out, "Customize storage labels (advanced)") {
 		t.Fatalf("wizard output still shows legacy storage label mode prompt: %q", out)
 	}
-	if !strings.Contains(out, "Git secrets storage label") || !strings.Contains(out, "Reviewer storage label") || !strings.Contains(out, "LLM storage label") {
-		t.Fatalf("wizard output missing flattened storage label prompts: %q", out)
+	if !strings.Contains(out, "Git secrets storage label") {
+		t.Fatalf("wizard output missing inline Git storage label prompt: %q", out)
+	}
+	if strings.Contains(out, "Reviewer storage label") || strings.Contains(out, "LLM storage label") {
+		t.Fatalf("wizard output exposed reviewer/LLM storage labels in profile editor: %q", out)
 	}
 	if !strings.Contains(out, "Useful for advanced deployment scenarios. Leave unchanged if you're unsure.") {
 		t.Fatalf("wizard output missing advanced Git storage-label guidance: %q", out)
@@ -6722,7 +6728,7 @@ func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
 	}
 }
 
-func TestHuhInitPrompterAccessibleStorageLabelsRespondToProfileSelections(t *testing.T) {
+func TestHuhInitPrompterAccessibleStorageLabelsOnlyExposeGitLabel(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	work := basicProfile("work")
 	cfg := config.File{
@@ -6799,8 +6805,11 @@ func TestHuhInitPrompterAccessibleStorageLabelsRespondToProfileSelections(t *tes
 		t.Fatalf("Run: %v", err)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Reviewer storage label") || !strings.Contains(out, "LLM storage label") {
-		t.Fatalf("stderr = %q, want inline storage labels to respond to reviewer/runtime changes in the same form", out)
+	if !strings.Contains(out, "Git secrets storage label") {
+		t.Fatalf("stderr = %q, want inline Git storage label", out)
+	}
+	if strings.Contains(out, "Reviewer storage label") || strings.Contains(out, "LLM storage label") {
+		t.Fatalf("stderr = %q, want profile editor to omit reviewer/LLM storage labels", out)
 	}
 	_ = draft
 }
@@ -7942,6 +7951,81 @@ func TestInitInteractiveModelMapPreserveUsesEditedLLMContext(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.Profiles["work"].LLM.ModelMap, config.ModelMap{"medium": "claude-custom"}) {
 		t.Fatalf("saved model_map = %#v, want preserved override", cfg.Profiles["work"].LLM.ModelMap)
+	}
+}
+
+func TestEditInteractiveInitProfileSkipsInlineProfileDetailCollectors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	}
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	work := cfg.Profiles["work"]
+	draft := seedInteractiveInitDraft("work", "work", "work", &work)
+	draft.RoutesSet = true
+	draft.ModelMapSet = true
+	draft.ModelMap = config.ModelMap{"large": "claude-custom"}
+	draft.AgentSourcesSet = true
+	draft.AgentSources = []string{"/tmp/agents", "/tmp/agents"}
+	draft.ReviewPolicySet = true
+	draft.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+		ResolveAfter:     "24h",
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return draft, nil
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
+			t.Fatal("routes prompter should not run when RoutesSet is true")
+			return initRoutesEdit{}, nil
+		}),
+		modelMapPrompter: initModelMapPrompterFunc(func(initModelMapPrompt) (initModelMapEdit, error) {
+			t.Fatal("model-map prompter should not run when ModelMapSet is true")
+			return initModelMapEdit{}, nil
+		}),
+		agentSourcesPrompter: initAgentSourcesPrompterFunc(func(initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
+			t.Fatal("agent-sources prompter should not run when AgentSourcesSet is true")
+			return initAgentSourcesEdit{}, nil
+		}),
+		reviewPolicyPrompter: initReviewPolicyPrompterFunc(func(initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
+			t.Fatal("review-policy prompter should not run when ReviewPolicySet is true")
+			return initReviewPolicyEdit{}, nil
+		}),
+	}
+	session := initSessionDraft{
+		path:                 path,
+		originalCfg:          cloneInitConfigFile(cfg),
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: "work",
+	}
+
+	next, stay, err := editInteractiveInitProfileStep(&cobra.Command{}, opts, initOptions{}, deps, session)
+	if err != nil {
+		t.Fatalf("editInteractiveInitProfileStep: %v", err)
+	}
+	if !stay {
+		t.Fatal("stay = false, want profile category to remain active after staging profile")
+	}
+	profile := next.cfg.Profiles["work"]
+	if !reflect.DeepEqual(profile.LLM.ModelMap, config.ModelMap{"large": "claude-custom"}) {
+		t.Fatalf("model_map = %#v, want inline model-map edit", profile.LLM.ModelMap)
+	}
+	if !reflect.DeepEqual(profile.AgentSources, []string{"/tmp/agents"}) {
+		t.Fatalf("agent_sources = %#v, want normalized inline agent-source edit", profile.AgentSources)
+	}
+	if profile.ReviewPolicy != draft.ReviewPolicy {
+		t.Fatalf("review_policy = %#v, want %#v", profile.ReviewPolicy, draft.ReviewPolicy)
 	}
 }
 
