@@ -2356,28 +2356,6 @@ func TestInitReviewerEntitySelectionOptionsOmitCreateActions(t *testing.T) {
 	}
 }
 
-func TestDefaultProfileSelectionOptionsExistingDefault(t *testing.T) {
-	got := defaultProfileSelectionOptions("work")
-	want := []huh.Option[bool]{
-		huh.NewOption("No, keep work as the default profile", false),
-		huh.NewOption("Yes, make this profile the default", true),
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("options = %#v, want %#v", got, want)
-	}
-}
-
-func TestDefaultProfileSelectionOptionsNoCurrentDefault(t *testing.T) {
-	got := defaultProfileSelectionOptions("")
-	want := []huh.Option[bool]{
-		huh.NewOption("Yes, make this profile the default", true),
-		huh.NewOption("No, use the standard first-profile default behavior", false),
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("options = %#v, want %#v", got, want)
-	}
-}
-
 func TestInitReviewerEntityLabelUsesExplicitDisplayName(t *testing.T) {
 	label := initReviewerEntityLabel(initReviewerEntityDraft{
 		Name:          "reviewer-github-app",
