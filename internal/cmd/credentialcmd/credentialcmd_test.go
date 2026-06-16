@@ -8302,6 +8302,30 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	}
 }
 
+func TestHuhInitMenuPrompterAccessibleSelectsSecretsManagement(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitMenuPrompter{
+		stdin:  strings.NewReader("5\n"),
+		stderr: &stderr,
+	}
+	action, err := prompter.ChooseAction(initMenuPrompt{
+		HasWorkspace:        true,
+		LLMRuntimeCount:     2,
+		ReviewerEntityCount: 3,
+		ReviewProfileCount:  1,
+		CanConfigureLLM:     true,
+		CanConfigureReviewer: true,
+		CanSave:             true,
+	})
+	if err != nil {
+		t.Fatalf("ChooseAction: %v", err)
+	}
+	if action != initMenuActionSecretsManagement {
+		t.Fatalf("action = %q, want secrets management", action)
+	}
+}
+
 func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
