@@ -9525,8 +9525,8 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"Git secrets storage label",
 		"> codereview/custom-git",
 		"Profile action",
-		"Stage profile settings",
-		"> Back without staging",
+		"> Stage profile settings",
+		"Back without staging",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("content missing %q:\n%s", want, content)
@@ -10165,6 +10165,152 @@ func TestInitProfileV2GitStorageLabelFollowsChangedScopeDefaultWhenUnedited(t *t
 	}
 	if draft.AdvancedStorageLabels {
 		t.Fatal("draft.AdvancedStorageLabels = true, want false for unchanged default label")
+	}
+}
+
+func TestInitProfileV2ProfileActionStagesValidatedDraft(t *testing.T) {
+	editor := newTestInitProfileV2Editor("monit", "github.com/SignalFT")
+	initProfileV2AppendProfileActionSection(&editor.Document)
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 24)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "monit-next")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileAction)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	if cmd == nil {
+		t.Fatal("Update returned nil command, want quit command after staging")
+	}
+	if !next.result.StageProfile {
+		t.Fatalf("StageProfile = false, result = %#v", next.result)
+	}
+	if next.result.Draft.ProfileName != "monit-next" {
+		t.Fatalf("staged ProfileName = %q, want monit-next", next.result.Draft.ProfileName)
+	}
+	if !next.result.Draft.RoutesSet || len(next.result.Draft.Routes) != 1 {
+		t.Fatalf("staged routes = (%t,%#v), want one staged route", next.result.Draft.RoutesSet, next.result.Draft.Routes)
+	}
+}
+
+func TestInitProfileV2ProfileActionKeepsEditorOpenOnValidationError(t *testing.T) {
+	editor := newTestInitProfileV2Editor("monit", "github.com/SignalFT")
+	initProfileV2AppendProfileActionSection(&editor.Document)
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldRoutes)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "not-a-route")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileAction)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	if cmd != nil {
+		t.Fatal("Update returned quit command, want editor to stay open on validation error")
+	}
+	if next.result.StageProfile {
+		t.Fatal("StageProfile = true, want validation to block staging")
+	}
+	actionIndex := next.document.fieldIndexByID(initProfileV2FieldProfileAction)
+	if actionIndex < 0 || !strings.Contains(next.document[actionIndex].Error, "must be host/namespace") {
+		t.Fatalf("profile action error = %q, want route validation", next.document[actionIndex].Error)
+	}
+}
+
+func TestInitProfileV2ProfileActionBackReturnsWithoutStaging(t *testing.T) {
+	editor := newTestInitProfileV2Editor("monit", "github.com/SignalFT")
+	initProfileV2AppendProfileActionSection(&editor.Document)
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileAction)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldProfileAction, initDetailActionBack)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	if cmd == nil {
+		t.Fatal("Update returned nil command, want quit command for back without staging")
+	}
+	if next.result.StageProfile {
+		t.Fatal("StageProfile = true, want back without staging to discard edits")
+	}
+}
+
+func TestBubbleTeaInitProfileV2PrompterReturnsStagedDraft(t *testing.T) {
+	profile := basicProfile("monit")
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "monit",
+					Title: "monit",
+				},
+			}, nil
+		},
+		profileEditorRunner: func(editor initProfileV2Editor) (initProfileV2EditorResult, error) {
+			draft := editor.Draft
+			draft.ProfileName = "monit-next"
+			return initProfileV2EditorResult{StageProfile: true, Draft: draft}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "monit",
+		ExistingProfileName:  "monit",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"monit"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"monit": profile}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.ProfileName != "monit-next" {
+		t.Fatalf("draft.ProfileName = %q, want staged draft from editor", draft.ProfileName)
+	}
+}
+
+func TestBubbleTeaInitProfileV2PrompterBackWithoutStagingReturnsToChooser(t *testing.T) {
+	profile := basicProfile("monit")
+	inventoryCalls := 0
+	editorCalls := 0
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			inventoryCalls++
+			if inventoryCalls == 1 {
+				return initInventoryResult{
+					Action: initInventoryActionEdit,
+					Row: initInventoryRow{
+						ID:    "monit",
+						Title: "monit",
+					},
+				}, nil
+			}
+			return initInventoryResult{Action: initInventoryActionBack}, nil
+		},
+		profileEditorRunner: func(initProfileV2Editor) (initProfileV2EditorResult, error) {
+			editorCalls++
+			return initProfileV2EditorResult{}, nil
+		},
+	}
+
+	_, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "monit",
+		ExistingProfileName:  "monit",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"monit"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"monit": profile}},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("Run error = %v, want chooser back after unstaged editor exit", err)
+	}
+	if inventoryCalls != 2 || editorCalls != 1 {
+		t.Fatalf("calls = inventory:%d editor:%d, want chooser re-entry after one unstaged editor exit", inventoryCalls, editorCalls)
 	}
 }
 

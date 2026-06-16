@@ -16,11 +16,14 @@ import (
 )
 
 type bubbleTeaInitProfileV2Prompter struct {
-	stdin              io.Reader
-	stderr             io.Writer
-	inventoryRunner    initInventoryRunner
-	llmRuntimePrompter initLLMRuntimePrompter
+	stdin               io.Reader
+	stderr              io.Writer
+	inventoryRunner     initInventoryRunner
+	llmRuntimePrompter  initLLMRuntimePrompter
+	profileEditorRunner initProfileV2EditorRunner
 }
+
+type initProfileV2EditorRunner func(initProfileV2Editor) (initProfileV2EditorResult, error)
 
 func newBubbleTeaInitProfileV2Prompter(opts *root.Options) initPrompter {
 	return bubbleTeaInitProfileV2Prompter{stdin: opts.Stdin, stderr: opts.Stderr}
@@ -42,8 +45,12 @@ func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, e
 		case initInventoryActionBack:
 			return initDraft{}, errInitNavigateBack
 		case initInventoryActionEdit, initInventoryActionCommand:
-			if err := p.runProfileEditor(ctx, result.Row.ID); err != nil {
+			draft, staged, err := p.runProfileEditor(ctx, result.Row.ID)
+			if err != nil {
 				return initDraft{}, err
+			}
+			if staged {
+				return draft, nil
 			}
 		case initInventoryActionNone:
 			continue
@@ -63,20 +70,23 @@ func (p bubbleTeaInitProfileV2Prompter) runInventory(prompt initInventoryPrompt)
 	return runner(prompt, p.stdin, p.stderr)
 }
 
-func (p bubbleTeaInitProfileV2Prompter) runProfileEditor(ctx initPromptContext, selection string) error {
+func (p bubbleTeaInitProfileV2Prompter) runProfileEditor(ctx initPromptContext, selection string) (initDraft, bool, error) {
 	editorCtx := ctx
 	selectedProfileName, _, _ := initProfileV2Selection(ctx, selection)
 	for {
 		editor, err := initProfileV2ReadOnlyEditor(editorCtx, selection)
 		if err != nil {
-			return err
+			return initDraft{}, false, err
 		}
 		result, err := p.runReadOnlyEditor(editor)
 		if err != nil {
-			return err
+			return initDraft{}, false, err
+		}
+		if result.StageProfile {
+			return result.Draft, true, nil
 		}
 		if !result.BootstrapLLMRuntime {
-			return nil
+			return initDraft{}, false, nil
 		}
 		llmRuntimePrompter := p.llmRuntimePrompter
 		if llmRuntimePrompter == nil {
@@ -97,7 +107,7 @@ func (p bubbleTeaInitProfileV2Prompter) runProfileEditor(ctx initPromptContext, 
 			continue
 		}
 		if err != nil {
-			return err
+			return initDraft{}, false, err
 		}
 		stagedRuntime := initLLMRuntimeDraftFromSeedDraft(runtimeDraft)
 		editorCtx.LLMRuntimes = maps.Clone(editorCtx.LLMRuntimes)
@@ -116,9 +126,14 @@ func (p bubbleTeaInitProfileV2Prompter) runProfileEditor(ctx initPromptContext, 
 
 type initProfileV2EditorResult struct {
 	BootstrapLLMRuntime bool
+	StageProfile        bool
+	Draft               initDraft
 }
 
 func (p bubbleTeaInitProfileV2Prompter) runReadOnlyEditor(editor initProfileV2Editor) (initProfileV2EditorResult, error) {
+	if p.profileEditorRunner != nil {
+		return p.profileEditorRunner(editor)
+	}
 	program := tea.NewProgram(newInitProfileV2ReadOnlyModel(editor, 100, 28), tea.WithInput(p.stdin), tea.WithOutput(p.stderr))
 	finalModel, err := program.Run()
 	if err != nil {
@@ -128,7 +143,7 @@ func (p bubbleTeaInitProfileV2Prompter) runReadOnlyEditor(editor initProfileV2Ed
 	if !ok {
 		return initProfileV2EditorResult{}, fmt.Errorf("profile v2 editor returned %T", finalModel)
 	}
-	return initProfileV2EditorResult{BootstrapLLMRuntime: model.requestLLMRuntimeBootstrap}, nil
+	return model.result, nil
 }
 
 func initProfileV2InventoryRows(ctx initPromptContext) []initInventoryRow {
@@ -154,6 +169,7 @@ type initProfileV2ReadOnlyModel struct {
 	focused                    int
 	quitting                   bool
 	requestLLMRuntimeBootstrap bool
+	result                     initProfileV2EditorResult
 }
 
 func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int) initProfileV2ReadOnlyModel {
@@ -209,7 +225,11 @@ func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.handleLLMRuntimeBootstrapKey(msg) {
 			m.requestLLMRuntimeBootstrap = true
+			m.result = initProfileV2EditorResult{BootstrapLLMRuntime: true}
 			return m, tea.Quit
+		}
+		if next, handled, cmd := m.handleProfileActionKey(msg); handled {
+			return next, cmd
 		}
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
@@ -330,10 +350,7 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	initProfileV2AppendAgentSourcesSection(&document, draft.AgentSources)
 	initProfileV2AppendReviewPolicySection(&document, draft.ReviewPolicy)
 	initProfileV2AppendGitStorageSection(&document, gitStorageLabel)
-	initProfileV2AddSelect(&document, "Profile action", "", []huh.Option[string]{
-		huh.NewOption("Stage profile settings", initDetailActionEdit),
-		huh.NewOption("Back without staging", initDetailActionBack),
-	}, initDetailActionBack)
+	initProfileV2AppendProfileActionSection(&document)
 	return initProfileV2Editor{
 		Draft:                      draft,
 		GitScopes:                  maps.Clone(ctx.GitScopes),
@@ -380,6 +397,7 @@ const (
 	initProfileV2FieldResolveThreads    initProfileV2FieldID = "resolve_threads"
 	initProfileV2FieldResolveAfter      initProfileV2FieldID = "resolve_after"
 	initProfileV2FieldGitStorageLabel   initProfileV2FieldID = "git_storage_label"
+	initProfileV2FieldProfileAction     initProfileV2FieldID = "profile_action"
 )
 
 func initProfileV2FieldModelMap(tier config.ModelTier) initProfileV2FieldID {
@@ -498,6 +516,13 @@ func initProfileV2AppendGitStorageSection(document *initProfileV2Document, gitSt
 		gitStorageLabel,
 		validateOptionalCredentialRef,
 	)
+}
+
+func initProfileV2AppendProfileActionSection(document *initProfileV2Document) {
+	document.addEditableSelect(initProfileV2FieldProfileAction, "Profile action", "", []huh.Option[string]{
+		huh.NewOption("Stage profile settings", initDetailActionEdit),
+		huh.NewOption("Back without staging", initDetailActionBack),
+	}, initDetailActionEdit)
 }
 
 func (d *initProfileV2Document) addSection(title, description string) {
@@ -722,6 +747,34 @@ func (m initProfileV2ReadOnlyModel) handleLLMRuntimeBootstrapKey(msg tea.KeyMsg)
 	}
 	field := m.document[m.focused]
 	return field.ID == initProfileV2FieldLLMRuntime && m.document.selectedValue(initProfileV2FieldLLMRuntime) == initConfigureNewLLMRuntimeSelection
+}
+
+func (m initProfileV2ReadOnlyModel) handleProfileActionKey(msg tea.KeyMsg) (initProfileV2ReadOnlyModel, bool, tea.Cmd) {
+	if msg.String() != "enter" || m.focused < 0 || m.focused >= len(m.document) {
+		return m, false, nil
+	}
+	field := m.document[m.focused]
+	if field.ID != initProfileV2FieldProfileAction {
+		return m, false, nil
+	}
+	m.document[m.focused].Error = ""
+	switch m.document.selectedValue(initProfileV2FieldProfileAction) {
+	case initDetailActionBack:
+		m.result = initProfileV2EditorResult{}
+		return m, true, tea.Quit
+	case initDetailActionEdit:
+		draft, err := m.validatedDraft()
+		if err != nil {
+			m.document[m.focused].Error = err.Error()
+			m.relayout()
+			m.ensureFocusedVisible()
+			return m, true, nil
+		}
+		m.result = initProfileV2EditorResult{StageProfile: true, Draft: draft}
+		return m, true, tea.Quit
+	default:
+		return m, true, nil
+	}
 }
 
 func initProfileV2MoveSelection(field *initProfileV2Field, offset int) {
