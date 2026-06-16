@@ -1,6 +1,7 @@
 package credentialcmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -15,9 +16,10 @@ import (
 )
 
 type bubbleTeaInitProfileV2Prompter struct {
-	stdin           io.Reader
-	stderr          io.Writer
-	inventoryRunner initInventoryRunner
+	stdin              io.Reader
+	stderr             io.Writer
+	inventoryRunner    initInventoryRunner
+	llmRuntimePrompter initLLMRuntimePrompter
 }
 
 func newBubbleTeaInitProfileV2Prompter(opts *root.Options) initPrompter {
@@ -40,11 +42,7 @@ func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, e
 		case initInventoryActionBack:
 			return initDraft{}, errInitNavigateBack
 		case initInventoryActionEdit, initInventoryActionCommand:
-			editor, err := initProfileV2ReadOnlyEditor(ctx, result.Row.ID)
-			if err != nil {
-				return initDraft{}, err
-			}
-			if err := p.runReadOnlyEditor(editor); err != nil {
+			if err := p.runProfileEditor(ctx, result.Row.ID); err != nil {
 				return initDraft{}, err
 			}
 		case initInventoryActionNone:
@@ -65,10 +63,72 @@ func (p bubbleTeaInitProfileV2Prompter) runInventory(prompt initInventoryPrompt)
 	return runner(prompt, p.stdin, p.stderr)
 }
 
-func (p bubbleTeaInitProfileV2Prompter) runReadOnlyEditor(editor initProfileV2Editor) error {
+func (p bubbleTeaInitProfileV2Prompter) runProfileEditor(ctx initPromptContext, selection string) error {
+	editorCtx := ctx
+	selectedProfileName, _, _ := initProfileV2Selection(ctx, selection)
+	for {
+		editor, err := initProfileV2ReadOnlyEditor(editorCtx, selection)
+		if err != nil {
+			return err
+		}
+		result, err := p.runReadOnlyEditor(editor)
+		if err != nil {
+			return err
+		}
+		if !result.BootstrapLLMRuntime {
+			return nil
+		}
+		llmRuntimePrompter := p.llmRuntimePrompter
+		if llmRuntimePrompter == nil {
+			llmRuntimePrompter = huhInitLLMRuntimePrompter{
+				stdin:           p.stdin,
+				stderr:          p.stderr,
+				checker:         defaultInitLLMRuntimeAvailabilityNote,
+				inventoryRunner: p.inventoryRunner,
+			}
+		}
+		runtimePromptCtx := editorCtx
+		runtimePromptCtx.LLMRuntimes = maps.Clone(editorCtx.LLMRuntimes)
+		if runtimePromptCtx.LLMRuntimes == nil {
+			runtimePromptCtx.LLMRuntimes = map[string]initLLMRuntimeDraft{}
+		}
+		runtimeDraft, err := llmRuntimePrompter.EditLLMRuntime(initLLMRuntimePrompt{Context: runtimePromptCtx})
+		if errors.Is(err, errInitNavigateBack) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		stagedRuntime := initLLMRuntimeDraftFromSeedDraft(runtimeDraft)
+		editorCtx.LLMRuntimes = maps.Clone(editorCtx.LLMRuntimes)
+		if editorCtx.LLMRuntimes == nil {
+			editorCtx.LLMRuntimes = map[string]initLLMRuntimeDraft{}
+		}
+		stagedRuntime.Name = uniqueInitLLMRuntimeName(editorCtx.LLMRuntimes, stagedRuntime.suggestedName())
+		editorCtx.LLMRuntimes[stagedRuntime.Name] = stagedRuntime
+		editorCtx.ProfileLLMRuntimes = maps.Clone(editorCtx.ProfileLLMRuntimes)
+		if editorCtx.ProfileLLMRuntimes == nil {
+			editorCtx.ProfileLLMRuntimes = map[string]string{}
+		}
+		editorCtx.ProfileLLMRuntimes[selectedProfileName] = stagedRuntime.Name
+	}
+}
+
+type initProfileV2EditorResult struct {
+	BootstrapLLMRuntime bool
+}
+
+func (p bubbleTeaInitProfileV2Prompter) runReadOnlyEditor(editor initProfileV2Editor) (initProfileV2EditorResult, error) {
 	program := tea.NewProgram(newInitProfileV2ReadOnlyModel(editor, 100, 28), tea.WithInput(p.stdin), tea.WithOutput(p.stderr))
-	_, err := program.Run()
-	return err
+	finalModel, err := program.Run()
+	if err != nil {
+		return initProfileV2EditorResult{}, err
+	}
+	model, ok := finalModel.(initProfileV2ReadOnlyModel)
+	if !ok {
+		return initProfileV2EditorResult{}, fmt.Errorf("profile v2 editor returned %T", finalModel)
+	}
+	return initProfileV2EditorResult{BootstrapLLMRuntime: model.requestLLMRuntimeBootstrap}, nil
 }
 
 func initProfileV2InventoryRows(ctx initPromptContext) []initInventoryRow {
@@ -81,14 +141,17 @@ func initProfileV2InventoryRows(ctx initPromptContext) []initInventoryRow {
 }
 
 type initProfileV2ReadOnlyModel struct {
-	viewport         viewport.Model
-	draft            initDraft
-	gitScopes        map[string]initGitScopeDraft
-	selectedGitScope string
-	document         initProfileV2Document
-	layout           initProfileV2Layout
-	focused          int
-	quitting         bool
+	viewport                   viewport.Model
+	draft                      initDraft
+	gitScopes                  map[string]initGitScopeDraft
+	reviewerEntities           map[string]initReviewerEntityDraft
+	llmRuntimes                map[string]initLLMRuntimeDraft
+	selectedGitScope           string
+	document                   initProfileV2Document
+	layout                     initProfileV2Layout
+	focused                    int
+	quitting                   bool
+	requestLLMRuntimeBootstrap bool
 }
 
 func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int) initProfileV2ReadOnlyModel {
@@ -103,6 +166,8 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 		viewport:         vp,
 		draft:            editor.Draft,
 		gitScopes:        maps.Clone(editor.GitScopes),
+		reviewerEntities: maps.Clone(editor.ReviewerEntities),
+		llmRuntimes:      maps.Clone(editor.LLMRuntimes),
 		selectedGitScope: editor.SelectedGitScope,
 		document:         editor.Document,
 		focused:          editor.Document.firstFocusableField(),
@@ -136,6 +201,10 @@ func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.relayout()
 			m.ensureFocusedVisible()
 			return m, nil
+		}
+		if m.handleLLMRuntimeBootstrapKey(msg) {
+			m.requestLLMRuntimeBootstrap = true
+			return m, tea.Quit
 		}
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
@@ -244,9 +313,9 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", draft.ProfileName, validateProfileName)
 	initProfileV2AppendRouteSection(&document, routeText)
 	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(ctx.GitScopes), draft, selectedGitScope == initCustomGitScopeSelection || len(ctx.GitScopes) > 1)
-	initProfileV2AddSelect(&document, "Reviewer entity", reviewerEntitySelectionDescription(), reviewerEntityOptions, selectedReviewerEntity)
-	initProfileV2AddSelect(&document, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
-	initProfileV2AddSelect(&document, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
+	document.addEditableSelect(initProfileV2FieldReviewerEntity, "Reviewer entity", reviewerEntitySelectionDescription(), reviewerEntityOptions, selectedReviewerEntity)
+	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
+	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
 	initProfileV2AppendModelMapSection(&document, modelMapLLM, draft.ModelMap)
 	initProfileV2AppendAgentSourcesSection(&document, draft.AgentSources)
 	initProfileV2AppendReviewPolicySection(&document, draft.ReviewPolicy)
@@ -258,6 +327,8 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	return initProfileV2Editor{
 		Draft:            draft,
 		GitScopes:        maps.Clone(ctx.GitScopes),
+		ReviewerEntities: maps.Clone(ctx.ReviewerEntities),
+		LLMRuntimes:      maps.Clone(llmRuntimes),
 		SelectedGitScope: selectedGitScope,
 		Document:         document,
 	}, nil
@@ -282,16 +353,21 @@ const (
 )
 
 const (
-	initProfileV2FieldProfileName initProfileV2FieldID = "profile_name"
-	initProfileV2FieldRoutes      initProfileV2FieldID = "routes"
-	initProfileV2FieldGitScope    initProfileV2FieldID = "git_scope"
-	initProfileV2FieldGitHost     initProfileV2FieldID = "git_host"
-	initProfileV2FieldGitAuth     initProfileV2FieldID = "git_auth"
+	initProfileV2FieldProfileName       initProfileV2FieldID = "profile_name"
+	initProfileV2FieldRoutes            initProfileV2FieldID = "routes"
+	initProfileV2FieldGitScope          initProfileV2FieldID = "git_scope"
+	initProfileV2FieldGitHost           initProfileV2FieldID = "git_host"
+	initProfileV2FieldGitAuth           initProfileV2FieldID = "git_auth"
+	initProfileV2FieldReviewerEntity    initProfileV2FieldID = "reviewer_entity"
+	initProfileV2FieldLLMRuntime        initProfileV2FieldID = "llm_runtime"
+	initProfileV2FieldReviewerModelTier initProfileV2FieldID = "reviewer_model_tier"
 )
 
 type initProfileV2Editor struct {
 	Draft            initDraft
 	GitScopes        map[string]initGitScopeDraft
+	ReviewerEntities map[string]initReviewerEntityDraft
+	LLMRuntimes      map[string]initLLMRuntimeDraft
 	SelectedGitScope string
 	Document         initProfileV2Document
 }
@@ -603,6 +679,14 @@ func (m *initProfileV2ReadOnlyModel) handleFocusedSelectKey(msg tea.KeyMsg) bool
 	return true
 }
 
+func (m initProfileV2ReadOnlyModel) handleLLMRuntimeBootstrapKey(msg tea.KeyMsg) bool {
+	if msg.String() != "enter" || m.focused < 0 || m.focused >= len(m.document) {
+		return false
+	}
+	field := m.document[m.focused]
+	return field.ID == initProfileV2FieldLLMRuntime && m.document.selectedValue(initProfileV2FieldLLMRuntime) == initConfigureNewLLMRuntimeSelection
+}
+
 func initProfileV2MoveSelection(field *initProfileV2Field, offset int) {
 	if len(field.Options) == 0 {
 		return
@@ -682,6 +766,23 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 	}
 	if _, err := applyInitProfileRoutes(nil, draft.ProfileName, draft.GitHost, routes); err != nil {
 		return draft, err
+	}
+	if selectedReviewerEntity := m.document.selectedValue(initProfileV2FieldReviewerEntity); selectedReviewerEntity != "" {
+		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, m.reviewerEntities)
+		reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+		applyReviewerEntitySelection(&draft, reviewerMode)
+	}
+	selectedLLMRuntime := m.document.selectedValue(initProfileV2FieldLLMRuntime)
+	if selectedLLMRuntime == initConfigureNewLLMRuntimeSelection {
+		return draft, fmt.Errorf("configure a new LLM runtime first")
+	}
+	if selectedLLMRuntime != "" {
+		applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, m.llmRuntimes)
+		selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+		applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+	}
+	if m.document.fieldIndexByID(initProfileV2FieldReviewerModelTier) >= 0 {
+		draft.LLMReviewerModelTier = m.document.selectedValue(initProfileV2FieldReviewerModelTier)
 	}
 	draft.RoutesSet = true
 	draft.Routes = routes

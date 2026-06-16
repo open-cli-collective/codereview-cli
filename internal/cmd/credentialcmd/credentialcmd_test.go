@@ -9835,6 +9835,73 @@ func TestInitProfileV2GitScopeRejectsRoutesForDifferentHost(t *testing.T) {
 	}
 }
 
+func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"app-reviewer": {
+			Kind:          initReviewerEntityKindGitHubApp,
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: "codereview/app-reviewer",
+			DisplayName:   "enterprise/reviewer-bot",
+		},
+	}
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"claude-work": {
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		"openai-work": {
+			Preset:        initLLMRuntimePresetOpenAIAPIKey,
+			Provider:      config.LLMProviderOpenAI,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterOpenAIAPI,
+			CredentialRef: "codereview/openai-work",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", reviewerEntities, llmRuntimes), 160, 24)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "app-reviewer")
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldLLMRuntime, "openai-work")
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerModelTier, string(config.ModelTierMedium))
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModeGitHubApp) || draft.ReviewerCredentialRef != "codereview/app-reviewer" || draft.ReviewerDisplayName != "enterprise/reviewer-bot" {
+		t.Fatalf("draft reviewer = (enabled:%t auth:%q ref:%q name:%q), want selected GitHub App reviewer", draft.ReviewerEnabled, draft.ReviewerAuth, draft.ReviewerCredentialRef, draft.ReviewerDisplayName)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMCredentialRef != "codereview/openai-work" {
+		t.Fatalf("draft LLM = (%q,%q,%q,%q), want selected OpenAI API runtime", draft.LLMProvider, draft.LLMAuth, draft.LLMAdapter, draft.LLMCredentialRef)
+	}
+	if draft.LLMReviewerModelTier != string(config.ModelTierMedium) {
+		t.Fatalf("draft.LLMReviewerModelTier = %q, want medium", draft.LLMReviewerModelTier)
+	}
+}
+
+func TestInitProfileV2NoRuntimeBootstrapRequestsExistingFlow(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", nil, nil), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldLLMRuntime)
+	if !strings.Contains(model.View(), "Configure a new LLM runtime first") {
+		t.Fatalf("view missing no-runtime bootstrap option:\n%s", model.View())
+	}
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	if !next.requestLLMRuntimeBootstrap {
+		t.Fatal("requestLLMRuntimeBootstrap = false, want existing runtime flow request")
+	}
+	if cmd == nil {
+		t.Fatal("Update returned nil command, want quit command for runtime bootstrap handoff")
+	}
+	if _, err := next.validatedDraft(); err == nil || !strings.Contains(err.Error(), "configure a new LLM runtime first") {
+		t.Fatalf("validatedDraft error = %v, want no-runtime guard", err)
+	}
+}
+
 func updateInitProfileV2ReadOnlyModel(t *testing.T, model initProfileV2ReadOnlyModel, msg tea.Msg) initProfileV2ReadOnlyModel {
 	t.Helper()
 	updated, _ := model.Update(msg)
@@ -9865,6 +9932,22 @@ func focusInitProfileV2Field(t *testing.T, model initProfileV2ReadOnlyModel, id 
 	return model
 }
 
+func selectInitProfileV2FieldValue(t *testing.T, model initProfileV2ReadOnlyModel, id initProfileV2FieldID, value string) initProfileV2ReadOnlyModel {
+	t.Helper()
+	index := model.document.fieldIndexByID(id)
+	if index < 0 {
+		t.Fatalf("field %q missing", id)
+	}
+	model.selectFieldValue(id, value)
+	model.afterFieldChange(index)
+	model.relayout()
+	model.ensureFocusedVisible()
+	if got := model.document.selectedValue(id); got != value {
+		t.Fatalf("field %q selected value = %q, want %q", id, got, value)
+	}
+	return model
+}
+
 func newTestInitProfileV2Editor(profileName string, routeText string) initProfileV2Editor {
 	var document initProfileV2Document
 	document.addSection("Profile", "")
@@ -9878,6 +9961,38 @@ func newTestInitProfileV2Editor(profileName string, routeText string) initProfil
 			GitAuth:             string(config.GitAuthModePAT),
 		},
 		Document: document,
+	}
+}
+
+func newTestInitProfileV2EditorWithSelections(profileName string, routeText string, reviewerEntities map[string]initReviewerEntityDraft, llmRuntimes map[string]initLLMRuntimeDraft) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		LLMProvider:         string(config.LLMProviderAnthropic),
+		LLMAuth:             string(config.LLMAuthSubscription),
+		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+	}
+	llmRuntimeOptions, selectedLLMRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, "", draft)
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	document.addEditableSelect(
+		initProfileV2FieldReviewerEntity,
+		"Reviewer entity",
+		reviewerEntitySelectionDescription(),
+		initReviewerEntitySelectionOptions(reviewerEntities, reviewerEntityGitAccountFallbackLabel(config.GitAuthModePAT, "")),
+		string(initReviewerEntityKindUseGitIdentity),
+	)
+	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
+	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
+	return initProfileV2Editor{
+		Draft:            draft,
+		ReviewerEntities: reviewerEntities,
+		LLMRuntimes:      llmRuntimes,
+		Document:         document,
 	}
 }
 
