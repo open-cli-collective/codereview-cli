@@ -37,7 +37,7 @@ func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *t
 	}
 }
 
-func TestInitInventoryReordersRowsIntoActivePendingAndCommandSections(t *testing.T) {
+func TestInitInventoryReordersRowsIntoActivePendingAndCommandGroups(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:  "Reviewer entity",
 		Width:  80,
@@ -57,11 +57,11 @@ func TestInitInventoryReordersRowsIntoActivePendingAndCommandSections(t *testing
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ordered row ids = %#v, want %#v", got, want)
 	}
-	if model.rows[1].Description != "Pending deletion" {
-		t.Fatalf("pending description = %q, want Pending deletion", model.rows[1].Description)
+	if model.rows[1].Description != "" {
+		t.Fatalf("pending description = %q, want empty description", model.rows[1].Description)
 	}
-	if model.rows[2].Description != "Actions" {
-		t.Fatalf("command description = %q, want Actions", model.rows[2].Description)
+	if model.rows[2].Description != "" {
+		t.Fatalf("command description = %q, want empty description", model.rows[2].Description)
 	}
 }
 
@@ -435,7 +435,16 @@ func TestInitLLMRuntimeInventoryDeterministicRunnerReturnsRestoreAction(t *testi
 	}
 }
 
-func TestInitInventoryViewShowsHelpBindings(t *testing.T) {
+func TestInitInventoryRowsHaveDescriptions(t *testing.T) {
+	if initInventoryRowsHaveDescriptions([]initInventoryRow{{Title: "one"}, {Title: "two"}}) {
+		t.Fatal("rows without descriptions reported as having descriptions")
+	}
+	if !initInventoryRowsHaveDescriptions([]initInventoryRow{{Title: "one"}, {Title: "two", Description: "route summary"}}) {
+		t.Fatal("rows with a description reported as not having descriptions")
+	}
+}
+
+func TestInitInventoryViewShowsContextualHelpBindings(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:       "Reviewer entity",
 		Description: "Choose who posts reviews.",
@@ -455,15 +464,33 @@ func TestInitInventoryViewShowsHelpBindings(t *testing.T) {
 		"select",
 		"d",
 		"delete",
-		"r",
-		"restore",
 		"esc",
 		"back",
-		"Pending deletion",
-		"Actions",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("view = %q, want %q", out, want)
+		}
+	}
+	for _, unwanted := range []string{"restore", "Actions", "Pending deletion"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("view = %q, did not want %q for selected deletable row", out, unwanted)
+		}
+	}
+
+	model.list.Select(1)
+	out = model.View()
+	if !strings.Contains(out, "r") || !strings.Contains(out, "restore") {
+		t.Fatalf("view = %q, want restore help for selected restorable row", out)
+	}
+	if strings.Contains(out, "delete") {
+		t.Fatalf("view = %q, did not want delete help for selected restorable row", out)
+	}
+
+	model.list.Select(2)
+	out = model.View()
+	for _, unwanted := range []string{"delete", "restore"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("view = %q, did not want %q help for selected command row", out, unwanted)
 		}
 	}
 }

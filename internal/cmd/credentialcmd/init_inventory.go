@@ -129,8 +129,12 @@ func newInitInventoryModel(prompt initInventoryPrompt) initInventoryModel {
 		items = append(items, initInventoryItem{row: row})
 	}
 	delegate := list.NewDefaultDelegate()
-	delegate.ShowDescription = true
-	delegate.SetHeight(2)
+	delegate.ShowDescription = initInventoryRowsHaveDescriptions(rows)
+	if delegate.ShowDescription {
+		delegate.SetHeight(2)
+	} else {
+		delegate.SetHeight(1)
+	}
 	delegate.SetSpacing(0)
 
 	l := list.New(items, delegate, prompt.Width, prompt.Height)
@@ -150,12 +154,6 @@ func newInitInventoryModel(prompt initInventoryPrompt) initInventoryModel {
 		l.SetHeight(14)
 	}
 	keys := defaultInitInventoryKeyMap()
-	l.AdditionalShortHelpKeys = func() []key.Binding {
-		return []key.Binding{keys.Select, keys.Delete, keys.Restore, keys.Back}
-	}
-	l.AdditionalFullHelpKeys = func() []key.Binding {
-		return []key.Binding{keys.Select, keys.Delete, keys.Restore, keys.Back}
-	}
 
 	return initInventoryModel{
 		title: prompt.Title,
@@ -177,22 +175,18 @@ func orderInitInventoryRows(rows []initInventoryRow) []initInventoryRow {
 	}
 	ordered := make([]initInventoryRow, 0, len(rows))
 	ordered = append(ordered, grouped[initInventoryRowKindActive]...)
-	ordered = append(ordered, withSectionDescription(grouped[initInventoryRowKindPending], "Pending deletion")...)
-	ordered = append(ordered, withSectionDescription(grouped[initInventoryRowKindCommand], "Actions")...)
+	ordered = append(ordered, grouped[initInventoryRowKindPending]...)
+	ordered = append(ordered, grouped[initInventoryRowKindCommand]...)
 	return ordered
 }
 
-func withSectionDescription(rows []initInventoryRow, section string) []initInventoryRow {
-	if len(rows) == 0 {
-		return nil
+func initInventoryRowsHaveDescriptions(rows []initInventoryRow) bool {
+	for _, row := range rows {
+		if strings.TrimSpace(row.Description) != "" {
+			return true
+		}
 	}
-	out := append([]initInventoryRow(nil), rows...)
-	if strings.TrimSpace(out[0].Description) == "" {
-		out[0].Description = section
-	} else {
-		out[0].Description = section + "\n" + out[0].Description
-	}
-	return out
+	return false
 }
 
 func initInventoryFilterRanks(term string, rows []initInventoryRow) []list.Rank {
@@ -250,10 +244,17 @@ func (m initInventoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m initInventoryModel) View() string {
-	if m.desc == "" {
-		return m.list.View()
+	l := m.list
+	l.AdditionalShortHelpKeys = func() []key.Binding {
+		return m.helpBindings()
 	}
-	return m.desc + "\n\n" + m.list.View()
+	l.AdditionalFullHelpKeys = func() []key.Binding {
+		return m.helpBindings()
+	}
+	if m.desc == "" {
+		return l.View()
+	}
+	return m.desc + "\n\n" + l.View()
 }
 
 func (m initInventoryModel) selectedRow() (initInventoryRow, bool) {
@@ -266,6 +267,20 @@ func (m initInventoryModel) selectedRow() (initInventoryRow, bool) {
 		return initInventoryRow{}, false
 	}
 	return item.row, true
+}
+
+func (m initInventoryModel) helpBindings() []key.Binding {
+	bindings := []key.Binding{m.keys.Select}
+	if row, ok := m.selectedRow(); ok {
+		if row.Deletable {
+			bindings = append(bindings, m.keys.Delete)
+		}
+		if row.Restorable {
+			bindings = append(bindings, m.keys.Restore)
+		}
+	}
+	bindings = append(bindings, m.keys.Back)
+	return bindings
 }
 
 func (r initInventoryRow) primaryAction() initInventoryAction {
