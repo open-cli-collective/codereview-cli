@@ -3614,8 +3614,8 @@ func initRouteEditorFields(routeText *string, includeIntroTitle bool) []huh.Fiel
 		intro,
 		huh.NewNote().
 			Title("Accepted route formats").
-			Description("host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;. Newline-separated pastes are also accepted."),
-		huh.NewText().
+			Description("host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;."),
+		huh.NewInput().
 			Title("Route entries").
 			Value(routeText),
 	}

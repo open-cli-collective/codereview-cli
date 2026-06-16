@@ -7668,13 +7668,16 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 		"github.com/YourOrg",
 		"github.com/YourUsername [RepoA, RepoB] (will not match on RepoC)",
 		"github.com/YourOrg/org-repo/pull/123",
-		"Separate multiple entries with ;. Newline-separated pastes are also accepted.",
+		"Separate multiple entries with ;.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr = %q, want route editor copy %q", out, want)
 		}
 	}
-	if count := strings.Count(out, "Separate multiple entries with ;. Newline-separated pastes are also accepted."); count != 1 {
+	if strings.Contains(out, "Newline-separated pastes") {
+		t.Fatalf("stderr = %q, want route UI copy to avoid newline-paste guidance", out)
+	}
+	if count := strings.Count(out, "Separate multiple entries with ;."); count != 1 {
 		t.Fatalf("stderr = %q, want semicolon guidance once, got %d", out, count)
 	}
 	if !strings.Contains(out, "Route entries") {
