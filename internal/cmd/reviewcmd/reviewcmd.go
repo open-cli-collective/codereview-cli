@@ -687,7 +687,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 	}
 	store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
 	if err != nil {
-		return Runtime{}, cmderr.Credential(err)
+		return Runtime{}, mapRunError(err)
 	}
 	cleanup := func() { _ = store.Close() }
 	providerGit := gitConfigForReviewerAuth(profile)

@@ -505,6 +505,57 @@ func TestNewRuntimePassesPRRefForGitHubAppInstallationLookup(t *testing.T) {
 	}
 }
 
+func TestNewRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+	profile := cfg.Profiles["home"]
+	cmd := &cobra.Command{}
+	cmd.Flags().String(credstore.BackendFlagName, "", "")
+	if err := cmd.Flags().Set(credstore.BackendFlagName, "memory"); err != nil {
+		t.Fatalf("Set backend flag: %v", err)
+	}
+	opts := &root.Options{Backend: "memory", Stderr: io.Discard}
+
+	_, err := newRuntime(cmd, opts, cfg, profile, RuntimeOptions{})
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("newRuntime error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestOpenSelectionRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+
+	_, err := OpenSelectionRuntime(context.Background(), "memory", true, cfg, cfg.Profiles["home"])
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("OpenSelectionRuntime error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
 func TestNewRuntimeLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
 	statedirtest.Hermetic(t)
 	cfg := testConfig()

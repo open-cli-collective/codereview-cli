@@ -23,11 +23,11 @@ type SelectionRuntime struct {
 func OpenSelectionRuntime(_ context.Context, backend string, backendFlagChanged bool, cfg config.File, profile config.Profile) (SelectionRuntime, error) {
 	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
 	if err != nil {
-		return SelectionRuntime{}, err
+		return SelectionRuntime{}, mapRunError(err)
 	}
 	store, err := credentials.OpenResolvedStore(backend, backendFlagChanged, cfg, resolvedSecretsProfile)
 	if err != nil {
-		return SelectionRuntime{}, err
+		return SelectionRuntime{}, mapRunError(err)
 	}
 	cleanup := func() { _ = store.Close() }
 	// Selection-only paths read with the profile git credential. Reviewer
