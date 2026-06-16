@@ -7710,6 +7710,37 @@ func TestHuhInitRetentionPrompterBackReturnsNavigateBack(t *testing.T) {
 	}
 }
 
+func TestValidateRetentionMaxAgeDaysUsesCurrentFieldCopy(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "non-number",
+			value: "abc",
+			want:  "maximum run-data age in days must be a whole number",
+		},
+		{
+			name:  "negative",
+			value: "-1",
+			want:  "maximum run-data age in days must be non-negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRetentionMaxAgeDays(tt.value)
+			if err == nil {
+				t.Fatalf("validateRetentionMaxAgeDays(%q) error = nil, want %q", tt.value, tt.want)
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("validateRetentionMaxAgeDays(%q) error = %q, want %q", tt.value, err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer

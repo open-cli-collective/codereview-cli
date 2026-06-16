@@ -3465,14 +3465,14 @@ func validateInteractiveRetentionMaxAgeDaysField(value string) error {
 func parseInteractiveRetentionMaxAgeDays(value string) (int, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return 0, fmt.Errorf("custom max age is required")
+		return 0, fmt.Errorf("maximum run-data age in days is required")
 	}
 	days, err := strconv.Atoi(trimmed)
 	if err != nil {
-		return 0, fmt.Errorf("custom max age must be a whole number")
+		return 0, fmt.Errorf("maximum run-data age in days must be a whole number")
 	}
 	if days < 0 {
-		return 0, fmt.Errorf("custom max age must be non-negative")
+		return 0, fmt.Errorf("maximum run-data age in days must be non-negative")
 	}
 	return days, nil
 }
