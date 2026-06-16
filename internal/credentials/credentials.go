@@ -60,6 +60,43 @@ type Ref struct {
 	Full    string
 }
 
+// SecretsProfileSelectionSource identifies why a secrets-management profile was selected.
+type SecretsProfileSelectionSource string
+
+const (
+	// SecretsProfileSelectionExplicit means the active profile selected a named
+	// secrets-management profile directly.
+	SecretsProfileSelectionExplicit      SecretsProfileSelectionSource = "profile"
+	// SecretsProfileSelectionDefault means the configured global default
+	// secrets-management profile selected the store.
+	SecretsProfileSelectionDefault       SecretsProfileSelectionSource = "default_profile"
+	// SecretsProfileSelectionLegacyDefault means no named secrets-management
+	// profile applied, so legacy backend fallback rules selected the store.
+	SecretsProfileSelectionLegacyDefault SecretsProfileSelectionSource = "legacy_fallback"
+)
+
+// ResolvedSecretsProfile is the typed runtime store-selection result.
+type ResolvedSecretsProfile struct {
+	ID              string
+	Label           string
+	Backend         string
+	Source          config.EffectiveSecretsProfileSource
+	SelectionSource SecretsProfileSelectionSource
+}
+
+// DisplayName returns the best user-facing label for the resolved store.
+func (r ResolvedSecretsProfile) DisplayName() string {
+	if strings.TrimSpace(r.Label) != "" {
+		return strings.TrimSpace(r.Label)
+	}
+	return strings.TrimSpace(r.ID)
+}
+
+// IsNamed reports whether the selection came from an explicit named secrets profile.
+func (r ResolvedSecretsProfile) IsNamed() bool {
+	return r.Source == config.EffectiveSecretsProfileSourceConfigured
+}
+
 // FormatRef returns the canonical ref for a cr profile segment.
 func FormatRef(profile string) (string, error) {
 	return credstore.FormatRef(ServiceName, profile)
@@ -75,6 +112,92 @@ func ParseRef(ref string) (Ref, error) {
 		return Ref{}, fmt.Errorf("%w: got %q, want %q", ErrWrongService, service, ServiceName)
 	}
 	return Ref{Service: service, Profile: profile, Full: ref}, nil
+}
+
+// ResolveSecretsProfileForProfile resolves the effective secrets-management
+// profile for one review profile.
+func ResolveSecretsProfileForProfile(cfg config.File, profile config.Profile) (ResolvedSecretsProfile, error) {
+	selection := strings.TrimSpace(profile.SecretsProfile)
+	if selection != "" {
+		return resolveConfiguredSecretsProfile(cfg, selection, SecretsProfileSelectionExplicit)
+	}
+	if effectiveDefault, ok := config.EffectiveDefaultSecretsProfile(cfg); ok && effectiveDefault.Source == config.EffectiveSecretsProfileSourceConfigured {
+		return resolvedSecretsProfileFromEffective(effectiveDefault, SecretsProfileSelectionDefault), nil
+	}
+	return resolveLegacySecretsProfile(cfg), nil
+}
+
+// ResolveSecretsProfileForRef resolves the effective secrets-management profile
+// for a low-level credential ref write/read, optionally narrowed by the global
+// --profile selection.
+func ResolveSecretsProfileForRef(cfg config.File, ref string, selectedProfile string) (ResolvedSecretsProfile, error) {
+	selectedProfile = strings.TrimSpace(selectedProfile)
+	if selectedProfile != "" {
+		profile, ok := cfg.Profiles[selectedProfile]
+		if !ok {
+			return ResolvedSecretsProfile{}, fmt.Errorf("%w: %s", config.ErrProfileNotFound, selectedProfile)
+		}
+		if len(matchingCredentialRefs(profile, ref)) > 0 {
+			return ResolveSecretsProfileForProfile(cfg, profile)
+		}
+		owners := profilesDeclaringCredentialRef(cfg, ref)
+		if len(owners) == 0 {
+			return ResolveSecretsProfileForProfile(cfg, profile)
+		}
+		return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential ref %q is not declared by selected profile %q; declared by %s", config.ErrInvalid, ref, selectedProfile, strings.Join(ownerNames(owners), ", "))
+	}
+
+	owners := profilesDeclaringCredentialRef(cfg, ref)
+	if len(owners) == 0 {
+		return resolveLegacySecretsProfile(cfg), nil
+	}
+	resolved, err := ResolveSecretsProfileForProfile(cfg, owners[0].Profile)
+	if err != nil {
+		return ResolvedSecretsProfile{}, err
+	}
+	for _, owner := range owners[1:] {
+		next, err := ResolveSecretsProfileForProfile(cfg, owner.Profile)
+		if err != nil {
+			return ResolvedSecretsProfile{}, err
+		}
+		if sameResolvedSecretsProfile(resolved, next) {
+			continue
+		}
+		return ResolvedSecretsProfile{}, ambiguousSecretsProfileError(ref, cfg, owners)
+	}
+	return resolved, nil
+}
+
+// StoreOptionsForResolvedProfile builds credstore options for one resolved
+// secrets-management profile.
+func StoreOptionsForResolvedProfile(flagValue string, flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (credstore.Options, error) {
+	if resolved.IsNamed() {
+		if flagSet {
+			return credstore.Options{}, fmt.Errorf("%w: --backend conflicts with named secrets-management profile %q", config.ErrInvalid, resolved.DisplayName())
+		}
+		backend, err := credstore.ParseBackend(resolved.Backend)
+		if err != nil {
+			return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+		}
+		return credstore.Options{
+			AllowedKeys: AllowedKeys(),
+			Backend:     backend,
+		}, nil
+	}
+	return StoreOptions(flagValue, flagSet, cfg)
+}
+
+// OpenResolvedStore opens the resolved service-scoped keyring store.
+func OpenResolvedStore(flagValue string, flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (*credstore.Store, error) {
+	opts, err := StoreOptionsForResolvedProfile(flagValue, flagSet, cfg, resolved)
+	if err != nil {
+		return nil, err
+	}
+	store, err := credstore.Open(ServiceName, &opts)
+	if err != nil {
+		return nil, fmt.Errorf("credentials: opening secrets-management profile %q (%s): %w", resolved.DisplayName(), resolved.Backend, err)
+	}
+	return store, nil
 }
 
 // StoreOptions validates backend selectors and returns credstore options.
@@ -97,6 +220,90 @@ func OpenStore(flagValue string, flagSet bool, cfg config.File) (*credstore.Stor
 		return nil, err
 	}
 	return store, nil
+}
+
+func resolvedSecretsProfileFromEffective(profile config.EffectiveSecretsProfile, selectionSource SecretsProfileSelectionSource) ResolvedSecretsProfile {
+	return ResolvedSecretsProfile{
+		ID:              profile.ID,
+		Label:           strings.TrimSpace(profile.Label),
+		Backend:         profile.Backend,
+		Source:          profile.Source,
+		SelectionSource: selectionSource,
+	}
+}
+
+func resolveConfiguredSecretsProfile(cfg config.File, id string, selectionSource SecretsProfileSelectionSource) (ResolvedSecretsProfile, error) {
+	id = strings.TrimSpace(id)
+	for _, profile := range config.EffectiveSecretsProfiles(cfg) {
+		if profile.ID != id {
+			continue
+		}
+		if profile.Source != config.EffectiveSecretsProfileSourceConfigured {
+			break
+		}
+		return resolvedSecretsProfileFromEffective(profile, selectionSource), nil
+	}
+	return ResolvedSecretsProfile{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, id)
+}
+
+func resolveLegacySecretsProfile(cfg config.File) ResolvedSecretsProfile {
+	backend := strings.TrimSpace(cfg.Keyring.Backend)
+	if backend == "" {
+		backend = config.ProjectedLegacySecretsBackendKind
+	}
+	return ResolvedSecretsProfile{
+		ID:              config.LegacyProjectedSecretsProfileID,
+		Label:           "Legacy default",
+		Backend:         backend,
+		Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
+		SelectionSource: SecretsProfileSelectionLegacyDefault,
+	}
+}
+
+type credentialRefOwner struct {
+	Name    string
+	Profile config.Profile
+}
+
+func profilesDeclaringCredentialRef(cfg config.File, ref string) []credentialRefOwner {
+	names := make([]string, 0, len(cfg.Profiles))
+	for name := range cfg.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	owners := make([]credentialRefOwner, 0, len(names))
+	for _, name := range names {
+		profile := cfg.Profiles[name]
+		if len(matchingCredentialRefs(profile, ref)) == 0 {
+			continue
+		}
+		owners = append(owners, credentialRefOwner{Name: name, Profile: profile})
+	}
+	return owners
+}
+
+func ownerNames(owners []credentialRefOwner) []string {
+	names := make([]string, 0, len(owners))
+	for _, owner := range owners {
+		names = append(names, owner.Name)
+	}
+	return names
+}
+
+func sameResolvedSecretsProfile(a, b ResolvedSecretsProfile) bool {
+	return a.ID == b.ID && a.Source == b.Source && a.Backend == b.Backend
+}
+
+func ambiguousSecretsProfileError(ref string, cfg config.File, owners []credentialRefOwner) error {
+	details := make([]string, 0, len(owners))
+	for _, owner := range owners {
+		resolved, err := ResolveSecretsProfileForProfile(cfg, owner.Profile)
+		if err != nil {
+			return err
+		}
+		details = append(details, fmt.Sprintf("%s -> %s (%s)", owner.Name, resolved.DisplayName(), resolved.ID))
+	}
+	return fmt.Errorf("%w: credential ref %q is declared by profiles using different secrets-management profiles; pass --profile to disambiguate: %s", config.ErrInvalid, ref, strings.Join(details, "; "))
 }
 
 // BackendMetadata reports the selected backend/source without opening the store.

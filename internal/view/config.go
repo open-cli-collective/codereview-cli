@@ -13,16 +13,17 @@ import (
 
 // ConfigShow is the presentation model for `cr config show`.
 type ConfigShow struct {
-	ActiveProfile  string              `json:"active_profile"`
-	Profile        config.Profile      `json:"profile"`
-	Data           config.DataConfig   `json:"data"`
-	Backend        string              `json:"backend,omitempty"`
-	BackendSource  string              `json:"backend_source,omitempty"`
-	SecretsProfiles []config.EffectiveSecretsProfile `json:"secrets_profiles,omitempty"`
-	CredentialRef  string              `json:"credential_ref,omitempty"`
-	CredentialRefs []CredentialStatus  `json:"credential_refs"`
-	LLMCredential  LLMCredential       `json:"llm_credential"`
-	AgentSources   []agents.SourceInfo `json:"agent_sources,omitempty"`
+	ActiveProfile        string                `json:"active_profile"`
+	Profile              config.Profile        `json:"profile"`
+	Data                 config.DataConfig     `json:"data"`
+	Backend              string                `json:"backend,omitempty"`
+	BackendSource        string                `json:"backend_source,omitempty"`
+	ActiveSecretsProfile *ConfigSecretsProfile `json:"active_secrets_profile,omitempty"`
+	SecretsProfiles      []config.EffectiveSecretsProfile `json:"secrets_profiles,omitempty"`
+	CredentialRef        string                `json:"credential_ref,omitempty"`
+	CredentialRefs       []CredentialStatus    `json:"credential_refs"`
+	LLMCredential        LLMCredential         `json:"llm_credential"`
+	AgentSources         []agents.SourceInfo   `json:"agent_sources,omitempty"`
 }
 
 // CredentialStatus reports key presence for one declared credential ref.
@@ -77,6 +78,18 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 	}
 	if show.BackendSource != "" {
 		if err := writeKV(w, "Keyring backend source", show.BackendSource); err != nil {
+			return err
+		}
+	}
+	if show.ActiveSecretsProfile != nil {
+		label := show.ActiveSecretsProfile.ID
+		if strings.TrimSpace(show.ActiveSecretsProfile.Label) != "" {
+			label = show.ActiveSecretsProfile.Label
+		}
+		if err := writeKV(w, "Selected secrets management", fmt.Sprintf("%s (%s)", label, show.ActiveSecretsProfile.Backend)); err != nil {
+			return err
+		}
+		if err := writeKV(w, "Selected secrets management source", show.ActiveSecretsProfile.Source); err != nil {
 			return err
 		}
 	}
@@ -546,6 +559,7 @@ func RenderConfigAgentSourcesJSON(w io.Writer, result ConfigAgentSources) error 
 type ConfigClear struct {
 	Backend              string                 `json:"backend"`
 	BackendSource        string                 `json:"backend_source"`
+	ActiveSecretsProfile *ConfigSecretsProfile  `json:"active_secrets_profile,omitempty"`
 	DryRun               bool                   `json:"dry_run"`
 	Cleared              []ClearedCredentialRef `json:"cleared"`
 	ConfigProfileRemoved string                 `json:"config_profile_removed,omitempty"`
@@ -574,6 +588,18 @@ func RenderConfigClearText(w io.Writer, result ConfigClear) error {
 	}
 	if err := writeKV(w, "Keyring backend source", result.BackendSource); err != nil {
 		return err
+	}
+	if result.ActiveSecretsProfile != nil {
+		label := result.ActiveSecretsProfile.ID
+		if strings.TrimSpace(result.ActiveSecretsProfile.Label) != "" {
+			label = result.ActiveSecretsProfile.Label
+		}
+		if err := writeKV(w, "Selected secrets management", fmt.Sprintf("%s (%s)", label, result.ActiveSecretsProfile.Backend)); err != nil {
+			return err
+		}
+		if err := writeKV(w, "Selected secrets management source", result.ActiveSecretsProfile.Source); err != nil {
+			return err
+		}
 	}
 	if result.DryRun {
 		if err := writeKV(w, "Dry run", "true"); err != nil {

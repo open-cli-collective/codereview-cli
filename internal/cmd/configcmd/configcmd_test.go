@@ -1375,8 +1375,11 @@ func TestConfigShowSeparatesRuntimeBackendFromConfiguredSecretsProfiles(t *testi
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.Backend != "memory" || got.BackendSource != "config" {
-		t.Fatalf("backend = (%q,%q), want legacy runtime compatibility backend (memory,config)", got.Backend, got.BackendSource)
+	if got.Backend != "file" || got.BackendSource != "secrets_profile" {
+		t.Fatalf("backend = (%q,%q), want selected secrets-profile backend (file,secrets_profile)", got.Backend, got.BackendSource)
+	}
+	if got.ActiveSecretsProfile == nil || got.ActiveSecretsProfile.ID != "work-file" || got.ActiveSecretsProfile.Label != "Work File Store" {
+		t.Fatalf("active_secrets_profile = %#v, want work-file", got.ActiveSecretsProfile)
 	}
 	want := []config.EffectiveSecretsProfile{
 		{

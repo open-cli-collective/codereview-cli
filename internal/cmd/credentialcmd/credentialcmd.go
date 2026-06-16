@@ -100,18 +100,29 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 		}
 		return result, exitcode.Usage(err)
 	}
+	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForRef(cfg, flags.ref, opts.Profile)
+	if err != nil {
+		return result, exitcode.AuthConfig(err)
+	}
+	store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
+	if err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+			return result, cmderr.Config(err)
+		}
+		return result, cmderr.Credential(err)
+	}
+	defer store.Close()
 	secret, err := readSecretIngress(opts.Stdin, flags.stdin, flags.fromEnv, "--stdin", "--from-env")
 	if err != nil {
 		return result, exitcode.Usage(err)
 	}
-	store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
-	if err != nil {
-		return result, cmderr.Credential(err)
-	}
-	defer store.Close()
 	backend, source := store.Backend()
 	result.Backend = string(backend)
-	result.BackendSource = string(source)
+	if resolvedSecretsProfile.IsNamed() {
+		result.BackendSource = "secrets_profile"
+	} else {
+		result.BackendSource = string(source)
+	}
 	setOpts := []credstore.SetOpt{}
 	if flags.overwrite {
 		setOpts = append(setOpts, credstore.WithOverwrite())
@@ -385,6 +396,7 @@ type initDeps struct {
 	loadConfig           func(string) (config.File, bool, error)
 	saveConfig           func(string, config.File) error
 	openStore            func(string, bool, config.File) (initStore, error)
+	openResolvedStore    func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error)
 	readSecret           func(io.Reader, bool, string, string, string) (string, bool, error)
 }
 
@@ -547,6 +559,7 @@ const (
 type initCredentialPlanEntry struct {
 	Ref                 config.CredentialRef
 	PreviousRef         *config.CredentialRef
+	SecretsProfile      credentials.ResolvedSecretsProfile
 	KeySpecs            []credentials.KeySpec
 	PlannedWriteKeys    []string
 	MissingRequiredKeys []string
@@ -613,6 +626,9 @@ func defaultInitDeps() initDeps {
 		openStore: func(flagValue string, flagSet bool, cfg config.File) (initStore, error) {
 			return credentials.OpenStore(flagValue, flagSet, cfg)
 		},
+		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, flagValue string, flagSet bool, cfg config.File) (initStore, error) {
+			return credentials.OpenResolvedStore(flagValue, flagSet, cfg, resolved)
+		},
 		readSecret: readOptionalSecretIngress,
 	}
 }
@@ -669,6 +685,9 @@ func (deps initDeps) withDefaults() initDeps {
 	}
 	if deps.openStore == nil {
 		deps.openStore = defaults.openStore
+	}
+	if deps.openResolvedStore == nil {
+		deps.openResolvedStore = defaults.openResolvedStore
 	}
 	if deps.readSecret == nil {
 		deps.readSecret = defaults.readSecret
@@ -3782,7 +3801,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		addWrite(writes, llmRef, llmKey, llmSecret)
 	}
 	plannedWriteKeys := projectInitPlannedWriteKeys(writes)
-	credentialPlan, err := planInitCredentials(previousProfile, profile, plannedWriteKeys)
+	credentialPlan, err := planInitCredentialsWithConfig(cfg, previousProfile, profile, plannedWriteKeys)
 	if err != nil {
 		return initPlan{}, cmderr.Config(err)
 	}
@@ -3893,7 +3912,7 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 
-	credentialPlan, err := planInitCredentials(previousProfile, profile, nil)
+	credentialPlan, err := planInitCredentialsWithConfig(working, previousProfile, profile, nil)
 	if err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
@@ -4009,12 +4028,14 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 			activeRefs[ref.Ref] = true
 		}
 		previousProfile := touchedInteractiveInitPreviousProfile(session, profileName)
-		entries, err := planInitCredentials(previousProfile, profile, plannedWriteKeys)
+		entries, err := planInitCredentialsWithConfig(session.cfg, previousProfile, profile, plannedWriteKeys)
 		if err != nil {
 			return initSessionPlan{}, cmderr.Config(err)
 		}
 		for _, entry := range entries {
-			mergeInteractiveInitSessionPlanEntry(entriesByKey, entry)
+			if err := mergeInteractiveInitSessionPlanEntry(entriesByKey, entry); err != nil {
+				return initSessionPlan{}, cmderr.Config(err)
+			}
 		}
 	}
 	entryKeys := make([]string, 0, len(entriesByKey))
@@ -4057,16 +4078,20 @@ func touchedInteractiveInitPreviousProfile(session initSessionDraft, profileName
 	return &profileCopy
 }
 
-func mergeInteractiveInitSessionPlanEntry(entriesByKey map[string]initCredentialPlanEntry, entry initCredentialPlanEntry) {
+func mergeInteractiveInitSessionPlanEntry(entriesByKey map[string]initCredentialPlanEntry, entry initCredentialPlanEntry) error {
 	key := initCredentialEntryKey(entry.Ref)
 	existing, ok := entriesByKey[key]
 	if !ok {
 		entriesByKey[key] = entry
-		return
+		return nil
+	}
+	if existing.State != initCredentialPlanStateClearRef && entry.State != initCredentialPlanStateClearRef && !sameInitCredentialStore(existing.SecretsProfile, entry.SecretsProfile) {
+		return fmt.Errorf("%w: init credential ref %q is staged for multiple secrets-management profiles in one session", config.ErrInvalid, entry.Ref.Ref)
 	}
 	if existing.State == initCredentialPlanStateClearRef && entry.State != initCredentialPlanStateClearRef {
 		entriesByKey[key] = entry
 	}
+	return nil
 }
 
 func collectInteractiveInitSessionWorkspaceSecrets(opts *root.Options, deps initDeps, session initSessionDraft, purposes []string) (initSessionDraft, error) {
@@ -5181,6 +5206,67 @@ func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, cfg conf
 	return fmt.Sprintf(" --backend %s", opts.Backend)
 }
 
+func sameInitCredentialStore(a, b credentials.ResolvedSecretsProfile) bool {
+	return a.ID == b.ID && a.Source == b.Source && a.Backend == b.Backend
+}
+
+func initCredentialStoreKey(resolved credentials.ResolvedSecretsProfile) string {
+	return fmt.Sprintf("%s|%s|%s", resolved.ID, resolved.Source, resolved.Backend)
+}
+
+type initWriteGroup struct {
+	Resolved      credentials.ResolvedSecretsProfile
+	Writes        map[string]map[string]string
+	OverwriteRefs map[string]bool
+}
+
+func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string]map[string]string, overwriteRefs map[string]bool) ([]initWriteGroup, error) {
+	if len(entries) == 0 {
+		return []initWriteGroup{{
+			Writes:        writes,
+			OverwriteRefs: overwriteRefs,
+		}}, nil
+	}
+	groups := map[string]*initWriteGroup{}
+	for _, entry := range entries {
+		bundle := writes[entry.Ref.Ref]
+		if len(bundle) == 0 {
+			continue
+		}
+		key := initCredentialStoreKey(entry.SecretsProfile)
+		group := groups[key]
+		if group == nil {
+			group = &initWriteGroup{
+				Resolved:      entry.SecretsProfile,
+				Writes:        map[string]map[string]string{},
+				OverwriteRefs: map[string]bool{},
+			}
+			groups[key] = group
+		}
+		group.Writes[entry.Ref.Ref] = bundle
+		if overwriteRefs[entry.Ref.Ref] {
+			group.OverwriteRefs[entry.Ref.Ref] = true
+		}
+	}
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]initWriteGroup, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, *groups[key])
+	}
+	return out, nil
+}
+
+func openInitStoreForEntry(deps initDeps, opts *root.Options, flagSet bool, cfg config.File, entry initCredentialPlanEntry) (initStore, error) {
+	if entry.SecretsProfile.IsNamed() {
+		return deps.openResolvedStore(entry.SecretsProfile, opts.Backend, flagSet, cfg)
+	}
+	return deps.openStore(opts.Backend, flagSet, cfg)
+}
+
 func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	if len(plan.credentialPlan) == 0 {
 		return plan, nil
@@ -5201,21 +5287,24 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 	if prompter == nil {
 		prompter = newHuhInitSecretPrompter(opts)
 	}
-	var store initStore
-	openStore := func() (initStore, error) {
-		if store != nil {
+	stores := map[string]initStore{}
+	openStore := func(entry initCredentialPlanEntry) (initStore, error) {
+		key := initCredentialStoreKey(entry.SecretsProfile)
+		if store := stores[key]; store != nil {
 			return store, nil
 		}
-		opened, err := deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+		opened, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
 		if err != nil {
 			return nil, err
 		}
-		store = opened
-		return store, nil
+		stores[key] = opened
+		return opened, nil
 	}
 	defer func() {
-		if store != nil {
-			_ = store.Close()
+		for _, store := range stores {
+			if store != nil {
+				_ = store.Close()
+			}
 		}
 	}()
 
@@ -5250,7 +5339,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			if action == initCredentialSecretActionDefer {
 				break
 			}
-			activeStore, err := openStore()
+			activeStore, err := openStore(entry)
 			if err != nil {
 				return initWorkspaceDraft{}, cmderr.Credential(err)
 			}
@@ -5390,8 +5479,8 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 		return plan, nil
 	}
 	var err error
-	plan.credentialPlan, err = loadInteractiveCredentialPlanState(plan.credentialPlan, func() (initStore, error) {
-		return deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+	plan.credentialPlan, err = loadInteractiveCredentialPlanStateWithResolver(plan.credentialPlan, func(entry initCredentialPlanEntry) (initStore, error) {
+		return openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
 	})
 	if err != nil {
 		return initSessionPlan{}, cmderr.Credential(err)
@@ -5418,6 +5507,12 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 }
 
 func loadInteractiveCredentialPlanState(entries []initCredentialPlanEntry, openStore func() (initStore, error)) ([]initCredentialPlanEntry, error) {
+	return loadInteractiveCredentialPlanStateWithResolver(entries, func(initCredentialPlanEntry) (initStore, error) {
+		return openStore()
+	})
+}
+
+func loadInteractiveCredentialPlanStateWithResolver(entries []initCredentialPlanEntry, openStore func(initCredentialPlanEntry) (initStore, error)) ([]initCredentialPlanEntry, error) {
 	var needsStore bool
 	for _, entry := range entries {
 		if entry.State == initCredentialPlanStateClearRef || entry.State == initCredentialPlanStateKeepExisting || len(entry.PlannedWriteKeys) > 0 {
@@ -5429,11 +5524,14 @@ func loadInteractiveCredentialPlanState(entries []initCredentialPlanEntry, openS
 	if !needsStore {
 		return entries, nil
 	}
-	store, err := openStore()
-	if err != nil {
-		return nil, err
-	}
-	defer store.Close()
+	stores := map[string]initStore{}
+	defer func() {
+		for _, store := range stores {
+			if store != nil {
+				_ = store.Close()
+			}
+		}
+	}()
 	normalized := make([]initCredentialPlanEntry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.State == initCredentialPlanStateClearRef {
@@ -5443,6 +5541,16 @@ func loadInteractiveCredentialPlanState(entries []initCredentialPlanEntry, openS
 		if entry.State == initCredentialPlanStateKeepExisting || len(entry.PlannedWriteKeys) > 0 {
 			normalized = append(normalized, entry)
 			continue
+		}
+		key := initCredentialStoreKey(entry.SecretsProfile)
+		store := stores[key]
+		if store == nil {
+			var err error
+			store, err = openStore(entry)
+			if err != nil {
+				return nil, err
+			}
+			stores[key] = store
 		}
 		status, err := credentials.CredentialRefStatus(store, entry.Ref, nil)
 		if err != nil {
@@ -5718,19 +5826,28 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 		}
 		return err
 	}
-	var store initStore
 	if len(plan.writes) > 0 {
-		var err error
-		store, err = deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+		groups, err := groupInitWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
 		if err != nil {
-			return cmderr.Credential(err)
+			return cmderr.Config(err)
 		}
-		defer store.Close()
-		if err := preflightNoOverwrite(store, plan.writes, plan.overwriteRefs); err != nil {
-			return cmderr.Credential(err)
-		}
-		if _, err := writeBundles(store, plan.writes, false, plan.overwriteRefs); err != nil {
-			return cmderr.Credential(err)
+		for _, group := range groups {
+			store, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
+			if err != nil {
+				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+					return cmderr.Config(err)
+				}
+				return cmderr.Credential(err)
+			}
+			if err := preflightNoOverwrite(store, group.Writes, group.OverwriteRefs); err != nil {
+				_ = store.Close()
+				return cmderr.Credential(err)
+			}
+			if _, err := writeBundles(store, group.Writes, false, group.OverwriteRefs); err != nil {
+				_ = store.Close()
+				return cmderr.Credential(err)
+			}
+			_ = store.Close()
 		}
 	}
 	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
@@ -5792,10 +5909,36 @@ func initCredentialPurposeLabel(purpose string) string {
 
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
 	var store initStore
+	var primaryResolved credentials.ResolvedSecretsProfile
+	openPrimaryStore := func() (initStore, error) {
+		if store != nil {
+			return store, nil
+		}
+		entry := initCredentialPlanEntry{}
+		if len(plan.credentialPlan) > 0 {
+			entry.SecretsProfile = plan.credentialPlan[0].SecretsProfile
+		} else {
+			resolved, err := credentials.ResolveSecretsProfileForProfile(plan.cfg, plan.profile)
+			if err != nil {
+				return nil, err
+			}
+			entry.SecretsProfile = resolved
+		}
+		primaryResolved = entry.SecretsProfile
+		opened, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
+		if err != nil {
+			return nil, err
+		}
+		store = opened
+		return store, nil
+	}
 	if len(plan.writes) > 0 || (plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.allowDeferredLLM) {
 		var err error
-		store, err = deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+		store, err = openPrimaryStore()
 		if err != nil {
+			if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+				return cmderr.Config(err)
+			}
 			return cmderr.Credential(err)
 		}
 		defer store.Close()
@@ -5820,14 +5963,33 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 			return exitcode.Usage(fmt.Errorf("api_key LLM auth requires --llm-api-key-stdin or --llm-api-key-from-env"))
 		}
 	}
-	if store != nil && len(plan.writes) > 0 && !flags.overwrite {
-		if err := preflightNoOverwrite(store, plan.writes, plan.overwriteRefs); err != nil {
-			return cmderr.Credential(err)
+	if len(plan.writes) > 0 {
+		groups, err := groupInitWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
+		if err != nil {
+			return cmderr.Config(err)
 		}
-	}
-	if store != nil {
-		if _, err := writeBundles(store, plan.writes, flags.overwrite, plan.overwriteRefs); err != nil {
-			return cmderr.Credential(err)
+		for _, group := range groups {
+			groupStore := store
+			if groupStore == nil || !sameInitCredentialStore(group.Resolved, primaryResolved) {
+				groupStore, err = openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
+				if err != nil {
+					if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+						return cmderr.Config(err)
+					}
+					return cmderr.Credential(err)
+				}
+				if groupStore != store {
+					defer groupStore.Close()
+				}
+			}
+			if !flags.overwrite {
+				if err := preflightNoOverwrite(groupStore, group.Writes, group.OverwriteRefs); err != nil {
+					return cmderr.Credential(err)
+				}
+			}
+			if _, err := writeBundles(groupStore, group.Writes, flags.overwrite, group.OverwriteRefs); err != nil {
+				return cmderr.Credential(err)
+			}
 		}
 	}
 	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
@@ -5881,7 +6043,15 @@ func projectInitPlannedWriteKeys(writes map[string]map[string]string) map[string
 }
 
 func planInitCredentials(previousProfile *config.Profile, desiredProfile config.Profile, plannedWriteKeys map[string][]string) ([]initCredentialPlanEntry, error) {
+	return planInitCredentialsWithConfig(config.File{}, previousProfile, desiredProfile, plannedWriteKeys)
+}
+
+func planInitCredentialsWithConfig(cfg config.File, previousProfile *config.Profile, desiredProfile config.Profile, plannedWriteKeys map[string][]string) ([]initCredentialPlanEntry, error) {
 	desiredRefs, err := config.CredentialRefs(desiredProfile)
+	if err != nil {
+		return nil, err
+	}
+	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, desiredProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -5910,6 +6080,7 @@ func planInitCredentials(previousProfile *config.Profile, desiredProfile config.
 		}
 		entry := initCredentialPlanEntry{
 			Ref:              ref,
+			SecretsProfile:   resolvedSecretsProfile,
 			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 			PlannedWriteKeys: writeKeys,
 		}

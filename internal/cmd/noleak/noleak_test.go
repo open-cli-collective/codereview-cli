@@ -1014,7 +1014,7 @@ type realIdentityResolver struct {
 	store *credstore.Store
 }
 
-func (r realIdentityResolver) ResolveIdentity(ctx context.Context, git config.GitConfig) (gitprovider.Identity, error) {
+func (r realIdentityResolver) ResolveIdentity(ctx context.Context, _ string, git config.GitConfig) (gitprovider.Identity, error) {
 	provider, credential, err := r.h.newGitHubProvider(git, r.store, nil)
 	if err != nil {
 		return gitprovider.Identity{}, err

@@ -228,7 +228,7 @@ type fakeResolver struct {
 	calls      []config.GitConfig
 }
 
-func (f *fakeResolver) ResolveIdentity(_ context.Context, git config.GitConfig) (gitprovider.Identity, error) {
+func (f *fakeResolver) ResolveIdentity(_ context.Context, _ string, git config.GitConfig) (gitprovider.Identity, error) {
 	f.calls = append(f.calls, git)
 	if err := f.errs[git.CredentialRef]; err != nil {
 		return gitprovider.Identity{}, err

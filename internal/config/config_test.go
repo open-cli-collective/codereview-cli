@@ -969,7 +969,49 @@ func TestValidateSecretsProfiles(t *testing.T) {
 			wantErr: ErrInvalid,
 			wantMsg: `secrets.profiles. work  id must not contain surrounding whitespace`,
 		},
-		}
+		{
+			name: "profile may select configured secrets profile",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"work-file": {
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
+						},
+					},
+				}
+				profile := cfg.Profiles["home"]
+				profile.SecretsProfile = "work-file"
+				cfg.Profiles["home"] = profile
+			},
+		},
+		{
+			name: "profile rejects projected legacy selection",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["home"]
+				profile.SecretsProfile = LegacyProjectedSecretsProfileID
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `profiles.home.secrets_profile "legacy-default" is reserved`,
+		},
+		{
+			name: "profile rejects missing configured secrets profile",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"personal": {
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendKeychain)},
+						},
+					},
+				}
+				profile := cfg.Profiles["home"]
+				profile.SecretsProfile = "missing"
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrSecretsProfileNotFound,
+			wantMsg: `profiles.home.secrets_profile "missing"`,
+		},
+	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -54,6 +54,7 @@ func TestMeDefaultProfileUpdatesGitCacheAndRendersText(t *testing.T) {
 func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 	const token = "distinctive-secret-token"
 	store := openFileStore(t)
+	defer store.Close()
 	if _, err := store.SetBundle("home", map[string]string{credentials.GitTokenKey: token}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle home: %v", err)
 	}
@@ -64,9 +65,11 @@ func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 		writeJSON(t, w, map[string]any{"login": "live-home", "id": 1})
 	}))
 	defer server.Close()
-	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
 		return &githubResolver{
-			store: store,
+			cfg:                cfg,
+			backend:            string(credstore.BackendFile),
+			backendFlagChanged: true,
 			options: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
@@ -118,6 +121,7 @@ func TestMeProfileUsesReviewerCredentials(t *testing.T) {
 func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	const installationToken = "me-reviewer-github-app-installation-token" // #nosec G101 -- distinctive test canary, not a real token.
 	store := openFileStore(t)
+	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("work-reviewer", map[string]string{
 		credentials.GitHubAppIDKey:             "12345",
@@ -153,9 +157,11 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
 		return &githubResolver{
-			store: store,
+			cfg:                cfg,
+			backend:            string(credstore.BackendFile),
+			backendFlagChanged: true,
 			options: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
@@ -374,6 +380,7 @@ func TestMeProductionMissingGitCredentialExitCode(t *testing.T) {
 
 func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
 	store := openFileStore(t)
+	defer store.Close()
 	if _, err := store.SetBundle("work", map[string]string{credentials.GitTokenKey: "git-token"}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle work: %v", err)
 	}
@@ -406,6 +413,7 @@ func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
 
 func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T) {
 	store := openFileStore(t)
+	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("home", map[string]string{
 		credentials.GitHubAppIDKey:         "12345",
@@ -443,6 +451,7 @@ func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T)
 func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 	const installationToken = "me-github-app-installation-token" // #nosec G101 -- distinctive test canary, not a real token.
 	store := openFileStore(t)
+	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("home", map[string]string{
 		credentials.GitHubAppIDKey:             "12345",
@@ -479,9 +488,11 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
 		return &githubResolver{
-			store: store,
+			cfg:                cfg,
+			backend:            string(credstore.BackendFile),
+			backendFlagChanged: true,
 			options: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
@@ -695,6 +706,7 @@ func TestMeProviderErrorExitCode(t *testing.T) {
 
 func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 	store := openFileStore(t)
+	defer store.Close()
 	if _, err := store.SetBundle("work", map[string]string{credentials.GitTokenKey: "git-token"}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle work: %v", err)
 	}
@@ -721,13 +733,36 @@ func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 	defer server.Close()
 
 	resolver := &githubResolver{
-		store: store,
+		cfg: config.File{
+			DefaultProfile: "work",
+			Keyring:        config.KeyringConfig{Backend: "file"},
+			Profiles: map[string]config.Profile{
+				"work": {
+					Git: config.GitConfig{
+						Host:          "github.com",
+						AuthMode:      config.GitAuthModePAT,
+						CredentialRef: "codereview/work",
+					},
+					ReviewerCredentials: &config.ReviewerCredentials{
+						AuthMode:      config.GitAuthModePAT,
+						CredentialRef: "codereview/work-reviewer",
+					},
+					LLM: config.LLMConfig{
+						Provider: config.LLMProviderAnthropic,
+						Auth:     config.LLMAuthSubscription,
+						Adapter:  config.LLMAdapterClaudeCLI,
+					},
+				},
+			},
+		},
+		backend:            string(credstore.BackendFile),
+		backendFlagChanged: true,
 		options: githubprovider.Options{
 			BaseURL:    server.URL,
 			GraphQLURL: server.URL + "/graphql",
 		},
 	}
-	gitIdentity, err := resolver.ResolveIdentity(context.Background(), config.GitConfig{
+	gitIdentity, err := resolver.ResolveIdentity(context.Background(), "work", config.GitConfig{
 		Host:          "github.com",
 		AuthMode:      config.GitAuthModePAT,
 		CredentialRef: "codereview/work",
@@ -735,7 +770,7 @@ func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveIdentity git: %v", err)
 	}
-	reviewerIdentity, err := resolver.ResolveIdentity(context.Background(), config.GitConfig{
+	reviewerIdentity, err := resolver.ResolveIdentity(context.Background(), "work", config.GitConfig{
 		Host:          "github.com",
 		AuthMode:      config.GitAuthModePAT,
 		CredentialRef: "codereview/work-reviewer",
@@ -887,7 +922,7 @@ type fakeResolver struct {
 	calls      []config.GitConfig
 }
 
-func (f *fakeResolver) ResolveIdentity(_ context.Context, git config.GitConfig) (gitprovider.Identity, error) {
+func (f *fakeResolver) ResolveIdentity(_ context.Context, _ string, git config.GitConfig) (gitprovider.Identity, error) {
 	f.calls = append(f.calls, git)
 	if err := f.errs[git.CredentialRef]; err != nil {
 		return gitprovider.Identity{}, err
@@ -938,17 +973,14 @@ func runOrgDeploymentCommand(t *testing.T, path string, stdin *strings.Reader, f
 
 func orgDeploymentFactory(serverURL string) IdentityResolverFactory {
 	return func(_ *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
-		store, err := credentials.OpenStore(opts.Backend, false, cfg)
-		if err != nil {
-			return nil, nil, err
-		}
 		return &githubResolver{
-			store: store,
+			cfg:     cfg,
+			backend: opts.Backend,
 			options: githubprovider.Options{
 				BaseURL:    serverURL,
 				GraphQLURL: serverURL + "/graphql",
 			},
-		}, func() { _ = store.Close() }, nil
+		}, nil, nil
 	}
 }
 
