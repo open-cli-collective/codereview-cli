@@ -1967,24 +1967,42 @@ func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
 }
 
 func TestSharedWorkstreamModel(t *testing.T) {
+	ws := func(name, model string) reviewplan.WorkstreamUsage {
+		return reviewplan.WorkstreamUsage{Name: name, Model: model}
+	}
 	cases := []struct {
-		name   string
-		models []string
-		want   string
+		name        string
+		workstreams []reviewplan.WorkstreamUsage
+		want        string
 	}{
-		{"all same", []string{"sonnet", "sonnet", "sonnet"}, "sonnet"},
-		{"mixed", []string{"opus", "sonnet", "sonnet"}, ""},
-		{"unreported model makes headline unavailable", []string{"", "sonnet", "sonnet"}, ""},
+		{"all same", []reviewplan.WorkstreamUsage{ws("a:x", "sonnet"), ws("b:y", "sonnet")}, "sonnet"},
+		{
+			"orchestrators excluded so reviewer model is the headline",
+			[]reviewplan.WorkstreamUsage{
+				ws("orchestrator-selection", "sonnet"),
+				ws("policies:conventions", "opus"),
+				ws("structure:repo-health", "opus"),
+				ws("orchestrator-rollup", "sonnet"),
+			},
+			"opus",
+		},
+		{
+			"mixed reviewer models are joined in first-seen order",
+			[]reviewplan.WorkstreamUsage{ws("a:x", "opus"), ws("b:y", "sonnet")},
+			"opus, sonnet",
+		},
+		{"empty reviewer model is skipped", []reviewplan.WorkstreamUsage{ws("a:x", ""), ws("b:y", "sonnet")}, "sonnet"},
+		{
+			"falls back to orchestrator model when there are no reviewers",
+			[]reviewplan.WorkstreamUsage{ws("orchestrator-selection", "sonnet")},
+			"sonnet",
+		},
 		{"none", nil, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var workstreams []reviewplan.WorkstreamUsage
-			for _, model := range tc.models {
-				workstreams = append(workstreams, reviewplan.WorkstreamUsage{Model: model})
-			}
-			if got := sharedWorkstreamModel(workstreams); got != tc.want {
-				t.Fatalf("sharedWorkstreamModel(%v) = %q, want %q", tc.models, got, tc.want)
+			if got := sharedWorkstreamModel(tc.workstreams); got != tc.want {
+				t.Fatalf("sharedWorkstreamModel() = %q, want %q", got, tc.want)
 			}
 		})
 	}
