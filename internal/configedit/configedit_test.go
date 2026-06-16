@@ -502,6 +502,19 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		if got.Backend.OnePassword == nil || got.Backend.OnePassword.ServiceTokenEnv != "CUSTOM_SERVICE_TOKEN" {
 			t.Fatalf("replaced 1password profile = %#v, want service token env payload", got)
 		}
+
+		downgraded := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")}
+		updated, changed, created, err = configedit.SetSecretsProfile(updated, "work-op", configedit.SecretsProfilePatch{Backend: &downgraded})
+		if err != nil {
+			t.Fatalf("SetSecretsProfile 1password downgrade: %v", err)
+		}
+		if !changed || created {
+			t.Fatalf("SetSecretsProfile 1password downgrade = changed:%t created:%t, want true,false", changed, created)
+		}
+		got = updated.Secrets.Profiles["work-op"]
+		if got.Backend.Kind != "file" || got.Backend.OnePassword != nil {
+			t.Fatalf("downgraded profile = %#v, want file backend without 1password payload", got)
+		}
 	})
 
 	t.Run("set validates edge cases", func(t *testing.T) {

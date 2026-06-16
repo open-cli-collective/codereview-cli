@@ -465,8 +465,9 @@ func TestRenderConfigSecretsProfileTextWithOnePasswordDetails(t *testing.T) {
 		Backend: "op",
 		BackendInfo: &ConfigSecretsProfileBackendDetails{
 			OnePassword: &ConfigSecretsProfileOnePassword{
-				Timeout:                "5s",
-				VaultID:                "vault-123",
+				Timeout: "5s",
+				VaultID: "vault-123",
+				// #nosec G101 -- this is an env-var name rendered for display, not a secret value.
 				ServiceAccountTokenEnv: "OP_SERVICE_ACCOUNT_TOKEN",
 			},
 		},
