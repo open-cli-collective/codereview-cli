@@ -18,6 +18,7 @@ type ConfigShow struct {
 	Data           config.DataConfig   `json:"data"`
 	Backend        string              `json:"backend,omitempty"`
 	BackendSource  string              `json:"backend_source,omitempty"`
+	SecretsProfiles []config.EffectiveSecretsProfile `json:"secrets_profiles,omitempty"`
 	CredentialRef  string              `json:"credential_ref,omitempty"`
 	CredentialRefs []CredentialStatus  `json:"credential_refs"`
 	LLMCredential  LLMCredential       `json:"llm_credential"`
@@ -77,6 +78,27 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 	if show.BackendSource != "" {
 		if err := writeKV(w, "Keyring backend source", show.BackendSource); err != nil {
 			return err
+		}
+	}
+	if len(show.SecretsProfiles) > 0 {
+		if _, err := fmt.Fprintln(w, "Secrets management profiles:"); err != nil {
+			return err
+		}
+		for _, profile := range show.SecretsProfiles {
+			label := profile.ID
+			if strings.TrimSpace(profile.Label) != "" {
+				label = profile.Label
+			}
+			suffix := ""
+			if profile.IsDefault {
+				suffix = " [default]"
+			}
+			if _, err := fmt.Fprintf(w, "  - %s: %s (%s)%s\n", profile.ID, label, profile.Backend, suffix); err != nil {
+				return err
+			}
+			if err := writeKV(w, "    Source", string(profile.Source)); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := fmt.Fprintln(w, "Git:"); err != nil {
