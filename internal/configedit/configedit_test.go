@@ -429,6 +429,9 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		if got.Label != "Personal Keychain" || got.Backend.Kind != backend {
 			t.Fatalf("created profile = %#v, want trimmed label + backend", got)
 		}
+		if len(cfg.Secrets.Profiles) != 0 {
+			t.Fatalf("original cfg mutated on create: %#v", cfg.Secrets.Profiles)
+		}
 
 		nextBackend := config.SecretsBackendKind("file")
 		updated2, changed, created, err := configedit.SetSecretsProfile(updated, "personal", configedit.SecretsProfilePatch{
@@ -492,6 +495,20 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		if !errors.Is(err, configedit.ErrSecretsProfileMutationRequired) {
 			t.Fatalf("SetSecretsProfile update without flags error = %v, want ErrSecretsProfileMutationRequired", err)
 		}
+
+		cfg = testConfig()
+		cfg.Secrets.Profiles = map[string]config.SecretsProfile{
+			"personal": {Backend: config.SecretsProfileBackend{Kind: backend}},
+		}
+		invalidBackend := config.SecretsBackendKind("bogus")
+		before := cfg.Secrets.Profiles["personal"]
+		_, _, _, err = configedit.SetSecretsProfile(cfg, "personal", configedit.SecretsProfilePatch{Backend: &invalidBackend})
+		if !errors.Is(err, config.ErrInvalid) {
+			t.Fatalf("SetSecretsProfile invalid backend error = %v, want ErrInvalid", err)
+		}
+		if after := cfg.Secrets.Profiles["personal"]; !reflect.DeepEqual(after, before) {
+			t.Fatalf("original cfg mutated on failed update: got %#v want %#v", after, before)
+		}
 	})
 
 	t.Run("default set and unset validate configured profiles only", func(t *testing.T) {
@@ -545,6 +562,9 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		}
 		if !changed || len(updated.Secrets.Profiles) != 0 {
 			t.Fatalf("RemoveSecretsProfile existing = changed:%t profiles:%#v, want true/empty", changed, updated.Secrets.Profiles)
+		}
+		if len(cfg.Secrets.Profiles) != 1 {
+			t.Fatalf("original cfg mutated on remove: %#v", cfg.Secrets.Profiles)
 		}
 		updated, changed, err = configedit.RemoveSecretsProfile(updated, "work")
 		if err != nil {

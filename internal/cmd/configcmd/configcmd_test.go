@@ -356,12 +356,43 @@ func TestConfigSecretsProfileGetAndDefaultGetJSON(t *testing.T) {
 	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get", "--json"}); err != nil {
 		t.Fatalf("Execute default get: %v", err)
 	}
-	got = view.ConfigSecretsProfile{}
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+	var defaultGot view.ConfigSecretsProfileDefault
+	wantDefault := view.ConfigSecretsProfileDefault{DefaultProfile: &want}
+	if err := json.Unmarshal(out.Bytes(), &defaultGot); err != nil {
 		t.Fatalf("Unmarshal default JSON: %v\n%s", err, out.String())
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("default get JSON = %#v, want %#v", got, want)
+	if !reflect.DeepEqual(defaultGot, wantDefault) {
+		t.Fatalf("default get JSON = %#v, want %#v", defaultGot, wantDefault)
+	}
+}
+
+func TestConfigSecretsProfileDefaultGetReportsNoneForValidUnsetState(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = config.SecretsConfig{
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {Label: "Work File Store", Backend: config.SecretsProfileBackend{Kind: "file"}},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+
+	cmd, out := newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get"}); err != nil {
+		t.Fatalf("Execute text: %v", err)
+	}
+	if out.String() != "Default secrets profile: none\n" {
+		t.Fatalf("default get text = %q, want none text", out.String())
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get", "--json"}); err != nil {
+		t.Fatalf("Execute JSON: %v", err)
+	}
+	defaultGot := view.ConfigSecretsProfileDefault{}
+	if err := json.Unmarshal(out.Bytes(), &defaultGot); err != nil {
+		t.Fatalf("Unmarshal default-none JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(defaultGot, view.ConfigSecretsProfileDefault{}) {
+		t.Fatalf("default get JSON = %#v, want empty default wrapper", defaultGot)
 	}
 }
 

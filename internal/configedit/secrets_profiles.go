@@ -63,6 +63,7 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 		normalizedLabel = &trimmed
 	}
 	working := cfg
+	working.Secrets.Profiles = cloneSecretsProfiles(cfg.Secrets.Profiles)
 	if working.Secrets.Profiles == nil {
 		working.Secrets.Profiles = map[string]config.SecretsProfile{}
 	}
@@ -142,6 +143,7 @@ func RemoveSecretsProfile(cfg config.File, rawID string) (config.File, bool, err
 		return cfg, false, nil
 	}
 	working := cfg
+	working.Secrets.Profiles = cloneSecretsProfiles(cfg.Secrets.Profiles)
 	delete(working.Secrets.Profiles, id)
 	if len(working.Secrets.Profiles) == 0 {
 		working.Secrets.Profiles = nil
@@ -150,4 +152,15 @@ func RemoveSecretsProfile(cfg config.File, rawID string) (config.File, bool, err
 		return config.File{}, false, err
 	}
 	return working, true, nil
+}
+
+func cloneSecretsProfiles(in map[string]config.SecretsProfile) map[string]config.SecretsProfile {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]config.SecretsProfile, len(in))
+	for id, profile := range in {
+		out[id] = profile
+	}
+	return out
 }

@@ -184,13 +184,17 @@ func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
 			}
 			profile, ok := config.EffectiveDefaultSecretsProfile(cfg)
 			if !ok {
-				return cmderr.Config(fmt.Errorf("%w", config.ErrSecretsProfileNotFound))
+				result := view.ConfigSecretsProfileDefault{}
+				if defaultJSON {
+					return view.RenderConfigSecretsProfileDefaultJSON(opts.Stdout, result)
+				}
+				return view.RenderConfigSecretsProfileDefaultText(opts.Stdout, result)
 			}
-			result := configSecretsProfileView(profile)
+			result := view.ConfigSecretsProfileDefault{DefaultProfile: configSecretsProfileViewPtr(profile)}
 			if defaultJSON {
-				return view.RenderConfigSecretsProfileJSON(opts.Stdout, result)
+				return view.RenderConfigSecretsProfileDefaultJSON(opts.Stdout, result)
 			}
-			return view.RenderConfigSecretsProfileText(opts.Stdout, result)
+			return view.RenderConfigSecretsProfileDefaultText(opts.Stdout, result)
 		},
 	}
 	defaultGetCmd.Flags().BoolVar(&defaultJSON, "json", false, "Emit JSON")
@@ -276,6 +280,11 @@ func configSecretsProfileView(profile config.EffectiveSecretsProfile) view.Confi
 	}
 }
 
+func configSecretsProfileViewPtr(profile config.EffectiveSecretsProfile) *view.ConfigSecretsProfile {
+	result := configSecretsProfileView(profile)
+	return &result
+}
+
 func effectiveSecretsProfileByID(cfg config.File, rawID string) (config.EffectiveSecretsProfile, error) {
 	id := strings.TrimSpace(rawID)
 	if id == "" {
@@ -306,4 +315,3 @@ func mapSecretsProfileMutationError(err error) error {
 		return cmderr.Config(err)
 	}
 }
-

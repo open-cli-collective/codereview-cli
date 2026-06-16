@@ -348,6 +348,11 @@ type ConfigSecretsProfile struct {
 	Source    string `json:"source"`
 }
 
+// ConfigSecretsProfileDefault is the presentation model for `cr config secrets-profile default get`.
+type ConfigSecretsProfileDefault struct {
+	DefaultProfile *ConfigSecretsProfile `json:"default_profile,omitempty"`
+}
+
 // RenderConfigSecretsProfilesText writes a stable human-readable secrets-profile listing.
 func RenderConfigSecretsProfilesText(w io.Writer, result ConfigSecretsProfiles) error {
 	if len(result.Profiles) == 0 {
@@ -402,6 +407,31 @@ func RenderConfigSecretsProfileJSON(w io.Writer, profile ConfigSecretsProfile) e
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(profile)
+}
+
+// RenderConfigSecretsProfileDefaultText writes the default secrets-profile summary.
+func RenderConfigSecretsProfileDefaultText(w io.Writer, result ConfigSecretsProfileDefault) error {
+	if result.DefaultProfile == nil {
+		_, err := fmt.Fprintln(w, "Default secrets profile: none")
+		return err
+	}
+	if err := writeKV(w, "Default secrets profile", result.DefaultProfile.ID); err != nil {
+		return err
+	}
+	if err := writeOptionalKV(w, "Label", result.DefaultProfile.Label); err != nil {
+		return err
+	}
+	if err := writeKV(w, "Backend", result.DefaultProfile.Backend); err != nil {
+		return err
+	}
+	return writeKV(w, "Source", result.DefaultProfile.Source)
+}
+
+// RenderConfigSecretsProfileDefaultJSON writes the default secrets-profile summary as indented JSON.
+func RenderConfigSecretsProfileDefaultJSON(w io.Writer, result ConfigSecretsProfileDefault) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
 }
 
 // ConfigRoute is one repository-profile route.

@@ -455,6 +455,60 @@ func TestRenderConfigSecretsProfileJSON(t *testing.T) {
 	}
 }
 
+func TestRenderConfigSecretsProfileDefaultText(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigSecretsProfileDefault{
+		DefaultProfile: &ConfigSecretsProfile{
+			ID:      "work",
+			Label:   "Work Keychain",
+			Backend: "keychain",
+			Source:  "configured",
+		},
+	}
+
+	if err := RenderConfigSecretsProfileDefaultText(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsProfileDefaultText: %v", err)
+	}
+	want := "Default secrets profile: work\nLabel: Work Keychain\nBackend: keychain\nSource: configured\n"
+	if out.String() != want {
+		t.Fatalf("text output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRenderConfigSecretsProfileDefaultTextNone(t *testing.T) {
+	var out bytes.Buffer
+
+	if err := RenderConfigSecretsProfileDefaultText(&out, ConfigSecretsProfileDefault{}); err != nil {
+		t.Fatalf("RenderConfigSecretsProfileDefaultText: %v", err)
+	}
+	if out.String() != "Default secrets profile: none\n" {
+		t.Fatalf("text output = %q, want none text", out.String())
+	}
+}
+
+func TestRenderConfigSecretsProfileDefaultJSON(t *testing.T) {
+	var out bytes.Buffer
+	result := ConfigSecretsProfileDefault{
+		DefaultProfile: &ConfigSecretsProfile{
+			ID:      "work",
+			Label:   "Work Keychain",
+			Backend: "keychain",
+			Source:  "configured",
+		},
+	}
+
+	if err := RenderConfigSecretsProfileDefaultJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsProfileDefaultJSON: %v", err)
+	}
+	var decoded ConfigSecretsProfileDefault
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded = %#v, want %#v", decoded, result)
+	}
+}
+
 func TestRenderConfigResolveProfileText(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigResolveProfile{
