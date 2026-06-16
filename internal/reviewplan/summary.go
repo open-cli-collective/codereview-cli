@@ -63,7 +63,10 @@ type WorkstreamUsage struct {
 	CacheRead   *int
 	CacheCreate *int
 	CostUSD     *float64
-	DurationMS  *int64
+	// CostEstimated is true when CostUSD was derived from token prices because
+	// the adapter did not report a real cost.
+	CostEstimated bool
+	DurationMS    *int64
 }
 
 // AggregateUsage holds run-wide totals. Each field is non-nil only when every
@@ -75,6 +78,7 @@ type AggregateUsage struct {
 	CacheRead         *int
 	CacheCreate       *int
 	CostUSD           *float64
+	CostEstimated     bool
 	ComputeDurationMS *int64
 }
 
@@ -147,8 +151,24 @@ func aggregateUsage(workstreams []WorkstreamUsage) AggregateUsage {
 		CacheRead:         sumInts(workstreams, func(w WorkstreamUsage) *int { return w.CacheRead }),
 		CacheCreate:       sumInts(workstreams, func(w WorkstreamUsage) *int { return w.CacheCreate }),
 		CostUSD:           sumFloats(workstreams, func(w WorkstreamUsage) *float64 { return w.CostUSD }),
+		CostEstimated:     allCostEstimated(workstreams),
 		ComputeDurationMS: sumDurations(workstreams, func(w WorkstreamUsage) *int64 { return w.DurationMS }),
 	}
+}
+
+// allCostEstimated reports whether every workstream's cost was estimated, so the
+// aggregate is marked an estimate only when it is fully estimated — a mostly-real
+// total is not labeled "(est.)".
+func allCostEstimated(workstreams []WorkstreamUsage) bool {
+	if len(workstreams) == 0 {
+		return false
+	}
+	for _, w := range workstreams {
+		if !w.CostEstimated {
+			return false
+		}
+	}
+	return true
 }
 
 func sumInts(workstreams []WorkstreamUsage, field func(WorkstreamUsage) *int) *int {
@@ -203,7 +223,7 @@ func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage)
 	out.WriteString("\n---\n<details>\n<summary>Completed in ")
 	out.WriteString(formatDurationMS(run.WallDurationMS))
 	out.WriteString(" | ")
-	out.WriteString(formatUSD(totals.CostUSD))
+	out.WriteString(formatUSDEst(totals.CostUSD, totals.CostEstimated))
 	out.WriteString(" | ")
 	out.WriteString(escapeCell(orUnavailable(run.Model)))
 	out.WriteString(" | cr ")
@@ -228,7 +248,7 @@ func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage)
 		duration += " wall · " + formatDurationMS(totals.ComputeDurationMS) + " compute"
 	}
 	writeFooterRow(out, "Duration", duration)
-	writeFooterRow(out, "Cost", formatUSD(totals.CostUSD))
+	writeFooterRow(out, "Cost", formatUSDEst(totals.CostUSD, totals.CostEstimated))
 	tokens := unavailableValue
 	if totals.TokensIn != nil || totals.TokensOut != nil {
 		tokens = formatTokens(totals.TokensIn) + " in / " + formatTokens(totals.TokensOut) + " out"
@@ -247,7 +267,7 @@ func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage)
 				formatTokens(workstream.TokensOut),
 				formatTokens(workstream.CacheRead),
 				formatTokens(workstream.CacheCreate),
-				formatUSD(workstream.CostUSD),
+				formatUSDEst(workstream.CostUSD, workstream.CostEstimated),
 				formatDurationMS(workstream.DurationMS),
 			)
 		}
@@ -295,9 +315,21 @@ func formatTokens(value *int) string {
 	}
 }
 
+// formatUSD renders a real (adapter-reported) dollar amount. Estimated costs go
+// through formatUSDEst, so there is a single rendering path.
 func formatUSD(value *float64) string {
+	return formatUSDEst(value, false)
+}
+
+// formatUSDEst renders a dollar amount, marking it as an estimate
+// ("~$X.XX (est.)") when the cost was derived from token prices rather than
+// reported by the adapter.
+func formatUSDEst(value *float64, estimated bool) string {
 	if value == nil {
 		return unavailableValue
+	}
+	if estimated {
+		return fmt.Sprintf("~$%.2f (est.)", *value)
 	}
 	return fmt.Sprintf("$%.2f", *value)
 }

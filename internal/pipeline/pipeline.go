@@ -25,6 +25,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	"github.com/open-cli-collective/codereview-cli/internal/pricing"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/sessionreuse"
@@ -1213,6 +1214,17 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 		CacheRead:   usage.CacheRead,
 		CacheCreate: usage.CacheCreate,
 		CostUSD:     usage.CostUSD,
+	}
+	// When the adapter reports no cost (e.g. subscription auth), estimate it from
+	// tokens at public list prices — only for models the price table knows, so an
+	// agent's unpriced model leaves cost unavailable rather than wrong.
+	if workstream.CostUSD == nil {
+		if est, ok := pricing.EstimateUSD(
+			draft.model, usage.TokensIn, usage.TokensOut, usage.CacheRead, usage.CacheCreate,
+		); ok {
+			workstream.CostUSD = &est
+			workstream.CostEstimated = true
+		}
 	}
 	// Zero means the adapter never reported a duration; fall back to the
 	// pipeline's own start/complete clock for the workstream, and render
