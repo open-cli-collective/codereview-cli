@@ -6139,6 +6139,22 @@ func TestValidateInteractiveInitConfigDoesNotMaskUnrelatedInvalidState(t *testin
 	}
 }
 
+func TestValidateInteractiveInitConfigAllowsOnlyMissingSecretsProfile(t *testing.T) {
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	if err := validateInteractiveInitConfig(cfg); err != nil {
+		t.Fatalf("validateInteractiveInitConfig error = %v, want nil for interactive recovery", err)
+	}
+}
+
 func TestHuhInitSecretPrompterAccessibleNamesSelectedSecretsProfile(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
@@ -6225,6 +6241,93 @@ func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileSelection(t *te
 	}
 	if got := workspace.profile.SecretsProfile; got != "" {
 		t.Fatalf("workspace.profile.SecretsProfile = %q, want cleared explicit selection", got)
+	}
+}
+
+func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileToConfiguredProfile(t *testing.T) {
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"team-vault": {
+					Label:   "Team Vault",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	profile := cfg.Profiles["work"]
+	draft := seedInteractiveInitDraft("work", "work", "work", &profile)
+	applySecretsProfileSelection(&draft, "team-vault")
+
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	if got := workspace.profile.SecretsProfile; got != "team-vault" {
+		t.Fatalf("workspace.profile.SecretsProfile = %q, want team-vault", got)
+	}
+	if got := workspace.cfg.Profiles["work"].SecretsProfile; got != "team-vault" {
+		t.Fatalf("workspace cfg secrets_profile = %q, want team-vault", got)
+	}
+}
+
+func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName:      "work",
+				MakeDefault:      true,
+				GitHost:          "github.com",
+				GitAuth:          string(config.GitAuthModePAT),
+				GitCredentialRef: "codereview/work",
+				SecretsProfile:   "team-vault",
+				LLMProvider:      string(config.LLMProviderAnthropic),
+				LLMAuth:          string(config.LLMAuthSubscription),
+				LLMAdapter:       string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{
+				Profiles: map[string]config.Profile{},
+				Secrets: config.SecretsConfig{
+					Profiles: map[string]config.SecretsProfile{
+						"team-vault": {
+							Label:   "Team Vault",
+							Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+						},
+					},
+				},
+			}, false, nil
+		},
+		saveConfig: func(string, config.File) error { return nil },
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "Next via Team Vault: cr set-credential --ref codereview/work --key "+credentials.GitTokenKey+" --stdin") {
+		t.Fatalf("stderr = %q, want deferred hint naming the selected secrets-management profile", got)
 	}
 }
 
