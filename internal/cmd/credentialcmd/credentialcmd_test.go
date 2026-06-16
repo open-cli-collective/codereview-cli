@@ -3964,8 +3964,8 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if strings.Contains(strings.ToLower(out), "paste a secret") {
 		t.Fatalf("wizard output unexpectedly requested secret ingress: %q", out)
 	}
-	if !strings.Contains(out, "Default profile") || !strings.Contains(out, "This profile is already the default profile.") {
-		t.Fatalf("wizard output missing already-default profile copy: %q", out)
+	if strings.Contains(out, "Default profile") || strings.Contains(out, "This profile is already the default profile.") {
+		t.Fatalf("wizard output still shows default-profile prompt in profile editor: %q", out)
 	}
 	if strings.Contains(out, "Make this the default profile") || strings.Contains(out, "No, keep the current default profile") {
 		t.Fatalf("wizard output contains stale default-profile select copy: %q", out)
@@ -4548,8 +4548,8 @@ func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDef
 	if !draft.MakeDefault {
 		t.Fatalf("draft.MakeDefault = false, want no-default interactive flow to preserve seeded true selection")
 	}
-	if !strings.Contains(stderr.String(), "Yes, make this profile the default") {
-		t.Fatalf("stderr = %q, want default-profile select copy in no-default flow", stderr.String())
+	if strings.Contains(stderr.String(), "Yes, make this profile the default") || strings.Contains(stderr.String(), "Default profile") {
+		t.Fatalf("stderr = %q, want profile editor to omit default-profile select copy", stderr.String())
 	}
 }
 

@@ -2287,10 +2287,11 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 			agentSourceFields := []huh.Field{
 				huh.NewNote().
+					Title("Additional reviewer-agent directories (optional)").
 					Description("Add local directories that contain custom reviewer agent definitions for this profile. These profile-specific directories are loaded alongside repo-local agents under <repo>/.codereview/agents and any per-run --agents-dir sources."),
 				huh.NewText().
 					Title("Additional trusted reviewer-agent directories").
-					Description("One directory per line. Paths are deduplicated and normalized before save.").
+					Description("Paths are deduplicated and normalized before save.").
 					Value(&agentSourceText),
 			}
 			actionFields := []huh.Field{
@@ -2302,8 +2303,47 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 					).
 					Value(&profileAction),
 			}
+			profileFields := []huh.Field{
+				huh.NewInput().
+					Title("Profile name").
+					Value(&draft.ProfileName).
+					Validate(validateProfileName),
+			}
+			profileFields = append(profileFields, initRouteEditorFields(&routeText, true)...)
+			profileFields = append(profileFields,
+				huh.NewSelect[string]().
+					Title("Reviewer entity").
+					Description(reviewerEntitySelectionDescription()).
+					Options(reviewerEntityOptions...).
+					Value(&selectedReviewerEntity),
+				huh.NewSelect[string]().
+					Title("LLM runtime").
+					Description("Choose how reviewer agents run for this profile.").
+					Options(llmRuntimeOptions...).
+					Value(&selectedLLMRuntime),
+				huh.NewSelect[string]().
+					Title(initReviewerModelTierTitle).
+					Description(initReviewerModelTierDescription).
+					Options(initReviewerModelTierOptions()...).
+					Value(&draft.LLMReviewerModelTier),
+				huh.NewNote().Title("Model tier mapping"),
+			)
+			profileFields = append(profileFields, modelMapFields...)
+			profileFields = append(profileFields, agentSourceFields...)
+			profileFields = append(profileFields, huh.NewNote().Title("Review Policy"))
+			profileFields = append(profileFields, reviewPolicyFields...)
+			profileFields = append(profileFields,
+				huh.NewNote().
+					Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure."),
+				huh.NewInput().
+					Title("Git secrets storage label").
+					Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure.").
+					Value(&gitStorageLabel).
+					Validate(validateOptionalCredentialRef),
+			)
+			profileFields = append(profileFields, actionFields...)
 			form := huh.NewForm(
-				huh.NewGroup(initProfileIdentityFields(&draft, selectedProfileName, ctx.DefaultProfileName)...).Title("Profile"),
+				huh.NewGroup(profileFields...).Title("Profile"),
 				huh.NewGroup(
 					huh.NewSelect[string]().
 						Title("Git scope").
@@ -2325,41 +2365,6 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				).WithHideFunc(func() bool {
 					return selectedGitScope != initCustomGitScopeSelection
 				}).Title("Git Scope"),
-				huh.NewGroup(initRouteEditorFields(&routeText, false)...).Title("Automatic profile selection"),
-				huh.NewGroup(
-					huh.NewSelect[string]().
-						Title("Reviewer entity").
-						Description(reviewerEntitySelectionDescription()).
-						Options(reviewerEntityOptions...).
-						Value(&selectedReviewerEntity),
-				),
-				huh.NewGroup(
-					huh.NewSelect[string]().
-						Title("LLM runtime").
-						Description("Choose how reviewer agents run for this profile.").
-						Options(llmRuntimeOptions...).
-						Value(&selectedLLMRuntime),
-				),
-				huh.NewGroup(
-					huh.NewSelect[string]().
-						Title(initReviewerModelTierTitle).
-						Description(initReviewerModelTierDescription).
-						Options(initReviewerModelTierOptions()...).
-						Value(&draft.LLMReviewerModelTier),
-				),
-				huh.NewGroup(modelMapFields...).Title("Model tier mapping"),
-				huh.NewGroup(agentSourceFields...).Title("Additional reviewer-agent directories (optional)"),
-				huh.NewGroup(reviewPolicyFields...).Title("Review Policy"),
-				huh.NewGroup(
-					huh.NewNote().
-						Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure."),
-					huh.NewInput().
-						Title("Git secrets storage label").
-						Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure.").
-						Value(&gitStorageLabel).
-						Validate(validateOptionalCredentialRef),
-				),
-				huh.NewGroup(actionFields...),
 			)
 			back, err := runBackableInitForm(form, p.stdin, p.stderr)
 			if err != nil {
