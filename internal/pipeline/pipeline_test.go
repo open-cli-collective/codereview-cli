@@ -2032,11 +2032,11 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 	}
 
 	// Adapter reported a real cost → passes through, not marked estimated.
-	real := 9.99
+	realCost := 9.99
 	draft.model = "claude-sonnet-4-6"
-	draft.response.Usage.CostUSD = &real
+	draft.response.Usage.CostUSD = &realCost
 	w = workstreamUsage("z:w", draft)
-	if w.CostUSD == nil || *w.CostUSD != real || w.CostEstimated {
+	if w.CostUSD == nil || *w.CostUSD != realCost || w.CostEstimated {
 		t.Fatalf("real cost should pass through unmarked; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
 	}
 }

@@ -158,7 +158,7 @@ func aggregateUsage(workstreams []WorkstreamUsage) AggregateUsage {
 
 // allCostEstimated reports whether every workstream's cost was estimated, so the
 // aggregate is marked an estimate only when it is fully estimated — a mostly-real
-// total is not labelled "(est.)".
+// total is not labeled "(est.)".
 func allCostEstimated(workstreams []WorkstreamUsage) bool {
 	if len(workstreams) == 0 {
 		return false
