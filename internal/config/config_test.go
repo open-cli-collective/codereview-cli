@@ -1142,6 +1142,15 @@ func TestValidateSecretsProfiles(t *testing.T) {
 	}
 }
 
+func TestValidateKeyringRejectsLegacyOnePasswordBackends(t *testing.T) {
+	for _, backend := range []string{"op", "op-connect", "op-desktop"} {
+		err := ValidateKeyring(KeyringConfig{Backend: backend})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("ValidateKeyring(%q) error = %v, want ErrInvalid", backend, err)
+		}
+	}
+}
+
 func TestSecretsProfileBackendNormalizedOnePasswordDefaults(t *testing.T) {
 	service := SecretsProfileBackend{
 		Kind: SecretsBackendKind(credstore.BackendOP),

@@ -558,6 +558,11 @@ func Save(path string, cfg File) error {
 	return nil
 }
 
+// Normalize returns cfg with the same normalization pass Validate and Save apply.
+func Normalize(cfg File) File {
+	return cfg.normalized()
+}
+
 // Validate checks a config file after defaults have been applied.
 func Validate(cfg File) error {
 	cfg = cfg.normalized()
@@ -974,8 +979,12 @@ func ValidateKeyring(keyring KeyringConfig) error {
 	if backend == "" {
 		return nil
 	}
-	if _, err := credstore.ParseBackend(backend); err != nil {
+	parsed, err := credstore.ParseBackend(backend)
+	if err != nil {
 		return fmt.Errorf("%w: keyring.backend %q is invalid: %w", ErrInvalid, backend, err)
+	}
+	if IsOnePasswordSecretsBackend(SecretsBackendKind(parsed)) {
+		return invalid("keyring.backend %q is not supported; configure 1Password through a named secrets-management profile instead", backend)
 	}
 	return nil
 }

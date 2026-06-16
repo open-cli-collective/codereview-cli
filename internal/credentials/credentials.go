@@ -228,6 +228,12 @@ func StoreOptions(flagValue string, flagSet bool, cfg config.File) (credstore.Op
 	if err := credstore.BindBackendFlag(&opts, flagValue, flagSet, cfg.Keyring.Backend); err != nil {
 		return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
 	}
+	if err := rejectLegacyOnePasswordBackend(opts.Backend); err != nil {
+		return credstore.Options{}, err
+	}
+	if err := rejectLegacyOnePasswordBackend(opts.ConfigBackend); err != nil {
+		return credstore.Options{}, err
+	}
 	return opts, nil
 }
 
@@ -366,12 +372,18 @@ func BackendMetadata(flagValue string, flagSet bool, cfg config.File) (credstore
 		if err != nil {
 			return "", "", fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
 		}
+		if err := rejectLegacyOnePasswordBackend(backend); err != nil {
+			return "", "", err
+		}
 		return backend, credstore.SourceEnv, nil
 	}
 	if opts.ConfigBackend != "" {
 		backend, err := credstore.ParseBackend(string(opts.ConfigBackend))
 		if err != nil {
 			return "", "", fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+		}
+		if err := rejectLegacyOnePasswordBackend(backend); err != nil {
+			return "", "", err
 		}
 		return backend, credstore.SourceConfig, nil
 	}
@@ -385,6 +397,13 @@ func BackendMetadata(flagValue string, flagSet bool, cfg config.File) (credstore
 	default:
 		return "", "", credstore.ErrBackendNotImplemented
 	}
+}
+
+func rejectLegacyOnePasswordBackend(kind credstore.Backend) error {
+	if !config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kind)) {
+		return nil
+	}
+	return fmt.Errorf("%w: backend %q is only supported through named secrets-management profiles", ErrInvalidBackendSelection, kind)
 }
 
 // KeyStatus reports the presence state for one declared keyring key.

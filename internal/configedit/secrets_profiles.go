@@ -94,7 +94,7 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 	if err := config.Validate(working); err != nil {
 		return config.File{}, false, false, err
 	}
-	return working, true, !existed, nil
+	return config.Normalize(working), true, !existed, nil
 }
 
 // SetDefaultSecretsProfile updates cfg.secrets.default_profile after verifying the profile exists.
@@ -114,7 +114,7 @@ func SetDefaultSecretsProfile(cfg config.File, rawID string) (config.File, bool,
 	if err := config.Validate(working); err != nil {
 		return config.File{}, false, err
 	}
-	return working, true, nil
+	return config.Normalize(working), true, nil
 }
 
 // UnsetDefaultSecretsProfile clears cfg.secrets.default_profile.
@@ -127,7 +127,7 @@ func UnsetDefaultSecretsProfile(cfg config.File) (config.File, bool, error) {
 	if err := config.Validate(working); err != nil {
 		return config.File{}, false, err
 	}
-	return working, true, nil
+	return config.Normalize(working), true, nil
 }
 
 // RemoveSecretsProfile removes one explicit named secrets-management profile.
@@ -151,7 +151,7 @@ func RemoveSecretsProfile(cfg config.File, rawID string) (config.File, bool, err
 	if err := config.Validate(working); err != nil {
 		return config.File{}, false, err
 	}
-	return working, true, nil
+	return config.Normalize(working), true, nil
 }
 
 func cloneSecretsProfiles(in map[string]config.SecretsProfile) map[string]config.SecretsProfile {

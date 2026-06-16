@@ -62,6 +62,25 @@ func TestStoreOptionsBackendPrecedenceMetadata(t *testing.T) {
 	}
 }
 
+func TestStoreOptionsRejectsLegacyOnePasswordBackends(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		flag    string
+		flagSet bool
+		cfg     config.File
+	}{
+		{name: "flag", flag: "op", flagSet: true, cfg: config.File{}},
+		{name: "config", cfg: config.File{Keyring: config.KeyringConfig{Backend: "op-connect"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := StoreOptions(tc.flag, tc.flagSet, tc.cfg)
+			if !errors.Is(err, ErrInvalidBackendSelection) {
+				t.Fatalf("StoreOptions error = %v, want ErrInvalidBackendSelection", err)
+			}
+		})
+	}
+}
+
 func TestStoreOptionsInvalidBackendFlag(t *testing.T) {
 	_, err := StoreOptions("bogus", true, config.File{})
 	if !errors.Is(err, ErrInvalidBackendSelection) {

@@ -584,6 +584,30 @@ func TestConfigSecretsProfileSetAndGetOnePasswordBackend(t *testing.T) {
 	}
 }
 
+func TestConfigSecretsProfileSetShowsNormalizedOnePasswordDefaults(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{
+		"config", "secrets-profile", "set", "work-op",
+		"--backend", "op",
+		"--op-vault-id", "vault-123",
+	}); err != nil {
+		t.Fatalf("Execute create op: %v", err)
+	}
+	wantText := "" +
+		"Secrets profile: work-op\n" +
+		"Backend: op\n" +
+		"1Password timeout: 5s\n" +
+		"1Password vault id: vault-123\n" +
+		"1Password service token env: OP_SERVICE_ACCOUNT_TOKEN\n" +
+		"Source: configured\n" +
+		"Default: false\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout after op create = %q, want %q", out.String(), wantText)
+	}
+}
+
 func TestConfigSecretsProfileSetRejectsIncompatibleOnePasswordFlags(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)
