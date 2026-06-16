@@ -7958,7 +7958,7 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	if !foundConfigure {
 		t.Fatalf("rows = %#v, want configure-new backend command copy", rows)
 	}
-	options := initLegacySecretsBackendOptions()
+	options := initLegacySecretsBackendOptions("")
 	if len(options) == 0 {
 		t.Fatal("initLegacySecretsBackendOptions returned no options")
 	}
@@ -8463,6 +8463,22 @@ func TestValidateInitSecretsRequiredSingleLine(t *testing.T) {
 	}
 	if err := validateInitSecretsRequiredSingleLine("https://connect.example", true, "1Password Connect host"); err != nil {
 		t.Fatalf("required validator valid input error = %v, want nil", err)
+	}
+}
+
+func TestInitSecretsProfileBackendOptionsExcludeUnavailableChoicesUnlessCurrent(t *testing.T) {
+	options := initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile))
+	values := make([]string, 0, len(options))
+	for _, option := range options {
+		values = append(values, option.Value)
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		for _, value := range values {
+			if value == string(credstore.BackendWinCred) {
+				t.Fatalf("wincred should be excluded from selectable backend options on darwin: %v", values)
+			}
+		}
 	}
 }
 

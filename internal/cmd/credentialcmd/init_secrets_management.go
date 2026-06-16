@@ -244,19 +244,22 @@ func initSecretsProfileEditorLabelSeed(profile config.SecretsProfile, id string,
 	return fallback, "", fallback
 }
 
-func initSecretsProfileBackendOptions() []huh.Option[string] {
+func initSecretsProfileBackendOptions(current config.SecretsBackendKind) []huh.Option[string] {
 	options := make([]huh.Option[string], 0, len(initSecretsBackendCatalog()))
 	for _, backend := range initSecretsBackendCatalog() {
+		if !backend.Available && backend.Kind != current {
+			continue
+		}
 		label := backend.Label
-		if !backend.Available {
-			label += " (unavailable in this build)"
+		if !backend.Available && backend.Kind == current {
+			label += " (unavailable in this build; existing config)"
 		}
 		options = append(options, huh.NewOption(label, string(backend.Kind)))
 	}
 	return options
 }
 
-func initLegacySecretsBackendOptions() []huh.Option[string] {
+func initLegacySecretsBackendOptions(current string) []huh.Option[string] {
 	options := []huh.Option[string]{
 		huh.NewOption("Automatic OS default", ""),
 	}
@@ -264,7 +267,14 @@ func initLegacySecretsBackendOptions() []huh.Option[string] {
 		if !backend.LegacyCompatible {
 			continue
 		}
-		options = append(options, huh.NewOption(backend.Label, string(backend.Kind)))
+		if !backend.Available && string(backend.Kind) != strings.TrimSpace(current) {
+			continue
+		}
+		label := backend.Label
+		if !backend.Available && string(backend.Kind) == strings.TrimSpace(current) {
+			label += " (unavailable in this build; existing config)"
+		}
+		options = append(options, huh.NewOption(label, string(backend.Kind)))
 	}
 	return options
 }
@@ -530,7 +540,7 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 				Validate(validateOptionalDisplayName),
 			huh.NewSelect[string]().
 				Title("Secrets-management backend").
-				Options(initSecretsProfileBackendOptions()...).
+				Options(initSecretsProfileBackendOptions(seedProfile.Backend.Kind)...).
 				Value(&kindValue),
 		).Title("Secrets Management Profile Details"),
 		huh.NewGroup(
@@ -661,7 +671,7 @@ func (p huhInitKeyringBackendPrompter) editLegacySecretsManagement(currentBacken
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Legacy persistent backend").
-				Options(initLegacySecretsBackendOptions()...).
+				Options(initLegacySecretsBackendOptions(currentBackend)...).
 				Value(&backend),
 			huh.NewSelect[string]().
 				Title("Legacy secrets-management action").
