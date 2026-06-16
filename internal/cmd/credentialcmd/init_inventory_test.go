@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 )
 
 func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *testing.T) {
@@ -20,7 +21,7 @@ func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *t
 			{ID: "app", Title: "GitHub App reviewer: org-bot", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
 			{ID: "pat", Title: "PAT reviewer", FilterValue: "default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
 			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
-			{ID: "create-pat", Title: "Use a personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
+			{ID: "create-pat", Title: "Configure new personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
@@ -37,7 +38,7 @@ func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *t
 	}
 }
 
-func TestInitInventoryReordersRowsIntoActivePendingAndCommandSections(t *testing.T) {
+func TestInitInventoryReordersRowsIntoActivePendingAndCommandGroups(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:  "Reviewer entity",
 		Width:  80,
@@ -57,11 +58,11 @@ func TestInitInventoryReordersRowsIntoActivePendingAndCommandSections(t *testing
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ordered row ids = %#v, want %#v", got, want)
 	}
-	if model.rows[1].Description != "Pending deletion" {
-		t.Fatalf("pending description = %q, want Pending deletion", model.rows[1].Description)
+	if model.rows[1].Description != "" {
+		t.Fatalf("pending description = %q, want empty description", model.rows[1].Description)
 	}
-	if model.rows[2].Description != "Actions" {
-		t.Fatalf("command description = %q, want Actions", model.rows[2].Description)
+	if model.rows[2].Description != "" {
+		t.Fatalf("command description = %q, want empty description", model.rows[2].Description)
 	}
 }
 
@@ -181,7 +182,7 @@ func TestInitInventoryEnterSelectsActiveAndCommandRows(t *testing.T) {
 		Height: 20,
 		Rows: []initInventoryRow{
 			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-			{ID: "create-pat", Title: "Use a personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
+			{ID: "create-pat", Title: "Configure new personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
@@ -268,6 +269,52 @@ func TestInitInventoryDeterministicRunnerReturnsCommandAction(t *testing.T) {
 	}
 }
 
+func TestInitInventoryViewClearsAfterQuitActions(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection int
+		key       tea.KeyMsg
+	}{
+		{
+			name: "select",
+			key:  tea.KeyMsg{Type: tea.KeyEnter},
+		},
+		{
+			name: "delete",
+			key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")},
+		},
+		{
+			name:      "restore",
+			selection: 1,
+			key:       tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")},
+		},
+		{
+			name: "back",
+			key:  tea.KeyMsg{Type: tea.KeyEsc},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := newInitInventoryModel(initInventoryPrompt{
+				Title: "Review Profile",
+				Rows: []initInventoryRow{
+					{ID: "work", Title: "work", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
+					{ID: "old-work", Title: "Restore work (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+				},
+			})
+			model.list.Select(tt.selection)
+			next, _ := model.Update(tt.key)
+			resultModel := next.(initInventoryModel)
+			if !resultModel.QuitRequested() {
+				t.Fatalf("QuitRequested = false, want true")
+			}
+			if got := resultModel.View(); got != "" {
+				t.Fatalf("View after quit = %q, want empty final frame", got)
+			}
+		})
+	}
+}
+
 func TestInitReviewerEntityInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	rows := initReviewerEntityInventoryRows(initPromptContext{
 		ExistingProfileName: "work",
@@ -297,11 +344,20 @@ func TestInitReviewerEntityInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	if got := rows[2]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
 		t.Fatalf("fallback row = %#v, want selectable command fallback", got)
 	}
+	if got, want := rows[2].Title, "Use a profile's Git account (no separate reviewer entity)"; got != want {
+		t.Fatalf("fallback row title = %q, want %q", got, want)
+	}
 	if got := rows[3]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
 		t.Fatalf("pat row = %#v, want selectable command PAT template", got)
 	}
+	if got, want := rows[3].Title, "Configure new personal access token (PAT) reviewer"; got != want {
+		t.Fatalf("pat row title = %q, want %q", got, want)
+	}
 	if got := rows[4]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
 		t.Fatalf("github app row = %#v, want selectable command GitHub App template", got)
+	}
+	if got, want := rows[4].Title, "Configure new GitHub App reviewer"; got != want {
+		t.Fatalf("github app row title = %q, want %q", got, want)
 	}
 	if got := rows[5]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionBack {
 		t.Fatalf("back row = %#v, want selectable Back command", got)
@@ -391,6 +447,81 @@ func TestInitProfileInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	}
 }
 
+func TestInitProfileInventoryRowsShowRoutesAndSortBySpecificity(t *testing.T) {
+	rows := initProfileInventoryRows(initPromptContext{
+		ExistingProfileNames: []string{"default", "unrouted", "namespace", "repo"},
+		DefaultProfileName:   "default",
+		ExistingConfig: config.File{
+			DefaultProfile: "default",
+			Profiles: map[string]config.Profile{
+				"default":   {Git: config.GitConfig{Host: "github.com"}},
+				"unrouted":  {Git: config.GitConfig{Host: "github.com"}},
+				"namespace": {Git: config.GitConfig{Host: "github.com"}},
+				"repo":      {Git: config.GitConfig{Host: "github.com"}},
+			},
+			RepositoryProfiles: []config.RepositoryProfile{
+				{
+					Profile: "namespace",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "SignalFT",
+					},
+				},
+				{
+					Profile: "repo",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "SignalFT",
+						Repos:     []string{"api", "web"},
+					},
+				},
+				{
+					Profile: "repo",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "OtherMonitOrg",
+					},
+				},
+			},
+		},
+	})
+
+	var got []string
+	for _, row := range rows[:4] {
+		got = append(got, row.ID)
+	}
+	want := []string{"repo", "namespace", "unrouted", "default"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("profile row order = %#v, want %#v", got, want)
+	}
+	if got, want := rows[0].Description, "github.com/OtherMonitOrg; github.com/SignalFT [api, web]"; got != want {
+		t.Fatalf("repo description = %q, want %q", got, want)
+	}
+	if got, want := rows[1].Description, "github.com/SignalFT"; got != want {
+		t.Fatalf("namespace description = %q, want %q", got, want)
+	}
+	if got := rows[2].Description; got != "" {
+		t.Fatalf("unrouted description = %q, want empty", got)
+	}
+	if got, want := rows[3].Description, "Everything else"; got != want {
+		t.Fatalf("default description = %q, want %q", got, want)
+	}
+	if !strings.Contains(rows[0].FilterValue, "github.com/OtherMonitOrg") {
+		t.Fatalf("route summary missing from filter value: %q", rows[0].FilterValue)
+	}
+}
+
+func TestFormatInitRouteSpecsInline(t *testing.T) {
+	got := formatInitRouteSpecsInline([]configedit.RepositoryRouteSpec{
+		{Host: "github.com", Namespace: "SignalFT"},
+		{Host: "github.com", Namespace: "OtherMonitOrg", Repos: []string{"api", "web"}},
+	})
+	want := "github.com/SignalFT; github.com/OtherMonitOrg [api, web]"
+	if got != want {
+		t.Fatalf("formatInitRouteSpecsInline = %q, want %q", got, want)
+	}
+}
+
 func TestInitLLMRuntimeInventoryDeterministicRunnerReturnsRestoreAction(t *testing.T) {
 	rows := initLLMRuntimeInventoryRows(initPromptContext{
 		LLMRuntimes: map[string]initLLMRuntimeDraft{
@@ -426,7 +557,16 @@ func TestInitLLMRuntimeInventoryDeterministicRunnerReturnsRestoreAction(t *testi
 	}
 }
 
-func TestInitInventoryViewShowsHelpBindings(t *testing.T) {
+func TestInitInventoryRowsHaveDescriptions(t *testing.T) {
+	if initInventoryRowsHaveDescriptions([]initInventoryRow{{Title: "one"}, {Title: "two"}}) {
+		t.Fatal("rows without descriptions reported as having descriptions")
+	}
+	if !initInventoryRowsHaveDescriptions([]initInventoryRow{{Title: "one"}, {Title: "two", Description: "route summary"}}) {
+		t.Fatal("rows with a description reported as not having descriptions")
+	}
+}
+
+func TestInitInventoryViewShowsContextualHelpBindings(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:       "Reviewer entity",
 		Description: "Choose who posts reviews.",
@@ -446,15 +586,33 @@ func TestInitInventoryViewShowsHelpBindings(t *testing.T) {
 		"select",
 		"d",
 		"delete",
-		"r",
-		"restore",
 		"esc",
 		"back",
-		"Pending deletion",
-		"Actions",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("view = %q, want %q", out, want)
+		}
+	}
+	for _, unwanted := range []string{"restore", "Actions", "Pending deletion"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("view = %q, did not want %q for selected deletable row", out, unwanted)
+		}
+	}
+
+	model.list.Select(1)
+	out = model.View()
+	if !strings.Contains(out, "r") || !strings.Contains(out, "restore") {
+		t.Fatalf("view = %q, want restore help for selected restorable row", out)
+	}
+	if strings.Contains(out, "delete") {
+		t.Fatalf("view = %q, did not want delete help for selected restorable row", out)
+	}
+
+	model.list.Select(2)
+	out = model.View()
+	for _, unwanted := range []string{"delete", "restore"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("view = %q, did not want %q help for selected command row", out, unwanted)
 		}
 	}
 }

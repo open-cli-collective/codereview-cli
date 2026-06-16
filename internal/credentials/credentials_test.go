@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 
@@ -59,6 +60,33 @@ func TestStoreOptionsBackendPrecedenceMetadata(t *testing.T) {
 	if backend != credstore.BackendMemory || source != credstore.SourceEnv {
 		t.Fatalf("Backend = (%s,%s), want (memory,env)", backend, source)
 	}
+}
+
+func TestStoreOptionsRejectsLegacyOnePasswordBackends(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		flag    string
+		flagSet bool
+		cfg     config.File
+	}{
+		{name: "flag", flag: "op", flagSet: true, cfg: config.File{}},
+		{name: "config", cfg: config.File{Keyring: config.KeyringConfig{Backend: "op-connect"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := StoreOptions(tc.flag, tc.flagSet, tc.cfg)
+			if !errors.Is(err, ErrInvalidBackendSelection) {
+				t.Fatalf("StoreOptions error = %v, want ErrInvalidBackendSelection", err)
+			}
+		})
+	}
+
+	t.Run("env", func(t *testing.T) {
+		t.Setenv(BackendEnvVar(), "op-desktop")
+		_, err := StoreOptions("", false, config.File{})
+		if !errors.Is(err, ErrInvalidBackendSelection) {
+			t.Fatalf("StoreOptions env error = %v, want ErrInvalidBackendSelection", err)
+		}
+	})
 }
 
 func TestStoreOptionsInvalidBackendFlag(t *testing.T) {
@@ -266,6 +294,104 @@ func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.
 	}
 }
 
+func TestResolveSecretsProfileForProfileAndRef(t *testing.T) {
+	cfg := config.File{
+		DefaultProfile: "home",
+		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "work-file",
+			Profiles: map[string]config.SecretsProfile{
+				"personal-keychain": {
+					Label:   "Personal Keychain",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)},
+				},
+				"work-file": {
+					Label:   "Work File Store",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"home": func() config.Profile {
+				p := matrixProfile("codereview/shared-git", "codereview/home-llm", config.LLMProviderAnthropic)
+				p.SecretsProfile = "personal-keychain"
+				return p
+			}(),
+			"work": func() config.Profile {
+				p := matrixProfile("codereview/shared-git", "codereview/work-llm", config.LLMProviderOpenAI)
+				return p
+			}(),
+		},
+	}
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("Validate config: %v", err)
+	}
+
+	homeResolved, err := ResolveSecretsProfileForProfile(cfg, cfg.Profiles["home"])
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile(home): %v", err)
+	}
+	wantHome := ResolvedSecretsProfile{
+		ID:              "personal-keychain",
+		Label:           "Personal Keychain",
+		Backend:         "keychain",
+		Source:          config.EffectiveSecretsProfileSourceConfigured,
+		SelectionSource: SecretsProfileSelectionExplicit,
+	}
+	if !reflect.DeepEqual(homeResolved, wantHome) {
+		t.Fatalf("home resolved secrets profile = %#v, want %#v", homeResolved, wantHome)
+	}
+
+	workResolved, err := ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile(work): %v", err)
+	}
+	wantWork := ResolvedSecretsProfile{
+		ID:              "work-file",
+		Label:           "Work File Store",
+		Backend:         "file",
+		Source:          config.EffectiveSecretsProfileSourceConfigured,
+		SelectionSource: SecretsProfileSelectionDefault,
+	}
+	if !reflect.DeepEqual(workResolved, wantWork) {
+		t.Fatalf("work resolved secrets profile = %#v, want %#v", workResolved, wantWork)
+	}
+
+	if _, err := ResolveSecretsProfileForRef(cfg, "codereview/shared-git", ""); !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("ResolveSecretsProfileForRef(shared-git) error = %v, want ErrInvalid ambiguity", err)
+	}
+	selectedResolved, err := ResolveSecretsProfileForRef(cfg, "codereview/shared-git", "home")
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForRef(shared-git, home): %v", err)
+	}
+	if !reflect.DeepEqual(selectedResolved, wantHome) {
+		t.Fatalf("selected resolved secrets profile = %#v, want %#v", selectedResolved, wantHome)
+	}
+	undeclaredResolved, err := ResolveSecretsProfileForRef(cfg, "codereview/custom-ref", "work")
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForRef(custom-ref, work): %v", err)
+	}
+	if !reflect.DeepEqual(undeclaredResolved, wantWork) {
+		t.Fatalf("undeclared resolved secrets profile = %#v, want %#v", undeclaredResolved, wantWork)
+	}
+
+	cfg.Secrets.DefaultProfile = ""
+	legacyResolved, err := ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile(work legacy): %v", err)
+	}
+	wantLegacy := ResolvedSecretsProfile{
+		ID:              config.LegacyProjectedSecretsProfileID,
+		Label:           "Legacy default",
+		Backend:         "memory",
+		Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
+		SelectionSource: SecretsProfileSelectionLegacyDefault,
+	}
+	if !reflect.DeepEqual(legacyResolved, wantLegacy) {
+		t.Fatalf("legacy resolved secrets profile = %#v, want %#v", legacyResolved, wantLegacy)
+	}
+}
+
 func TestAllowedKeyMemoryRoundTrip(t *testing.T) {
 	store, err := OpenStore("memory", true, config.File{})
 	if err != nil {
@@ -285,6 +411,126 @@ func TestAllowedKeyMemoryRoundTrip(t *testing.T) {
 	}
 	if err := store.Set("work", "bad_key", "token"); !errors.Is(err, credstore.ErrKeyNotAllowed) {
 		t.Fatalf("Set disallowed key error = %v, want ErrKeyNotAllowed", err)
+	}
+}
+
+func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
+	tests := []struct {
+		name        string
+		backendKind credstore.Backend
+		profile     config.SecretsProfile
+		assert      func(*testing.T, *credstore.OnePasswordOptions)
+	}{
+		{
+			name:        "service account",
+			backendKind: credstore.BackendOP,
+			profile: config.SecretsProfile{
+				Label: "Work 1Password",
+				Backend: config.SecretsProfileBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendOP),
+					OnePassword: &config.SecretsProfileOnePasswordConfig{
+						Timeout:         "7s",
+						VaultID:         "vault-123",
+						ItemTitlePrefix: "cr",
+						ItemTag:         "codereview",
+						ItemFieldTitle:  "credential",
+					},
+				},
+			},
+			assert: func(t *testing.T, got *credstore.OnePasswordOptions) {
+				t.Helper()
+				if got.Timeout != 7*time.Second || got.VaultID != "vault-123" || got.ServiceTokenEnv != credstore.DefaultOnePasswordServiceTokenEnv {
+					t.Fatalf("OnePassword = %#v, want service-account defaults", got)
+				}
+			},
+		},
+		{
+			name:        "connect",
+			backendKind: credstore.BackendOPConnect,
+			profile: config.SecretsProfile{
+				Label: "Work 1Password",
+				Backend: config.SecretsProfileBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendOPConnect),
+					OnePassword: &config.SecretsProfileOnePasswordConfig{
+						Timeout:         "7s",
+						VaultID:         "vault-123",
+						ItemTitlePrefix: "cr",
+						ItemTag:         "codereview",
+						ItemFieldTitle:  "credential",
+						ConnectHost:     "https://connect.example",
+						ConnectTokenEnv: "CUSTOM_CONNECT_TOKEN",
+					},
+				},
+			},
+			assert: func(t *testing.T, got *credstore.OnePasswordOptions) {
+				t.Helper()
+				if got.Timeout != 7*time.Second || got.VaultID != "vault-123" || got.ConnectHost != "https://connect.example" || got.ConnectTokenEnv != "CUSTOM_CONNECT_TOKEN" {
+					t.Fatalf("OnePassword = %#v, want connect mapping", got)
+				}
+			},
+		},
+		{
+			name:        "desktop",
+			backendKind: credstore.BackendOPDesktop,
+			profile: config.SecretsProfile{
+				Label: "Work 1Password",
+				Backend: config.SecretsProfileBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
+					OnePassword: &config.SecretsProfileOnePasswordConfig{
+						Timeout:          "9s",
+						VaultID:          "vault-123",
+						ItemTitlePrefix:  "cr",
+						ItemTag:          "codereview",
+						ItemFieldTitle:   "credential",
+						DesktopAccountID: "desktop-account",
+					},
+				},
+			},
+			assert: func(t *testing.T, got *credstore.OnePasswordOptions) {
+				t.Helper()
+				if got.Timeout != 9*time.Second || got.VaultID != "vault-123" || got.DesktopAccountID != "desktop-account" {
+					t.Fatalf("OnePassword = %#v, want desktop mapping", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.File{
+				DefaultProfile: "home",
+				Secrets: config.SecretsConfig{
+					Profiles: map[string]config.SecretsProfile{
+						"work-op": tt.profile,
+					},
+				},
+				Profiles: map[string]config.Profile{
+					"home": matrixProfile("codereview/shared-git", "codereview/home-llm", config.LLMProviderAnthropic),
+				},
+			}
+			cfg = config.Normalize(cfg)
+			if err := config.Validate(cfg); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+
+			resolved := ResolvedSecretsProfile{
+				ID:      "work-op",
+				Label:   "Work 1Password",
+				Backend: string(tt.backendKind),
+				Source:  config.EffectiveSecretsProfileSourceConfigured,
+			}
+			got, err := StoreOptionsForResolvedProfile("", false, cfg, resolved)
+			if err != nil {
+				t.Fatalf("StoreOptionsForResolvedProfile: %v", err)
+			}
+			if got.Backend != tt.backendKind {
+				t.Fatalf("Backend = %q, want %q", got.Backend, tt.backendKind)
+			}
+			if got.OnePassword == nil {
+				t.Fatal("OnePassword = nil, want populated options")
+			}
+			tt.assert(t, got.OnePassword)
+		})
 	}
 }
 

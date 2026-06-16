@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,8 @@ var (
 	ErrNotConfigured = errors.New("config: not configured")
 	// ErrProfileNotFound means the requested profile is absent.
 	ErrProfileNotFound = errors.New("config: profile not found")
+	// ErrSecretsProfileNotFound means the requested secrets-management profile is absent.
+	ErrSecretsProfileNotFound = errors.New("config: secrets-management profile not found")
 	// ErrInvalid means the config file is malformed or violates the schema.
 	ErrInvalid = errors.New("config: invalid")
 	// ErrUnsupported means the config uses a known v2-only option.
@@ -39,6 +42,7 @@ var (
 type File struct {
 	DefaultProfile     string              `yaml:"default_profile" json:"default_profile"`
 	Keyring            KeyringConfig       `yaml:"keyring,omitempty" json:"keyring"`
+	Secrets            SecretsConfig       `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	RepositoryProfiles []RepositoryProfile `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
 	Profiles           map[string]Profile  `yaml:"profiles" json:"profiles"`
 	Data               DataConfig          `yaml:"data,omitempty" json:"data"`
@@ -49,9 +53,75 @@ type KeyringConfig struct {
 	Backend string `yaml:"backend,omitempty" json:"backend,omitempty"`
 }
 
+// SecretsConfig carries named secrets-management profile configuration.
+type SecretsConfig struct {
+	DefaultProfile string                    `yaml:"default_profile,omitempty" json:"default_profile,omitempty"`
+	Profiles       map[string]SecretsProfile `yaml:"profiles,omitempty" json:"profiles,omitempty"`
+}
+
+// SecretsProfile is one named secrets-management profile.
+type SecretsProfile struct {
+	Label   string                `yaml:"label,omitempty" json:"label,omitempty"`
+	Backend SecretsProfileBackend `yaml:"backend" json:"backend"`
+}
+
+// SecretsProfileBackend carries one typed backend choice.
+type SecretsProfileBackend struct {
+	Kind        SecretsBackendKind               `yaml:"kind" json:"kind"`
+	OnePassword *SecretsProfileOnePasswordConfig `yaml:"onepassword,omitempty" json:"onepassword,omitempty"`
+}
+
+// SecretsProfileOnePasswordConfig carries non-secret 1Password backend settings.
+type SecretsProfileOnePasswordConfig struct {
+	Timeout          string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	VaultID          string `yaml:"vault_id,omitempty" json:"vault_id,omitempty"`
+	ItemTitlePrefix  string `yaml:"item_title_prefix,omitempty" json:"item_title_prefix,omitempty"`
+	ItemTag          string `yaml:"item_tag,omitempty" json:"item_tag,omitempty"`
+	ItemFieldTitle   string `yaml:"item_field_title,omitempty" json:"item_field_title,omitempty"`
+	ConnectHost      string `yaml:"connect_host,omitempty" json:"connect_host,omitempty"`
+	ConnectTokenEnv  string `yaml:"connect_token_env,omitempty" json:"connect_token_env,omitempty"`
+	ServiceTokenEnv  string `yaml:"service_token_env,omitempty" json:"service_token_env,omitempty"`
+	DesktopAccountID string `yaml:"desktop_account_id,omitempty" json:"desktop_account_id,omitempty"`
+}
+
+// SecretsBackendKind is the durable non-secret backend selector for a
+// named secrets-management profile.
+type SecretsBackendKind string
+
+// EffectiveSecretsProfileSource distinguishes configured profiles from the
+// read-only projected legacy compatibility entry.
+type EffectiveSecretsProfileSource string
+
+const (
+	// LegacyProjectedSecretsProfileID is the reserved effective id used when an
+	// old config still relies on legacy keyring.backend behavior.
+	LegacyProjectedSecretsProfileID = "legacy-default"
+	// ProjectedLegacySecretsBackendKind is the effective backend summary when the
+	// old config omits keyring.backend and still relies on auto/env resolution.
+	ProjectedLegacySecretsBackendKind = "auto"
+	defaultOnePasswordTimeout         = "5s"
+)
+
+// Effective secrets-profile inventory sources.
+const (
+	EffectiveSecretsProfileSourceConfigured      EffectiveSecretsProfileSource = "configured"
+	EffectiveSecretsProfileSourceProjectedLegacy EffectiveSecretsProfileSource = "projected_legacy"
+)
+
+// EffectiveSecretsProfile is the presentation-safe effective secrets-management
+// inventory shape used by callers that need to summarize the config.
+type EffectiveSecretsProfile struct {
+	ID        string                        `json:"id"`
+	Label     string                        `json:"label,omitempty"`
+	Backend   string                        `json:"backend"`
+	IsDefault bool                          `json:"is_default,omitempty"`
+	Source    EffectiveSecretsProfileSource `json:"source"`
+}
+
 // Profile is one named review profile.
 type Profile struct {
 	Git                 GitConfig            `yaml:"git" json:"git"`
+	SecretsProfile      string               `yaml:"secrets_profile,omitempty" json:"secrets_profile,omitempty"`
 	ReviewerCredentials *ReviewerCredentials `yaml:"reviewer_credentials,omitempty" json:"reviewer_credentials,omitempty"`
 	LLM                 LLMConfig            `yaml:"llm" json:"llm"`
 	AgentSources        []string             `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
@@ -488,6 +558,11 @@ func Save(path string, cfg File) error {
 	return nil
 }
 
+// Normalize returns cfg with the same normalization pass Validate and Save apply.
+func Normalize(cfg File) File {
+	return cfg.normalized()
+}
+
 // Validate checks a config file after defaults have been applied.
 func Validate(cfg File) error {
 	cfg = cfg.normalized()
@@ -501,7 +576,11 @@ func Validate(cfg File) error {
 		if strings.TrimSpace(name) == "" {
 			return invalid("profile name is required")
 		}
-		if err := validateProfile(name, profile.normalized()); err != nil {
+		profile = profile.normalized()
+		if err := validateProfile(name, profile); err != nil {
+			return err
+		}
+		if err := validateProfileSecretsProfileSelection(cfg.Secrets, name, profile); err != nil {
 			return err
 		}
 	}
@@ -514,10 +593,63 @@ func Validate(cfg File) error {
 	if err := ValidateKeyring(cfg.Keyring); err != nil {
 		return err
 	}
+	if err := ValidateSecrets(cfg.Secrets); err != nil {
+		return err
+	}
 	if err := ValidateRetention(cfg.Data.Retention); err != nil {
 		return err
 	}
 	return nil
+}
+
+// EffectiveSecretsProfiles returns the configured secrets-management profiles or
+// a projected read-only legacy profile when config still relies on the old
+// keyring.backend model.
+func EffectiveSecretsProfiles(cfg File) []EffectiveSecretsProfile {
+	cfg = cfg.normalized()
+	if len(cfg.Secrets.Profiles) == 0 {
+		backend := strings.TrimSpace(cfg.Keyring.Backend)
+		if backend == "" {
+			backend = ProjectedLegacySecretsBackendKind
+		}
+		return []EffectiveSecretsProfile{{
+			ID:        LegacyProjectedSecretsProfileID,
+			Label:     "Legacy default",
+			Backend:   backend,
+			IsDefault: true,
+			Source:    EffectiveSecretsProfileSourceProjectedLegacy,
+		}}
+	}
+
+	ids := make([]string, 0, len(cfg.Secrets.Profiles))
+	for id := range cfg.Secrets.Profiles {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	profiles := make([]EffectiveSecretsProfile, 0, len(ids))
+	for _, id := range ids {
+		profile := cfg.Secrets.Profiles[id]
+		label := strings.TrimSpace(profile.Label)
+		profiles = append(profiles, EffectiveSecretsProfile{
+			ID:        id,
+			Label:     label,
+			Backend:   string(profile.Backend.Kind),
+			IsDefault: strings.TrimSpace(cfg.Secrets.DefaultProfile) == id,
+			Source:    EffectiveSecretsProfileSourceConfigured,
+		})
+	}
+	return profiles
+}
+
+// EffectiveDefaultSecretsProfile returns the effective default secrets profile, if any.
+func EffectiveDefaultSecretsProfile(cfg File) (EffectiveSecretsProfile, bool) {
+	for _, profile := range EffectiveSecretsProfiles(cfg) {
+		if profile.IsDefault {
+			return profile, true
+		}
+	}
+	return EffectiveSecretsProfile{}, false
 }
 
 // ResolveProfile returns the requested profile, or the default profile when
@@ -770,6 +902,20 @@ func validateProfile(name string, profile Profile) error {
 	return nil
 }
 
+func validateProfileSecretsProfileSelection(secrets SecretsConfig, name string, profile Profile) error {
+	selection := strings.TrimSpace(profile.SecretsProfile)
+	if selection == "" {
+		return nil
+	}
+	if selection == LegacyProjectedSecretsProfileID {
+		return invalid("profiles.%s.secrets_profile %q is reserved", name, LegacyProjectedSecretsProfileID)
+	}
+	if _, ok := secrets.Profiles[selection]; !ok {
+		return fmt.Errorf("%w: profiles.%s.secrets_profile %q", ErrSecretsProfileNotFound, name, selection)
+	}
+	return nil
+}
+
 func validateRepositoryProfiles(cfg File) error {
 	namespaceRoutes := map[string]int{}
 	repoRoutes := map[string]int{}
@@ -833,8 +979,109 @@ func ValidateKeyring(keyring KeyringConfig) error {
 	if backend == "" {
 		return nil
 	}
-	if _, err := credstore.ParseBackend(backend); err != nil {
+	parsed, err := credstore.ParseBackend(backend)
+	if err != nil {
 		return fmt.Errorf("%w: keyring.backend %q is invalid: %w", ErrInvalid, backend, err)
+	}
+	if IsOnePasswordSecretsBackend(SecretsBackendKind(parsed)) {
+		return invalid("keyring.backend %q is not supported; configure 1Password through a named secrets-management profile instead", backend)
+	}
+	return nil
+}
+
+// ValidateSecrets checks non-secret named secrets-management profile config.
+func ValidateSecrets(secrets SecretsConfig) error {
+	secrets = secrets.normalized()
+	if strings.TrimSpace(secrets.DefaultProfile) != "" {
+		if secrets.DefaultProfile == LegacyProjectedSecretsProfileID {
+			return invalid("secrets.default_profile %q is reserved", LegacyProjectedSecretsProfileID)
+		}
+		if _, ok := secrets.Profiles[secrets.DefaultProfile]; !ok {
+			return fmt.Errorf("%w: secrets.default_profile %q", ErrProfileNotFound, secrets.DefaultProfile)
+		}
+	}
+	for id, profile := range secrets.Profiles {
+		trimmedID := strings.TrimSpace(id)
+		if trimmedID == "" {
+			return invalid("secrets.profiles key is required")
+		}
+		if trimmedID != id {
+			return invalid("secrets.profiles.%s id must not contain surrounding whitespace", id)
+		}
+		if id == LegacyProjectedSecretsProfileID {
+			return invalid("secrets.profiles.%s is reserved", LegacyProjectedSecretsProfileID)
+		}
+		if err := validateSecretsProfile(id, profile); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSecretsProfile(id string, profile SecretsProfile) error {
+	if err := validateOptionalSingleLine(fmt.Sprintf("secrets.profiles.%s.label", id), profile.Label); err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(profile.Backend.Kind)) == "" {
+		return invalid("secrets.profiles.%s.backend.kind is required", id)
+	}
+	if _, err := credstore.ParseBackend(string(profile.Backend.Kind)); err != nil {
+		return fmt.Errorf("%w: secrets.profiles.%s.backend.kind %q is invalid: %w", ErrInvalid, id, profile.Backend.Kind, err)
+	}
+	if err := validateSecretsProfileBackend(id, profile.Backend); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSecretsProfileBackend(id string, backend SecretsProfileBackend) error {
+	if !IsOnePasswordSecretsBackend(backend.Kind) {
+		return nil
+	}
+	onePassword := backend.OnePassword
+	if onePassword == nil {
+		onePassword = &SecretsProfileOnePasswordConfig{}
+	}
+	field := func(suffix string) string {
+		return fmt.Sprintf("secrets.profiles.%s.backend.onepassword.%s", id, suffix)
+	}
+	for suffix, value := range map[string]string{
+		"vault_id":           onePassword.VaultID,
+		"item_title_prefix":  onePassword.ItemTitlePrefix,
+		"item_tag":           onePassword.ItemTag,
+		"item_field_title":   onePassword.ItemFieldTitle,
+		"connect_host":       onePassword.ConnectHost,
+		"connect_token_env":  onePassword.ConnectTokenEnv,
+		"service_token_env":  onePassword.ServiceTokenEnv,
+		"desktop_account_id": onePassword.DesktopAccountID,
+	} {
+		if err := validateOptionalSingleLine(field(suffix), value); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(onePassword.VaultID) == "" {
+		return invalid("%s is required", field("vault_id"))
+	}
+	if strings.TrimSpace(onePassword.Timeout) != "" {
+		if _, err := time.ParseDuration(onePassword.Timeout); err != nil {
+			return invalid("%s %q is invalid", field("timeout"), onePassword.Timeout)
+		}
+	}
+	switch backend.Kind {
+	case SecretsBackendKind(credstore.BackendOP):
+		if strings.TrimSpace(onePassword.ServiceTokenEnv) == "" {
+			return invalid("%s is required", field("service_token_env"))
+		}
+	case SecretsBackendKind(credstore.BackendOPConnect):
+		if strings.TrimSpace(onePassword.ConnectHost) == "" {
+			return invalid("%s is required", field("connect_host"))
+		}
+		if strings.TrimSpace(onePassword.ConnectTokenEnv) == "" {
+			return invalid("%s is required", field("connect_token_env"))
+		}
+	case SecretsBackendKind(credstore.BackendOPDesktop):
+		// DesktopAccountID may be omitted so ByteNess can fall back to
+		// OP_DESKTOP_ACCOUNT_ID at runtime.
 	}
 	return nil
 }
@@ -905,10 +1152,91 @@ func (cfg File) normalized() File {
 		cfg.RepositoryProfiles = routes
 	}
 	cfg.Data.Retention = cfg.Data.Retention.normalized()
+	cfg.Secrets = cfg.Secrets.normalized()
 	return cfg
 }
 
+func (s SecretsConfig) normalized() SecretsConfig {
+	s.DefaultProfile = strings.TrimSpace(s.DefaultProfile)
+	if s.Profiles == nil {
+		s.Profiles = map[string]SecretsProfile{}
+	}
+	profiles := make(map[string]SecretsProfile, len(s.Profiles))
+	for id, profile := range s.Profiles {
+		profiles[id] = profile.normalized()
+	}
+	s.Profiles = profiles
+	return s
+}
+
+func (p SecretsProfile) normalized() SecretsProfile {
+	p.Label = strings.TrimSpace(p.Label)
+	p.Backend = p.Backend.normalized()
+	return p
+}
+
+func (b SecretsProfileBackend) normalized() SecretsProfileBackend {
+	b.Kind = SecretsBackendKind(strings.TrimSpace(string(b.Kind)))
+	if !IsOnePasswordSecretsBackend(b.Kind) {
+		b.OnePassword = nil
+		return b
+	}
+	onePassword := SecretsProfileOnePasswordConfig{}
+	if b.OnePassword != nil {
+		onePassword = b.OnePassword.normalized()
+	}
+	if onePassword.Timeout == "" && (b.Kind == SecretsBackendKind(credstore.BackendOP) || b.Kind == SecretsBackendKind(credstore.BackendOPDesktop)) {
+		onePassword.Timeout = defaultOnePasswordTimeout
+	}
+	switch b.Kind {
+	case SecretsBackendKind(credstore.BackendOP):
+		if onePassword.ServiceTokenEnv == "" {
+			onePassword.ServiceTokenEnv = credstore.DefaultOnePasswordServiceTokenEnv
+		}
+		onePassword.ConnectHost = ""
+		onePassword.ConnectTokenEnv = ""
+		onePassword.DesktopAccountID = ""
+	case SecretsBackendKind(credstore.BackendOPConnect):
+		if onePassword.ConnectTokenEnv == "" {
+			onePassword.ConnectTokenEnv = credstore.DefaultOnePasswordConnectTokenEnv
+		}
+		onePassword.ServiceTokenEnv = ""
+		onePassword.DesktopAccountID = ""
+	case SecretsBackendKind(credstore.BackendOPDesktop):
+		onePassword.ServiceTokenEnv = ""
+		onePassword.ConnectHost = ""
+		onePassword.ConnectTokenEnv = ""
+	}
+	b.OnePassword = &onePassword
+	return b
+}
+
+func (c SecretsProfileOnePasswordConfig) normalized() SecretsProfileOnePasswordConfig {
+	c.Timeout = strings.TrimSpace(c.Timeout)
+	c.VaultID = strings.TrimSpace(c.VaultID)
+	c.ItemTitlePrefix = strings.TrimSpace(c.ItemTitlePrefix)
+	c.ItemTag = strings.TrimSpace(c.ItemTag)
+	c.ItemFieldTitle = strings.TrimSpace(c.ItemFieldTitle)
+	c.ConnectHost = strings.TrimSpace(c.ConnectHost)
+	c.ConnectTokenEnv = strings.TrimSpace(c.ConnectTokenEnv)
+	c.ServiceTokenEnv = strings.TrimSpace(c.ServiceTokenEnv)
+	c.DesktopAccountID = strings.TrimSpace(c.DesktopAccountID)
+	return c
+}
+
+// IsOnePasswordSecretsBackend reports whether kind is one of cr's supported
+// 1Password-backed secrets-profile variants.
+func IsOnePasswordSecretsBackend(kind SecretsBackendKind) bool {
+	switch kind {
+	case SecretsBackendKind(credstore.BackendOP), SecretsBackendKind(credstore.BackendOPConnect), SecretsBackendKind(credstore.BackendOPDesktop):
+		return true
+	default:
+		return false
+	}
+}
+
 func (p Profile) normalized() Profile {
+	p.SecretsProfile = strings.TrimSpace(p.SecretsProfile)
 	p.LLM = p.LLM.normalized()
 	p.ReviewPolicy = p.ReviewPolicy.normalized()
 	return p

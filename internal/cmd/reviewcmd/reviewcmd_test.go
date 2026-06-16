@@ -23,6 +23,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -502,6 +503,169 @@ func TestNewRuntimePassesPRRefForGitHubAppInstallationLookup(t *testing.T) {
 	}
 	if gotLookup == nil || gotLookup.Owner != "open-cli" || gotLookup.Repo != "codereview-cli" {
 		t.Fatalf("InstallationLookup = %#v, want PR owner/repo", gotLookup)
+	}
+}
+
+func TestNewRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+	profile := cfg.Profiles["home"]
+	cmd := &cobra.Command{}
+	cmd.Flags().String(credstore.BackendFlagName, "", "")
+	if err := cmd.Flags().Set(credstore.BackendFlagName, "memory"); err != nil {
+		t.Fatalf("Set backend flag: %v", err)
+	}
+	opts := &root.Options{Backend: "memory", Stderr: io.Discard}
+
+	_, err := newRuntime(cmd, opts, cfg, profile, RuntimeOptions{})
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("newRuntime error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestNewRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing.T) {
+	statedirtest.Hermetic(t)
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendFile,
+	})
+	if err != nil {
+		t.Fatalf("Open file backend: %v", err)
+	}
+	defer store.Close()
+	if err := store.Set("home", credentials.GitTokenKey, "named-store-token", credstore.WithOverwrite()); err != nil {
+		t.Fatalf("Set(home, git_token): %v", err)
+	}
+
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+	profile := cfg.Profiles["home"]
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			token, err := tokenStore.Get("home", credentials.GitTokenKey)
+			if err != nil {
+				t.Fatalf("tokenStore.Get(home, git_token): %v", err)
+			}
+			if token != "named-store-token" {
+				t.Fatalf("token = %q, want named-store-token", token)
+			}
+			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: token}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	runtime, err := newRuntime(cmd, &root.Options{Stderr: io.Discard}, cfg, profile, RuntimeOptions{})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+}
+
+func TestOpenSelectionRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+
+	_, err := OpenSelectionRuntime(context.Background(), "memory", true, cfg, cfg.Profiles["home"])
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("OpenSelectionRuntime error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestOpenSelectionRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing.T) {
+	statedirtest.Hermetic(t)
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendFile,
+	})
+	if err != nil {
+		t.Fatalf("Open file backend: %v", err)
+	}
+	defer store.Close()
+	if err := store.Set("home", credentials.GitTokenKey, "named-store-token", credstore.WithOverwrite()); err != nil {
+		t.Fatalf("Set(home, git_token): %v", err)
+	}
+
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.Secrets = config.SecretsConfig{
+		DefaultProfile: "work-file",
+		Profiles: map[string]config.SecretsProfile{
+			"work-file": {
+				Label:   "Work File Store",
+				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+	withReviewRuntimeSeams(t,
+		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			token, err := tokenStore.Get("home", credentials.GitTokenKey)
+			if err != nil {
+				t.Fatalf("tokenStore.Get(home, git_token): %v", err)
+			}
+			if token != "named-store-token" {
+				t.Fatalf("token = %q, want named-store-token", token)
+			}
+			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: token}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return gitprovider.Identity{}, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	runtime, err := OpenSelectionRuntime(context.Background(), "", false, cfg, cfg.Profiles["home"])
+	if err != nil {
+		t.Fatalf("OpenSelectionRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
 	}
 }
 

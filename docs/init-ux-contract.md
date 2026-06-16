@@ -41,7 +41,8 @@ Supporting language is allowed when it helps teach the model:
 - A profile is the saved result.
 - A Git scope is the thing the user chooses while assembling that profile.
 - `credential_ref` remains an implementation term. User-facing prompts should
-  prefer **advanced storage labels**.
+  prefer **storage labels** and explain them in terms of the selected Git
+  scope, reviewer entity, or LLM runtime.
 
 ## Core Mental Model
 
@@ -80,9 +81,10 @@ The intended top-level shape is:
 1. Configure LLM runtimes
 2. Configure reviewer entities
 3. Configure review profiles
-4. Review global settings
-5. Commit staged changes and exit
-6. Discard staged changes and exit
+4. Configure global settings
+5. Configure secrets management
+6. Commit staged changes and exit
+7. Discard staged changes and exit
 
 This ordering is intentional:
 
@@ -93,6 +95,9 @@ This ordering is intentional:
   configurations.
 - Global settings stay visible but conceptually separate from the core
   identity/runtime/profile model.
+- Secrets management stays top-level because it affects where credentials live,
+  but it should not be confused with the credential refs inside a review
+  profile.
 
 ## First-Run Behavior
 
@@ -182,8 +187,9 @@ Interactive `init` should offer a user-facing reviewer entity fallback option na
 When the UI has additional profile context, it may render equivalent
 contextual variants of the same fallback choice, such as:
 
-- **None (uses this profile's Git account; no separate reviewer entity)**
-- **None (uses the `<profile>` profile's Git account)**
+- **Post as rianjs (GitHub PAT)**
+- **Post as acme-review-bot (GitHub App)**
+- **Post using this profile's Git account (GitHub PAT)**
 
 This means:
 
@@ -211,11 +217,18 @@ When no explicit display name exists, the chooser should fall back to stable,
 deterministic identity text derived from the credential ref or equivalent
 profile context, for example:
 
-- **GitHub App reviewer: open-cli-collective-rianjs-bot**
-- **PAT reviewer: reviewer-pat**
+- **open-cli-collective-rianjs-bot (GitHub App reviewer)**
+- **reviewer-pat (PAT reviewer)**
 
 The profile-Git-account fallback is not a separately named reviewer entity and
 should not ask for a custom reviewer-entity display name.
+
+When the profile Git identity is known, fallback labels should prefer that
+discovered identity plus the auth mode, for example `Post as rianjs (GitHub
+PAT)`. When the identity is not yet known, the fallback should still make the
+posting path explicit with `Post using this profile's Git account (<auth
+mode>)`. This wording is derived from profile Git context such as
+`git.identity_cache`; it does not create a separate reviewer entity label.
 
 When multiple profiles already share the same separate reviewer identity, a
 display-name edit in interactive `init` applies to that shared identity across
@@ -238,16 +251,20 @@ and saved config must stay stable:
 This section is intentionally high level. The detailed field inventory and
 mutation rules still live in `docs/init-config-surface.md`.
 
-## Advanced Storage Labels
+## Storage Labels
 
-Interactive `init` should treat credential refs as an advanced concept.
+Interactive `init` should treat credential refs as an advanced concept without
+forcing the user through a separate mode selector before they can see the
+relevant values.
 
 Primary-path users should not be asked for `credential_ref` values directly.
 Instead:
 
 - defaults should be generated automatically
-- advanced users may inspect or override them through an **advanced storage
-  labels** path
+- users who need an override may edit the relevant inline **storage label**
+  fields for Git, reviewer, or LLM secrets
+- irrelevant reviewer/LLM storage-label fields should stay hidden when the
+  profile is using its Git account or a subscription runtime
 - any advanced path should still explain that these labels are non-secret
   pointers to keyring entries, not the secrets themselves
 
@@ -256,10 +273,10 @@ Instead:
 Global settings belong in an optional top-level area, not in the main profile
 assembly path.
 
-The initial area should cover:
+The top-level auxiliary areas should cover:
 
-- keyring backend behavior
-- run-data retention behavior
+- global settings for run-data retention behavior
+- secrets-management settings for credential-store/backend behavior
 
 These settings matter, but they are not part of the primary
 `Git scope + reviewer entity + LLM runtime = review profile` model.

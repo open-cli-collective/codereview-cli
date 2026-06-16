@@ -165,6 +165,7 @@ func mapRunError(err error) error {
 	case errors.Is(err, config.ErrInvalid),
 		errors.Is(err, config.ErrNotConfigured),
 		errors.Is(err, config.ErrProfileNotFound),
+		errors.Is(err, config.ErrSecretsProfileNotFound),
 		errors.Is(err, config.ErrUnsupported):
 		return cmderr.Config(err)
 	case errors.Is(err, gitprovider.ErrAuth),
@@ -200,26 +201,37 @@ func configPath(opts *root.Options) (string, error) {
 }
 
 func newGitHubResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
-	store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
-	if err != nil {
-		return nil, nil, cmderr.Credential(err)
-	}
-	return &githubResolver{store: store}, func() { _ = store.Close() }, nil
+	return &githubResolver{
+		cfg:                cfg,
+		backend:            opts.Backend,
+		backendFlagChanged: cmderr.BackendFlagChanged(cmd),
+	}, nil, nil
 }
 
 type githubResolver struct {
-	store     githubprovider.TokenStore
-	options   githubprovider.Options
-	NewClient func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
+	cfg                config.File
+	backend            string
+	backendFlagChanged bool
+	options            githubprovider.Options
+	NewClient          func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
 }
 
 // ResolveIdentity resolves one configured GitHub identity.
-func (r *githubResolver) ResolveIdentity(ctx context.Context, git config.GitConfig) (gitprovider.Identity, error) {
+func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string, git config.GitConfig) (gitprovider.Identity, error) {
 	newClient := r.NewClient
 	if newClient == nil {
 		newClient = githubprovider.NewFromGitConfig
 	}
-	client, credential, err := newClient(git, r.store, r.options)
+	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForRef(r.cfg, git.CredentialRef, profileName)
+	if err != nil {
+		return gitprovider.Identity{}, err
+	}
+	store, err := credentials.OpenResolvedStore(r.backend, r.backendFlagChanged, r.cfg, resolvedSecretsProfile)
+	if err != nil {
+		return gitprovider.Identity{}, err
+	}
+	defer store.Close()
+	client, credential, err := newClient(git, store, r.options)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}

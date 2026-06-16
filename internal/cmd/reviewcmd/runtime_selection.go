@@ -21,9 +21,13 @@ type SelectionRuntime struct {
 // OpenSelectionRuntime resolves provider and adapter setup using the same
 // semantics as the real review command.
 func OpenSelectionRuntime(_ context.Context, backend string, backendFlagChanged bool, cfg config.File, profile config.Profile) (SelectionRuntime, error) {
-	store, err := credentials.OpenStore(backend, backendFlagChanged, cfg)
+	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
 	if err != nil {
-		return SelectionRuntime{}, err
+		return SelectionRuntime{}, mapRunError(err)
+	}
+	store, err := credentials.OpenResolvedStore(backend, backendFlagChanged, cfg, resolvedSecretsProfile)
+	if err != nil {
+		return SelectionRuntime{}, mapRunError(err)
 	}
 	cleanup := func() { _ = store.Close() }
 	// Selection-only paths read with the profile git credential. Reviewer

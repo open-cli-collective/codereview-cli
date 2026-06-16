@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedirtest"
 )
 
@@ -864,6 +865,411 @@ func TestValidateRejectsMissingDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestValidateSecretsProfiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*File)
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name: "valid configured secrets profile",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					DefaultProfile: "personal",
+					Profiles: map[string]SecretsProfile{
+						"personal": {
+							Label: "Personal Keychain",
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendKeychain),
+							},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "missing configured default secrets profile",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{DefaultProfile: "missing"}
+			},
+			wantErr: ErrProfileNotFound,
+			wantMsg: `secrets.default_profile "missing"`,
+		},
+		{
+			name: "configured default secrets profile trims surrounding whitespace",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					DefaultProfile: " work-vault ",
+					Profiles: map[string]SecretsProfile{
+						"work-vault": {
+							Label: "Work File Store",
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendFile),
+							},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "invalid secrets backend kind",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Backend: SecretsProfileBackend{Kind: "bogus"},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `secrets.profiles.broken.backend.kind "bogus" is invalid`,
+		},
+		{
+			name: "valid 1password service account profile defaults token env and timeout",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"work-op": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOP),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID: "vault-123",
+								},
+							},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "valid 1password connect profile requires host and defaults token env",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"work-connect": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOPConnect),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID:     "vault-123",
+									ConnectHost: "https://connect.example",
+								},
+							},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "valid 1password desktop profile permits env fallback account id",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"work-desktop": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOPDesktop),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID: "vault-123",
+								},
+							},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "1password service account missing vault id invalid",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Backend: SecretsProfileBackend{
+								Kind:        SecretsBackendKind(credstore.BackendOP),
+								OnePassword: &SecretsProfileOnePasswordConfig{},
+							},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "secrets.profiles.broken.backend.onepassword.vault_id is required",
+		},
+		{
+			name: "1password connect missing host invalid",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOPConnect),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID: "vault-123",
+								},
+							},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "secrets.profiles.broken.backend.onepassword.connect_host is required",
+		},
+		{
+			name: "1password timeout must parse",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOP),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID: "vault-123",
+									Timeout: "later",
+								},
+							},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `secrets.profiles.broken.backend.onepassword.timeout "later" is invalid`,
+		},
+		{
+			name: "multiline label invalid",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Label:   "line one\nline two",
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "secrets.profiles.broken.label must be a single line",
+		},
+		{
+			name: "reserved projected legacy id is rejected",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						LegacyProjectedSecretsProfileID: {
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `secrets.profiles.legacy-default is reserved`,
+		},
+		{
+			name: "surrounding whitespace in id is rejected",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						" work ": {
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `secrets.profiles. work  id must not contain surrounding whitespace`,
+		},
+		{
+			name: "profile may select configured secrets profile",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"work-file": {
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
+						},
+					},
+				}
+				profile := cfg.Profiles["home"]
+				profile.SecretsProfile = "work-file"
+				cfg.Profiles["home"] = profile
+			},
+		},
+		{
+			name: "profile rejects projected legacy selection",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["home"]
+				profile.SecretsProfile = LegacyProjectedSecretsProfileID
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `profiles.home.secrets_profile "legacy-default" is reserved`,
+		},
+		{
+			name: "profile rejects missing configured secrets profile",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"personal": {
+							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendKeychain)},
+						},
+					},
+				}
+				profile := cfg.Profiles["home"]
+				profile.SecretsProfile = "missing"
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrSecretsProfileNotFound,
+			wantMsg: `profiles.home.secrets_profile "missing"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			tt.mutate(&cfg)
+			err := Validate(cfg)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("Validate: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Fatalf("Validate error = %v, want message containing %q", err, tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestValidateKeyringRejectsLegacyOnePasswordBackends(t *testing.T) {
+	for _, backend := range []string{"op", "op-connect", "op-desktop"} {
+		err := ValidateKeyring(KeyringConfig{Backend: backend})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("ValidateKeyring(%q) error = %v, want ErrInvalid", backend, err)
+		}
+	}
+}
+
+func TestSecretsProfileBackendNormalizedOnePasswordDefaults(t *testing.T) {
+	service := SecretsProfileBackend{
+		Kind: SecretsBackendKind(credstore.BackendOP),
+		OnePassword: &SecretsProfileOnePasswordConfig{
+			VaultID: "vault-123",
+		},
+	}.normalized()
+	if service.OnePassword == nil {
+		t.Fatal("service OnePassword = nil, want defaults")
+	}
+	if service.OnePassword.Timeout != defaultOnePasswordTimeout {
+		t.Fatalf("service timeout = %q, want %q", service.OnePassword.Timeout, defaultOnePasswordTimeout)
+	}
+	if service.OnePassword.ServiceTokenEnv != credstore.DefaultOnePasswordServiceTokenEnv {
+		t.Fatalf("service token env = %q, want %q", service.OnePassword.ServiceTokenEnv, credstore.DefaultOnePasswordServiceTokenEnv)
+	}
+
+	connect := SecretsProfileBackend{
+		Kind: SecretsBackendKind(credstore.BackendOPConnect),
+		OnePassword: &SecretsProfileOnePasswordConfig{
+			VaultID:     "vault-123",
+			ConnectHost: "https://connect.example",
+		},
+	}.normalized()
+	if connect.OnePassword == nil {
+		t.Fatal("connect OnePassword = nil, want defaults")
+	}
+	if connect.OnePassword.ConnectTokenEnv != credstore.DefaultOnePasswordConnectTokenEnv {
+		t.Fatalf("connect token env = %q, want %q", connect.OnePassword.ConnectTokenEnv, credstore.DefaultOnePasswordConnectTokenEnv)
+	}
+
+	desktop := SecretsProfileBackend{
+		Kind: SecretsBackendKind(credstore.BackendOPDesktop),
+		OnePassword: &SecretsProfileOnePasswordConfig{
+			VaultID: "vault-123",
+		},
+	}.normalized()
+	if desktop.OnePassword == nil {
+		t.Fatal("desktop OnePassword = nil, want defaults")
+	}
+	if desktop.OnePassword.Timeout != defaultOnePasswordTimeout {
+		t.Fatalf("desktop timeout = %q, want %q", desktop.OnePassword.Timeout, defaultOnePasswordTimeout)
+	}
+}
+
+func TestEffectiveSecretsProfiles(t *testing.T) {
+	t.Run("configured secrets profiles win inventory", func(t *testing.T) {
+		cfg := validFile()
+		cfg.Keyring.Backend = string(credstore.BackendMemory)
+		cfg.Secrets = SecretsConfig{
+			DefaultProfile: "work-vault",
+			Profiles: map[string]SecretsProfile{
+				"personal": {
+					Label:   "Personal Keychain",
+					Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendKeychain)},
+				},
+				"work-vault": {
+					Label:   "Work File Store",
+					Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		}
+
+		got := EffectiveSecretsProfiles(cfg)
+		want := []EffectiveSecretsProfile{
+			{
+				ID:      "personal",
+				Label:   "Personal Keychain",
+				Backend: string(credstore.BackendKeychain),
+				Source:  EffectiveSecretsProfileSourceConfigured,
+			},
+			{
+				ID:        "work-vault",
+				Label:     "Work File Store",
+				Backend:   string(credstore.BackendFile),
+				IsDefault: true,
+				Source:    EffectiveSecretsProfileSourceConfigured,
+			},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("EffectiveSecretsProfiles = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("legacy keyring backend projects deterministic default", func(t *testing.T) {
+		cfg := validFile()
+		cfg.Keyring.Backend = string(credstore.BackendMemory)
+
+		got := EffectiveSecretsProfiles(cfg)
+		want := []EffectiveSecretsProfile{{
+			ID:        LegacyProjectedSecretsProfileID,
+			Label:     "Legacy default",
+			Backend:   string(credstore.BackendMemory),
+			IsDefault: true,
+			Source:    EffectiveSecretsProfileSourceProjectedLegacy,
+		}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("EffectiveSecretsProfiles = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("omitted legacy backend still projects auto default", func(t *testing.T) {
+		cfg := validFile()
+		cfg.Keyring.Backend = ""
+
+		got := EffectiveSecretsProfiles(cfg)
+		want := []EffectiveSecretsProfile{{
+			ID:        LegacyProjectedSecretsProfileID,
+			Label:     "Legacy default",
+			Backend:   ProjectedLegacySecretsBackendKind,
+			IsDefault: true,
+			Source:    EffectiveSecretsProfileSourceProjectedLegacy,
+		}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("EffectiveSecretsProfiles = %#v, want %#v", got, want)
+		}
+	})
+}
+
 func TestKeyringBackendRoundTripAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := validFile()
@@ -882,6 +1288,30 @@ func TestKeyringBackendRoundTripAndValidation(t *testing.T) {
 	cfg.Keyring.Backend = "bogus"
 	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("Validate invalid backend error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestSaveLegacyConfigDoesNotPersistProjectedSecretsProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := validFile()
+	cfg.Keyring.Backend = string(credstore.BackendMemory)
+
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Secrets.Profiles) != 0 {
+		t.Fatalf("secrets.profiles = %#v, want omitted explicit profiles for legacy config", got.Secrets.Profiles)
+	}
+	if got.Secrets.DefaultProfile != "" {
+		t.Fatalf("secrets.default_profile = %q, want empty for legacy config", got.Secrets.DefaultProfile)
+	}
+	effective := EffectiveSecretsProfiles(got)
+	if len(effective) != 1 || effective[0].ID != LegacyProjectedSecretsProfileID || effective[0].Source != EffectiveSecretsProfileSourceProjectedLegacy {
+		t.Fatalf("EffectiveSecretsProfiles = %#v, want projected legacy default", effective)
 	}
 }
 

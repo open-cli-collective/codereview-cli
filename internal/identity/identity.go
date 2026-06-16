@@ -23,7 +23,7 @@ type CredentialSource string
 
 // Resolver resolves one live git-host identity.
 type Resolver interface {
-	ResolveIdentity(ctx context.Context, git config.GitConfig) (gitprovider.Identity, error)
+	ResolveIdentity(ctx context.Context, profileName string, git config.GitConfig) (gitprovider.Identity, error)
 }
 
 // ProfileResult describes one refreshed profile identity.
@@ -106,7 +106,7 @@ func refreshProfileSource(ctx context.Context, name string, profile config.Profi
 	if resolver == nil {
 		return config.Profile{}, ProfileResult{}, false, fmt.Errorf("identity: resolver is required")
 	}
-	live, err := resolver.ResolveIdentity(ctx, gitConfig)
+	live, err := resolver.ResolveIdentity(ctx, name, gitConfig)
 	if err != nil {
 		return config.Profile{}, ProfileResult{}, false, err
 	}

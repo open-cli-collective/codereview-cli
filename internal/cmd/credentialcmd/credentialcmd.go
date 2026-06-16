@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"reflect"
@@ -18,6 +19,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
@@ -25,6 +27,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -99,18 +102,29 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 		}
 		return result, exitcode.Usage(err)
 	}
+	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForRef(cfg, flags.ref, opts.Profile)
+	if err != nil {
+		return result, exitcode.AuthConfig(err)
+	}
+	store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
+	if err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+			return result, cmderr.Config(err)
+		}
+		return result, cmderr.Credential(err)
+	}
+	defer store.Close()
 	secret, err := readSecretIngress(opts.Stdin, flags.stdin, flags.fromEnv, "--stdin", "--from-env")
 	if err != nil {
 		return result, exitcode.Usage(err)
 	}
-	store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
-	if err != nil {
-		return result, cmderr.Credential(err)
-	}
-	defer store.Close()
 	backend, source := store.Backend()
 	result.Backend = string(backend)
-	result.BackendSource = string(source)
+	if resolvedSecretsProfile.IsNamed() {
+		result.BackendSource = string(credentials.BackendSourceSecretsProfile)
+	} else {
+		result.BackendSource = string(source)
+	}
 	setOpts := []credstore.SetOpt{}
 	if flags.overwrite {
 		setOpts = append(setOpts, credstore.WithOverwrite())
@@ -212,6 +226,9 @@ type initPromptContext struct {
 	ProfileGitScopes             map[string]string
 	ReviewerEntities             map[string]initReviewerEntityDraft
 	ProfileReviewerEntities      map[string]string
+	SecretsProfiles              []config.EffectiveSecretsProfile
+	ProfileSecretsProfiles       map[string]string
+	BrokenProfileSecretsProfiles map[string]string
 	LLMRuntimes                  map[string]initLLMRuntimeDraft
 	ProfileLLMRuntimes           map[string]string
 	ProfileWarnings              map[string][]string
@@ -245,13 +262,21 @@ type initDraft struct {
 	ReviewerAuth          string
 	ReviewerCredentialRef string
 	ReviewerDisplayName   string
+	SecretsProfile        string
 	LLMProvider           string
 	LLMAuth               string
 	LLMAdapter            string
 	LLMReviewerModelTier  string
 	LLMCredentialRef      string
 	AdvancedStorageLabels bool
-	RepositoryRoutesAction string
+	RoutesSet             bool
+	Routes                []configedit.RepositoryRouteSpec
+	ModelMapSet           bool
+	ModelMap              config.ModelMap
+	AgentSourcesSet       bool
+	AgentSources          []string
+	ReviewPolicySet       bool
+	ReviewPolicy          config.ReviewPolicy
 }
 
 type initModelMapPrompt struct {
@@ -288,11 +313,9 @@ type initRoutesPrompt struct {
 	PreviousHost string
 	HostChanged  bool
 	Routes       []configedit.RepositoryRouteSpec
-	Action       initRoutesAction
 }
 
 type initRoutesEdit struct {
-	Apply  bool
 	Routes []configedit.RepositoryRouteSpec
 }
 
@@ -306,12 +329,17 @@ type initRetentionEdit struct {
 }
 
 type initKeyringBackendPrompt struct {
-	Backend string
+	Backend        string
+	Config         config.File
+	RuntimeBackend string
+	BackendFlagSet bool
 }
 
 type initKeyringBackendEdit struct {
-	Apply   bool
-	Backend string
+	Apply         bool
+	HasConfigEdit bool
+	Backend       string
+	Config        config.File
 }
 
 type initFinalizeAction string
@@ -335,12 +363,13 @@ type initFinalizePrompt struct {
 type initMenuAction string
 
 const (
-	initMenuActionLLMRuntimes      initMenuAction = "llm_runtimes"
-	initMenuActionReviewerEntities initMenuAction = "reviewer_entities"
-	initMenuActionReviewProfiles   initMenuAction = "review_profiles"
-	initMenuActionGlobalSettings   initMenuAction = "global_settings"
-	initMenuActionSave             initMenuAction = "save"
-	initMenuActionExit             initMenuAction = "exit"
+	initMenuActionLLMRuntimes       initMenuAction = "llm_runtimes"
+	initMenuActionReviewerEntities  initMenuAction = "reviewer_entities"
+	initMenuActionReviewProfiles    initMenuAction = "review_profiles"
+	initMenuActionGlobalSettings    initMenuAction = "global_settings"
+	initMenuActionSecretsManagement initMenuAction = "secrets_management"
+	initMenuActionSave              initMenuAction = "save"
+	initMenuActionExit              initMenuAction = "exit"
 )
 
 var (
@@ -386,6 +415,7 @@ type initDeps struct {
 	loadConfig           func(string) (config.File, bool, error)
 	saveConfig           func(string, config.File) error
 	openStore            func(string, bool, config.File) (initStore, error)
+	openResolvedStore    func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error)
 	readSecret           func(io.Reader, bool, string, string, string) (string, bool, error)
 }
 
@@ -548,6 +578,7 @@ const (
 type initCredentialPlanEntry struct {
 	Ref                 config.CredentialRef
 	PreviousRef         *config.CredentialRef
+	SecretsProfile      credentials.ResolvedSecretsProfile
 	KeySpecs            []credentials.KeySpec
 	PlannedWriteKeys    []string
 	MissingRequiredKeys []string
@@ -567,23 +598,6 @@ const (
 	initCredentialSecretActionSetNow initCredentialSecretAction = "set_now"
 	initCredentialSecretActionDefer  initCredentialSecretAction = "defer"
 	initCredentialSecretActionBack   initCredentialSecretAction = "back"
-)
-
-type initRoutesAction string
-
-const (
-	initRoutesActionPreserve initRoutesAction = "preserve"
-	initRoutesActionEdit     initRoutesAction = "edit"
-	initRoutesActionReset    initRoutesAction = "reset"
-	initRoutesActionBack     initRoutesAction = "back"
-)
-
-type initRetentionMaxAgeMode string
-
-const (
-	initRetentionMaxAgeDefault initRetentionMaxAgeMode = "default"
-	initRetentionMaxAgeForever initRetentionMaxAgeMode = "forever"
-	initRetentionMaxAgeCustom  initRetentionMaxAgeMode = "custom"
 )
 
 type initSecretSource string
@@ -630,6 +644,9 @@ func defaultInitDeps() initDeps {
 		saveConfig:           config.Save,
 		openStore: func(flagValue string, flagSet bool, cfg config.File) (initStore, error) {
 			return credentials.OpenStore(flagValue, flagSet, cfg)
+		},
+		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, flagValue string, flagSet bool, cfg config.File) (initStore, error) {
+			return credentials.OpenResolvedStore(flagValue, flagSet, cfg, resolved)
 		},
 		readSecret: readOptionalSecretIngress,
 	}
@@ -687,6 +704,9 @@ func (deps initDeps) withDefaults() initDeps {
 	}
 	if deps.openStore == nil {
 		deps.openStore = defaults.openStore
+	}
+	if deps.openResolvedStore == nil {
+		deps.openResolvedStore = defaults.openResolvedStore
 	}
 	if deps.readSecret == nil {
 		deps.readSecret = defaults.readSecret
@@ -835,6 +855,10 @@ func runInjectedInteractiveInit(cmd *cobra.Command, opts *root.Options, flags in
 	if err != nil {
 		return initSessionDraft{}, err
 	}
+	// The injected legacy path remains a direct test seam for older prompt
+	// dependencies; it intentionally preserves the pre-menu sequencing here even
+	// though the user-facing menu now exposes retention and secrets management as
+	// separate top-level categories.
 	if deps.retentionPrompter != nil {
 		session.cfg, err = collectInteractiveInitRetentionConfig(opts, deps, cloneInitConfigFile(session.cfg))
 		if err != nil {
@@ -862,9 +886,10 @@ func runInjectedInteractiveInit(cmd *cobra.Command, opts *root.Options, flags in
 }
 
 type huhInitPrompter struct {
-	stdin           io.Reader
-	stderr          io.Writer
-	inventoryRunner initInventoryRunner
+	stdin              io.Reader
+	stderr             io.Writer
+	inventoryRunner    initInventoryRunner
+	llmRuntimePrompter initLLMRuntimePrompter
 }
 
 type huhInitMenuPrompter struct {
@@ -891,7 +916,11 @@ type huhInitFinalizePrompter struct {
 }
 
 func newHuhInitPrompter(opts *root.Options) initPrompter {
-	return huhInitPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	return huhInitPrompter{
+		stdin:              opts.Stdin,
+		stderr:             opts.Stderr,
+		llmRuntimePrompter: newHuhInitLLMRuntimePrompter(opts),
+	}
 }
 
 func newHuhInitMenuPrompter(opts *root.Options) initMenuPrompter {
@@ -945,13 +974,17 @@ type huhInitRetentionPrompter struct {
 }
 
 type huhInitKeyringBackendPrompter struct {
-	stdin  io.Reader
-	stderr io.Writer
+	stdin           io.Reader
+	stderr          io.Writer
+	inventoryRunner initInventoryRunner
 }
 
 const (
 	initCustomGitScopeSelection           = "__custom_git_scope__"
 	initCustomLLMRuntimeSelection         = "__custom_llm_runtime__"
+	initConfigureNewLLMRuntimeSelection   = "__configure_new_llm_runtime__"
+	initSecretsProfileDefaultSelection    = "__init_secrets_profile_default__"
+	initMissingSecretsProfilePrefix       = "__missing_secrets_profile__:"
 	initBackSelection                     = "__back__"
 	initUndoProfileDeletePrefix           = "__undo_profile_delete__:"
 	initUndoReviewerEntityDeletePrefix    = "__undo_reviewer_entity_delete__:"
@@ -965,6 +998,8 @@ const (
 	initDetailActionEdit                  = "edit"
 	initDetailActionBack                  = "back"
 	initDetailActionDelete                = "delete"
+	initReviewerModelTierTitle            = "Minimum reviewer model tier"
+	initReviewerModelTierDescription      = "Sets the minimum model tier for reviewer agents. Agents that require a higher tier still use their higher configured tier."
 )
 
 func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
@@ -998,6 +1033,7 @@ func newHuhInitKeyringBackendPrompter(opts *root.Options) initKeyringBackendProm
 func buildInteractiveInitInventoryPromptContext(ctx initPromptContext) initPromptContext {
 	ctx.GitScopes, ctx.ProfileGitScopes = buildInitGitScopeInventory(ctx.ExistingConfig)
 	ctx.ReviewerEntities, ctx.ProfileReviewerEntities = buildInitReviewerEntityInventory(ctx.ExistingConfig)
+	ctx.SecretsProfiles, ctx.ProfileSecretsProfiles, ctx.BrokenProfileSecretsProfiles = buildInitSecretsProfileInventory(ctx.ExistingConfig)
 	ctx.LLMRuntimes, ctx.ProfileLLMRuntimes = buildInitLLMRuntimeInventory(ctx.ExistingConfig)
 	return ctx
 }
@@ -1126,6 +1162,8 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 			session, err = loopInteractiveInitProfile(cmd, opts, flags, deps, session)
 		case initMenuActionGlobalSettings:
 			session, err = editInteractiveInitGlobalSettings(cmd, opts, deps, session)
+		case initMenuActionSecretsManagement:
+			session, err = editInteractiveInitSecretsManagement(cmd, opts, deps, session)
 		case initMenuActionSave:
 			if session.workspace == nil {
 				return initSessionDraft{}, exitcode.Usage(errors.New("commit requires at least one configured profile"))
@@ -1190,54 +1228,67 @@ func editInteractiveInitProfileStep(cmd *cobra.Command, opts *root.Options, flag
 	if err != nil {
 		return initSessionDraft{}, false, err
 	}
-	nextWorkspace, err := collectInteractiveInitRoutes(opts, deps, workspace, initRoutesAction(strings.TrimSpace(draft.RepositoryRoutesAction)))
-	if errors.Is(err, errInitNavigateBack) {
-		session.workspace = &workspace
-		session.cfg = cloneInitConfigFile(workspace.cfg)
-		session.requestedProfileName = workspace.profileName
-		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, strings.TrimSpace(draft.RepositoryRoutesAction) != "", nil
+	if draft.RoutesSet {
+		workspace, err = applyInteractiveInitWorkspaceRoutes(workspace, draft.Routes)
+		if err != nil {
+			return initSessionDraft{}, false, err
+		}
+	} else {
+		nextWorkspace, err := collectInteractiveInitRoutes(opts, deps, workspace)
+		if errors.Is(err, errInitNavigateBack) {
+			session.workspace = &workspace
+			session.cfg = cloneInitConfigFile(workspace.cfg)
+			session.requestedProfileName = workspace.profileName
+			session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+			return session, true, nil
+		}
+		if err != nil {
+			return initSessionDraft{}, false, err
+		}
+		workspace = nextWorkspace
 	}
-	if err != nil {
-		return initSessionDraft{}, false, err
+	if !draft.ModelMapSet {
+		nextWorkspace, err := collectInteractiveInitModelMap(opts, deps, workspace)
+		if errors.Is(err, errInitNavigateBack) {
+			session.workspace = &workspace
+			session.cfg = cloneInitConfigFile(workspace.cfg)
+			session.requestedProfileName = workspace.profileName
+			session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+			return session, false, nil
+		}
+		if err != nil {
+			return initSessionDraft{}, false, err
+		}
+		workspace = nextWorkspace
 	}
-	workspace = nextWorkspace
-	nextWorkspace, err = collectInteractiveInitModelMap(opts, deps, workspace)
-	if errors.Is(err, errInitNavigateBack) {
-		session.workspace = &workspace
-		session.cfg = cloneInitConfigFile(workspace.cfg)
-		session.requestedProfileName = workspace.profileName
-		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, false, nil
+	if !draft.AgentSourcesSet {
+		nextWorkspace, err := collectInteractiveInitAgentSources(opts, deps, workspace)
+		if errors.Is(err, errInitNavigateBack) {
+			session.workspace = &workspace
+			session.cfg = cloneInitConfigFile(workspace.cfg)
+			session.requestedProfileName = workspace.profileName
+			session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+			return session, false, nil
+		}
+		if err != nil {
+			return initSessionDraft{}, false, err
+		}
+		workspace = nextWorkspace
 	}
-	if err != nil {
-		return initSessionDraft{}, false, err
+	if !draft.ReviewPolicySet {
+		nextWorkspace, err := collectInteractiveInitReviewPolicy(opts, deps, workspace)
+		if errors.Is(err, errInitNavigateBack) {
+			session.workspace = &workspace
+			session.cfg = cloneInitConfigFile(workspace.cfg)
+			session.requestedProfileName = workspace.profileName
+			session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+			return session, false, nil
+		}
+		if err != nil {
+			return initSessionDraft{}, false, err
+		}
+		workspace = nextWorkspace
 	}
-	workspace = nextWorkspace
-	nextWorkspace, err = collectInteractiveInitAgentSources(opts, deps, workspace)
-	if errors.Is(err, errInitNavigateBack) {
-		session.workspace = &workspace
-		session.cfg = cloneInitConfigFile(workspace.cfg)
-		session.requestedProfileName = workspace.profileName
-		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, false, nil
-	}
-	if err != nil {
-		return initSessionDraft{}, false, err
-	}
-	workspace = nextWorkspace
-	nextWorkspace, err = collectInteractiveInitReviewPolicy(opts, deps, workspace)
-	if errors.Is(err, errInitNavigateBack) {
-		session.workspace = &workspace
-		session.cfg = cloneInitConfigFile(workspace.cfg)
-		session.requestedProfileName = workspace.profileName
-		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		return session, false, nil
-	}
-	if err != nil {
-		return initSessionDraft{}, false, err
-	}
-	workspace = nextWorkspace
 	session.workspace = &workspace
 	session.cfg = cloneInitConfigFile(workspace.cfg)
 	session.requestedProfileName = workspace.profileName
@@ -1374,7 +1425,11 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		return initSessionDraft{}, false, err
 	}
 	session.cfg = cloneInitConfigFile(workspace.cfg)
-	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, initReviewerEntityDraftFromSeedDraft(draft))
+	nextEntity := initReviewerEntityDraft{}
+	if profile, ok := session.cfg.Profiles[workspace.profileName]; ok {
+		nextEntity = initReviewerEntityDraftFromConfig(profile)
+	}
+	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, nextEntity)
 	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
 	session.requestedProfileName = workspace.profileName
 	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, session.workspace.profile) {
@@ -1429,26 +1484,29 @@ func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, dep
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	nextCfg, err := collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cfg)
-	if errors.Is(err, errInitNavigateBack) {
-		session.cfg = cfg
-		if session.workspace != nil {
-			workspace := *session.workspace
-			workspace.cfg = cloneInitConfigFile(cfg)
-			workspace.backendArg = interactiveInitBackendArg(opts, workspace.backendFlagSet, cfg)
-			session.workspace = &workspace
-		}
-		return session, nil
-	}
-	if err != nil {
-		return initSessionDraft{}, err
-	}
-	cfg = nextCfg
 	session.cfg = cfg
 	if session.workspace != nil {
 		workspace := *session.workspace
 		workspace.cfg = cloneInitConfigFile(cfg)
 		workspace.backendArg = interactiveInitBackendArg(opts, workspace.backendFlagSet, cfg)
+		session.workspace = &workspace
+	}
+	return session, nil
+}
+
+func editInteractiveInitSecretsManagement(_ *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	nextCfg, err := collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cloneInitConfigFile(session.cfg))
+	if errors.Is(err, errInitNavigateBack) {
+		return session, nil
+	}
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	session.cfg = nextCfg
+	if session.workspace != nil {
+		workspace := *session.workspace
+		workspace.cfg = cloneInitConfigFile(nextCfg)
+		workspace.backendArg = interactiveInitBackendArg(opts, workspace.backendFlagSet, nextCfg)
 		session.workspace = &workspace
 	}
 	return session, nil
@@ -1463,7 +1521,8 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 		huh.NewOption(fmt.Sprintf("Configure LLM runtimes (%d)", prompt.LLMRuntimeCount), initMenuActionLLMRuntimes),
 		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
 		huh.NewOption(fmt.Sprintf("Configure review profiles (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfiles),
-		huh.NewOption("Review global settings", initMenuActionGlobalSettings),
+		huh.NewOption("Configure global settings", initMenuActionGlobalSettings),
+		huh.NewOption("Configure secrets management", initMenuActionSecretsManagement),
 		huh.NewOption("Commit staged changes and exit", initMenuActionSave),
 		huh.NewOption("Discard staged changes and exit", initMenuActionExit),
 	}
@@ -1488,7 +1547,7 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 						if !prompt.CanSave {
 							return errors.New("configure a review profile before committing changes")
 						}
-					case initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+					case initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionSecretsManagement, initMenuActionExit:
 					}
 					return nil
 				}),
@@ -1886,20 +1945,16 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 }
 
 func (p huhInitReviewerEntityPrompter) editExistingReviewerEntity(entity initReviewerEntityDraft, seed initDraft) (initDraft, bool, error) {
-	return p.editReviewerEntityFields(entity.Kind, seed, strings.TrimSpace(entity.CredentialRef), true)
+	return p.editReviewerEntityFields(entity, seed, true)
 }
 
 func (p huhInitReviewerEntityPrompter) editNewReviewerEntity(kind initReviewerEntityKind, seed initDraft) (initDraft, bool, error) {
-	return p.editReviewerEntityFields(kind, seed, "", false)
+	return p.editReviewerEntityFields(initReviewerEntityDraft{Kind: kind}, seed, false)
 }
 
-const (
-	initReviewerSecretLocationActionStandard = "reviewer_secret_location_standard"
-	initReviewerSecretLocationActionCustom   = "reviewer_secret_location_custom"
-)
-
-func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewerEntityKind, seed initDraft, standardReviewerRef string, preserveCurrentLocation bool) (initDraft, bool, error) {
+func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
 	editDraft := seed
+	kind := entity.Kind
 	applyReviewerEntitySelection(&editDraft, string(kind))
 	if kind == initReviewerEntityKindUseGitIdentity {
 		action := initDetailActionEdit
@@ -1924,17 +1979,22 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewe
 		return editDraft, false, nil
 	}
 
-	secretLocationMode := initReviewerSecretLocationActionStandard
-	customSecretLocation := ""
-	if preserveCurrentLocation && currentReviewerRefUsesCustomLocation(editDraft) {
-		secretLocationMode = initReviewerSecretLocationActionCustom
-		customSecretLocation = strings.TrimSpace(editDraft.ReviewerCredentialRef)
+	standardReviewerRef, err := standardReviewerCredentialRef(editDraft.ProfileName)
+	if err != nil {
+		return initDraft{}, false, err
 	}
-	secretLocationDescription := "Keep the standard reviewer secret location unless you need an advanced custom location."
-	standardLocationLabel := "Use the standard reviewer secret location (recommended)"
+	labelInput, explicitDisplayName, fallbackLabelSeed := reviewerEntityEditorLabelSeed(entity)
+	if !preserveCurrentLocation {
+		// New entities start from a blank editable label even when the kind has a fallback display shape.
+		labelInput = ""
+	}
+	reviewerSecretLocation := ""
 	if preserveCurrentLocation {
-		secretLocationDescription = "Keep this reviewer entity's current secret location unless you need an advanced custom location."
-		standardLocationLabel = "Keep this reviewer entity's current secret location (recommended)"
+		if currentRef := strings.TrimSpace(editDraft.ReviewerCredentialRef); currentRef != "" {
+			reviewerSecretLocation = currentRef
+		} else {
+			reviewerSecretLocation = standardReviewerRef
+		}
 	}
 	action := initDetailActionEdit
 	form := huh.NewForm(
@@ -1942,16 +2002,13 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewe
 			huh.NewInput().
 				Title("Entity label").
 				Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
-				Value(&editDraft.ReviewerDisplayName).
+				Value(&labelInput).
 				Validate(validateOptionalDisplayName),
-			huh.NewSelect[string]().
+			huh.NewInput().
 				Title("Reviewer secret location").
-				Description(secretLocationDescription).
-				Options(
-					huh.NewOption(standardLocationLabel, initReviewerSecretLocationActionStandard),
-					huh.NewOption("Use a custom reviewer secret location (advanced)", initReviewerSecretLocationActionCustom),
-				).
-				Value(&secretLocationMode),
+				Description("Leave blank to use the standard reviewer secret location for this profile. Replace the value only if you need a custom location.").
+				Value(&reviewerSecretLocation).
+				Validate(validateOptionalCredentialRef),
 			huh.NewSelect[string]().
 				Title("Reviewer detail action").
 				Options(
@@ -1968,45 +2025,33 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(kind initReviewe
 	if back || action == initDetailActionBack {
 		return initDraft{}, true, nil
 	}
-	if secretLocationMode == initReviewerSecretLocationActionCustom {
-		customAction := initDetailActionEdit
-		customForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Custom reviewer secret location").
-					Description("Advanced: enter a custom reviewer secret location. Leave blank when using the standard location.").
-					Value(&customSecretLocation).
-					Validate(func(value string) error {
-						if strings.TrimSpace(value) == "" {
-							return fmt.Errorf("custom reviewer secret location is required")
-						}
-						return validateOptionalCredentialRef(value)
-					}),
-				huh.NewSelect[string]().
-					Title("Custom secret location action").
-					Options(
-						huh.NewOption("Stage reviewer settings", initDetailActionEdit),
-						huh.NewOption("Back without staging", initDetailActionBack),
-					).
-					Value(&customAction),
-			).Title("Reviewer Entity Details"),
-		)
-		back, err = runBackableInitForm(customForm, p.stdin, p.stderr)
-		if err != nil {
-			return initDraft{}, false, err
-		}
-		if back || customAction == initDetailActionBack {
-			return initDraft{}, true, nil
-		}
-	}
-	editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(editDraft.ReviewerDisplayName)
-	editDraft.AdvancedStorageLabels = secretLocationMode == initReviewerSecretLocationActionCustom
-	if editDraft.AdvancedStorageLabels {
-		editDraft.ReviewerCredentialRef = strings.TrimSpace(customSecretLocation)
-	} else {
-		editDraft.ReviewerCredentialRef = standardReviewerRef
-	}
+	finalizeReviewerEntityEditorDraft(&editDraft, explicitDisplayName, fallbackLabelSeed, labelInput, reviewerSecretLocation, standardReviewerRef, preserveCurrentLocation)
 	return editDraft, false, nil
+}
+
+func finalizeReviewerEntityEditorDraft(editDraft *initDraft, explicitDisplayName string, fallbackLabelSeed string, labelInput string, reviewerSecretLocation string, standardReviewerRef string, preserveCurrentLocation bool) {
+	editDraft.ReviewerDisplayName = normalizeOptionalDisplayName(labelInput)
+	userAcceptedFallbackLabelUnchanged := preserveCurrentLocation && explicitDisplayName == "" && editDraft.ReviewerDisplayName == fallbackLabelSeed
+	if userAcceptedFallbackLabelUnchanged {
+		// Keep inferred fallback labels as UI-only seeds; only persist labels the user explicitly set or changed.
+		editDraft.ReviewerDisplayName = ""
+	}
+	reviewerSecretLocation = strings.TrimSpace(reviewerSecretLocation)
+	editDraft.AdvancedStorageLabels = reviewerSecretLocation != "" && reviewerSecretLocation != standardReviewerRef
+	if editDraft.AdvancedStorageLabels {
+		editDraft.ReviewerCredentialRef = reviewerSecretLocation
+	} else {
+		editDraft.ReviewerCredentialRef = ""
+	}
+}
+
+func reviewerEntityEditorLabelSeed(entity initReviewerEntityDraft) (labelInput string, explicitDisplayName string, fallbackLabelSeed string) {
+	explicitDisplayName = normalizeOptionalDisplayName(entity.DisplayName)
+	if explicitDisplayName != "" {
+		return explicitDisplayName, explicitDisplayName, ""
+	}
+	fallbackLabelSeed = reviewerEntityFallbackIdentityLabel(entity)
+	return fallbackLabelSeed, "", fallbackLabelSeed
 }
 
 func (p huhInitReviewerEntityPrompter) runInventory(prompt initInventoryPrompt) (initInventoryResult, error) {
@@ -2048,7 +2093,7 @@ func initReviewerEntityInventoryRows(ctx initPromptContext) []initInventoryRow {
 	rows = append(rows,
 		initInventoryRow{
 			ID:            string(initReviewerEntityKindUseGitIdentity),
-			Title:         focusedReviewerEntityFallbackLabel(ctx.ExistingProfileName),
+			Title:         focusedReviewerEntityFallbackLabel(ctx.ExistingProfile),
 			Kind:          initInventoryRowKindCommand,
 			PrimaryAction: initInventoryActionCommand,
 			Selectable:    true,
@@ -2078,19 +2123,8 @@ func initReviewerEntityInventoryRows(ctx initPromptContext) []initInventoryRow {
 	return rows
 }
 
-func currentReviewerRefUsesCustomLocation(draft initDraft) bool {
-	if !draft.ReviewerEnabled {
-		return false
-	}
-	reviewerRef := strings.TrimSpace(draft.ReviewerCredentialRef)
-	if reviewerRef == "" {
-		return false
-	}
-	defaultRef, err := credentials.FormatRef(draft.ProfileName + "-reviewer")
-	if err != nil {
-		return false
-	}
-	return reviewerRef != defaultRef
+func standardReviewerCredentialRef(profileName string) (string, error) {
+	return credentials.FormatRef(profileName + "-reviewer")
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -2140,8 +2174,8 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			selectedExistingProfile = &profileCopy
 		}
 		requestedProfileName := ctx.RequestedProfileName
-		if selectedCreateNewProfile && ctx.ExistingProfile != nil {
-			requestedProfileName = ""
+		if selectedCreateNewProfile {
+			requestedProfileName = initCreateProfileSeedName(ctx)
 		}
 		draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
 		if warnings := ctx.ProfileWarnings[selectedProfileName]; len(warnings) > 0 {
@@ -2151,189 +2185,279 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 			_, _ = fmt.Fprintln(p.stderr)
 		}
-		reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
-		llmRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
-		selectedRuntimePreset := string(llmRuntime.Preset)
-		reviewerMode := string(reviewerEntity.Kind)
-		selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
-		if selectedGitScope == "" {
-			selectedGitScope = initCustomGitScopeSelection
-		}
-		selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
-		if selectedReviewerEntity == "" {
-			selectedReviewerEntity = reviewerMode
-		} else {
-			selectedReviewerEntity = normalizeReviewerEntitySelectionValue(selectedReviewerEntity, ctx.ReviewerEntities)
-		}
-		selectedLLMRuntime := ctx.ProfileLLMRuntimes[selectedProfileName]
-		if selectedLLMRuntime == "" {
-			if selectedRuntimePreset == string(initLLMRuntimePresetCustom) {
-				selectedLLMRuntime = initCustomLLMRuntimeSelection
-			} else {
-				selectedLLMRuntime = selectedRuntimePreset
+		routeText := formatInitRouteSpecs(currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName))
+		stagedLLMRuntimes := map[string]initLLMRuntimeDraft{}
+		for {
+			reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
+			reviewerMode := string(reviewerEntity.Kind)
+			selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
+			if selectedGitScope == "" {
+				selectedGitScope = initCustomGitScopeSelection
 			}
-		}
-		selectedStorageLabelsMode := initStorageLabelsStandard
-		if draft.AdvancedStorageLabels {
-			selectedStorageLabelsMode = initStorageLabelsCustom
-		}
-		currentRoutes := currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName)
-		selectedRepositoryRoutesAction := string(initRoutesActionPreserve)
-		gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
-		reviewerEntityOptions := initReviewerEntityOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedProfileName))
-		llmRuntimeOptions := initLLMRuntimeOptions(ctx.LLMRuntimes)
-
-		reviewerProfileFields := []huh.Field{
-			huh.NewSelect[string]().
-				Title("Reviewer entity").
-				Description(reviewerEntitySelectionDescription()).
-				Options(reviewerEntityOptions...).
-				Value(&selectedReviewerEntity),
-		}
-		if selectedReviewerEntity != string(initReviewerEntityKindUseGitIdentity) {
-			reviewerProfileFields = append(reviewerProfileFields,
-				huh.NewInput().
-					Title("Reviewer entity label").
-					Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
-					Value(&draft.ReviewerDisplayName).
-					Validate(validateOptionalDisplayName),
+			selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
+			if selectedReviewerEntity == "" {
+				selectedReviewerEntity = reviewerMode
+			} else {
+				selectedReviewerEntity = normalizeReviewerEntitySelectionValue(selectedReviewerEntity, ctx.ReviewerEntities)
+			}
+			gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
+			selectedGit := initGitScopeDraft{
+				Host:          draft.GitHost,
+				AuthMode:      config.GitAuthMode(draft.GitAuth),
+				CredentialRef: strings.TrimSpace(draft.GitCredentialRef),
+			}
+			if scopeName := ctx.ProfileGitScopes[selectedProfileName]; scopeName != "" {
+				if scope, ok := ctx.GitScopes[scopeName]; ok {
+					selectedGit = scope
+				}
+			}
+			reviewerEntityOptions := initReviewerEntitySelectionOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
+			_, selectedSecretsProfile := initProfileEditorSecretsProfileSelection(
+				ctx.SecretsProfiles,
+				ctx.ProfileSecretsProfiles[selectedProfileName],
+				ctx.BrokenProfileSecretsProfiles[selectedProfileName],
+				initSecretsProfileDefaultOptionLabel(ctx.ExistingConfig),
+				draft,
 			)
-		}
-		reviewerProfileFields = append(reviewerProfileFields,
-			huh.NewSelect[string]().
-				Title("LLM runtime").
-				Description("Choose how reviewer agents run for this profile.").
-				Options(llmRuntimeOptions...).
-				Value(&selectedLLMRuntime),
-			huh.NewSelect[string]().
-				Title("Reviewer model tier").
-				Options(
-					huh.NewOption("Built-in default", ""),
-					huh.NewOption("Small", string(config.ModelTierSmall)),
-					huh.NewOption("Medium", string(config.ModelTierMedium)),
-					huh.NewOption("Large", string(config.ModelTierLarge)),
-				).
-				Value(&draft.LLMReviewerModelTier),
-			huh.NewSelect[string]().
-				Title("Storage label handling").
-				Description("Choose whether to use the standard credential-store labels or override them for this profile.").
-				Options(
-					huh.NewOption("Use standard storage labels (recommended)", initStorageLabelsStandard),
-					huh.NewOption("Customize storage labels (advanced)", initStorageLabelsCustom),
-				).
-				Value(&selectedStorageLabelsMode),
-			huh.NewSelect[string]().
-				Title("Repository routes").
-				Description("Choose how cr should select this profile automatically when --profile is omitted.").
-				Options(profileRouteActionOptions(len(currentRoutes) > 0)...).
-				Value(&selectedRepositoryRoutesAction),
-		)
+			llmRuntimes := maps.Clone(ctx.LLMRuntimes)
+			if llmRuntimes == nil {
+				llmRuntimes = map[string]initLLMRuntimeDraft{}
+			}
+			for name, runtime := range stagedLLMRuntimes {
+				llmRuntimes[name] = runtime
+			}
+			llmRuntimeOptions, selectedLLMRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, ctx.ProfileLLMRuntimes[selectedProfileName], draft)
+			standardGitCredentialRef, err := initStandardGitCredentialRef(draft.ProfileName, selectedGitScope, ctx.GitScopes)
+			if err != nil {
+				return initDraft{}, err
+			}
+			standardReviewerCredentialRef, err := initStandardReviewerCredentialRef(draft.ProfileName, selectedReviewerEntity, ctx.ReviewerEntities)
+			if err != nil {
+				return initDraft{}, err
+			}
+			standardLLMCredentialRef, err := initStandardLLMCredentialRef(draft.ProfileName, selectedLLMRuntime, llmRuntimes)
+			if err != nil {
+				return initDraft{}, err
+			}
+			gitStorageLabel := initEffectiveStorageLabelValue(draft.GitCredentialRef, standardGitCredentialRef)
+			reviewerStorageLabel := initEffectiveStorageLabelValue(draft.ReviewerCredentialRef, standardReviewerCredentialRef)
+			llmStorageLabel := initEffectiveStorageLabelValue(draft.LLMCredentialRef, standardLLMCredentialRef)
+			initialSelectedLLMRuntime := selectedLLMRuntime
+			modelMapLLM := initProfileEditorModelMapLLM(draft, selectedLLMRuntime, llmRuntimes)
+			modelMapFields, modelMapValues := initModelMapEditorFields(modelMapLLM, draft.ModelMap)
+			agentSourceText := strings.Join(draft.AgentSources, "\n")
+			policy := draft.ReviewPolicy
+			if policy.MajorEvent == "" {
+				policy.MajorEvent = config.ReviewMajorEventComment
+			}
+			majorEvent := policy.MajorEvent
+			selfApproveChoice := initReviewPolicySelfApproveChoice(policy.AllowSelfApprove)
+			resolveThreads := string(policy.ResolveThreads)
+			resolveAfter := policy.ResolveAfter
+			profileAction := initDetailActionEdit
 
-		form := huh.NewForm(
-			huh.NewGroup(
+			reviewPolicyFields := []huh.Field{
+				huh.NewSelect[config.ReviewMajorEvent]().
+					Title("Major findings event").
+					Options(
+						huh.NewOption("Comment", config.ReviewMajorEventComment),
+						huh.NewOption("Request changes", config.ReviewMajorEventRequestChanges),
+					).
+					Value(&majorEvent),
+				huh.NewSelect[string]().
+					Title("Allow self-approve").
+					Options(initReviewPolicySelfApproveOptions()...).
+					Value(&selfApproveChoice),
+				huh.NewSelect[string]().
+					Title("Resolve threads").
+					Options(
+						huh.NewOption("Use built-in default", ""),
+						huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
+						huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
+					).
+					Value(&resolveThreads),
+				huh.NewInput().
+					Title("Resolve-after duration").
+					Description("Optional. Leave blank to clear. Example: 24h or 30m.").
+					Value(&resolveAfter).
+					Validate(validateOptionalDuration),
+			}
+			if len(modelMapFields) == 0 {
+				modelMapFields = append(modelMapFields, huh.NewNote().Description("No model tiers are available to configure."))
+			}
+			agentSourceFields := []huh.Field{
+				huh.NewNote().
+					Title("Additional reviewer-agent directories (optional)").
+					Description("Add local directories that contain custom reviewer agent definitions for this profile. These profile-specific directories are loaded alongside repo-local agents under <repo>/.codereview/agents and any per-run --agents-dir sources."),
+				huh.NewText().
+					Title("Additional trusted reviewer-agent directories").
+					Description("Paths are deduplicated and normalized before save.").
+					Value(&agentSourceText),
+			}
+			actionFields := []huh.Field{
+				huh.NewSelect[string]().
+					Title("Profile action").
+					Options(
+						huh.NewOption("Stage profile settings", initDetailActionEdit),
+						huh.NewOption("Back without staging", initDetailActionBack),
+					).
+					Value(&profileAction),
+			}
+			profileFields := []huh.Field{
 				huh.NewInput().
 					Title("Profile name").
 					Value(&draft.ProfileName).
 					Validate(validateProfileName),
-				huh.NewConfirm().
-					Title("Make this the default profile").
-					Value(&draft.MakeDefault),
-			).Title("Profile"),
-			huh.NewGroup(
+			}
+			profileFields = append(profileFields, initRouteEditorFields(&routeText, true)...)
+			profileFields = append(profileFields,
 				huh.NewSelect[string]().
-					Title("Git scope").
-					Description("Choose an existing Git scope for this profile or configure a custom one.").
-					Options(gitScopeOptions...).
-					Value(&selectedGitScope),
+					Title("Reviewer entity").
+					Description(reviewerEntitySelectionDescription()).
+					Options(reviewerEntityOptions...).
+					Value(&selectedReviewerEntity),
+				huh.NewSelect[string]().
+					Title("LLM runtime").
+					Description("Choose how reviewer agents run for this profile.").
+					Options(llmRuntimeOptions...).
+					Value(&selectedLLMRuntime),
+				huh.NewSelect[string]().
+					Title(initReviewerModelTierTitle).
+					Description(initReviewerModelTierDescription).
+					Options(initReviewerModelTierOptions()...).
+					Value(&draft.LLMReviewerModelTier),
+				huh.NewNote().Title("Model tier mapping"),
+			)
+			profileFields = append(profileFields, modelMapFields...)
+			profileFields = append(profileFields, agentSourceFields...)
+			profileFields = append(profileFields, huh.NewNote().Title("Review Policy"))
+			profileFields = append(profileFields, reviewPolicyFields...)
+			profileFields = append(profileFields,
+				huh.NewNote().
+					Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure."),
 				huh.NewInput().
-					Title("Git scope host").
-					Description("The Git host this review profile applies to, such as github.com or github.mycompany.com.").
-					Value(&draft.GitHost).
-					Validate(validateRequiredText("git host is required")),
-				huh.NewSelect[string]().
-					Title("Git scope auth mode").
-					Options(
-						huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
-						huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
-					).
-					Value(&draft.GitAuth),
-			).WithHideFunc(func() bool {
-				return selectedGitScope != initCustomGitScopeSelection
-			}).Title("Git Scope"),
-			huh.NewGroup(reviewerProfileFields...).Title("Review Profile"),
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("LLM provider").
-					Options(
-						huh.NewOption("Anthropic", string(config.LLMProviderAnthropic)),
-						huh.NewOption("OpenAI", string(config.LLMProviderOpenAI)),
-						huh.NewOption("Pi", string(config.LLMProviderPi)),
-					).
-					Value(&draft.LLMProvider),
-				huh.NewSelect[string]().
-					Title("LLM auth mode").
-					Options(
-						huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
-						huh.NewOption("API key", string(config.LLMAuthAPIKey)),
-					).
-					Value(&draft.LLMAuth),
-				huh.NewSelect[string]().
-					Title("LLM adapter").
-					Options(
-						huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
-						huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
-						huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
-						huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
-						huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
-					).
-					Value(&draft.LLMAdapter),
-			).WithHideFunc(func() bool {
-				return selectedLLMRuntime != initCustomLLMRuntimeSelection
-			}).Title("LLM Runtime Details"),
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Git storage label").
-					Description("Leave blank to use the standard profile-based label.").
-					Value(&draft.GitCredentialRef).
+					Title("Git secrets storage label").
+					Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure.").
+					Value(&gitStorageLabel).
 					Validate(validateOptionalCredentialRef),
-				huh.NewInput().
-					Title("Reviewer storage label").
-					Description("Leave blank to use the standard profile-based label when using separate reviewer credentials.").
-					Value(&draft.ReviewerCredentialRef).
-					Validate(validateOptionalCredentialRef),
-				huh.NewInput().
-					Title("LLM storage label").
-					Description("Leave blank to use the standard profile-based label when using an API-key runtime.").
-					Value(&draft.LLMCredentialRef).
-					Validate(validateOptionalCredentialRef),
-			).WithHideFunc(func() bool {
-				return selectedStorageLabelsMode != initStorageLabelsCustom
-			}).Title("Advanced Storage Labels"),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initDraft{}, err
+			)
+			profileFields = append(profileFields, actionFields...)
+			form := huh.NewForm(
+				huh.NewGroup(profileFields...).Title("Profile"),
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("Git scope").
+						Description("Choose an existing Git scope for this profile or configure a custom one.").
+						Options(gitScopeOptions...).
+						Value(&selectedGitScope),
+					huh.NewInput().
+						Title("Git scope host").
+						Description("The Git host this review profile applies to, such as github.com or github.mycompany.com.").
+						Value(&draft.GitHost).
+						Validate(validateRequiredText("git host is required")),
+					huh.NewSelect[string]().
+						Title("Git scope auth mode").
+						Options(
+							huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
+							huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
+						).
+						Value(&draft.GitAuth),
+				).WithHideFunc(func() bool {
+					return selectedGitScope != initCustomGitScopeSelection
+				}).Title("Git Scope"),
+			)
+			back, err := runBackableInitForm(form, p.stdin, p.stderr)
+			if err != nil {
+				return initDraft{}, err
+			}
+			if back || profileAction == initDetailActionBack {
+				break
+			}
+			if selectedLLMRuntime == initConfigureNewLLMRuntimeSelection {
+				llmRuntimePrompter := p.llmRuntimePrompter
+				if llmRuntimePrompter == nil {
+					llmRuntimePrompter = huhInitLLMRuntimePrompter{
+						stdin:           p.stdin,
+						stderr:          p.stderr,
+						checker:         defaultInitLLMRuntimeAvailabilityNote,
+						inventoryRunner: p.inventoryRunner,
+					}
+				}
+				runtimePromptCtx := ctx
+				runtimePromptCtx.LLMRuntimes = llmRuntimes
+				runtimeDraft, err := llmRuntimePrompter.EditLLMRuntime(initLLMRuntimePrompt{Context: runtimePromptCtx})
+				if errors.Is(err, errInitNavigateBack) {
+					continue
+				}
+				if err != nil {
+					return initDraft{}, err
+				}
+				stagedRuntime := initLLMRuntimeDraftFromSeedDraft(runtimeDraft)
+				stagedRuntime.Name = uniqueInitLLMRuntimeName(llmRuntimes, stagedRuntime.suggestedName())
+				stagedLLMRuntimes = map[string]initLLMRuntimeDraft{stagedRuntime.Name: stagedRuntime}
+				draft.LLMProvider = runtimeDraft.LLMProvider
+				draft.LLMAuth = runtimeDraft.LLMAuth
+				draft.LLMAdapter = runtimeDraft.LLMAdapter
+				if !draft.AdvancedStorageLabels {
+					draft.LLMCredentialRef = runtimeDraft.LLMCredentialRef
+				}
+				continue
+			}
+			if selectedLLMRuntime != initialSelectedLLMRuntime {
+				applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, llmRuntimes)
+				selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+				applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+				continue
+			}
+			routes, err := parseInitRouteSpecs(routeText)
+			if err != nil {
+				return initDraft{}, err
+			}
+			gitUsesDefaultBeforeSelection := initStorageLabelUsesDefault(gitStorageLabel, standardGitCredentialRef)
+			reviewerUsesDefaultBeforeSelection := initStorageLabelUsesDefault(reviewerStorageLabel, standardReviewerCredentialRef)
+			llmUsesDefaultBeforeSelection := initStorageLabelUsesDefault(llmStorageLabel, standardLLMCredentialRef)
+			applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
+			applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
+			applySecretsProfileSelection(&draft, selectedSecretsProfile)
+			applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, llmRuntimes)
+			// Inventory selections fill provider/auth/ref fields; rerunning the mode finalizers applies side effects like clearing refs for self-reviewers or subscription runtimes.
+			reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
+			selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
+			applyReviewerEntitySelection(&draft, reviewerMode)
+			applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
+			labels := initStorageLabelNormalizationInput{
+				Git: initStorageLabelFieldState{
+					Value:       gitStorageLabel,
+					UsesDefault: gitUsesDefaultBeforeSelection,
+				},
+				Reviewer: initStorageLabelFieldState{
+					Value:       reviewerStorageLabel,
+					UsesDefault: reviewerUsesDefaultBeforeSelection,
+				},
+				LLM: initStorageLabelFieldState{
+					Value:       llmStorageLabel,
+					UsesDefault: llmUsesDefaultBeforeSelection,
+				},
+			}
+			if err := normalizeInitProfileStorageLabels(&draft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime, ctx.GitScopes, ctx.ReviewerEntities, llmRuntimes, labels); err != nil {
+				return initDraft{}, err
+			}
+			draft.ModelMapSet = true
+			draft.ModelMap = initModelMapFromEditorValues(modelMapLLM, modelMapValues)
+			draft.AgentSourcesSet = true
+			draft.AgentSources = strings.FieldsFunc(agentSourceText, func(r rune) bool { return r == '\n' || r == '\r' })
+			draft.ReviewPolicySet = true
+			draft.ReviewPolicy = config.ReviewPolicy{
+				MajorEvent:       majorEvent,
+				AllowSelfApprove: initReviewPolicyAllowSelfApprove(selfApproveChoice),
+				ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(resolveThreads)),
+				ResolveAfter:     strings.TrimSpace(resolveAfter),
+			}
+			draft.RoutesSet = true
+			draft.Routes = routes
+			return draft, nil
 		}
-		if back {
-			continue
-		}
-		typedReviewerDisplayName := normalizeOptionalDisplayName(draft.ReviewerDisplayName)
-		draft.AdvancedStorageLabels = selectedStorageLabelsMode == initStorageLabelsCustom
-		applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
-		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
-		applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, ctx.LLMRuntimes)
-		// Inventory selections fill provider/auth/ref fields; rerunning the mode finalizers applies side effects like clearing refs for self-reviewers or subscription runtimes.
-		reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
-		selectedRuntimePreset = string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
-		applyReviewerEntitySelection(&draft, reviewerMode)
-		applyLLMRuntimeSelection(&draft, selectedRuntimePreset)
-		if reviewerMode == string(initReviewerEntityKindUseGitIdentity) {
-			draft.ReviewerDisplayName = ""
-		} else {
-			draft.ReviewerDisplayName = typedReviewerDisplayName
-		}
-		draft.RepositoryRoutesAction = selectedRepositoryRoutesAction
-		return draft, nil
+		continue
 	}
 }
 
@@ -2347,16 +2471,19 @@ func (p huhInitPrompter) runInventory(prompt initInventoryPrompt) (initInventory
 
 func initProfileInventoryRows(ctx initPromptContext) []initInventoryRow {
 	names := append([]string(nil), ctx.ExistingProfileNames...)
-	sort.Strings(names)
+	sortProfileInventoryNames(names, ctx)
 	rows := make([]initInventoryRow, 0, len(names)+len(ctx.PendingProfileDeletes)+2)
 	for _, name := range names {
+		description := profileInventoryRowDescription(name, ctx)
+		filterValue := strings.TrimSpace(strings.Join([]string{name, ctx.ExistingConfig.Profiles[name].Git.Host, description}, " "))
 		rows = append(rows, initInventoryRow{
 			ID:          name,
 			Title:       name,
+			Description: description,
 			Kind:        initInventoryRowKindActive,
 			Selectable:  true,
 			Deletable:   true,
-			FilterValue: strings.TrimSpace(strings.Join([]string{name, ctx.ExistingConfig.Profiles[name].Git.Host}, " ")),
+			FilterValue: filterValue,
 		})
 	}
 	pendingDeleteNames := make([]string, 0, len(ctx.PendingProfileDeletes))
@@ -2391,21 +2518,49 @@ func initProfileInventoryRows(ctx initPromptContext) []initInventoryRow {
 	return rows
 }
 
-func profileRouteActionOptions(hasRoutes bool) []huh.Option[string] {
-	if !hasRoutes {
-		return []huh.Option[string]{
-			huh.NewOption("Skip automatic profile-selection routes for now", string(initRoutesActionPreserve)),
-			huh.NewOption("Add automatic profile-selection routes", string(initRoutesActionEdit)),
+func sortProfileInventoryNames(names []string, ctx initPromptContext) {
+	sort.SliceStable(names, func(i, j int) bool {
+		left := profileInventorySortKey(names[i], ctx)
+		right := profileInventorySortKey(names[j], ctx)
+		if left != right {
+			return left < right
+		}
+		return names[i] < names[j]
+	})
+}
+
+func profileInventorySortKey(name string, ctx initPromptContext) int {
+	if name == strings.TrimSpace(ctx.DefaultProfileName) {
+		return 3
+	}
+	routes := currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, name)
+	if len(routes) == 0 {
+		return 2
+	}
+	for _, route := range routes {
+		if len(route.Repos) > 0 {
+			return 0
 		}
 	}
-	options := []huh.Option[string]{
-		huh.NewOption("Keep current automatic profile-selection routes", string(initRoutesActionPreserve)),
-		huh.NewOption("Edit automatic profile-selection routes", string(initRoutesActionEdit)),
+	return 1
+}
+
+func profileInventoryRowDescription(name string, ctx initPromptContext) string {
+	if name == strings.TrimSpace(ctx.DefaultProfileName) {
+		return "Everything else"
 	}
-	if hasRoutes {
-		options = append(options, huh.NewOption("Remove all automatic profile-selection routes for this profile", string(initRoutesActionReset)))
+	return formatInitRouteSpecsInline(currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, name))
+}
+
+func formatInitRouteSpecsInline(specs []configedit.RepositoryRouteSpec) string {
+	if len(specs) == 0 {
+		return ""
 	}
-	return options
+	parts := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		parts = append(parts, configedit.FormatRepositoryRouteSpec(spec))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDraft {
@@ -2490,6 +2645,18 @@ func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft, fall
 	return dedupeInitStringOptions(options)
 }
 
+func initReviewerEntitySelectionOptions(entities map[string]initReviewerEntityDraft, fallbackLabel string) []huh.Option[string] {
+	names := configuredInitReviewerEntityNames(entities)
+	sort.Strings(names)
+	options := make([]huh.Option[string], 0, len(names)+1)
+	for _, name := range names {
+		entity := entities[name]
+		options = append(options, huh.NewOption(initReviewerEntityLabel(entity), name))
+	}
+	options = append(options, huh.NewOption(fallbackLabel, string(initReviewerEntityKindUseGitIdentity)))
+	return dedupeInitStringOptions(options)
+}
+
 func configuredInitReviewerEntityNames(entities map[string]initReviewerEntityDraft) []string {
 	names := make([]string, 0, len(entities))
 	for name, entity := range entities {
@@ -2520,48 +2687,317 @@ func reviewerEntitySelectionDescription() string {
 	return "Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile. Profiles with no separate reviewer entity post using their profile Git account."
 }
 
+func buildInitSecretsProfileInventory(cfg config.File) ([]config.EffectiveSecretsProfile, map[string]string, map[string]string) {
+	profiles := make([]config.EffectiveSecretsProfile, 0, len(cfg.Secrets.Profiles))
+	for _, profile := range config.EffectiveSecretsProfiles(cfg) {
+		if profile.Source != config.EffectiveSecretsProfileSourceConfigured {
+			continue
+		}
+		profiles = append(profiles, profile)
+	}
+	selectedByProfile := make(map[string]string, len(cfg.Profiles))
+	brokenByProfile := map[string]string{}
+	for name, profile := range cfg.Profiles {
+		selection := strings.TrimSpace(profile.SecretsProfile)
+		selectedByProfile[name] = selection
+		if selection == "" {
+			continue
+		}
+		if _, ok := cfg.Secrets.Profiles[selection]; ok {
+			continue
+		}
+		brokenByProfile[name] = selection
+	}
+	return profiles, selectedByProfile, brokenByProfile
+}
+
+func initSecretsProfileSelectionOptions(profiles []config.EffectiveSecretsProfile, missingSelection string, defaultLabel string) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(profiles)+2)
+	if missingSelection != "" {
+		options = append(options, huh.NewOption(initMissingSecretsProfileLabel(missingSelection), initMissingSecretsProfileSelection(missingSelection)))
+	}
+	options = append(options, huh.NewOption(defaultLabel, initSecretsProfileDefaultSelection))
+	for _, profile := range profiles {
+		options = append(options, huh.NewOption(initSecretsProfileLabel(profile), profile.ID))
+	}
+	return dedupeInitStringOptions(options)
+}
+
+func initProfileEditorSecretsProfileSelection(profiles []config.EffectiveSecretsProfile, explicitSelection string, missingSelection string, defaultLabel string, draft initDraft) ([]huh.Option[string], string) {
+	options := initSecretsProfileSelectionOptions(profiles, missingSelection, defaultLabel)
+	selected := strings.TrimSpace(explicitSelection)
+	if selected == "" {
+		selected = strings.TrimSpace(draft.SecretsProfile)
+	}
+	if selected == "" {
+		selected = initSecretsProfileDefaultSelection
+	}
+	if missingSelection != "" && selected == missingSelection {
+		selected = initMissingSecretsProfileSelection(missingSelection)
+	}
+	return options, normalizeInitStringSelectionValue(selected, options)
+}
+
+func initProfileEditorSecretsProfileSelectionVisible(profiles []config.EffectiveSecretsProfile, missingSelection string) bool {
+	return len(profiles) > 0 || strings.TrimSpace(missingSelection) != ""
+}
+
+func initSecretsProfileDefaultOptionLabel(cfg config.File) string {
+	if profile, ok := config.EffectiveDefaultSecretsProfile(cfg); ok {
+		return fmt.Sprintf("Use built-in default (%s)", initSecretsProfileLabel(profile))
+	}
+	return "Use built-in default"
+}
+
+func initSecretsProfileLabel(profile config.EffectiveSecretsProfile) string {
+	displayName := strings.TrimSpace(profile.Label)
+	if displayName == "" {
+		displayName = strings.TrimSpace(profile.ID)
+	}
+	backend := strings.TrimSpace(profile.Backend)
+	if backend == "" {
+		return displayName
+	}
+	if item, ok := initSecretsBackendByKind(config.SecretsBackendKind(backend)); ok {
+		backend = item.Label
+	}
+	return fmt.Sprintf("%s (%s)", displayName, backend)
+}
+
+func initMissingSecretsProfileSelection(id string) string {
+	return initMissingSecretsProfilePrefix + strings.TrimSpace(id)
+}
+
+func initMissingSecretsProfileLabel(id string) string {
+	return fmt.Sprintf("Missing configured profile: %s (choose another option to repair)", strings.TrimSpace(id))
+}
+
+func applySecretsProfileSelection(draft *initDraft, selection string) {
+	switch {
+	case selection == initSecretsProfileDefaultSelection:
+		draft.SecretsProfile = ""
+	case strings.HasPrefix(selection, initMissingSecretsProfilePrefix):
+		draft.SecretsProfile = strings.TrimSpace(strings.TrimPrefix(selection, initMissingSecretsProfilePrefix))
+	default:
+		draft.SecretsProfile = strings.TrimSpace(selection)
+	}
+}
+
+func initReviewerModelTierOptions() []huh.Option[string] {
+	return []huh.Option[string]{
+		huh.NewOption("Built-in baseline (small)", ""),
+		huh.NewOption("Small baseline", string(config.ModelTierSmall)),
+		huh.NewOption("Medium baseline", string(config.ModelTierMedium)),
+		huh.NewOption("Large baseline", string(config.ModelTierLarge)),
+	}
+}
+
+func initProfileEditorModelMapLLM(draft initDraft, selectedLLMRuntime string, runtimes map[string]initLLMRuntimeDraft) config.LLMConfig {
+	llm := config.LLMConfig{
+		Provider: config.LLMProvider(draft.LLMProvider),
+		Auth:     config.LLMAuth(draft.LLMAuth),
+		Adapter:  config.LLMAdapter(draft.LLMAdapter),
+		ModelMap: copyModelMap(draft.ModelMap),
+	}
+	if runtime, ok := runtimes[selectedLLMRuntime]; ok {
+		llm.Provider = runtime.Provider
+		llm.Auth = runtime.Auth
+		llm.Adapter = runtime.Adapter
+	}
+	return llm
+}
+
+func initModelMapEditorFields(llm config.LLMConfig, modelMap config.ModelMap) ([]huh.Field, map[config.ModelTier]*string) {
+	existing := copyModelMap(modelMap)
+	values := map[config.ModelTier]*string{}
+	fields := make([]huh.Field, 0, len(config.ModelTiers()))
+	effective := config.EffectiveModelMap(applyModelMapToLLM(llm, existing))
+	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
+	for _, tier := range config.ModelTiers() {
+		value := initEffectiveModelMapInputValue(effective, tier)
+		values[tier] = &value
+		description := initModelMapInputDescription(tier, strings.TrimSpace(existing[string(tier)]), strings.TrimSpace(builtIns[string(tier)]))
+		fields = append(fields,
+			huh.NewInput().
+				Title(fmt.Sprintf("%s model", tier)).
+				Description(description).
+				Value(values[tier]),
+		)
+	}
+	return fields, values
+}
+
+func initModelMapFromEditorValues(llm config.LLMConfig, values map[config.ModelTier]*string) config.ModelMap {
+	edited := config.ModelMap{}
+	for _, tier := range config.ModelTiers() {
+		value, ok := values[tier]
+		if !ok || value == nil {
+			continue
+		}
+		edited[string(tier)] = strings.TrimSpace(*value)
+	}
+	return normalizeInitModelMap(llm, edited)
+}
+
+func initEffectiveStorageLabelValue(current, standard string) string {
+	current = strings.TrimSpace(current)
+	if current != "" {
+		return current
+	}
+	return strings.TrimSpace(standard)
+}
+
+func initStorageLabelUsesDefault(value, standard string) bool {
+	value = strings.TrimSpace(value)
+	standard = strings.TrimSpace(standard)
+	return value == "" || value == standard
+}
+
+type initStorageLabelFieldState struct {
+	Value       string
+	UsesDefault bool
+}
+
+type initStorageLabelNormalizationInput struct {
+	Git      initStorageLabelFieldState
+	Reviewer initStorageLabelFieldState
+	LLM      initStorageLabelFieldState
+}
+
+func initStandardGitCredentialRef(profileName, selection string, scopes map[string]initGitScopeDraft) (string, error) {
+	if selection != initCustomGitScopeSelection {
+		if scope, ok := scopes[selection]; ok && strings.TrimSpace(scope.CredentialRef) != "" {
+			return strings.TrimSpace(scope.CredentialRef), nil
+		}
+	}
+	return credentials.FormatRef(profileName)
+}
+
+func initReviewerStorageLabelRelevant(selection string, entities map[string]initReviewerEntityDraft) bool {
+	switch initReviewerEntityKind(selection) {
+	case initReviewerEntityKindUseGitIdentity:
+		return false
+	case initReviewerEntityKindPAT, initReviewerEntityKindGitHubApp:
+		return true
+	}
+	entity, ok := entities[selection]
+	return ok && entity.Kind != initReviewerEntityKindUseGitIdentity
+}
+
+func initStandardReviewerCredentialRef(profileName, selection string, entities map[string]initReviewerEntityDraft) (string, error) {
+	if !initReviewerStorageLabelRelevant(selection, entities) {
+		return "", nil
+	}
+	if entity, ok := entities[selection]; ok && strings.TrimSpace(entity.CredentialRef) != "" {
+		return strings.TrimSpace(entity.CredentialRef), nil
+	}
+	return standardReviewerCredentialRef(profileName)
+}
+
+func initLLMStorageLabelRelevant(selection string, runtimes map[string]initLLMRuntimeDraft) bool {
+	if runtime, ok := runtimes[selection]; ok {
+		return runtime.Auth == config.LLMAuthAPIKey
+	}
+	switch initLLMRuntimePreset(selection) {
+	case initLLMRuntimePresetAnthropicAPIKey, initLLMRuntimePresetOpenAIAPIKey:
+		return true
+	case initLLMRuntimePresetClaudeCLISubscription,
+		initLLMRuntimePresetCodexCLISubscription,
+		initLLMRuntimePresetPiLocal,
+		initLLMRuntimePresetCustom:
+		return false
+	}
+	return false
+}
+
+func initStandardLLMCredentialRef(profileName, selection string, runtimes map[string]initLLMRuntimeDraft) (string, error) {
+	if !initLLMStorageLabelRelevant(selection, runtimes) {
+		return "", nil
+	}
+	if runtime, ok := runtimes[selection]; ok && strings.TrimSpace(runtime.CredentialRef) != "" {
+		return strings.TrimSpace(runtime.CredentialRef), nil
+	}
+	return credentials.FormatRef(profileName + "-llm")
+}
+
+func normalizeInitProfileStorageLabels(draft *initDraft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime string, scopes map[string]initGitScopeDraft, entities map[string]initReviewerEntityDraft, runtimes map[string]initLLMRuntimeDraft, labels initStorageLabelNormalizationInput) error {
+	standardGitRef, err := initStandardGitCredentialRef(draft.ProfileName, selectedGitScope, scopes)
+	if err != nil {
+		return err
+	}
+	standardReviewerRef, err := initStandardReviewerCredentialRef(draft.ProfileName, selectedReviewerEntity, entities)
+	if err != nil {
+		return err
+	}
+	standardLLMRef, err := initStandardLLMCredentialRef(draft.ProfileName, selectedLLMRuntime, runtimes)
+	if err != nil {
+		return err
+	}
+
+	if labels.Git.UsesDefault {
+		draft.GitCredentialRef = standardGitRef
+	} else {
+		draft.GitCredentialRef = strings.TrimSpace(labels.Git.Value)
+	}
+
+	if !draft.ReviewerEnabled || !initReviewerStorageLabelRelevant(selectedReviewerEntity, entities) {
+		draft.ReviewerCredentialRef = ""
+	} else if labels.Reviewer.UsesDefault {
+		draft.ReviewerCredentialRef = standardReviewerRef
+	} else {
+		draft.ReviewerCredentialRef = strings.TrimSpace(labels.Reviewer.Value)
+	}
+
+	if config.LLMAuth(draft.LLMAuth) != config.LLMAuthAPIKey || !initLLMStorageLabelRelevant(selectedLLMRuntime, runtimes) {
+		draft.LLMCredentialRef = ""
+	} else if labels.LLM.UsesDefault {
+		draft.LLMCredentialRef = standardLLMRef
+	} else {
+		draft.LLMCredentialRef = strings.TrimSpace(labels.LLM.Value)
+	}
+
+	gitDeviatesFromStandard := strings.TrimSpace(draft.GitCredentialRef) != strings.TrimSpace(standardGitRef)
+	reviewerDeviatesFromStandard := draft.ReviewerEnabled && strings.TrimSpace(draft.ReviewerCredentialRef) != strings.TrimSpace(standardReviewerRef)
+	llmDeviatesFromStandard := config.LLMAuth(draft.LLMAuth) == config.LLMAuthAPIKey && strings.TrimSpace(draft.LLMCredentialRef) != strings.TrimSpace(standardLLMRef)
+	draft.AdvancedStorageLabels = gitDeviatesFromStandard || reviewerDeviatesFromStandard || llmDeviatesFromStandard
+	return nil
+}
+
 func reviewerEntityTemplateFallbackLabel() string {
 	return "Use a profile's Git account (no separate reviewer entity)"
 }
 
 func reviewerEntityTemplatePATLabel() string {
-	return "Use a personal access token (PAT) reviewer"
+	return "Configure new personal access token (PAT) reviewer"
 }
 
 func reviewerEntityTemplateGitHubAppLabel() string {
-	return "Use a GitHub App reviewer"
+	return "Configure new GitHub App reviewer"
 }
 
-func profileEditorReviewerEntityFallbackLabel(profileName string) string {
-	if strings.TrimSpace(profileName) == "" {
+func profileEditorReviewerEntityFallbackLabel(git initGitScopeDraft, existingProfile *config.Profile) string {
+	if strings.TrimSpace(git.Host) == "" && git.AuthMode == "" {
 		return reviewerEntityTemplateFallbackLabel()
 	}
-	return "None (uses this profile's Git account; no separate reviewer entity)"
+	return reviewerEntityGitAccountFallbackLabel(git.AuthMode, matchingGitIdentityCache(git, existingProfile))
 }
 
-func focusedReviewerEntityFallbackLabel(profileName string) string {
-	profileName = strings.TrimSpace(profileName)
-	if profileName == "" {
+func focusedReviewerEntityFallbackLabel(existingProfile *config.Profile) string {
+	if existingProfile == nil {
 		return reviewerEntityTemplateFallbackLabel()
 	}
-	return fmt.Sprintf("None (uses the %s profile's Git account)", profileName)
+	return reviewerEntityGitAccountFallbackLabel(existingProfile.Git.AuthMode, existingProfile.Git.IdentityCache)
 }
 
 func initReviewerEntityLabel(entity initReviewerEntityDraft) string {
 	displayName := normalizeOptionalDisplayName(entity.DisplayName)
 	switch entity.Kind {
 	case initReviewerEntityKindUseGitIdentity:
-		return "None (uses each profile's Git account)"
+		return "Post using each profile's Git account"
 	case initReviewerEntityKindGitHubApp:
-		if displayName != "" {
-			return fmt.Sprintf("%s (GitHub App reviewer)", displayName)
-		}
-		return fmt.Sprintf("GitHub App reviewer: %s", reviewerEntityFallbackIdentityLabel(entity))
+		return fmt.Sprintf("%s (GitHub App reviewer)", firstNonEmpty(displayName, reviewerEntityFallbackIdentityLabel(entity)))
 	case initReviewerEntityKindPAT:
-		if displayName != "" {
-			return fmt.Sprintf("%s (PAT reviewer)", displayName)
-		}
-		return fmt.Sprintf("PAT reviewer: %s", reviewerEntityFallbackIdentityLabel(entity))
+		return fmt.Sprintf("%s (PAT reviewer)", firstNonEmpty(displayName, reviewerEntityFallbackIdentityLabel(entity)))
 	default:
 		if displayName != "" {
 			return displayName
@@ -2587,6 +3023,45 @@ func reviewerEntityFallbackIdentityLabel(entity initReviewerEntityDraft) string 
 		pathSegment = ref[slash+1:]
 	}
 	return pathSegment
+}
+
+func reviewerEntityGitAccountFallbackLabel(authMode config.GitAuthMode, identityCache string) string {
+	authLabel := reviewerEntityGitAccountAuthLabel(authMode)
+	identityCache = strings.TrimSpace(identityCache)
+	if identityCache != "" {
+		return fmt.Sprintf("Post as %s (%s)", identityCache, authLabel)
+	}
+	return fmt.Sprintf("Post using this profile's Git account (%s)", authLabel)
+}
+
+func reviewerEntityGitAccountAuthLabel(authMode config.GitAuthMode) string {
+	switch authMode {
+	case config.GitAuthModeGitHubApp:
+		return "GitHub App"
+	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
+		return "GitHub PAT"
+	default:
+		return "GitHub PAT"
+	}
+}
+
+func matchingGitIdentityCache(git initGitScopeDraft, existingProfile *config.Profile) string {
+	if existingProfile == nil {
+		return ""
+	}
+	if !git.matchesConfig(existingProfile.Git) {
+		return ""
+	}
+	return existingProfile.Git.IdentityCache
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func applyReviewerEntityInventorySelection(draft *initDraft, selection string, entities map[string]initReviewerEntityDraft) {
@@ -2650,6 +3125,36 @@ func initLLMRuntimeOptions(runtimes map[string]initLLMRuntimeDraft) []huh.Option
 		huh.NewOption("Custom compatible runtime", initCustomLLMRuntimeSelection),
 	)
 	return dedupeInitStringOptions(options)
+}
+
+func initLLMRuntimeSelectionOptions(runtimes map[string]initLLMRuntimeDraft) []huh.Option[string] {
+	names := configuredInitLLMRuntimeNames(runtimes)
+	if len(names) == 0 {
+		return []huh.Option[string]{
+			huh.NewOption("Configure a new LLM runtime first", initConfigureNewLLMRuntimeSelection),
+		}
+	}
+	options := make([]huh.Option[string], 0, len(names))
+	for _, name := range names {
+		runtime := runtimes[name]
+		options = append(options, huh.NewOption("Configured: "+initLLMRuntimeLabel(runtime), name))
+	}
+	return dedupeInitStringOptions(options)
+}
+
+func initProfileEditorLLMRuntimeSelection(runtimes map[string]initLLMRuntimeDraft, profileRuntimeName string, draft initDraft) ([]huh.Option[string], string) {
+	options := initLLMRuntimeSelectionOptions(runtimes)
+	selected := profileRuntimeName
+	if selected == "" {
+		currentRuntime := initLLMRuntimeDraftFromSeedDraft(draft)
+		for name, runtime := range runtimes {
+			if runtime.identityKey() == currentRuntime.identityKey() {
+				selected = name
+				break
+			}
+		}
+	}
+	return options, normalizeInitStringSelectionValue(selected, options)
 }
 
 func configuredInitLLMRuntimeNames(runtimes map[string]initLLMRuntimeDraft) []string {
@@ -2761,6 +3266,20 @@ func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runti
 	applyLLMRuntimeSelection(draft, selection)
 }
 
+func normalizeInitStringSelectionValue(selection string, options []huh.Option[string]) string {
+	if len(options) == 0 {
+		return selection
+	}
+	if selection != "" {
+		for _, option := range options {
+			if option.Value == selection {
+				return selection
+			}
+		}
+	}
+	return options[0].Value
+}
+
 func dedupeInitStringOptions(options []huh.Option[string]) []huh.Option[string] {
 	seen := map[string]struct{}{}
 	deduped := make([]huh.Option[string], 0, len(options))
@@ -2824,7 +3343,9 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 	choice := options[0].Value
 	title := fmt.Sprintf("How should init handle %s credentials?", initCredentialPurposeLabel(prompt.Entry.Ref.Purpose))
 	if prompt.Entry.Ref.Ref != "" {
-		title = fmt.Sprintf("%s (%s)", title, prompt.Entry.Ref.Ref)
+		title = fmt.Sprintf("%s (%s%s)", title, prompt.Entry.Ref.Ref, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))
+	} else if suffix := initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile); suffix != "" {
+		title += suffix
 	}
 	if prompt.TargetHasAnyKeys && !prompt.TargetHasRequired {
 		title = fmt.Sprintf("%s Existing values were found; choose set-now to review them key by key.", title)
@@ -2864,7 +3385,7 @@ func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) 
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[initSecretSource]().
-				Title(fmt.Sprintf("How should init get %s?", prompt.Key)).
+				Title(fmt.Sprintf("How should init get %s%s?", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))).
 				Options(options...).
 				Value(&choice),
 		),
@@ -2883,7 +3404,7 @@ func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string
 	var value string
 	action := initDetailActionEdit
 	field := huh.NewInput().
-		Title(fmt.Sprintf("Paste %s", prompt.Key)).
+		Title(fmt.Sprintf("Paste %s%s", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))).
 		Description("Secret input is hidden.").
 		Value(&value).
 		EchoMode(huh.EchoModePassword).
@@ -2916,111 +3437,39 @@ func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string
 }
 
 func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initModelMapEdit, error) {
-	action := initDetailActionEdit
 	existing := copyModelMap(prompt.ModelMap)
-	values := map[config.ModelTier]*string{}
-	fields := make([]huh.Field, 0, len(config.ModelTiers()))
-	builtIns := config.BuiltInModelMap(prompt.LLM.Provider, prompt.LLM.Adapter)
-	for _, tier := range config.ModelTiers() {
-		value := strings.TrimSpace(existing[string(tier)])
-		values[tier] = &value
-		description := initModelMapInputDescription(tier, builtIns[string(tier)])
-		fields = append(fields,
-			huh.NewInput().
-				Title(fmt.Sprintf("%s model", tier)).
-				Description(description).
-				Value(values[tier]),
-		)
-	}
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Model-map action").
-				Options(
-					huh.NewOption("Stage model-map settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
-		).Title("Model Tiers"),
-		huh.NewGroup(fields...).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("Model Tiers"),
-	)
+	fields, values := initModelMapEditorFields(prompt.LLM, existing)
+	form := huh.NewForm(huh.NewGroup(fields...).Title("Model tier mapping"))
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
 		return initModelMapEdit{}, err
 	}
-	if back || action == initDetailActionBack {
+	if back {
 		return initModelMapEdit{}, errInitNavigateBack
 	}
-	edited := config.ModelMap{}
-	for _, tier := range config.ModelTiers() {
-		value := strings.TrimSpace(*values[tier])
-		if value == "" {
-			continue
-		}
-		edited[string(tier)] = value
-	}
-	if len(edited) == 0 {
-		edited = nil
-	}
-	return initModelMapEdit{Apply: true, ModelMap: edited}, nil
+	return initModelMapEdit{Apply: true, ModelMap: initModelMapFromEditorValues(prompt.LLM, values)}, nil
 }
 
 func (p huhInitAgentSourcesPrompter) EditAgentSources(prompt initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
-	action := initDetailActionEdit
-	values := make([]string, len(prompt.Sources))
-	fields := make([]huh.Field, 0, len(values)+1)
-	for i := range prompt.Sources {
-		values[i] = prompt.Sources[i]
-		fields = append(fields,
-			huh.NewInput().
-				Title(fmt.Sprintf("Agent source %d", i+1)).
-				Description("Leave blank to remove this path. Paths are normalized before save.").
-				Value(&values[i]),
-		)
-	}
-	var additions string
-	fields = append(fields,
-		huh.NewInput().
-			Title("Add agent sources").
-			Description("Optional. Enter comma-separated paths to append.").
-			Value(&additions),
-	)
+	agentSourceText := strings.Join(prompt.Sources, "\n")
 	form := huh.NewForm(
 		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Agent source action").
-				Options(
-					huh.NewOption("Stage agent source settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
-		).Title("Agent Sources"),
-		huh.NewGroup(fields...).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("Agent Sources"),
+			huh.NewNote().
+				Description("Add local directories that contain custom reviewer agent definitions for this profile. These profile-specific directories are loaded alongside repo-local agents under <repo>/.codereview/agents and any per-run --agents-dir sources. Paths are deduplicated and normalized before save."),
+			huh.NewText().
+				Title("Additional trusted reviewer-agent directories").
+				Description("One directory per line. Leave blank to use no additional profile-specific agent directories.").
+				Value(&agentSourceText),
+		).Title("Additional reviewer-agent directories (optional)"),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
 		return initAgentSourcesEdit{}, err
 	}
-	if back || action == initDetailActionBack {
+	if back {
 		return initAgentSourcesEdit{}, errInitNavigateBack
 	}
-	edited := make([]string, 0, len(values))
-	for _, value := range values {
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		edited = append(edited, value)
-	}
-	for _, value := range strings.Split(additions, ",") {
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		edited = append(edited, value)
-	}
+	edited := strings.FieldsFunc(agentSourceText, func(r rune) bool { return r == '\n' || r == '\r' })
 	if len(edited) == 0 {
 		edited = nil
 	}
@@ -3097,178 +3546,111 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 }
 
 func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEdit, error) {
-	action := prompt.Action
-	if action == "" {
-		action = initRoutesActionEdit
-	}
 	routeText := formatInitRouteSpecs(prompt.Routes)
-	fields := []huh.Field{
-		huh.NewNote().
-			Title("Automatic profile selection").
-			Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile."),
-		huh.NewNote().
-			Title("Accepted route formats").
-			Description("One per line: host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL."),
-	}
+	fields := initRouteEditorFields(&routeText, true)
 	if prompt.HostChanged && len(prompt.Routes) > 0 {
 		fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
 	}
-	fields = append(fields,
-		huh.NewText().
-			Title("Route entries").
-			Description("Leave blank to remove all routes for this profile.").
-			Value(&routeText),
-	)
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initRoutesAction]().
-				Title("Repository route action").
-				Options(
-					huh.NewOption("Stage repository-route settings", initRoutesActionEdit),
-					huh.NewOption("Back without staging", initRoutesActionBack),
-				).
-				Value(&action),
-		).Title("Repository Routes"),
-		huh.NewGroup(fields...).WithHideFunc(func() bool {
-			return action == initRoutesActionBack
-		}).Title("Repository Routes"),
-	)
+	form := huh.NewForm(huh.NewGroup(fields...).Title("Repository Routes"))
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
 		return initRoutesEdit{}, err
 	}
-	if back || action == initRoutesActionBack {
+	if back {
 		return initRoutesEdit{}, errInitNavigateBack
 	}
 	routes, err := parseInitRouteSpecs(routeText)
 	if err != nil {
 		return initRoutesEdit{}, err
 	}
-	return initRoutesEdit{Apply: true, Routes: routes}, nil
+	return initRoutesEdit{Routes: routes}, nil
+}
+
+func initRouteEditorFields(routeText *string, includeIntroTitle bool) []huh.Field {
+	intro := huh.NewNote().
+		Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile.")
+	if includeIntroTitle {
+		intro = intro.Title("Automatic profile selection")
+	}
+	return []huh.Field{
+		intro,
+		huh.NewNote().
+			Title("Accepted route formats").
+			Description("host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;."),
+		huh.NewInput().
+			Title("Route entries").
+			Value(routeText),
+	}
 }
 
 func (p huhInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
-	action := initDetailActionEdit
 	retention := prompt.Retention
-	mode := initRetentionMaxAgeDefault
-	customDays := ""
-	switch {
-	case retention.MaxAgeDays != nil && *retention.MaxAgeDays == 0:
-		mode = initRetentionMaxAgeForever
-	case retention.MaxAgeDays != nil && *retention.MaxAgeDays != config.DefaultRetentionConfig().MaxAgeDaysValue():
-		mode = initRetentionMaxAgeCustom
-		customDays = fmt.Sprintf("%d", *retention.MaxAgeDays)
-	}
-	enforcement := string(retention.Enforcement)
-	if enforcement == "" {
-		enforcement = string(config.RetentionAtWrite)
+	maxAgeDays := fmt.Sprintf("%d", retention.MaxAgeDaysValue())
+	if retention.MaxAgeDays == nil {
+		maxAgeDays = fmt.Sprintf("%d", config.DefaultRetentionConfig().MaxAgeDaysValue())
 	}
 	form := huh.NewForm(
 		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Retention action").
-				Options(
-					huh.NewOption("Stage retention settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
-		).Title("Retention"),
-		huh.NewGroup(
-			huh.NewSelect[initRetentionMaxAgeMode]().
-				Title("Maximum run-data age").
-				Options(
-					huh.NewOption("Default 90 days", initRetentionMaxAgeDefault),
-					huh.NewOption("Keep forever", initRetentionMaxAgeForever),
-					huh.NewOption("Custom days", initRetentionMaxAgeCustom),
-				).
-				Value(&mode),
+			huh.NewNote().
+				Title("Run data").
+				Description("Run data is cr's local record of review runs and related artifacts/logs. Retention controls how long old posted-review run data is kept locally."),
 			huh.NewInput().
-				Title("Custom max age in days").
-				Description("Required only when using a custom max age. Use 0 from the mode selector for keep forever.").
-				Value(&customDays).
-				Validate(func(value string) error {
-					if mode != initRetentionMaxAgeCustom {
-						return nil
-					}
-					return validateRetentionMaxAgeDays(value)
-				}),
-			huh.NewSelect[string]().
-				Title("Retention enforcement").
-				Options(
-					huh.NewOption("At write", string(config.RetentionAtWrite)),
-					huh.NewOption("Manual only", string(config.RetentionManualOnly)),
-				).
-				Value(&enforcement),
-		).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("Retention"),
+				Title("Maximum run-data age in days").
+				Description("How long cr keeps local run metadata and artifacts from posted reviews. Use 0 to keep posted-review run data indefinitely. Leave blank to reset to 90 days.").
+				Value(&maxAgeDays).
+				Validate(validateInteractiveRetentionMaxAgeDaysField),
+		).Title("Retention"),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
 		return initRetentionEdit{}, err
 	}
-	if back || action == initDetailActionBack {
+	if back {
 		return initRetentionEdit{}, errInitNavigateBack
 	}
 	next := config.RetentionConfig{
-		Enforcement: config.RetentionEnforcement(strings.TrimSpace(enforcement)),
+		Enforcement: retention.Enforcement,
 	}
-	switch mode {
-	case initRetentionMaxAgeDefault:
+	value := strings.TrimSpace(maxAgeDays)
+	if value == "" {
 		defaultDays := config.DefaultRetentionConfig().MaxAgeDaysValue()
 		next.MaxAgeDays = &defaultDays
-	case initRetentionMaxAgeForever:
-		keepForever := 0
-		next.MaxAgeDays = &keepForever
-	case initRetentionMaxAgeCustom:
-		days, err := parseInteractiveRetentionMaxAgeDays(customDays)
-		if err != nil {
-			return initRetentionEdit{}, err
-		}
-		next.MaxAgeDays = &days
-	default:
-		return initRetentionEdit{}, fmt.Errorf("unsupported retention max-age mode %q", mode)
+		return initRetentionEdit{Apply: true, Retention: next}, nil
 	}
+	days, err := parseInteractiveRetentionMaxAgeDays(value)
+	if err != nil {
+		return initRetentionEdit{}, err
+	}
+	next.MaxAgeDays = &days
 	return initRetentionEdit{Apply: true, Retention: next}, nil
 }
 
-func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
-	action := initDetailActionEdit
-	backend := strings.TrimSpace(prompt.Backend)
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Keyring backend action").
-				Options(
-					huh.NewOption("Stage keyring-backend settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
-		).Title("Keyring"),
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Persistent keyring backend").
-				Description("Examples include file or memory. Leave blank to use auto selection. Leave runtime-only --backend choices out unless you want them saved.").
-				Value(&backend),
-		).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("Keyring"),
-	)
-	back, err := runBackableInitForm(form, p.stdin, p.stderr)
-	if err != nil {
-		return initKeyringBackendEdit{}, err
+func initEffectiveModelMapInputValue(effective map[config.ModelTier]config.ModelMapResolution, tier config.ModelTier) string {
+	resolution, ok := effective[tier]
+	if !ok {
+		return ""
 	}
-	if back || action == initDetailActionBack {
-		return initKeyringBackendEdit{}, errInitNavigateBack
-	}
-	return initKeyringBackendEdit{Apply: true, Backend: strings.TrimSpace(backend)}, nil
+	return strings.TrimSpace(resolution.Model)
 }
 
-func initModelMapInputDescription(tier config.ModelTier, builtIn string) string {
-	if builtIn = strings.TrimSpace(builtIn); builtIn != "" {
-		return fmt.Sprintf("Leave blank to use the built-in %s model: %s", tier, builtIn)
+func applyModelMapToLLM(llm config.LLMConfig, modelMap config.ModelMap) config.LLMConfig {
+	llm.ModelMap = copyModelMap(modelMap)
+	return llm
+}
+
+func initModelMapInputDescription(tier config.ModelTier, override string, builtIn string) string {
+	override = strings.TrimSpace(override)
+	builtIn = strings.TrimSpace(builtIn)
+	switch {
+	case override != "" && builtIn != "":
+		return fmt.Sprintf("Configured override for the %s tier. Clear to use the built-in %s model: %s", tier, tier, builtIn)
+	case override != "":
+		return fmt.Sprintf("Configured override for the %s tier. Clear to leave this tier unmapped.", tier)
+	case builtIn != "":
+		return fmt.Sprintf("Built-in %s model for this runtime: %s. Leave unchanged to keep the built-in mapping, or enter a different model to override it.", tier, builtIn)
+	default:
+		return fmt.Sprintf("No built-in %s model for this runtime. Leave blank to keep this tier unmapped, or enter a model to configure it.", tier)
 	}
-	return "Leave blank to remove the override for this tier."
 }
 
 func initReviewPolicySelfApproveOptions() []huh.Option[string] {
@@ -3343,17 +3725,24 @@ func validateRetentionMaxAgeDays(value string) error {
 	return err
 }
 
+func validateInteractiveRetentionMaxAgeDaysField(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return validateRetentionMaxAgeDays(value)
+}
+
 func parseInteractiveRetentionMaxAgeDays(value string) (int, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return 0, fmt.Errorf("custom max age is required")
+		return 0, fmt.Errorf("maximum run-data age in days is required")
 	}
 	days, err := strconv.Atoi(trimmed)
 	if err != nil {
-		return 0, fmt.Errorf("custom max age must be a whole number")
+		return 0, fmt.Errorf("maximum run-data age in days must be a whole number")
 	}
 	if days < 0 {
-		return 0, fmt.Errorf("custom max age must be non-negative")
+		return 0, fmt.Errorf("maximum run-data age in days must be non-negative")
 	}
 	return days, nil
 }
@@ -3407,6 +3796,10 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		draft.LLMAdapter = string(existingProfile.LLM.Adapter)
 		draft.LLMReviewerModelTier = string(existingProfile.LLM.ReviewerModelTier)
 		draft.LLMCredentialRef = existingProfile.LLM.CredentialRef
+		draft.ModelMap = copyModelMap(existingProfile.LLM.ModelMap)
+		draft.AgentSources = append([]string(nil), existingProfile.AgentSources...)
+		draft.ReviewPolicy = existingProfile.ReviewPolicy
+		draft.SecretsProfile = strings.TrimSpace(existingProfile.SecretsProfile)
 		if existingProfile.ReviewerCredentials != nil {
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(existingProfile.ReviewerCredentials.AuthMode)
@@ -3415,6 +3808,48 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		}
 	}
 	return draft
+}
+
+func initCreateProfileSeedName(ctx initPromptContext) string {
+	requestedProfileName := strings.TrimSpace(ctx.RequestedProfileName)
+	if requestedProfileName != "" && !initProfileNameOccupied(ctx, requestedProfileName) {
+		return requestedProfileName
+	}
+	return uniqueInitProfileName(ctx, "new-profile")
+}
+
+func initProfileNameOccupied(ctx initPromptContext, profileName string) bool {
+	if profileName == "" {
+		return false
+	}
+	if _, ok := ctx.ExistingConfig.Profiles[profileName]; ok {
+		return true
+	}
+	for _, existingProfileName := range ctx.ExistingProfileNames {
+		if existingProfileName == profileName {
+			return true
+		}
+	}
+	if _, ok := ctx.PendingProfileDeletes[profileName]; ok {
+		return true
+	}
+	return false
+}
+
+func uniqueInitProfileName(ctx initPromptContext, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "profile"
+	}
+	if !initProfileNameOccupied(ctx, base) {
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", base, suffix)
+		if !initProfileNameOccupied(ctx, candidate) {
+			return candidate
+		}
+	}
 }
 
 func sortedProfileNames(profiles map[string]config.Profile) []string {
@@ -3463,6 +3898,11 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	cfg, exists, err := deps.loadConfig(path)
 	if err != nil {
 		return initPlan{}, cmderr.Config(err)
+	}
+	if exists {
+		if err := config.Validate(cfg); err != nil {
+			return initPlan{}, cmderr.Config(err)
+		}
 	}
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
@@ -3652,7 +4092,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		addWrite(writes, llmRef, llmKey, llmSecret)
 	}
 	plannedWriteKeys := projectInitPlannedWriteKeys(writes)
-	credentialPlan, err := planInitCredentials(previousProfile, profile, plannedWriteKeys)
+	credentialPlan, err := planInitCredentialsWithConfig(cfg, previousProfile, profile, plannedWriteKeys)
 	if err != nil {
 		return initPlan{}, cmderr.Config(err)
 	}
@@ -3759,11 +4199,11 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 			return initWorkspaceDraft{}, cmderr.Config(err)
 		}
 	}
-	if err := config.Validate(initValidationConfigForProfileHost(working, profileName, previousProfile, profile.Git.Host)); err != nil {
+	if err := validateInteractiveInitConfig(initValidationConfigForProfileHost(working, profileName, previousProfile, profile.Git.Host)); err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 
-	credentialPlan, err := planInitCredentials(previousProfile, profile, nil)
+	credentialPlan, err := planInitCredentialsWithConfig(working, previousProfile, profile, nil)
 	if err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
@@ -3862,7 +4302,9 @@ func resolveHistoricProfileName(session initSessionDraft, currentName string, dr
 func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraft) (initSessionPlan, error) {
 	profileNames := sortedTouchedProfileNames(session)
 	profileRefs := make(map[string][]config.CredentialRef, len(profileNames))
+	plannedWriteKeys := projectInitPlannedWriteKeys(session.writes)
 	entriesByKey := map[string]initCredentialPlanEntry{}
+	activeRefs := map[string]bool{}
 	for _, profileName := range profileNames {
 		profile, ok := session.cfg.Profiles[profileName]
 		if !ok {
@@ -3874,18 +4316,16 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 		}
 		profileRefs[profileName] = append([]config.CredentialRef(nil), refs...)
 		for _, ref := range refs {
-			key := initCredentialEntryKey(ref)
-			if _, exists := entriesByKey[key]; exists {
-				continue
-			}
-			specs, err := credentials.KeySpecsForPurpose(ref)
-			if err != nil {
+			activeRefs[ref.Ref] = true
+		}
+		previousProfile := touchedInteractiveInitPreviousProfile(session, profileName)
+		entries, err := planInitCredentialsWithConfig(session.cfg, previousProfile, profile, plannedWriteKeys)
+		if err != nil {
+			return initSessionPlan{}, cmderr.Config(err)
+		}
+		for _, entry := range entries {
+			if err := mergeInteractiveInitSessionPlanEntry(entriesByKey, entry); err != nil {
 				return initSessionPlan{}, cmderr.Config(err)
-			}
-			entriesByKey[key] = initCredentialPlanEntry{
-				Ref:      ref,
-				KeySpecs: append([]credentials.KeySpec(nil), specs...),
-				State:    initCredentialPlanStateDefer,
 			}
 		}
 	}
@@ -3895,11 +4335,8 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 	}
 	sort.Strings(entryKeys)
 	entries := make([]initCredentialPlanEntry, 0, len(entryKeys))
-	activeRefs := map[string]bool{}
 	for _, key := range entryKeys {
-		entry := entriesByKey[key]
-		activeRefs[entry.Ref.Ref] = true
-		entries = append(entries, entry)
+		entries = append(entries, entriesByKey[key])
 	}
 	writes := filterInitWritesByRefs(session.writes, activeRefs)
 	overwriteRefs := filterInitBoolMapByRefs(session.overwriteRefs, activeRefs)
@@ -3917,6 +4354,35 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 		backendFlagSet: session.backendFlagSet,
 		backendArg:     interactiveInitBackendArg(opts, session.backendFlagSet, session.cfg),
 	}, nil
+}
+
+func touchedInteractiveInitPreviousProfile(session initSessionDraft, profileName string) *config.Profile {
+	originalName := strings.TrimSpace(session.touchedProfiles[profileName])
+	if originalName == "" {
+		originalName = profileName
+	}
+	previousProfile, ok := session.originalCfg.Profiles[originalName]
+	if !ok {
+		return nil
+	}
+	profileCopy := previousProfile
+	return &profileCopy
+}
+
+func mergeInteractiveInitSessionPlanEntry(entriesByKey map[string]initCredentialPlanEntry, entry initCredentialPlanEntry) error {
+	key := initCredentialEntryKey(entry.Ref)
+	existing, ok := entriesByKey[key]
+	if !ok {
+		entriesByKey[key] = entry
+		return nil
+	}
+	if existing.State != initCredentialPlanStateClearRef && entry.State != initCredentialPlanStateClearRef && !sameInitCredentialStore(existing.SecretsProfile, entry.SecretsProfile) {
+		return fmt.Errorf("%w: init credential ref %q is staged for multiple secrets-management profiles in one session", config.ErrInvalid, entry.Ref.Ref)
+	}
+	if existing.State == initCredentialPlanStateClearRef && entry.State != initCredentialPlanStateClearRef {
+		entriesByKey[key] = entry
+	}
+	return nil
 }
 
 func collectInteractiveInitSessionWorkspaceSecrets(opts *root.Options, deps initDeps, session initSessionDraft, purposes []string) (initSessionDraft, error) {
@@ -4662,6 +5128,8 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	if draft.ReviewerEnabled {
 		reviewerRef := strings.TrimSpace(draft.ReviewerCredentialRef)
 		if reviewerRef == "" {
+			// A blank draft ref means "use this profile's standard reviewer secret location";
+			// expand it here so renames and shared-entity propagation can re-derive consistently.
 			reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
 			if err != nil {
 				return config.Profile{}, exitcode.Usage(err)
@@ -4696,6 +5164,20 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	} else {
 		profile.LLM.CredentialRef = ""
 	}
+	if draft.ModelMapSet {
+		profile.LLM.ModelMap = normalizeInitModelMap(profile.LLM, draft.ModelMap)
+	}
+	if draft.AgentSourcesSet {
+		sources, err := normalizeInitAgentSources(draft.AgentSources)
+		if err != nil {
+			return config.Profile{}, cmderr.Config(err)
+		}
+		profile.AgentSources = sources
+	}
+	if draft.ReviewPolicySet {
+		profile.ReviewPolicy = draft.ReviewPolicy
+	}
+	profile.SecretsProfile = strings.TrimSpace(draft.SecretsProfile)
 	return profile, nil
 }
 
@@ -4718,7 +5200,7 @@ func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan init
 		return plan, nil
 	}
 	nextProfile := plan.profile
-	nextProfile.LLM.ModelMap = normalizeInitModelMap(edit.ModelMap)
+	nextProfile.LLM.ModelMap = normalizeInitModelMap(nextProfile.LLM, edit.ModelMap)
 	nextCfg := plan.cfg
 	nextCfg.Profiles[plan.profileName] = nextProfile
 	if err := config.Validate(nextCfg); err != nil {
@@ -4812,7 +5294,7 @@ func normalizeInitAgentSources(sources []string) ([]string, error) {
 	return normalized, nil
 }
 
-func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initWorkspaceDraft, action initRoutesAction) (initWorkspaceDraft, error) {
+func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	prompter := deps.routesPrompter
 	if prompter == nil {
 		if deps.prompter != nil {
@@ -4826,50 +5308,21 @@ func collectInteractiveInitRoutes(opts *root.Options, deps initDeps, plan initWo
 		previousHost = plan.previousProfile.Git.Host
 		hostChanged = config.NormalizeHost(previousHost) != config.NormalizeHost(plan.profile.Git.Host)
 	}
-	if action == "" {
-		action = initRoutesActionPreserve
-	}
-	if action == initRoutesActionPreserve {
-		if err := validateInitRouteHosts(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host); err == nil {
-			return plan, nil
-		}
-		// A preserved route set became invalid after the profile edit, usually
-		// because git.host changed. Fall back to the route action chooser so the
-		// user can explicitly reconcile, remove, or back out instead of silently
-		// converting "preserve" into "edit".
-		action = ""
-	}
-	if action == initRoutesActionReset {
-		nextRoutes, err := applyInitProfileRoutes(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host, nil)
-		if err != nil {
-			return initWorkspaceDraft{}, exitcode.Usage(err)
-		}
-		nextCfg := plan.cfg
-		nextCfg.RepositoryProfiles = nextRoutes
-		if err := config.Validate(nextCfg); err != nil {
-			return initWorkspaceDraft{}, cmderr.Config(err)
-		}
-		plan.cfg = nextCfg
-		return plan, nil
-	}
 	edit, err := prompter.EditRoutes(initRoutesPrompt{
 		ProfileName:  plan.profileName,
 		ProfileHost:  plan.profile.Git.Host,
 		PreviousHost: previousHost,
 		HostChanged:  hostChanged,
 		Routes:       currentProfileRouteSpecs(plan.cfg.RepositoryProfiles, plan.profileName),
-		Action:       action,
 	})
 	if err != nil {
 		return initWorkspaceDraft{}, err
 	}
-	if !edit.Apply {
-		if err := validateInitRouteHosts(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host); err != nil {
-			return initWorkspaceDraft{}, exitcode.Usage(err)
-		}
-		return plan, nil
-	}
-	nextRoutes, err := applyInitProfileRoutes(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host, edit.Routes)
+	return applyInteractiveInitWorkspaceRoutes(plan, edit.Routes)
+}
+
+func applyInteractiveInitWorkspaceRoutes(plan initWorkspaceDraft, routes []configedit.RepositoryRouteSpec) (initWorkspaceDraft, error) {
+	nextRoutes, err := applyInitProfileRoutes(plan.cfg.RepositoryProfiles, plan.profileName, plan.profile.Git.Host, routes)
 	if err != nil {
 		return initWorkspaceDraft{}, exitcode.Usage(err)
 	}
@@ -4904,16 +5357,6 @@ func currentProfileRouteSpecs(routes []config.RepositoryProfile, profileName str
 	return specs
 }
 
-func validateInitRouteHosts(routes []config.RepositoryProfile, profileName string, profileHost string) error {
-	wantHost := config.NormalizeHost(profileHost)
-	for _, spec := range currentProfileRouteSpecs(routes, profileName) {
-		if spec.Host != wantHost {
-			return fmt.Errorf("profile %q has repository routes on host %q but git.host is %q; edit routes to reconcile the host change", profileName, spec.Host, profileHost)
-		}
-	}
-	return nil
-}
-
 func applyInitProfileRoutes(routes []config.RepositoryProfile, profileName string, profileHost string, specs []configedit.RepositoryRouteSpec) ([]config.RepositoryProfile, error) {
 	pruned := configedit.PruneRepositoryProfileRoutes(routes, profileName)
 	normalizedHost := config.NormalizeHost(profileHost)
@@ -4935,14 +5378,7 @@ func applyInitProfileRoutes(routes []config.RepositoryProfile, profileName strin
 }
 
 func formatInitRouteSpecs(specs []configedit.RepositoryRouteSpec) string {
-	if len(specs) == 0 {
-		return ""
-	}
-	lines := make([]string, 0, len(specs))
-	for _, spec := range specs {
-		lines = append(lines, configedit.FormatRepositoryRouteSpec(spec))
-	}
-	return strings.Join(lines, "\n")
+	return formatInitRouteSpecsInline(specs)
 }
 
 func parseInitRouteSpecs(raw string) ([]configedit.RepositoryRouteSpec, error) {
@@ -4950,17 +5386,25 @@ func parseInitRouteSpecs(raw string) ([]configedit.RepositoryRouteSpec, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	lines := strings.Split(raw, "\n")
-	specs := make([]configedit.RepositoryRouteSpec, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	entries := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ';' || r == '\n'
+	})
+	specs := make([]configedit.RepositoryRouteSpec, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
 			continue
 		}
-		spec, err := parseInitRouteSpec(line)
+		spec, err := parseInitRouteSpec(entry)
 		if err != nil {
 			return nil, err
 		}
+		key := configedit.FormatRepositoryRouteSpec(spec)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
 		specs = append(specs, spec)
 	}
 	if len(specs) == 0 {
@@ -4970,7 +5414,7 @@ func parseInitRouteSpecs(raw string) ([]configedit.RepositoryRouteSpec, error) {
 }
 
 func parseInitRouteSpec(raw string) (configedit.RepositoryRouteSpec, error) {
-	if ref, err := prref.ParseGitHubPullURL(raw); err == nil {
+	if ref, err := parseInitRoutePRURL(raw); err == nil {
 		return configedit.NormalizeRepositoryRouteSpec(configedit.RepositoryRouteSpec{
 			Host:      ref.Host,
 			Namespace: ref.Owner,
@@ -5005,6 +5449,18 @@ func parseInitRouteSpec(raw string) (configedit.RepositoryRouteSpec, error) {
 	})
 }
 
+func parseInitRoutePRURL(raw string) (gitprovider.PRRef, error) {
+	trimmed := strings.TrimSpace(raw)
+	ref, err := prref.ParseGitHubPullURL(trimmed)
+	if err == nil {
+		return ref, nil
+	}
+	if strings.Contains(trimmed, "://") {
+		return gitprovider.PRRef{}, err
+	}
+	return prref.ParseGitHubPullURL("https://" + strings.TrimPrefix(trimmed, "//"))
+}
+
 func collectInteractiveInitRetentionConfig(opts *root.Options, deps initDeps, cfg config.File) (config.File, error) {
 	prompter := deps.retentionPrompter
 	if prompter == nil {
@@ -5033,7 +5489,9 @@ func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDep
 		prompter = newHuhInitKeyringBackendPrompter(opts)
 	}
 	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Backend: cfg.Keyring.Backend,
+		Config:         cfg,
+		RuntimeBackend: opts.Backend,
+		BackendFlagSet: backendFlagSet,
 	})
 	if err != nil {
 		return config.File{}, err
@@ -5042,14 +5500,58 @@ func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDep
 		return cfg, nil
 	}
 	nextCfg := cfg
-	nextCfg.Keyring.Backend = strings.TrimSpace(edit.Backend)
+	if edit.HasConfigEdit {
+		nextCfg = config.Normalize(edit.Config)
+	} else {
+		nextCfg.Keyring.Backend = strings.TrimSpace(edit.Backend)
+	}
 	if err := validateInteractiveInitGlobalConfig(nextCfg); err != nil {
 		return config.File{}, cmderr.Config(err)
 	}
 	if backendFlagSet && nextCfg.Keyring.Backend != "" && nextCfg.Keyring.Backend != opts.Backend {
 		return config.File{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with selected keyring.backend %q", opts.Backend, nextCfg.Keyring.Backend))
 	}
+	if backendFlagSet {
+		if effectiveDefault, ok := config.EffectiveDefaultSecretsProfile(nextCfg); ok && effectiveDefault.Source == config.EffectiveSecretsProfileSourceConfigured {
+			name := strings.TrimSpace(effectiveDefault.Label)
+			if name == "" {
+				name = effectiveDefault.ID
+			}
+			return config.File{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with default secrets-management profile %q", opts.Backend, name))
+		}
+	}
 	return nextCfg, nil
+}
+
+func validateInteractiveInitConfig(cfg config.File) error {
+	err := config.Validate(cfg)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, config.ErrSecretsProfileNotFound) {
+		return err
+	}
+	recovered := cloneInitConfigFile(cfg)
+	hadBrokenSecretsProfile := false
+	for name, profile := range recovered.Profiles {
+		selection := strings.TrimSpace(profile.SecretsProfile)
+		if selection == "" || selection == config.LegacyProjectedSecretsProfileID {
+			continue
+		}
+		if _, ok := recovered.Secrets.Profiles[selection]; ok {
+			continue
+		}
+		profile.SecretsProfile = ""
+		recovered.Profiles[name] = profile
+		hadBrokenSecretsProfile = true
+	}
+	if !hadBrokenSecretsProfile {
+		return err
+	}
+	if recoveredErr := config.Validate(recovered); recoveredErr != nil {
+		return recoveredErr
+	}
+	return nil
 }
 
 func validateInteractiveInitGlobalConfig(cfg config.File) error {
@@ -5059,7 +5561,7 @@ func validateInteractiveInitGlobalConfig(cfg config.File) error {
 		}
 		return config.ValidateRetention(cfg.Data.Retention)
 	}
-	return config.Validate(cfg)
+	return validateInteractiveInitConfig(cfg)
 }
 
 func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, cfg config.File) string {
@@ -5070,6 +5572,69 @@ func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, cfg conf
 		return ""
 	}
 	return fmt.Sprintf(" --backend %s", opts.Backend)
+}
+
+func sameInitCredentialStore(a, b credentials.ResolvedSecretsProfile) bool {
+	return a.Equal(b)
+}
+
+func initCredentialStoreKey(resolved credentials.ResolvedSecretsProfile) string {
+	return fmt.Sprintf("%s|%s|%s", resolved.ID, resolved.Source, resolved.Backend)
+}
+
+type initWriteGroup struct {
+	Resolved      credentials.ResolvedSecretsProfile
+	Writes        map[string]map[string]string
+	OverwriteRefs map[string]bool
+}
+
+func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string]map[string]string, overwriteRefs map[string]bool) ([]initWriteGroup, error) {
+	if len(entries) == 0 {
+		// An empty credential plan means init is using the legacy/default store
+		// path, represented by the zero-value unresolved selection.
+		return []initWriteGroup{{
+			Writes:        writes,
+			OverwriteRefs: overwriteRefs,
+		}}, nil
+	}
+	groups := map[string]*initWriteGroup{}
+	for _, entry := range entries {
+		bundle := writes[entry.Ref.Ref]
+		if len(bundle) == 0 {
+			continue
+		}
+		key := initCredentialStoreKey(entry.SecretsProfile)
+		group := groups[key]
+		if group == nil {
+			group = &initWriteGroup{
+				Resolved:      entry.SecretsProfile,
+				Writes:        map[string]map[string]string{},
+				OverwriteRefs: map[string]bool{},
+			}
+			groups[key] = group
+		}
+		group.Writes[entry.Ref.Ref] = bundle
+		if overwriteRefs[entry.Ref.Ref] {
+			group.OverwriteRefs[entry.Ref.Ref] = true
+		}
+	}
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]initWriteGroup, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, *groups[key])
+	}
+	return out, nil
+}
+
+func openInitStoreForEntry(deps initDeps, opts *root.Options, flagSet bool, cfg config.File, entry initCredentialPlanEntry) (initStore, error) {
+	if entry.SecretsProfile.IsNamed() {
+		return deps.openResolvedStore(entry.SecretsProfile, opts.Backend, flagSet, cfg)
+	}
+	return deps.openStore(opts.Backend, flagSet, cfg)
 }
 
 func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
@@ -5092,21 +5657,24 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 	if prompter == nil {
 		prompter = newHuhInitSecretPrompter(opts)
 	}
-	var store initStore
-	openStore := func() (initStore, error) {
-		if store != nil {
+	stores := map[string]initStore{}
+	openStore := func(entry initCredentialPlanEntry) (initStore, error) {
+		key := initCredentialStoreKey(entry.SecretsProfile)
+		if store := stores[key]; store != nil {
 			return store, nil
 		}
-		opened, err := deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+		opened, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
 		if err != nil {
 			return nil, err
 		}
-		store = opened
-		return store, nil
+		stores[key] = opened
+		return opened, nil
 	}
 	defer func() {
-		if store != nil {
-			_ = store.Close()
+		for _, store := range stores {
+			if store != nil {
+				_ = store.Close()
+			}
 		}
 	}()
 
@@ -5141,8 +5709,11 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			if action == initCredentialSecretActionDefer {
 				break
 			}
-			activeStore, err := openStore()
+			activeStore, err := openStore(entry)
 			if err != nil {
+				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+					return initWorkspaceDraft{}, cmderr.Config(err)
+				}
 				return initWorkspaceDraft{}, cmderr.Credential(err)
 			}
 			targetKeys, err := existingInitCredentialKeys(activeStore, entry.Ref.Ref)
@@ -5281,10 +5852,13 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 		return plan, nil
 	}
 	var err error
-	plan.credentialPlan, err = loadInteractiveCredentialPlanState(plan.credentialPlan, func() (initStore, error) {
-		return deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+	plan.credentialPlan, err = loadInteractiveCredentialPlanStateWithResolver(plan.credentialPlan, func(entry initCredentialPlanEntry) (initStore, error) {
+		return openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
 	})
 	if err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+			return initSessionPlan{}, cmderr.Config(err)
+		}
 		return initSessionPlan{}, cmderr.Credential(err)
 	}
 	workspacePlan := initWorkspaceDraft{
@@ -5309,21 +5883,31 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 }
 
 func loadInteractiveCredentialPlanState(entries []initCredentialPlanEntry, openStore func() (initStore, error)) ([]initCredentialPlanEntry, error) {
+	return loadInteractiveCredentialPlanStateWithResolver(entries, func(initCredentialPlanEntry) (initStore, error) {
+		return openStore()
+	})
+}
+
+func loadInteractiveCredentialPlanStateWithResolver(entries []initCredentialPlanEntry, openStore func(initCredentialPlanEntry) (initStore, error)) ([]initCredentialPlanEntry, error) {
 	var needsStore bool
 	for _, entry := range entries {
-		if entry.State != initCredentialPlanStateClearRef {
-			needsStore = true
-			break
+		if entry.State == initCredentialPlanStateClearRef || entry.State == initCredentialPlanStateKeepExisting || len(entry.PlannedWriteKeys) > 0 {
+			continue
 		}
+		needsStore = true
+		break
 	}
 	if !needsStore {
 		return entries, nil
 	}
-	store, err := openStore()
-	if err != nil {
-		return nil, err
-	}
-	defer store.Close()
+	stores := map[string]initStore{}
+	defer func() {
+		for _, store := range stores {
+			if store != nil {
+				_ = store.Close()
+			}
+		}
+	}()
 	normalized := make([]initCredentialPlanEntry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.State == initCredentialPlanStateClearRef {
@@ -5333,6 +5917,16 @@ func loadInteractiveCredentialPlanState(entries []initCredentialPlanEntry, openS
 		if entry.State == initCredentialPlanStateKeepExisting || len(entry.PlannedWriteKeys) > 0 {
 			normalized = append(normalized, entry)
 			continue
+		}
+		key := initCredentialStoreKey(entry.SecretsProfile)
+		store := stores[key]
+		if store == nil {
+			var err error
+			store, err = openStore(entry)
+			if err != nil {
+				return nil, err
+			}
+			stores[key] = store
 		}
 		status, err := credentials.CredentialRefStatus(store, entry.Ref, nil)
 		if err != nil {
@@ -5471,23 +6065,36 @@ func filterInitBoolMapByRefs(values map[string]bool, activeRefs map[string]bool)
 	return filtered
 }
 
-func normalizeInitModelMap(modelMap config.ModelMap) config.ModelMap {
+func normalizeInitModelMap(llm config.LLMConfig, modelMap config.ModelMap) config.ModelMap {
 	if len(modelMap) == 0 {
 		return nil
 	}
+	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
 	normalized := config.ModelMap{}
 	for _, tier := range config.ModelTiers() {
 		model, ok := modelMap[string(tier)]
 		if !ok {
 			continue
 		}
-		normalized[string(tier)] = strings.TrimSpace(model)
+		model = strings.TrimSpace(model)
+		builtIn := strings.TrimSpace(builtIns[string(tier)])
+		isRedundantOverride := model == "" || model == builtIn
+		if isRedundantOverride {
+			continue
+		}
+		normalized[string(tier)] = model
 	}
 	for tier, model := range modelMap {
 		if _, seen := normalized[tier]; seen {
 			continue
 		}
-		normalized[tier] = strings.TrimSpace(model)
+		model = strings.TrimSpace(model)
+		builtIn := strings.TrimSpace(builtIns[tier])
+		isRedundantOverride := model == "" || model == builtIn
+		if isRedundantOverride {
+			continue
+		}
+		normalized[tier] = model
 	}
 	if len(normalized) == 0 {
 		return nil
@@ -5573,7 +6180,7 @@ func buildInteractiveInitProfileReadiness(plan initSessionPlan) []initProfileRea
 }
 
 func initCredentialReadinessNote(entry initCredentialPlanEntry) string {
-	label := initCredentialPurposeLabel(entry.Ref.Purpose)
+	label := initCredentialPurposeLabel(entry.Ref.Purpose) + initSecretsProfileHintLabel(entry.SecretsProfile)
 	switch entry.State {
 	case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
 		return ""
@@ -5595,19 +6202,28 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 		}
 		return err
 	}
-	var store initStore
 	if len(plan.writes) > 0 {
-		var err error
-		store, err = deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+		groups, err := groupInitWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
 		if err != nil {
-			return cmderr.Credential(err)
+			return cmderr.Config(err)
 		}
-		defer store.Close()
-		if err := preflightNoOverwrite(store, plan.writes, plan.overwriteRefs); err != nil {
-			return cmderr.Credential(err)
-		}
-		if _, err := writeBundles(store, plan.writes, false, plan.overwriteRefs); err != nil {
-			return cmderr.Credential(err)
+		for _, group := range groups {
+			store, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
+			if err != nil {
+				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+					return cmderr.Config(err)
+				}
+				return cmderr.Credential(err)
+			}
+			if err := preflightNoOverwrite(store, group.Writes, group.OverwriteRefs); err != nil {
+				_ = store.Close()
+				return cmderr.Credential(err)
+			}
+			if _, err := writeBundles(store, group.Writes, false, group.OverwriteRefs); err != nil {
+				_ = store.Close()
+				return cmderr.Credential(err)
+			}
+			_ = store.Close()
 		}
 	}
 	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
@@ -5667,12 +6283,49 @@ func initCredentialPurposeLabel(purpose string) string {
 	}
 }
 
+func initSecretsProfilePromptSuffix(resolved credentials.ResolvedSecretsProfile) string {
+	if !resolved.IsNamed() {
+		return ""
+	}
+	return fmt.Sprintf(" via %s", resolved.DisplayName())
+}
+
+func initSecretsProfileHintLabel(resolved credentials.ResolvedSecretsProfile) string {
+	return initSecretsProfilePromptSuffix(resolved)
+}
+
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
 	var store initStore
+	var primaryResolved credentials.ResolvedSecretsProfile
+	openPrimaryStore := func() (initStore, credentials.ResolvedSecretsProfile, error) {
+		if store != nil {
+			return store, primaryResolved, nil
+		}
+		entry := initCredentialPlanEntry{}
+		if len(plan.credentialPlan) > 0 {
+			entry.SecretsProfile = plan.credentialPlan[0].SecretsProfile
+		} else {
+			resolved, err := credentials.ResolveSecretsProfileForProfile(plan.cfg, plan.profile)
+			if err != nil {
+				return nil, credentials.ResolvedSecretsProfile{}, err
+			}
+			entry.SecretsProfile = resolved
+		}
+		opened, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
+		if err != nil {
+			return nil, credentials.ResolvedSecretsProfile{}, err
+		}
+		store = opened
+		primaryResolved = entry.SecretsProfile
+		return store, primaryResolved, nil
+	}
 	if len(plan.writes) > 0 || (plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.allowDeferredLLM) {
 		var err error
-		store, err = deps.openStore(opts.Backend, plan.backendFlagSet, plan.cfg)
+		store, primaryResolved, err = openPrimaryStore()
 		if err != nil {
+			if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+				return cmderr.Config(err)
+			}
 			return cmderr.Credential(err)
 		}
 		defer store.Close()
@@ -5697,14 +6350,33 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 			return exitcode.Usage(fmt.Errorf("api_key LLM auth requires --llm-api-key-stdin or --llm-api-key-from-env"))
 		}
 	}
-	if store != nil && len(plan.writes) > 0 && !flags.overwrite {
-		if err := preflightNoOverwrite(store, plan.writes, plan.overwriteRefs); err != nil {
-			return cmderr.Credential(err)
+	if len(plan.writes) > 0 {
+		groups, err := groupInitWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
+		if err != nil {
+			return cmderr.Config(err)
 		}
-	}
-	if store != nil {
-		if _, err := writeBundles(store, plan.writes, flags.overwrite, plan.overwriteRefs); err != nil {
-			return cmderr.Credential(err)
+		for _, group := range groups {
+			groupStore := store
+			if groupStore == nil || !sameInitCredentialStore(group.Resolved, primaryResolved) {
+				groupStore, err = openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
+				if err != nil {
+					if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+						return cmderr.Config(err)
+					}
+					return cmderr.Credential(err)
+				}
+				if groupStore != store {
+					defer groupStore.Close()
+				}
+			}
+			if !flags.overwrite {
+				if err := preflightNoOverwrite(groupStore, group.Writes, group.OverwriteRefs); err != nil {
+					return cmderr.Credential(err)
+				}
+			}
+			if _, err := writeBundles(groupStore, group.Writes, flags.overwrite, group.OverwriteRefs); err != nil {
+				return cmderr.Credential(err)
+			}
 		}
 	}
 	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
@@ -5740,8 +6412,12 @@ func writeInitCredentialPlanHints(w io.Writer, backendArg string, entry initCred
 			keys = append(keys, spec.Key)
 		}
 	}
+	hintPrefix := "Next"
+	if hintLabel := initSecretsProfileHintLabel(entry.SecretsProfile); hintLabel != "" {
+		hintPrefix += hintLabel
+	}
 	for _, key := range keys {
-		if _, err := fmt.Fprintf(w, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, entry.Ref.Ref, key); err != nil {
+		if _, err := fmt.Fprintf(w, "%s: cr%s set-credential --ref %s --key %s --stdin\n", hintPrefix, backendArg, entry.Ref.Ref, key); err != nil {
 			return err
 		}
 	}
@@ -5758,7 +6434,15 @@ func projectInitPlannedWriteKeys(writes map[string]map[string]string) map[string
 }
 
 func planInitCredentials(previousProfile *config.Profile, desiredProfile config.Profile, plannedWriteKeys map[string][]string) ([]initCredentialPlanEntry, error) {
+	return planInitCredentialsWithConfig(config.File{}, previousProfile, desiredProfile, plannedWriteKeys)
+}
+
+func planInitCredentialsWithConfig(cfg config.File, previousProfile *config.Profile, desiredProfile config.Profile, plannedWriteKeys map[string][]string) ([]initCredentialPlanEntry, error) {
 	desiredRefs, err := config.CredentialRefs(desiredProfile)
+	if err != nil {
+		return nil, err
+	}
+	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, desiredProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -5787,6 +6471,7 @@ func planInitCredentials(previousProfile *config.Profile, desiredProfile config.
 		}
 		entry := initCredentialPlanEntry{
 			Ref:              ref,
+			SecretsProfile:   resolvedSecretsProfile,
 			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 			PlannedWriteKeys: writeKeys,
 		}
@@ -5946,7 +6631,41 @@ func loadConfigForInit(path string) (config.File, bool, error) {
 	if errors.Is(err, config.ErrNotConfigured) {
 		return config.File{Profiles: map[string]config.Profile{}}, false, nil
 	}
+	if err != nil && errors.Is(err, config.ErrSecretsProfileNotFound) {
+		recovered, recoverErr := loadConfigForInteractiveInitRecovery(path)
+		if recoverErr != nil {
+			return config.File{}, true, recoverErr
+		}
+		return recovered, true, nil
+	}
 	return cfg, true, err
+}
+
+func loadConfigForInteractiveInitRecovery(path string) (config.File, error) {
+	// #nosec G304 -- path is the resolved cr config path or an injected test path.
+	file, err := os.Open(path)
+	if err != nil {
+		return config.File{}, err
+	}
+	defer file.Close()
+
+	decoder := yaml.NewDecoder(file)
+	decoder.KnownFields(true)
+	var cfg config.File
+	if err := decoder.Decode(&cfg); err != nil {
+		return config.File{}, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != nil && !errors.Is(err, io.EOF) {
+		return config.File{}, err
+	} else if err == nil {
+		return config.File{}, fmt.Errorf("config: multiple YAML documents are not supported")
+	}
+	cfg = config.Normalize(cfg)
+	if err := validateInteractiveInitConfig(cfg); err != nil {
+		return config.File{}, err
+	}
+	return cfg, nil
 }
 
 func configPath(opts *root.Options) (string, error) {
