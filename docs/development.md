@@ -65,6 +65,12 @@ the target profile already participates in `repository_profiles` routing. The
 wizard shows the affected routes, lets the user reconcile or remove them, and
 rejects preserved routes whose host no longer matches the selected profile.
 
+Default repo builds now compile 1Password keyring backend support in by keeping
+`keyring_nopassage` but dropping `keyring_no1password` from shipped build tags.
+CI still runs an explicit `keyring_no1password` opt-out test path plus a
+`CGO_ENABLED=0` smoke test so unsupported build modes fail intentionally rather
+than drifting unnoticed.
+
 ## Release Secrets
 
 `auto-release.yml` passes `RELEASE_TAG_TOKEN` to the shared auto-release

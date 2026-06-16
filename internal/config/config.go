@@ -61,13 +61,27 @@ type SecretsConfig struct {
 
 // SecretsProfile is one named secrets-management profile.
 type SecretsProfile struct {
-	Label   string               `yaml:"label,omitempty" json:"label,omitempty"`
+	Label   string                `yaml:"label,omitempty" json:"label,omitempty"`
 	Backend SecretsProfileBackend `yaml:"backend" json:"backend"`
 }
 
 // SecretsProfileBackend carries one typed backend choice.
 type SecretsProfileBackend struct {
-	Kind SecretsBackendKind `yaml:"kind" json:"kind"`
+	Kind        SecretsBackendKind               `yaml:"kind" json:"kind"`
+	OnePassword *SecretsProfileOnePasswordConfig `yaml:"onepassword,omitempty" json:"onepassword,omitempty"`
+}
+
+// SecretsProfileOnePasswordConfig carries non-secret 1Password backend settings.
+type SecretsProfileOnePasswordConfig struct {
+	Timeout          string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	VaultID          string `yaml:"vault_id,omitempty" json:"vault_id,omitempty"`
+	ItemTitlePrefix  string `yaml:"item_title_prefix,omitempty" json:"item_title_prefix,omitempty"`
+	ItemTag          string `yaml:"item_tag,omitempty" json:"item_tag,omitempty"`
+	ItemFieldTitle   string `yaml:"item_field_title,omitempty" json:"item_field_title,omitempty"`
+	ConnectHost      string `yaml:"connect_host,omitempty" json:"connect_host,omitempty"`
+	ConnectTokenEnv  string `yaml:"connect_token_env,omitempty" json:"connect_token_env,omitempty"`
+	ServiceTokenEnv  string `yaml:"service_token_env,omitempty" json:"service_token_env,omitempty"`
+	DesktopAccountID string `yaml:"desktop_account_id,omitempty" json:"desktop_account_id,omitempty"`
 }
 
 // SecretsBackendKind is the durable non-secret backend selector for a
@@ -85,6 +99,7 @@ const (
 	// ProjectedLegacySecretsBackendKind is the effective backend summary when the
 	// old config omits keyring.backend and still relies on auto/env resolution.
 	ProjectedLegacySecretsBackendKind = "auto"
+	defaultOnePasswordTimeout         = "5s"
 )
 
 // Effective secrets-profile inventory sources.
@@ -1004,6 +1019,61 @@ func validateSecretsProfile(id string, profile SecretsProfile) error {
 	if _, err := credstore.ParseBackend(string(profile.Backend.Kind)); err != nil {
 		return fmt.Errorf("%w: secrets.profiles.%s.backend.kind %q is invalid: %w", ErrInvalid, id, profile.Backend.Kind, err)
 	}
+	if err := validateSecretsProfileBackend(id, profile.Backend); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSecretsProfileBackend(id string, backend SecretsProfileBackend) error {
+	if !IsOnePasswordSecretsBackend(backend.Kind) {
+		return nil
+	}
+	onePassword := backend.OnePassword
+	if onePassword == nil {
+		onePassword = &SecretsProfileOnePasswordConfig{}
+	}
+	field := func(suffix string) string {
+		return fmt.Sprintf("secrets.profiles.%s.backend.onepassword.%s", id, suffix)
+	}
+	for suffix, value := range map[string]string{
+		"vault_id":           onePassword.VaultID,
+		"item_title_prefix":  onePassword.ItemTitlePrefix,
+		"item_tag":           onePassword.ItemTag,
+		"item_field_title":   onePassword.ItemFieldTitle,
+		"connect_host":       onePassword.ConnectHost,
+		"connect_token_env":  onePassword.ConnectTokenEnv,
+		"service_token_env":  onePassword.ServiceTokenEnv,
+		"desktop_account_id": onePassword.DesktopAccountID,
+	} {
+		if err := validateOptionalSingleLine(field(suffix), value); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(onePassword.VaultID) == "" {
+		return invalid("%s is required", field("vault_id"))
+	}
+	if strings.TrimSpace(onePassword.Timeout) != "" {
+		if _, err := time.ParseDuration(onePassword.Timeout); err != nil {
+			return invalid("%s %q is invalid", field("timeout"), onePassword.Timeout)
+		}
+	}
+	switch backend.Kind {
+	case SecretsBackendKind(credstore.BackendOP):
+		if strings.TrimSpace(onePassword.ServiceTokenEnv) == "" {
+			return invalid("%s is required", field("service_token_env"))
+		}
+	case SecretsBackendKind(credstore.BackendOPConnect):
+		if strings.TrimSpace(onePassword.ConnectHost) == "" {
+			return invalid("%s is required", field("connect_host"))
+		}
+		if strings.TrimSpace(onePassword.ConnectTokenEnv) == "" {
+			return invalid("%s is required", field("connect_token_env"))
+		}
+	case SecretsBackendKind(credstore.BackendOPDesktop):
+		// DesktopAccountID may be omitted so ByteNess can fall back to
+		// OP_DESKTOP_ACCOUNT_ID at runtime.
+	}
 	return nil
 }
 
@@ -1098,7 +1168,62 @@ func (p SecretsProfile) normalized() SecretsProfile {
 
 func (b SecretsProfileBackend) normalized() SecretsProfileBackend {
 	b.Kind = SecretsBackendKind(strings.TrimSpace(string(b.Kind)))
+	if !IsOnePasswordSecretsBackend(b.Kind) {
+		b.OnePassword = nil
+		return b
+	}
+	onePassword := SecretsProfileOnePasswordConfig{}
+	if b.OnePassword != nil {
+		onePassword = b.OnePassword.normalized()
+	}
+	if onePassword.Timeout == "" && (b.Kind == SecretsBackendKind(credstore.BackendOP) || b.Kind == SecretsBackendKind(credstore.BackendOPDesktop)) {
+		onePassword.Timeout = defaultOnePasswordTimeout
+	}
+	switch b.Kind {
+	case SecretsBackendKind(credstore.BackendOP):
+		if onePassword.ServiceTokenEnv == "" {
+			onePassword.ServiceTokenEnv = credstore.DefaultOnePasswordServiceTokenEnv
+		}
+		onePassword.ConnectHost = ""
+		onePassword.ConnectTokenEnv = ""
+		onePassword.DesktopAccountID = ""
+	case SecretsBackendKind(credstore.BackendOPConnect):
+		if onePassword.ConnectTokenEnv == "" {
+			onePassword.ConnectTokenEnv = credstore.DefaultOnePasswordConnectTokenEnv
+		}
+		onePassword.ServiceTokenEnv = ""
+		onePassword.DesktopAccountID = ""
+	case SecretsBackendKind(credstore.BackendOPDesktop):
+		onePassword.ServiceTokenEnv = ""
+		onePassword.ConnectHost = ""
+		onePassword.ConnectTokenEnv = ""
+	}
+	b.OnePassword = &onePassword
 	return b
+}
+
+func (c SecretsProfileOnePasswordConfig) normalized() SecretsProfileOnePasswordConfig {
+	c.Timeout = strings.TrimSpace(c.Timeout)
+	c.VaultID = strings.TrimSpace(c.VaultID)
+	c.ItemTitlePrefix = strings.TrimSpace(c.ItemTitlePrefix)
+	c.ItemTag = strings.TrimSpace(c.ItemTag)
+	c.ItemFieldTitle = strings.TrimSpace(c.ItemFieldTitle)
+	c.ConnectHost = strings.TrimSpace(c.ConnectHost)
+	c.ConnectTokenEnv = strings.TrimSpace(c.ConnectTokenEnv)
+	c.ServiceTokenEnv = strings.TrimSpace(c.ServiceTokenEnv)
+	c.DesktopAccountID = strings.TrimSpace(c.DesktopAccountID)
+	return c
+}
+
+// IsOnePasswordSecretsBackend reports whether kind is one of cr's supported
+// 1Password-backed secrets-profile variants.
+func IsOnePasswordSecretsBackend(kind SecretsBackendKind) bool {
+	switch kind {
+	case SecretsBackendKind(credstore.BackendOP), SecretsBackendKind(credstore.BackendOPConnect), SecretsBackendKind(credstore.BackendOPDesktop):
+		return true
+	default:
+		return false
+	}
 }
 
 func (p Profile) normalized() Profile {

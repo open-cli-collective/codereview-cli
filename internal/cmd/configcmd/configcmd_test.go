@@ -524,6 +524,81 @@ func TestConfigSecretsProfileSetRejectsLabelEdgeCases(t *testing.T) {
 	}
 }
 
+func TestConfigSecretsProfileSetAndGetOnePasswordBackend(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	args := []string{
+		"config", "secrets-profile", "set", "work-op",
+		"--backend", "op-connect",
+		"--label", "Work Connect",
+		"--op-vault-id", "vault-123",
+		"--op-timeout", "7s",
+		"--op-connect-host", "https://connect.example",
+		"--op-connect-token-env", "CUSTOM_CONNECT_TOKEN",
+		"--op-item-title-prefix", "cr",
+	}
+	if err := root.Execute(cmd, args); err != nil {
+		t.Fatalf("Execute create op-connect: %v", err)
+	}
+	wantText := "" +
+		"Secrets profile: work-op\n" +
+		"Label: Work Connect\n" +
+		"Backend: op-connect\n" +
+		"1Password timeout: 7s\n" +
+		"1Password vault id: vault-123\n" +
+		"1Password item title prefix: cr\n" +
+		"1Password Connect host: https://connect.example\n" +
+		"1Password Connect token env: CUSTOM_CONNECT_TOKEN\n" +
+		"Source: configured\n" +
+		"Default: false\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout after op-connect create = %q, want %q", out.String(), wantText)
+	}
+
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after op-connect create: %v", err)
+	}
+	got := saved.Secrets.Profiles["work-op"]
+	if got.Backend.Kind != "op-connect" || got.Backend.OnePassword == nil {
+		t.Fatalf("saved backend = %#v, want op-connect payload", got.Backend)
+	}
+	if got.Backend.OnePassword.ConnectTokenEnv != "CUSTOM_CONNECT_TOKEN" || got.Backend.OnePassword.ConnectHost != "https://connect.example" {
+		t.Fatalf("saved onepassword payload = %#v, want connect settings", got.Backend.OnePassword)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "get", "work-op", "--json"}); err != nil {
+		t.Fatalf("Execute get op-connect: %v", err)
+	}
+	var viewGot view.ConfigSecretsProfile
+	if err := json.Unmarshal(out.Bytes(), &viewGot); err != nil {
+		t.Fatalf("Unmarshal get JSON: %v\n%s", err, out.String())
+	}
+	if viewGot.Backend != "op-connect" || viewGot.BackendInfo == nil || viewGot.BackendInfo.OnePassword == nil {
+		t.Fatalf("get JSON = %#v, want backend details", viewGot)
+	}
+	if viewGot.BackendInfo.OnePassword.ConnectTokenEnv != "CUSTOM_CONNECT_TOKEN" || viewGot.BackendInfo.OnePassword.DesktopAccountEnv != "" {
+		t.Fatalf("get JSON backend info = %#v, want safe 1password details", viewGot.BackendInfo.OnePassword)
+	}
+}
+
+func TestConfigSecretsProfileSetRejectsIncompatibleOnePasswordFlags(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{
+		"config", "secrets-profile", "set", "work-op",
+		"--backend", "op",
+		"--op-vault-id", "vault-123",
+		"--op-connect-host", "https://connect.example",
+	})
+	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
+		t.Fatalf("incompatible 1password flags error = %v, want usage error", err)
+	}
+}
+
 func TestConfigSecretsProfileDefaultSetUnsetAndRemove(t *testing.T) {
 	cfg := testConfig()
 	cfg.Secrets = config.SecretsConfig{

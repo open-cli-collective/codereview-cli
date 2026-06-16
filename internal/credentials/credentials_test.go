@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 
@@ -383,6 +384,60 @@ func TestAllowedKeyMemoryRoundTrip(t *testing.T) {
 	}
 	if err := store.Set("work", "bad_key", "token"); !errors.Is(err, credstore.ErrKeyNotAllowed) {
 		t.Fatalf("Set disallowed key error = %v, want ErrKeyNotAllowed", err)
+	}
+}
+
+func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
+	cfg := config.File{
+		DefaultProfile: "home",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"work-op": {
+					Label: "Work 1Password",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendOPConnect),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{
+							Timeout:         "7s",
+							VaultID:         "vault-123",
+							ItemTitlePrefix: "cr",
+							ItemTag:         "codereview",
+							ItemFieldTitle:  "credential",
+							ConnectHost:     "https://connect.example",
+							ConnectTokenEnv: "CUSTOM_CONNECT_TOKEN",
+						},
+					},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"home": matrixProfile("codereview/shared-git", "codereview/home-llm", config.LLMProviderAnthropic),
+		},
+	}
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	resolved := ResolvedSecretsProfile{
+		ID:      "work-op",
+		Label:   "Work 1Password",
+		Backend: string(credstore.BackendOPConnect),
+		Source:  config.EffectiveSecretsProfileSourceConfigured,
+	}
+	got, err := StoreOptionsForResolvedProfile("", false, cfg, resolved)
+	if err != nil {
+		t.Fatalf("StoreOptionsForResolvedProfile: %v", err)
+	}
+	if got.Backend != credstore.BackendOPConnect {
+		t.Fatalf("Backend = %q, want %q", got.Backend, credstore.BackendOPConnect)
+	}
+	if got.OnePassword == nil {
+		t.Fatal("OnePassword = nil, want populated options")
+	}
+	if got.OnePassword.Timeout != 7*time.Second {
+		t.Fatalf("Timeout = %v, want 7s", got.OnePassword.Timeout)
+	}
+	if got.OnePassword.VaultID != "vault-123" || got.OnePassword.ConnectHost != "https://connect.example" || got.OnePassword.ConnectTokenEnv != "CUSTOM_CONNECT_TOKEN" {
+		t.Fatalf("OnePassword = %#v, want mapped non-secret fields", got.OnePassword)
 	}
 }
 

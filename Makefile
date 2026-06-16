@@ -1,8 +1,7 @@
 .PHONY: all build test test-cover lint fmt tidy deps check install snapshot package-render-check release clean
 
-# Standard keyring opt-out tags (cli-common working-with-secrets.md §1.10):
-# exclude the 1Password and passage backends credstore never exposes.
-export GOFLAGS := -tags=keyring_no1password,keyring_nopassage
+# Standard keyring tags: enable 1Password support, keep passage disabled.
+export GOFLAGS := -tags=keyring_nopassage
 
 all: check
 

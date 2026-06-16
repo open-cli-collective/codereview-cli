@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 
@@ -70,10 +71,10 @@ type SecretsProfileSelectionSource string
 const (
 	// SecretsProfileSelectionExplicit means the active profile selected a named
 	// secrets-management profile directly.
-	SecretsProfileSelectionExplicit      SecretsProfileSelectionSource = "profile"
+	SecretsProfileSelectionExplicit SecretsProfileSelectionSource = "profile"
 	// SecretsProfileSelectionDefault means the configured global default
 	// secrets-management profile selected the store.
-	SecretsProfileSelectionDefault       SecretsProfileSelectionSource = "default_profile"
+	SecretsProfileSelectionDefault SecretsProfileSelectionSource = "default_profile"
 	// SecretsProfileSelectionLegacyDefault means no named secrets-management
 	// profile applied, so legacy backend fallback rules selected the store.
 	SecretsProfileSelectionLegacyDefault SecretsProfileSelectionSource = "legacy_fallback"
@@ -185,14 +186,25 @@ func StoreOptionsForResolvedProfile(flagValue string, flagSet bool, cfg config.F
 		if flagSet {
 			return credstore.Options{}, fmt.Errorf("%w: --backend conflicts with named secrets-management profile %q", config.ErrInvalid, resolved.DisplayName())
 		}
+		profile, ok := cfg.Secrets.Profiles[resolved.ID]
+		if !ok {
+			return credstore.Options{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, resolved.ID)
+		}
 		backend, err := credstore.ParseBackend(resolved.Backend)
 		if err != nil {
 			return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
 		}
-		return credstore.Options{
+		options := credstore.Options{
 			AllowedKeys: AllowedKeys(),
 			Backend:     backend,
-		}, nil
+		}
+		if config.IsOnePasswordSecretsBackend(profile.Backend.Kind) {
+			options.OnePassword, err = onePasswordOptionsFromConfig(profile.Backend)
+			if err != nil {
+				return credstore.Options{}, fmt.Errorf("%w: %w", config.ErrInvalid, err)
+			}
+		}
+		return options, nil
 	}
 	return StoreOptions(flagValue, flagSet, cfg)
 }
@@ -230,6 +242,34 @@ func OpenStore(flagValue string, flagSet bool, cfg config.File) (*credstore.Stor
 		return nil, err
 	}
 	return store, nil
+}
+
+func onePasswordOptionsFromConfig(backend config.SecretsProfileBackend) (*credstore.OnePasswordOptions, error) {
+	if !config.IsOnePasswordSecretsBackend(backend.Kind) {
+		return nil, nil
+	}
+	cfg := backend.OnePassword
+	if cfg == nil {
+		cfg = &config.SecretsProfileOnePasswordConfig{}
+	}
+	options := &credstore.OnePasswordOptions{
+		VaultID:          strings.TrimSpace(cfg.VaultID),
+		ItemTitlePrefix:  strings.TrimSpace(cfg.ItemTitlePrefix),
+		ItemTag:          strings.TrimSpace(cfg.ItemTag),
+		ItemFieldTitle:   strings.TrimSpace(cfg.ItemFieldTitle),
+		ConnectHost:      strings.TrimSpace(cfg.ConnectHost),
+		ConnectTokenEnv:  strings.TrimSpace(cfg.ConnectTokenEnv),
+		ServiceTokenEnv:  strings.TrimSpace(cfg.ServiceTokenEnv),
+		DesktopAccountID: strings.TrimSpace(cfg.DesktopAccountID),
+	}
+	if strings.TrimSpace(cfg.Timeout) != "" {
+		timeout, err := time.ParseDuration(cfg.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid 1Password timeout %q: %w", cfg.Timeout, err)
+		}
+		options.Timeout = timeout
+	}
+	return options, nil
 }
 
 func resolvedSecretsProfileFromEffective(profile config.EffectiveSecretsProfile, selectionSource SecretsProfileSelectionSource) ResolvedSecretsProfile {

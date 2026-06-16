@@ -927,6 +927,114 @@ func TestValidateSecretsProfiles(t *testing.T) {
 			wantMsg: `secrets.profiles.broken.backend.kind "bogus" is invalid`,
 		},
 		{
+			name: "valid 1password service account profile defaults token env and timeout",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"work-op": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOP),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID: "vault-123",
+								},
+							},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "valid 1password connect profile requires host and defaults token env",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"work-connect": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOPConnect),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID:     "vault-123",
+									ConnectHost: "https://connect.example",
+								},
+							},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "valid 1password desktop profile permits env fallback account id",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"work-desktop": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOPDesktop),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID: "vault-123",
+								},
+							},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "1password service account missing vault id invalid",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Backend: SecretsProfileBackend{
+								Kind:        SecretsBackendKind(credstore.BackendOP),
+								OnePassword: &SecretsProfileOnePasswordConfig{},
+							},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "secrets.profiles.broken.backend.onepassword.vault_id is required",
+		},
+		{
+			name: "1password connect missing host invalid",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOPConnect),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID: "vault-123",
+								},
+							},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "secrets.profiles.broken.backend.onepassword.connect_host is required",
+		},
+		{
+			name: "1password timeout must parse",
+			mutate: func(cfg *File) {
+				cfg.Secrets = SecretsConfig{
+					Profiles: map[string]SecretsProfile{
+						"broken": {
+							Backend: SecretsProfileBackend{
+								Kind: SecretsBackendKind(credstore.BackendOP),
+								OnePassword: &SecretsProfileOnePasswordConfig{
+									VaultID: "vault-123",
+									Timeout: "later",
+								},
+							},
+						},
+					},
+				}
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `secrets.profiles.broken.backend.onepassword.timeout "later" is invalid`,
+		},
+		{
 			name: "multiline label invalid",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
@@ -1031,6 +1139,51 @@ func TestValidateSecretsProfiles(t *testing.T) {
 				t.Fatalf("Validate error = %v, want message containing %q", err, tt.wantMsg)
 			}
 		})
+	}
+}
+
+func TestSecretsProfileBackendNormalizedOnePasswordDefaults(t *testing.T) {
+	service := SecretsProfileBackend{
+		Kind: SecretsBackendKind(credstore.BackendOP),
+		OnePassword: &SecretsProfileOnePasswordConfig{
+			VaultID: "vault-123",
+		},
+	}.normalized()
+	if service.OnePassword == nil {
+		t.Fatal("service OnePassword = nil, want defaults")
+	}
+	if service.OnePassword.Timeout != defaultOnePasswordTimeout {
+		t.Fatalf("service timeout = %q, want %q", service.OnePassword.Timeout, defaultOnePasswordTimeout)
+	}
+	if service.OnePassword.ServiceTokenEnv != credstore.DefaultOnePasswordServiceTokenEnv {
+		t.Fatalf("service token env = %q, want %q", service.OnePassword.ServiceTokenEnv, credstore.DefaultOnePasswordServiceTokenEnv)
+	}
+
+	connect := SecretsProfileBackend{
+		Kind: SecretsBackendKind(credstore.BackendOPConnect),
+		OnePassword: &SecretsProfileOnePasswordConfig{
+			VaultID:     "vault-123",
+			ConnectHost: "https://connect.example",
+		},
+	}.normalized()
+	if connect.OnePassword == nil {
+		t.Fatal("connect OnePassword = nil, want defaults")
+	}
+	if connect.OnePassword.ConnectTokenEnv != credstore.DefaultOnePasswordConnectTokenEnv {
+		t.Fatalf("connect token env = %q, want %q", connect.OnePassword.ConnectTokenEnv, credstore.DefaultOnePasswordConnectTokenEnv)
+	}
+
+	desktop := SecretsProfileBackend{
+		Kind: SecretsBackendKind(credstore.BackendOPDesktop),
+		OnePassword: &SecretsProfileOnePasswordConfig{
+			VaultID: "vault-123",
+		},
+	}.normalized()
+	if desktop.OnePassword == nil {
+		t.Fatal("desktop OnePassword = nil, want defaults")
+	}
+	if desktop.OnePassword.Timeout != defaultOnePasswordTimeout {
+		t.Fatalf("desktop timeout = %q, want %q", desktop.OnePassword.Timeout, defaultOnePasswordTimeout)
 	}
 }
 

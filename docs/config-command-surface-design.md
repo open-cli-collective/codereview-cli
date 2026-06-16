@@ -243,7 +243,7 @@ Owns:
 
 - `cr config secrets-profile list [--json]`
 - `cr config secrets-profile get <id> [--json]`
-- `cr config secrets-profile set <id> [--backend <kind>] [--label <text>] [--clear-label]`
+- `cr config secrets-profile set <id> [--backend <kind>] [--label <text>] [--clear-label] [--op-timeout <duration>] [--op-vault-id <id>] [--op-item-title-prefix <text>] [--op-item-tag <text>] [--op-item-field-title <text>] [--op-connect-host <url>] [--op-connect-token-env <name>] [--op-service-token-env <name>] [--op-desktop-account-id <id>]`
 - `cr config secrets-profile default get [--json]`
 - `cr config secrets-profile default set <id>`
 - `cr config secrets-profile default unset`

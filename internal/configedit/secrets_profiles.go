@@ -28,7 +28,7 @@ var (
 
 // SecretsProfilePatch describes a config-only update to one named secrets-management profile.
 type SecretsProfilePatch struct {
-	Backend    *config.SecretsBackendKind
+	Backend    *config.SecretsProfileBackend
 	Label      *string
 	ClearLabel bool
 }
@@ -76,7 +76,7 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 	}
 	updated := existing
 	if patch.Backend != nil {
-		updated.Backend.Kind = *patch.Backend
+		updated.Backend = *patch.Backend
 	}
 	if normalizedLabel != nil {
 		updated.Label = *normalizedLabel
