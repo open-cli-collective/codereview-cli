@@ -294,6 +294,24 @@ func ReviewEventForFindings(findings []review.Finding, opts EventOptions) review
 	}
 }
 
+// effectiveReviewEvent resolves the posted review event. It begins with the
+// rollup model's chosen event (or the severity-derived default when the model
+// did not specify one), then clamps it so a review whose findings are all
+// minor/nit — nothing blocking or major — always approves. Non-blocking,
+// non-major findings are suggestions and must never gate approval, regardless
+// of what the rollup model proposed. Blocking/major findings still govern as
+// before (the model's choice, or the severity default, stands).
+func effectiveReviewEvent(rollupEvent review.ReviewEvent, findings []review.Finding, opts EventOptions) review.ReviewEvent {
+	severityEvent := ReviewEventForFindings(findings, opts)
+	if severityEvent == review.ReviewEventApprove {
+		return review.ReviewEventApprove
+	}
+	if rollupEvent == "" {
+		return severityEvent
+	}
+	return rollupEvent
+}
+
 func applySelfApprovalPolicy(event review.ReviewEvent, opts EventOptions) review.ReviewEvent {
 	if event == review.ReviewEventApprove && opts.PostingIdentityIsPRAuthor && !opts.AllowSelfApprove {
 		return review.ReviewEventComment
@@ -368,10 +386,7 @@ func (b *builder) buildReview() (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	event := b.req.Rollup.ReviewEvent
-	if event == "" {
-		event = ReviewEventForFindings(ordered, b.req.EventOptions)
-	}
+	event := effectiveReviewEvent(b.req.Rollup.ReviewEvent, ordered, b.req.EventOptions)
 	if !event.Valid() {
 		return Plan{}, fmt.Errorf("reviewplan: invalid rollup review event %q", event)
 	}
