@@ -7461,14 +7461,20 @@ func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
 		t.Fatalf("edit.Sources = %#v, want preserved source", edit.Sources)
 	}
 	out := stderr.String()
+	if !strings.Contains(out, "Add local directories that contain custom reviewer agent definitions for this profile.") {
+		t.Fatalf("stderr = %q, want local-directory explanation", out)
+	}
+	if !strings.Contains(out, "<repo>/.codereview/agents") || !strings.Contains(out, "any per-run --agents-dir sources") {
+		t.Fatalf("stderr = %q, want agent-source resolution context", out)
+	}
 	if !strings.Contains(out, "Additional trusted reviewer-agent directories") {
 		t.Fatalf("stderr = %q, want trusted reviewer-agent label", out)
 	}
-	if !strings.Contains(out, ".codereview/agents") || !strings.Contains(out, "Most users should leave this empty") {
-		t.Fatalf("stderr = %q, want explanatory agent-source copy", out)
+	if !strings.Contains(out, "Paths are deduplicated and normalized before save.") {
+		t.Fatalf("stderr = %q, want normalization guidance", out)
 	}
-	if !strings.Contains(out, "Only configure directories you trust and expect to stay stable.") {
-		t.Fatalf("stderr = %q, want trust/stability guidance", out)
+	if strings.Contains(out, "Most users should leave this empty") || strings.Contains(out, "Trust requirement") || strings.Contains(out, "Only configure directories you trust") {
+		t.Fatalf("stderr = %q, want simplified agent-source copy", out)
 	}
 }
 

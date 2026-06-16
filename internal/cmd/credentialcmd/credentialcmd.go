@@ -3378,7 +3378,7 @@ func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initMo
 				Value(values[tier]),
 		)
 	}
-	form := huh.NewForm(huh.NewGroup(fields...).Title("Model Tiers"))
+	form := huh.NewForm(huh.NewGroup(fields...).Title("Model tier mapping"))
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
 		return initModelMapEdit{}, err
@@ -3399,19 +3399,12 @@ func (p huhInitAgentSourcesPrompter) EditAgentSources(prompt initAgentSourcesPro
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewNote().
-				Title("Additional trusted reviewer-agent directories").
-				Description("Optional. Add stable local directories that contain custom reviewer agent definitions for this profile. Most users should leave this empty."),
-			huh.NewNote().
-				Title("How agent sources are resolved").
-				Description("These profile-specific directories are loaded alongside repo-local agents under .codereview/agents and any per-run --agents-dir sources."),
-			huh.NewNote().
-				Title("Trust requirement").
-				Description("Only configure directories you trust and expect to stay stable. PR review execution rejects mutable or ambiguous profile agent sources."),
+				Description("Add local directories that contain custom reviewer agent definitions for this profile. These profile-specific directories are loaded alongside repo-local agents under <repo>/.codereview/agents and any per-run --agents-dir sources. Paths are deduplicated and normalized before save."),
 			huh.NewText().
 				Title("Additional trusted reviewer-agent directories").
-				Description("One directory per line. Leave blank to use no additional profile-specific agent directories. Existing paths are normalized before save.").
+				Description("One directory per line. Leave blank to use no additional profile-specific agent directories.").
 				Value(&agentSourceText),
-		).Title("Agent Sources"),
+		).Title("Additional reviewer-agent directories (optional)"),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
