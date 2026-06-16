@@ -3705,6 +3705,38 @@ func TestCollectInteractiveInitSessionSecretsMapsNamedSecretsProfileLoadConflict
 	}
 }
 
+func TestMergeInteractiveInitSessionPlanEntryRejectsSameRefAcrossDifferentSecretsProfiles(t *testing.T) {
+	entriesByKey := map[string]initCredentialPlanEntry{}
+	first := initCredentialPlanEntry{
+		Ref:   config.CredentialRef{Purpose: "git", Ref: "codereview/shared", Mode: string(config.GitAuthModePAT)},
+		State: initCredentialPlanStateMissingRequired,
+		SecretsProfile: credentials.ResolvedSecretsProfile{
+			ID:      "personal-memory",
+			Backend: string(credstore.BackendMemory),
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+	}
+	if err := mergeInteractiveInitSessionPlanEntry(entriesByKey, first); err != nil {
+		t.Fatalf("merge first entry: %v", err)
+	}
+
+	err := mergeInteractiveInitSessionPlanEntry(entriesByKey, initCredentialPlanEntry{
+		Ref:   config.CredentialRef{Purpose: "git", Ref: "codereview/shared", Mode: string(config.GitAuthModePAT)},
+		State: initCredentialPlanStateMissingRequired,
+		SecretsProfile: credentials.ResolvedSecretsProfile{
+			ID:      "work-file",
+			Backend: string(credstore.BackendFile),
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+	})
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("merge conflicting entry error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "multiple secrets-management profiles") {
+		t.Fatalf("merge conflicting entry error = %v, want conflict detail", err)
+	}
+}
+
 func testInitSecretWorkspace() initWorkspaceDraft {
 	return initWorkspaceDraft{
 		cfg: config.File{Profiles: map[string]config.Profile{}},
