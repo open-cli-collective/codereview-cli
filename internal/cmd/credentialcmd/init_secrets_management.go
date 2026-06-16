@@ -3,7 +3,7 @@ package credentialcmd
 import (
 	"fmt"
 	"reflect"
-	"sort"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -25,11 +25,6 @@ type initSecretsBackendPresentation struct {
 	Description      string
 	Available        bool
 	LegacyCompatible bool
-}
-
-type initSecretsProfileDeleteDraft struct {
-	Profile    config.SecretsProfile
-	WasDefault bool
 }
 
 type initSecretsProfileEditorResult struct {
@@ -111,10 +106,22 @@ func initSecretsBackendDescription(kind config.SecretsBackendKind) string {
 }
 
 func initSecretsBackendAvailable(kind config.SecretsBackendKind) bool {
-	if !config.IsOnePasswordSecretsBackend(kind) {
+	switch kind {
+	case config.SecretsBackendKind(credstore.BackendKeychain):
+		return runtime.GOOS == "darwin"
+	case config.SecretsBackendKind(credstore.BackendWinCred):
+		return runtime.GOOS == "windows"
+	case config.SecretsBackendKind(credstore.BackendSecretService):
+		return runtime.GOOS == "linux"
+	case config.SecretsBackendKind(credstore.BackendPass):
+		return runtime.GOOS != "windows"
+	case config.SecretsBackendKind(credstore.BackendOP),
+		config.SecretsBackendKind(credstore.BackendOPConnect),
+		config.SecretsBackendKind(credstore.BackendOPDesktop):
+		return initOnePasswordBackendsAvailable()
+	default:
 		return true
 	}
-	return initOnePasswordBackendsAvailable()
 }
 
 func initSecretsBackendByKind(kind config.SecretsBackendKind) (initSecretsBackendPresentation, bool) {
@@ -130,9 +137,9 @@ func initSecretsManagementInventoryDescription() string {
 	return "Choose how cr should store credentials. Secrets-management profiles are reusable store definitions that review profiles can choose later."
 }
 
-func initSecretsManagementInventoryRows(cfg config.File, pendingDeletes map[string]initSecretsProfileDeleteDraft) []initInventoryRow {
+func initSecretsManagementInventoryRows(cfg config.File) []initInventoryRow {
 	effective := config.EffectiveSecretsProfiles(cfg)
-	rows := make([]initInventoryRow, 0, len(effective)+len(pendingDeletes)+len(initSecretsBackendCatalog())+2)
+	rows := make([]initInventoryRow, 0, len(effective)+len(initSecretsBackendCatalog())+2)
 	for _, profile := range effective {
 		if profile.Source != config.EffectiveSecretsProfileSourceConfigured {
 			continue
@@ -143,7 +150,6 @@ func initSecretsManagementInventoryRows(cfg config.File, pendingDeletes map[stri
 			Title:       title,
 			Kind:        initInventoryRowKindActive,
 			Selectable:  true,
-			Deletable:   true,
 			FilterValue: strings.TrimSpace(strings.Join([]string{profile.ID, profile.Label, profile.Backend, title}, " ")),
 		})
 	}
@@ -156,20 +162,6 @@ func initSecretsManagementInventoryRows(cfg config.File, pendingDeletes map[stri
 		Selectable:    true,
 		FilterValue:   strings.TrimSpace(strings.Join([]string{"legacy compatibility", strings.TrimSpace(cfg.Keyring.Backend)}, " ")),
 	})
-
-	pendingIDs := make([]string, 0, len(pendingDeletes))
-	for id := range pendingDeletes {
-		pendingIDs = append(pendingIDs, id)
-	}
-	sort.Strings(pendingIDs)
-	for _, id := range pendingIDs {
-		rows = append(rows, initInventoryRow{
-			ID:         id,
-			Title:      fmt.Sprintf("%s (staged for deletion)", initSecretsProfileDisplayName(id, pendingDeletes[id].Profile.Label)),
-			Kind:       initInventoryRowKindPending,
-			Restorable: true,
-		})
-	}
 
 	for _, backend := range initSecretsBackendCatalog() {
 		title := fmt.Sprintf("Configure new %s profile", strings.ToLower(initSecretsBackendDisplayLabel(backend.Kind)))
@@ -354,48 +346,6 @@ func normalizeInitSecretsProfileIDToken(value string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-func stageInitSecretsProfileDelete(cfg config.File, id string) (config.File, initSecretsProfileDeleteDraft, error) {
-	profile, ok := cfg.Secrets.Profiles[id]
-	if !ok {
-		return cfg, initSecretsProfileDeleteDraft{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, id)
-	}
-	wasDefault := strings.TrimSpace(cfg.Secrets.DefaultProfile) == id
-	working := cfg
-	var err error
-	if wasDefault {
-		working, _, err = configedit.UnsetDefaultSecretsProfile(working)
-		if err != nil {
-			return cfg, initSecretsProfileDeleteDraft{}, err
-		}
-	}
-	working, _, err = configedit.RemoveSecretsProfile(working, id)
-	if err != nil {
-		return cfg, initSecretsProfileDeleteDraft{}, err
-	}
-	return working, initSecretsProfileDeleteDraft{Profile: profile, WasDefault: wasDefault}, nil
-}
-
-func restoreInitSecretsProfileDelete(cfg config.File, id string, draft initSecretsProfileDeleteDraft) (config.File, error) {
-	patch := configedit.SecretsProfilePatch{
-		Backend: &draft.Profile.Backend,
-	}
-	if strings.TrimSpace(draft.Profile.Label) != "" {
-		label := draft.Profile.Label
-		patch.Label = &label
-	}
-	working, _, _, err := configedit.SetSecretsProfile(cfg, id, patch)
-	if err != nil {
-		return cfg, err
-	}
-	if draft.WasDefault {
-		working, _, err = configedit.SetDefaultSecretsProfile(working, id)
-		if err != nil {
-			return cfg, err
-		}
-	}
-	return working, nil
-}
-
 func normalizeInitSecretsProfileBackend(backend config.SecretsProfileBackend) config.SecretsProfileBackend {
 	working := config.File{
 		Profiles: map[string]config.Profile{"default": {}},
@@ -413,6 +363,14 @@ func initConfigsEqual(a, b config.File) bool {
 	return reflect.DeepEqual(config.Normalize(a), config.Normalize(b))
 }
 
+func validateInitSecretsRequiredSingleLine(value string, required bool, field string) error {
+	trimmed := strings.TrimSpace(value)
+	if required && trimmed == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	return validateOptionalDisplayName(trimmed)
+}
+
 func (p huhInitKeyringBackendPrompter) runInventory(prompt initInventoryPrompt) (initInventoryResult, error) {
 	runner := p.inventoryRunner
 	if runner == nil {
@@ -424,13 +382,12 @@ func (p huhInitKeyringBackendPrompter) runInventory(prompt initInventoryPrompt) 
 func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 	working := cloneInitConfigFile(prompt.Config)
 	original := cloneInitConfigFile(prompt.Config)
-	pendingDeletes := map[string]initSecretsProfileDeleteDraft{}
 
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
 			Title:       "Secrets Management",
 			Description: initSecretsManagementInventoryDescription(),
-			Rows:        initSecretsManagementInventoryRows(working, pendingDeletes),
+			Rows:        initSecretsManagementInventoryRows(working),
 			Width:       88,
 			Height:      18,
 		})
@@ -443,24 +400,8 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 				return initKeyringBackendEdit{}, errInitNavigateBack
 			}
 			return initKeyringBackendEdit{Apply: true, Config: working}, nil
-		case initInventoryActionRestore:
-			deleteDraft, ok := pendingDeletes[result.Row.ID]
-			if !ok {
-				continue
-			}
-			nextCfg, err := restoreInitSecretsProfileDelete(working, result.Row.ID, deleteDraft)
-			if err != nil {
-				return initKeyringBackendEdit{}, err
-			}
-			working = nextCfg
-			delete(pendingDeletes, result.Row.ID)
-		case initInventoryActionStageDelete:
-			nextCfg, deleteDraft, err := stageInitSecretsProfileDelete(working, result.Row.ID)
-			if err != nil {
-				return initKeyringBackendEdit{}, err
-			}
-			working = nextCfg
-			pendingDeletes[result.Row.ID] = deleteDraft
+		case initInventoryActionRestore, initInventoryActionStageDelete:
+			return initKeyringBackendEdit{}, fmt.Errorf("unsupported secrets-management inventory action %q", result.Action)
 		case initInventoryActionCommand, initInventoryActionEdit:
 			switch {
 			case result.Row.ID == initSecretsManagementLegacySelection:
@@ -499,7 +440,7 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 				}
 				if edit.UseDefault {
 					nextCfg, _, err = configedit.SetDefaultSecretsProfile(nextCfg, id)
-				} else {
+				} else if strings.TrimSpace(working.Secrets.DefaultProfile) == id {
 					nextCfg, _, err = configedit.UnsetDefaultSecretsProfile(nextCfg)
 				}
 				if err != nil {
@@ -538,7 +479,7 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 				}
 				if edit.UseDefault {
 					nextCfg, _, err = configedit.SetDefaultSecretsProfile(nextCfg, result.Row.ID)
-				} else {
+				} else if strings.TrimSpace(working.Secrets.DefaultProfile) == result.Row.ID {
 					nextCfg, _, err = configedit.UnsetDefaultSecretsProfile(nextCfg)
 				}
 				if err != nil {
@@ -596,7 +537,10 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 			huh.NewInput().
 				Title("1Password vault id").
 				Description("Required for every 1Password-backed secrets-management profile.").
-				Value(&vaultID),
+				Value(&vaultID).
+				Validate(func(value string) error {
+					return validateInitSecretsRequiredSingleLine(value, config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue)), "1Password vault id")
+				}),
 		).WithHideFunc(func() bool {
 			return !config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue))
 		}).Title("1Password Details"),
@@ -642,7 +586,9 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 				Title("1Password Connect host").
 				Description("Required only for 1Password Connect profiles.").
 				Value(&connectHost).
-				Validate(validateOptionalDisplayName),
+				Validate(func(value string) error {
+					return validateInitSecretsRequiredSingleLine(value, config.SecretsBackendKind(kindValue) == config.SecretsBackendKind(credstore.BackendOPConnect), "1Password Connect host")
+				}),
 		).WithHideFunc(func() bool {
 			return config.SecretsBackendKind(kindValue) != config.SecretsBackendKind(credstore.BackendOPConnect)
 		}),

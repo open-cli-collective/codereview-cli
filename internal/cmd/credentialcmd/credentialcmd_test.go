@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -7940,7 +7941,7 @@ func TestValidateRetentionMaxAgeDaysUsesCurrentFieldCopy(t *testing.T) {
 }
 
 func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
-	rows := initSecretsManagementInventoryRows(config.File{}, nil)
+	rows := initSecretsManagementInventoryRows(config.File{})
 	if len(rows) == 0 {
 		t.Fatal("initSecretsManagementInventoryRows returned no rows")
 	}
@@ -8426,6 +8427,42 @@ func TestInitSecretsProfileIDFromLabelDeconflictsDeterministically(t *testing.T)
 	got := initSecretsProfileIDFromLabel("Work Vault", config.SecretsBackendKind(credstore.BackendFile), existing)
 	if got != "work-vault-3" {
 		t.Fatalf("initSecretsProfileIDFromLabel = %q, want work-vault-3", got)
+	}
+}
+
+func TestInitSecretsManagementInventoryRowsDisableUnavailableBackends(t *testing.T) {
+	rows := initSecretsManagementInventoryRows(config.File{})
+	availability := map[string]bool{}
+	for _, row := range rows {
+		if strings.HasPrefix(row.ID, initConfigureSecretsProfileSelectionPrefix) {
+			availability[row.ID] = row.Selectable
+		}
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		if !availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendKeychain)] {
+			t.Fatal("macOS keychain backend should be selectable on darwin")
+		}
+		if availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendWinCred)] {
+			t.Fatal("wincred backend should not be selectable on darwin")
+		}
+	case "linux":
+		if !availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendSecretService)] {
+			t.Fatal("secret-service backend should be selectable on linux")
+		}
+	case "windows":
+		if !availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendWinCred)] {
+			t.Fatal("wincred backend should be selectable on windows")
+		}
+	}
+}
+
+func TestValidateInitSecretsRequiredSingleLine(t *testing.T) {
+	if err := validateInitSecretsRequiredSingleLine("", true, "1Password vault id"); err == nil || err.Error() != "1Password vault id is required" {
+		t.Fatalf("required validator error = %v, want required field failure", err)
+	}
+	if err := validateInitSecretsRequiredSingleLine("https://connect.example", true, "1Password Connect host"); err != nil {
+		t.Fatalf("required validator valid input error = %v, want nil", err)
 	}
 }
 
