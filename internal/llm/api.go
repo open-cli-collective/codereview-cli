@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -281,6 +282,9 @@ func (a *APIAdapter) execute(ctx context.Context, req Request) (string, Response
 
 	httpResp, err := a.httpClient.Do(httpReq)
 	if err != nil {
+		if isTransientTransportError(err) {
+			return "", Response{}, fmt.Errorf("%w: %w", ErrTransient, err)
+		}
 		return "", Response{}, err
 	}
 	defer httpResp.Body.Close()
@@ -289,12 +293,34 @@ func (a *APIAdapter) execute(ctx context.Context, req Request) (string, Response
 		return "", Response{}, err
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
-		return "", Response{}, fmt.Errorf("llm api %s: provider returned %s", a.kind, httpResp.Status)
+		statusErr := fmt.Errorf("llm api %s: provider returned %s", a.kind, httpResp.Status)
+		if classifyHTTPStatusTransient(httpResp.StatusCode) {
+			return "", Response{}, fmt.Errorf("%w: %w", ErrTransient, statusErr)
+		}
+		return "", Response{}, statusErr
 	}
 	// Response logging is best-effort; a provider response should not be
 	// discarded because the caller's local log path is unavailable.
 	_ = writeAPIResponseLog(req.LogPath, responseBody)
 	return a.parseProviderResponse(responseBody)
+}
+
+// isTransientTransportError reports whether an http.Client.Do error is a
+// retryable transport failure (a timeout, a reset connection, or an unexpected
+// EOF). A canceled request context is intentionally not treated as transient.
+func isTransientTransportError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	lowered := strings.ToLower(err.Error())
+	return strings.Contains(lowered, "connection reset") || strings.Contains(lowered, "unexpected eof")
 }
 
 func (a *APIAdapter) buildProviderRequest(req Request) (string, []byte, error) {
