@@ -1248,10 +1248,7 @@ func initProfileV2ApplyActiveRail(line string, active bool) string {
 	if !active {
 		return line
 	}
-	if line == "" {
-		return initProfileV2Theme.activeRail.Render("|")
-	}
-	return initProfileV2Theme.activeRail.Render("|") + line[1:]
+	return initProfileV2Theme.activeRail.Render("|") + " " + line
 }
 
 func initProfileV2LooksLikeHeading(line string) bool {
