@@ -10086,7 +10086,7 @@ func TestInitProfileV2ModelMapInputsDraftOverridesAndClears(t *testing.T) {
 	), 160, 24)
 
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierSmall))
-	if !strings.Contains(model.View(), "| > |") {
+	if !strings.Contains(model.View(), "> |") {
 		t.Fatalf("view missing editable cursor for empty small model field:\n%s", model.View())
 	}
 	model = typeInitProfileV2Text(t, model, "claude-haiku-custom")

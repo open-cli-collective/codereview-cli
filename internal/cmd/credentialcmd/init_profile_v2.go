@@ -29,14 +29,12 @@ type initProfileV2EditorRunner func(initProfileV2Editor) (initProfileV2EditorRes
 var initProfileV2Theme = struct {
 	title       lipgloss.Style
 	selected    lipgloss.Style
-	activeRail  lipgloss.Style
 	activeTitle lipgloss.Style
 	error       lipgloss.Style
 	help        lipgloss.Style
 }{
 	title:       lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")),
 	selected:    lipgloss.NewStyle().Foreground(lipgloss.Color("201")),
-	activeRail:  lipgloss.NewStyle().Foreground(lipgloss.Color("201")),
 	activeTitle: lipgloss.NewStyle().Foreground(lipgloss.Color("201")),
 	error:       lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
 	help:        lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
@@ -1230,25 +1228,18 @@ func initProfileV2StyleViewportLine(line string, active bool) string {
 	trimmed := strings.TrimSpace(line)
 	switch {
 	case trimmed == "":
-		return initProfileV2ApplyActiveRail(line, active)
+		return line
 	case strings.HasPrefix(trimmed, "! "):
-		return initProfileV2Theme.error.Render(initProfileV2ApplyActiveRail(line, active))
+		return initProfileV2Theme.error.Render(line)
 	case strings.HasPrefix(trimmed, "> "):
-		return initProfileV2Theme.selected.Render(initProfileV2ApplyActiveRail(line, active))
+		return initProfileV2Theme.selected.Render(line)
 	case active && initProfileV2LooksLikeHeading(trimmed):
-		return initProfileV2Theme.activeTitle.Render(initProfileV2ApplyActiveRail(line, true))
+		return initProfileV2Theme.activeTitle.Render(line)
 	case initProfileV2LooksLikeHeading(trimmed):
 		return initProfileV2Theme.title.Render(line)
 	default:
-		return initProfileV2ApplyActiveRail(line, active)
-	}
-}
-
-func initProfileV2ApplyActiveRail(line string, active bool) string {
-	if !active {
 		return line
 	}
-	return initProfileV2Theme.activeRail.Render("|") + " " + line
 }
 
 func initProfileV2LooksLikeHeading(line string) bool {
