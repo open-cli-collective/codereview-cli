@@ -35,7 +35,7 @@ var initProfileV2Theme = struct {
 }{
 	title:       lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")),
 	selected:    lipgloss.NewStyle().Foreground(lipgloss.Color("201")),
-	activeTitle: lipgloss.NewStyle().Foreground(lipgloss.Color("201")),
+	activeTitle: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("201")),
 	error:       lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
 	help:        lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 }
