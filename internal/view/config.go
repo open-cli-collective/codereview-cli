@@ -334,6 +334,106 @@ type ConfigRoutes struct {
 	Routes []ConfigRoute `json:"routes"`
 }
 
+// ConfigSecretsProfiles is the presentation model for `cr config secrets-profile list`.
+type ConfigSecretsProfiles struct {
+	Profiles []ConfigSecretsProfile `json:"profiles"`
+}
+
+// ConfigSecretsProfile is one effective secrets-management profile summary.
+type ConfigSecretsProfile struct {
+	ID        string `json:"id"`
+	Label     string `json:"label,omitempty"`
+	Backend   string `json:"backend"`
+	IsDefault bool   `json:"is_default,omitempty"`
+	Source    string `json:"source"`
+}
+
+// ConfigSecretsProfileDefault is the presentation model for `cr config secrets-profile default get`.
+type ConfigSecretsProfileDefault struct {
+	DefaultProfile *ConfigSecretsProfile `json:"default_profile,omitempty"`
+}
+
+// RenderConfigSecretsProfilesText writes a stable human-readable secrets-profile listing.
+func RenderConfigSecretsProfilesText(w io.Writer, result ConfigSecretsProfiles) error {
+	if len(result.Profiles) == 0 {
+		_, err := fmt.Fprintln(w, "Secrets management profiles: none")
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Secrets management profiles:"); err != nil {
+		return err
+	}
+	for _, profile := range result.Profiles {
+		label := profile.ID
+		if strings.TrimSpace(profile.Label) != "" {
+			label = profile.Label
+		}
+		suffix := ""
+		if profile.IsDefault {
+			suffix = " [default]"
+		}
+		if _, err := fmt.Fprintf(w, "  - %s: %s (%s, %s)%s\n", profile.ID, label, profile.Backend, profile.Source, suffix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RenderConfigSecretsProfilesJSON writes the secrets-profile listing as indented JSON.
+func RenderConfigSecretsProfilesJSON(w io.Writer, result ConfigSecretsProfiles) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
+// RenderConfigSecretsProfileText writes one stable human-readable secrets-profile summary.
+func RenderConfigSecretsProfileText(w io.Writer, profile ConfigSecretsProfile) error {
+	if err := writeKV(w, "Secrets profile", profile.ID); err != nil {
+		return err
+	}
+	if err := writeOptionalKV(w, "Label", profile.Label); err != nil {
+		return err
+	}
+	if err := writeKV(w, "Backend", profile.Backend); err != nil {
+		return err
+	}
+	if err := writeKV(w, "Source", profile.Source); err != nil {
+		return err
+	}
+	return writeKV(w, "Default", fmt.Sprint(profile.IsDefault))
+}
+
+// RenderConfigSecretsProfileJSON writes one secrets-profile summary as indented JSON.
+func RenderConfigSecretsProfileJSON(w io.Writer, profile ConfigSecretsProfile) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(profile)
+}
+
+// RenderConfigSecretsProfileDefaultText writes the default secrets-profile summary.
+func RenderConfigSecretsProfileDefaultText(w io.Writer, result ConfigSecretsProfileDefault) error {
+	if result.DefaultProfile == nil {
+		_, err := fmt.Fprintln(w, "Default secrets profile: none")
+		return err
+	}
+	if err := writeKV(w, "Default secrets profile", result.DefaultProfile.ID); err != nil {
+		return err
+	}
+	if err := writeOptionalKV(w, "Label", result.DefaultProfile.Label); err != nil {
+		return err
+	}
+	if err := writeKV(w, "Backend", result.DefaultProfile.Backend); err != nil {
+		return err
+	}
+	return writeKV(w, "Source", result.DefaultProfile.Source)
+}
+
+// RenderConfigSecretsProfileDefaultJSON writes the default secrets-profile summary as indented JSON.
+func RenderConfigSecretsProfileDefaultJSON(w io.Writer, result ConfigSecretsProfileDefault) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
 // ConfigRoute is one repository-profile route.
 type ConfigRoute struct {
 	Profile   string   `json:"profile"`

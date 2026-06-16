@@ -15,6 +15,7 @@ This document is the semantic parent for:
 - `#166`: `cr config route` management commands
 - `#169`: `cr config resolve-profile` route preview
 - `#168`: `cr config agent-source` management commands
+- `#294`: `cr config secrets-profile` management commands
 
 Related but out of scope for this batch:
 
@@ -49,7 +50,9 @@ The codebase already supports:
 
 The missing piece is command coverage. Today `cr config` exposes `show`,
 `clear`, and `llm models`, but path/default/route/route-preview/agent-source
-operations still require manual YAML edits.
+operations still require manual YAML edits. Named secrets-management profiles
+also need a non-interactive command surface, but that surface must remain
+config-only until the later secrets-profile resolver/selection tickets land.
 
 ## Shared Command Rules
 
@@ -233,6 +236,40 @@ Path normalization contract:
 
 This keeps mutation semantics deterministic and local-string-based rather than
 filesystem-state-based.
+
+### `#294`: secrets-management profile mutation
+
+Owns:
+
+- `cr config secrets-profile list [--json]`
+- `cr config secrets-profile get <id> [--json]`
+- `cr config secrets-profile set <id> [--backend <kind>] [--label <text>] [--clear-label]`
+- `cr config secrets-profile default get [--json]`
+- `cr config secrets-profile default set <id>`
+- `cr config secrets-profile default unset`
+- `cr config secrets-profile remove <id>`
+
+Must not own:
+
+- secret ingress or secret-value printing
+- runtime credential routing away from legacy `keyring.backend`
+- review-profile references to secrets-management profiles before the later selection tickets
+
+Required semantics:
+
+- `list` and `default get` report the effective secrets-profile inventory/default, including the projected `legacy-default` compatibility entry when no explicit profiles exist
+- `default set` and `default unset` mutate only `config.secrets.default_profile`
+- `default set` rejects `legacy-default` because it is reserved/projected, not configured state
+- `set` is patch-style:
+  - create requires `--backend`
+  - update preserves omitted fields
+  - `--clear-label` explicitly clears the label
+  - `--label` plus `--clear-label` is a usage error
+  - whitespace-only `--label` is rejected
+  - update requires at least one mutation flag
+- `remove` is idempotent for already-absent configured profiles, but rejects `legacy-default` and blocks removing the configured default profile until it is unset or moved
+- backend validation must reuse shared credstore metadata rather than duplicating backend-name knowledge in command code
+- this ticket is config-only: mixed configs with both `keyring.backend` and `secrets.*` keep legacy runtime backend behavior until the later resolver ticket changes credential selection
 
 ## `init` Boundary
 
