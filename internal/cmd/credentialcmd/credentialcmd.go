@@ -3161,7 +3161,7 @@ func (p huhInitModelMapPrompter) EditModelMap(prompt initModelMapPrompt) (initMo
 	existing := copyModelMap(prompt.ModelMap)
 	values := map[config.ModelTier]*string{}
 	fields := make([]huh.Field, 0, len(config.ModelTiers()))
-	effective := config.EffectiveModelMap(initEffectiveModelMapLLM(prompt.LLM, existing))
+	effective := config.EffectiveModelMap(applyModelMapToLLM(prompt.LLM, existing))
 	builtIns := config.BuiltInModelMap(prompt.LLM.Provider, prompt.LLM.Adapter)
 	for _, tier := range config.ModelTiers() {
 		value := initEffectiveModelMapInputValue(effective, tier)
@@ -3495,7 +3495,7 @@ func initEffectiveModelMapInputValue(effective map[config.ModelTier]config.Model
 	return strings.TrimSpace(resolution.Model)
 }
 
-func initEffectiveModelMapLLM(llm config.LLMConfig, modelMap config.ModelMap) config.LLMConfig {
+func applyModelMapToLLM(llm config.LLMConfig, modelMap config.ModelMap) config.LLMConfig {
 	llm.ModelMap = copyModelMap(modelMap)
 	return llm
 }
@@ -5750,7 +5750,9 @@ func normalizeInitModelMap(llm config.LLMConfig, modelMap config.ModelMap) confi
 			continue
 		}
 		model = strings.TrimSpace(model)
-		if model == "" || model == strings.TrimSpace(builtIns[string(tier)]) {
+		builtIn := strings.TrimSpace(builtIns[string(tier)])
+		isRedundantOverride := model == "" || model == builtIn
+		if isRedundantOverride {
 			continue
 		}
 		normalized[string(tier)] = model
@@ -5760,7 +5762,9 @@ func normalizeInitModelMap(llm config.LLMConfig, modelMap config.ModelMap) confi
 			continue
 		}
 		model = strings.TrimSpace(model)
-		if model == "" || model == strings.TrimSpace(builtIns[tier]) {
+		builtIn := strings.TrimSpace(builtIns[tier])
+		isRedundantOverride := model == "" || model == builtIn
+		if isRedundantOverride {
 			continue
 		}
 		normalized[tier] = model

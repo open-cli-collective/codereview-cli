@@ -6629,13 +6629,13 @@ func TestInitEffectiveModelMapInputValuePrefersConfiguredOverride(t *testing.T) 
 	}
 }
 
-func TestInitEffectiveModelMapLLMUsesPromptModelMapOverrides(t *testing.T) {
+func TestApplyModelMapToLLMUsesPromptModelMapOverrides(t *testing.T) {
 	llm := config.LLMConfig{
 		Provider: config.LLMProviderAnthropic,
 		Auth:     config.LLMAuthSubscription,
 		Adapter:  config.LLMAdapterClaudeCLI,
 	}
-	effective := config.EffectiveModelMap(initEffectiveModelMapLLM(llm, config.ModelMap{"medium": "claude-custom"}))
+	effective := config.EffectiveModelMap(applyModelMapToLLM(llm, config.ModelMap{"medium": "claude-custom"}))
 	got := initEffectiveModelMapInputValue(effective, config.ModelTierMedium)
 	if got != "claude-custom" {
 		t.Fatalf("effective input value = %q, want prompt override applied even when llm.ModelMap is nil", got)
