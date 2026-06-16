@@ -265,24 +265,24 @@ func onePasswordOptionsFromConfig(backend config.SecretsProfileBackend) (*credst
 	if !config.IsOnePasswordSecretsBackend(backend.Kind) {
 		return nil, nil
 	}
-	cfg := backend.OnePassword
-	if cfg == nil {
-		cfg = &config.SecretsProfileOnePasswordConfig{}
+	onePasswordCfg := backend.OnePassword
+	if onePasswordCfg == nil {
+		onePasswordCfg = &config.SecretsProfileOnePasswordConfig{}
 	}
 	options := &credstore.OnePasswordOptions{
-		VaultID:          strings.TrimSpace(cfg.VaultID),
-		ItemTitlePrefix:  strings.TrimSpace(cfg.ItemTitlePrefix),
-		ItemTag:          strings.TrimSpace(cfg.ItemTag),
-		ItemFieldTitle:   strings.TrimSpace(cfg.ItemFieldTitle),
-		ConnectHost:      strings.TrimSpace(cfg.ConnectHost),
-		ConnectTokenEnv:  strings.TrimSpace(cfg.ConnectTokenEnv),
-		ServiceTokenEnv:  strings.TrimSpace(cfg.ServiceTokenEnv),
-		DesktopAccountID: strings.TrimSpace(cfg.DesktopAccountID),
+		VaultID:          strings.TrimSpace(onePasswordCfg.VaultID),
+		ItemTitlePrefix:  strings.TrimSpace(onePasswordCfg.ItemTitlePrefix),
+		ItemTag:          strings.TrimSpace(onePasswordCfg.ItemTag),
+		ItemFieldTitle:   strings.TrimSpace(onePasswordCfg.ItemFieldTitle),
+		ConnectHost:      strings.TrimSpace(onePasswordCfg.ConnectHost),
+		ConnectTokenEnv:  strings.TrimSpace(onePasswordCfg.ConnectTokenEnv),
+		ServiceTokenEnv:  strings.TrimSpace(onePasswordCfg.ServiceTokenEnv),
+		DesktopAccountID: strings.TrimSpace(onePasswordCfg.DesktopAccountID),
 	}
-	if strings.TrimSpace(cfg.Timeout) != "" {
-		timeout, err := time.ParseDuration(cfg.Timeout)
+	if strings.TrimSpace(onePasswordCfg.Timeout) != "" {
+		timeout, err := time.ParseDuration(onePasswordCfg.Timeout)
 		if err != nil {
-			return nil, fmt.Errorf("invalid 1Password timeout %q: %w", cfg.Timeout, err)
+			return nil, fmt.Errorf("invalid 1Password timeout %q: %w", onePasswordCfg.Timeout, err)
 		}
 		options.Timeout = timeout
 	}

@@ -267,6 +267,7 @@ Required semantics:
   - `--label` plus `--clear-label` is a usage error
   - whitespace-only `--label` is rejected
   - update requires at least one mutation flag
+  - `--backend op`, `--backend op-connect`, and `--backend op-desktop` also require `--op-vault-id`; `op-connect` additionally requires `--op-connect-host`
 - `remove` is idempotent for already-absent configured profiles, but rejects `legacy-default` and blocks removing the configured default profile until it is unset or moved
 - backend validation must reuse shared credstore metadata rather than duplicating backend-name knowledge in command code
 - this ticket is config-only: mixed configs with both `keyring.backend` and `secrets.*` keep legacy runtime backend behavior until the later resolver ticket changes credential selection

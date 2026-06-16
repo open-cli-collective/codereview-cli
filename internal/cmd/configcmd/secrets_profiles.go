@@ -408,29 +408,38 @@ func configSecretsProfileView(cfg config.File, profile config.EffectiveSecretsPr
 		IsDefault: profile.IsDefault,
 		Source:    string(profile.Source),
 	}
-	if profile.Source == config.EffectiveSecretsProfileSourceConfigured {
-		if configured, ok := cfg.Secrets.Profiles[profile.ID]; ok && configured.Backend.OnePassword != nil && config.IsOnePasswordSecretsBackend(configured.Backend.Kind) {
-			onePassword := &view.ConfigSecretsProfileOnePassword{
-				Timeout:         configured.Backend.OnePassword.Timeout,
-				VaultID:         configured.Backend.OnePassword.VaultID,
-				ItemTitlePrefix: configured.Backend.OnePassword.ItemTitlePrefix,
-				ItemTag:         configured.Backend.OnePassword.ItemTag,
-				ItemFieldTitle:  configured.Backend.OnePassword.ItemFieldTitle,
-			}
-			switch configured.Backend.Kind {
-			case config.SecretsBackendKind(credstore.BackendOP):
-				onePassword.ServiceAccountTokenEnv = configured.Backend.OnePassword.ServiceTokenEnv
-			case config.SecretsBackendKind(credstore.BackendOPConnect):
-				onePassword.ConnectHost = configured.Backend.OnePassword.ConnectHost
-				onePassword.ConnectTokenEnv = configured.Backend.OnePassword.ConnectTokenEnv
-			case config.SecretsBackendKind(credstore.BackendOPDesktop):
-				onePassword.DesktopAccountID = configured.Backend.OnePassword.DesktopAccountID
-				onePassword.DesktopAccountEnv = credstore.DefaultOnePasswordDesktopAccountEnv
-			}
-			result.BackendInfo = &view.ConfigSecretsProfileBackendDetails{OnePassword: onePassword}
+	if configured, ok := configuredOnePasswordSecretsProfile(cfg, profile); ok {
+		onePassword := &view.ConfigSecretsProfileOnePassword{
+			Timeout:         configured.Backend.OnePassword.Timeout,
+			VaultID:         configured.Backend.OnePassword.VaultID,
+			ItemTitlePrefix: configured.Backend.OnePassword.ItemTitlePrefix,
+			ItemTag:         configured.Backend.OnePassword.ItemTag,
+			ItemFieldTitle:  configured.Backend.OnePassword.ItemFieldTitle,
 		}
+		switch configured.Backend.Kind {
+		case config.SecretsBackendKind(credstore.BackendOP):
+			onePassword.ServiceAccountTokenEnv = configured.Backend.OnePassword.ServiceTokenEnv
+		case config.SecretsBackendKind(credstore.BackendOPConnect):
+			onePassword.ConnectHost = configured.Backend.OnePassword.ConnectHost
+			onePassword.ConnectTokenEnv = configured.Backend.OnePassword.ConnectTokenEnv
+		case config.SecretsBackendKind(credstore.BackendOPDesktop):
+			onePassword.DesktopAccountID = configured.Backend.OnePassword.DesktopAccountID
+			onePassword.DesktopAccountEnv = credstore.DefaultOnePasswordDesktopAccountEnv
+		}
+		result.BackendInfo = &view.ConfigSecretsProfileBackendDetails{OnePassword: onePassword}
 	}
 	return result
+}
+
+func configuredOnePasswordSecretsProfile(cfg config.File, profile config.EffectiveSecretsProfile) (config.SecretsProfile, bool) {
+	if profile.Source != config.EffectiveSecretsProfileSourceConfigured {
+		return config.SecretsProfile{}, false
+	}
+	configured, ok := cfg.Secrets.Profiles[profile.ID]
+	if !ok || configured.Backend.OnePassword == nil || !config.IsOnePasswordSecretsBackend(configured.Backend.Kind) {
+		return config.SecretsProfile{}, false
+	}
+	return configured, true
 }
 
 func configSecretsProfileViewPtr(cfg config.File, profile config.EffectiveSecretsProfile) *view.ConfigSecretsProfile {

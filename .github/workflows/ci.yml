@@ -65,10 +65,10 @@ jobs:
       GOFLAGS: -tags=keyring_nopassage
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: open-cli-collective/.github/actions/go-test@v1
         with:
           go-version-file: go.mod
-      - run: go test ./internal/... ./cmd/... -count=1
+          target: test-static-smoke
 
   lint:
     runs-on: ubuntu-latest

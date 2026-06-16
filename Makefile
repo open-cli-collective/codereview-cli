@@ -1,4 +1,4 @@
-.PHONY: all build test test-cover lint fmt tidy deps check install snapshot package-render-check release clean
+.PHONY: all build test test-cover test-static-smoke lint fmt tidy deps check install snapshot package-render-check release clean
 
 # Standard keyring tags: enable 1Password support, keep passage disabled.
 export GOFLAGS := -tags=keyring_nopassage
@@ -13,6 +13,9 @@ test:
 
 test-cover:
 	go test -coverprofile=coverage.out ./...
+
+test-static-smoke:
+	go test -v ./internal/... ./cmd/... -count=1
 
 lint:
 	golangci-lint run
