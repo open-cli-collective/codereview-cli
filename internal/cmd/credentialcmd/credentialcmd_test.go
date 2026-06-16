@@ -7496,16 +7496,22 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	edit, err := prompter.EditRoutes(initRoutesPrompt{
 		ProfileName: "work",
 		ProfileHost: "github.com",
-		Routes: []configedit.RepositoryRouteSpec{{
-			Host:      "github.com",
-			Namespace: "open-cli-collective",
-			Repos:     []string{"codereview-cli"},
-		}},
+		Routes: []configedit.RepositoryRouteSpec{
+			{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+			{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("EditRoutes: %v", err)
 	}
-	if len(edit.Routes) != 1 || edit.Routes[0].Namespace != "open-cli-collective" {
+	if len(edit.Routes) != 2 || edit.Routes[0].Namespace != "open-cli-collective" || edit.Routes[1].Namespace != "rianjs" {
 		t.Fatalf("routes = %#v, want preserved route", edit.Routes)
 	}
 	out := stderr.String()
@@ -7515,8 +7521,19 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	if !strings.Contains(out, "Automatic profile selection") || !strings.Contains(out, "Routes tell cr when to use this profile automatically.") {
 		t.Fatalf("stderr = %q, want route editor explanation", out)
 	}
-	if !strings.Contains(out, "Accepted route formats") || !strings.Contains(out, "One per line: host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.") {
+	if !strings.Contains(out, "Accepted route formats") || !strings.Contains(out, "host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.") {
 		t.Fatalf("stderr = %q, want route format instructions", out)
+	}
+	for _, want := range []string{
+		"Leave blank to remove all routes for this profile. Examples:",
+		"github.com/YourOrg",
+		"github.com/YourUsername [RepoA, RepoB] (will not match on RepoC)",
+		"github.com/YourOrg/org-repo/pull/123",
+		"Separate multiple entries with ;. Newline-separated pastes are also accepted.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr = %q, want route editor copy %q", out, want)
+		}
 	}
 	if !strings.Contains(out, "Route entries") {
 		t.Fatalf("stderr = %q, want route entry instructions", out)
@@ -12355,6 +12372,18 @@ func TestInitInteractiveRouteParsersAcceptPRURLAndManualSpecs(t *testing.T) {
 		t.Fatalf("PR URL spec = %#v", urlSpec)
 	}
 
+	shorthandURLSpec, err := parseInitRouteSpec("github.com/YourOrg/org-repo/pull/123")
+	if err != nil {
+		t.Fatalf("parseInitRouteSpec shorthand PR URL: %v", err)
+	}
+	if !reflect.DeepEqual(shorthandURLSpec, configedit.RepositoryRouteSpec{
+		Host:      "github.com",
+		Namespace: "YourOrg",
+		Repos:     []string{"org-repo"},
+	}) {
+		t.Fatalf("shorthand PR URL spec = %#v", shorthandURLSpec)
+	}
+
 	manualSpec, err := parseInitRouteSpec("github.com/open-cli-collective [codereview-cli, cli-common]")
 	if err != nil {
 		t.Fatalf("parseInitRouteSpec manual: %v", err)
@@ -12365,6 +12394,49 @@ func TestInitInteractiveRouteParsersAcceptPRURLAndManualSpecs(t *testing.T) {
 		Repos:     []string{"cli-common", "codereview-cli"},
 	}) {
 		t.Fatalf("manual spec = %#v", manualSpec)
+	}
+}
+
+func TestInitInteractiveRouteSpecsUseSemicolonDisplay(t *testing.T) {
+	got := formatInitRouteSpecs([]configedit.RepositoryRouteSpec{
+		{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+		{
+			Host:      "github.com",
+			Namespace: "rianjs",
+		},
+	})
+	want := "github.com/open-cli-collective [codereview-cli]; github.com/rianjs"
+	if got != want {
+		t.Fatalf("formatInitRouteSpecs = %q, want %q", got, want)
+	}
+}
+
+func TestInitInteractiveRouteParsersAcceptSemicolonsNewlinesAndDeduplicate(t *testing.T) {
+	specs, err := parseInitRouteSpecs(strings.Join([]string{
+		"https://github.com/open-cli-collective/codereview-cli/pull/185; GitHub.com/rianjs [RepoB, RepoA, RepoA]",
+		"github.com/open-cli-collective/codereview-cli",
+	}, "\n"))
+	if err != nil {
+		t.Fatalf("parseInitRouteSpecs: %v", err)
+	}
+	want := []configedit.RepositoryRouteSpec{
+		{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+		{
+			Host:      "github.com",
+			Namespace: "rianjs",
+			Repos:     []string{"RepoA", "RepoB"},
+		},
+	}
+	if !reflect.DeepEqual(specs, want) {
+		t.Fatalf("parseInitRouteSpecs = %#v, want %#v", specs, want)
 	}
 }
 

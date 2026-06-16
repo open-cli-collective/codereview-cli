@@ -27,6 +27,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -3458,7 +3459,7 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 			Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile."),
 		huh.NewNote().
 			Title("Accepted route formats").
-			Description("One per line: host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL."),
+			Description("host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;. Newline-separated pastes are also accepted."),
 	}
 	if prompt.HostChanged && len(prompt.Routes) > 0 {
 		fields = append(fields, huh.NewNote().Description(fmt.Sprintf("The profile host changed from %s to %s. Update or remove the affected routes.", prompt.PreviousHost, prompt.ProfileHost)))
@@ -3466,7 +3467,7 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 	fields = append(fields,
 		huh.NewText().
 			Title("Route entries").
-			Description("Leave blank to remove all routes for this profile.").
+			Description("Separate multiple entries with ;. Newline-separated pastes are also accepted.").
 			Value(&routeText),
 	)
 	form := huh.NewForm(huh.NewGroup(fields...).Title("Repository Routes"))
@@ -5259,14 +5260,7 @@ func applyInitProfileRoutes(routes []config.RepositoryProfile, profileName strin
 }
 
 func formatInitRouteSpecs(specs []configedit.RepositoryRouteSpec) string {
-	if len(specs) == 0 {
-		return ""
-	}
-	lines := make([]string, 0, len(specs))
-	for _, spec := range specs {
-		lines = append(lines, configedit.FormatRepositoryRouteSpec(spec))
-	}
-	return strings.Join(lines, "\n")
+	return formatInitRouteSpecsInline(specs)
 }
 
 func parseInitRouteSpecs(raw string) ([]configedit.RepositoryRouteSpec, error) {
@@ -5274,17 +5268,25 @@ func parseInitRouteSpecs(raw string) ([]configedit.RepositoryRouteSpec, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	lines := strings.Split(raw, "\n")
-	specs := make([]configedit.RepositoryRouteSpec, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	entries := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ';' || r == '\n'
+	})
+	specs := make([]configedit.RepositoryRouteSpec, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
 			continue
 		}
-		spec, err := parseInitRouteSpec(line)
+		spec, err := parseInitRouteSpec(entry)
 		if err != nil {
 			return nil, err
 		}
+		key := configedit.FormatRepositoryRouteSpec(spec)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
 		specs = append(specs, spec)
 	}
 	if len(specs) == 0 {
@@ -5294,7 +5296,7 @@ func parseInitRouteSpecs(raw string) ([]configedit.RepositoryRouteSpec, error) {
 }
 
 func parseInitRouteSpec(raw string) (configedit.RepositoryRouteSpec, error) {
-	if ref, err := prref.ParseGitHubPullURL(raw); err == nil {
+	if ref, err := parseInitRoutePRURL(raw); err == nil {
 		return configedit.NormalizeRepositoryRouteSpec(configedit.RepositoryRouteSpec{
 			Host:      ref.Host,
 			Namespace: ref.Owner,
@@ -5327,6 +5329,18 @@ func parseInitRouteSpec(raw string) (configedit.RepositoryRouteSpec, error) {
 		Namespace: parts[1],
 		Repos:     repos,
 	})
+}
+
+func parseInitRoutePRURL(raw string) (gitprovider.PRRef, error) {
+	trimmed := strings.TrimSpace(raw)
+	ref, err := prref.ParseGitHubPullURL(trimmed)
+	if err == nil {
+		return ref, nil
+	}
+	if strings.Contains(trimmed, "://") {
+		return gitprovider.PRRef{}, err
+	}
+	return prref.ParseGitHubPullURL("https://" + strings.TrimPrefix(trimmed, "//"))
 }
 
 func collectInteractiveInitRetentionConfig(opts *root.Options, deps initDeps, cfg config.File) (config.File, error) {
