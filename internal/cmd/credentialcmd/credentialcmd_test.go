@@ -2356,28 +2356,6 @@ func TestInitReviewerEntitySelectionOptionsOmitCreateActions(t *testing.T) {
 	}
 }
 
-func TestDefaultProfileSelectionOptionsExistingDefault(t *testing.T) {
-	got := defaultProfileSelectionOptions("work")
-	want := []huh.Option[bool]{
-		huh.NewOption("Yes, make this the default profile", true),
-		huh.NewOption("No, keep the current default profile", false),
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("options = %#v, want %#v", got, want)
-	}
-}
-
-func TestDefaultProfileSelectionOptionsNoCurrentDefault(t *testing.T) {
-	got := defaultProfileSelectionOptions("")
-	want := []huh.Option[bool]{
-		huh.NewOption("Yes, make this the default profile", true),
-		huh.NewOption("No, use the standard first-profile default behavior", false),
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("options = %#v, want %#v", got, want)
-	}
-}
-
 func TestInitReviewerEntityLabelUsesExplicitDisplayName(t *testing.T) {
 	label := initReviewerEntityLabel(initReviewerEntityDraft{
 		Name:          "reviewer-github-app",
@@ -3885,7 +3863,15 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 		DefaultProfileName:   "work",
 		ExistingConfig: config.File{
 			DefaultProfile: "work",
-			Profiles:       map[string]config.Profile{"work": existing},
+			RepositoryProfiles: []config.RepositoryProfile{{
+				Profile: "work",
+				Match: config.RepositoryProfileMatch{
+					Host:      "gitlab.com",
+					Namespace: "open-cli-collective",
+					Repos:     []string{"codereview-cli"},
+				},
+			}},
+			Profiles: map[string]config.Profile{"work": existing},
 		},
 		GitScopes: map[string]initGitScopeDraft{
 			"gitlab-scope": initGitScopeDraftFromConfig(existing.Git),
@@ -3918,9 +3904,27 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMReviewerModelTier != string(config.ModelTierMedium) || draft.LLMCredentialRef != "codereview/work-llm" {
 		t.Fatalf("llm draft = %#v, want existing api-key openai values", draft)
 	}
+	if !draft.RoutesSet {
+		t.Fatalf("draft.RoutesSet = false, want profile form to own route edits")
+	}
+	if !reflect.DeepEqual(draft.Routes, []configedit.RepositoryRouteSpec{{
+		Host:      "gitlab.com",
+		Namespace: "open-cli-collective",
+		Repos:     []string{"codereview-cli"},
+	}}) {
+		t.Fatalf("draft.Routes = %#v, want prefilled route from inline editor", draft.Routes)
+	}
 	out := stderr.String()
 	if !strings.Contains(out, "Choose a profile to edit or create") || !strings.Contains(out, "Git scope host") || !strings.Contains(out, "Reviewer entity") || !strings.Contains(out, "LLM runtime") {
 		t.Fatalf("wizard output missing expected prompts: %q", out)
+	}
+	routeIndex := strings.Index(out, "Routes tell cr when to use this profile automatically.")
+	reviewerIndex := strings.Index(out, "Reviewer entity")
+	if routeIndex < 0 || reviewerIndex < 0 || routeIndex > reviewerIndex {
+		t.Fatalf("wizard output order = %q, want automatic profile selection before reviewer entity", out)
+	}
+	if strings.Contains(out, "Secrets management") {
+		t.Fatalf("wizard output unexpectedly showed inert secrets management selector: %q", out)
 	}
 	if !strings.Contains(out, "Minimum reviewer model tier") ||
 		!strings.Contains(out, "Built-in baseline (small)") ||
@@ -3938,8 +3942,90 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if strings.Contains(strings.ToLower(out), "paste a secret") {
 		t.Fatalf("wizard output unexpectedly requested secret ingress: %q", out)
 	}
-	if !strings.Contains(out, "Yes, make this the default profile") || !strings.Contains(out, "No, keep the current default profile") {
-		t.Fatalf("wizard output missing default-profile select copy: %q", out)
+	if strings.Contains(out, "Default profile") || strings.Contains(out, "This profile is already the default profile.") {
+		t.Fatalf("wizard output still shows default-profile prompt in profile editor: %q", out)
+	}
+	if strings.Contains(out, "Make this the default profile") || strings.Contains(out, "No, keep the current default profile") {
+		t.Fatalf("wizard output contains stale default-profile select copy: %q", out)
+	}
+}
+
+func TestHuhInitPrompterAccessibleOmitsSecretsManagementFromProfileEditor(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	work := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"team-vault": {
+					Label: "Team Vault",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendFile),
+					},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"work": work,
+		},
+	}
+	gitScopes, profileGitScopes := buildInitGitScopeInventory(cfg)
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	secretsProfiles, profileSecretsProfiles, brokenProfileSecretsProfiles := buildInitSecretsProfileInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Route entries
+			"", // Reviewer entity
+			"", // Secrets management
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Git storage label
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "work\n")
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName:         "work",
+		ExistingProfileName:          "work",
+		ExistingProfile:              &work,
+		ExistingProfileNames:         []string{"work"},
+		DefaultProfileName:           "work",
+		ExistingConfig:               cfg,
+		GitScopes:                    gitScopes,
+		ProfileGitScopes:             profileGitScopes,
+		ReviewerEntities:             reviewerEntities,
+		ProfileReviewerEntities:      profileReviewerEntities,
+		SecretsProfiles:              secretsProfiles,
+		ProfileSecretsProfiles:       profileSecretsProfiles,
+		BrokenProfileSecretsProfiles: brokenProfileSecretsProfiles,
+		LLMRuntimes:                  llmRuntimes,
+		ProfileLLMRuntimes:           profileLLMRuntimes,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := stderr.String()
+	if strings.Contains(out, "Secrets management") || strings.Contains(out, "Team Vault") {
+		t.Fatalf("stderr = %q, want profile editor to omit secrets-management selector", out)
+	}
+	if draft.SecretsProfile != "" {
+		t.Fatalf("draft.SecretsProfile = %q, want unchanged default secrets profile", draft.SecretsProfile)
 	}
 }
 
@@ -4368,8 +4454,8 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	if draft.OriginalProfileName != "" {
 		t.Fatalf("draft.OriginalProfileName = %q, want blank for create-new seed", draft.OriginalProfileName)
 	}
-	if draft.ProfileName != credstore.DefaultProfile {
-		t.Fatalf("draft.ProfileName = %q, want fresh default profile seed", draft.ProfileName)
+	if draft.ProfileName != "new-profile" {
+		t.Fatalf("draft.ProfileName = %q, want non-conflicting create-new profile seed", draft.ProfileName)
 	}
 	if draft.MakeDefault {
 		t.Fatalf("draft.MakeDefault = true, want create-new seed to preserve false selection when an existing default profile is present")
@@ -4440,8 +4526,88 @@ func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDef
 	if !draft.MakeDefault {
 		t.Fatalf("draft.MakeDefault = false, want no-default interactive flow to preserve seeded true selection")
 	}
-	if !strings.Contains(stderr.String(), "Yes, make this the default profile") {
-		t.Fatalf("stderr = %q, want default-profile select copy in no-default flow", stderr.String())
+	if strings.Contains(stderr.String(), "Yes, make this profile the default") || strings.Contains(stderr.String(), "Default profile") {
+		t.Fatalf("stderr = %q, want profile editor to omit default-profile select copy", stderr.String())
+	}
+}
+
+func TestHuhInitPrompterAccessibleCreateNewProfileAvoidsExistingDefaultProfileName(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	existing := basicProfile(credstore.DefaultProfile)
+	var stderr bytes.Buffer
+	prompter := huhInitPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // Profile name
+			"", // Make default
+			"", // Git host
+			"", // Git auth
+			"", // Reviewer entity
+			"", // LLM runtime
+			"", // Reviewer model tier
+			"", // Git storage label
+			"", // Repository routes
+			"",
+		}, "\n")),
+		stderr: &stderr,
+		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
+			_, _ = io.WriteString(out, prompt.Description+"\n")
+			_, _ = io.WriteString(out, "Create new profile\n")
+			return initInventoryResult{
+				Action: initInventoryActionCommand,
+				Row: initInventoryRow{
+					ID:            initCreateProfileSentinel,
+					Title:         "Create new profile",
+					PrimaryAction: initInventoryActionCommand,
+				},
+			}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: credstore.DefaultProfile,
+		ExistingProfileName:  credstore.DefaultProfile,
+		ExistingProfile:      &existing,
+		ExistingProfileNames: []string{credstore.DefaultProfile},
+		DefaultProfileName:   credstore.DefaultProfile,
+		ExistingConfig: config.File{
+			DefaultProfile: credstore.DefaultProfile,
+			Profiles:       map[string]config.Profile{credstore.DefaultProfile: existing},
+		},
+		LLMRuntimes: map[string]initLLMRuntimeDraft{
+			"default-runtime": initLLMRuntimeDraftFromConfig(existing.LLM),
+		},
+		ProfileLLMRuntimes: map[string]string{credstore.DefaultProfile: "default-runtime"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.OriginalProfileName != "" {
+		t.Fatalf("draft.OriginalProfileName = %q, want blank for create-new seed", draft.OriginalProfileName)
+	}
+	if draft.ProfileName != "new-profile" {
+		t.Fatalf("draft.ProfileName = %q, want create-new seed to avoid existing default profile", draft.ProfileName)
+	}
+	if draft.MakeDefault {
+		t.Fatalf("draft.MakeDefault = true, want existing default profile to remain default")
+	}
+}
+
+func TestInitCreateProfileSeedNameUsesNextAvailableGeneratedName(t *testing.T) {
+	got := initCreateProfileSeedName(initPromptContext{
+		RequestedProfileName: credstore.DefaultProfile,
+		ExistingProfileNames: []string{credstore.DefaultProfile, "new-profile"},
+		ExistingConfig: config.File{
+			Profiles: map[string]config.Profile{
+				credstore.DefaultProfile: {},
+				"new-profile":            {},
+			},
+		},
+		PendingProfileDeletes: map[string]initPendingProfileDelete{
+			"new-profile-2": {ProfileName: "new-profile-2"},
+		},
+	})
+	if got != "new-profile-3" {
+		t.Fatalf("initCreateProfileSeedName = %q, want next available generated name", got)
 	}
 }
 
@@ -5981,16 +6147,16 @@ func TestInitProfileEditorLLMRuntimeSelectionFallsBackToFirstConfiguredRuntimeWi
 func TestInitSecretsProfileSelectionOptionsShowConfiguredProfilesAndBuiltInDefault(t *testing.T) {
 	profiles := []config.EffectiveSecretsProfile{
 		{
-			ID:     "personal-keychain",
-			Label:  "Personal macOS Keychain",
+			ID:      "personal-keychain",
+			Label:   "Personal macOS Keychain",
 			Backend: string(credstore.BackendKeychain),
-			Source: config.EffectiveSecretsProfileSourceConfigured,
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
 		},
 		{
-			ID:     "work-1password",
-			Label:  "Work 1Password",
+			ID:      "work-1password",
+			Label:   "Work 1Password",
 			Backend: string(credstore.BackendOPDesktop),
-			Source: config.EffectiveSecretsProfileSourceConfigured,
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
 		},
 	}
 	options := initSecretsProfileSelectionOptions(profiles, "", "Use built-in default (Legacy default (In-memory store))")
@@ -6027,6 +6193,22 @@ func TestInitProfileEditorSecretsProfileSelectionKeepsBrokenReferenceSelectable(
 	}
 	if got := options[0].Key; !strings.Contains(got, "Missing configured profile: missing-vault") {
 		t.Fatalf("options[0].Key = %q, want missing profile recovery label", got)
+	}
+}
+
+func TestInitProfileEditorSecretsProfileSelectionVisibleOnlyWhenMeaningful(t *testing.T) {
+	if initProfileEditorSecretsProfileSelectionVisible(nil, "") {
+		t.Fatal("visible = true, want inert built-in default selector hidden")
+	}
+	if !initProfileEditorSecretsProfileSelectionVisible([]config.EffectiveSecretsProfile{{
+		ID:      "team-vault",
+		Backend: string(credstore.BackendFile),
+		Source:  config.EffectiveSecretsProfileSourceConfigured,
+	}}, "") {
+		t.Fatal("visible = false, want configured secrets profile selector shown")
+	}
+	if !initProfileEditorSecretsProfileSelectionVisible(nil, "missing-vault") {
+		t.Fatal("visible = false, want broken secrets profile selector shown for repair")
 	}
 }
 
@@ -6446,8 +6628,14 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 	if strings.Contains(out, "Storage label handling") || strings.Contains(out, "Customize storage labels (advanced)") {
 		t.Fatalf("wizard output still shows legacy storage label mode prompt: %q", out)
 	}
-	if !strings.Contains(out, "Git storage label") || !strings.Contains(out, "Reviewer storage label") || !strings.Contains(out, "LLM storage label") {
-		t.Fatalf("wizard output missing flattened storage label prompts: %q", out)
+	if !strings.Contains(out, "Git secrets storage label") {
+		t.Fatalf("wizard output missing inline Git storage label prompt: %q", out)
+	}
+	if strings.Contains(out, "Reviewer storage label") || strings.Contains(out, "LLM storage label") {
+		t.Fatalf("wizard output exposed reviewer/LLM storage labels in profile editor: %q", out)
+	}
+	if !strings.Contains(out, "Useful for advanced deployment scenarios. Leave unchanged if you're unsure.") {
+		t.Fatalf("wizard output missing advanced Git storage-label guidance: %q", out)
 	}
 	if draft.AdvancedStorageLabels {
 		t.Fatalf("draft.AdvancedStorageLabels = true, want false when the flattened fields keep their selected defaults")
@@ -6510,15 +6698,21 @@ func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
 	if strings.Contains(out, "Storage label handling") {
 		t.Fatalf("wizard output still shows legacy storage label mode prompt: %q", out)
 	}
-	if !strings.Contains(out, "Git storage label") {
-		t.Fatalf("wizard output missing inline git storage label: %q", out)
+	if !strings.Contains(out, "Git secrets storage label") {
+		t.Fatalf("wizard output missing inline git secrets storage label: %q", out)
+	}
+	if !strings.Contains(out, "Profile action") || !strings.Contains(out, "Stage profile settings") {
+		t.Fatalf("wizard output missing profile-level staging action: %q", out)
+	}
+	if strings.Contains(out, "Review policy action") || strings.Contains(out, "Stage review-policy settings") {
+		t.Fatalf("wizard output still shows review-policy-only staging action: %q", out)
 	}
 	if draft.AdvancedStorageLabels {
 		t.Fatalf("draft.AdvancedStorageLabels = true, want false on the default storage-label path")
 	}
 }
 
-func TestHuhInitPrompterAccessibleStorageLabelsRespondToProfileSelections(t *testing.T) {
+func TestHuhInitPrompterAccessibleStorageLabelsOnlyExposeGitLabel(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	work := basicProfile("work")
 	cfg := config.File{
@@ -6595,8 +6789,11 @@ func TestHuhInitPrompterAccessibleStorageLabelsRespondToProfileSelections(t *tes
 		t.Fatalf("Run: %v", err)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Reviewer storage label") || !strings.Contains(out, "LLM storage label") {
-		t.Fatalf("stderr = %q, want inline storage labels to respond to reviewer/runtime changes in the same form", out)
+	if !strings.Contains(out, "Git secrets storage label") {
+		t.Fatalf("stderr = %q, want inline Git storage label", out)
+	}
+	if strings.Contains(out, "Reviewer storage label") || strings.Contains(out, "LLM storage label") {
+		t.Fatalf("stderr = %q, want profile editor to omit reviewer/LLM storage labels", out)
 	}
 	_ = draft
 }
@@ -7257,14 +7454,20 @@ func TestHuhInitAgentSourcesPrompterAccessibleShowsEditablePaths(t *testing.T) {
 		t.Fatalf("edit.Sources = %#v, want preserved source", edit.Sources)
 	}
 	out := stderr.String()
+	if !strings.Contains(out, "Add local directories that contain custom reviewer agent definitions for this profile.") {
+		t.Fatalf("stderr = %q, want local-directory explanation", out)
+	}
+	if !strings.Contains(out, "<repo>/.codereview/agents") || !strings.Contains(out, "any per-run --agents-dir sources") {
+		t.Fatalf("stderr = %q, want agent-source resolution context", out)
+	}
 	if !strings.Contains(out, "Additional trusted reviewer-agent directories") {
 		t.Fatalf("stderr = %q, want trusted reviewer-agent label", out)
 	}
-	if !strings.Contains(out, ".codereview/agents") || !strings.Contains(out, "Most users should leave this empty") {
-		t.Fatalf("stderr = %q, want explanatory agent-source copy", out)
+	if !strings.Contains(out, "Paths are deduplicated and normalized before save.") {
+		t.Fatalf("stderr = %q, want normalization guidance", out)
 	}
-	if !strings.Contains(out, "Only configure directories you trust and expect to stay stable.") {
-		t.Fatalf("stderr = %q, want trust/stability guidance", out)
+	if strings.Contains(out, "Most users should leave this empty") || strings.Contains(out, "Trust requirement") || strings.Contains(out, "Only configure directories you trust") {
+		t.Fatalf("stderr = %q, want simplified agent-source copy", out)
 	}
 }
 
@@ -7416,16 +7619,22 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	edit, err := prompter.EditRoutes(initRoutesPrompt{
 		ProfileName: "work",
 		ProfileHost: "github.com",
-		Routes: []configedit.RepositoryRouteSpec{{
-			Host:      "github.com",
-			Namespace: "open-cli-collective",
-			Repos:     []string{"codereview-cli"},
-		}},
+		Routes: []configedit.RepositoryRouteSpec{
+			{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+			{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("EditRoutes: %v", err)
 	}
-	if len(edit.Routes) != 1 || edit.Routes[0].Namespace != "open-cli-collective" {
+	if len(edit.Routes) != 2 || edit.Routes[0].Namespace != "open-cli-collective" || edit.Routes[1].Namespace != "rianjs" {
 		t.Fatalf("routes = %#v, want preserved route", edit.Routes)
 	}
 	out := stderr.String()
@@ -7435,8 +7644,25 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 	if !strings.Contains(out, "Automatic profile selection") || !strings.Contains(out, "Routes tell cr when to use this profile automatically.") {
 		t.Fatalf("stderr = %q, want route editor explanation", out)
 	}
-	if !strings.Contains(out, "Accepted route formats") || !strings.Contains(out, "One per line: host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.") {
+	if !strings.Contains(out, "Accepted route formats") || !strings.Contains(out, "host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL.") {
 		t.Fatalf("stderr = %q, want route format instructions", out)
+	}
+	for _, want := range []string{
+		"Leave blank to remove all routes for this profile. Examples:",
+		"github.com/YourOrg",
+		"github.com/YourUsername [RepoA, RepoB] (will not match on RepoC)",
+		"github.com/YourOrg/org-repo/pull/123",
+		"Separate multiple entries with ;.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr = %q, want route editor copy %q", out, want)
+		}
+	}
+	if strings.Contains(out, "Newline-separated pastes") {
+		t.Fatalf("stderr = %q, want route UI copy to avoid newline-paste guidance", out)
+	}
+	if count := strings.Count(out, "Separate multiple entries with ;."); count != 1 {
+		t.Fatalf("stderr = %q, want semicolon guidance once, got %d", out, count)
 	}
 	if !strings.Contains(out, "Route entries") {
 		t.Fatalf("stderr = %q, want route entry instructions", out)
@@ -7715,6 +7941,81 @@ func TestInitInteractiveModelMapPreserveUsesEditedLLMContext(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.Profiles["work"].LLM.ModelMap, config.ModelMap{"medium": "claude-custom"}) {
 		t.Fatalf("saved model_map = %#v, want preserved override", cfg.Profiles["work"].LLM.ModelMap)
+	}
+}
+
+func TestEditInteractiveInitProfileSkipsInlineProfileDetailCollectors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	}
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	work := cfg.Profiles["work"]
+	draft := seedInteractiveInitDraft("work", "work", "work", &work)
+	draft.RoutesSet = true
+	draft.ModelMapSet = true
+	draft.ModelMap = config.ModelMap{"large": "claude-custom"}
+	draft.AgentSourcesSet = true
+	draft.AgentSources = []string{"/tmp/agents", "/tmp/agents"}
+	draft.ReviewPolicySet = true
+	draft.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+		ResolveAfter:     "24h",
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return draft, nil
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
+			t.Fatal("routes prompter should not run when RoutesSet is true")
+			return initRoutesEdit{}, nil
+		}),
+		modelMapPrompter: initModelMapPrompterFunc(func(initModelMapPrompt) (initModelMapEdit, error) {
+			t.Fatal("model-map prompter should not run when ModelMapSet is true")
+			return initModelMapEdit{}, nil
+		}),
+		agentSourcesPrompter: initAgentSourcesPrompterFunc(func(initAgentSourcesPrompt) (initAgentSourcesEdit, error) {
+			t.Fatal("agent-sources prompter should not run when AgentSourcesSet is true")
+			return initAgentSourcesEdit{}, nil
+		}),
+		reviewPolicyPrompter: initReviewPolicyPrompterFunc(func(initReviewPolicyPrompt) (initReviewPolicyEdit, error) {
+			t.Fatal("review-policy prompter should not run when ReviewPolicySet is true")
+			return initReviewPolicyEdit{}, nil
+		}),
+	}
+	session := initSessionDraft{
+		path:                 path,
+		originalCfg:          cloneInitConfigFile(cfg),
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: "work",
+	}
+
+	next, stay, err := editInteractiveInitProfileStep(&cobra.Command{}, opts, initOptions{}, deps, session)
+	if err != nil {
+		t.Fatalf("editInteractiveInitProfileStep: %v", err)
+	}
+	if !stay {
+		t.Fatal("stay = false, want profile category to remain active after staging profile")
+	}
+	profile := next.cfg.Profiles["work"]
+	if !reflect.DeepEqual(profile.LLM.ModelMap, config.ModelMap{"large": "claude-custom"}) {
+		t.Fatalf("model_map = %#v, want inline model-map edit", profile.LLM.ModelMap)
+	}
+	if !reflect.DeepEqual(profile.AgentSources, []string{"/tmp/agents"}) {
+		t.Fatalf("agent_sources = %#v, want normalized inline agent-source edit", profile.AgentSources)
+	}
+	if profile.ReviewPolicy != draft.ReviewPolicy {
+		t.Fatalf("review_policy = %#v, want %#v", profile.ReviewPolicy, draft.ReviewPolicy)
 	}
 }
 
@@ -12200,6 +12501,69 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 	}
 }
 
+func TestInitInteractiveProfileDraftRoutesSkipRouteSubprompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			draft := seedInteractiveInitDraft("work", "work", "work", nil)
+			draft.GitHost = "github.com"
+			draft.GitAuth = string(config.GitAuthModePAT)
+			draft.GitCredentialRef = "codereview/work"
+			draft.LLMProvider = string(config.LLMProviderAnthropic)
+			draft.LLMAuth = string(config.LLMAuthSubscription)
+			draft.LLMAdapter = string(config.LLMAdapterClaudeCLI)
+			draft.RoutesSet = true
+			draft.Routes = []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			}}
+			return draft, nil
+		}),
+		routesPrompter: initRoutesPrompterFunc(func(initRoutesPrompt) (initRoutesEdit, error) {
+			t.Fatal("routesPrompter called despite inline profile routes")
+			return initRoutesEdit{}, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	wantRoutes := []config.RepositoryProfile{{
+		Profile: "work",
+		Match: config.RepositoryProfileMatch{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+	}}
+	if !reflect.DeepEqual(cfg.RepositoryProfiles, wantRoutes) {
+		t.Fatalf("RepositoryProfiles = %#v, want inline draft routes applied", cfg.RepositoryProfiles)
+	}
+}
+
 func TestInitInteractiveRouteEditorPreservesExistingRoutesWhenLeftUnchanged(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	wantRoutes := []config.RepositoryProfile{{
@@ -12275,6 +12639,18 @@ func TestInitInteractiveRouteParsersAcceptPRURLAndManualSpecs(t *testing.T) {
 		t.Fatalf("PR URL spec = %#v", urlSpec)
 	}
 
+	shorthandURLSpec, err := parseInitRouteSpec("github.com/YourOrg/org-repo/pull/123")
+	if err != nil {
+		t.Fatalf("parseInitRouteSpec shorthand PR URL: %v", err)
+	}
+	if !reflect.DeepEqual(shorthandURLSpec, configedit.RepositoryRouteSpec{
+		Host:      "github.com",
+		Namespace: "YourOrg",
+		Repos:     []string{"org-repo"},
+	}) {
+		t.Fatalf("shorthand PR URL spec = %#v", shorthandURLSpec)
+	}
+
 	manualSpec, err := parseInitRouteSpec("github.com/open-cli-collective [codereview-cli, cli-common]")
 	if err != nil {
 		t.Fatalf("parseInitRouteSpec manual: %v", err)
@@ -12285,6 +12661,49 @@ func TestInitInteractiveRouteParsersAcceptPRURLAndManualSpecs(t *testing.T) {
 		Repos:     []string{"cli-common", "codereview-cli"},
 	}) {
 		t.Fatalf("manual spec = %#v", manualSpec)
+	}
+}
+
+func TestInitInteractiveRouteSpecsUseSemicolonDisplay(t *testing.T) {
+	got := formatInitRouteSpecs([]configedit.RepositoryRouteSpec{
+		{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+		{
+			Host:      "github.com",
+			Namespace: "rianjs",
+		},
+	})
+	want := "github.com/open-cli-collective [codereview-cli]; github.com/rianjs"
+	if got != want {
+		t.Fatalf("formatInitRouteSpecs = %q, want %q", got, want)
+	}
+}
+
+func TestInitInteractiveRouteParsersAcceptSemicolonsNewlinesAndDeduplicate(t *testing.T) {
+	specs, err := parseInitRouteSpecs(strings.Join([]string{
+		"https://github.com/open-cli-collective/codereview-cli/pull/185; GitHub.com/rianjs [RepoB, RepoA, RepoA]",
+		"github.com/open-cli-collective/codereview-cli",
+	}, "\n"))
+	if err != nil {
+		t.Fatalf("parseInitRouteSpecs: %v", err)
+	}
+	want := []configedit.RepositoryRouteSpec{
+		{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		},
+		{
+			Host:      "github.com",
+			Namespace: "rianjs",
+			Repos:     []string{"RepoA", "RepoB"},
+		},
+	}
+	if !reflect.DeepEqual(specs, want) {
+		t.Fatalf("parseInitRouteSpecs = %#v, want %#v", specs, want)
 	}
 }
 
