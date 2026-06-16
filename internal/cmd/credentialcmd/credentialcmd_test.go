@@ -7642,9 +7642,15 @@ func TestHuhInitRetentionPrompterAccessibleShowsFields(t *testing.T) {
 	if !edit.Apply {
 		t.Fatal("edit.Apply = false, want true")
 	}
+	if edit.Retention.MaxAgeDaysValue() != config.DefaultRetentionConfig().MaxAgeDaysValue() {
+		t.Fatalf("MaxAgeDaysValue = %d, want default %d for omitted retention config", edit.Retention.MaxAgeDaysValue(), config.DefaultRetentionConfig().MaxAgeDaysValue())
+	}
 	out := stderr.String()
 	if !strings.Contains(out, "Maximum run-data age in days") || !strings.Contains(out, "Run data") {
 		t.Fatalf("stderr = %q, want retention fields", out)
+	}
+	if !strings.Contains(out, "local record of review runs and related artifacts/logs") {
+		t.Fatalf("stderr = %q, want explanatory run-data note", out)
 	}
 	if strings.Contains(out, "Stage retention settings") || strings.Contains(out, "Default 90 days") || strings.Contains(out, "Keep forever") || strings.Contains(out, "Custom days") || strings.Contains(out, "Custom max age in days") || strings.Contains(out, "Retention enforcement") {
 		t.Fatalf("stderr = %q, want removed retention mode-selector copy absent", out)
