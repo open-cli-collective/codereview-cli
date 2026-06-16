@@ -10005,6 +10005,7 @@ func TestInitProfileV2GitScopeRejectsRoutesForDifferentHost(t *testing.T) {
 }
 
 func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
+	// #nosec G101 -- test fixture credential reference, not a secret.
 	reviewerEntities := map[string]initReviewerEntityDraft{
 		"app-reviewer": {
 			Kind:          initReviewerEntityKindGitHubApp,

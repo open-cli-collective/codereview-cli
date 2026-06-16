@@ -1252,20 +1252,6 @@ func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 	return session, err
 }
 
-func loopInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
-	for {
-		var stayInCategory bool
-		var err error
-		session, stayInCategory, err = editInteractiveInitProfileStep(cmd, opts, flags, deps, session)
-		if err != nil {
-			return initSessionDraft{}, err
-		}
-		if !stayInCategory {
-			return session, nil
-		}
-	}
-}
-
 func editInteractiveInitProfileStep(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
 	prompter := deps.prompter
 	if prompter == nil {

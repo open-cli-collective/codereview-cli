@@ -822,6 +822,19 @@ func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
 		m.syncGitScopeFields()
 	case initProfileV2FieldLLMRuntime:
 		m.syncModelMapFields()
+	case initProfileV2FieldProfileName,
+		initProfileV2FieldRoutes,
+		initProfileV2FieldGitHost,
+		initProfileV2FieldGitAuth,
+		initProfileV2FieldReviewerEntity,
+		initProfileV2FieldReviewerModelTier,
+		initProfileV2FieldAgentSources,
+		initProfileV2FieldReviewMajorEvent,
+		initProfileV2FieldSelfApprove,
+		initProfileV2FieldResolveThreads,
+		initProfileV2FieldResolveAfter,
+		initProfileV2FieldGitStorageLabel,
+		initProfileV2FieldProfileAction:
 	}
 }
 
