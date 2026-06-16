@@ -1,7 +1,8 @@
 .PHONY: all build test test-cover test-static-smoke lint fmt tidy deps check install snapshot package-render-check release clean
 
 # Standard keyring tags: enable 1Password support, keep passage disabled.
-export GOFLAGS := -tags=keyring_nopassage
+GOFLAGS ?= -tags=keyring_nopassage
+export GOFLAGS
 
 all: check
 
