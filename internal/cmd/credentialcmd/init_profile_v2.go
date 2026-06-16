@@ -173,6 +173,7 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 		focused:          editor.Document.firstFocusableField(),
 	}
 	model.syncGitScopeFields()
+	model.syncModelMapFields()
 	model.validateAll()
 	model.relayout()
 	model.ensureFocusedVisible()
@@ -363,6 +364,10 @@ const (
 	initProfileV2FieldReviewerModelTier initProfileV2FieldID = "reviewer_model_tier"
 )
 
+func initProfileV2FieldModelMap(tier config.ModelTier) initProfileV2FieldID {
+	return initProfileV2FieldID("model_map_" + string(tier))
+}
+
 type initProfileV2Editor struct {
 	Draft            initDraft
 	GitScopes        map[string]initGitScopeDraft
@@ -438,7 +443,7 @@ func initProfileV2AppendModelMapSection(document *initProfileV2Document, llm con
 	for _, tier := range config.ModelTiers() {
 		value := initEffectiveModelMapInputValue(effective, tier)
 		description := initModelMapInputDescription(tier, strings.TrimSpace(existing[string(tier)]), strings.TrimSpace(builtIns[string(tier)]))
-		document.addInput(fmt.Sprintf("%s model", tier), description, value)
+		document.addEditableInput(initProfileV2FieldModelMap(tier), fmt.Sprintf("%s model", tier), description, value, nil)
 	}
 }
 
@@ -709,8 +714,14 @@ func initProfileV2MoveSelection(field *initProfileV2Field, offset int) {
 
 func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
 	m.validateField(index)
-	if index >= 0 && index < len(m.document) && m.document[index].ID == initProfileV2FieldGitScope {
+	if index < 0 || index >= len(m.document) {
+		return
+	}
+	switch m.document[index].ID {
+	case initProfileV2FieldGitScope:
 		m.syncGitScopeFields()
+	case initProfileV2FieldLLMRuntime:
+		m.syncModelMapFields()
 	}
 }
 
@@ -784,6 +795,15 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 	if m.document.fieldIndexByID(initProfileV2FieldReviewerModelTier) >= 0 {
 		draft.LLMReviewerModelTier = m.document.selectedValue(initProfileV2FieldReviewerModelTier)
 	}
+	if initProfileV2HasModelMapFields(m.document) {
+		llm := config.LLMConfig{
+			Provider: config.LLMProvider(draft.LLMProvider),
+			Auth:     config.LLMAuth(draft.LLMAuth),
+			Adapter:  config.LLMAdapter(draft.LLMAdapter),
+		}
+		draft.ModelMapSet = true
+		draft.ModelMap = initProfileV2ModelMapFromDocument(llm, m.document)
+	}
 	draft.RoutesSet = true
 	draft.Routes = routes
 	return draft, nil
@@ -814,6 +834,50 @@ func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
 		}
 	}
 	m.validateAll()
+}
+
+func (m *initProfileV2ReadOnlyModel) syncModelMapFields() {
+	if !initProfileV2HasModelMapFields(m.document) {
+		return
+	}
+	selectedLLMRuntime := m.document.selectedValue(initProfileV2FieldLLMRuntime)
+	llm := initProfileEditorModelMapLLM(m.draft, selectedLLMRuntime, m.llmRuntimes)
+	existing := copyModelMap(m.draft.ModelMap)
+	effective := config.EffectiveModelMap(applyModelMapToLLM(llm, existing))
+	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
+	for _, tier := range config.ModelTiers() {
+		index := m.document.fieldIndexByID(initProfileV2FieldModelMap(tier))
+		if index < 0 {
+			continue
+		}
+		value := initEffectiveModelMapInputValue(effective, tier)
+		m.document[index].Value = value
+		m.document[index].Cursor = len([]rune(value))
+		m.document[index].Description = initModelMapInputDescription(tier, strings.TrimSpace(existing[string(tier)]), strings.TrimSpace(builtIns[string(tier)]))
+		m.validateField(index)
+	}
+}
+
+func initProfileV2HasModelMapFields(document initProfileV2Document) bool {
+	for _, tier := range config.ModelTiers() {
+		if document.fieldIndexByID(initProfileV2FieldModelMap(tier)) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func initProfileV2ModelMapFromDocument(llm config.LLMConfig, document initProfileV2Document) config.ModelMap {
+	values := map[config.ModelTier]*string{}
+	for _, tier := range config.ModelTiers() {
+		index := document.fieldIndexByID(initProfileV2FieldModelMap(tier))
+		if index < 0 {
+			continue
+		}
+		value := document[index].Value
+		values[tier] = &value
+	}
+	return initModelMapFromEditorValues(llm, values)
 }
 
 func (m *initProfileV2ReadOnlyModel) setFieldValue(id initProfileV2FieldID, value string) {

@@ -9902,6 +9902,82 @@ func TestInitProfileV2NoRuntimeBootstrapRequestsExistingFlow(t *testing.T) {
 	}
 }
 
+func TestInitProfileV2ModelMapInputsDraftOverridesAndClears(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithModelMap(
+		"monit",
+		"github.com/SignalFT",
+		config.LLMConfig{
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		config.ModelMap{
+			string(config.ModelTierLarge): "claude-opus-4-7",
+		},
+	), 160, 24)
+
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierSmall))
+	if !strings.Contains(model.View(), "> |") {
+		t.Fatalf("view missing editable cursor for empty small model field:\n%s", model.View())
+	}
+	model = typeInitProfileV2Text(t, model, "claude-haiku-custom")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierMedium))
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierLarge))
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.ModelMapSet {
+		t.Fatal("draft.ModelMapSet = false, want model map edits staged")
+	}
+	want := config.ModelMap{
+		string(config.ModelTierSmall): "claude-haiku-custom",
+	}
+	if !reflect.DeepEqual(draft.ModelMap, want) {
+		t.Fatalf("draft.ModelMap = %#v, want %#v", draft.ModelMap, want)
+	}
+}
+
+func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"claude-work": {
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		"openai-work": {
+			Preset:   initLLMRuntimePresetOpenAIAPIKey,
+			Provider: config.LLMProviderOpenAI,
+			Auth:     config.LLMAuthAPIKey,
+			Adapter:  config.LLMAdapterOpenAIAPI,
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap("monit", "github.com/SignalFT", llmRuntimes, "claude-work"), 160, 24)
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "" {
+		t.Fatalf("initial small model = %q, want unmapped Claude small model", got)
+	}
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-4-6" {
+		t.Fatalf("initial medium model = %q, want Claude built-in", got)
+	}
+
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldLLMRuntime, "openai-work")
+
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "gpt-5.4-mini" {
+		t.Fatalf("small model after runtime change = %q, want OpenAI built-in", got)
+	}
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-5.4" {
+		t.Fatalf("medium model after runtime change = %q, want OpenAI built-in", got)
+	}
+	smallIndex := model.document.fieldIndexByID(initProfileV2FieldModelMap(config.ModelTierSmall))
+	if smallIndex < 0 || !strings.Contains(model.document[smallIndex].Description, "Built-in small model for this runtime: gpt-5.4-mini.") {
+		t.Fatalf("small model description after runtime change = %q", model.document[smallIndex].Description)
+	}
+}
+
 func updateInitProfileV2ReadOnlyModel(t *testing.T, model initProfileV2ReadOnlyModel, msg tea.Msg) initProfileV2ReadOnlyModel {
 	t.Helper()
 	updated, _ := model.Update(msg)
@@ -9993,6 +10069,57 @@ func newTestInitProfileV2EditorWithSelections(profileName string, routeText stri
 		ReviewerEntities: reviewerEntities,
 		LLMRuntimes:      llmRuntimes,
 		Document:         document,
+	}
+}
+
+func newTestInitProfileV2EditorWithModelMap(profileName string, routeText string, llm config.LLMConfig, modelMap config.ModelMap) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		LLMProvider:         string(llm.Provider),
+		LLMAuth:             string(llm.Auth),
+		LLMAdapter:          string(llm.Adapter),
+		ModelMap:            copyModelMap(modelMap),
+	}
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	initProfileV2AppendModelMapSection(&document, llm, modelMap)
+	return initProfileV2Editor{
+		Draft:    draft,
+		Document: document,
+	}
+}
+
+func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeText string, llmRuntimes map[string]initLLMRuntimeDraft, selectedRuntime string) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		LLMProvider:         string(config.LLMProviderAnthropic),
+		LLMAuth:             string(config.LLMAuthSubscription),
+		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+	}
+	if runtime, ok := llmRuntimes[selectedRuntime]; ok {
+		draft.LLMProvider = string(runtime.Provider)
+		draft.LLMAuth = string(runtime.Auth)
+		draft.LLMAdapter = string(runtime.Adapter)
+	}
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	llmRuntimeOptions, normalizedRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, selectedRuntime, draft)
+	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, normalizedRuntime)
+	initProfileV2AppendModelMapSection(&document, initProfileEditorModelMapLLM(draft, normalizedRuntime, llmRuntimes), draft.ModelMap)
+	return initProfileV2Editor{
+		Draft:       draft,
+		LLMRuntimes: llmRuntimes,
+		Document:    document,
 	}
 }
 
