@@ -8088,6 +8088,101 @@ func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *test
 	}
 }
 
+func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": existing,
+		},
+	}
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	session := initSessionDraft{
+		path:                 path,
+		originalCfg:          cloneInitConfigFile(cfg),
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: "work",
+	}
+	calls := 0
+	var reentryCtx initPromptContext
+	policy := config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+		ResolveAfter:     "24h",
+	}
+	deps := initDeps{
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			calls++
+			if calls == 2 {
+				reentryCtx = ctx
+				return initDraft{}, errInitNavigateBack
+			}
+			work := ctx.ExistingConfig.Profiles["work"]
+			draft := seedInteractiveInitDraft("work", "work", "work", &work)
+			draft.GitCredentialRef = "codereview/custom-work-git"
+			draft.LLMProvider = string(config.LLMProviderOpenAI)
+			draft.LLMAuth = string(config.LLMAuthSubscription)
+			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
+			draft.LLMReviewerModelTier = string(config.ModelTierMedium)
+			draft.RoutesSet = true
+			draft.Routes = []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			}}
+			draft.ModelMapSet = true
+			draft.ModelMap = config.ModelMap{"medium": "gpt-custom"}
+			draft.AgentSourcesSet = true
+			draft.AgentSources = []string{"/tmp/agents", "/tmp/agents/../agents"}
+			draft.ReviewPolicySet = true
+			draft.ReviewPolicy = policy
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		clipboardSupported: func() bool { return false },
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+	}
+
+	next, err := loopInteractiveInitProfileV2(&cobra.Command{}, opts, initOptions{}, deps, session)
+	if err != nil {
+		t.Fatalf("loopInteractiveInitProfileV2: %v", err)
+	}
+	profile := next.cfg.Profiles["work"]
+	if profile.Git.CredentialRef != "codereview/custom-work-git" {
+		t.Fatalf("git ref = %q, want custom v2 git label", profile.Git.CredentialRef)
+	}
+	if profile.LLM.Provider != config.LLMProviderOpenAI || profile.LLM.Adapter != config.LLMAdapterCodexCLI || profile.LLM.ReviewerModelTier != config.ModelTierMedium {
+		t.Fatalf("llm = %#v, want v2 runtime/model-tier edits", profile.LLM)
+	}
+	if !reflect.DeepEqual(profile.LLM.ModelMap, config.ModelMap{"medium": "gpt-custom"}) {
+		t.Fatalf("model_map = %#v, want v2 model-map edit", profile.LLM.ModelMap)
+	}
+	if !reflect.DeepEqual(profile.AgentSources, []string{"/tmp/agents"}) {
+		t.Fatalf("agent_sources = %#v, want normalized v2 agent sources", profile.AgentSources)
+	}
+	if profile.ReviewPolicy != policy {
+		t.Fatalf("review_policy = %#v, want %#v", profile.ReviewPolicy, policy)
+	}
+	if len(next.cfg.RepositoryProfiles) != 1 || next.cfg.RepositoryProfiles[0].Profile != "work" || next.cfg.RepositoryProfiles[0].Match.Repos[0] != "codereview-cli" {
+		t.Fatalf("repository_profiles = %#v, want v2 route edit", next.cfg.RepositoryProfiles)
+	}
+	reentryProfile := reentryCtx.ExistingConfig.Profiles["work"]
+	if reentryProfile.Git.CredentialRef != "codereview/custom-work-git" || !reflect.DeepEqual(reentryProfile.AgentSources, []string{"/tmp/agents"}) {
+		t.Fatalf("reentry profile = %#v, want staged v2 detail edits", reentryProfile)
+	}
+}
+
 func TestInitInteractiveModelMapAddEditRemoveAndReset(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -10340,6 +10435,86 @@ func TestBubbleTeaInitProfileV2PrompterReturnsStagedDraft(t *testing.T) {
 	}
 	if draft.ProfileName != "monit-next" {
 		t.Fatalf("draft.ProfileName = %q, want staged draft from editor", draft.ProfileName)
+	}
+}
+
+func TestBubbleTeaInitProfileV2PrompterBootstrapsRuntimeBeforeStaging(t *testing.T) {
+	profile := basicProfile("monit")
+	editorCalls := 0
+	llmPromptCalled := false
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "monit",
+					Title: "monit",
+				},
+			}, nil
+		},
+		profileEditorRunner: func(editor initProfileV2Editor) (initProfileV2EditorResult, error) {
+			editorCalls++
+			switch editorCalls {
+			case 1:
+				if len(editor.LLMRuntimes) != 0 {
+					t.Fatalf("initial editor runtimes = %#v, want first-run no-runtime state", editor.LLMRuntimes)
+				}
+				return initProfileV2EditorResult{BootstrapLLMRuntime: true}, nil
+			case 2:
+				if got := editor.Document.selectedValue(initProfileV2FieldLLMRuntime); got != "codex-cli" {
+					t.Fatalf("selected LLM runtime after bootstrap = %q, want codex-cli", got)
+				}
+				runtime, ok := editor.LLMRuntimes["codex-cli"]
+				if !ok {
+					t.Fatalf("editor runtimes = %#v, want staged codex-cli runtime", editor.LLMRuntimes)
+				}
+				if runtime.Provider != config.LLMProviderOpenAI || runtime.Adapter != config.LLMAdapterCodexCLI {
+					t.Fatalf("runtime = %#v, want Codex CLI subscription runtime", runtime)
+				}
+				draft, err := newInitProfileV2ReadOnlyModel(editor, 160, 24).validatedDraft()
+				if err != nil {
+					t.Fatalf("validatedDraft after bootstrap: %v", err)
+				}
+				return initProfileV2EditorResult{StageProfile: true, Draft: draft}, nil
+			default:
+				t.Fatalf("unexpected editor call %d", editorCalls)
+				return initProfileV2EditorResult{}, nil
+			}
+		},
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmPromptCalled = true
+			if len(prompt.Context.LLMRuntimes) != 0 {
+				t.Fatalf("bootstrap prompt runtimes = %#v, want empty first-run inventory", prompt.Context.LLMRuntimes)
+			}
+			return initDraft{
+				LLMProvider:      string(config.LLMProviderOpenAI),
+				LLMAuth:          string(config.LLMAuthSubscription),
+				LLMAdapter:       string(config.LLMAdapterCodexCLI),
+				LLMCredentialRef: "",
+			}, nil
+		}),
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "monit",
+		ExistingProfileName:  "monit",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"monit"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"monit": profile}},
+		LLMRuntimes:          map[string]initLLMRuntimeDraft{},
+		ProfileLLMRuntimes:   map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !llmPromptCalled {
+		t.Fatal("llmRuntimePrompter was not called")
+	}
+	if editorCalls != 2 {
+		t.Fatalf("editorCalls = %d, want bootstrap editor then staged editor", editorCalls)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
+		t.Fatalf("draft LLM = (%q,%q), want staged bootstrap runtime", draft.LLMProvider, draft.LLMAdapter)
 	}
 }
 
