@@ -9978,6 +9978,50 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 	}
 }
 
+func TestInitProfileV2AgentSourcesTextareaDraftsNormalizedSources(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithAgentSources("monit", "github.com/SignalFT", []string{"/tmp/agents-old"}), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldAgentSources)
+	if !strings.Contains(model.View(), "ctrl+j newline") {
+		t.Fatalf("view missing textarea newline help:\n%s", model.View())
+	}
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "/tmp/agents-alpha")
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlJ})
+	model = typeInitProfileV2Text(t, model, "/tmp/agents-alpha/../agents-alpha")
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlJ})
+	model = typeInitProfileV2Text(t, model, " ./agents-beta ")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.AgentSourcesSet {
+		t.Fatal("draft.AgentSourcesSet = false, want agent-source edits staged")
+	}
+	want := []string{"/tmp/agents-alpha", "agents-beta"}
+	if !reflect.DeepEqual(draft.AgentSources, want) {
+		t.Fatalf("draft.AgentSources = %#v, want %#v", draft.AgentSources, want)
+	}
+}
+
+func TestInitProfileV2AgentSourcesEnterMovesFocusWithoutDestroyingNavigation(t *testing.T) {
+	editor := newTestInitProfileV2EditorWithAgentSources("monit", "github.com/SignalFT", nil)
+	editor.Document.addEditableInput(initProfileV2FieldID("after_agent_sources"), "After agent sources", "", "next", nil)
+	model := newInitProfileV2ReadOnlyModel(editor, 48, 10)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldAgentSources)
+	model = typeInitProfileV2Text(t, model, strings.Repeat("/tmp/very-long-agent-source-path/", 5))
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if got := model.document[model.focused].Title; got != "After agent sources" {
+		t.Fatalf("focused field = %q, want next field after textarea", got)
+	}
+	if !strings.Contains(model.View(), "After agent sources") {
+		t.Fatalf("view missing next field after leaving long textarea:\n%s", model.View())
+	}
+}
+
 func updateInitProfileV2ReadOnlyModel(t *testing.T, model initProfileV2ReadOnlyModel, msg tea.Msg) initProfileV2ReadOnlyModel {
 	t.Helper()
 	updated, _ := model.Update(msg)
@@ -10120,6 +10164,28 @@ func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeT
 		Draft:       draft,
 		LLMRuntimes: llmRuntimes,
 		Document:    document,
+	}
+}
+
+func newTestInitProfileV2EditorWithAgentSources(profileName string, routeText string, agentSources []string) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		LLMProvider:         string(config.LLMProviderAnthropic),
+		LLMAuth:             string(config.LLMAuthSubscription),
+		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+		AgentSources:        append([]string(nil), agentSources...),
+	}
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	initProfileV2AppendAgentSourcesSection(&document, agentSources)
+	return initProfileV2Editor{
+		Draft:    draft,
+		Document: document,
 	}
 }
 

@@ -248,7 +248,11 @@ func (m initProfileV2ReadOnlyModel) View() string {
 	if m.quitting {
 		return ""
 	}
-	return m.viewport.View() + "\n\nup/down focus - enter next - shift+tab previous - left/right change select - esc back"
+	help := "up/down focus - enter next - shift+tab previous - left/right change select - esc back"
+	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Kind == initProfileV2FieldTextarea {
+		help = "up/down focus - enter next - shift+tab previous - ctrl+j newline - esc back"
+	}
+	return m.viewport.View() + "\n\n" + help
 }
 
 func initProfileV2ReadOnlyContent(ctx initPromptContext, selection string) (string, error) {
@@ -348,9 +352,10 @@ type initProfileV2FieldKind string
 type initProfileV2FieldID string
 
 const (
-	initProfileV2FieldSection initProfileV2FieldKind = "section"
-	initProfileV2FieldInput   initProfileV2FieldKind = "input"
-	initProfileV2FieldSelect  initProfileV2FieldKind = "select"
+	initProfileV2FieldSection  initProfileV2FieldKind = "section"
+	initProfileV2FieldInput    initProfileV2FieldKind = "input"
+	initProfileV2FieldSelect   initProfileV2FieldKind = "select"
+	initProfileV2FieldTextarea initProfileV2FieldKind = "textarea"
 )
 
 const (
@@ -362,6 +367,7 @@ const (
 	initProfileV2FieldReviewerEntity    initProfileV2FieldID = "reviewer_entity"
 	initProfileV2FieldLLMRuntime        initProfileV2FieldID = "llm_runtime"
 	initProfileV2FieldReviewerModelTier initProfileV2FieldID = "reviewer_model_tier"
+	initProfileV2FieldAgentSources      initProfileV2FieldID = "agent_sources"
 )
 
 func initProfileV2FieldModelMap(tier config.ModelTier) initProfileV2FieldID {
@@ -449,7 +455,7 @@ func initProfileV2AppendModelMapSection(document *initProfileV2Document, llm con
 
 func initProfileV2AppendAgentSourcesSection(document *initProfileV2Document, sources []string) {
 	document.addSection("Additional reviewer-agent directories (optional)", "Add local directories that contain custom reviewer agent definitions for this profile. These profile-specific directories are loaded alongside repo-local agents under <repo>/.codereview/agents and any per-run --agents-dir sources.")
-	document.addInput("Additional trusted reviewer-agent directories", "Paths are deduplicated and normalized before save.", strings.Join(sources, "\n"))
+	document.addEditableTextarea(initProfileV2FieldAgentSources, "Additional trusted reviewer-agent directories", "Paths are deduplicated and normalized before save.", strings.Join(sources, "\n"))
 }
 
 func initProfileV2AppendReviewPolicySection(document *initProfileV2Document, policy config.ReviewPolicy) {
@@ -487,16 +493,20 @@ func (d *initProfileV2Document) addSection(title, description string) {
 }
 
 func (d *initProfileV2Document) addInput(title, description, value string) {
-	d.addInputField("", title, description, value, false, nil, initProfileV2FieldOptions{})
+	d.addInputField(initProfileV2FieldInput, "", title, description, value, false, nil, initProfileV2FieldOptions{})
 }
 
 func (d *initProfileV2Document) addEditableInput(id initProfileV2FieldID, title, description, value string, validate func(string) error, options ...initProfileV2FieldOptions) {
-	d.addInputField(id, title, description, value, true, validate, mergedInitProfileV2FieldOptions(options))
+	d.addInputField(initProfileV2FieldInput, id, title, description, value, true, validate, mergedInitProfileV2FieldOptions(options))
 }
 
-func (d *initProfileV2Document) addInputField(id initProfileV2FieldID, title, description, value string, editable bool, validate func(string) error, options initProfileV2FieldOptions) {
+func (d *initProfileV2Document) addEditableTextarea(id initProfileV2FieldID, title, description, value string) {
+	d.addInputField(initProfileV2FieldTextarea, id, title, description, value, true, nil, initProfileV2FieldOptions{})
+}
+
+func (d *initProfileV2Document) addInputField(kind initProfileV2FieldKind, id initProfileV2FieldID, title, description, value string, editable bool, validate func(string) error, options initProfileV2FieldOptions) {
 	*d = append(*d, initProfileV2Field{
-		Kind:        initProfileV2FieldInput,
+		Kind:        kind,
 		ID:          id,
 		Title:       title,
 		Description: description,
@@ -628,8 +638,14 @@ func (m *initProfileV2ReadOnlyModel) handleFocusedInputKey(msg tea.KeyMsg) bool 
 		return false
 	}
 	field := &m.document[m.focused]
-	if field.Kind != initProfileV2FieldInput || !field.Editable {
+	if (field.Kind != initProfileV2FieldInput && field.Kind != initProfileV2FieldTextarea) || !field.Editable {
 		return false
+	}
+	if field.Kind == initProfileV2FieldTextarea && (msg.String() == "ctrl+j" || msg.String() == "alt+enter") {
+		field.Value = initProfileV2InsertRunes(field.Value, field.Cursor, []rune{'\n'})
+		field.Cursor++
+		m.afterFieldChange(m.focused)
+		return true
 	}
 	key := tea.Key(msg)
 	//nolint:exhaustive // The text input consumes only editing keys; all other keys fall through to form navigation.
@@ -804,6 +820,14 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 		draft.ModelMapSet = true
 		draft.ModelMap = initProfileV2ModelMapFromDocument(llm, m.document)
 	}
+	if m.document.fieldIndexByID(initProfileV2FieldAgentSources) >= 0 {
+		agentSources, err := normalizeInitAgentSources(initProfileV2AgentSourcesFromDocument(m.document))
+		if err != nil {
+			return draft, err
+		}
+		draft.AgentSourcesSet = true
+		draft.AgentSources = agentSources
+	}
 	draft.RoutesSet = true
 	draft.Routes = routes
 	return draft, nil
@@ -878,6 +902,14 @@ func initProfileV2ModelMapFromDocument(llm config.LLMConfig, document initProfil
 		values[tier] = &value
 	}
 	return initModelMapFromEditorValues(llm, values)
+}
+
+func initProfileV2AgentSourcesFromDocument(document initProfileV2Document) []string {
+	value := document.fieldValue(initProfileV2FieldAgentSources)
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.FieldsFunc(value, func(r rune) bool { return r == '\n' || r == '\r' })
 }
 
 func (m *initProfileV2ReadOnlyModel) setFieldValue(id initProfileV2FieldID, value string) {
@@ -970,7 +1002,7 @@ func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, fo
 	}
 	switch field.Kind {
 	case initProfileV2FieldSection:
-	case initProfileV2FieldInput:
+	case initProfileV2FieldInput, initProfileV2FieldTextarea:
 		value := field.Value
 		if focused && field.Editable {
 			value = initProfileV2ValueWithCursor(value, field.Cursor)
