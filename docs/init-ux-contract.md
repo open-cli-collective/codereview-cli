@@ -81,9 +81,10 @@ The intended top-level shape is:
 1. Configure LLM runtimes
 2. Configure reviewer entities
 3. Configure review profiles
-4. Review global settings
-5. Commit staged changes and exit
-6. Discard staged changes and exit
+4. Configure global settings
+5. Configure secrets management
+6. Commit staged changes and exit
+7. Discard staged changes and exit
 
 This ordering is intentional:
 
@@ -94,6 +95,9 @@ This ordering is intentional:
   configurations.
 - Global settings stay visible but conceptually separate from the core
   identity/runtime/profile model.
+- Secrets management stays top-level because it affects where credentials live,
+  but it should not be confused with the credential refs inside a review
+  profile.
 
 ## First-Run Behavior
 
@@ -269,10 +273,10 @@ Instead:
 Global settings belong in an optional top-level area, not in the main profile
 assembly path.
 
-The initial area should cover:
+The top-level auxiliary areas should cover:
 
-- keyring backend behavior
-- run-data retention behavior
+- global settings for run-data retention behavior
+- secrets-management settings for credential-store/backend behavior
 
 These settings matter, but they are not part of the primary
 `Git scope + reviewer entity + LLM runtime = review profile` model.
