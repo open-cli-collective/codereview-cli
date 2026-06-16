@@ -366,6 +366,42 @@ func TestConfigSecretsProfileGetAndDefaultGetJSON(t *testing.T) {
 	}
 }
 
+func TestConfigSecretsProfileDefaultGetProjectedLegacy(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = config.SecretsConfig{}
+	path := saveTestConfig(t, cfg)
+
+	cmd, out := newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get"}); err != nil {
+		t.Fatalf("Execute text: %v", err)
+	}
+	wantText := "Default secrets profile: legacy-default\nLabel: Legacy default\nBackend: memory\nSource: projected_legacy\n"
+	if out.String() != wantText {
+		t.Fatalf("default get text = %q, want %q", out.String(), wantText)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get", "--json"}); err != nil {
+		t.Fatalf("Execute JSON: %v", err)
+	}
+	wantJSON := view.ConfigSecretsProfileDefault{
+		DefaultProfile: &view.ConfigSecretsProfile{
+			ID:        "legacy-default",
+			Label:     "Legacy default",
+			Backend:   "memory",
+			Source:    "projected_legacy",
+			IsDefault: true,
+		},
+	}
+	var got view.ConfigSecretsProfileDefault
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal projected legacy JSON: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(got, wantJSON) {
+		t.Fatalf("default get JSON = %#v, want %#v", got, wantJSON)
+	}
+}
+
 func TestConfigSecretsProfileDefaultGetReportsNoneForValidUnsetState(t *testing.T) {
 	cfg := testConfig()
 	cfg.Secrets = config.SecretsConfig{
@@ -433,6 +469,42 @@ func TestConfigSecretsProfileSetCreateUpdateAndPreserveUnrelatedConfig(t *testin
 	}
 	if got := saved.Secrets.Profiles["personal-keychain"]; got.Label != "" || got.Backend.Kind != "file" {
 		t.Fatalf("updated secrets profile = %#v, want cleared label + file backend", got)
+	}
+
+	cmd, out = newTestCommand(path)
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal-keychain", "--label", " Renamed profile "}); err != nil {
+		t.Fatalf("Execute label-only update: %v", err)
+	}
+	wantText = "Secrets profile: personal-keychain\nLabel: Renamed profile\nBackend: file\nSource: configured\nDefault: false\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout after label-only update = %q, want %q", out.String(), wantText)
+	}
+	saved, err = config.Load(path)
+	if err != nil {
+		t.Fatalf("Load after label-only update: %v", err)
+	}
+	if got := saved.Secrets.Profiles["personal-keychain"]; got.Label != "Renamed profile" || got.Backend.Kind != "file" {
+		t.Fatalf("label-only update profile = %#v, want renamed label + preserved backend", got)
+	}
+}
+
+func TestConfigSecretsProfileSetCreateWithoutLabel(t *testing.T) {
+	path := saveTestConfig(t, testConfig())
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal-keychain", "--backend", "keychain"}); err != nil {
+		t.Fatalf("Execute create without label: %v", err)
+	}
+	wantText := "Secrets profile: personal-keychain\nBackend: keychain\nSource: configured\nDefault: false\n"
+	if out.String() != wantText {
+		t.Fatalf("stdout = %q, want %q", out.String(), wantText)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := saved.Secrets.Profiles["personal-keychain"]; got.Label != "" || got.Backend.Kind != "keychain" {
+		t.Fatalf("saved profile = %#v, want empty label + keychain backend", got)
 	}
 }
 
