@@ -1990,6 +1990,39 @@ func TestSharedWorkstreamModel(t *testing.T) {
 	}
 }
 
+func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
+	in, out := 1_000_000, 1_000_000
+
+	// Known model, adapter reported no cost → estimate is filled and marked.
+	draft := sessionDraft{
+		model:    "claude-sonnet-4-6",
+		response: llm.Response{Usage: llm.Usage{TokensIn: &in, TokensOut: &out}},
+	}
+	w := workstreamUsage("policies:conventions", draft)
+	if w.CostUSD == nil || !w.CostEstimated {
+		t.Fatalf("expected estimated cost; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
+	}
+	if want := 18.0; *w.CostUSD < want-1e-6 || *w.CostUSD > want+1e-6 { // 1M*$3 + 1M*$15
+		t.Fatalf("cost = %v, want %v", *w.CostUSD, want)
+	}
+
+	// Unknown model (any agent's model) → no estimate, cost stays unavailable.
+	draft.model = "vendor/unknown-model"
+	w = workstreamUsage("x:y", draft)
+	if w.CostUSD != nil || w.CostEstimated {
+		t.Fatalf("unknown model should not be estimated; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
+	}
+
+	// Adapter reported a real cost → passes through, not marked estimated.
+	real := 9.99
+	draft.model = "claude-sonnet-4-6"
+	draft.response.Usage.CostUSD = &real
+	w = workstreamUsage("z:w", draft)
+	if w.CostUSD == nil || *w.CostUSD != real || w.CostEstimated {
+		t.Fatalf("real cost should pass through unmarked; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
+	}
+}
+
 func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 	agentID := "harness:alpha"
 	inputs := planRunInputs{
