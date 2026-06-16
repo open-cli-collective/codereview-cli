@@ -7630,10 +7630,6 @@ func TestHuhInitRetentionPrompterAccessibleShowsFields(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitRetentionPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Stage retention settings
-			"",  // keep default 90 days
-			"",  // custom days unused
-			"2", // manual only
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -7646,12 +7642,108 @@ func TestHuhInitRetentionPrompterAccessibleShowsFields(t *testing.T) {
 	if !edit.Apply {
 		t.Fatal("edit.Apply = false, want true")
 	}
+	if edit.Retention.MaxAgeDaysValue() != config.DefaultRetentionConfig().MaxAgeDaysValue() {
+		t.Fatalf("MaxAgeDaysValue = %d, want default %d for omitted retention config", edit.Retention.MaxAgeDaysValue(), config.DefaultRetentionConfig().MaxAgeDaysValue())
+	}
 	out := stderr.String()
-	if !strings.Contains(out, "Maximum run-data age") || !strings.Contains(out, "Retention enforcement") {
+	if !strings.Contains(out, "Maximum run-data age in days") || !strings.Contains(out, "Run data") {
 		t.Fatalf("stderr = %q, want retention fields", out)
 	}
-	if !strings.Contains(out, "Back without staging") {
-		t.Fatalf("stderr = %q, want retention Back option", out)
+	if !strings.Contains(out, "local record of review runs and related artifacts/logs") {
+		t.Fatalf("stderr = %q, want explanatory run-data note", out)
+	}
+	if strings.Contains(out, "Stage retention settings") || strings.Contains(out, "Default 90 days") || strings.Contains(out, "Keep forever") || strings.Contains(out, "Custom days") || strings.Contains(out, "Custom max age in days") || strings.Contains(out, "Retention enforcement") {
+		t.Fatalf("stderr = %q, want removed retention mode-selector copy absent", out)
+	}
+}
+
+func TestHuhInitRetentionPrompterXtermBlankResetsToDefault(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitRetentionPrompter{
+		stdin:  strings.NewReader("\x15\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	thirty := 30
+	edit, err := prompter.EditRetention(initRetentionPrompt{
+		Retention: config.RetentionConfig{
+			MaxAgeDays: &thirty,
+			Enforcement: config.RetentionManualOnly,
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditRetention: %v", err)
+	}
+	if edit.Retention.MaxAgeDaysValue() != config.DefaultRetentionConfig().MaxAgeDaysValue() {
+		t.Fatalf("MaxAgeDaysValue = %d, want default %d after blank reset", edit.Retention.MaxAgeDaysValue(), config.DefaultRetentionConfig().MaxAgeDaysValue())
+	}
+	if edit.Retention.Enforcement != config.RetentionManualOnly {
+		t.Fatalf("Enforcement = %q, want preserved manual_only", edit.Retention.Enforcement)
+	}
+}
+
+func TestHuhInitRetentionPrompterXtermKeepsForeverPrefill(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitRetentionPrompter{
+		stdin:  strings.NewReader("\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	forever := 0
+	edit, err := prompter.EditRetention(initRetentionPrompt{
+		Retention: config.RetentionConfig{
+			MaxAgeDays: &forever,
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditRetention: %v", err)
+	}
+	if edit.Retention.MaxAgeDaysValue() != 0 {
+		t.Fatalf("MaxAgeDaysValue = %d, want preserved keep-forever 0", edit.Retention.MaxAgeDaysValue())
+	}
+}
+
+func TestHuhInitRetentionPrompterBackReturnsNavigateBack(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitRetentionPrompter{
+		stdin:  strings.NewReader("\x1b"),
+		stderr: &bytes.Buffer{},
+	}
+
+	_, err := prompter.EditRetention(initRetentionPrompt{Retention: config.RetentionConfig{}})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditRetention error = %v, want errInitNavigateBack", err)
+	}
+}
+
+func TestValidateRetentionMaxAgeDaysUsesCurrentFieldCopy(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "non-number",
+			value: "abc",
+			want:  "maximum run-data age in days must be a whole number",
+		},
+		{
+			name:  "negative",
+			value: "-1",
+			want:  "maximum run-data age in days must be non-negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRetentionMaxAgeDays(tt.value)
+			if err == nil {
+				t.Fatalf("validateRetentionMaxAgeDays(%q) error = nil, want %q", tt.value, tt.want)
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("validateRetentionMaxAgeDays(%q) error = %q, want %q", tt.value, err.Error(), tt.want)
+			}
+		})
 	}
 }
 

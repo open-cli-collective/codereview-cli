@@ -567,14 +567,6 @@ const (
 	initCredentialSecretActionBack   initCredentialSecretAction = "back"
 )
 
-type initRetentionMaxAgeMode string
-
-const (
-	initRetentionMaxAgeDefault initRetentionMaxAgeMode = "default"
-	initRetentionMaxAgeForever initRetentionMaxAgeMode = "forever"
-	initRetentionMaxAgeCustom  initRetentionMaxAgeMode = "custom"
-)
-
 type initSecretSource string
 
 const (
@@ -3290,87 +3282,44 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 }
 
 func (p huhInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
-	action := initDetailActionEdit
 	retention := prompt.Retention
-	mode := initRetentionMaxAgeDefault
-	customDays := ""
-	switch {
-	case retention.MaxAgeDays != nil && *retention.MaxAgeDays == 0:
-		mode = initRetentionMaxAgeForever
-	case retention.MaxAgeDays != nil && *retention.MaxAgeDays != config.DefaultRetentionConfig().MaxAgeDaysValue():
-		mode = initRetentionMaxAgeCustom
-		customDays = fmt.Sprintf("%d", *retention.MaxAgeDays)
-	}
-	enforcement := string(retention.Enforcement)
-	if enforcement == "" {
-		enforcement = string(config.RetentionAtWrite)
+	maxAgeDays := fmt.Sprintf("%d", retention.MaxAgeDaysValue())
+	if retention.MaxAgeDays == nil {
+		maxAgeDays = fmt.Sprintf("%d", config.DefaultRetentionConfig().MaxAgeDaysValue())
 	}
 	form := huh.NewForm(
 		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Retention action").
-				Options(
-					huh.NewOption("Stage retention settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
-		).Title("Retention"),
-		huh.NewGroup(
-			huh.NewSelect[initRetentionMaxAgeMode]().
-				Title("Maximum run-data age").
-				Options(
-					huh.NewOption("Default 90 days", initRetentionMaxAgeDefault),
-					huh.NewOption("Keep forever", initRetentionMaxAgeForever),
-					huh.NewOption("Custom days", initRetentionMaxAgeCustom),
-				).
-				Value(&mode),
+			huh.NewNote().
+				Title("Run data").
+				Description("Run data is cr's local record of review runs and related artifacts/logs. Retention controls how long old posted-review run data is kept locally."),
 			huh.NewInput().
-				Title("Custom max age in days").
-				Description("Required only when using a custom max age. Use 0 from the mode selector for keep forever.").
-				Value(&customDays).
-				Validate(func(value string) error {
-					if mode != initRetentionMaxAgeCustom {
-						return nil
-					}
-					return validateRetentionMaxAgeDays(value)
-				}),
-			huh.NewSelect[string]().
-				Title("Retention enforcement").
-				Options(
-					huh.NewOption("At write", string(config.RetentionAtWrite)),
-					huh.NewOption("Manual only", string(config.RetentionManualOnly)),
-				).
-				Value(&enforcement),
-		).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("Retention"),
+				Title("Maximum run-data age in days").
+				Description("How long cr keeps local run metadata and artifacts from posted reviews. Use 0 to keep posted-review run data indefinitely. Leave blank to reset to 90 days.").
+				Value(&maxAgeDays).
+				Validate(validateInteractiveRetentionMaxAgeDaysField),
+		).Title("Retention"),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
 		return initRetentionEdit{}, err
 	}
-	if back || action == initDetailActionBack {
+	if back {
 		return initRetentionEdit{}, errInitNavigateBack
 	}
 	next := config.RetentionConfig{
-		Enforcement: config.RetentionEnforcement(strings.TrimSpace(enforcement)),
+		Enforcement: retention.Enforcement,
 	}
-	switch mode {
-	case initRetentionMaxAgeDefault:
+	value := strings.TrimSpace(maxAgeDays)
+	if value == "" {
 		defaultDays := config.DefaultRetentionConfig().MaxAgeDaysValue()
 		next.MaxAgeDays = &defaultDays
-	case initRetentionMaxAgeForever:
-		keepForever := 0
-		next.MaxAgeDays = &keepForever
-	case initRetentionMaxAgeCustom:
-		days, err := parseInteractiveRetentionMaxAgeDays(customDays)
-		if err != nil {
-			return initRetentionEdit{}, err
-		}
-		next.MaxAgeDays = &days
-	default:
-		return initRetentionEdit{}, fmt.Errorf("unsupported retention max-age mode %q", mode)
+		return initRetentionEdit{Apply: true, Retention: next}, nil
 	}
+	days, err := parseInteractiveRetentionMaxAgeDays(value)
+	if err != nil {
+		return initRetentionEdit{}, err
+	}
+	next.MaxAgeDays = &days
 	return initRetentionEdit{Apply: true, Retention: next}, nil
 }
 
@@ -3506,17 +3455,24 @@ func validateRetentionMaxAgeDays(value string) error {
 	return err
 }
 
+func validateInteractiveRetentionMaxAgeDaysField(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return validateRetentionMaxAgeDays(value)
+}
+
 func parseInteractiveRetentionMaxAgeDays(value string) (int, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return 0, fmt.Errorf("custom max age is required")
+		return 0, fmt.Errorf("maximum run-data age in days is required")
 	}
 	days, err := strconv.Atoi(trimmed)
 	if err != nil {
-		return 0, fmt.Errorf("custom max age must be a whole number")
+		return 0, fmt.Errorf("maximum run-data age in days must be a whole number")
 	}
 	if days < 0 {
-		return 0, fmt.Errorf("custom max age must be non-negative")
+		return 0, fmt.Errorf("maximum run-data age in days must be non-negative")
 	}
 	return days, nil
 }
