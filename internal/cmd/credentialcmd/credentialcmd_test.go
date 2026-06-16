@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -9560,6 +9561,84 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"Git secrets storage label",
 		"Profile action",
 	)
+}
+
+func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *testing.T) {
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addInput("Profile name", "", "open-cli-collective")
+	initProfileV2AppendRouteSection(&document, "github.com/open-cli-collective")
+	initProfileV2AddSelect(&document, "Reviewer entity", "Choose who posts review events.", []huh.Option[string]{
+		huh.NewOption("Post using this profile's Git account (GitHub PAT)", "profile"),
+	}, "profile")
+
+	model := newInitProfileV2ReadOnlyModel(document, 240, 19)
+	routeIndex := document.fieldIndexByTitle("Route entries")
+	if routeIndex < 0 {
+		t.Fatal("Route entries field missing")
+	}
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if model.focused != routeIndex {
+		t.Fatalf("focused index = %d, want route entries index %d", model.focused, routeIndex)
+	}
+	if model.viewport.YOffset != 0 {
+		t.Fatalf("viewport YOffset = %d, want unchanged top while route entries are already visible", model.viewport.YOffset)
+	}
+	for _, want := range []string{
+		"Automatic profile selection",
+		"Accepted route formats",
+		"Route entries",
+		"> github.com/open-cli-collective",
+	} {
+		if !strings.Contains(model.View(), want) {
+			t.Fatalf("view missing %q after focusing route entries:\n%s", want, model.View())
+		}
+	}
+}
+
+func TestInitProfileV2LayoutWrapsAndMeasuresSmallViewport(t *testing.T) {
+	var document initProfileV2Document
+	document.addSection("Profile", "This section has enough words to wrap across multiple lines in a narrow terminal.")
+	document.addInput("Profile name", "Short field that should remain measurable.", "monit")
+	document.addInput("Route entries", "Routes tell cr when to use this profile automatically in a narrow viewport.", "github.com/SignalFT")
+	document.addInput("Git secrets storage label", "Useful for advanced deployment scenarios. Leave unchanged if unsure.", "codereview/monit")
+
+	layout := initProfileV2LayoutDocument(document, 32, document.firstFocusableField())
+	if len(layout.Bounds) != len(document) {
+		t.Fatalf("bounds count = %d, want %d", len(layout.Bounds), len(document))
+	}
+	if layout.Lines <= len(document) {
+		t.Fatalf("layout lines = %d, want wrapped content larger than document length %d", layout.Lines, len(document))
+	}
+	for _, line := range strings.Split(layout.Content, "\n") {
+		if len(line) > 32 {
+			t.Fatalf("line length = %d, want <= 32 for %q\n%s", len(line), line, layout.Content)
+		}
+	}
+	for index, bounds := range layout.Bounds {
+		if bounds.Start < 0 || bounds.End <= bounds.Start || bounds.End > layout.Lines {
+			t.Fatalf("bounds[%d] = %#v outside layout with %d lines", index, bounds, layout.Lines)
+		}
+	}
+
+	model := newInitProfileV2ReadOnlyModel(document, 32, 6)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyEnd})
+	bounds := model.layout.Bounds[model.focused]
+	if bounds.Start < model.viewport.YOffset || bounds.Start >= model.viewport.YOffset+model.viewport.Height {
+		t.Fatalf("focused field start line %d not visible in viewport [%d,%d)", bounds.Start, model.viewport.YOffset, model.viewport.YOffset+model.viewport.Height)
+	}
+}
+
+func updateInitProfileV2ReadOnlyModel(t *testing.T, model initProfileV2ReadOnlyModel, msg tea.Msg) initProfileV2ReadOnlyModel {
+	t.Helper()
+	updated, _ := model.Update(msg)
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	return next
 }
 
 func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
