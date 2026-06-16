@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -24,6 +25,18 @@ type bubbleTeaInitProfileV2Prompter struct {
 }
 
 type initProfileV2EditorRunner func(initProfileV2Editor) (initProfileV2EditorResult, error)
+
+var initProfileV2Theme = struct {
+	title    lipgloss.Style
+	selected lipgloss.Style
+	error    lipgloss.Style
+	help     lipgloss.Style
+}{
+	title:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")),
+	selected: lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
+	error:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
+	help:     lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+}
 
 func newBubbleTeaInitProfileV2Prompter(opts *root.Options) initPrompter {
 	return bubbleTeaInitProfileV2Prompter{stdin: opts.Stdin, stderr: opts.Stderr}
@@ -276,7 +289,7 @@ func (m initProfileV2ReadOnlyModel) View() string {
 	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Kind == initProfileV2FieldTextarea {
 		help = "up/down focus - enter next - shift+tab previous - ctrl+j newline - esc back"
 	}
-	return m.viewport.View() + "\n\n" + help
+	return initProfileV2StyleViewport(m.viewport.View()) + "\n\n" + initProfileV2Theme.help.Render(help)
 }
 
 func initProfileV2ReadOnlyContent(ctx initPromptContext, selection string) (string, error) {
@@ -1194,6 +1207,56 @@ func initProfileV2AppendWrappedWithPrefix(lines *[]string, prefix string, text s
 		available = max(width-len(prefix), 1)
 	}
 	*lines = append(*lines, prefix+remaining)
+}
+
+func initProfileV2StyleViewport(raw string) string {
+	lines := strings.Split(raw, "\n")
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "":
+			continue
+		case strings.HasPrefix(trimmed, "! "):
+			lines[index] = initProfileV2Theme.error.Render(line)
+		case strings.HasPrefix(trimmed, "> "):
+			lines[index] = initProfileV2Theme.selected.Render(line)
+		case initProfileV2LooksLikeHeading(trimmed):
+			lines[index] = initProfileV2Theme.title.Render(line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func initProfileV2LooksLikeHeading(line string) bool {
+	switch line {
+	case "Profile",
+		"Profile name",
+		"Automatic profile selection",
+		"Accepted route formats",
+		"Route entries",
+		"Git scope",
+		"Git scope host",
+		"Git scope auth mode",
+		"Reviewer entity",
+		"LLM runtime",
+		"Minimum reviewer model tier",
+		"Model tier mapping",
+		"small model",
+		"medium model",
+		"large model",
+		"Additional reviewer-agent directories (optional)",
+		"Additional trusted reviewer-agent directories",
+		"Review Policy",
+		"Major findings event",
+		"Allow self-approve",
+		"Resolve threads",
+		"Resolve-after duration",
+		"Git secrets storage label",
+		"Profile action":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateInitProfileV2RouteText(value string) error {
