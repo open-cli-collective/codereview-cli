@@ -9710,6 +9710,131 @@ func TestInitProfileV2TextInputsShowLocalErrors(t *testing.T) {
 	})
 }
 
+func TestInitProfileV2GitScopeDefaultPathHidesCustomControls(t *testing.T) {
+	profile := basicProfile("monit")
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"monit": profile,
+		},
+	}
+	gitScopes, profileGitScopes := buildInitGitScopeInventory(cfg)
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+
+	content, err := initProfileV2ReadOnlyContent(initPromptContext{
+		RequestedProfileName:    "monit",
+		ExistingProfileName:     "monit",
+		ExistingProfile:         &profile,
+		ExistingProfileNames:    []string{"monit"},
+		ExistingConfig:          cfg,
+		GitScopes:               gitScopes,
+		ProfileGitScopes:        profileGitScopes,
+		ReviewerEntities:        reviewerEntities,
+		ProfileReviewerEntities: profileReviewerEntities,
+		LLMRuntimes:             llmRuntimes,
+		ProfileLLMRuntimes:      profileLLMRuntimes,
+	}, "monit")
+	if err != nil {
+		t.Fatalf("initProfileV2ReadOnlyContent: %v", err)
+	}
+	for _, absent := range []string{
+		"Choose an existing Git scope",
+		"Git scope host",
+		"Git scope auth mode",
+	} {
+		if strings.Contains(content, absent) {
+			t.Fatalf("content contains %q, want ordinary single-scope profile to keep Git scope controls hidden:\n%s", absent, content)
+		}
+	}
+}
+
+func TestInitProfileV2GitScopePreservesSelectedScopeInDraft(t *testing.T) {
+	gitScopes := map[string]initGitScopeDraft{
+		"gitlab-work": {
+			Host:          "gitlab.com",
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: "codereview/gitlab-work",
+		},
+		"github-work": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/github-work",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
+		"monit",
+		"gitlab.com/SignalFT",
+		"gitlab-work",
+		gitScopes,
+		initDraft{
+			OriginalProfileName: "monit",
+			ProfileName:         "monit",
+			GitHost:             "github.com",
+			GitAuth:             string(config.GitAuthModePAT),
+		},
+	), 160, 24)
+
+	if strings.Contains(model.View(), "Git scope host") {
+		t.Fatalf("view contains custom Git host controls for selected shared scope:\n%s", model.View())
+	}
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModeGitHubApp) || draft.GitCredentialRef != "codereview/gitlab-work" {
+		t.Fatalf("draft Git = (%q,%q,%q), want selected gitlab scope", draft.GitHost, draft.GitAuth, draft.GitCredentialRef)
+	}
+}
+
+func TestInitProfileV2GitScopeCustomEditsDraft(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
+		"monit",
+		"gitlab.com/SignalFT",
+		initCustomGitScopeSelection,
+		nil,
+		initDraft{
+			OriginalProfileName: "monit",
+			ProfileName:         "monit",
+			GitHost:             "github.enterprise",
+			GitAuth:             string(config.GitAuthModeGitHubApp),
+		},
+	), 160, 24)
+
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitHost)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "gitlab.com")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitAuth)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyLeft})
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModePAT) {
+		t.Fatalf("draft Git = (%q,%q), want edited custom Git host/auth", draft.GitHost, draft.GitAuth)
+	}
+}
+
+func TestInitProfileV2GitScopeRejectsRoutesForDifferentHost(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
+		"monit",
+		"github.com/SignalFT",
+		initCustomGitScopeSelection,
+		nil,
+		initDraft{
+			OriginalProfileName: "monit",
+			ProfileName:         "monit",
+			GitHost:             "gitlab.com",
+			GitAuth:             string(config.GitAuthModePAT),
+		},
+	), 160, 24)
+
+	_, err := model.validatedDraft()
+	if err == nil || !strings.Contains(err.Error(), `route host "github.com" does not match selected profile host "gitlab.com"`) {
+		t.Fatalf("validatedDraft error = %v, want route host mismatch", err)
+	}
+}
+
 func updateInitProfileV2ReadOnlyModel(t *testing.T, model initProfileV2ReadOnlyModel, msg tea.Msg) initProfileV2ReadOnlyModel {
 	t.Helper()
 	updated, _ := model.Update(msg)
@@ -9728,6 +9853,18 @@ func typeInitProfileV2Text(t *testing.T, model initProfileV2ReadOnlyModel, text 
 	return model
 }
 
+func focusInitProfileV2Field(t *testing.T, model initProfileV2ReadOnlyModel, id initProfileV2FieldID) initProfileV2ReadOnlyModel {
+	t.Helper()
+	index := model.document.fieldIndexByID(id)
+	if index < 0 {
+		t.Fatalf("field %q missing", id)
+	}
+	model.focused = index
+	model.relayout()
+	model.ensureFocusedVisible()
+	return model
+}
+
 func newTestInitProfileV2Editor(profileName string, routeText string) initProfileV2Editor {
 	var document initProfileV2Document
 	document.addSection("Profile", "")
@@ -9737,8 +9874,24 @@ func newTestInitProfileV2Editor(profileName string, routeText string) initProfil
 		Draft: initDraft{
 			OriginalProfileName: profileName,
 			ProfileName:         profileName,
+			GitHost:             "github.com",
+			GitAuth:             string(config.GitAuthModePAT),
 		},
 		Document: document,
+	}
+}
+
+func newTestInitProfileV2EditorWithGitScope(profileName string, routeText string, selectedGitScope string, gitScopes map[string]initGitScopeDraft, draft initDraft) initProfileV2Editor {
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(gitScopes), draft, true)
+	return initProfileV2Editor{
+		Draft:            draft,
+		GitScopes:        gitScopes,
+		SelectedGitScope: selectedGitScope,
+		Document:         document,
 	}
 }
 

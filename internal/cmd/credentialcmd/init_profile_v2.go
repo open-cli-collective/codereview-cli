@@ -81,12 +81,14 @@ func initProfileV2InventoryRows(ctx initPromptContext) []initInventoryRow {
 }
 
 type initProfileV2ReadOnlyModel struct {
-	viewport viewport.Model
-	draft    initDraft
-	document initProfileV2Document
-	layout   initProfileV2Layout
-	focused  int
-	quitting bool
+	viewport         viewport.Model
+	draft            initDraft
+	gitScopes        map[string]initGitScopeDraft
+	selectedGitScope string
+	document         initProfileV2Document
+	layout           initProfileV2Layout
+	focused          int
+	quitting         bool
 }
 
 func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int) initProfileV2ReadOnlyModel {
@@ -98,11 +100,14 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 	}
 	vp := viewport.New(width, max(height-2, 1))
 	model := initProfileV2ReadOnlyModel{
-		viewport: vp,
-		draft:    editor.Draft,
-		document: editor.Document,
-		focused:  editor.Document.firstFocusableField(),
+		viewport:         vp,
+		draft:            editor.Draft,
+		gitScopes:        maps.Clone(editor.GitScopes),
+		selectedGitScope: editor.SelectedGitScope,
+		document:         editor.Document,
+		focused:          editor.Document.firstFocusableField(),
 	}
+	model.syncGitScopeFields()
 	model.validateAll()
 	model.relayout()
 	model.ensureFocusedVisible()
@@ -123,6 +128,11 @@ func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		if m.handleFocusedInputKey(msg) {
+			m.relayout()
+			m.ensureFocusedVisible()
+			return m, nil
+		}
+		if m.handleFocusedSelectKey(msg) {
 			m.relayout()
 			m.ensureFocusedVisible()
 			return m, nil
@@ -168,7 +178,7 @@ func (m initProfileV2ReadOnlyModel) View() string {
 	if m.quitting {
 		return ""
 	}
-	return m.viewport.View() + "\n\nup/down focus - enter next - shift+tab previous - esc back"
+	return m.viewport.View() + "\n\nup/down focus - enter next - shift+tab previous - left/right change select - esc back"
 }
 
 func initProfileV2ReadOnlyContent(ctx initPromptContext, selection string) (string, error) {
@@ -233,9 +243,7 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	document.addSection("Profile", "")
 	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", draft.ProfileName, validateProfileName)
 	initProfileV2AppendRouteSection(&document, routeText)
-	if selectedGitScope == initCustomGitScopeSelection {
-		initProfileV2AppendCustomGitScopeSection(&document, draft)
-	}
+	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(ctx.GitScopes), draft, selectedGitScope == initCustomGitScopeSelection || len(ctx.GitScopes) > 1)
 	initProfileV2AddSelect(&document, "Reviewer entity", reviewerEntitySelectionDescription(), reviewerEntityOptions, selectedReviewerEntity)
 	initProfileV2AddSelect(&document, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
 	initProfileV2AddSelect(&document, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
@@ -247,7 +255,12 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 		huh.NewOption("Stage profile settings", initDetailActionEdit),
 		huh.NewOption("Back without staging", initDetailActionBack),
 	}, initDetailActionBack)
-	return initProfileV2Editor{Draft: draft, Document: document}, nil
+	return initProfileV2Editor{
+		Draft:            draft,
+		GitScopes:        maps.Clone(ctx.GitScopes),
+		SelectedGitScope: selectedGitScope,
+		Document:         document,
+	}, nil
 }
 
 func initProfileV2Selection(ctx initPromptContext, selection string) (string, *config.Profile, string) {
@@ -271,11 +284,16 @@ const (
 const (
 	initProfileV2FieldProfileName initProfileV2FieldID = "profile_name"
 	initProfileV2FieldRoutes      initProfileV2FieldID = "routes"
+	initProfileV2FieldGitScope    initProfileV2FieldID = "git_scope"
+	initProfileV2FieldGitHost     initProfileV2FieldID = "git_host"
+	initProfileV2FieldGitAuth     initProfileV2FieldID = "git_auth"
 )
 
 type initProfileV2Editor struct {
-	Draft    initDraft
-	Document initProfileV2Document
+	Draft            initDraft
+	GitScopes        map[string]initGitScopeDraft
+	SelectedGitScope string
+	Document         initProfileV2Document
 }
 
 type initProfileV2Document []initProfileV2Field
@@ -290,12 +308,18 @@ type initProfileV2Field struct {
 	Options     []initProfileV2Option
 	Focusable   bool
 	Editable    bool
+	Hidden      bool
 	Error       string
 	Validate    func(string) error
 }
 
+type initProfileV2FieldOptions struct {
+	Hidden bool
+}
+
 type initProfileV2Option struct {
 	Label    string
+	Value    string
 	Selected bool
 }
 
@@ -316,10 +340,18 @@ func initProfileV2AppendRouteSection(document *initProfileV2Document, routeText 
 	document.addEditableInput(initProfileV2FieldRoutes, "Route entries", "", routeText, validateInitProfileV2RouteText)
 }
 
-func initProfileV2AppendCustomGitScopeSection(document *initProfileV2Document, draft initDraft) {
-	document.addSection("Git scope", "Custom Git scope settings for this profile. Milestone 1 renders these read-only to preserve v1 parity visibility.")
-	document.addInput("Git scope host", "", draft.GitHost)
-	document.addInput("Git scope auth mode", "", initGitAuthModeLabel(config.GitAuthMode(draft.GitAuth)))
+func initProfileV2AppendGitScopeSection(document *initProfileV2Document, selectedScope string, scopeOptions []huh.Option[string], draft initDraft, visible bool) {
+	if !visible {
+		return
+	}
+	customHidden := selectedScope != initCustomGitScopeSelection
+	document.addSection("Git scope", "Choose an existing Git scope for this profile or configure custom Git host/auth settings.")
+	document.addEditableSelect(initProfileV2FieldGitScope, "Git scope", "", scopeOptions, selectedScope)
+	document.addEditableInput(initProfileV2FieldGitHost, "Git scope host", "The Git host this review profile applies to, such as github.com or github.mycompany.com.", draft.GitHost, validateRequiredText("git host is required"), initProfileV2FieldOptions{Hidden: customHidden})
+	document.addEditableSelect(initProfileV2FieldGitAuth, "Git scope auth mode", "", []huh.Option[string]{
+		huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
+		huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
+	}, draft.GitAuth, initProfileV2FieldOptions{Hidden: customHidden})
 }
 
 func initProfileV2AppendModelMapSection(document *initProfileV2Document, llm config.LLMConfig, modelMap config.ModelMap) {
@@ -374,14 +406,14 @@ func (d *initProfileV2Document) addSection(title, description string) {
 }
 
 func (d *initProfileV2Document) addInput(title, description, value string) {
-	d.addInputField("", title, description, value, false, nil)
+	d.addInputField("", title, description, value, false, nil, initProfileV2FieldOptions{})
 }
 
-func (d *initProfileV2Document) addEditableInput(id initProfileV2FieldID, title, description, value string, validate func(string) error) {
-	d.addInputField(id, title, description, value, true, validate)
+func (d *initProfileV2Document) addEditableInput(id initProfileV2FieldID, title, description, value string, validate func(string) error, options ...initProfileV2FieldOptions) {
+	d.addInputField(id, title, description, value, true, validate, mergedInitProfileV2FieldOptions(options))
 }
 
-func (d *initProfileV2Document) addInputField(id initProfileV2FieldID, title, description, value string, editable bool, validate func(string) error) {
+func (d *initProfileV2Document) addInputField(id initProfileV2FieldID, title, description, value string, editable bool, validate func(string) error, options initProfileV2FieldOptions) {
 	*d = append(*d, initProfileV2Field{
 		Kind:        initProfileV2FieldInput,
 		ID:          id,
@@ -391,21 +423,44 @@ func (d *initProfileV2Document) addInputField(id initProfileV2FieldID, title, de
 		Cursor:      len([]rune(value)),
 		Focusable:   true,
 		Editable:    editable,
+		Hidden:      options.Hidden,
 		Validate:    validate,
 	})
 }
 
+func mergedInitProfileV2FieldOptions(options []initProfileV2FieldOptions) initProfileV2FieldOptions {
+	var merged initProfileV2FieldOptions
+	for _, option := range options {
+		if option.Hidden {
+			merged.Hidden = true
+		}
+	}
+	return merged
+}
+
 func initProfileV2AddSelect[T comparable](document *initProfileV2Document, title, description string, options []huh.Option[T], selected T) {
+	initProfileV2AddSelectField(document, "", title, description, options, selected, false, initProfileV2FieldOptions{})
+}
+
+func (d *initProfileV2Document) addEditableSelect(id initProfileV2FieldID, title, description string, options []huh.Option[string], selected string, fieldOptions ...initProfileV2FieldOptions) {
+	initProfileV2AddSelectField(d, id, title, description, options, selected, true, mergedInitProfileV2FieldOptions(fieldOptions))
+}
+
+func initProfileV2AddSelectField[T comparable](document *initProfileV2Document, id initProfileV2FieldID, title, description string, options []huh.Option[T], selected T, editable bool, fieldOptions initProfileV2FieldOptions) {
 	field := initProfileV2Field{
 		Kind:        initProfileV2FieldSelect,
+		ID:          id,
 		Title:       title,
 		Description: description,
 		Focusable:   true,
+		Editable:    editable,
+		Hidden:      fieldOptions.Hidden,
 		Options:     make([]initProfileV2Option, 0, len(options)),
 	}
 	for _, option := range options {
 		field.Options = append(field.Options, initProfileV2Option{
 			Label:    option.Key,
+			Value:    fmt.Sprint(option.Value),
 			Selected: option.Value == selected,
 		})
 	}
@@ -414,7 +469,7 @@ func initProfileV2AddSelect[T comparable](document *initProfileV2Document, title
 
 func (d initProfileV2Document) firstFocusableField() int {
 	for index, field := range d {
-		if field.Focusable {
+		if field.Focusable && !field.Hidden {
 			return index
 		}
 	}
@@ -423,7 +478,7 @@ func (d initProfileV2Document) firstFocusableField() int {
 
 func (d initProfileV2Document) lastFocusableField() int {
 	for index := len(d) - 1; index >= 0; index-- {
-		if d[index].Focusable {
+		if d[index].Focusable && !d[index].Hidden {
 			return index
 		}
 	}
@@ -432,7 +487,7 @@ func (d initProfileV2Document) lastFocusableField() int {
 
 func (d initProfileV2Document) nextFocusableField(current int) int {
 	for index := current + 1; index < len(d); index++ {
-		if d[index].Focusable {
+		if d[index].Focusable && !d[index].Hidden {
 			return index
 		}
 	}
@@ -441,7 +496,7 @@ func (d initProfileV2Document) nextFocusableField(current int) int {
 
 func (d initProfileV2Document) previousFocusableField(current int) int {
 	for index := current - 1; index >= 0; index-- {
-		if d[index].Focusable {
+		if d[index].Focusable && !d[index].Hidden {
 			return index
 		}
 	}
@@ -472,6 +527,19 @@ func (d initProfileV2Document) fieldValue(id initProfileV2FieldID) string {
 		return ""
 	}
 	return d[index].Value
+}
+
+func (d initProfileV2Document) selectedValue(id initProfileV2FieldID) string {
+	index := d.fieldIndexByID(id)
+	if index < 0 {
+		return ""
+	}
+	for _, option := range d[index].Options {
+		if option.Selected {
+			return option.Value
+		}
+	}
+	return ""
 }
 
 func (m *initProfileV2ReadOnlyModel) handleFocusedInputKey(msg tea.KeyMsg) bool {
@@ -511,8 +579,55 @@ func (m *initProfileV2ReadOnlyModel) handleFocusedInputKey(msg tea.KeyMsg) bool 
 	default:
 		return false
 	}
-	m.validateField(m.focused)
+	m.afterFieldChange(m.focused)
 	return true
+}
+
+func (m *initProfileV2ReadOnlyModel) handleFocusedSelectKey(msg tea.KeyMsg) bool {
+	if m.focused < 0 || m.focused >= len(m.document) {
+		return false
+	}
+	field := &m.document[m.focused]
+	if field.Kind != initProfileV2FieldSelect || !field.Editable || len(field.Options) == 0 {
+		return false
+	}
+	switch msg.String() {
+	case "left", "h":
+		initProfileV2MoveSelection(field, -1)
+	case "right", "l", " ":
+		initProfileV2MoveSelection(field, 1)
+	default:
+		return false
+	}
+	m.afterFieldChange(m.focused)
+	return true
+}
+
+func initProfileV2MoveSelection(field *initProfileV2Field, offset int) {
+	if len(field.Options) == 0 {
+		return
+	}
+	selectedIndex := 0
+	for index, option := range field.Options {
+		if option.Selected {
+			selectedIndex = index
+			break
+		}
+	}
+	next := (selectedIndex + offset) % len(field.Options)
+	if next < 0 {
+		next += len(field.Options)
+	}
+	for index := range field.Options {
+		field.Options[index].Selected = index == next
+	}
+}
+
+func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
+	m.validateField(index)
+	if index >= 0 && index < len(m.document) && m.document[index].ID == initProfileV2FieldGitScope {
+		m.syncGitScopeFields()
+	}
 }
 
 func (m *initProfileV2ReadOnlyModel) validateAll() {
@@ -546,9 +661,85 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 		return draft, err
 	}
 	draft.ProfileName = profileName
+	selectedGitScope := m.document.selectedValue(initProfileV2FieldGitScope)
+	if selectedGitScope == "" {
+		selectedGitScope = m.selectedGitScope
+	}
+	if selectedGitScope == "" {
+		selectedGitScope = initCustomGitScopeSelection
+	}
+	if selectedGitScope == initCustomGitScopeSelection {
+		gitHost := m.document.fieldValue(initProfileV2FieldGitHost)
+		if strings.TrimSpace(gitHost) != "" {
+			draft.GitHost = strings.TrimSpace(gitHost)
+		}
+		gitAuth := m.document.selectedValue(initProfileV2FieldGitAuth)
+		if gitAuth != "" {
+			draft.GitAuth = gitAuth
+		}
+	} else {
+		applyGitScopeSelection(&draft, selectedGitScope, m.gitScopes)
+	}
+	if _, err := applyInitProfileRoutes(nil, draft.ProfileName, draft.GitHost, routes); err != nil {
+		return draft, err
+	}
 	draft.RoutesSet = true
 	draft.Routes = routes
 	return draft, nil
+}
+
+func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
+	selectedGitScope := m.document.selectedValue(initProfileV2FieldGitScope)
+	if selectedGitScope == "" {
+		selectedGitScope = m.selectedGitScope
+	}
+	if selectedGitScope == "" {
+		selectedGitScope = initCustomGitScopeSelection
+	}
+	m.selectedGitScope = selectedGitScope
+	custom := selectedGitScope == initCustomGitScopeSelection
+	if !custom {
+		if scope, ok := m.gitScopes[selectedGitScope]; ok {
+			m.setFieldValue(initProfileV2FieldGitHost, scope.Host)
+			m.selectFieldValue(initProfileV2FieldGitAuth, string(scope.AuthMode))
+		}
+	}
+	m.setFieldHidden(initProfileV2FieldGitHost, !custom)
+	m.setFieldHidden(initProfileV2FieldGitAuth, !custom)
+	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Hidden {
+		m.focused = m.document.nextFocusableField(m.focused)
+		if m.focused >= len(m.document) || m.document[m.focused].Hidden {
+			m.focused = m.document.previousFocusableField(len(m.document))
+		}
+	}
+	m.validateAll()
+}
+
+func (m *initProfileV2ReadOnlyModel) setFieldValue(id initProfileV2FieldID, value string) {
+	index := m.document.fieldIndexByID(id)
+	if index < 0 {
+		return
+	}
+	m.document[index].Value = value
+	m.document[index].Cursor = len([]rune(value))
+}
+
+func (m *initProfileV2ReadOnlyModel) selectFieldValue(id initProfileV2FieldID, value string) {
+	index := m.document.fieldIndexByID(id)
+	if index < 0 {
+		return
+	}
+	for optionIndex := range m.document[index].Options {
+		m.document[index].Options[optionIndex].Selected = m.document[index].Options[optionIndex].Value == value
+	}
+}
+
+func (m *initProfileV2ReadOnlyModel) setFieldHidden(id initProfileV2FieldID, hidden bool) {
+	index := m.document.fieldIndexByID(id)
+	if index < 0 {
+		return
+	}
+	m.document[index].Hidden = hidden
 }
 
 func (m *initProfileV2ReadOnlyModel) relayout() {
@@ -581,6 +772,10 @@ func initProfileV2LayoutDocument(document initProfileV2Document, width int, focu
 	lines := []string{}
 	bounds := make([]initProfileV2FieldBounds, len(document))
 	for index, field := range document {
+		if field.Hidden {
+			bounds[index] = initProfileV2FieldBounds{Start: len(lines), End: len(lines)}
+			continue
+		}
 		if len(lines) > 0 {
 			lines = append(lines, "")
 		}
