@@ -117,6 +117,7 @@ func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Height = max(msg.Height-2, 1)
 		m.relayout()
 		m.ensureFocusedVisible()
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
@@ -126,22 +127,28 @@ func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focused = m.document.previousFocusableField(m.focused)
 			m.relayout()
 			m.ensureFocusedVisible()
+			return m, nil
 		case "down", "j", "tab", "enter":
 			m.focused = m.document.nextFocusableField(m.focused)
 			m.relayout()
 			m.ensureFocusedVisible()
+			return m, nil
 		case "pgup", "b":
 			m.viewport.HalfPageUp()
+			return m, nil
 		case "pgdown", "f", " ":
 			m.viewport.HalfPageDown()
+			return m, nil
 		case "home", "g":
 			m.focused = m.document.firstFocusableField()
 			m.relayout()
 			m.ensureFocusedVisible()
+			return m, nil
 		case "end", "G":
 			m.focused = m.document.lastFocusableField()
 			m.relayout()
 			m.ensureFocusedVisible()
+			return m, nil
 		}
 	}
 	var cmd tea.Cmd

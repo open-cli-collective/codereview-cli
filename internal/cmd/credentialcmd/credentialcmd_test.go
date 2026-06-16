@@ -9572,29 +9572,39 @@ func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *test
 		huh.NewOption("Post using this profile's Git account (GitHub PAT)", "profile"),
 	}, "profile")
 
-	model := newInitProfileV2ReadOnlyModel(document, 240, 19)
 	routeIndex := document.fieldIndexByTitle("Route entries")
 	if routeIndex < 0 {
 		t.Fatal("Route entries field missing")
 	}
 
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyEnter})
-
-	if model.focused != routeIndex {
-		t.Fatalf("focused index = %d, want route entries index %d", model.focused, routeIndex)
-	}
-	if model.viewport.YOffset != 0 {
-		t.Fatalf("viewport YOffset = %d, want unchanged top while route entries are already visible", model.viewport.YOffset)
-	}
-	for _, want := range []string{
-		"Automatic profile selection",
-		"Accepted route formats",
-		"Route entries",
-		"> github.com/open-cli-collective",
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyType
+	}{
+		{name: "enter", key: tea.KeyEnter},
+		{name: "down", key: tea.KeyDown},
 	} {
-		if !strings.Contains(model.View(), want) {
-			t.Fatalf("view missing %q after focusing route entries:\n%s", want, model.View())
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			model := newInitProfileV2ReadOnlyModel(document, 240, 19)
+			model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tc.key})
+
+			if model.focused != routeIndex {
+				t.Fatalf("focused index = %d, want route entries index %d", model.focused, routeIndex)
+			}
+			if model.viewport.YOffset != 0 {
+				t.Fatalf("viewport YOffset = %d, want unchanged top while route entries are already visible", model.viewport.YOffset)
+			}
+			for _, want := range []string{
+				"Automatic profile selection",
+				"Accepted route formats",
+				"Route entries",
+				"> github.com/open-cli-collective",
+			} {
+				if !strings.Contains(model.View(), want) {
+					t.Fatalf("view missing %q after focusing route entries:\n%s", want, model.View())
+				}
+			}
+		})
 	}
 }
 
