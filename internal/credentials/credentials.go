@@ -170,7 +170,7 @@ func ResolveSecretsProfileForRef(cfg config.File, ref string, selectedProfile st
 		if err != nil {
 			return ResolvedSecretsProfile{}, err
 		}
-		if sameResolvedSecretsProfile(resolved, next) {
+		if resolved.Equal(next) {
 			continue
 		}
 		return ResolvedSecretsProfile{}, ambiguousSecretsProfileError(ref, cfg, owners)
@@ -298,10 +298,6 @@ func ownerNames(owners []credentialRefOwner) []string {
 		names = append(names, owner.Name)
 	}
 	return names
-}
-
-func sameResolvedSecretsProfile(a, b ResolvedSecretsProfile) bool {
-	return a.ID == b.ID && a.Source == b.Source && a.Backend == b.Backend
 }
 
 func ambiguousSecretsProfileError(ref string, cfg config.File, owners []credentialRefOwner) error {
