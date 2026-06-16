@@ -6701,6 +6701,24 @@ func TestHuhInitAgentSourcesPrompterXtermAcceptsMultilinePaths(t *testing.T) {
 	}
 }
 
+func TestHuhInitAgentSourcesPrompterXtermClearsPrefilledPaths(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	prompter := huhInitAgentSourcesPrompter{
+		stdin:  strings.NewReader("\x15\r"),
+		stderr: &bytes.Buffer{},
+	}
+
+	edit, err := prompter.EditAgentSources(initAgentSourcesPrompt{
+		Sources: []string{"/tmp/agents-alpha"},
+	})
+	if err != nil {
+		t.Fatalf("EditAgentSources: %v", err)
+	}
+	if edit.Sources != nil {
+		t.Fatalf("edit.Sources = %#v, want nil after clearing prefilled trusted directories", edit.Sources)
+	}
+}
+
 func TestHuhInitAgentSourcesPrompterBackReturnsNavigateBack(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	prompter := huhInitAgentSourcesPrompter{
