@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -3629,6 +3630,78 @@ func TestCollectInteractiveInitSecretsBackAfterPartialMultiKeyWriteDiscardsScrat
 	}
 	if len(prompter.actions) != 0 || len(prompter.sources) != 0 || len(prompter.pastes) != 0 {
 		t.Fatalf("prompter queues = actions %#v sources %#v pastes %#v, want consumed", prompter.actions, prompter.sources, prompter.pastes)
+	}
+}
+
+func TestCollectInteractiveInitSecretsMapsNamedSecretsProfileOpenConflictAsConfigError(t *testing.T) {
+	workspace := testInitSecretWorkspace()
+	workspace.credentialPlan[0].SecretsProfile = credentials.ResolvedSecretsProfile{
+		ID:      "work-file",
+		Label:   "Work File Store",
+		Backend: string(credstore.BackendFile),
+		Source:  config.EffectiveSecretsProfileSourceConfigured,
+	}
+	workspace.backendFlagSet = true
+	prompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+	}
+
+	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{Backend: "memory"}, initDeps{
+		secretPrompter:     prompter,
+		clipboardSupported: func() bool { return false },
+		clipboardRead: func() (string, error) {
+			t.Fatal("clipboard should not be read")
+			return "", nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("legacy openStore should not be used for named secrets profile")
+			return nil, nil
+		},
+		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+			return nil, fmt.Errorf("%w: named secrets-management profile conflict", config.ErrInvalid)
+		},
+	}, workspace)
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("collectInteractiveInitSecrets error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
+	}
+}
+
+func TestCollectInteractiveInitSessionSecretsMapsNamedSecretsProfileLoadConflictAsConfigError(t *testing.T) {
+	plan := initSessionPlan{
+		cfg: config.File{},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "git",
+				Ref:     "codereview/default",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			State: initCredentialPlanStateMissingRequired,
+			SecretsProfile: credentials.ResolvedSecretsProfile{
+				ID:      "work-file",
+				Label:   "Work File Store",
+				Backend: string(credstore.BackendFile),
+				Source:  config.EffectiveSecretsProfileSourceConfigured,
+			},
+		}},
+	}
+
+	_, err := collectInteractiveInitSessionSecrets(&root.Options{Backend: "memory"}, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("legacy openStore should not be used for named secrets profile")
+			return nil, nil
+		},
+		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+			return nil, fmt.Errorf("%w: named secrets-management profile conflict", config.ErrInvalid)
+		},
+	}, plan)
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("collectInteractiveInitSessionSecrets error = %v, want ErrInvalid", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
 	}
 }
 

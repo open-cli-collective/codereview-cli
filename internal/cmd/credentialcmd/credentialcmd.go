@@ -5341,6 +5341,9 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			}
 			activeStore, err := openStore(entry)
 			if err != nil {
+				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+					return initWorkspaceDraft{}, cmderr.Config(err)
+				}
 				return initWorkspaceDraft{}, cmderr.Credential(err)
 			}
 			targetKeys, err := existingInitCredentialKeys(activeStore, entry.Ref.Ref)
@@ -5483,6 +5486,9 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 		return openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
 	})
 	if err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+			return initSessionPlan{}, cmderr.Config(err)
+		}
 		return initSessionPlan{}, cmderr.Credential(err)
 	}
 	workspacePlan := initWorkspaceDraft{
