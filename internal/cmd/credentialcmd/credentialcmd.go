@@ -3707,6 +3707,11 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	if err != nil {
 		return initPlan{}, cmderr.Config(err)
 	}
+	if exists {
+		if err := config.Validate(cfg); err != nil {
+			return initPlan{}, cmderr.Config(err)
+		}
+	}
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
 	}
@@ -5301,10 +5306,30 @@ func validateInteractiveInitConfig(cfg config.File) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, config.ErrSecretsProfileNotFound) {
-		return nil
+	if !errors.Is(err, config.ErrSecretsProfileNotFound) {
+		return err
 	}
-	return err
+	recovered := cloneInitConfigFile(cfg)
+	hadBrokenSecretsProfile := false
+	for name, profile := range recovered.Profiles {
+		selection := strings.TrimSpace(profile.SecretsProfile)
+		if selection == "" || selection == config.LegacyProjectedSecretsProfileID {
+			continue
+		}
+		if _, ok := recovered.Secrets.Profiles[selection]; ok {
+			continue
+		}
+		profile.SecretsProfile = ""
+		recovered.Profiles[name] = profile
+		hadBrokenSecretsProfile = true
+	}
+	if !hadBrokenSecretsProfile {
+		return err
+	}
+	if recoveredErr := config.Validate(recovered); recoveredErr != nil {
+		return recoveredErr
+	}
+	return nil
 }
 
 func validateInteractiveInitGlobalConfig(cfg config.File) error {
@@ -5933,7 +5958,7 @@ func buildInteractiveInitProfileReadiness(plan initSessionPlan) []initProfileRea
 }
 
 func initCredentialReadinessNote(entry initCredentialPlanEntry) string {
-	label := initCredentialPurposeLabel(entry.Ref.Purpose)
+	label := initCredentialPurposeLabel(entry.Ref.Purpose) + initSecretsProfileHintLabel(entry.SecretsProfile)
 	switch entry.State {
 	case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
 		return ""
@@ -6037,6 +6062,13 @@ func initCredentialPurposeLabel(purpose string) string {
 }
 
 func initSecretsProfilePromptSuffix(resolved credentials.ResolvedSecretsProfile) string {
+	if !resolved.IsNamed() {
+		return ""
+	}
+	return fmt.Sprintf(" via %s", resolved.DisplayName())
+}
+
+func initSecretsProfileHintLabel(resolved credentials.ResolvedSecretsProfile) string {
 	if !resolved.IsNamed() {
 		return ""
 	}
@@ -6161,8 +6193,12 @@ func writeInitCredentialPlanHints(w io.Writer, backendArg string, entry initCred
 			keys = append(keys, spec.Key)
 		}
 	}
+	prefix := "Next"
+	if hintLabel := initSecretsProfileHintLabel(entry.SecretsProfile); hintLabel != "" {
+		prefix += hintLabel
+	}
 	for _, key := range keys {
-		if _, err := fmt.Fprintf(w, "Next: cr%s set-credential --ref %s --key %s --stdin\n", backendArg, entry.Ref.Ref, key); err != nil {
+		if _, err := fmt.Fprintf(w, "%s: cr%s set-credential --ref %s --key %s --stdin\n", prefix, backendArg, entry.Ref.Ref, key); err != nil {
 			return err
 		}
 	}

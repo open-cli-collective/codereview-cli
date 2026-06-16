@@ -6081,6 +6081,64 @@ func TestLoadConfigForInitRecoversMissingSecretsProfileReference(t *testing.T) {
 	}
 }
 
+func TestBuildNonInteractiveInitPlanRejectsMissingSecretsProfileReference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	body, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	opts := &root.Options{ConfigPath: path}
+	flags := initOptions{
+		nonInteractive: true,
+		gitHost:        "github.com",
+		gitAuth:        string(config.GitAuthModePAT),
+		reviewerAuth:   string(config.GitAuthModePAT),
+		llmProvider:    string(config.LLMProviderAnthropic),
+		llmAuth:        string(config.LLMAuthSubscription),
+		llmAdapter:     string(config.LLMAdapterClaudeCLI),
+		majorEvent:     string(config.ReviewMajorEventComment),
+	}
+	_, err = buildNonInteractiveInitPlan(&cobra.Command{}, opts, flags, defaultInitDeps())
+	if !errors.Is(err, config.ErrSecretsProfileNotFound) {
+		t.Fatalf("buildNonInteractiveInitPlan error = %v, want ErrSecretsProfileNotFound", err)
+	}
+}
+
+func TestValidateInteractiveInitConfigDoesNotMaskUnrelatedInvalidState(t *testing.T) {
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Keyring:        config.KeyringConfig{Backend: "bogus"},
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	err := validateInteractiveInitConfig(cfg)
+	if err == nil {
+		t.Fatal("validateInteractiveInitConfig error = nil, want invalid keyring backend")
+	}
+	if !strings.Contains(err.Error(), `keyring.backend "bogus"`) {
+		t.Fatalf("validateInteractiveInitConfig error = %v, want unrelated invalid state preserved", err)
+	}
+}
+
 func TestHuhInitSecretPrompterAccessibleNamesSelectedSecretsProfile(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
@@ -6104,6 +6162,45 @@ func TestHuhInitSecretPrompterAccessibleNamesSelectedSecretsProfile(t *testing.T
 	}
 	if got := stderr.String(); !strings.Contains(got, "via Team Vault") {
 		t.Fatalf("stderr = %q, want selected secrets-management profile in prompt title", got)
+	}
+}
+
+func TestWriteInitCredentialPlanHintsNamesSelectedSecretsProfile(t *testing.T) {
+	var out bytes.Buffer
+	err := writeInitCredentialPlanHints(&out, "", initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "git",
+			Ref:     "codereview/work",
+		},
+		SecretsProfile: credentials.ResolvedSecretsProfile{
+			ID:      "team-vault",
+			Label:   "Team Vault",
+			Backend: string(credstore.BackendFile),
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+		KeySpecs: []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
+	})
+	if err != nil {
+		t.Fatalf("writeInitCredentialPlanHints: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "Next via Team Vault:") {
+		t.Fatalf("hint output = %q, want selected secrets-management profile context", got)
+	}
+}
+
+func TestInitCredentialReadinessNoteNamesSelectedSecretsProfile(t *testing.T) {
+	note := initCredentialReadinessNote(initCredentialPlanEntry{
+		Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
+		SecretsProfile: credentials.ResolvedSecretsProfile{
+			ID:      "team-vault",
+			Label:   "Team Vault",
+			Backend: string(credstore.BackendFile),
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+		State: initCredentialPlanStateDefer,
+	})
+	if !strings.Contains(note, "Git via Team Vault deferred") {
+		t.Fatalf("note = %q, want named selected secrets-management profile", note)
 	}
 }
 
