@@ -9764,11 +9764,14 @@ func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *test
 				"Automatic profile selection",
 				"Accepted route formats",
 				"Route entries",
-				"> github.com/open-cli-collective",
+				"github.com/open-cli-collective",
 			} {
 				if !strings.Contains(model.View(), want) {
 					t.Fatalf("view missing %q after focusing route entries:\n%s", want, model.View())
 				}
+			}
+			if strings.Contains(model.View(), "> Route entries") {
+				t.Fatalf("view still uses caret on focused title instead of active rail:\n%s", model.View())
 			}
 		})
 	}
@@ -10083,7 +10086,7 @@ func TestInitProfileV2ModelMapInputsDraftOverridesAndClears(t *testing.T) {
 	), 160, 24)
 
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierSmall))
-	if !strings.Contains(model.View(), "> |") {
+	if !strings.Contains(model.View(), "| |") {
 		t.Fatalf("view missing editable cursor for empty small model field:\n%s", model.View())
 	}
 	model = typeInitProfileV2Text(t, model, "claude-haiku-custom")

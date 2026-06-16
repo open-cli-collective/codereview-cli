@@ -27,15 +27,19 @@ type bubbleTeaInitProfileV2Prompter struct {
 type initProfileV2EditorRunner func(initProfileV2Editor) (initProfileV2EditorResult, error)
 
 var initProfileV2Theme = struct {
-	title    lipgloss.Style
-	selected lipgloss.Style
-	error    lipgloss.Style
-	help     lipgloss.Style
+	title       lipgloss.Style
+	selected    lipgloss.Style
+	activeRail  lipgloss.Style
+	activeTitle lipgloss.Style
+	error       lipgloss.Style
+	help        lipgloss.Style
 }{
-	title:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")),
-	selected: lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
-	error:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
-	help:     lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+	title:       lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")),
+	selected:    lipgloss.NewStyle().Foreground(lipgloss.Color("201")),
+	activeRail:  lipgloss.NewStyle().Foreground(lipgloss.Color("201")),
+	activeTitle: lipgloss.NewStyle().Foreground(lipgloss.Color("201")),
+	error:       lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
+	help:        lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 }
 
 func newBubbleTeaInitProfileV2Prompter(opts *root.Options) initPrompter {
@@ -289,7 +293,7 @@ func (m initProfileV2ReadOnlyModel) View() string {
 	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Kind == initProfileV2FieldTextarea {
 		help = "up/down focus - enter next - shift+tab previous - ctrl+j newline - esc back"
 	}
-	return initProfileV2StyleViewport(m.viewport.View()) + "\n\n" + initProfileV2Theme.help.Render(help)
+	return m.styleVisibleViewport() + "\n\n" + initProfileV2Theme.help.Render(help)
 }
 
 func initProfileV2ReadOnlyContent(ctx initPromptContext, selection string) (string, error) {
@@ -1142,9 +1146,6 @@ func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, fo
 	titlePrefix := ""
 	if field.Focusable {
 		titlePrefix = "  "
-		if focused {
-			titlePrefix = "> "
-		}
 	}
 	initProfileV2AppendWrappedWithPrefix(lines, titlePrefix, field.Title, width)
 	initProfileV2AppendWrapped(lines, field.Description, width)
@@ -1209,22 +1210,48 @@ func initProfileV2AppendWrappedWithPrefix(lines *[]string, prefix string, text s
 	*lines = append(*lines, prefix+remaining)
 }
 
-func initProfileV2StyleViewport(raw string) string {
-	lines := strings.Split(raw, "\n")
+func (m initProfileV2ReadOnlyModel) styleVisibleViewport() string {
+	lines := strings.Split(m.viewport.View(), "\n")
+	activeStart := -1
+	activeEnd := -1
+	if m.focused >= 0 && m.focused < len(m.layout.Bounds) {
+		bounds := m.layout.Bounds[m.focused]
+		activeStart = bounds.Start - m.viewport.YOffset
+		activeEnd = bounds.End - m.viewport.YOffset
+	}
 	for index, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case trimmed == "":
-			continue
-		case strings.HasPrefix(trimmed, "! "):
-			lines[index] = initProfileV2Theme.error.Render(line)
-		case strings.HasPrefix(trimmed, "> "):
-			lines[index] = initProfileV2Theme.selected.Render(line)
-		case initProfileV2LooksLikeHeading(trimmed):
-			lines[index] = initProfileV2Theme.title.Render(line)
-		}
+		active := index >= activeStart && index < activeEnd
+		lines[index] = initProfileV2StyleViewportLine(line, active)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func initProfileV2StyleViewportLine(line string, active bool) string {
+	trimmed := strings.TrimSpace(line)
+	switch {
+	case trimmed == "":
+		return initProfileV2ApplyActiveRail(line, active)
+	case strings.HasPrefix(trimmed, "! "):
+		return initProfileV2Theme.error.Render(initProfileV2ApplyActiveRail(line, active))
+	case strings.HasPrefix(trimmed, "> "):
+		return initProfileV2Theme.selected.Render(initProfileV2ApplyActiveRail(line, active))
+	case active && initProfileV2LooksLikeHeading(trimmed):
+		return initProfileV2Theme.activeTitle.Render(initProfileV2ApplyActiveRail(line, true))
+	case initProfileV2LooksLikeHeading(trimmed):
+		return initProfileV2Theme.title.Render(line)
+	default:
+		return initProfileV2ApplyActiveRail(line, active)
+	}
+}
+
+func initProfileV2ApplyActiveRail(line string, active bool) string {
+	if !active {
+		return line
+	}
+	if line == "" {
+		return initProfileV2Theme.activeRail.Render("|")
+	}
+	return initProfileV2Theme.activeRail.Render("|") + line[1:]
 }
 
 func initProfileV2LooksLikeHeading(line string) bool {
