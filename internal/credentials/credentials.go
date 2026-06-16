@@ -18,6 +18,10 @@ const (
 	// ServiceName is the credential-ref service segment owned by cr.
 	ServiceName = "codereview"
 
+	// BackendSourceSecretsProfile records that a named secrets-management
+	// profile selected the active credential backend.
+	BackendSourceSecretsProfile credstore.Source = "secrets_profile"
+
 	// GitTokenKey stores the Git host access token for PAT auth.
 	GitTokenKey = "git_token"
 	// GitHubAppIDKey stores the GitHub App JWT issuer, usually the app ID.
@@ -90,6 +94,12 @@ func (r ResolvedSecretsProfile) DisplayName() string {
 		return strings.TrimSpace(r.Label)
 	}
 	return strings.TrimSpace(r.ID)
+}
+
+// Equal reports whether two resolved secrets-profile selections point at the
+// same logical credential store.
+func (r ResolvedSecretsProfile) Equal(other ResolvedSecretsProfile) bool {
+	return r.ID == other.ID && r.Source == other.Source && r.Backend == other.Backend
 }
 
 // IsNamed reports whether the selection came from an explicit named secrets profile.

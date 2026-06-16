@@ -1123,13 +1123,11 @@ func configPath(opts *root.Options) (string, error) {
 	return config.Path()
 }
 
-const backendSourceSecretsProfile credstore.Source = "secrets_profile"
-
 func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg config.File, resolvedSecretsProfile credentials.ResolvedSecretsProfile) (credstore.Backend, credstore.Source, error) {
 	if store != nil {
 		backend, source := store.Backend()
 		if resolvedSecretsProfile.IsNamed() {
-			return backend, backendSourceSecretsProfile, nil
+			return backend, credentials.BackendSourceSecretsProfile, nil
 		}
 		return backend, source, nil
 	}
@@ -1138,7 +1136,7 @@ func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg
 		if err != nil {
 			return "", "", fmt.Errorf("%w: %w", credentials.ErrInvalidBackendSelection, err)
 		}
-		return backend, backendSourceSecretsProfile, nil
+		return backend, credentials.BackendSourceSecretsProfile, nil
 	}
 	return credentials.BackendMetadata(flagValue, flagSet, cfg)
 }

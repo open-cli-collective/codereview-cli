@@ -82,11 +82,7 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 		}
 	}
 	if show.ActiveSecretsProfile != nil {
-		label := show.ActiveSecretsProfile.ID
-		if strings.TrimSpace(show.ActiveSecretsProfile.Label) != "" {
-			label = show.ActiveSecretsProfile.Label
-		}
-		if err := writeKV(w, "Selected secrets management", fmt.Sprintf("%s (%s)", label, show.ActiveSecretsProfile.Backend)); err != nil {
+		if err := writeKV(w, "Selected secrets management", fmt.Sprintf("%s (%s)", show.ActiveSecretsProfile.DisplayName(), show.ActiveSecretsProfile.Backend)); err != nil {
 			return err
 		}
 		if err := writeKV(w, "Selected secrets management source", show.ActiveSecretsProfile.Source); err != nil {
@@ -98,10 +94,7 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 			return err
 		}
 		for _, profile := range show.SecretsProfiles {
-			label := profile.ID
-			if strings.TrimSpace(profile.Label) != "" {
-				label = profile.Label
-			}
+			label := ConfigSecretsProfile{ID: profile.ID, Label: profile.Label}.DisplayName()
 			suffix := ""
 			if profile.IsDefault {
 				suffix = " [default]"
@@ -361,6 +354,14 @@ type ConfigSecretsProfile struct {
 	Source    string `json:"source"`
 }
 
+// DisplayName returns the best user-facing secrets-profile label.
+func (p ConfigSecretsProfile) DisplayName() string {
+	if strings.TrimSpace(p.Label) != "" {
+		return strings.TrimSpace(p.Label)
+	}
+	return strings.TrimSpace(p.ID)
+}
+
 // ConfigSecretsProfileDefault is the presentation model for `cr config secrets-profile default get`.
 type ConfigSecretsProfileDefault struct {
 	DefaultProfile *ConfigSecretsProfile `json:"default_profile,omitempty"`
@@ -376,10 +377,7 @@ func RenderConfigSecretsProfilesText(w io.Writer, result ConfigSecretsProfiles) 
 		return err
 	}
 	for _, profile := range result.Profiles {
-		label := profile.ID
-		if strings.TrimSpace(profile.Label) != "" {
-			label = profile.Label
-		}
+		label := profile.DisplayName()
 		suffix := ""
 		if profile.IsDefault {
 			suffix = " [default]"
@@ -590,11 +588,7 @@ func RenderConfigClearText(w io.Writer, result ConfigClear) error {
 		return err
 	}
 	if result.ActiveSecretsProfile != nil {
-		label := result.ActiveSecretsProfile.ID
-		if strings.TrimSpace(result.ActiveSecretsProfile.Label) != "" {
-			label = result.ActiveSecretsProfile.Label
-		}
-		if err := writeKV(w, "Selected secrets management", fmt.Sprintf("%s (%s)", label, result.ActiveSecretsProfile.Backend)); err != nil {
+		if err := writeKV(w, "Selected secrets management", fmt.Sprintf("%s (%s)", result.ActiveSecretsProfile.DisplayName(), result.ActiveSecretsProfile.Backend)); err != nil {
 			return err
 		}
 		if err := writeKV(w, "Selected secrets management source", result.ActiveSecretsProfile.Source); err != nil {

@@ -119,7 +119,7 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 	backend, source := store.Backend()
 	result.Backend = string(backend)
 	if resolvedSecretsProfile.IsNamed() {
-		result.BackendSource = "secrets_profile"
+		result.BackendSource = string(credentials.BackendSourceSecretsProfile)
 	} else {
 		result.BackendSource = string(source)
 	}
@@ -5207,7 +5207,7 @@ func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, cfg conf
 }
 
 func sameInitCredentialStore(a, b credentials.ResolvedSecretsProfile) bool {
-	return a.ID == b.ID && a.Source == b.Source && a.Backend == b.Backend
+	return a.Equal(b)
 }
 
 func initCredentialStoreKey(resolved credentials.ResolvedSecretsProfile) string {
@@ -5222,6 +5222,8 @@ type initWriteGroup struct {
 
 func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string]map[string]string, overwriteRefs map[string]bool) ([]initWriteGroup, error) {
 	if len(entries) == 0 {
+		// An empty credential plan means init is using the legacy/default store
+		// path, represented by the zero-value unresolved selection.
 		return []initWriteGroup{{
 			Writes:        writes,
 			OverwriteRefs: overwriteRefs,
@@ -5916,9 +5918,9 @@ func initCredentialPurposeLabel(purpose string) string {
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
 	var store initStore
 	var primaryResolved credentials.ResolvedSecretsProfile
-	openPrimaryStore := func() (initStore, error) {
+	openPrimaryStore := func() (initStore, credentials.ResolvedSecretsProfile, error) {
 		if store != nil {
-			return store, nil
+			return store, primaryResolved, nil
 		}
 		entry := initCredentialPlanEntry{}
 		if len(plan.credentialPlan) > 0 {
@@ -5926,21 +5928,21 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 		} else {
 			resolved, err := credentials.ResolveSecretsProfileForProfile(plan.cfg, plan.profile)
 			if err != nil {
-				return nil, err
+				return nil, credentials.ResolvedSecretsProfile{}, err
 			}
 			entry.SecretsProfile = resolved
 		}
-		primaryResolved = entry.SecretsProfile
 		opened, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
 		if err != nil {
-			return nil, err
+			return nil, credentials.ResolvedSecretsProfile{}, err
 		}
 		store = opened
-		return store, nil
+		primaryResolved = entry.SecretsProfile
+		return store, primaryResolved, nil
 	}
 	if len(plan.writes) > 0 || (plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.allowDeferredLLM) {
 		var err error
-		store, err = openPrimaryStore()
+		store, primaryResolved, err = openPrimaryStore()
 		if err != nil {
 			if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
 				return cmderr.Config(err)
