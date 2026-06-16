@@ -526,7 +526,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
 			return Result{}, err
 		}
-		rollupLog, err := prepared.artifacts.AgentLog("orchestrator-rollup")
+		rollupLog, err := prepared.artifacts.AgentLog(orchestratorRollupStage)
 		if err != nil {
 			return Result{}, err
 		}
@@ -798,7 +798,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err := opts.checkPromptBudget("selection", "", model, "", selectionPrompt); err != nil {
 		return llm.Selection{}, sessionDraft{}, err
 	}
-	selectionLog, err := req.Artifacts.AgentLog("orchestrator-selection")
+	selectionLog, err := req.Artifacts.AgentLog(orchestratorSelectionStage)
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, err
 	}
@@ -1130,7 +1130,7 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		agentByRow[draft.rowID] = *draft.agentID
 	}
 
-	workstreams := []reviewplan.WorkstreamUsage{workstreamUsage("orchestrator-selection", inputs.selection)}
+	workstreams := []reviewplan.WorkstreamUsage{workstreamUsage(orchestratorSelectionStage, inputs.selection)}
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
@@ -1138,7 +1138,7 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 			workstreams = append(workstreams, workstreamUsage(selected.AgentID, draft))
 		}
 	}
-	workstreams = append(workstreams, workstreamUsage("orchestrator-rollup", inputs.rollup))
+	workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
 
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
@@ -1160,20 +1160,48 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	return summary, findingReviewers
 }
 
-// sharedWorkstreamModel reports the run's headline model only when every
-// workstream reported the same one; mixed or partially-reported models render
-// the headline as unavailable and rely on the per-workstream table. The
-// consensus covers only workstreams with session drafts — a selected agent
-// that produced no draft has no model data to contribute.
+// Orchestrator stage names share a stable prefix so the headline model filter
+// can exclude them; deriving the stage names from the prefix keeps the filter
+// and the names from diverging.
+const (
+	orchestratorWorkstreamPrefix = "orchestrator-"
+	orchestratorSelectionStage   = orchestratorWorkstreamPrefix + "selection"
+	orchestratorRollupStage      = orchestratorWorkstreamPrefix + "rollup"
+)
+
+// sharedWorkstreamModel reports the run's headline model. It reflects the model
+// the reviewer agents ran on, excluding the orchestrator selection/rollup stages
+// — those run on a cheaper baseline tier, so including them would blank the
+// headline on every mixed-tier run (e.g. Sonnet orchestrators + Opus reviewers).
+// Distinct reviewer models are comma-joined in first-seen order; if no reviewer
+// reported a model, it falls back to any reported model, else "".
 func sharedWorkstreamModel(workstreams []reviewplan.WorkstreamUsage) string {
-	model := ""
-	for i, workstream := range workstreams {
-		if workstream.Model == "" || (i > 0 && workstream.Model != model) {
-			return ""
-		}
-		model = workstream.Model
+	reviewer := distinctWorkstreamModels(workstreams, true)
+	if len(reviewer) > 0 {
+		return strings.Join(reviewer, ", ")
 	}
-	return model
+	return strings.Join(distinctWorkstreamModels(workstreams, false), ", ")
+}
+
+// distinctWorkstreamModels returns the distinct non-empty models in first-seen
+// order. When reviewersOnly is set, orchestrator stages are excluded.
+func distinctWorkstreamModels(workstreams []reviewplan.WorkstreamUsage, reviewersOnly bool) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, workstream := range workstreams {
+		if workstream.Model == "" {
+			continue
+		}
+		if reviewersOnly && strings.HasPrefix(workstream.Name, orchestratorWorkstreamPrefix) {
+			continue
+		}
+		if seen[workstream.Model] {
+			continue
+		}
+		seen[workstream.Model] = true
+		out = append(out, workstream.Model)
+	}
+	return out
 }
 
 func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {
