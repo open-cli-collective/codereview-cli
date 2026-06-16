@@ -2385,16 +2385,19 @@ func (p huhInitPrompter) runInventory(prompt initInventoryPrompt) (initInventory
 
 func initProfileInventoryRows(ctx initPromptContext) []initInventoryRow {
 	names := append([]string(nil), ctx.ExistingProfileNames...)
-	sort.Strings(names)
+	sortProfileInventoryNames(names, ctx)
 	rows := make([]initInventoryRow, 0, len(names)+len(ctx.PendingProfileDeletes)+2)
 	for _, name := range names {
+		description := profileInventoryRowDescription(name, ctx)
+		filterValue := strings.TrimSpace(strings.Join([]string{name, ctx.ExistingConfig.Profiles[name].Git.Host, description}, " "))
 		rows = append(rows, initInventoryRow{
 			ID:          name,
 			Title:       name,
+			Description: description,
 			Kind:        initInventoryRowKindActive,
 			Selectable:  true,
 			Deletable:   true,
-			FilterValue: strings.TrimSpace(strings.Join([]string{name, ctx.ExistingConfig.Profiles[name].Git.Host}, " ")),
+			FilterValue: filterValue,
 		})
 	}
 	pendingDeleteNames := make([]string, 0, len(ctx.PendingProfileDeletes))
@@ -2427,6 +2430,51 @@ func initProfileInventoryRows(ctx initPromptContext) []initInventoryRow {
 		},
 	)
 	return rows
+}
+
+func sortProfileInventoryNames(names []string, ctx initPromptContext) {
+	sort.SliceStable(names, func(i, j int) bool {
+		left := profileInventorySortKey(names[i], ctx)
+		right := profileInventorySortKey(names[j], ctx)
+		if left != right {
+			return left < right
+		}
+		return names[i] < names[j]
+	})
+}
+
+func profileInventorySortKey(name string, ctx initPromptContext) int {
+	if name == strings.TrimSpace(ctx.DefaultProfileName) {
+		return 3
+	}
+	routes := currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, name)
+	if len(routes) == 0 {
+		return 2
+	}
+	for _, route := range routes {
+		if len(route.Repos) > 0 {
+			return 0
+		}
+	}
+	return 1
+}
+
+func profileInventoryRowDescription(name string, ctx initPromptContext) string {
+	if name == strings.TrimSpace(ctx.DefaultProfileName) {
+		return "Everything else"
+	}
+	return formatInitRouteSpecsInline(currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, name))
+}
+
+func formatInitRouteSpecsInline(specs []configedit.RepositoryRouteSpec) string {
+	if len(specs) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		parts = append(parts, configedit.FormatRepositoryRouteSpec(spec))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDraft {

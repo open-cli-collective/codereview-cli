@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 )
 
 func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *testing.T) {
@@ -397,6 +398,81 @@ func TestInitProfileInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	}
 	if got := rows[3]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionBack {
 		t.Fatalf("back row = %#v, want selectable Back command", got)
+	}
+}
+
+func TestInitProfileInventoryRowsShowRoutesAndSortBySpecificity(t *testing.T) {
+	rows := initProfileInventoryRows(initPromptContext{
+		ExistingProfileNames: []string{"default", "unrouted", "namespace", "repo"},
+		DefaultProfileName:   "default",
+		ExistingConfig: config.File{
+			DefaultProfile: "default",
+			Profiles: map[string]config.Profile{
+				"default":   {Git: config.GitConfig{Host: "github.com"}},
+				"unrouted":  {Git: config.GitConfig{Host: "github.com"}},
+				"namespace": {Git: config.GitConfig{Host: "github.com"}},
+				"repo":      {Git: config.GitConfig{Host: "github.com"}},
+			},
+			RepositoryProfiles: []config.RepositoryProfile{
+				{
+					Profile: "namespace",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "SignalFT",
+					},
+				},
+				{
+					Profile: "repo",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "SignalFT",
+						Repos:     []string{"api", "web"},
+					},
+				},
+				{
+					Profile: "repo",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "OtherMonitOrg",
+					},
+				},
+			},
+		},
+	})
+
+	var got []string
+	for _, row := range rows[:4] {
+		got = append(got, row.ID)
+	}
+	want := []string{"repo", "namespace", "unrouted", "default"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("profile row order = %#v, want %#v", got, want)
+	}
+	if got, want := rows[0].Description, "github.com/OtherMonitOrg; github.com/SignalFT [api, web]"; got != want {
+		t.Fatalf("repo description = %q, want %q", got, want)
+	}
+	if got, want := rows[1].Description, "github.com/SignalFT"; got != want {
+		t.Fatalf("namespace description = %q, want %q", got, want)
+	}
+	if got := rows[2].Description; got != "" {
+		t.Fatalf("unrouted description = %q, want empty", got)
+	}
+	if got, want := rows[3].Description, "Everything else"; got != want {
+		t.Fatalf("default description = %q, want %q", got, want)
+	}
+	if !strings.Contains(rows[0].FilterValue, "github.com/OtherMonitOrg") {
+		t.Fatalf("route summary missing from filter value: %q", rows[0].FilterValue)
+	}
+}
+
+func TestFormatInitRouteSpecsInline(t *testing.T) {
+	got := formatInitRouteSpecsInline([]configedit.RepositoryRouteSpec{
+		{Host: "github.com", Namespace: "SignalFT"},
+		{Host: "github.com", Namespace: "OtherMonitOrg", Repos: []string{"api", "web"}},
+	})
+	want := "github.com/SignalFT; github.com/OtherMonitOrg [api, web]"
+	if got != want {
+		t.Fatalf("formatInitRouteSpecsInline = %q, want %q", got, want)
 	}
 }
 

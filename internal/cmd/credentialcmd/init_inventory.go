@@ -68,6 +68,10 @@ type initInventoryItem struct {
 	row initInventoryRow
 }
 
+type initInventoryDelegate struct {
+	delegate list.DefaultDelegate
+}
+
 func (i initInventoryItem) Title() string {
 	return i.row.Title
 }
@@ -82,6 +86,36 @@ func (i initInventoryItem) FilterValue() string {
 	}
 	parts := []string{i.row.Title, i.row.Description, i.row.ID}
 	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func (d initInventoryDelegate) Height() int {
+	return d.delegate.Height()
+}
+
+func (d initInventoryDelegate) Spacing() int {
+	return d.delegate.Spacing()
+}
+
+func (d initInventoryDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd {
+	return d.delegate.Update(msg, m)
+}
+
+func (d initInventoryDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	if inventoryItem, ok := item.(initInventoryItem); ok && strings.TrimSpace(inventoryItem.row.Description) == "" {
+		delegate := d.delegate
+		delegate.ShowDescription = false
+		delegate.Render(w, m, index, item)
+		return
+	}
+	d.delegate.Render(w, m, index, item)
+}
+
+func (d initInventoryDelegate) ShortHelp() []key.Binding {
+	return d.delegate.ShortHelp()
+}
+
+func (d initInventoryDelegate) FullHelp() [][]key.Binding {
+	return d.delegate.FullHelp()
 }
 
 type initInventoryKeyMap struct {
@@ -128,14 +162,15 @@ func newInitInventoryModel(prompt initInventoryPrompt) initInventoryModel {
 	for _, row := range rows {
 		items = append(items, initInventoryItem{row: row})
 	}
-	delegate := list.NewDefaultDelegate()
-	delegate.ShowDescription = initInventoryRowsHaveDescriptions(rows)
-	if delegate.ShowDescription {
-		delegate.SetHeight(2)
+	defaultDelegate := list.NewDefaultDelegate()
+	defaultDelegate.ShowDescription = initInventoryRowsHaveDescriptions(rows)
+	if defaultDelegate.ShowDescription {
+		defaultDelegate.SetHeight(2)
 	} else {
-		delegate.SetHeight(1)
+		defaultDelegate.SetHeight(1)
 	}
-	delegate.SetSpacing(0)
+	defaultDelegate.SetSpacing(0)
+	delegate := initInventoryDelegate{delegate: defaultDelegate}
 
 	l := list.New(items, delegate, prompt.Width, prompt.Height)
 	l.Title = prompt.Title
