@@ -2742,10 +2742,6 @@ func initProfileEditorSecretsProfileSelectionVisible(profiles []config.Effective
 	return len(profiles) > 0 || strings.TrimSpace(missingSelection) != ""
 }
 
-func initSecretsProfileSelectionDescription() string {
-	return "Choose where this review profile stores and retrieves tokens and API keys."
-}
-
 func initSecretsProfileDefaultOptionLabel(cfg config.File) string {
 	if profile, ok := config.EffectiveDefaultSecretsProfile(cfg); ok {
 		return fmt.Sprintf("Use built-in default (%s)", initSecretsProfileLabel(profile))
