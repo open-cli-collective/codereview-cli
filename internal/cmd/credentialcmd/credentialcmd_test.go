@@ -8020,6 +8020,74 @@ func TestEditInteractiveInitProfileSkipsInlineProfileDetailCollectors(t *testing
 	}
 }
 
+func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	existing := basicProfile("open-cli-collective")
+	cfg := config.File{
+		DefaultProfile: "open-cli-collective",
+		Profiles: map[string]config.Profile{
+			"open-cli-collective": existing,
+		},
+	}
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	session := initSessionDraft{
+		path:                 path,
+		originalCfg:          cloneInitConfigFile(cfg),
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: "open-cli-collective",
+	}
+	calls := 0
+	var reentryCtx initPromptContext
+	deps := initDeps{
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			calls++
+			if calls == 2 {
+				reentryCtx = ctx
+				return initDraft{}, errInitNavigateBack
+			}
+			work := ctx.ExistingConfig.Profiles["open-cli-collective"]
+			draft := seedInteractiveInitDraft("open-cli-collective", "open-cli-collective", "open-cli-collective", &work)
+			draft.ProfileName = "open-cli-collective-lkjlkj"
+			draft.GitCredentialRef = "codereview/open-cli-collective12365"
+			draft.RoutesSet = true
+			draft.ModelMapSet = true
+			draft.AgentSourcesSet = true
+			draft.ReviewPolicySet = true
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		clipboardSupported: func() bool { return false },
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+	}
+
+	next, err := loopInteractiveInitProfileV2(&cobra.Command{}, opts, initOptions{}, deps, session)
+	if err != nil {
+		t.Fatalf("loopInteractiveInitProfileV2: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("profile v2 calls = %d, want stage then reentry", calls)
+	}
+	if _, ok := next.cfg.Profiles["open-cli-collective"]; ok {
+		t.Fatalf("old profile still present after staged rename: %#v", next.cfg.Profiles)
+	}
+	profile := next.cfg.Profiles["open-cli-collective-lkjlkj"]
+	if profile.Git.CredentialRef != "codereview/open-cli-collective12365" {
+		t.Fatalf("staged git ref = %q, want edited v2 Git label", profile.Git.CredentialRef)
+	}
+	if reentryCtx.ExistingConfig.Profiles["open-cli-collective-lkjlkj"].Git.CredentialRef != "codereview/open-cli-collective12365" {
+		t.Fatalf("reentry context profile = %#v, want staged v2 edits", reentryCtx.ExistingConfig.Profiles)
+	}
+}
+
 func TestInitInteractiveModelMapAddEditRemoveAndReset(t *testing.T) {
 	tests := []struct {
 		name     string
