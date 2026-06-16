@@ -1159,20 +1159,39 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	return summary, findingReviewers
 }
 
-// sharedWorkstreamModel reports the run's headline model only when every
-// workstream reported the same one; mixed or partially-reported models render
-// the headline as unavailable and rely on the per-workstream table. The
-// consensus covers only workstreams with session drafts — a selected agent
-// that produced no draft has no model data to contribute.
+// sharedWorkstreamModel reports the run's headline model. It reflects the model
+// the reviewer agents ran on, excluding the orchestrator selection/rollup stages
+// — those run on a cheaper baseline tier, so including them would blank the
+// headline on every mixed-tier run (e.g. Sonnet orchestrators + Opus reviewers).
+// Distinct reviewer models are comma-joined in first-seen order; if no reviewer
+// reported a model, it falls back to any reported model, else "".
 func sharedWorkstreamModel(workstreams []reviewplan.WorkstreamUsage) string {
-	model := ""
-	for i, workstream := range workstreams {
-		if workstream.Model == "" || (i > 0 && workstream.Model != model) {
-			return ""
-		}
-		model = workstream.Model
+	reviewer := distinctWorkstreamModels(workstreams, true)
+	if len(reviewer) > 0 {
+		return strings.Join(reviewer, ", ")
 	}
-	return model
+	return strings.Join(distinctWorkstreamModels(workstreams, false), ", ")
+}
+
+// distinctWorkstreamModels returns the distinct non-empty models in first-seen
+// order. When reviewersOnly is set, orchestrator stages are excluded.
+func distinctWorkstreamModels(workstreams []reviewplan.WorkstreamUsage, reviewersOnly bool) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, workstream := range workstreams {
+		if workstream.Model == "" {
+			continue
+		}
+		if reviewersOnly && strings.HasPrefix(workstream.Name, "orchestrator-") {
+			continue
+		}
+		if seen[workstream.Model] {
+			continue
+		}
+		seen[workstream.Model] = true
+		out = append(out, workstream.Model)
+	}
+	return out
 }
 
 func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {
