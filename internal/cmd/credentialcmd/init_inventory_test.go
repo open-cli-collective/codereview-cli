@@ -269,6 +269,20 @@ func TestInitInventoryDeterministicRunnerReturnsCommandAction(t *testing.T) {
 	}
 }
 
+func TestInitInventoryViewClearsAfterQuit(t *testing.T) {
+	model := newInitInventoryModel(initInventoryPrompt{
+		Title: "Review Profile",
+		Rows: []initInventoryRow{
+			{ID: "work", Title: "work", Kind: initInventoryRowKindActive, Selectable: true},
+		},
+	})
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	resultModel := next.(initInventoryModel)
+	if got := resultModel.View(); got != "" {
+		t.Fatalf("View after quit = %q, want empty final frame", got)
+	}
+}
+
 func TestInitReviewerEntityInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	rows := initReviewerEntityInventoryRows(initPromptContext{
 		ExistingProfileName: "work",

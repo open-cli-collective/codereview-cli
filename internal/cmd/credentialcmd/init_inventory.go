@@ -279,6 +279,11 @@ func (m initInventoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m initInventoryModel) View() string {
+	if m.quits {
+		// Let Bubble Tea's final render erase the inventory frame before the next
+		// prompt starts, rather than appending the next form below stale content.
+		return ""
+	}
 	l := m.list
 	l.AdditionalShortHelpKeys = func() []key.Binding {
 		return m.helpBindings()
