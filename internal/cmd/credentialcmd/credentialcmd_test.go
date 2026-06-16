@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -8019,6 +8020,353 @@ func TestEditInteractiveInitProfileSkipsInlineProfileDetailCollectors(t *testing
 	}
 }
 
+func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	existing := basicProfile("open-cli-collective")
+	cfg := config.File{
+		DefaultProfile: "open-cli-collective",
+		Profiles: map[string]config.Profile{
+			"open-cli-collective": existing,
+		},
+	}
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	session := initSessionDraft{
+		path:                 path,
+		originalCfg:          cloneInitConfigFile(cfg),
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: "open-cli-collective",
+	}
+	calls := 0
+	var reentryCtx initPromptContext
+	deps := initDeps{
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			calls++
+			if calls == 2 {
+				reentryCtx = ctx
+				return initDraft{}, errInitNavigateBack
+			}
+			work := ctx.ExistingConfig.Profiles["open-cli-collective"]
+			draft := seedInteractiveInitDraft("open-cli-collective", "open-cli-collective", "open-cli-collective", &work)
+			draft.ProfileName = "open-cli-collective-lkjlkj"
+			draft.GitCredentialRef = "codereview/open-cli-collective12365"
+			draft.RoutesSet = true
+			draft.ModelMapSet = true
+			draft.AgentSourcesSet = true
+			draft.ReviewPolicySet = true
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		clipboardSupported: func() bool { return false },
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+	}
+
+	next, err := loopInteractiveInitProfileV2(&cobra.Command{}, opts, initOptions{}, deps, session)
+	if err != nil {
+		t.Fatalf("loopInteractiveInitProfileV2: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("profile v2 calls = %d, want stage then reentry", calls)
+	}
+	if _, ok := next.cfg.Profiles["open-cli-collective"]; ok {
+		t.Fatalf("old profile still present after staged rename: %#v", next.cfg.Profiles)
+	}
+	profile := next.cfg.Profiles["open-cli-collective-lkjlkj"]
+	if profile.Git.CredentialRef != "codereview/open-cli-collective12365" {
+		t.Fatalf("staged git ref = %q, want edited v2 Git label", profile.Git.CredentialRef)
+	}
+	if reentryCtx.ExistingConfig.Profiles["open-cli-collective-lkjlkj"].Git.CredentialRef != "codereview/open-cli-collective12365" {
+		t.Fatalf("reentry context profile = %#v, want staged v2 edits", reentryCtx.ExistingConfig.Profiles)
+	}
+}
+
+func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": existing,
+		},
+	}
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	session := initSessionDraft{
+		path:                 path,
+		originalCfg:          cloneInitConfigFile(cfg),
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: "work",
+	}
+	calls := 0
+	var reentryCtx initPromptContext
+	policy := config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+		ResolveAfter:     "24h",
+	}
+	deps := initDeps{
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			calls++
+			if calls == 2 {
+				reentryCtx = ctx
+				return initDraft{}, errInitNavigateBack
+			}
+			work := ctx.ExistingConfig.Profiles["work"]
+			draft := seedInteractiveInitDraft("work", "work", "work", &work)
+			draft.GitCredentialRef = "codereview/custom-work-git"
+			draft.LLMProvider = string(config.LLMProviderOpenAI)
+			draft.LLMAuth = string(config.LLMAuthSubscription)
+			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
+			draft.LLMReviewerModelTier = string(config.ModelTierMedium)
+			draft.RoutesSet = true
+			draft.Routes = []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			}}
+			draft.ModelMapSet = true
+			draft.ModelMap = config.ModelMap{"medium": "gpt-custom"}
+			draft.AgentSourcesSet = true
+			draft.AgentSources = []string{"/tmp/agents", "/tmp/agents/../agents"}
+			draft.ReviewPolicySet = true
+			draft.ReviewPolicy = policy
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		clipboardSupported: func() bool { return false },
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+	}
+
+	next, err := loopInteractiveInitProfileV2(&cobra.Command{}, opts, initOptions{}, deps, session)
+	if err != nil {
+		t.Fatalf("loopInteractiveInitProfileV2: %v", err)
+	}
+	profile := next.cfg.Profiles["work"]
+	if profile.Git.CredentialRef != "codereview/custom-work-git" {
+		t.Fatalf("git ref = %q, want custom v2 git label", profile.Git.CredentialRef)
+	}
+	if profile.LLM.Provider != config.LLMProviderOpenAI || profile.LLM.Adapter != config.LLMAdapterCodexCLI || profile.LLM.ReviewerModelTier != config.ModelTierMedium {
+		t.Fatalf("llm = %#v, want v2 runtime/model-tier edits", profile.LLM)
+	}
+	if !reflect.DeepEqual(profile.LLM.ModelMap, config.ModelMap{"medium": "gpt-custom"}) {
+		t.Fatalf("model_map = %#v, want v2 model-map edit", profile.LLM.ModelMap)
+	}
+	if !reflect.DeepEqual(profile.AgentSources, []string{"/tmp/agents"}) {
+		t.Fatalf("agent_sources = %#v, want normalized v2 agent sources", profile.AgentSources)
+	}
+	if profile.ReviewPolicy != policy {
+		t.Fatalf("review_policy = %#v, want %#v", profile.ReviewPolicy, policy)
+	}
+	if len(next.cfg.RepositoryProfiles) != 1 || next.cfg.RepositoryProfiles[0].Profile != "work" || next.cfg.RepositoryProfiles[0].Match.Repos[0] != "codereview-cli" {
+		t.Fatalf("repository_profiles = %#v, want v2 route edit", next.cfg.RepositoryProfiles)
+	}
+	reentryProfile := reentryCtx.ExistingConfig.Profiles["work"]
+	if reentryProfile.Git.CredentialRef != "codereview/custom-work-git" || !reflect.DeepEqual(reentryProfile.AgentSources, []string{"/tmp/agents"}) {
+		t.Fatalf("reentry profile = %#v, want staged v2 detail edits", reentryProfile)
+	}
+}
+
+func TestCompleteInteractiveInitProfileV2DraftUsesProfileNamePriorityForRoutes(t *testing.T) {
+	ctx := initPromptContext{
+		ExistingProfileName: "existing",
+		ExistingConfig: config.File{
+			RepositoryProfiles: []config.RepositoryProfile{
+				{
+					Profile: "original",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "OriginalOrg",
+					},
+				},
+				{
+					Profile: "existing",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "ExistingOrg",
+					},
+				},
+				{
+					Profile: "fallback",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "FallbackOrg",
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name               string
+		originalProfile    string
+		existingProfile    string
+		fallbackProfile    string
+		wantRouteNamespace string
+	}{
+		{
+			name:               "original profile wins",
+			originalProfile:    "original",
+			existingProfile:    "existing",
+			fallbackProfile:    "fallback",
+			wantRouteNamespace: "OriginalOrg",
+		},
+		{
+			name:               "existing profile wins over fallback",
+			existingProfile:    "existing",
+			fallbackProfile:    "fallback",
+			wantRouteNamespace: "ExistingOrg",
+		},
+		{
+			name:               "fallback profile used last",
+			fallbackProfile:    "fallback",
+			wantRouteNamespace: "FallbackOrg",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nextCtx := ctx
+			nextCtx.ExistingProfileName = tt.existingProfile
+			draft := completeInteractiveInitProfileV2Draft(nextCtx, initDraft{
+				OriginalProfileName: tt.originalProfile,
+				ProfileName:         tt.fallbackProfile,
+			})
+
+			want := []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: tt.wantRouteNamespace,
+			}}
+			if !reflect.DeepEqual(draft.Routes, want) {
+				t.Fatalf("Routes = %#v, want %#v", draft.Routes, want)
+			}
+			if !draft.RoutesSet {
+				t.Fatalf("RoutesSet = false, want true")
+			}
+		})
+	}
+}
+
+func TestCompleteInteractiveInitProfileV2DraftPreservesExplicitSetFields(t *testing.T) {
+	existing := basicProfile("work")
+	existing.LLM.ModelMap = config.ModelMap{"medium": "existing-medium"}
+	existing.AgentSources = []string{"/existing/agents"}
+	existing.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+	}
+	ctx := initPromptContext{
+		ExistingProfileName: "work",
+		ExistingProfile:     &existing,
+		ExistingConfig: config.File{
+			RepositoryProfiles: []config.RepositoryProfile{{
+				Profile: "work",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "ExistingOrg",
+				},
+			}},
+		},
+	}
+	wantRoutes := []configedit.RepositoryRouteSpec{{
+		Host:      "github.com",
+		Namespace: "ExplicitOrg",
+	}}
+	wantModelMap := config.ModelMap{"large": "explicit-large"}
+	wantAgentSources := []string{"/explicit/agents"}
+	wantReviewPolicy := config.ReviewPolicy{
+		MajorEvent:     config.ReviewMajorEventComment,
+		ResolveThreads: config.ResolveThreadsNever,
+	}
+
+	draft := completeInteractiveInitProfileV2Draft(ctx, initDraft{
+		RoutesSet:       true,
+		Routes:          wantRoutes,
+		ModelMapSet:     true,
+		ModelMap:        wantModelMap,
+		AgentSourcesSet: true,
+		AgentSources:    wantAgentSources,
+		ReviewPolicySet: true,
+		ReviewPolicy:    wantReviewPolicy,
+	})
+
+	if !reflect.DeepEqual(draft.Routes, wantRoutes) {
+		t.Fatalf("Routes = %#v, want explicit %#v", draft.Routes, wantRoutes)
+	}
+	if !reflect.DeepEqual(draft.ModelMap, wantModelMap) {
+		t.Fatalf("ModelMap = %#v, want explicit %#v", draft.ModelMap, wantModelMap)
+	}
+	if !reflect.DeepEqual(draft.AgentSources, wantAgentSources) {
+		t.Fatalf("AgentSources = %#v, want explicit %#v", draft.AgentSources, wantAgentSources)
+	}
+	if draft.ReviewPolicy != wantReviewPolicy {
+		t.Fatalf("ReviewPolicy = %#v, want explicit %#v", draft.ReviewPolicy, wantReviewPolicy)
+	}
+}
+
+func TestCompleteInteractiveInitProfileV2DraftFillsUnsetFieldsAndDefaultsReviewPolicy(t *testing.T) {
+	existing := basicProfile("work")
+	existing.LLM.ModelMap = config.ModelMap{"medium": "existing-medium"}
+	existing.AgentSources = []string{"/existing/agents"}
+	existing.ReviewPolicy = config.ReviewPolicy{
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+	}
+	ctx := initPromptContext{
+		ExistingProfileName: "work",
+		ExistingProfile:     &existing,
+		ExistingConfig: config.File{
+			RepositoryProfiles: []config.RepositoryProfile{{
+				Profile: "work",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "ExistingOrg",
+				},
+			}},
+		},
+	}
+
+	draft := completeInteractiveInitProfileV2Draft(ctx, initDraft{})
+
+	wantRoutes := []configedit.RepositoryRouteSpec{{
+		Host:      "github.com",
+		Namespace: "ExistingOrg",
+	}}
+	if !reflect.DeepEqual(draft.Routes, wantRoutes) || !draft.RoutesSet {
+		t.Fatalf("Routes = %#v set=%v, want %#v set=true", draft.Routes, draft.RoutesSet, wantRoutes)
+	}
+	if !reflect.DeepEqual(draft.ModelMap, existing.LLM.ModelMap) || !draft.ModelMapSet {
+		t.Fatalf("ModelMap = %#v set=%v, want existing set=true", draft.ModelMap, draft.ModelMapSet)
+	}
+	if !reflect.DeepEqual(draft.AgentSources, existing.AgentSources) || !draft.AgentSourcesSet {
+		t.Fatalf("AgentSources = %#v set=%v, want existing set=true", draft.AgentSources, draft.AgentSourcesSet)
+	}
+	if !draft.ReviewPolicySet {
+		t.Fatalf("ReviewPolicySet = false, want true")
+	}
+	if draft.ReviewPolicy.MajorEvent != config.ReviewMajorEventComment {
+		t.Fatalf("ReviewPolicy.MajorEvent = %q, want default comment", draft.ReviewPolicy.MajorEvent)
+	}
+	if !draft.ReviewPolicy.AllowSelfApprove || draft.ReviewPolicy.ResolveThreads != config.ResolveThreadsNever {
+		t.Fatalf("ReviewPolicy = %#v, want existing fields preserved", draft.ReviewPolicy)
+	}
+}
+
 func TestInitInteractiveModelMapAddEditRemoveAndReset(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -8678,10 +9026,9 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 		},
 	}
 	profileCalls := 0
-	routeCalls := 0
 	deps := initDeps{
 		menuPrompter: menu,
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileCalls++
 			switch profileCalls {
 			case 1:
@@ -8695,6 +9042,11 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 					LLMProvider:         string(config.LLMProviderAnthropic),
 					LLMAuth:             string(config.LLMAuthSubscription),
 					LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					RoutesSet:           true,
+					Routes: []configedit.RepositoryRouteSpec{{
+						Host:      "gitlab.com",
+						Namespace: "open-cli-collective",
+					}},
 				}, nil
 			case 2:
 				if prompt.ExistingProfile == nil {
@@ -8710,14 +9062,8 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 			}
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
-			routeCalls++
-			if routeCalls > 1 {
-				t.Fatalf("unexpected routes prompt #%d", routeCalls)
-			}
-			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
-				t.Fatalf("prompt = %#v, want integrated route reconciliation before Back", prompt)
-			}
-			return initRoutesEdit{}, errInitNavigateBack
+			t.Fatalf("routes prompter should not run from v2 profile editor path: %#v", prompt)
+			return initRoutesEdit{}, nil
 		}),
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -8735,9 +9081,6 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 	}
 	if profileCalls != 2 {
 		t.Fatalf("profileCalls = %d, want staged profile pass then explicit Back", profileCalls)
-	}
-	if routeCalls != 1 {
-		t.Fatalf("routeCalls = %d, want single integrated route prompt before Back", routeCalls)
 	}
 	got := menu.prompts[1]
 	if got.ActiveProfileName != "work" || !got.CanSave || got.ReviewProfileCount != 1 {
@@ -9344,6 +9687,12 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 			t.Fatalf("stderr = %q, want menu item %q", out, want)
 		}
 	}
+	if strings.Count(out, "Configure review profiles") != 1 {
+		t.Fatalf("stderr = %q, want exactly one review-profile menu item", out)
+	}
+	if strings.Contains(out, "Configure review profiles v2") {
+		t.Fatalf("stderr = %q, want temporary v2 menu item removed", out)
+	}
 }
 
 func TestHuhInitMenuPrompterAccessibleSelectsSecretsManagement(t *testing.T) {
@@ -9413,6 +9762,1201 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	}
 	if !strings.Contains(stderr.String(), "configure a review profile before editing LLM runtimes") {
 		t.Fatalf("stderr = %q, want disabled-llm validation message", stderr.String())
+	}
+}
+
+func TestHuhInitMenuPrompterAccessibleSelectsReviewProfiles(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitMenuPrompter{
+		stdin:  strings.NewReader("3\n"),
+		stderr: &stderr,
+	}
+	action, err := prompter.ChooseAction(initMenuPrompt{
+		HasWorkspace:         true,
+		LLMRuntimeCount:      2,
+		ReviewerEntityCount:  3,
+		ReviewProfileCount:   1,
+		CanConfigureLLM:      true,
+		CanConfigureReviewer: true,
+		CanSave:              true,
+	})
+	if err != nil {
+		t.Fatalf("ChooseAction: %v", err)
+	}
+	if action != initMenuActionReviewProfiles {
+		t.Fatalf("action = %q, want review profiles", action)
+	}
+	if !strings.Contains(stderr.String(), "Configure review profiles (1)") {
+		t.Fatalf("stderr = %q, want review profile menu entry", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Configure review profiles v2") {
+		t.Fatalf("stderr = %q, want temporary v2 menu entry removed", stderr.String())
+	}
+}
+
+func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T) {
+	profile := basicProfile("open-cli-collective")
+	reviewerRef, err := credentials.FormatRef("occ-reviewer")
+	if err != nil {
+		t.Fatalf("FormatRef: %v", err)
+	}
+	profile.Git.Host = "github.enterprise"
+	profile.Git.AuthMode = config.GitAuthModeGitHubApp
+	profile.Git.CredentialRef = "codereview/custom-git"
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: reviewerRef,
+		DisplayName:   "OCC reviewer",
+	}
+	profile.LLM.ModelMap = config.ModelMap{
+		string(config.ModelTierLarge): "claude-opus-4-7",
+	}
+	profile.AgentSources = []string{"/opt/codereview/agents"}
+	profile.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsAuto,
+		ResolveAfter:     "24h",
+	}
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"open-cli-collective": profile,
+		},
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "open-cli-collective",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+			},
+		}},
+	}
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+
+	content, err := initProfileV2ReadOnlyContent(initPromptContext{
+		RequestedProfileName:    "open-cli-collective",
+		ExistingProfileName:     "open-cli-collective",
+		ExistingProfile:         &profile,
+		ExistingProfileNames:    []string{"open-cli-collective"},
+		ExistingConfig:          cfg,
+		ReviewerEntities:        reviewerEntities,
+		ProfileReviewerEntities: profileReviewerEntities,
+		LLMRuntimes:             llmRuntimes,
+		ProfileLLMRuntimes:      profileLLMRuntimes,
+	}, "open-cli-collective")
+	if err != nil {
+		t.Fatalf("initProfileV2ReadOnlyContent: %v", err)
+	}
+
+	for _, want := range []string{
+		"Profile name",
+		"> open-cli-collective",
+		"Automatic profile selection",
+		"github.com/open-cli-collective",
+		"Git scope",
+		"Git scope host",
+		"> github.enterprise",
+		"Reviewer entity",
+		"OCC reviewer (GitHub App reviewer)",
+		"LLM runtime",
+		"Configured: Claude CLI subscription",
+		"Minimum reviewer model tier",
+		"Model tier mapping",
+		"large model",
+		"> claude-opus-4-7",
+		"Additional reviewer-agent directories (optional)",
+		"/opt/codereview/agents",
+		"Review Policy",
+		"> Request changes",
+		"> Enable self-approve",
+		"> Auto-resolve",
+		"> 24h",
+		"Git secrets storage label",
+		"> codereview/custom-git",
+		"Profile action",
+		"> Stage profile settings",
+		"Back without staging",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("content missing %q:\n%s", want, content)
+		}
+	}
+
+	assertContentOrder := func(parts ...string) {
+		t.Helper()
+		previous := -1
+		for _, part := range parts {
+			index := strings.Index(content, part)
+			if index < 0 {
+				t.Fatalf("content missing %q:\n%s", part, content)
+			}
+			if index <= previous {
+				t.Fatalf("content order wrong for %q:\n%s", part, content)
+			}
+			previous = index
+		}
+	}
+	assertContentOrder(
+		"Profile name",
+		"Automatic profile selection",
+		"Route entries",
+		"Git scope",
+		"Reviewer entity",
+		"LLM runtime",
+		"Minimum reviewer model tier",
+		"Model tier mapping",
+		"Additional reviewer-agent directories (optional)",
+		"Review Policy",
+		"Git secrets storage label",
+		"Profile action",
+	)
+}
+
+func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *testing.T) {
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addInput("Profile name", "", "open-cli-collective")
+	initProfileV2AppendRouteSection(&document, "github.com/open-cli-collective")
+	initProfileV2AddSelect(&document, "Reviewer entity", "Choose who posts review events.", []huh.Option[string]{
+		huh.NewOption("Post using this profile's Git account (GitHub PAT)", "profile"),
+	}, "profile")
+
+	routeIndex := document.fieldIndexByTitle("Route entries")
+	if routeIndex < 0 {
+		t.Fatal("Route entries field missing")
+	}
+
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyType
+	}{
+		{name: "enter", key: tea.KeyEnter},
+		{name: "down", key: tea.KeyDown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 240, 19)
+			model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tc.key})
+
+			if model.focused != routeIndex {
+				t.Fatalf("focused index = %d, want route entries index %d", model.focused, routeIndex)
+			}
+			if model.viewport.YOffset != 0 {
+				t.Fatalf("viewport YOffset = %d, want unchanged top while route entries are already visible", model.viewport.YOffset)
+			}
+			for _, want := range []string{
+				"Automatic profile selection",
+				"Accepted route formats",
+				"Route entries",
+				"github.com/open-cli-collective",
+			} {
+				if !strings.Contains(model.View(), want) {
+					t.Fatalf("view missing %q after focusing route entries:\n%s", want, model.View())
+				}
+			}
+			if strings.Contains(model.View(), "> Route entries") {
+				t.Fatalf("view still uses caret on focused title instead of active rail:\n%s", model.View())
+			}
+		})
+	}
+}
+
+func TestInitProfileV2LayoutWrapsAndMeasuresSmallViewport(t *testing.T) {
+	var document initProfileV2Document
+	document.addSection("Profile", "This section has enough words to wrap across multiple lines in a narrow terminal.")
+	document.addInput("Profile name", "Short field that should remain measurable.", "monit")
+	document.addInput("Route entries", "Routes tell cr when to use this profile automatically in a narrow viewport.", "github.com/SignalFT")
+	document.addInput("Git secrets storage label", "Useful for advanced deployment scenarios. Leave unchanged if unsure.", "codereview/monit")
+
+	layout := initProfileV2LayoutDocument(document, 32, document.firstFocusableField())
+	if len(layout.Bounds) != len(document) {
+		t.Fatalf("bounds count = %d, want %d", len(layout.Bounds), len(document))
+	}
+	if layout.Lines <= len(document) {
+		t.Fatalf("layout lines = %d, want wrapped content larger than document length %d", layout.Lines, len(document))
+	}
+	for _, line := range strings.Split(layout.Content, "\n") {
+		if len(line) > 32 {
+			t.Fatalf("line length = %d, want <= 32 for %q\n%s", len(line), line, layout.Content)
+		}
+	}
+	for index, bounds := range layout.Bounds {
+		if bounds.Start < 0 || bounds.End <= bounds.Start || bounds.End > layout.Lines {
+			t.Fatalf("bounds[%d] = %#v outside layout with %d lines", index, bounds, layout.Lines)
+		}
+	}
+
+	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 32, 6)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyEnd})
+	bounds := model.layout.Bounds[model.focused]
+	if bounds.Start < model.viewport.YOffset || bounds.Start >= model.viewport.YOffset+model.viewport.Height {
+		t.Fatalf("focused field start line %d not visible in viewport [%d,%d)", bounds.Start, model.viewport.YOffset, model.viewport.YOffset+model.viewport.Height)
+	}
+}
+
+func TestInitProfileV2TextInputsDraftProfileNameAndRoutes(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT; github.com/OtherMonitOrg"), 160, 24)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "monit-next")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.ProfileName != "monit-next" {
+		t.Fatalf("ProfileName = %q, want monit-next", draft.ProfileName)
+	}
+	if !draft.RoutesSet {
+		t.Fatal("RoutesSet = false, want true")
+	}
+	wantRoutes := []configedit.RepositoryRouteSpec{
+		{Host: "github.com", Namespace: "SignalFT"},
+		{Host: "github.com", Namespace: "OtherMonitOrg"},
+	}
+	if !reflect.DeepEqual(draft.Routes, wantRoutes) {
+		t.Fatalf("Routes = %#v, want %#v", draft.Routes, wantRoutes)
+	}
+}
+
+func TestInitProfileV2TextInputsClearRoutes(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT"), 160, 24)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.RoutesSet {
+		t.Fatal("RoutesSet = false, want true")
+	}
+	if len(draft.Routes) != 0 {
+		t.Fatalf("Routes = %#v, want cleared routes", draft.Routes)
+	}
+}
+
+func TestInitProfileV2TextInputsShowLocalErrors(t *testing.T) {
+	t.Run("profile name", func(t *testing.T) {
+		model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT"), 160, 24)
+		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+
+		if !strings.Contains(model.View(), "profile name is required") {
+			t.Fatalf("view missing profile name validation error:\n%s", model.View())
+		}
+		if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "profile name is required") {
+			t.Fatalf("validatedDraft error = %v, want profile name validation", err)
+		}
+	})
+
+	t.Run("routes", func(t *testing.T) {
+		model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT"), 160, 24)
+		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+		model = typeInitProfileV2Text(t, model, "not-a-route")
+
+		if !strings.Contains(model.View(), "must be host/namespace") {
+			t.Fatalf("view missing route validation error:\n%s", model.View())
+		}
+		if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "must be host/namespace") {
+			t.Fatalf("validatedDraft error = %v, want route validation", err)
+		}
+	})
+}
+
+func TestInitProfileV2GitScopeDefaultPathHidesCustomControls(t *testing.T) {
+	profile := basicProfile("monit")
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"monit": profile,
+		},
+	}
+	gitScopes, profileGitScopes := buildInitGitScopeInventory(cfg)
+	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+
+	content, err := initProfileV2ReadOnlyContent(initPromptContext{
+		RequestedProfileName:    "monit",
+		ExistingProfileName:     "monit",
+		ExistingProfile:         &profile,
+		ExistingProfileNames:    []string{"monit"},
+		ExistingConfig:          cfg,
+		GitScopes:               gitScopes,
+		ProfileGitScopes:        profileGitScopes,
+		ReviewerEntities:        reviewerEntities,
+		ProfileReviewerEntities: profileReviewerEntities,
+		LLMRuntimes:             llmRuntimes,
+		ProfileLLMRuntimes:      profileLLMRuntimes,
+	}, "monit")
+	if err != nil {
+		t.Fatalf("initProfileV2ReadOnlyContent: %v", err)
+	}
+	for _, absent := range []string{
+		"Choose an existing Git scope",
+		"Git scope host",
+		"Git scope auth mode",
+	} {
+		if strings.Contains(content, absent) {
+			t.Fatalf("content contains %q, want ordinary single-scope profile to keep Git scope controls hidden:\n%s", absent, content)
+		}
+	}
+}
+
+func TestInitProfileV2GitScopePreservesSelectedScopeInDraft(t *testing.T) {
+	gitScopes := map[string]initGitScopeDraft{
+		"gitlab-work": {
+			Host:          "gitlab.com",
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: "codereview/gitlab-work",
+		},
+		"github-work": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/github-work",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
+		"monit",
+		"gitlab.com/SignalFT",
+		"gitlab-work",
+		gitScopes,
+		initDraft{
+			OriginalProfileName: "monit",
+			ProfileName:         "monit",
+			GitHost:             "github.com",
+			GitAuth:             string(config.GitAuthModePAT),
+		},
+	), 160, 24)
+
+	if strings.Contains(model.View(), "Git scope host") {
+		t.Fatalf("view contains custom Git host controls for selected shared scope:\n%s", model.View())
+	}
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModeGitHubApp) || draft.GitCredentialRef != "codereview/gitlab-work" {
+		t.Fatalf("draft Git = (%q,%q,%q), want selected gitlab scope", draft.GitHost, draft.GitAuth, draft.GitCredentialRef)
+	}
+}
+
+func TestInitProfileV2GitScopeCustomEditsDraft(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
+		"monit",
+		"gitlab.com/SignalFT",
+		initCustomGitScopeSelection,
+		nil,
+		initDraft{
+			OriginalProfileName: "monit",
+			ProfileName:         "monit",
+			GitHost:             "github.enterprise",
+			GitAuth:             string(config.GitAuthModeGitHubApp),
+		},
+	), 160, 24)
+
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitHost)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "gitlab.com")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitAuth)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyLeft})
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModePAT) {
+		t.Fatalf("draft Git = (%q,%q), want edited custom Git host/auth", draft.GitHost, draft.GitAuth)
+	}
+}
+
+func TestInitProfileV2GitScopeRejectsRoutesForDifferentHost(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
+		"monit",
+		"github.com/SignalFT",
+		initCustomGitScopeSelection,
+		nil,
+		initDraft{
+			OriginalProfileName: "monit",
+			ProfileName:         "monit",
+			GitHost:             "gitlab.com",
+			GitAuth:             string(config.GitAuthModePAT),
+		},
+	), 160, 24)
+
+	_, err := model.validatedDraft()
+	if err == nil || !strings.Contains(err.Error(), `route host "github.com" does not match selected profile host "gitlab.com"`) {
+		t.Fatalf("validatedDraft error = %v, want route host mismatch", err)
+	}
+}
+
+func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
+	// #nosec G101 -- test fixture credential reference, not a secret.
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"app-reviewer": {
+			Kind:          initReviewerEntityKindGitHubApp,
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: "codereview/app-reviewer",
+			DisplayName:   "enterprise/reviewer-bot",
+		},
+	}
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"claude-work": {
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		"openai-work": {
+			Preset:        initLLMRuntimePresetOpenAIAPIKey,
+			Provider:      config.LLMProviderOpenAI,
+			Auth:          config.LLMAuthAPIKey,
+			Adapter:       config.LLMAdapterOpenAIAPI,
+			CredentialRef: "codereview/openai-work",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", reviewerEntities, llmRuntimes), 160, 24)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "app-reviewer")
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldLLMRuntime, "openai-work")
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerModelTier, string(config.ModelTierMedium))
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModeGitHubApp) || draft.ReviewerCredentialRef != "codereview/app-reviewer" || draft.ReviewerDisplayName != "enterprise/reviewer-bot" {
+		t.Fatalf("draft reviewer = (enabled:%t auth:%q ref:%q name:%q), want selected GitHub App reviewer", draft.ReviewerEnabled, draft.ReviewerAuth, draft.ReviewerCredentialRef, draft.ReviewerDisplayName)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAuth != string(config.LLMAuthAPIKey) || draft.LLMAdapter != string(config.LLMAdapterOpenAIAPI) || draft.LLMCredentialRef != "codereview/openai-work" {
+		t.Fatalf("draft LLM = (%q,%q,%q,%q), want selected OpenAI API runtime", draft.LLMProvider, draft.LLMAuth, draft.LLMAdapter, draft.LLMCredentialRef)
+	}
+	if draft.LLMReviewerModelTier != string(config.ModelTierMedium) {
+		t.Fatalf("draft.LLMReviewerModelTier = %q, want medium", draft.LLMReviewerModelTier)
+	}
+}
+
+func TestInitProfileV2NoRuntimeBootstrapRequestsExistingFlow(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", nil, nil), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldLLMRuntime)
+	if !strings.Contains(model.View(), "Configure a new LLM runtime first") {
+		t.Fatalf("view missing no-runtime bootstrap option:\n%s", model.View())
+	}
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	if !next.requestLLMRuntimeBootstrap {
+		t.Fatal("requestLLMRuntimeBootstrap = false, want existing runtime flow request")
+	}
+	if cmd == nil {
+		t.Fatal("Update returned nil command, want quit command for runtime bootstrap handoff")
+	}
+	if _, err := next.validatedDraft(); err == nil || !strings.Contains(err.Error(), "configure a new LLM runtime first") {
+		t.Fatalf("validatedDraft error = %v, want no-runtime guard", err)
+	}
+}
+
+func TestInitProfileV2ModelMapInputsDraftOverridesAndClears(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithModelMap(
+		"monit",
+		"github.com/SignalFT",
+		config.LLMConfig{
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		config.ModelMap{
+			string(config.ModelTierLarge): "claude-opus-4-7",
+		},
+	), 160, 24)
+
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierSmall))
+	if !strings.Contains(model.View(), "> |") {
+		t.Fatalf("view missing editable cursor for empty small model field:\n%s", model.View())
+	}
+	model = typeInitProfileV2Text(t, model, "claude-haiku-custom")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierMedium))
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierLarge))
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.ModelMapSet {
+		t.Fatal("draft.ModelMapSet = false, want model map edits staged")
+	}
+	want := config.ModelMap{
+		string(config.ModelTierSmall): "claude-haiku-custom",
+	}
+	if !reflect.DeepEqual(draft.ModelMap, want) {
+		t.Fatalf("draft.ModelMap = %#v, want %#v", draft.ModelMap, want)
+	}
+}
+
+func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"claude-work": {
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+		"openai-work": {
+			Preset:   initLLMRuntimePresetOpenAIAPIKey,
+			Provider: config.LLMProviderOpenAI,
+			Auth:     config.LLMAuthAPIKey,
+			Adapter:  config.LLMAdapterOpenAIAPI,
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap("monit", "github.com/SignalFT", llmRuntimes, "claude-work"), 160, 24)
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "" {
+		t.Fatalf("initial small model = %q, want unmapped Claude small model", got)
+	}
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-4-6" {
+		t.Fatalf("initial medium model = %q, want Claude built-in", got)
+	}
+
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldLLMRuntime, "openai-work")
+
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "gpt-5.4-mini" {
+		t.Fatalf("small model after runtime change = %q, want OpenAI built-in", got)
+	}
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-5.4" {
+		t.Fatalf("medium model after runtime change = %q, want OpenAI built-in", got)
+	}
+	smallIndex := model.document.fieldIndexByID(initProfileV2FieldModelMap(config.ModelTierSmall))
+	if smallIndex < 0 || !strings.Contains(model.document[smallIndex].Description, "Built-in small model for this runtime: gpt-5.4-mini.") {
+		t.Fatalf("small model description after runtime change = %q", model.document[smallIndex].Description)
+	}
+}
+
+func TestInitProfileV2AgentSourcesTextareaDraftsNormalizedSources(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithAgentSources("monit", "github.com/SignalFT", []string{"/tmp/agents-old"}), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldAgentSources)
+	if !strings.Contains(model.View(), "ctrl+j newline") {
+		t.Fatalf("view missing textarea newline help:\n%s", model.View())
+	}
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "/tmp/agents-alpha")
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlJ})
+	model = typeInitProfileV2Text(t, model, "/tmp/agents-alpha/../agents-alpha")
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlJ})
+	model = typeInitProfileV2Text(t, model, " ./agents-beta ")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.AgentSourcesSet {
+		t.Fatal("draft.AgentSourcesSet = false, want agent-source edits staged")
+	}
+	want := []string{"/tmp/agents-alpha", "agents-beta"}
+	if !reflect.DeepEqual(draft.AgentSources, want) {
+		t.Fatalf("draft.AgentSources = %#v, want %#v", draft.AgentSources, want)
+	}
+}
+
+func TestInitProfileV2AgentSourcesEnterMovesFocusWithoutDestroyingNavigation(t *testing.T) {
+	editor := newTestInitProfileV2EditorWithAgentSources("monit", "github.com/SignalFT", nil)
+	editor.Document.addEditableInput(initProfileV2FieldID("after_agent_sources"), "After agent sources", "", "next", nil)
+	model := newInitProfileV2ReadOnlyModel(editor, 48, 10)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldAgentSources)
+	model = typeInitProfileV2Text(t, model, strings.Repeat("/tmp/very-long-agent-source-path/", 5))
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if got := model.document[model.focused].Title; got != "After agent sources" {
+		t.Fatalf("focused field = %q, want next field after textarea", got)
+	}
+	if !strings.Contains(model.View(), "After agent sources") {
+		t.Fatalf("view missing next field after leaving long textarea:\n%s", model.View())
+	}
+}
+
+func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/monit",
+		true,
+		nil,
+		initCustomGitScopeSelection,
+	), 160, 24)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewMajorEvent, string(config.ReviewMajorEventRequestChanges))
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldSelfApprove, initSelfApproveEnable)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldResolveThreads, string(config.ResolveThreadsAuto))
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldResolveAfter)
+	model = typeInitProfileV2Text(t, model, "24h")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if !draft.ReviewPolicySet {
+		t.Fatal("draft.ReviewPolicySet = false, want review-policy edits staged")
+	}
+	want := config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsAuto,
+		ResolveAfter:     "24h",
+	}
+	if !reflect.DeepEqual(draft.ReviewPolicy, want) {
+		t.Fatalf("draft.ReviewPolicy = %#v, want %#v", draft.ReviewPolicy, want)
+	}
+}
+
+func TestInitProfileV2ReviewPolicyRejectsInvalidDuration(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/monit",
+		true,
+		nil,
+		initCustomGitScopeSelection,
+	), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldResolveAfter)
+	model = typeInitProfileV2Text(t, model, "tomorrow")
+
+	if !strings.Contains(model.View(), "invalid duration") {
+		t.Fatalf("view missing duration validation error:\n%s", model.View())
+	}
+	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "invalid duration") {
+		t.Fatalf("validatedDraft error = %v, want duration validation", err)
+	}
+}
+
+func TestInitProfileV2GitStorageLabelDraftsCustomLabel(t *testing.T) {
+	gitScopes := map[string]initGitScopeDraft{
+		"github-work": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/monit",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/monit",
+		true,
+		gitScopes,
+		"github-work",
+	), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitStorageLabel)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "codereview/custom-monit-git")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/custom-monit-git" {
+		t.Fatalf("draft.GitCredentialRef = %q, want custom label", draft.GitCredentialRef)
+	}
+	if !draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = false, want true for custom Git label")
+	}
+}
+
+func TestInitProfileV2GitStorageLabelRejectsInvalidCredentialRef(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/monit",
+		true,
+		nil,
+		initCustomGitScopeSelection,
+	), 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitStorageLabel)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "not-a-ref")
+
+	if !strings.Contains(model.View(), "credential ref") {
+		t.Fatalf("view missing credential-ref validation error:\n%s", model.View())
+	}
+	if _, err := model.validatedDraft(); err == nil {
+		t.Fatal("validatedDraft error = nil, want credential-ref validation")
+	}
+}
+
+func TestInitProfileV2GitStorageLabelFollowsChangedScopeDefaultWhenUnedited(t *testing.T) {
+	gitScopes := map[string]initGitScopeDraft{
+		"old-git": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/old-git",
+		},
+		"new-git": {
+			Host:          "github.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/new-git",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
+		"monit",
+		"github.com/SignalFT",
+		config.ReviewPolicy{},
+		"codereview/old-git",
+		true,
+		gitScopes,
+		"old-git",
+	), 160, 24)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldGitScope, "new-git")
+
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.GitCredentialRef != "codereview/new-git" {
+		t.Fatalf("draft.GitCredentialRef = %q, want changed Git scope default", draft.GitCredentialRef)
+	}
+	if draft.AdvancedStorageLabels {
+		t.Fatal("draft.AdvancedStorageLabels = true, want false for unchanged default label")
+	}
+}
+
+func TestInitProfileV2ProfileActionStagesValidatedDraft(t *testing.T) {
+	editor := newTestInitProfileV2Editor("monit", "github.com/SignalFT")
+	initProfileV2AppendProfileActionSection(&editor.Document)
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 24)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "monit-next")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileAction)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	if cmd == nil {
+		t.Fatal("Update returned nil command, want quit command after staging")
+	}
+	if !next.result.StageProfile {
+		t.Fatalf("StageProfile = false, result = %#v", next.result)
+	}
+	if next.result.Draft.ProfileName != "monit-next" {
+		t.Fatalf("staged ProfileName = %q, want monit-next", next.result.Draft.ProfileName)
+	}
+	if !next.result.Draft.RoutesSet || len(next.result.Draft.Routes) != 1 {
+		t.Fatalf("staged routes = (%t,%#v), want one staged route", next.result.Draft.RoutesSet, next.result.Draft.Routes)
+	}
+}
+
+func TestInitProfileV2ProfileActionKeepsEditorOpenOnValidationError(t *testing.T) {
+	editor := newTestInitProfileV2Editor("monit", "github.com/SignalFT")
+	initProfileV2AppendProfileActionSection(&editor.Document)
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldRoutes)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "not-a-route")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileAction)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	if cmd != nil {
+		t.Fatal("Update returned quit command, want editor to stay open on validation error")
+	}
+	if next.result.StageProfile {
+		t.Fatal("StageProfile = true, want validation to block staging")
+	}
+	actionIndex := next.document.fieldIndexByID(initProfileV2FieldProfileAction)
+	if actionIndex < 0 || !strings.Contains(next.document[actionIndex].Error, "must be host/namespace") {
+		t.Fatalf("profile action error = %q, want route validation", next.document[actionIndex].Error)
+	}
+}
+
+func TestInitProfileV2ProfileActionBackReturnsWithoutStaging(t *testing.T) {
+	editor := newTestInitProfileV2Editor("monit", "github.com/SignalFT")
+	initProfileV2AppendProfileActionSection(&editor.Document)
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 24)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileAction)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldProfileAction, initDetailActionBack)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	if cmd == nil {
+		t.Fatal("Update returned nil command, want quit command for back without staging")
+	}
+	if next.result.StageProfile {
+		t.Fatal("StageProfile = true, want back without staging to discard edits")
+	}
+}
+
+func TestBubbleTeaInitProfileV2PrompterReturnsStagedDraft(t *testing.T) {
+	profile := basicProfile("monit")
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "monit",
+					Title: "monit",
+				},
+			}, nil
+		},
+		profileEditorRunner: func(editor initProfileV2Editor) (initProfileV2EditorResult, error) {
+			draft := editor.Draft
+			draft.ProfileName = "monit-next"
+			return initProfileV2EditorResult{StageProfile: true, Draft: draft}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "monit",
+		ExistingProfileName:  "monit",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"monit"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"monit": profile}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.ProfileName != "monit-next" {
+		t.Fatalf("draft.ProfileName = %q, want staged draft from editor", draft.ProfileName)
+	}
+}
+
+func TestBubbleTeaInitProfileV2PrompterBootstrapsRuntimeBeforeStaging(t *testing.T) {
+	profile := basicProfile("monit")
+	editorCalls := 0
+	llmPromptCalled := false
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			return initInventoryResult{
+				Action: initInventoryActionEdit,
+				Row: initInventoryRow{
+					ID:    "monit",
+					Title: "monit",
+				},
+			}, nil
+		},
+		profileEditorRunner: func(editor initProfileV2Editor) (initProfileV2EditorResult, error) {
+			editorCalls++
+			switch editorCalls {
+			case 1:
+				if len(editor.LLMRuntimes) != 0 {
+					t.Fatalf("initial editor runtimes = %#v, want first-run no-runtime state", editor.LLMRuntimes)
+				}
+				return initProfileV2EditorResult{BootstrapLLMRuntime: true}, nil
+			case 2:
+				if got := editor.Document.selectedValue(initProfileV2FieldLLMRuntime); got != "codex-cli" {
+					t.Fatalf("selected LLM runtime after bootstrap = %q, want codex-cli", got)
+				}
+				runtime, ok := editor.LLMRuntimes["codex-cli"]
+				if !ok {
+					t.Fatalf("editor runtimes = %#v, want staged codex-cli runtime", editor.LLMRuntimes)
+				}
+				if runtime.Provider != config.LLMProviderOpenAI || runtime.Adapter != config.LLMAdapterCodexCLI {
+					t.Fatalf("runtime = %#v, want Codex CLI subscription runtime", runtime)
+				}
+				draft, err := newInitProfileV2ReadOnlyModel(editor, 160, 24).validatedDraft()
+				if err != nil {
+					t.Fatalf("validatedDraft after bootstrap: %v", err)
+				}
+				return initProfileV2EditorResult{StageProfile: true, Draft: draft}, nil
+			default:
+				t.Fatalf("unexpected editor call %d", editorCalls)
+				return initProfileV2EditorResult{}, nil
+			}
+		},
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmPromptCalled = true
+			if len(prompt.Context.LLMRuntimes) != 0 {
+				t.Fatalf("bootstrap prompt runtimes = %#v, want empty first-run inventory", prompt.Context.LLMRuntimes)
+			}
+			return initDraft{
+				LLMProvider:      string(config.LLMProviderOpenAI),
+				LLMAuth:          string(config.LLMAuthSubscription),
+				LLMAdapter:       string(config.LLMAdapterCodexCLI),
+				LLMCredentialRef: "",
+			}, nil
+		}),
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "monit",
+		ExistingProfileName:  "monit",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"monit"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"monit": profile}},
+		LLMRuntimes:          map[string]initLLMRuntimeDraft{},
+		ProfileLLMRuntimes:   map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !llmPromptCalled {
+		t.Fatal("llmRuntimePrompter was not called")
+	}
+	if editorCalls != 2 {
+		t.Fatalf("editorCalls = %d, want bootstrap editor then staged editor", editorCalls)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
+		t.Fatalf("draft LLM = (%q,%q), want staged bootstrap runtime", draft.LLMProvider, draft.LLMAdapter)
+	}
+}
+
+func TestBubbleTeaInitProfileV2PrompterBackWithoutStagingReturnsToChooser(t *testing.T) {
+	profile := basicProfile("monit")
+	inventoryCalls := 0
+	editorCalls := 0
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			inventoryCalls++
+			if inventoryCalls == 1 {
+				return initInventoryResult{
+					Action: initInventoryActionEdit,
+					Row: initInventoryRow{
+						ID:    "monit",
+						Title: "monit",
+					},
+				}, nil
+			}
+			return initInventoryResult{Action: initInventoryActionBack}, nil
+		},
+		profileEditorRunner: func(initProfileV2Editor) (initProfileV2EditorResult, error) {
+			editorCalls++
+			return initProfileV2EditorResult{}, nil
+		},
+	}
+
+	_, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "monit",
+		ExistingProfileName:  "monit",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"monit"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"monit": profile}},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("Run error = %v, want chooser back after unstaged editor exit", err)
+	}
+	if inventoryCalls != 2 || editorCalls != 1 {
+		t.Fatalf("calls = inventory:%d editor:%d, want chooser re-entry after one unstaged editor exit", inventoryCalls, editorCalls)
+	}
+}
+
+func updateInitProfileV2ReadOnlyModel(t *testing.T, model initProfileV2ReadOnlyModel, msg tea.Msg) initProfileV2ReadOnlyModel {
+	t.Helper()
+	updated, _ := model.Update(msg)
+	next, ok := updated.(initProfileV2ReadOnlyModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
+	}
+	return next
+}
+
+func typeInitProfileV2Text(t *testing.T, model initProfileV2ReadOnlyModel, text string) initProfileV2ReadOnlyModel {
+	t.Helper()
+	for _, r := range text {
+		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	return model
+}
+
+func focusInitProfileV2Field(t *testing.T, model initProfileV2ReadOnlyModel, id initProfileV2FieldID) initProfileV2ReadOnlyModel {
+	t.Helper()
+	index := model.document.fieldIndexByID(id)
+	if index < 0 {
+		t.Fatalf("field %q missing", id)
+	}
+	model.focused = index
+	model.relayout()
+	model.ensureFocusedVisible()
+	return model
+}
+
+func selectInitProfileV2FieldValue(t *testing.T, model initProfileV2ReadOnlyModel, id initProfileV2FieldID, value string) initProfileV2ReadOnlyModel {
+	t.Helper()
+	index := model.document.fieldIndexByID(id)
+	if index < 0 {
+		t.Fatalf("field %q missing", id)
+	}
+	model.selectFieldValue(id, value)
+	model.afterFieldChange(index)
+	model.relayout()
+	model.ensureFocusedVisible()
+	if got := model.document.selectedValue(id); got != value {
+		t.Fatalf("field %q selected value = %q, want %q", id, got, value)
+	}
+	return model
+}
+
+func newTestInitProfileV2Editor(profileName string, routeText string) initProfileV2Editor {
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	return initProfileV2Editor{
+		Draft: initDraft{
+			OriginalProfileName: profileName,
+			ProfileName:         profileName,
+			GitHost:             "github.com",
+			GitAuth:             string(config.GitAuthModePAT),
+		},
+		Document: document,
+	}
+}
+
+func newTestInitProfileV2EditorWithSelections(profileName string, routeText string, reviewerEntities map[string]initReviewerEntityDraft, llmRuntimes map[string]initLLMRuntimeDraft) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		LLMProvider:         string(config.LLMProviderAnthropic),
+		LLMAuth:             string(config.LLMAuthSubscription),
+		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+	}
+	llmRuntimeOptions, selectedLLMRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, "", draft)
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	document.addEditableSelect(
+		initProfileV2FieldReviewerEntity,
+		"Reviewer entity",
+		reviewerEntitySelectionDescription(),
+		initReviewerEntitySelectionOptions(reviewerEntities, reviewerEntityGitAccountFallbackLabel(config.GitAuthModePAT, "")),
+		string(initReviewerEntityKindUseGitIdentity),
+	)
+	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
+	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
+	return initProfileV2Editor{
+		Draft:            draft,
+		ReviewerEntities: reviewerEntities,
+		LLMRuntimes:      llmRuntimes,
+		Document:         document,
+	}
+}
+
+func newTestInitProfileV2EditorWithModelMap(profileName string, routeText string, llm config.LLMConfig, modelMap config.ModelMap) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		LLMProvider:         string(llm.Provider),
+		LLMAuth:             string(llm.Auth),
+		LLMAdapter:          string(llm.Adapter),
+		ModelMap:            copyModelMap(modelMap),
+	}
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	initProfileV2AppendModelMapSection(&document, llm, modelMap)
+	return initProfileV2Editor{
+		Draft:    draft,
+		Document: document,
+	}
+}
+
+func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeText string, llmRuntimes map[string]initLLMRuntimeDraft, selectedRuntime string) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		LLMProvider:         string(config.LLMProviderAnthropic),
+		LLMAuth:             string(config.LLMAuthSubscription),
+		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+	}
+	if runtime, ok := llmRuntimes[selectedRuntime]; ok {
+		draft.LLMProvider = string(runtime.Provider)
+		draft.LLMAuth = string(runtime.Auth)
+		draft.LLMAdapter = string(runtime.Adapter)
+	}
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	llmRuntimeOptions, normalizedRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, selectedRuntime, draft)
+	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, normalizedRuntime)
+	initProfileV2AppendModelMapSection(&document, initProfileEditorModelMapLLM(draft, normalizedRuntime, llmRuntimes), draft.ModelMap)
+	return initProfileV2Editor{
+		Draft:       draft,
+		LLMRuntimes: llmRuntimes,
+		Document:    document,
+	}
+}
+
+func newTestInitProfileV2EditorWithAgentSources(profileName string, routeText string, agentSources []string) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		LLMProvider:         string(config.LLMProviderAnthropic),
+		LLMAuth:             string(config.LLMAuthSubscription),
+		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+		AgentSources:        append([]string(nil), agentSources...),
+	}
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	initProfileV2AppendAgentSourcesSection(&document, agentSources)
+	return initProfileV2Editor{
+		Draft:    draft,
+		Document: document,
+	}
+}
+
+func newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(profileName string, routeText string, policy config.ReviewPolicy, gitStorageLabel string, gitLabelUsesDefault bool, gitScopes map[string]initGitScopeDraft, selectedGitScope string) initProfileV2Editor {
+	draft := initDraft{
+		OriginalProfileName: profileName,
+		ProfileName:         profileName,
+		GitHost:             "github.com",
+		GitAuth:             string(config.GitAuthModePAT),
+		GitCredentialRef:    strings.TrimSpace(gitStorageLabel),
+		LLMProvider:         string(config.LLMProviderAnthropic),
+		LLMAuth:             string(config.LLMAuthSubscription),
+		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+		ReviewPolicy:        policy,
+	}
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	if selectedGitScope != "" && selectedGitScope != initCustomGitScopeSelection {
+		initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(gitScopes), draft, true)
+	}
+	initProfileV2AppendReviewPolicySection(&document, policy)
+	initProfileV2AppendGitStorageSection(&document, gitStorageLabel)
+	return initProfileV2Editor{
+		Draft:                      draft,
+		GitScopes:                  gitScopes,
+		SelectedGitScope:           selectedGitScope,
+		InitialGitStorageLabel:     gitStorageLabel,
+		GitStorageLabelUsesDefault: gitLabelUsesDefault,
+		Document:                   document,
+	}
+}
+
+func newTestInitProfileV2EditorWithGitScope(profileName string, routeText string, selectedGitScope string, gitScopes map[string]initGitScopeDraft, draft initDraft) initProfileV2Editor {
+	var document initProfileV2Document
+	document.addSection("Profile", "")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
+	initProfileV2AppendRouteSection(&document, routeText)
+	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(gitScopes), draft, true)
+	return initProfileV2Editor{
+		Draft:            draft,
+		GitScopes:        gitScopes,
+		SelectedGitScope: selectedGitScope,
+		Document:         document,
 	}
 }
 
@@ -9491,7 +11035,7 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -9569,7 +11113,7 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -9674,7 +11218,7 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -9804,7 +11348,7 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -9905,7 +11449,7 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -9922,6 +11466,11 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 					LLMProvider:         string(config.LLMProviderAnthropic),
 					LLMAuth:             string(config.LLMAuthSubscription),
 					LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+					RoutesSet:           true,
+					Routes: []configedit.RepositoryRouteSpec{{
+						Host:      "gitlab.com",
+						Namespace: "open-cli-collective",
+					}},
 				}, nil
 			case 2:
 				if ctx.ExistingProfileName != "office" {
@@ -9934,13 +11483,8 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 			return initDraft{}, nil
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
-			if prompt.ProfileName != "office" || !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
-				t.Fatalf("prompt = %#v, want renamed default profile reconciliation context", prompt)
-			}
-			return initRoutesEdit{Routes: []configedit.RepositoryRouteSpec{{
-				Host:      "gitlab.com",
-				Namespace: "open-cli-collective",
-			}}}, nil
+			t.Fatalf("routes prompter should not run from v2 profile editor path: %#v", prompt)
+			return initRoutesEdit{}, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
@@ -10008,7 +11552,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -10389,7 +11933,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			profilePrompterCalls++
 			if profilePrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -10805,7 +12349,7 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 				initMenuActionExit,
 			},
 		},
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			if prompt.RequestedProfileName != expectedPrompt.RequestedProfileName ||
 				prompt.ExistingProfileName != expectedPrompt.ExistingProfileName ||
 				prompt.DefaultProfileName != expectedPrompt.DefaultProfileName {
@@ -11123,15 +12667,19 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 		},
 	}
 	profileCalls := 0
-	routeCalls := 0
 	deps := initDeps{
 		menuPrompter: menu,
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileCalls++
 			switch profileCalls {
 			case 1:
 				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile)
 				draft.GitHost = "gitlab.com"
+				draft.RoutesSet = true
+				draft.Routes = []configedit.RepositoryRouteSpec{{
+					Host:      "gitlab.com",
+					Namespace: "open-cli-collective",
+				}}
 				return draft, nil
 			case 2:
 				if prompt.ExistingProfile == nil {
@@ -11147,14 +12695,8 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 			}
 		}),
 		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
-			routeCalls++
-			if routeCalls > 1 {
-				t.Fatalf("unexpected routes prompt #%d", routeCalls)
-			}
-			if !prompt.HostChanged || prompt.PreviousHost != "github.com" || prompt.ProfileHost != "gitlab.com" {
-				t.Fatalf("prompt = %#v, want integrated route reconciliation before Back", prompt)
-			}
-			return initRoutesEdit{}, errInitNavigateBack
+			t.Fatalf("routes prompter should not run from v2 profile editor path: %#v", prompt)
+			return initRoutesEdit{}, nil
 		}),
 		modelMapPrompter: initModelMapPrompterFunc(func(initModelMapPrompt) (initModelMapEdit, error) {
 			return initModelMapEdit{Apply: false}, nil
@@ -11182,15 +12724,12 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 	if profileCalls != 2 {
 		t.Fatalf("profileCalls = %d, want staged profile edit then Back in-category", profileCalls)
 	}
-	if routeCalls != 1 {
-		t.Fatalf("routeCalls = %d, want single integrated route prompt before Back", routeCalls)
-	}
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
 	}
 }
 
-func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *testing.T) {
+func TestInitInteractiveMenuFocusedReviewProfileDoesNotRunRouteSubprompt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -11209,15 +12748,19 @@ func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *test
 		},
 	}
 	profileCalls := 0
-	routeCalls := 0
 	deps := initDeps{
 		menuPrompter: menu,
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileCalls++
 			switch profileCalls {
 			case 1:
 				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile)
 				draft.GitHost = "gitlab.com"
+				draft.RoutesSet = true
+				draft.Routes = []configedit.RepositoryRouteSpec{{
+					Host:      "gitlab.com",
+					Namespace: "open-cli-collective",
+				}}
 				return draft, nil
 			case 2:
 				if prompt.ExistingProfile == nil {
@@ -11232,12 +12775,9 @@ func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *test
 				return initDraft{}, nil
 			}
 		}),
-		routesPrompter: initRoutesPrompterFunc(func(_ initRoutesPrompt) (initRoutesEdit, error) {
-			routeCalls++
-			if routeCalls > 1 {
-				t.Fatalf("unexpected routes prompt #%d", routeCalls)
-			}
-			return initRoutesEdit{}, errInitNavigateBack
+		routesPrompter: initRoutesPrompterFunc(func(prompt initRoutesPrompt) (initRoutesEdit, error) {
+			t.Fatalf("routes prompter should not run from v2 profile editor path: %#v", prompt)
+			return initRoutesEdit{}, nil
 		}),
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -11248,10 +12788,7 @@ func TestInitInteractiveMenuFocusedReviewProfileRouteBackStaysInCategory(t *test
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
 	if profileCalls != 2 {
-		t.Fatalf("profileCalls = %d, want route Back to reopen review-profile flow before explicit Back", profileCalls)
-	}
-	if routeCalls != 1 {
-		t.Fatalf("routeCalls = %d, want single integrated route prompt", routeCalls)
+		t.Fatalf("profileCalls = %d, want v2 stage to reopen review-profile flow before explicit Back", profileCalls)
 	}
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
@@ -11348,7 +12885,7 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 	llmEdits := 0
 	deps := initDeps{
 		menuPrompter: menu,
-		prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileEdits++
 			switch profileEdits {
 			case 1:
@@ -11494,7 +13031,7 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 			finalizePrompt = prompt
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -11596,7 +13133,7 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 			finalizePrompt = prompt
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -11683,7 +13220,7 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 			finalizePrompt = prompt
 			return initFinalizeActionSave, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -12007,7 +13544,7 @@ func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t
 		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionCancel, nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -12064,7 +13601,7 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 			t.Fatal("finalize prompt should not run after keyring open failure")
 			return "", nil
 		}),
-		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
 				MakeDefault: true,

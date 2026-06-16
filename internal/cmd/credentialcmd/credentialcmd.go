@@ -398,6 +398,7 @@ type initReviewerEntityPrompt struct {
 
 type initDeps struct {
 	prompter             initPrompter
+	profileV2Prompter    initPrompter
 	menuPrompter         initMenuPrompter
 	llmRuntimePrompter   initLLMRuntimePrompter
 	reviewerPrompter     initReviewerEntityPrompter
@@ -1159,7 +1160,7 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 		case initMenuActionReviewerEntities:
 			session, err = loopInteractiveInitReviewerEntity(cmd, opts, flags, deps, session)
 		case initMenuActionReviewProfiles:
-			session, err = loopInteractiveInitProfile(cmd, opts, flags, deps, session)
+			session, err = loopInteractiveInitProfileV2(cmd, opts, flags, deps, session)
 		case initMenuActionGlobalSettings:
 			session, err = editInteractiveInitGlobalSettings(cmd, opts, deps, session)
 		case initMenuActionSecretsManagement:
@@ -1181,16 +1182,23 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 	}
 }
 
-func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
-	session, _, err := editInteractiveInitProfileStep(cmd, opts, flags, deps, session)
-	return session, err
-}
-
-func loopInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+func loopInteractiveInitProfileV2(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	prompter := deps.profileV2Prompter
+	if prompter == nil {
+		prompter = newBubbleTeaInitProfileV2Prompter(opts)
+	}
 	for {
+		promptCtx := currentInteractiveInitInventoryPromptContext(session)
+		draft, err := prompter.Run(promptCtx)
+		if errors.Is(err, errInitNavigateBack) {
+			return session, nil
+		}
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+		draft = completeInteractiveInitProfileV2Draft(promptCtx, draft)
 		var stayInCategory bool
-		var err error
-		session, stayInCategory, err = editInteractiveInitProfileStep(cmd, opts, flags, deps, session)
+		session, stayInCategory, err = applyInteractiveInitProfileDraft(cmd, opts, flags, deps, session, draft)
 		if err != nil {
 			return initSessionDraft{}, err
 		}
@@ -1198,6 +1206,50 @@ func loopInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags in
 			return session, nil
 		}
 	}
+}
+
+func completeInteractiveInitProfileV2Draft(ctx initPromptContext, draft initDraft) initDraft {
+	if draft.Action != initDraftActionNone {
+		return draft
+	}
+	if !draft.RoutesSet {
+		profileName := draft.OriginalProfileName
+		if profileName == "" {
+			profileName = ctx.ExistingProfileName
+		}
+		if profileName == "" {
+			profileName = draft.ProfileName
+		}
+		draft.Routes = currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, profileName)
+		draft.RoutesSet = true
+	}
+	if !draft.ModelMapSet {
+		if ctx.ExistingProfile != nil {
+			draft.ModelMap = copyModelMap(ctx.ExistingProfile.LLM.ModelMap)
+		}
+		draft.ModelMapSet = true
+	}
+	if !draft.AgentSourcesSet {
+		if ctx.ExistingProfile != nil {
+			draft.AgentSources = append([]string(nil), ctx.ExistingProfile.AgentSources...)
+		}
+		draft.AgentSourcesSet = true
+	}
+	if !draft.ReviewPolicySet {
+		if ctx.ExistingProfile != nil {
+			draft.ReviewPolicy = ctx.ExistingProfile.ReviewPolicy
+		}
+		if draft.ReviewPolicy.MajorEvent == "" {
+			draft.ReviewPolicy.MajorEvent = config.ReviewMajorEventComment
+		}
+		draft.ReviewPolicySet = true
+	}
+	return draft
+}
+
+func editInteractiveInitProfile(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	session, _, err := editInteractiveInitProfileStep(cmd, opts, flags, deps, session)
+	return session, err
 }
 
 func editInteractiveInitProfileStep(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
@@ -1213,6 +1265,10 @@ func editInteractiveInitProfileStep(cmd *cobra.Command, opts *root.Options, flag
 	if err != nil {
 		return initSessionDraft{}, false, err
 	}
+	return applyInteractiveInitProfileDraft(cmd, opts, flags, deps, session, draft)
+}
+
+func applyInteractiveInitProfileDraft(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft, draft initDraft) (initSessionDraft, bool, error) {
 	switch draft.Action {
 	case initDraftActionNone:
 	case initDraftActionDeleteProfile:
