@@ -269,17 +269,49 @@ func TestInitInventoryDeterministicRunnerReturnsCommandAction(t *testing.T) {
 	}
 }
 
-func TestInitInventoryViewClearsAfterQuit(t *testing.T) {
-	model := newInitInventoryModel(initInventoryPrompt{
-		Title: "Review Profile",
-		Rows: []initInventoryRow{
-			{ID: "work", Title: "work", Kind: initInventoryRowKindActive, Selectable: true},
+func TestInitInventoryViewClearsAfterQuitActions(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection int
+		key       tea.KeyMsg
+	}{
+		{
+			name: "select",
+			key:  tea.KeyMsg{Type: tea.KeyEnter},
 		},
-	})
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	resultModel := next.(initInventoryModel)
-	if got := resultModel.View(); got != "" {
-		t.Fatalf("View after quit = %q, want empty final frame", got)
+		{
+			name: "delete",
+			key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")},
+		},
+		{
+			name:      "restore",
+			selection: 1,
+			key:       tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")},
+		},
+		{
+			name: "back",
+			key:  tea.KeyMsg{Type: tea.KeyEsc},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := newInitInventoryModel(initInventoryPrompt{
+				Title: "Review Profile",
+				Rows: []initInventoryRow{
+					{ID: "work", Title: "work", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
+					{ID: "old-work", Title: "Restore work (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+				},
+			})
+			model.list.Select(tt.selection)
+			next, _ := model.Update(tt.key)
+			resultModel := next.(initInventoryModel)
+			if !resultModel.QuitRequested() {
+				t.Fatalf("QuitRequested = false, want true")
+			}
+			if got := resultModel.View(); got != "" {
+				t.Fatalf("View after quit = %q, want empty final frame", got)
+			}
+		})
 	}
 }
 
