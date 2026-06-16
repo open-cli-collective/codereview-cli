@@ -7674,6 +7674,9 @@ func TestHuhInitRoutesPrompterAccessibleShowsRouteEditor(t *testing.T) {
 			t.Fatalf("stderr = %q, want route editor copy %q", out, want)
 		}
 	}
+	if count := strings.Count(out, "Separate multiple entries with ;. Newline-separated pastes are also accepted."); count != 1 {
+		t.Fatalf("stderr = %q, want semicolon guidance once, got %d", out, count)
+	}
 	if !strings.Contains(out, "Route entries") {
 		t.Fatalf("stderr = %q, want route entry instructions", out)
 	}

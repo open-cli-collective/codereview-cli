@@ -3617,7 +3617,6 @@ func initRouteEditorFields(routeText *string, includeIntroTitle bool) []huh.Fiel
 			Description("host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;. Newline-separated pastes are also accepted."),
 		huh.NewText().
 			Title("Route entries").
-			Description("Separate multiple entries with ;. Newline-separated pastes are also accepted.").
 			Value(routeText),
 	}
 }
