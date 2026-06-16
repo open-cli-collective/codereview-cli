@@ -525,7 +525,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
 			return Result{}, err
 		}
-		rollupLog, err := prepared.artifacts.AgentLog("orchestrator-rollup")
+		rollupLog, err := prepared.artifacts.AgentLog(orchestratorRollupStage)
 		if err != nil {
 			return Result{}, err
 		}
@@ -797,7 +797,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err := opts.checkPromptBudget("selection", "", model, "", selectionPrompt); err != nil {
 		return llm.Selection{}, sessionDraft{}, err
 	}
-	selectionLog, err := req.Artifacts.AgentLog("orchestrator-selection")
+	selectionLog, err := req.Artifacts.AgentLog(orchestratorSelectionStage)
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, err
 	}
@@ -1129,7 +1129,7 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		agentByRow[draft.rowID] = *draft.agentID
 	}
 
-	workstreams := []reviewplan.WorkstreamUsage{workstreamUsage("orchestrator-selection", inputs.selection)}
+	workstreams := []reviewplan.WorkstreamUsage{workstreamUsage(orchestratorSelectionStage, inputs.selection)}
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
@@ -1137,7 +1137,7 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 			workstreams = append(workstreams, workstreamUsage(selected.AgentID, draft))
 		}
 	}
-	workstreams = append(workstreams, workstreamUsage("orchestrator-rollup", inputs.rollup))
+	workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
 
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
@@ -1158,6 +1158,15 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	}
 	return summary, findingReviewers
 }
+
+// Orchestrator stage names share a stable prefix so the headline model filter
+// can exclude them; deriving the stage names from the prefix keeps the filter
+// and the names from diverging.
+const (
+	orchestratorWorkstreamPrefix = "orchestrator-"
+	orchestratorSelectionStage   = orchestratorWorkstreamPrefix + "selection"
+	orchestratorRollupStage      = orchestratorWorkstreamPrefix + "rollup"
+)
 
 // sharedWorkstreamModel reports the run's headline model. It reflects the model
 // the reviewer agents ran on, excluding the orchestrator selection/rollup stages
@@ -1182,7 +1191,7 @@ func distinctWorkstreamModels(workstreams []reviewplan.WorkstreamUsage, reviewer
 		if workstream.Model == "" {
 			continue
 		}
-		if reviewersOnly && strings.HasPrefix(workstream.Name, "orchestrator-") {
+		if reviewersOnly && strings.HasPrefix(workstream.Name, orchestratorWorkstreamPrefix) {
 			continue
 		}
 		if seen[workstream.Model] {
