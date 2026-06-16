@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -7940,32 +7941,26 @@ func TestValidateRetentionMaxAgeDaysUsesCurrentFieldCopy(t *testing.T) {
 }
 
 func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
-	t.Setenv("TERM", "dumb")
-	var stderr bytes.Buffer
-	prompter := huhInitKeyringBackendPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"",     // Stage keyring-backend settings
-			"file", // Persistent backend
-			"",
-		}, "\n")),
-		stderr: &stderr,
+	rows := initSecretsManagementInventoryRows(config.File{})
+	if len(rows) == 0 {
+		t.Fatal("initSecretsManagementInventoryRows returned no rows")
 	}
-
-	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{})
-	if err != nil {
-		t.Fatalf("EditKeyringBackend: %v", err)
+	if rows[0].Title != "Legacy compatibility (Automatic OS default)" {
+		t.Fatalf("first row title = %q, want legacy compatibility row first", rows[0].Title)
 	}
-	if !edit.Apply {
-		t.Fatalf("edit = %#v, want apply edit path", edit)
+	var foundConfigure bool
+	for _, row := range rows {
+		if row.Title == "Configure new encrypted file profile" {
+			foundConfigure = true
+			break
+		}
 	}
-	if !strings.Contains(stderr.String(), "Legacy persistent backend") {
-		t.Fatalf("stderr = %q, want backend input prompt", stderr.String())
+	if !foundConfigure {
+		t.Fatalf("rows = %#v, want configure-new backend command copy", rows)
 	}
-	if !strings.Contains(stderr.String(), "Back without staging") {
-		t.Fatalf("stderr = %q, want keyring Back option", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "Stage legacy secrets-management settings") {
-		t.Fatalf("stderr = %q, want transitional secrets-management wording", stderr.String())
+	options := initLegacySecretsBackendOptions("")
+	if len(options) == 0 {
+		t.Fatal("initLegacySecretsBackendOptions returned no options")
 	}
 }
 
@@ -8391,6 +8386,175 @@ func TestInitInteractiveKeyringBackendPreserveSetResetAndConflict(t *testing.T) 
 	}
 }
 
+func TestInitInteractiveKeyringBackendRejectsDefaultNamedSecretsProfileWhenRuntimeBackendSet(t *testing.T) {
+	opts := &root.Options{Backend: "memory"}
+	cfg := config.File{
+		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{
+			"default": basicProfile("default"),
+		},
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"team-vault": {
+					Label: "Team Vault",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendFile),
+					},
+				},
+			},
+			DefaultProfile: "team-vault",
+		},
+	}
+
+	_, err := collectInteractiveInitKeyringBackendConfig(opts, initDeps{
+		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: cfg}, nil
+		}),
+	}, true, cfg)
+	if err == nil {
+		t.Fatal("collectInteractiveInitKeyringBackendConfig error = nil, want runtime backend conflict")
+	}
+	if !strings.Contains(err.Error(), `--backend "memory" conflicts with default secrets-management profile "Team Vault"`) {
+		t.Fatalf("error = %v, want named default secrets-management conflict", err)
+	}
+}
+
+func TestInitSecretsProfileIDFromLabelDeconflictsDeterministically(t *testing.T) {
+	existing := map[string]config.SecretsProfile{
+		"work-vault":   {},
+		"work-vault-2": {},
+	}
+	got := initSecretsProfileIDFromLabel("Work Vault", config.SecretsBackendKind(credstore.BackendFile), existing)
+	if got != "work-vault-3" {
+		t.Fatalf("initSecretsProfileIDFromLabel = %q, want work-vault-3", got)
+	}
+}
+
+func TestInitSecretsManagementInventoryRowsDisableUnavailableBackends(t *testing.T) {
+	rows := initSecretsManagementInventoryRows(config.File{})
+	availability := map[string]bool{}
+	for _, row := range rows {
+		if strings.HasPrefix(row.ID, initConfigureSecretsProfileSelectionPrefix) {
+			availability[row.ID] = row.Selectable
+		}
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		if !availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendKeychain)] {
+			t.Fatal("macOS keychain backend should be selectable on darwin")
+		}
+		if availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendWinCred)] {
+			t.Fatal("wincred backend should not be selectable on darwin")
+		}
+	case "linux":
+		if !availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendSecretService)] {
+			t.Fatal("secret-service backend should be selectable on linux")
+		}
+	case "windows":
+		if !availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendWinCred)] {
+			t.Fatal("wincred backend should be selectable on windows")
+		}
+	}
+}
+
+func TestValidateInitSecretsRequiredSingleLine(t *testing.T) {
+	if err := validateInitSecretsRequiredSingleLine("", true, "1Password vault id"); err == nil || err.Error() != "1Password vault id is required" {
+		t.Fatalf("required validator error = %v, want required field failure", err)
+	}
+	if err := validateInitSecretsRequiredSingleLine("https://connect.example", true, "1Password Connect host"); err != nil {
+		t.Fatalf("required validator valid input error = %v, want nil", err)
+	}
+}
+
+func TestInitSecretsProfileBackendOptionsExcludeUnavailableChoicesUnlessCurrent(t *testing.T) {
+	options := initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile))
+	values := make([]string, 0, len(options))
+	for _, option := range options {
+		values = append(values, option.Value)
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		for _, value := range values {
+			if value == string(credstore.BackendWinCred) {
+				t.Fatalf("wincred should be excluded from selectable backend options on darwin: %v", values)
+			}
+		}
+	}
+}
+
+func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	callCount := 0
+	prompter := huhInitKeyringBackendPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // keep backend-derived label
+			"", // keep selected backend
+			"", // keep not-default selection
+			"", // stage settings
+		}, "\n")),
+		stderr: &bytes.Buffer{},
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return initInventoryResult{
+					Action: initInventoryActionCommand,
+					Row:    initInventoryRow{ID: initConfigureSecretsProfileSelectionPrefix + string(credstore.BackendFile)},
+				}, nil
+			case 2:
+				return initInventoryResult{
+					Action: initInventoryActionBack,
+					Row:    initInventoryRow{ID: initBackSelection},
+				}, nil
+			default:
+				t.Fatalf("unexpected inventory call %d", callCount)
+				return initInventoryResult{}, nil
+			}
+		},
+	}
+
+	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+	})
+	if err != nil {
+		t.Fatalf("EditKeyringBackend: %v", err)
+	}
+	if !edit.Apply {
+		t.Fatalf("edit = %#v, want apply=true", edit)
+	}
+	profile, ok := edit.Config.Secrets.Profiles["encrypted-file"]
+	if !ok {
+		t.Fatalf("secrets profiles = %#v, want generated encrypted-file profile", edit.Config.Secrets.Profiles)
+	}
+	if profile.Backend.Kind != config.SecretsBackendKind(credstore.BackendFile) {
+		t.Fatalf("backend kind = %q, want file", profile.Backend.Kind)
+	}
+	if profile.Label != "Encrypted file" {
+		t.Fatalf("profile label = %q, want backend-derived label", profile.Label)
+	}
+}
+
+func TestInitSecretsProfileBackendFromInputsSwitchingAwayFromOnePasswordClearsBackendFields(t *testing.T) {
+	backend := initSecretsProfileBackendFromInputs(
+		string(credstore.BackendFile),
+		"5s",
+		"vault-123",
+		"title-prefix",
+		"item-tag",
+		"field-title",
+		"https://connect.example",
+		"OP_CONNECT_TOKEN",
+		"OP_SERVICE_ACCOUNT_TOKEN",
+		"desktop-account",
+	)
+	if backend.Kind != config.SecretsBackendKind(credstore.BackendFile) {
+		t.Fatalf("backend kind = %q, want file", backend.Kind)
+	}
+	if backend.OnePassword != nil {
+		t.Fatalf("onepassword config = %#v, want cleared after switching to file backend", backend.OnePassword)
+	}
+}
+
 func TestBuildInteractiveInitMenuPromptNoWorkspaceDisablesProfileDependentActions(t *testing.T) {
 	prompt := buildInteractiveInitMenuPrompt(initSessionDraft{
 		cfg: config.File{Profiles: map[string]config.Profile{}},
@@ -8502,13 +8666,13 @@ func TestHuhInitMenuPrompterAccessibleSelectsSecretsManagement(t *testing.T) {
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{
-		HasWorkspace:        true,
-		LLMRuntimeCount:     2,
-		ReviewerEntityCount: 3,
-		ReviewProfileCount:  1,
-		CanConfigureLLM:     true,
+		HasWorkspace:         true,
+		LLMRuntimeCount:      2,
+		ReviewerEntityCount:  3,
+		ReviewProfileCount:   1,
+		CanConfigureLLM:      true,
 		CanConfigureReviewer: true,
-		CanSave:             true,
+		CanSave:              true,
 	})
 	if err != nil {
 		t.Fatalf("ChooseAction: %v", err)

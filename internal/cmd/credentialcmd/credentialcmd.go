@@ -315,12 +315,17 @@ type initRetentionEdit struct {
 }
 
 type initKeyringBackendPrompt struct {
-	Backend string
+	Backend        string
+	Config         config.File
+	RuntimeBackend string
+	BackendFlagSet bool
 }
 
 type initKeyringBackendEdit struct {
-	Apply   bool
-	Backend string
+	Apply         bool
+	HasConfigEdit bool
+	Backend       string
+	Config        config.File
 }
 
 type initFinalizeAction string
@@ -955,8 +960,9 @@ type huhInitRetentionPrompter struct {
 }
 
 type huhInitKeyringBackendPrompter struct {
-	stdin  io.Reader
-	stderr io.Writer
+	stdin           io.Reader
+	stderr          io.Writer
+	inventoryRunner initInventoryRunner
 }
 
 const (
@@ -3353,38 +3359,6 @@ func (p huhInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (ini
 	return initRetentionEdit{Apply: true, Retention: next}, nil
 }
 
-func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
-	action := initDetailActionEdit
-	backend := strings.TrimSpace(prompt.Backend)
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Secrets management action").
-				Options(
-					huh.NewOption("Stage legacy secrets-management settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
-		).Title("Secrets management"),
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Legacy persistent backend").
-				Description("This transitional setting still edits config.keyring.backend. Examples include file or memory. Leave blank to use auto selection. Leave runtime-only --backend choices out unless you want them saved.").
-				Value(&backend),
-		).WithHideFunc(func() bool {
-			return action == initDetailActionBack
-		}).Title("Secrets management"),
-	)
-	back, err := runBackableInitForm(form, p.stdin, p.stderr)
-	if err != nil {
-		return initKeyringBackendEdit{}, err
-	}
-	if back || action == initDetailActionBack {
-		return initKeyringBackendEdit{}, errInitNavigateBack
-	}
-	return initKeyringBackendEdit{Apply: true, Backend: strings.TrimSpace(backend)}, nil
-}
-
 func initEffectiveModelMapInputValue(effective map[config.ModelTier]config.ModelMapResolution, tier config.ModelTier) string {
 	resolution, ok := effective[tier]
 	if !ok {
@@ -5167,7 +5141,9 @@ func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDep
 		prompter = newHuhInitKeyringBackendPrompter(opts)
 	}
 	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Backend: cfg.Keyring.Backend,
+		Config:         cfg,
+		RuntimeBackend: opts.Backend,
+		BackendFlagSet: backendFlagSet,
 	})
 	if err != nil {
 		return config.File{}, err
@@ -5176,12 +5152,25 @@ func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDep
 		return cfg, nil
 	}
 	nextCfg := cfg
-	nextCfg.Keyring.Backend = strings.TrimSpace(edit.Backend)
+	if edit.HasConfigEdit {
+		nextCfg = config.Normalize(edit.Config)
+	} else {
+		nextCfg.Keyring.Backend = strings.TrimSpace(edit.Backend)
+	}
 	if err := validateInteractiveInitGlobalConfig(nextCfg); err != nil {
 		return config.File{}, cmderr.Config(err)
 	}
 	if backendFlagSet && nextCfg.Keyring.Backend != "" && nextCfg.Keyring.Backend != opts.Backend {
 		return config.File{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with selected keyring.backend %q", opts.Backend, nextCfg.Keyring.Backend))
+	}
+	if backendFlagSet {
+		if effectiveDefault, ok := config.EffectiveDefaultSecretsProfile(nextCfg); ok && effectiveDefault.Source == config.EffectiveSecretsProfileSourceConfigured {
+			name := strings.TrimSpace(effectiveDefault.Label)
+			if name == "" {
+				name = effectiveDefault.ID
+			}
+			return config.File{}, exitcode.Usage(fmt.Errorf("--backend %q conflicts with default secrets-management profile %q", opts.Backend, name))
+		}
 	}
 	return nextCfg, nil
 }
