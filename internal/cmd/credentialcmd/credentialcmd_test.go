@@ -8183,6 +8183,190 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 	}
 }
 
+func TestCompleteInteractiveInitProfileV2DraftUsesProfileNamePriorityForRoutes(t *testing.T) {
+	ctx := initPromptContext{
+		ExistingProfileName: "existing",
+		ExistingConfig: config.File{
+			RepositoryProfiles: []config.RepositoryProfile{
+				{
+					Profile: "original",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "OriginalOrg",
+					},
+				},
+				{
+					Profile: "existing",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "ExistingOrg",
+					},
+				},
+				{
+					Profile: "fallback",
+					Match: config.RepositoryProfileMatch{
+						Host:      "github.com",
+						Namespace: "FallbackOrg",
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name               string
+		originalProfile    string
+		existingProfile    string
+		fallbackProfile    string
+		wantRouteNamespace string
+	}{
+		{
+			name:               "original profile wins",
+			originalProfile:    "original",
+			existingProfile:    "existing",
+			fallbackProfile:    "fallback",
+			wantRouteNamespace: "OriginalOrg",
+		},
+		{
+			name:               "existing profile wins over fallback",
+			existingProfile:    "existing",
+			fallbackProfile:    "fallback",
+			wantRouteNamespace: "ExistingOrg",
+		},
+		{
+			name:               "fallback profile used last",
+			fallbackProfile:    "fallback",
+			wantRouteNamespace: "FallbackOrg",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nextCtx := ctx
+			nextCtx.ExistingProfileName = tt.existingProfile
+			draft := completeInteractiveInitProfileV2Draft(nextCtx, initDraft{
+				OriginalProfileName: tt.originalProfile,
+				ProfileName:         tt.fallbackProfile,
+			})
+
+			want := []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: tt.wantRouteNamespace,
+			}}
+			if !reflect.DeepEqual(draft.Routes, want) {
+				t.Fatalf("Routes = %#v, want %#v", draft.Routes, want)
+			}
+			if !draft.RoutesSet {
+				t.Fatalf("RoutesSet = false, want true")
+			}
+		})
+	}
+}
+
+func TestCompleteInteractiveInitProfileV2DraftPreservesExplicitSetFields(t *testing.T) {
+	existing := basicProfile("work")
+	existing.LLM.ModelMap = config.ModelMap{"medium": "existing-medium"}
+	existing.AgentSources = []string{"/existing/agents"}
+	existing.ReviewPolicy = config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+	}
+	ctx := initPromptContext{
+		ExistingProfileName: "work",
+		ExistingProfile:     &existing,
+		ExistingConfig: config.File{
+			RepositoryProfiles: []config.RepositoryProfile{{
+				Profile: "work",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "ExistingOrg",
+				},
+			}},
+		},
+	}
+	wantRoutes := []configedit.RepositoryRouteSpec{{
+		Host:      "github.com",
+		Namespace: "ExplicitOrg",
+	}}
+	wantModelMap := config.ModelMap{"large": "explicit-large"}
+	wantAgentSources := []string{"/explicit/agents"}
+	wantReviewPolicy := config.ReviewPolicy{
+		MajorEvent:     config.ReviewMajorEventComment,
+		ResolveThreads: config.ResolveThreadsNever,
+	}
+
+	draft := completeInteractiveInitProfileV2Draft(ctx, initDraft{
+		RoutesSet:       true,
+		Routes:          wantRoutes,
+		ModelMapSet:     true,
+		ModelMap:        wantModelMap,
+		AgentSourcesSet: true,
+		AgentSources:    wantAgentSources,
+		ReviewPolicySet: true,
+		ReviewPolicy:    wantReviewPolicy,
+	})
+
+	if !reflect.DeepEqual(draft.Routes, wantRoutes) {
+		t.Fatalf("Routes = %#v, want explicit %#v", draft.Routes, wantRoutes)
+	}
+	if !reflect.DeepEqual(draft.ModelMap, wantModelMap) {
+		t.Fatalf("ModelMap = %#v, want explicit %#v", draft.ModelMap, wantModelMap)
+	}
+	if !reflect.DeepEqual(draft.AgentSources, wantAgentSources) {
+		t.Fatalf("AgentSources = %#v, want explicit %#v", draft.AgentSources, wantAgentSources)
+	}
+	if draft.ReviewPolicy != wantReviewPolicy {
+		t.Fatalf("ReviewPolicy = %#v, want explicit %#v", draft.ReviewPolicy, wantReviewPolicy)
+	}
+}
+
+func TestCompleteInteractiveInitProfileV2DraftFillsUnsetFieldsAndDefaultsReviewPolicy(t *testing.T) {
+	existing := basicProfile("work")
+	existing.LLM.ModelMap = config.ModelMap{"medium": "existing-medium"}
+	existing.AgentSources = []string{"/existing/agents"}
+	existing.ReviewPolicy = config.ReviewPolicy{
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsNever,
+	}
+	ctx := initPromptContext{
+		ExistingProfileName: "work",
+		ExistingProfile:     &existing,
+		ExistingConfig: config.File{
+			RepositoryProfiles: []config.RepositoryProfile{{
+				Profile: "work",
+				Match: config.RepositoryProfileMatch{
+					Host:      "github.com",
+					Namespace: "ExistingOrg",
+				},
+			}},
+		},
+	}
+
+	draft := completeInteractiveInitProfileV2Draft(ctx, initDraft{})
+
+	wantRoutes := []configedit.RepositoryRouteSpec{{
+		Host:      "github.com",
+		Namespace: "ExistingOrg",
+	}}
+	if !reflect.DeepEqual(draft.Routes, wantRoutes) || !draft.RoutesSet {
+		t.Fatalf("Routes = %#v set=%v, want %#v set=true", draft.Routes, draft.RoutesSet, wantRoutes)
+	}
+	if !reflect.DeepEqual(draft.ModelMap, existing.LLM.ModelMap) || !draft.ModelMapSet {
+		t.Fatalf("ModelMap = %#v set=%v, want existing set=true", draft.ModelMap, draft.ModelMapSet)
+	}
+	if !reflect.DeepEqual(draft.AgentSources, existing.AgentSources) || !draft.AgentSourcesSet {
+		t.Fatalf("AgentSources = %#v set=%v, want existing set=true", draft.AgentSources, draft.AgentSourcesSet)
+	}
+	if !draft.ReviewPolicySet {
+		t.Fatalf("ReviewPolicySet = false, want true")
+	}
+	if draft.ReviewPolicy.MajorEvent != config.ReviewMajorEventComment {
+		t.Fatalf("ReviewPolicy.MajorEvent = %q, want default comment", draft.ReviewPolicy.MajorEvent)
+	}
+	if !draft.ReviewPolicy.AllowSelfApprove || draft.ReviewPolicy.ResolveThreads != config.ResolveThreadsNever {
+		t.Fatalf("ReviewPolicy = %#v, want existing fields preserved", draft.ReviewPolicy)
+	}
+}
+
 func TestInitInteractiveModelMapAddEditRemoveAndReset(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -1202,23 +1202,26 @@ func initProfileV2AppendWrapped(lines *[]string, text string, width int) {
 }
 
 func initProfileV2AppendWrappedWithPrefix(lines *[]string, prefix string, text string, width int) {
-	available := max(width-len(prefix), 1)
-	remaining := strings.TrimSpace(text)
-	if remaining == "" {
+	available := max(width-len([]rune(prefix)), 1)
+	remaining := []rune(strings.TrimSpace(text))
+	if len(remaining) == 0 {
 		*lines = append(*lines, prefix)
 		return
 	}
 	for len(remaining) > available {
-		cut := strings.LastIndex(remaining[:available+1], " ")
+		cut := available
+		for cut > 0 && remaining[cut] != ' ' {
+			cut--
+		}
 		if cut <= 0 {
 			cut = available
 		}
-		*lines = append(*lines, prefix+strings.TrimSpace(remaining[:cut]))
-		remaining = strings.TrimSpace(remaining[cut:])
-		prefix = strings.Repeat(" ", len(prefix))
-		available = max(width-len(prefix), 1)
+		*lines = append(*lines, prefix+strings.TrimSpace(string(remaining[:cut])))
+		remaining = []rune(strings.TrimSpace(string(remaining[cut:])))
+		prefix = strings.Repeat(" ", len([]rune(prefix)))
+		available = max(width-len([]rune(prefix)), 1)
 	}
-	*lines = append(*lines, prefix+remaining)
+	*lines = append(*lines, prefix+string(remaining))
 }
 
 func (m initProfileV2ReadOnlyModel) styleVisibleViewport() string {
@@ -1255,36 +1258,38 @@ func initProfileV2StyleViewportLine(line string, active bool) string {
 	}
 }
 
-func initProfileV2LooksLikeHeading(line string) bool {
-	switch line {
-	case "Profile",
-		"Profile name",
-		"Automatic profile selection",
-		"Accepted route formats",
-		"Route entries",
-		"Git scope",
-		"Git scope host",
-		"Git scope auth mode",
-		"Reviewer entity",
-		"LLM runtime",
-		"Minimum reviewer model tier",
-		"Model tier mapping",
-		"small model",
-		"medium model",
-		"large model",
-		"Additional reviewer-agent directories (optional)",
-		"Additional trusted reviewer-agent directories",
-		"Review Policy",
-		"Major findings event",
-		"Allow self-approve",
-		"Resolve threads",
-		"Resolve-after duration",
-		"Git secrets storage label",
-		"Profile action":
-		return true
-	default:
-		return false
+var initProfileV2HeadingSet = func() map[string]bool {
+	headings := map[string]bool{
+		"Profile":                     true,
+		"Profile name":                true,
+		"Automatic profile selection": true,
+		"Accepted route formats":      true,
+		"Route entries":               true,
+		"Git scope":                   true,
+		"Git scope host":              true,
+		"Git scope auth mode":         true,
+		"Reviewer entity":             true,
+		"LLM runtime":                 true,
+		"Minimum reviewer model tier": true,
+		"Model tier mapping":          true,
+		"Additional reviewer-agent directories (optional)": true,
+		"Additional trusted reviewer-agent directories":    true,
+		"Review Policy":             true,
+		"Major findings event":      true,
+		"Allow self-approve":        true,
+		"Resolve threads":           true,
+		"Resolve-after duration":    true,
+		"Git secrets storage label": true,
+		"Profile action":            true,
 	}
+	for _, tier := range config.ModelTiers() {
+		headings[fmt.Sprintf("%s model", tier)] = true
+	}
+	return headings
+}()
+
+func initProfileV2LooksLikeHeading(line string) bool {
+	return initProfileV2HeadingSet[line]
 }
 
 func validateInitProfileV2RouteText(value string) error {
