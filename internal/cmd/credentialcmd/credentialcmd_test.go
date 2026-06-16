@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
@@ -5974,6 +5975,392 @@ func TestInitProfileEditorLLMRuntimeSelectionFallsBackToFirstConfiguredRuntimeWi
 	}
 	if len(options) != 2 {
 		t.Fatalf("len(options) = %d, want 2 configured runtime options", len(options))
+	}
+}
+
+func TestInitSecretsProfileSelectionOptionsShowConfiguredProfilesAndBuiltInDefault(t *testing.T) {
+	profiles := []config.EffectiveSecretsProfile{
+		{
+			ID:     "personal-keychain",
+			Label:  "Personal macOS Keychain",
+			Backend: string(credstore.BackendKeychain),
+			Source: config.EffectiveSecretsProfileSourceConfigured,
+		},
+		{
+			ID:     "work-1password",
+			Label:  "Work 1Password",
+			Backend: string(credstore.BackendOPDesktop),
+			Source: config.EffectiveSecretsProfileSourceConfigured,
+		},
+	}
+	options := initSecretsProfileSelectionOptions(profiles, "", "Use built-in default (Legacy default (In-memory store))")
+	if len(options) != 3 {
+		t.Fatalf("len(options) = %d, want built-in default plus two configured profiles", len(options))
+	}
+	if got := options[0].Key; !strings.Contains(got, "Use built-in default") {
+		t.Fatalf("options[0].Key = %q, want built-in default label first", got)
+	}
+	if got, want := options[1].Value, "personal-keychain"; got != want {
+		t.Fatalf("options[1].Value = %q, want %q", got, want)
+	}
+	if got := options[2].Key; !strings.Contains(got, "Work 1Password") || !strings.Contains(got, "1Password desktop app") {
+		t.Fatalf("options[2].Key = %q, want configured secrets profile label with backend", got)
+	}
+}
+
+func TestInitProfileEditorSecretsProfileSelectionKeepsBrokenReferenceSelectable(t *testing.T) {
+	profiles := []config.EffectiveSecretsProfile{
+		{
+			ID:      "team-vault",
+			Label:   "Team Vault",
+			Backend: string(credstore.BackendFile),
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+	}
+	existing := basicProfile("work")
+	options, selected := initProfileEditorSecretsProfileSelection(profiles, "missing-vault", "missing-vault", "Use built-in default (Legacy default)", seedInteractiveInitDraft("work", "work", "work", &existing))
+	if got, want := selected, initMissingSecretsProfileSelection("missing-vault"); got != want {
+		t.Fatalf("selected = %q, want missing-selection sentinel %q", got, want)
+	}
+	if len(options) != 3 {
+		t.Fatalf("len(options) = %d, want missing + default + configured", len(options))
+	}
+	if got := options[0].Key; !strings.Contains(got, "Missing configured profile: missing-vault") {
+		t.Fatalf("options[0].Key = %q, want missing profile recovery label", got)
+	}
+}
+
+func TestApplySecretsProfileSelection(t *testing.T) {
+	draft := initDraft{}
+	applySecretsProfileSelection(&draft, initSecretsProfileDefaultSelection)
+	if draft.SecretsProfile != "" {
+		t.Fatalf("default selection set draft.SecretsProfile = %q, want cleared value", draft.SecretsProfile)
+	}
+	applySecretsProfileSelection(&draft, "team-vault")
+	if draft.SecretsProfile != "team-vault" {
+		t.Fatalf("configured selection set draft.SecretsProfile = %q, want team-vault", draft.SecretsProfile)
+	}
+	applySecretsProfileSelection(&draft, initMissingSecretsProfileSelection("missing-vault"))
+	if draft.SecretsProfile != "missing-vault" {
+		t.Fatalf("missing selection set draft.SecretsProfile = %q, want missing-vault", draft.SecretsProfile)
+	}
+}
+
+func TestLoadConfigForInitRecoversMissingSecretsProfileReference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	body, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	recovered, existed, err := loadConfigForInit(path)
+	if err != nil {
+		t.Fatalf("loadConfigForInit: %v", err)
+	}
+	if !existed {
+		t.Fatal("existed = false, want true")
+	}
+	if got := recovered.Profiles["work"].SecretsProfile; got != "missing-vault" {
+		t.Fatalf("recovered secrets_profile = %q, want missing-vault", got)
+	}
+	if err := config.Validate(recovered); !errors.Is(err, config.ErrSecretsProfileNotFound) {
+		t.Fatalf("Validate(recovered) error = %v, want ErrSecretsProfileNotFound", err)
+	}
+}
+
+func TestBuildNonInteractiveInitPlanRejectsMissingSecretsProfileReference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	body, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	opts := &root.Options{ConfigPath: path}
+	flags := initOptions{
+		nonInteractive: true,
+		gitHost:        "github.com",
+		gitAuth:        string(config.GitAuthModePAT),
+		reviewerAuth:   string(config.GitAuthModePAT),
+		llmProvider:    string(config.LLMProviderAnthropic),
+		llmAuth:        string(config.LLMAuthSubscription),
+		llmAdapter:     string(config.LLMAdapterClaudeCLI),
+		majorEvent:     string(config.ReviewMajorEventComment),
+	}
+	_, err = buildNonInteractiveInitPlan(&cobra.Command{}, opts, flags, defaultInitDeps())
+	if !errors.Is(err, config.ErrSecretsProfileNotFound) {
+		t.Fatalf("buildNonInteractiveInitPlan error = %v, want ErrSecretsProfileNotFound", err)
+	}
+}
+
+func TestValidateInteractiveInitConfigDoesNotMaskUnrelatedInvalidState(t *testing.T) {
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Keyring:        config.KeyringConfig{Backend: "bogus"},
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	err := validateInteractiveInitConfig(cfg)
+	if err == nil {
+		t.Fatal("validateInteractiveInitConfig error = nil, want invalid keyring backend")
+	}
+	if !strings.Contains(err.Error(), `keyring.backend "bogus"`) {
+		t.Fatalf("validateInteractiveInitConfig error = %v, want unrelated invalid state preserved", err)
+	}
+}
+
+func TestValidateInteractiveInitConfigAllowsOnlyMissingSecretsProfile(t *testing.T) {
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	if err := validateInteractiveInitConfig(cfg); err != nil {
+		t.Fatalf("validateInteractiveInitConfig error = %v, want nil for interactive recovery", err)
+	}
+}
+
+func TestHuhInitSecretPrompterAccessibleNamesSelectedSecretsProfile(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitSecretPrompter{
+		stdin:  strings.NewReader("\n"),
+		stderr: &stderr,
+	}
+	_, err := prompter.ChooseCredentialAction(initCredentialSecretPrompt{
+		Entry: initCredentialPlanEntry{
+			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
+			SecretsProfile: credentials.ResolvedSecretsProfile{
+				ID:      "team-vault",
+				Label:   "Team Vault",
+				Backend: string(credstore.BackendFile),
+				Source:  config.EffectiveSecretsProfileSourceConfigured,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ChooseCredentialAction: %v", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "via Team Vault") {
+		t.Fatalf("stderr = %q, want selected secrets-management profile in prompt title", got)
+	}
+}
+
+func TestWriteInitCredentialPlanHintsNamesSelectedSecretsProfile(t *testing.T) {
+	var out bytes.Buffer
+	err := writeInitCredentialPlanHints(&out, "", initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "git",
+			Ref:     "codereview/work",
+		},
+		SecretsProfile: credentials.ResolvedSecretsProfile{
+			ID:      "team-vault",
+			Label:   "Team Vault",
+			Backend: string(credstore.BackendFile),
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+		KeySpecs: []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
+	})
+	if err != nil {
+		t.Fatalf("writeInitCredentialPlanHints: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "Next via Team Vault:") {
+		t.Fatalf("hint output = %q, want selected secrets-management profile context", got)
+	}
+}
+
+func TestInitCredentialReadinessNoteNamesSelectedSecretsProfile(t *testing.T) {
+	note := initCredentialReadinessNote(initCredentialPlanEntry{
+		Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
+		SecretsProfile: credentials.ResolvedSecretsProfile{
+			ID:      "team-vault",
+			Label:   "Team Vault",
+			Backend: string(credstore.BackendFile),
+			Source:  config.EffectiveSecretsProfileSourceConfigured,
+		},
+		State: initCredentialPlanStateDefer,
+	})
+	if !strings.Contains(note, "Git via Team Vault deferred") {
+		t.Fatalf("note = %q, want named selected secrets-management profile", note)
+	}
+}
+
+func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileSelection(t *testing.T) {
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	profile := cfg.Profiles["work"]
+	draft := seedInteractiveInitDraft("work", "work", "work", &profile)
+	applySecretsProfileSelection(&draft, initSecretsProfileDefaultSelection)
+
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	if got := workspace.profile.SecretsProfile; got != "" {
+		t.Fatalf("workspace.profile.SecretsProfile = %q, want cleared explicit selection", got)
+	}
+}
+
+func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileToConfiguredProfile(t *testing.T) {
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "work",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"team-vault": {
+					Label:   "Team Vault",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	profile := cfg.Profiles["work"]
+	draft := seedInteractiveInitDraft("work", "work", "work", &profile)
+	applySecretsProfileSelection(&draft, "team-vault")
+
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	if got := workspace.profile.SecretsProfile; got != "team-vault" {
+		t.Fatalf("workspace.profile.SecretsProfile = %q, want team-vault", got)
+	}
+	if got := workspace.cfg.Profiles["work"].SecretsProfile; got != "team-vault" {
+		t.Fatalf("workspace cfg secrets_profile = %q, want team-vault", got)
+	}
+}
+
+func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+			return initDraft{
+				ProfileName:      "work",
+				MakeDefault:      true,
+				GitHost:          "github.com",
+				GitAuth:          string(config.GitAuthModePAT),
+				GitCredentialRef: "codereview/work",
+				SecretsProfile:   "team-vault",
+				LLMProvider:      string(config.LLMProviderAnthropic),
+				LLMAuth:          string(config.LLMAuthSubscription),
+				LLMAdapter:       string(config.LLMAdapterClaudeCLI),
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{
+				Profiles: map[string]config.Profile{},
+				Secrets: config.SecretsConfig{
+					Profiles: map[string]config.SecretsProfile{
+						"team-vault": {
+							Label:   "Team Vault",
+							Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+						},
+					},
+				},
+			}, false, nil
+		},
+		saveConfig: func(string, config.File) error { return nil },
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "Next via Team Vault: cr set-credential --ref codereview/work --key "+credentials.GitTokenKey+" --stdin") {
+		t.Fatalf("stderr = %q, want deferred hint naming the selected secrets-management profile", got)
+	}
+}
+
+func TestBuildInteractiveInitWorkspaceAllowsRepairWhileAnotherProfileStillHasBrokenSecretsProfile(t *testing.T) {
+	cfg := config.Normalize(config.File{
+		DefaultProfile: "home",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"team-vault": {
+					Label:   "Team Vault",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"home": basicProfile("home"),
+			"work": func() config.Profile {
+				profile := basicProfile("work")
+				profile.SecretsProfile = "missing-vault"
+				return profile
+			}(),
+		},
+	})
+	home := cfg.Profiles["home"]
+	draft := seedInteractiveInitDraft("home", "home", "home", &home)
+	applySecretsProfileSelection(&draft, "team-vault")
+
+	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
+	}
+	if got := workspace.profile.SecretsProfile; got != "team-vault" {
+		t.Fatalf("workspace.profile.SecretsProfile = %q, want team-vault", got)
 	}
 }
 
