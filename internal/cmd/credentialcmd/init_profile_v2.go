@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -26,19 +25,7 @@ type bubbleTeaInitProfileV2Prompter struct {
 
 type initProfileV2EditorRunner func(initProfileV2Editor) (initProfileV2EditorResult, error)
 
-var initProfileV2Theme = struct {
-	title       lipgloss.Style
-	selected    lipgloss.Style
-	activeTitle lipgloss.Style
-	error       lipgloss.Style
-	help        lipgloss.Style
-}{
-	title:       lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")),
-	selected:    lipgloss.NewStyle().Foreground(lipgloss.Color("201")),
-	activeTitle: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("201")),
-	error:       lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
-	help:        lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-}
+var initProfileV2Theme = initLinearTheme
 
 func newBubbleTeaInitProfileV2Prompter(opts *root.Options) initPrompter {
 	return bubbleTeaInitProfileV2Prompter{stdin: opts.Stdin, stderr: opts.Stderr}
@@ -241,6 +228,7 @@ func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.handleLLMRuntimeBootstrapKey(msg) {
 			m.requestLLMRuntimeBootstrap = true
 			m.result = initProfileV2EditorResult{BootstrapLLMRuntime: true}
+			m.quitting = true
 			return m, tea.Quit
 		}
 		if next, handled, cmd := m.handleProfileActionKey(msg); handled {
@@ -250,12 +238,12 @@ func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q", "esc":
 			m.quitting = true
 			return m, tea.Quit
-		case "up", "k", "shift+tab":
+		case "shift+tab":
 			m.focused = m.document.previousFocusableField(m.focused)
 			m.relayout()
 			m.ensureFocusedVisible()
 			return m, nil
-		case "down", "j", "tab", "enter":
+		case "tab", "enter":
 			m.focused = m.document.nextFocusableField(m.focused)
 			m.relayout()
 			m.ensureFocusedVisible()
@@ -287,9 +275,9 @@ func (m initProfileV2ReadOnlyModel) View() string {
 	if m.quitting {
 		return ""
 	}
-	help := "up/down focus - enter next - shift+tab previous - left/right change select - esc back"
+	help := "tab/enter next - shift+tab previous - up/down change select - esc back"
 	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Kind == initProfileV2FieldTextarea {
-		help = "up/down focus - enter next - shift+tab previous - ctrl+j newline - esc back"
+		help = "tab/enter next - shift+tab previous - ctrl+j newline - esc back"
 	}
 	return m.styleVisibleViewport() + "\n\n" + initProfileV2Theme.help.Render(help)
 }
@@ -387,14 +375,14 @@ func initProfileV2Selection(ctx initPromptContext, selection string) (string, *c
 	return selection, &profileCopy, ctx.RequestedProfileName
 }
 
-type initProfileV2FieldKind string
-type initProfileV2FieldID string
+type initProfileV2FieldKind = initLinearFieldKind
+type initProfileV2FieldID = initLinearFieldID
 
 const (
-	initProfileV2FieldSection  initProfileV2FieldKind = "section"
-	initProfileV2FieldInput    initProfileV2FieldKind = "input"
-	initProfileV2FieldSelect   initProfileV2FieldKind = "select"
-	initProfileV2FieldTextarea initProfileV2FieldKind = "textarea"
+	initProfileV2FieldSection  initProfileV2FieldKind = initLinearFieldSection
+	initProfileV2FieldInput    initProfileV2FieldKind = initLinearFieldInput
+	initProfileV2FieldSelect   initProfileV2FieldKind = initLinearFieldSelect
+	initProfileV2FieldTextarea initProfileV2FieldKind = initLinearFieldTextarea
 )
 
 const (
@@ -430,43 +418,11 @@ type initProfileV2Editor struct {
 	Document                   initProfileV2Document
 }
 
-type initProfileV2Document []initProfileV2Field
-
-type initProfileV2Field struct {
-	ID          initProfileV2FieldID
-	Kind        initProfileV2FieldKind
-	Title       string
-	Description string
-	Value       string
-	Cursor      int
-	Options     []initProfileV2Option
-	Focusable   bool
-	Editable    bool
-	Hidden      bool
-	Error       string
-	Validate    func(string) error
-}
-
-type initProfileV2FieldOptions struct {
-	Hidden bool
-}
-
-type initProfileV2Option struct {
-	Label    string
-	Value    string
-	Selected bool
-}
-
-type initProfileV2Layout struct {
-	Content string
-	Bounds  []initProfileV2FieldBounds
-	Lines   int
-}
-
-type initProfileV2FieldBounds struct {
-	Start int
-	End   int
-}
+type initProfileV2Document = initLinearDocument
+type initProfileV2Field = initLinearField
+type initProfileV2FieldOptions = initLinearFieldOptions
+type initProfileV2Layout = initLinearLayout
+type initProfileV2FieldBounds = initLinearFieldBounds
 
 func initProfileV2AppendRouteSection(document *initProfileV2Document, routeText string) {
 	document.addSection("Automatic profile selection", "Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile.")
@@ -540,153 +496,8 @@ func initProfileV2AppendProfileActionSection(document *initProfileV2Document) {
 	}, initDetailActionEdit)
 }
 
-func (d *initProfileV2Document) addSection(title, description string) {
-	*d = append(*d, initProfileV2Field{
-		Kind:        initProfileV2FieldSection,
-		Title:       title,
-		Description: description,
-	})
-}
-
-func (d *initProfileV2Document) addInput(title, description, value string) {
-	d.addInputField(initProfileV2FieldInput, "", title, description, value, false, nil, initProfileV2FieldOptions{})
-}
-
-func (d *initProfileV2Document) addEditableInput(id initProfileV2FieldID, title, description, value string, validate func(string) error, options ...initProfileV2FieldOptions) {
-	d.addInputField(initProfileV2FieldInput, id, title, description, value, true, validate, mergedInitProfileV2FieldOptions(options))
-}
-
-func (d *initProfileV2Document) addEditableTextarea(id initProfileV2FieldID, title, description, value string) {
-	d.addInputField(initProfileV2FieldTextarea, id, title, description, value, true, nil, initProfileV2FieldOptions{})
-}
-
-func (d *initProfileV2Document) addInputField(kind initProfileV2FieldKind, id initProfileV2FieldID, title, description, value string, editable bool, validate func(string) error, options initProfileV2FieldOptions) {
-	*d = append(*d, initProfileV2Field{
-		Kind:        kind,
-		ID:          id,
-		Title:       title,
-		Description: description,
-		Value:       value,
-		Cursor:      len([]rune(value)),
-		Focusable:   true,
-		Editable:    editable,
-		Hidden:      options.Hidden,
-		Validate:    validate,
-	})
-}
-
-func mergedInitProfileV2FieldOptions(options []initProfileV2FieldOptions) initProfileV2FieldOptions {
-	var merged initProfileV2FieldOptions
-	for _, option := range options {
-		if option.Hidden {
-			merged.Hidden = true
-		}
-	}
-	return merged
-}
-
 func initProfileV2AddSelect[T comparable](document *initProfileV2Document, title, description string, options []huh.Option[T], selected T) {
-	initProfileV2AddSelectField(document, "", title, description, options, selected, false, initProfileV2FieldOptions{})
-}
-
-func (d *initProfileV2Document) addEditableSelect(id initProfileV2FieldID, title, description string, options []huh.Option[string], selected string, fieldOptions ...initProfileV2FieldOptions) {
-	initProfileV2AddSelectField(d, id, title, description, options, selected, true, mergedInitProfileV2FieldOptions(fieldOptions))
-}
-
-func initProfileV2AddSelectField[T comparable](document *initProfileV2Document, id initProfileV2FieldID, title, description string, options []huh.Option[T], selected T, editable bool, fieldOptions initProfileV2FieldOptions) {
-	field := initProfileV2Field{
-		Kind:        initProfileV2FieldSelect,
-		ID:          id,
-		Title:       title,
-		Description: description,
-		Focusable:   true,
-		Editable:    editable,
-		Hidden:      fieldOptions.Hidden,
-		Options:     make([]initProfileV2Option, 0, len(options)),
-	}
-	for _, option := range options {
-		field.Options = append(field.Options, initProfileV2Option{
-			Label:    option.Key,
-			Value:    fmt.Sprint(option.Value),
-			Selected: option.Value == selected,
-		})
-	}
-	*document = append(*document, field)
-}
-
-func (d initProfileV2Document) firstFocusableField() int {
-	for index, field := range d {
-		if field.Focusable && !field.Hidden {
-			return index
-		}
-	}
-	return 0
-}
-
-func (d initProfileV2Document) lastFocusableField() int {
-	for index := len(d) - 1; index >= 0; index-- {
-		if d[index].Focusable && !d[index].Hidden {
-			return index
-		}
-	}
-	return d.firstFocusableField()
-}
-
-func (d initProfileV2Document) nextFocusableField(current int) int {
-	for index := current + 1; index < len(d); index++ {
-		if d[index].Focusable && !d[index].Hidden {
-			return index
-		}
-	}
-	return current
-}
-
-func (d initProfileV2Document) previousFocusableField(current int) int {
-	for index := current - 1; index >= 0; index-- {
-		if d[index].Focusable && !d[index].Hidden {
-			return index
-		}
-	}
-	return current
-}
-
-func (d initProfileV2Document) fieldIndexByTitle(title string) int {
-	for index, field := range d {
-		if field.Title == title {
-			return index
-		}
-	}
-	return -1
-}
-
-func (d initProfileV2Document) fieldIndexByID(id initProfileV2FieldID) int {
-	for index, field := range d {
-		if field.ID == id {
-			return index
-		}
-	}
-	return -1
-}
-
-func (d initProfileV2Document) fieldValue(id initProfileV2FieldID) string {
-	index := d.fieldIndexByID(id)
-	if index < 0 {
-		return ""
-	}
-	return d[index].Value
-}
-
-func (d initProfileV2Document) selectedValue(id initProfileV2FieldID) string {
-	index := d.fieldIndexByID(id)
-	if index < 0 {
-		return ""
-	}
-	for _, option := range d[index].Options {
-		if option.Selected {
-			return option.Value
-		}
-	}
-	return ""
+	initLinearAddSelect(document, title, description, options, selected)
 }
 
 func (m *initProfileV2ReadOnlyModel) handleFocusedInputKey(msg tea.KeyMsg) bool {
@@ -727,6 +538,8 @@ func (m *initProfileV2ReadOnlyModel) handleFocusedInputKey(msg tea.KeyMsg) bool 
 	case tea.KeyCtrlU:
 		field.Value = ""
 		field.Cursor = 0
+	case tea.KeyCtrlW:
+		field.Value, field.Cursor = initLinearDeleteWordBeforeCursor(field.Value, field.Cursor)
 	case tea.KeyCtrlK:
 		field.Value = initProfileV2DeleteAfterCursor(field.Value, field.Cursor)
 	default:
@@ -745,9 +558,9 @@ func (m *initProfileV2ReadOnlyModel) handleFocusedSelectKey(msg tea.KeyMsg) bool
 		return false
 	}
 	switch msg.String() {
-	case "left", "h":
+	case "up", "k":
 		initProfileV2MoveSelection(field, -1)
-	case "right", "l", " ":
+	case "down", "j", " ":
 		initProfileV2MoveSelection(field, 1)
 	default:
 		return false
@@ -776,6 +589,7 @@ func (m initProfileV2ReadOnlyModel) handleProfileActionKey(msg tea.KeyMsg) (init
 	switch m.document.selectedValue(initProfileV2FieldProfileAction) {
 	case initDetailActionBack:
 		m.result = initProfileV2EditorResult{}
+		m.quitting = true
 		return m, true, tea.Quit
 	case initDetailActionEdit:
 		draft, err := m.validatedDraft()
@@ -786,6 +600,7 @@ func (m initProfileV2ReadOnlyModel) handleProfileActionKey(msg tea.KeyMsg) (init
 			return m, true, nil
 		}
 		m.result = initProfileV2EditorResult{StageProfile: true, Draft: draft}
+		m.quitting = true
 		return m, true, tea.Quit
 	default:
 		return m, true, nil
@@ -817,24 +632,13 @@ func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
 	if index < 0 || index >= len(m.document) {
 		return
 	}
-	switch m.document[index].ID {
-	case initProfileV2FieldGitScope:
+	id := m.document[index].ID
+	if id == initProfileV2FieldGitScope {
 		m.syncGitScopeFields()
-	case initProfileV2FieldLLMRuntime:
+		return
+	}
+	if id == initProfileV2FieldLLMRuntime {
 		m.syncModelMapFields()
-	case initProfileV2FieldProfileName,
-		initProfileV2FieldRoutes,
-		initProfileV2FieldGitHost,
-		initProfileV2FieldGitAuth,
-		initProfileV2FieldReviewerEntity,
-		initProfileV2FieldReviewerModelTier,
-		initProfileV2FieldAgentSources,
-		initProfileV2FieldReviewMajorEvent,
-		initProfileV2FieldSelfApprove,
-		initProfileV2FieldResolveThreads,
-		initProfileV2FieldResolveAfter,
-		initProfileV2FieldGitStorageLabel,
-		initProfileV2FieldProfileAction:
 	}
 }
 
@@ -1121,6 +925,8 @@ func (m *initProfileV2ReadOnlyModel) ensureFocusedVisible() {
 	switch {
 	case bounds.Start < top:
 		m.viewport.SetYOffset(bounds.Start)
+	case bounds.Start >= bottom:
+		m.viewport.SetYOffset(bounds.Start)
 	case bounds.End > bottom:
 		if bounds.End-bounds.Start >= height {
 			m.viewport.SetYOffset(bounds.Start)
@@ -1159,9 +965,9 @@ func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, fo
 		titlePrefix = "  "
 	}
 	initProfileV2AppendWrappedWithPrefix(lines, titlePrefix, field.Title, width)
-	initProfileV2AppendWrapped(lines, field.Description, width)
+	initProfileV2AppendWrappedWithPrefix(lines, titlePrefix, field.Description, width)
 	if strings.TrimSpace(field.Error) != "" {
-		initProfileV2AppendWrappedWithPrefix(lines, "! ", field.Error, width)
+		initProfileV2AppendWrappedWithPrefix(lines, titlePrefix+"! ", field.Error, width)
 	}
 	switch field.Kind {
 	case initProfileV2FieldSection:
@@ -1176,7 +982,7 @@ func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, fo
 		}
 		for index, line := range valueLines {
 			prefix := "  "
-			if index == 0 {
+			if focused && index == 0 {
 				prefix = "> "
 			}
 			initProfileV2AppendWrappedWithPrefix(lines, prefix, line, width)
@@ -1184,20 +990,11 @@ func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, fo
 	case initProfileV2FieldSelect:
 		for _, option := range field.Options {
 			prefix := "  "
-			if option.Selected {
+			if focused && option.Selected {
 				prefix = "> "
 			}
 			initProfileV2AppendWrappedWithPrefix(lines, prefix, option.Label, width)
 		}
-	}
-}
-
-func initProfileV2AppendWrapped(lines *[]string, text string, width int) {
-	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		initProfileV2AppendWrappedWithPrefix(lines, "", strings.TrimSpace(line), width)
 	}
 }
 
@@ -1248,7 +1045,7 @@ func initProfileV2StyleViewportLine(line string, active bool) string {
 	case strings.HasPrefix(trimmed, "! "):
 		return initProfileV2Theme.error.Render(line)
 	case strings.HasPrefix(trimmed, "> "):
-		return initProfileV2Theme.selected.Render(line)
+		return initLinearStyleSelectedLine(line)
 	case active && initProfileV2LooksLikeHeading(trimmed):
 		return initProfileV2Theme.activeTitle.Render(line)
 	case initProfileV2LooksLikeHeading(trimmed):

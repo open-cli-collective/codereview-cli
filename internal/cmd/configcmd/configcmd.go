@@ -519,10 +519,10 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 				return cmderr.Credential(err)
 			}
 			result := view.ConfigClear{
-				Backend:       string(backend),
-				BackendSource: string(source),
+				Backend:              string(backend),
+				BackendSource:        string(source),
 				ActiveSecretsProfile: resolvedSecretsProfileViewPtr(resolvedSecretsProfile),
-				DryRun:        clearDryRun,
+				DryRun:               clearDryRun,
 			}
 			for _, profile := range profiles {
 				keys, err := clearCredentialBundle(store, profile.Profile, clearDryRun)

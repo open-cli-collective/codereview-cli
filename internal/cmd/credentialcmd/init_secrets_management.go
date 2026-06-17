@@ -41,9 +41,19 @@ type initLegacySecretsManagementEditorResult struct {
 }
 
 func initSecretsBackendCatalog() []initSecretsBackendPresentation {
-	items := make([]initSecretsBackendPresentation, 0, len(credstore.ValidBackendNames()))
-	for _, name := range credstore.ValidBackendNames() {
-		kind := config.SecretsBackendKind(name)
+	order := []config.SecretsBackendKind{
+		config.SecretsBackendKind(credstore.BackendKeychain),
+		config.SecretsBackendKind(credstore.BackendWinCred),
+		config.SecretsBackendKind(credstore.BackendSecretService),
+		config.SecretsBackendKind(credstore.BackendPass),
+		config.SecretsBackendKind(credstore.BackendFile),
+		config.SecretsBackendKind(credstore.BackendOPDesktop),
+		config.SecretsBackendKind(credstore.BackendOP),
+		config.SecretsBackendKind(credstore.BackendOPConnect),
+		config.SecretsBackendKind(credstore.BackendMemory),
+	}
+	items := make([]initSecretsBackendPresentation, 0, len(order))
+	for _, kind := range order {
 		items = append(items, initSecretsBackendPresentation{
 			Kind:             kind,
 			Label:            initSecretsBackendDisplayLabel(kind),
@@ -93,11 +103,11 @@ func initSecretsBackendDescription(kind config.SecretsBackendKind) string {
 	case config.SecretsBackendKind(credstore.BackendPass):
 		return "Store credentials in an initialized pass password store."
 	case config.SecretsBackendKind(credstore.BackendOP):
-		return "Use 1Password service-account access with non-secret config only."
+		return "Use 1Password service-account access. Best for CI or server environments where cr can read a service-account token from an environment variable; requires a vault name or id and service token env var."
 	case config.SecretsBackendKind(credstore.BackendOPConnect):
-		return "Use 1Password Connect with non-secret host and env wiring."
+		return "Use a 1Password Connect server. Best when your team runs a Connect API endpoint; requires a vault name or id, Connect host, and Connect token env var."
 	case config.SecretsBackendKind(credstore.BackendOPDesktop):
-		return "Use 1Password desktop integration with a selected account."
+		return "Use the local 1Password desktop app integration. Most common for local use; best for interactive developer machines with an unlocked desktop app; requires a vault name or id and can optionally pin a desktop account id."
 	case config.SecretsBackendKind(credstore.BackendMemory):
 		return "Keep credentials in memory only. Best suited for tests or CI."
 	default:
@@ -156,11 +166,11 @@ func initSecretsManagementInventoryRows(cfg config.File) []initInventoryRow {
 	rows = append(rows, initInventoryRow{
 		ID:            initSecretsManagementLegacySelection,
 		Title:         initLegacySecretsManagementInventoryTitle(cfg),
-		Description:   "Compatibility settings for the older keyring.backend workflow.",
+		Description:   "Global fallback credential store used by profiles that do not choose a named secrets-management profile.",
 		Kind:          initInventoryRowKindActive,
 		PrimaryAction: initInventoryActionCommand,
 		Selectable:    true,
-		FilterValue:   strings.TrimSpace(strings.Join([]string{"legacy compatibility", strings.TrimSpace(cfg.Keyring.Backend)}, " ")),
+		FilterValue:   strings.TrimSpace(strings.Join([]string{"default credential store global fallback keyring backend", strings.TrimSpace(cfg.Keyring.Backend)}, " ")),
 	})
 
 	for _, backend := range initSecretsBackendCatalog() {
@@ -215,7 +225,7 @@ func initLegacySecretsManagementInventoryTitle(cfg config.File) string {
 	if backend == config.ProjectedLegacySecretsBackendKind {
 		backendLabel = "Automatic OS default"
 	}
-	return fmt.Sprintf("Legacy compatibility (%s)", backendLabel)
+	return fmt.Sprintf("Default credential store (%s)", backendLabel)
 }
 
 func initSecretsProfileDisplayName(id string, label string) string {
@@ -253,6 +263,9 @@ func initSecretsProfileEditorLabelSeed(profile config.SecretsProfile, id string,
 		}
 	}
 	fallback := initSecretsBackendDisplayLabel(kind)
+	if creating && kind == config.SecretsBackendKind(credstore.BackendOPDesktop) {
+		fallback = "1Password"
+	}
 	return initSecretsProfileLabelSeed{
 		DisplayValue:  fallback,
 		FallbackValue: fallback,
@@ -406,6 +419,9 @@ func (p huhInitKeyringBackendPrompter) runInventory(prompt initInventoryPrompt) 
 }
 
 func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+	if p.inventoryRunner == nil {
+		return p.editKeyringBackendLinear(prompt)
+	}
 	working := cloneInitConfigFile(prompt.Config)
 	original := cloneInitConfigFile(prompt.Config)
 
@@ -687,17 +703,17 @@ func (p huhInitKeyringBackendPrompter) editLegacySecretsManagement(currentBacken
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
-				Title("Legacy persistent backend").
+				Title("Default credential store backend").
 				Options(initLegacySecretsBackendOptions(currentBackend)...).
 				Value(&backend),
 			huh.NewSelect[string]().
-				Title("Legacy secrets-management action").
+				Title("Default credential-store action").
 				Options(
-					huh.NewOption("Stage legacy compatibility settings", initDetailActionEdit),
+					huh.NewOption("Stage default credential-store settings", initDetailActionEdit),
 					huh.NewOption("Back without staging", initDetailActionBack),
 				).
 				Value(&action),
-		).Title("Legacy Secrets Compatibility"),
+		).Title("Default Credential Store"),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
