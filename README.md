@@ -998,6 +998,47 @@ Live text output includes run ID, gate status, decision, outcome, PR, artifacts,
 and post counts. JSON output includes `run`, `status`, `decision`, `message`,
 `outbox`, `artifacts`, and `fail_on_triggered`.
 
+### `cr respond`
+
+```text
+cr respond <PR> [flags]
+```
+
+Responds to human replies on `cr`'s own open review-comment threads, closing the
+conversational loop on a finding without forcing a full re-review. The PR host
+must match the active profile's `git.host`.
+
+`cr respond` lists the pull request's inline review threads and selects the ones
+that meet all of:
+
+- the first comment is a `cr` finding (it matches the posting identity and
+  carries a codereview marker),
+- the thread is still open (unresolved), and
+- the latest comment is a human reply that `cr` has not already answered.
+
+For each selected thread, a small-tier LLM classifier reads the original finding
+plus the full thread and chooses one of `acknowledge_and_resolve` (post a brief
+acknowledgement and resolve the thread because the finding is addressed or
+conceded), `reply_only` (post a contextual answer and keep the thread open), or
+`skip` (take no action). Threads with no new human reply never reach the
+classifier, so repeated runs are idempotent without persisted per-thread state.
+
+| Flag | Semantics |
+|------|-----------|
+| `--dry-run` | Plan thread replies and print the plan without posting. |
+| `--no-post` | Alias for `--dry-run`. |
+| `--no-resolve-threads` | Post replies but never resolve threads. Also implied by profile `resolve_threads: never`. |
+| `--json` | Emit JSON. |
+
+Text output includes the PR, mode, considered/replied/resolved/skipped counts,
+and a per-thread breakdown. JSON output includes `pr_url`, `dry_run`, the same
+counts, and a `threads` array with each thread's `decision`, `reply`, and
+`resolved` state.
+
+The classifier uses the profile's `small` model tier (falling back to `medium`
+when `small` is unset, with a warning); a profile with neither configured is
+rejected.
+
 ### `cr benchmark`
 
 ```text
