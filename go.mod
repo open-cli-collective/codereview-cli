@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/google/uuid v1.6.0
-	github.com/open-cli-collective/cli-common v0.3.3-0.20260616043623-eb0e0b7e5097
+	github.com/open-cli-collective/cli-common v0.3.3-0.20260617212421-4d896e589e27
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
