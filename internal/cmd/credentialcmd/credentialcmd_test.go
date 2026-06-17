@@ -535,6 +535,7 @@ func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
 	reviewer := cfg.Profiles["default"].ReviewerCredentials
 	if reviewer == nil {
 		t.Fatal("reviewer credentials missing")
+		return
 	}
 	if reviewer.AuthMode != config.GitAuthModePAT || reviewer.CredentialRef != "codereview/default-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want pat codereview/default-reviewer", reviewer)
@@ -1123,6 +1124,7 @@ func TestBuildInteractiveInitSessionPlanUsesOriginalProfileForRenamedTouchedProf
 	}
 	if reviewerEntry == nil {
 		t.Fatal("reviewer credential entry missing from session plan")
+		return
 	}
 	if reviewerEntry.State != initCredentialPlanStateKeepExisting {
 		t.Fatalf("reviewer entry state = %s, want keep_existing for label-only renamed profile edit", reviewerEntry.State)
@@ -2111,6 +2113,7 @@ func TestInitReviewerEntityDraftExportClearsIdentityCacheWhenShapeChanges(t *tes
 
 	if exported == nil {
 		t.Fatal("exportConfig = nil, want separate reviewer credentials")
+		return
 	}
 	if exported.IdentityCache != "" {
 		t.Fatalf("IdentityCache = %q, want cleared on reviewer entity change", exported.IdentityCache)
