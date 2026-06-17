@@ -31,9 +31,8 @@ cr lists the pull request's inline review threads, finds the ones it authored
 whether to acknowledge, answer, or skip. It posts a contextual in-thread reply
 and resolves the thread when the finding has been addressed.
 
-Use --dry-run (or --no-post) to plan replies without posting. Use
---no-resolve-threads to keep threads open even when the reply indicates the
-finding is addressed.`
+Use --dry-run to plan replies without posting. Use --no-resolve-threads to keep
+threads open even when the reply indicates the finding is addressed.`
 
 // Runtime contains the per-command dependencies for `cr respond`.
 type Runtime struct {
@@ -76,7 +75,10 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 		},
 	}
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Plan thread replies without posting")
-	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Alias for --dry-run")
+	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Deprecated alias for --dry-run")
+	// --no-post is a legacy alias for --dry-run; keep it working but hide it so
+	// --help advertises a single flag for the plan-only behavior.
+	_ = cmd.Flags().MarkHidden("no-post")
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 	cmd.Flags().BoolVar(&flags.noResolveThreads, "no-resolve-threads", false, "Reply but never resolve threads")
 	rootCmd.AddCommand(cmd)
@@ -364,22 +366,5 @@ func gitProviderOptions(ref gitprovider.PRRef) githubprovider.Options {
 }
 
 func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter, error) {
-	switch llmConfig.Adapter {
-	case config.LLMAdapterClaudeCLI:
-		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{}), nil
-	case config.LLMAdapterCodexCLI:
-		if llmConfig.Provider != config.LLMProviderOpenAI || llmConfig.Auth != config.LLMAuthSubscription {
-			return nil, fmt.Errorf("%w: codex_cli requires provider openai with subscription auth", config.ErrUnsupported)
-		}
-		return llm.NewCodexCLIAdapter(llm.SubprocessOptions{AllowBestEffortNoTools: true}), nil
-	case config.LLMAdapterPiRPC:
-		if llmConfig.Provider != config.LLMProviderPi || llmConfig.Auth != config.LLMAuthSubscription {
-			return nil, fmt.Errorf("%w: pi_rpc requires provider pi with subscription auth", config.ErrUnsupported)
-		}
-		return llm.NewPiRPCAdapter(llm.PiRPCOptions{}), nil
-	case config.LLMAdapterAnthropicAPI, config.LLMAdapterOpenAIAPI:
-		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{})
-	default:
-		return nil, fmt.Errorf("%w: unsupported LLM adapter %q", config.ErrUnsupported, llmConfig.Adapter)
-	}
+	return llm.NewAdapterFromConfig(llmConfig, store)
 }

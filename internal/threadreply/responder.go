@@ -49,13 +49,18 @@ func buildRequest(pr gitprovider.PR, postingIdentity gitprovider.Identity, login
 	original := ""
 	for i, c := range thread.Comments {
 		fromCR := authoredByCR(c, login)
-		body := marker.SanitizeModelContent(c.Body)
+		// Strip cr's own markers first, then escape any remaining marker
+		// openings the comment text may contain, so the model never sees a
+		// live marker yet a single representation is used everywhere. Deriving
+		// both Body and OriginalFinding from this one value keeps the first
+		// comment consistent between the two fields.
+		body := marker.SanitizeModelContent(stripMarkers(c.Body))
 		if i == 0 {
-			original = stripMarkers(c.Body)
+			original = body
 		}
 		comments = append(comments, Comment{
 			Author:    displayLogin(c),
-			Body:      stripMarkers(body),
+			Body:      body,
 			FromCR:    fromCR,
 			CreatedAt: c.CreatedAt,
 		})

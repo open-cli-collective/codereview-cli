@@ -982,24 +982,7 @@ func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvide
 }
 
 func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter, error) {
-	switch llmConfig.Adapter {
-	case config.LLMAdapterClaudeCLI:
-		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{}), nil
-	case config.LLMAdapterCodexCLI:
-		if llmConfig.Provider != config.LLMProviderOpenAI || llmConfig.Auth != config.LLMAuthSubscription {
-			return nil, fmt.Errorf("%w: codex_cli requires provider openai with subscription auth", config.ErrUnsupported)
-		}
-		return llm.NewCodexCLIAdapter(llm.SubprocessOptions{AllowBestEffortNoTools: true}), nil
-	case config.LLMAdapterPiRPC:
-		if llmConfig.Provider != config.LLMProviderPi || llmConfig.Auth != config.LLMAuthSubscription {
-			return nil, fmt.Errorf("%w: pi_rpc requires provider pi with subscription auth", config.ErrUnsupported)
-		}
-		return llm.NewPiRPCAdapter(llm.PiRPCOptions{}), nil
-	case config.LLMAdapterAnthropicAPI, config.LLMAdapterOpenAIAPI:
-		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{})
-	default:
-		return nil, fmt.Errorf("%w: unsupported LLM adapter %q", config.ErrUnsupported, llmConfig.Adapter)
-	}
+	return llm.NewAdapterFromConfig(llmConfig, store)
 }
 
 var _ Runner = reviewRunner{}

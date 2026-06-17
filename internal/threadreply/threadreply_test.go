@@ -123,9 +123,6 @@ func TestLLMClassifierRejectsEmptyReplyForAction(t *testing.T) {
 	adapter.Queue(llm.FakeResult{
 		Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"decision":"reply_only","reply":"   "}`)},
 	})
-	adapter.Queue(llm.FakeResult{
-		Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"decision":"reply_only","reply":"   "}`)},
-	})
 	classifier := NewLLMClassifier(adapter, "small-model", "low")
 	if _, err := classifier.ClassifyThreadReply(context.Background(), Request{Comments: []Comment{{Author: "a", Body: "b"}}}); err == nil {
 		t.Fatal("ClassifyThreadReply error = nil, want error for empty reply")
@@ -212,6 +209,41 @@ func TestSelectCandidatesPicksReplyOnCRThread(t *testing.T) {
 	}
 	if len(got.Request.Comments) != 2 || !got.Request.Comments[0].FromCR || got.Request.Comments[1].FromCR {
 		t.Fatalf("comments = %+v, want first from cr and second from human", got.Request.Comments)
+	}
+}
+
+func TestSelectCandidatesFirstCommentBodyMatchesOriginalFinding(t *testing.T) {
+	pr := gitprovider.PR{Title: "t", URL: "u"}
+	posting := gitprovider.Identity{Login: "review-bot"}
+	threads := []gitprovider.InlineThread{
+		{
+			ID:       "open-with-reply",
+			Resolved: false,
+			Path:     "a.go",
+			Line:     10,
+			Comments: []gitprovider.ThreadComment{
+				markerComment("review-bot", "Nil check missing."),
+				plainComment("author", "Fixed it."),
+			},
+		},
+	}
+
+	candidates := SelectCandidates(pr, posting, threads)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(candidates))
+	}
+	req := candidates[0].Request
+	// OriginalFinding and the first comment body are derived from a single
+	// stripped-then-sanitized representation, so they must be identical and
+	// must not leak the cr marker (live or HTML-escaped).
+	if req.OriginalFinding != req.Comments[0].Body {
+		t.Fatalf("OriginalFinding %q != Comments[0].Body %q", req.OriginalFinding, req.Comments[0].Body)
+	}
+	if req.OriginalFinding != "Nil check missing." {
+		t.Fatalf("OriginalFinding = %q, want marker stripped", req.OriginalFinding)
+	}
+	if strings.Contains(req.OriginalFinding, "codereview:") {
+		t.Fatalf("OriginalFinding = %q, leaks codereview marker", req.OriginalFinding)
 	}
 }
 
