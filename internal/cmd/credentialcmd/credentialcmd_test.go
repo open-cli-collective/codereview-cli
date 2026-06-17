@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -9961,6 +9962,17 @@ func TestInitSecretsProfileBackendOptionsExcludeUnavailableChoicesUnlessCurrent(
 			}
 		}
 	}
+	if !initOnePasswordBackendsAvailable() {
+		for _, backend := range []credstore.Backend{
+			credstore.BackendOPDesktop,
+			credstore.BackendOP,
+			credstore.BackendOPConnect,
+		} {
+			if slices.Contains(values, string(backend)) {
+				t.Fatalf("%s should be excluded from selectable backend options when 1Password is compiled out: %v", backend, values)
+			}
+		}
+	}
 }
 
 func TestInitSecretsProfileBackendOptionsUsePreferredOrder(t *testing.T) {
@@ -9970,14 +9982,47 @@ func TestInitSecretsProfileBackendOptionsUsePreferredOrder(t *testing.T) {
 		values = append(values, option.Value)
 	}
 	joined := "\n" + strings.Join(values, "\n") + "\n"
-	assertContentOrder(t, joined,
-		"\n"+string(credstore.BackendPass)+"\n",
-		"\n"+string(credstore.BackendFile)+"\n",
-		"\n"+string(credstore.BackendOPDesktop)+"\n",
-		"\n"+string(credstore.BackendOP)+"\n",
-		"\n"+string(credstore.BackendOPConnect)+"\n",
-		"\n"+string(credstore.BackendMemory)+"\n",
-	)
+	want := []string{
+		"\n" + string(credstore.BackendPass) + "\n",
+		"\n" + string(credstore.BackendFile) + "\n",
+	}
+	if initOnePasswordBackendsAvailable() {
+		want = append(want,
+			"\n"+string(credstore.BackendOPDesktop)+"\n",
+			"\n"+string(credstore.BackendOP)+"\n",
+			"\n"+string(credstore.BackendOPConnect)+"\n",
+		)
+	}
+	want = append(want, "\n"+string(credstore.BackendMemory)+"\n")
+	assertContentOrder(t, joined, want...)
+}
+
+func TestInitSecretsManagementLinearEditorHidesOnePasswordCreateTargetsWhenUnavailable(t *testing.T) {
+	if initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are hidden only in keyring_no1password builds")
+	}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	targetIndex := model.document.fieldIndexByID(initSecretsManagementFieldTarget)
+	if targetIndex < 0 {
+		t.Fatal("target field missing")
+	}
+	for _, backend := range []credstore.Backend{
+		credstore.BackendOPDesktop,
+		credstore.BackendOP,
+		credstore.BackendOPConnect,
+	} {
+		targetValue := initConfigureSecretsProfileSelectionPrefix + string(backend)
+		for _, option := range model.document[targetIndex].Options {
+			if option.Value == targetValue {
+				t.Fatalf("target options include %q in keyring_no1password build: %#v", targetValue, model.document[targetIndex].Options)
+			}
+		}
+	}
 }
 
 func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing.T) {
@@ -10181,6 +10226,9 @@ func TestInitSecretsManagementLinearEditorOnlyFocusedSelectChangesAndShowsCaret(
 }
 
 func TestInitSecretsManagementLinearEditorCreateBackendTargetLocksBackend(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
 	cfg := config.File{
 		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
 		DefaultProfile: "default",
@@ -10210,6 +10258,9 @@ func TestInitSecretsManagementLinearEditorCreateBackendTargetLocksBackend(t *tes
 }
 
 func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
 	cfg := config.File{
 		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
 		DefaultProfile: "default",
@@ -10263,6 +10314,9 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 }
 
 func TestInitSecretsManagementLinearEditorShowsOnePasswordBackendRolloverDescriptions(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
 	cfg := config.File{
 		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
 		DefaultProfile: "default",
@@ -10294,6 +10348,9 @@ func TestInitSecretsManagementLinearEditorShowsOnePasswordBackendRolloverDescrip
 }
 
 func TestInitSecretsManagementEditStoresOnePasswordVaultNameOrIDAsEntered(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
 	cfg := config.File{
 		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
 		DefaultProfile: "default",
