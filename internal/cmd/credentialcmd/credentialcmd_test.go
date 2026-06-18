@@ -14378,6 +14378,86 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 	}
 }
 
+func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	reviewerPrompterCalls := 0
+	secretPrompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{
+			initCredentialSecretActionDefer,
+			initCredentialSecretActionDefer,
+		},
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			switch reviewerPrompterCalls {
+			case 1:
+				draft.ReviewerCredentialRef = "codereview/old-reviewer"
+			case 2:
+				draft.ReviewerCredentialRef = "codereview/new-reviewer"
+			default:
+				return initDraft{}, errInitNavigateBack
+			}
+			return draft, nil
+		}),
+		secretPrompter: secretPrompter,
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"work": {credentials.GitTokenKey: "existing-token"},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(secretPrompter.actionPrompts) != 2 {
+		t.Fatalf("action prompts = %d, want old and new reviewer prompts", len(secretPrompter.actionPrompts))
+	}
+	out := stdout.String() + "\n" + stderr.String()
+	if strings.Contains(out, "old-reviewer") {
+		t.Fatalf("output kept stale reviewer ref:\n%s", out)
+	}
+	if !strings.Contains(out, "codereview/new-reviewer") {
+		t.Fatalf("output = %q, want follow-up hint for new reviewer ref", out)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got.Profiles["work"].ReviewerCredentials == nil || got.Profiles["work"].ReviewerCredentials.CredentialRef != "codereview/new-reviewer" {
+		t.Fatalf("reviewer credentials = %#v, want new reviewer ref", got.Profiles["work"].ReviewerCredentials)
+	}
+}
+
 func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{

@@ -3330,7 +3330,8 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 	} else if suffix := initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile); suffix != "" {
 		title += suffix
 	}
-	if summary := initCredentialScopedKeySummary(prompt.Entry); summary != "" {
+	if prompt.Entry.Ref.Purpose == "reviewer_credentials" {
+		summary := initCredentialScopedKeySummary(prompt.Entry)
 		title += summary
 	}
 	if prompt.TargetHasAnyKeys && !prompt.TargetHasRequired {
@@ -6477,18 +6478,6 @@ func initCredentialSecretBundleLabel(entry initCredentialPlanEntry) string {
 			return "reviewer OAuth credentials"
 		}
 		return "reviewer secrets"
-	case "git":
-		switch config.GitAuthMode(entry.Ref.Mode) {
-		case config.GitAuthModeGitHubApp:
-			return "GitHub App Git secrets"
-		case config.GitAuthModePAT:
-			return "Git token"
-		case config.GitAuthModeOAuthDevice:
-			return "Git OAuth credentials"
-		}
-		return "Git credentials"
-	case "llm":
-		return "LLM credentials"
 	default:
 		return initCredentialPurposeLabel(entry.Ref.Purpose) + " credentials"
 	}
