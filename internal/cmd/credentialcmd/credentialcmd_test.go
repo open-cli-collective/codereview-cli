@@ -13982,6 +13982,73 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	}
 }
 
+func TestInitCredentialSecretPromptTitleReviewerKeys(t *testing.T) {
+	githubAppEntry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/rianjs-bot",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+	}
+	patEntry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/work-reviewer",
+			Mode:    string(config.GitAuthModePAT),
+		},
+		KeySpecs: []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
+	}
+
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "github app action title",
+			got: initCredentialSecretPromptTitle(initCredentialSecretPrompt{
+				Entry: githubAppEntry,
+			}),
+			want: "How should init handle GitHub App reviewer secrets? (codereview/rianjs-bot) (required: github_app_id, github_app_private_key; optional: github_app_installation_id)",
+		},
+		{
+			name: "pat action title",
+			got: initCredentialSecretPromptTitle(initCredentialSecretPrompt{
+				Entry: patEntry,
+			}),
+			want: "How should init handle PAT reviewer secret? (codereview/work-reviewer)",
+		},
+		{
+			name: "pat key source title",
+			got: initSecretSourcePromptTitle(initSecretValuePrompt{
+				Entry: patEntry,
+				Key:   credentials.GitTokenKey,
+			}),
+			want: "How should init get git_token?",
+		},
+		{
+			name: "github app private key source title",
+			got: initSecretSourcePromptTitle(initSecretValuePrompt{
+				Entry: githubAppEntry,
+				Key:   credentials.GitHubAppPrivateKeyKey,
+			}),
+			want: "How should init get github_app_private_key?",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("title = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
@@ -14087,6 +14154,550 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(
 	}
 	if strings.Contains(errOut, " --key "+credentials.GitHubAppInstallationIDKey+" ") {
 		t.Fatalf("stderr = %q, want optional installation id omitted from required follow-up commands", errOut)
+	}
+}
+
+func TestInitInteractiveMenuFocusedGitHubAppReviewerSetNowPromptsBeforeCommitAndDoesNotRepeat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
+		},
+	}
+	privateKey := strings.Join([]string{
+		"-----BEGIN PRIVATE KEY-----",
+		"abc123",
+		"-----END PRIVATE KEY-----",
+	}, "\n")
+	var actionMenuPromptCounts []int
+	secretPrompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+		sources: []initSecretSource{
+			initSecretSourcePaste,
+			initSecretSourcePaste,
+			initSecretSourceSkip,
+		},
+		pastes: []string{"12345", privateKey},
+		onAction: func(initCredentialSecretPrompt) {
+			actionMenuPromptCounts = append(actionMenuPromptCounts, len(menu.prompts))
+		},
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+	})
+	reviewerPrompterCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			if reviewerPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+			draft.ReviewerDisplayName = "rianjs-bot"
+			return draft, nil
+		}),
+		secretPrompter: secretPrompter,
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if !reflect.DeepEqual(actionMenuPromptCounts, []int{1}) {
+		t.Fatalf("action prompt menu counts = %#v, want prompt after reviewer menu action and before commit", actionMenuPromptCounts)
+	}
+	if len(secretPrompter.actionPrompts) != 1 {
+		t.Fatalf("action prompts = %d, want reviewer credential prompt once", len(secretPrompter.actionPrompts))
+	}
+	actionPrompt := secretPrompter.actionPrompts[0]
+	if actionPrompt.Entry.Ref.Purpose != "reviewer_credentials" || actionPrompt.Entry.Ref.Mode != string(config.GitAuthModeGitHubApp) {
+		t.Fatalf("action prompt ref = %#v, want GitHub App reviewer credentials", actionPrompt.Entry.Ref)
+	}
+	gotKeys := make([]string, 0, len(secretPrompter.sourcePrompts))
+	for _, prompt := range secretPrompter.sourcePrompts {
+		gotKeys = append(gotKeys, prompt.Key)
+	}
+	wantKeys := []string{credentials.GitHubAppIDKey, credentials.GitHubAppPrivateKeyKey, credentials.GitHubAppInstallationIDKey}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("source prompt keys = %#v, want %#v", gotKeys, wantKeys)
+	}
+	if got := store.bundles["rianjs-bot"][credentials.GitHubAppIDKey]; got != "12345" {
+		t.Fatalf("stored app id = %q, want staged value written at commit", got)
+	}
+	if got := store.bundles["rianjs-bot"][credentials.GitHubAppPrivateKeyKey]; got != privateKey {
+		t.Fatalf("stored private key = %q, want multi-line private key", got)
+	}
+	if _, ok := store.bundles["rianjs-bot"][credentials.GitHubAppInstallationIDKey]; ok {
+		t.Fatalf("installation id stored unexpectedly: %#v", store.bundles["rianjs-bot"])
+	}
+	if strings.Contains(stderr.String(), "set-credential --ref codereview/rianjs-bot") {
+		t.Fatalf("stderr = %q, want no follow-up hints after set-now reviewer flow", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "- work: ready") {
+		t.Fatalf("stdout = %q, want ready profile after set-now reviewer flow", stdout.String())
+	}
+}
+
+func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	secretPrompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+		sources: []initSecretSource{initSecretSourcePaste},
+		pastes:  []string{"reviewer-pat"},
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+	})
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModePAT)
+			draft.ReviewerCredentialRef = "codereview/work-reviewer"
+			return draft, nil
+		}),
+		secretPrompter: secretPrompter,
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(secretPrompter.actionPrompts) != 1 {
+		t.Fatalf("action prompts = %d, want one PAT reviewer prompt", len(secretPrompter.actionPrompts))
+	}
+	prompt := secretPrompter.actionPrompts[0]
+	if prompt.Entry.Ref.Purpose != "reviewer_credentials" || prompt.Entry.Ref.Mode != string(config.GitAuthModePAT) {
+		t.Fatalf("prompt ref = %#v, want PAT reviewer", prompt.Entry.Ref)
+	}
+	if len(secretPrompter.sourcePrompts) != 1 {
+		t.Fatalf("source prompts = %d, want exactly one reviewer PAT key prompt", len(secretPrompter.sourcePrompts))
+	}
+	sourcePrompt := secretPrompter.sourcePrompts[0]
+	if sourcePrompt.Key != credentials.GitTokenKey || sourcePrompt.Optional {
+		t.Fatalf("source prompt = %#v, want required reviewer git_token", sourcePrompt)
+	}
+	if got := initSecretSourcePromptTitle(sourcePrompt); got != "How should init get git_token?" {
+		t.Fatalf("source prompt title = %q, want reviewer git_token prompt", got)
+	}
+	if got := store.bundles["work-reviewer"][credentials.GitTokenKey]; got != "reviewer-pat" {
+		t.Fatalf("stored reviewer PAT = %q, want staged value written at commit", got)
+	}
+	if strings.Contains(stderr.String(), credentials.GitHubAppIDKey) || strings.Contains(stderr.String(), credentials.GitHubAppPrivateKeyKey) {
+		t.Fatalf("stderr = %q, want PAT reviewer flow not GitHub App keys", stderr.String())
+	}
+}
+
+func TestInitInteractiveMenuFocusedUseGitReviewerSkipsReviewerCredentialPrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = false
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"work": {credentials.GitTokenKey: "existing-token"},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+}
+
+func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	reviewerPrompterCalls := 0
+	secretPrompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			switch reviewerPrompterCalls {
+			case 1:
+				draft.ReviewerEnabled = true
+				draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+				draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+			case 2:
+				draft.ReviewerEnabled = false
+			default:
+				return initDraft{}, errInitNavigateBack
+			}
+			return draft, nil
+		}),
+		secretPrompter: secretPrompter,
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"work": {credentials.GitTokenKey: "existing-token"},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(secretPrompter.actionPrompts) != 1 {
+		t.Fatalf("action prompts = %d, want only initial deferred reviewer prompt", len(secretPrompter.actionPrompts))
+	}
+	if strings.Contains(stdout.String(), "reviewer deferred") || strings.Contains(stderr.String(), "rianjs-bot") {
+		t.Fatalf("stdout/stderr kept stale reviewer decision:\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got.Profiles["work"].ReviewerCredentials != nil {
+		t.Fatalf("reviewer credentials = %#v, want cleared reviewer", got.Profiles["work"].ReviewerCredentials)
+	}
+}
+
+func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	reviewerPrompterCalls := 0
+	secretPrompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{
+			initCredentialSecretActionDefer,
+			initCredentialSecretActionDefer,
+		},
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			switch reviewerPrompterCalls {
+			case 1:
+				draft.ReviewerCredentialRef = "codereview/old-reviewer"
+			case 2:
+				draft.ReviewerCredentialRef = "codereview/new-reviewer"
+			default:
+				return initDraft{}, errInitNavigateBack
+			}
+			return draft, nil
+		}),
+		secretPrompter: secretPrompter,
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"work": {credentials.GitTokenKey: "existing-token"},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(secretPrompter.actionPrompts) != 2 {
+		t.Fatalf("action prompts = %d, want old and new reviewer prompts", len(secretPrompter.actionPrompts))
+	}
+	out := stdout.String() + "\n" + stderr.String()
+	if strings.Contains(out, "old-reviewer") {
+		t.Fatalf("output kept stale reviewer ref:\n%s", out)
+	}
+	if !strings.Contains(out, "codereview/new-reviewer") {
+		t.Fatalf("output = %q, want follow-up hint for new reviewer ref", out)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got.Profiles["work"].ReviewerCredentials == nil || got.Profiles["work"].ReviewerCredentials.CredentialRef != "codereview/new-reviewer" {
+		t.Fatalf("reviewer credentials = %#v, want new reviewer ref", got.Profiles["work"].ReviewerCredentials)
+	}
+}
+
+func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+	})
+	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
+		t.Fatal("SetBundle called before commit/discard")
+		return credstore.Result{}, nil
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionExit,
+			},
+		},
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{
+				initSecretSourcePaste,
+				initSecretSourcePaste,
+				initSecretSourceSkip,
+			},
+			pastes: []string{"sentinel-app-id", "sentinel-private-key"},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called on discard")
+			return nil
+		},
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got.Profiles["work"].ReviewerCredentials != nil {
+		t.Fatalf("reviewer credentials after discard = %#v, want original nil reviewer", got.Profiles["work"].ReviewerCredentials)
+	}
+	// #nosec G304 -- path is a test-controlled temporary config file.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	if strings.Contains(string(raw), "rianjs-bot") || strings.Contains(string(raw), "sentinel") {
+		t.Fatalf("config after discard contains staged reviewer data:\n%s", string(raw))
+	}
+	if _, ok := store.bundles["rianjs-bot"]; ok {
+		t.Fatalf("reviewer bundle = %#v, want no credential write on discard", store.bundles["rianjs-bot"])
+	}
+}
+
+func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDiscardsPartialSecretWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	var stdout bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+	})
+	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
+		t.Fatal("SetBundle called after backing out of reviewer secret capture")
+		return credstore.Result{}, nil
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionBack,
+				initCredentialSecretActionDefer,
+			},
+			sources: []initSecretSource{
+				initSecretSourcePaste,
+				initSecretSourcePaste,
+				initSecretSourceBack,
+			},
+			pastes: []string{"sentinel-app-id", "sentinel-private-key"},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	reviewer := got.Profiles["work"].ReviewerCredentials
+	if reviewer == nil || reviewer.CredentialRef != "codereview/rianjs-bot" {
+		t.Fatalf("reviewer credentials after secret-step back = %#v, want staged reviewer saved after final defer", reviewer)
+	}
+	// #nosec G304 -- path is a test-controlled temporary config file.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	if strings.Contains(string(raw), "sentinel") {
+		t.Fatalf("config after secret-step back contains partial secret values:\n%s", string(raw))
+	}
+	if _, ok := store.bundles["rianjs-bot"]; ok {
+		t.Fatalf("reviewer bundle = %#v, want no credential write after secret-step back", store.bundles["rianjs-bot"])
+	}
+	if !strings.Contains(stdout.String(), "reviewer deferred") {
+		t.Fatalf("stdout = %q, want final defer hint after backing out of focused secret step", stdout.String())
 	}
 }
 
@@ -17489,13 +18100,21 @@ func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
 }
 
 type fakeInitSecretPrompter struct {
-	actions     []initCredentialSecretAction
-	sources     []initSecretSource
-	pastes      []string
-	pasteErrors []error
+	actions       []initCredentialSecretAction
+	sources       []initSecretSource
+	pastes        []string
+	pasteErrors   []error
+	onAction      func(initCredentialSecretPrompt)
+	actionPrompts []initCredentialSecretPrompt
+	sourcePrompts []initSecretValuePrompt
+	pastePrompts  []initSecretValuePrompt
 }
 
-func (f *fakeInitSecretPrompter) ChooseCredentialAction(initCredentialSecretPrompt) (initCredentialSecretAction, error) {
+func (f *fakeInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecretPrompt) (initCredentialSecretAction, error) {
+	f.actionPrompts = append(f.actionPrompts, prompt)
+	if f.onAction != nil {
+		f.onAction(prompt)
+	}
 	if len(f.actions) == 0 {
 		return "", errors.New("unexpected credential action prompt")
 	}
@@ -17504,7 +18123,8 @@ func (f *fakeInitSecretPrompter) ChooseCredentialAction(initCredentialSecretProm
 	return action, nil
 }
 
-func (f *fakeInitSecretPrompter) ChooseSecretSource(initSecretValuePrompt) (initSecretSource, error) {
+func (f *fakeInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) (initSecretSource, error) {
+	f.sourcePrompts = append(f.sourcePrompts, prompt)
 	if len(f.sources) == 0 {
 		return "", errors.New("unexpected secret source prompt")
 	}
@@ -17513,7 +18133,8 @@ func (f *fakeInitSecretPrompter) ChooseSecretSource(initSecretValuePrompt) (init
 	return source, nil
 }
 
-func (f *fakeInitSecretPrompter) PasteSecret(initSecretValuePrompt) (string, error) {
+func (f *fakeInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string, error) {
+	f.pastePrompts = append(f.pastePrompts, prompt)
 	if len(f.pasteErrors) > 0 {
 		err := f.pasteErrors[0]
 		f.pasteErrors = f.pasteErrors[1:]
