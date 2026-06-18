@@ -10555,6 +10555,49 @@ func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing
 	}
 }
 
+func TestHuhInitKeyringBackendPrompterAccessibleLegacyFallbackFormShowsFallbackCopy(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitKeyringBackendPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"", // keep selected memory backend
+			"", // stage fallback settings
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+
+	edit, err := prompter.editLegacySecretsManagement(string(credstore.BackendMemory))
+	if err != nil {
+		t.Fatalf("editLegacySecretsManagement: %v", err)
+	}
+	if !edit.Apply || edit.Backend != string(credstore.BackendMemory) {
+		t.Fatalf("edit = %#v, want staged memory fallback backend", edit)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Legacy fallback credential store backend",
+		"Fallback credential-store action",
+		"Stage fallback credential-store settings",
+		initAutomaticOSDefaultSecretsBackendLabel(),
+		"In-memory store",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("legacy fallback form output missing %q:\n%s", want, out)
+		}
+	}
+	for _, stale := range []string{
+		"Default Credential Store",
+		"Default credential store backend",
+		"Default credential-store action",
+		"Stage default credential-store settings",
+	} {
+		if strings.Contains(out, stale) {
+			t.Fatalf("legacy fallback form output contains stale copy %q:\n%s", stale, out)
+		}
+	}
+}
+
 func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitKeyringBackendPrompter{

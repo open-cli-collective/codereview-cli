@@ -509,7 +509,7 @@ func initSecretsManagementBackendFieldDescription(kind config.SecretsBackendKind
 func initLegacySecretsBackendFieldDescription(backend string) string {
 	trimmed := strings.TrimSpace(backend)
 	if trimmed == "" {
-		return "Use the platform credential store chosen by the OS, such as macOS Keychain on Darwin, Windows Credential Manager on Windows, or Linux Secret Service on Linux."
+		return "Use the platform credential store chosen by the OS, such as macOS Keychain on macOS, Windows Credential Manager on Windows, or Linux Secret Service on Linux."
 	}
 	description := strings.TrimSpace(initSecretsBackendDescription(config.SecretsBackendKind(trimmed)))
 	if description == "" {
