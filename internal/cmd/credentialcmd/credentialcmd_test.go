@@ -14615,16 +14615,17 @@ func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials
 	}
 }
 
-func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDoesNotStageOrWrite(t *testing.T) {
+func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDiscardsPartialSecretWrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
 		DefaultProfile: "work",
 		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
 	}
 	saveCredentialTestConfig(t, path, cfg)
+	var stdout bytes.Buffer
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
-		Stdout:     &bytes.Buffer{},
+		Stdout:     &stdout,
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
@@ -14656,6 +14657,7 @@ func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDoesNotStageOrWrit
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionSetNow,
 				initCredentialSecretActionBack,
+				initCredentialSecretActionDefer,
 			},
 			sources: []initSecretSource{
 				initSecretSourcePaste,
@@ -14679,19 +14681,23 @@ func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDoesNotStageOrWrit
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if got.Profiles["work"].ReviewerCredentials != nil {
-		t.Fatalf("reviewer credentials after secret-step back = %#v, want original nil reviewer", got.Profiles["work"].ReviewerCredentials)
+	reviewer := got.Profiles["work"].ReviewerCredentials
+	if reviewer == nil || reviewer.CredentialRef != "codereview/rianjs-bot" {
+		t.Fatalf("reviewer credentials after secret-step back = %#v, want staged reviewer saved after final defer", reviewer)
 	}
 	// #nosec G304 -- path is a test-controlled temporary config file.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile config: %v", err)
 	}
-	if strings.Contains(string(raw), "rianjs-bot") || strings.Contains(string(raw), "sentinel") {
-		t.Fatalf("config after secret-step back contains staged reviewer data:\n%s", string(raw))
+	if strings.Contains(string(raw), "sentinel") {
+		t.Fatalf("config after secret-step back contains partial secret values:\n%s", string(raw))
 	}
 	if _, ok := store.bundles["rianjs-bot"]; ok {
 		t.Fatalf("reviewer bundle = %#v, want no credential write after secret-step back", store.bundles["rianjs-bot"])
+	}
+	if !strings.Contains(stdout.String(), "reviewer deferred") {
+		t.Fatalf("stdout = %q, want final defer hint after backing out of focused secret step", stdout.String())
 	}
 }
 

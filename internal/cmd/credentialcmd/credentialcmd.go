@@ -1489,7 +1489,6 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
 	}
-	rollbackSession := snapshotInitSessionDraft(session)
 	previousProfileName := session.workspace.profileName
 	previousProfile := session.workspace.profile
 	previousCfg := cloneInitConfigFile(session.cfg)
@@ -1524,7 +1523,7 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		if deps.menuPrompter != nil || deps.prompter == nil {
 			session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"reviewer_credentials"})
 			if errors.Is(err, errInitNavigateBack) {
-				return rollbackSession, false, nil
+				return session, false, nil
 			}
 			if err != nil {
 				return initSessionDraft{}, false, err
@@ -5049,21 +5048,6 @@ func cloneInitConfigFile(cfg config.File) config.File {
 		cloned.Data.Retention.MaxAgeDays = &value
 	}
 	return cloned
-}
-
-func snapshotInitSessionDraft(session initSessionDraft) initSessionDraft {
-	snapshot := session
-	snapshot.cfg = cloneInitConfigFile(session.cfg)
-	if session.workspace != nil {
-		workspace := *session.workspace
-		snapshot.workspace = &workspace
-	}
-	snapshot.touchedProfiles = copyStringMap(session.touchedProfiles)
-	snapshot.writes = cloneInitWrites(session.writes)
-	snapshot.credentialDecisions = cloneInitCredentialDecisions(session.credentialDecisions)
-	snapshot.overwriteRefs = cloneInitBoolMap(session.overwriteRefs)
-	snapshot.satisfiedRefs = cloneInitBoolMap(session.satisfiedRefs)
-	return snapshot
 }
 
 func cloneInitProfile(profile config.Profile) config.Profile {
