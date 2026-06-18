@@ -478,7 +478,7 @@ func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
 					Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
 					OnePassword: &config.SecretsProfileOnePasswordConfig{
 						Timeout:          "9s",
-						VaultID:          "vault-123",
+						VaultID:          "Employee",
 						ItemTitlePrefix:  "cr",
 						ItemTag:          "codereview",
 						ItemFieldTitle:   "credential",
@@ -488,7 +488,7 @@ func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
 			},
 			assert: func(t *testing.T, got *credstore.OnePasswordOptions) {
 				t.Helper()
-				if got.Timeout != 9*time.Second || got.VaultID != "vault-123" || got.DesktopAccountID != "desktop-account" {
+				if got.Timeout != 9*time.Second || got.VaultID != "Employee" || got.DesktopAccountID != "desktop-account" {
 					t.Fatalf("OnePassword = %#v, want desktop mapping", got)
 				}
 			},

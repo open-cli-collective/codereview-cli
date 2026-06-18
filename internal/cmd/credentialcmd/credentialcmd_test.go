@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -534,6 +535,7 @@ func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
 	reviewer := cfg.Profiles["default"].ReviewerCredentials
 	if reviewer == nil {
 		t.Fatal("reviewer credentials missing")
+		return
 	}
 	if reviewer.AuthMode != config.GitAuthModePAT || reviewer.CredentialRef != "codereview/default-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want pat codereview/default-reviewer", reviewer)
@@ -1122,6 +1124,7 @@ func TestBuildInteractiveInitSessionPlanUsesOriginalProfileForRenamedTouchedProf
 	}
 	if reviewerEntry == nil {
 		t.Fatal("reviewer credential entry missing from session plan")
+		return
 	}
 	if reviewerEntry.State != initCredentialPlanStateKeepExisting {
 		t.Fatalf("reviewer entry state = %s, want keep_existing for label-only renamed profile edit", reviewerEntry.State)
@@ -2110,6 +2113,7 @@ func TestInitReviewerEntityDraftExportClearsIdentityCacheWhenShapeChanges(t *tes
 
 	if exported == nil {
 		t.Fatal("exportConfig = nil, want separate reviewer credentials")
+		return
 	}
 	if exported.IdentityCache != "" {
 		t.Fatalf("IdentityCache = %q, want cleared on reviewer entity change", exported.IdentityCache)
@@ -2535,8 +2539,8 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *tes
 	if err != nil {
 		t.Fatalf("editInteractiveInitReviewerEntityStep: %v", err)
 	}
-	if !stayInCategory {
-		t.Fatal("stayInCategory = false, want focused reviewer flow to stay active")
+	if stayInCategory {
+		t.Fatal("stayInCategory = true, want focused reviewer flow to return to main menu after stage")
 	}
 	for _, profileName := range []string{"home", "work"} {
 		profile := next.cfg.Profiles[profileName]
@@ -2604,8 +2608,8 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesConcreteSharedReviewerRe
 	if err != nil {
 		t.Fatalf("editInteractiveInitReviewerEntityStep: %v", err)
 	}
-	if !stayInCategory {
-		t.Fatal("stayInCategory = false, want focused reviewer flow to stay active")
+	if stayInCategory {
+		t.Fatal("stayInCategory = true, want focused reviewer flow to return to main menu after stage")
 	}
 	for _, profileName := range []string{"home", "work"} {
 		profile := next.cfg.Profiles[profileName]
@@ -2670,8 +2674,8 @@ func TestEditInteractiveInitReviewerEntityStepSelectingFallbackDoesNotPropagateS
 	if err != nil {
 		t.Fatalf("editInteractiveInitReviewerEntityStep: %v", err)
 	}
-	if !stayInCategory {
-		t.Fatal("stayInCategory = false, want focused reviewer flow to stay active")
+	if stayInCategory {
+		t.Fatal("stayInCategory = true, want focused reviewer flow to return to main menu after stage")
 	}
 	if got := next.cfg.Profiles["home"].ReviewerCredentials; got != nil {
 		t.Fatalf("home reviewer credentials = %#v, want cleared fallback reviewer", got)
@@ -3843,6 +3847,13 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+			return initDraft{
+				LLMProvider: string(config.LLMProviderOpenAI),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
 			_, _ = io.WriteString(out, "work\n")
@@ -3988,6 +3999,13 @@ func TestHuhInitPrompterAccessibleOmitsSecretsManagementFromProfileEditor(t *tes
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+			return initDraft{
+				LLMProvider: string(config.LLMProviderOpenAI),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
 			_, _ = io.WriteString(out, "work\n")
@@ -4502,6 +4520,13 @@ func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDef
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+			return initDraft{
+				LLMProvider: string(config.LLMProviderOpenAI),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
 			_, _ = io.WriteString(out, "Create new profile\n")
@@ -4678,6 +4703,13 @@ func TestHuhInitPrompterAccessibleNewProfileFlowShowsBackOption(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stderr: &stderr,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+			return initDraft{
+				LLMProvider: string(config.LLMProviderOpenAI),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
 			_, _ = io.WriteString(out, "Create new profile\nBack to main menu\n")
@@ -4709,12 +4741,12 @@ func TestHuhInitPrompterAccessibleCanRestorePendingDeletedProfile(t *testing.T) 
 	prompter := huhInitPrompter{
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Restore work (staged for deletion)\n")
+			_, _ = io.WriteString(out, "work (Staged for deletion)\n")
 			return initInventoryResult{
 				Action: initInventoryActionRestore,
 				Row: initInventoryRow{
 					ID:    "work",
-					Title: "Restore work (staged for deletion)",
+					Title: "work (Staged for deletion)",
 				},
 			}, nil
 		},
@@ -4740,7 +4772,7 @@ func TestHuhInitPrompterAccessibleCanRestorePendingDeletedProfile(t *testing.T) 
 	if draft.Action != initDraftActionUndoDeleteProfile || draft.ActionTarget != "work" {
 		t.Fatalf("draft undo action = %#v, want restore work", draft)
 	}
-	if !strings.Contains(stderr.String(), "Restore work (staged for deletion)") {
+	if !strings.Contains(stderr.String(), "work (Staged for deletion)") {
 		t.Fatalf("stderr = %q, want restore label", stderr.String())
 	}
 }
@@ -4795,12 +4827,12 @@ func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t
 	prompter := huhInitReviewerEntityPrompter{
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Restore reviewer entity reviewer-github-app (staged for deletion)\n")
+			_, _ = io.WriteString(out, "reviewer-github-app (Staged for deletion)\n")
 			return initInventoryResult{
 				Action: initInventoryActionRestore,
 				Row: initInventoryRow{
 					ID:    "reviewer-github-app",
-					Title: "Restore reviewer entity reviewer-github-app (staged for deletion)",
+					Title: "reviewer-github-app (Staged for deletion)",
 				},
 			}, nil
 		},
@@ -4825,7 +4857,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t
 	if draft.Action != initDraftActionUndoDeleteReviewerEntity || draft.ActionTarget != "reviewer-github-app" {
 		t.Fatalf("draft undo reviewer action = %#v, want reviewer-github-app restore", draft)
 	}
-	if !strings.Contains(stderr.String(), "Restore reviewer entity reviewer-github-app (staged for deletion)") {
+	if !strings.Contains(stderr.String(), "reviewer-github-app (Staged for deletion)") {
 		t.Fatalf("stderr = %q, want reviewer restore label", stderr.String())
 	}
 }
@@ -4849,11 +4881,8 @@ func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInve
 	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Stage reviewer settings
-			"",
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "Post as rianjs (GitHub PAT)\n")
 			return initInventoryResult{
@@ -4907,13 +4936,8 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Entity label
-			"", // Keep current reviewer secret location
-			"", // Stage reviewer settings
-			"",
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "custom-work-reviewer (PAT reviewer)\n")
 			return initInventoryResult{
@@ -4962,6 +4986,13 @@ func TestHuhInitPrompterAccessibleRequestedNewProfilePreservesExplicitName(t *te
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+			return initDraft{
+				LLMProvider: string(config.LLMProviderOpenAI),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
 			_, _ = io.WriteString(out, "Create new profile\nBack to main menu\n")
@@ -5012,6 +5043,13 @@ func TestHuhInitPrompterAccessibleCreateNewProfilePreservesExplicitRequestedName
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+			return initDraft{
+				LLMProvider: string(config.LLMProviderOpenAI),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
 			_, _ = io.WriteString(out, "Create new profile\n")
@@ -5105,13 +5143,8 @@ func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeShowsDetails(t *tes
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Stage these runtime details
-			"", // Keep Anthropic provider
-			"", // Keep subscription auth
-			"", // Keep Claude CLI adapter
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageLLMRuntimeEditorRunner(t, nil, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "Configured: Claude CLI subscription (claude-cli)\n")
 			return initInventoryResult{
@@ -5158,13 +5191,8 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Stage these runtime details
-			"", // Keep OpenAI provider default
-			"", // Keep subscription auth default
-			"", // Keep Codex CLI adapter default
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageLLMRuntimeEditorRunner(t, nil, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "Template: Codex CLI subscription\n")
 			return initInventoryResult{
@@ -5210,13 +5238,8 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsAvailabilityNote(t *tes
 	var stderr bytes.Buffer
 	checkerCalled := false
 	prompter := huhInitLLMRuntimePrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Stage these runtime details
-			"", // Keep OpenAI provider default
-			"", // Keep subscription auth default
-			"", // Keep Codex CLI adapter default
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageLLMRuntimeEditorRunner(t, nil, ""),
 		checker: func(preset initLLMRuntimePreset) string {
 			if preset == initLLMRuntimePresetCodexCLISubscription {
 				checkerCalled = true
@@ -5249,7 +5272,9 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsAvailabilityNote(t *tes
 	if !checkerCalled {
 		t.Fatal("checkerCalled = false, want template selection to consult runtime availability checker")
 	}
-	if !strings.Contains(stderr.String(), "Runtime detail action") || !strings.Contains(stderr.String(), "Codex CLI check: codex-cli 0.139.0 installed.") {
+	if !strings.Contains(stderr.String(), "Runtime detail action") ||
+		!strings.Contains(stderr.String(), "Codex CLI") ||
+		!strings.Contains(stderr.String(), "codex-cli 0.139.0 installed.") {
 		t.Fatalf("stderr = %q, want flattened runtime detail screen with runtime availability note", stderr.String())
 	}
 }
@@ -5286,13 +5311,12 @@ func TestHuhInitLLMRuntimePrompterAccessibleCustomRuntimeShowsCustomFields(t *te
 	}
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"",  // Stage these runtime details
-			"2", // OpenAI provider
-			"2", // API key auth
-			"4", // OpenAI API adapter
-		}, "\n")),
 		stderr: &stderr,
+		editorRunner: stageLLMRuntimeEditorRunner(t, map[initLinearFieldID]string{
+			initLLMRuntimeFieldProvider: string(config.LLMProviderOpenAI),
+			initLLMRuntimeFieldAuth:     string(config.LLMAuthAPIKey),
+			initLLMRuntimeFieldAdapter:  string(config.LLMAdapterOpenAIAPI),
+		}, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "Custom compatible runtime\n")
 			return initInventoryResult{
@@ -5378,13 +5402,8 @@ func TestHuhInitLLMRuntimeDetailsBackDoesNotMutateDraft(t *testing.T) {
 	want := draft
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Back without staging
-			"",  // Keep provider
-			"",  // Keep auth
-			"",  // Keep adapter
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageLLMRuntimeEditorRunner(t, nil, initDetailActionBack),
 	}
 
 	_, back, err := prompter.editLLMRuntimeDetails(draft)
@@ -5543,12 +5562,12 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *t
 	prompter := huhInitLLMRuntimePrompter{
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Restore LLM runtime claude-cli (staged for deletion)\n")
+			_, _ = io.WriteString(out, "claude-cli (Staged for deletion)\n")
 			return initInventoryResult{
 				Action: initInventoryActionRestore,
 				Row: initInventoryRow{
 					ID:    "claude-cli",
-					Title: "Restore LLM runtime claude-cli (staged for deletion)",
+					Title: "claude-cli (Staged for deletion)",
 				},
 			}, nil
 		},
@@ -5571,8 +5590,151 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *t
 	if draft.Action != initDraftActionUndoDeleteLLMRuntime || draft.ActionTarget != "claude-cli" {
 		t.Fatalf("draft undo runtime action = %#v, want claude-cli restore", draft)
 	}
-	if !strings.Contains(stderr.String(), "Restore LLM runtime claude-cli (staged for deletion)") {
+	if !strings.Contains(stderr.String(), "claude-cli (Staged for deletion)") {
 		t.Fatalf("stderr = %q, want runtime restore label", stderr.String())
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterDefaultUsesLinearRuntimeFlow(t *testing.T) {
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stderr: &stderr,
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 180, 32)
+			_, _ = io.WriteString(out, model.layout.Content)
+			model = focusInitLinearField(t, model, initLLMRuntimeFieldAction)
+			model = selectInitLinearFieldValue(t, model, initLLMRuntimeFieldAction, initDetailActionEdit)
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}})
+	if err != nil {
+		t.Fatalf("EditLLMRuntime: %v", err)
+	}
+	if draft.LLMProvider != string(config.LLMProviderAnthropic) || draft.LLMAdapter != string(config.LLMAdapterClaudeCLI) {
+		t.Fatalf("draft = %#v, want default claude runtime", draft)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"LLM runtime",
+		"Runtime",
+		"Configured: Claude CLI subscription (claude-cli)",
+		"Runtime details",
+		"LLM provider",
+		"LLM auth mode",
+		"LLM adapter",
+		"Runtime action",
+		"Stage these runtime details",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr missing %q:\n%s", want, out)
+		}
+	}
+	assertContentOrder(t, out, "Runtime", "Runtime details", "LLM provider", "LLM auth mode", "LLM adapter", "Runtime action")
+	if strings.Contains(out, "Back to main menu") {
+		t.Fatalf("stderr = %q, want action-local Back without staging instead of inventory Back", out)
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testing.T) {
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	var stderr bytes.Buffer
+	prompter := huhInitLLMRuntimePrompter{
+		stderr: &stderr,
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 160, 60)
+			model = selectInitLinearFieldValue(t, model, initLLMRuntimeFieldReplacement, string(initLLMRuntimePresetCodexCLISubscription))
+			model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
+			_, _ = io.WriteString(out, model.View())
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}})
+	if err != nil {
+		t.Fatalf("EditLLMRuntime: %v", err)
+	}
+	if draft.Action != initDraftActionDeleteLLMRuntime || draft.ActionTarget != "claude-cli" {
+		t.Fatalf("draft action = %#v, want delete claude-cli", draft)
+	}
+	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
+		t.Fatalf("draft replacement = %#v, want codex-cli replacement", draft)
+	}
+	if !strings.Contains(stderr.String(), "d delete") {
+		t.Fatalf("stderr = %q, want delete shortcut help", stderr.String())
+	}
+}
+
+func TestHuhInitLLMRuntimePrompterDefaultPreservesConfiguredAPIKeyRuntimeRef(t *testing.T) {
+	existing := basicProfile("work")
+	existing.LLM = config.LLMConfig{
+		Provider:      config.LLMProviderOpenAI,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterOpenAIAPI,
+		CredentialRef: "codereview/custom-openai",
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	prompter := huhInitLLMRuntimePrompter{
+		stderr:       &bytes.Buffer{},
+		editorRunner: stageLLMRuntimeEditorRunner(t, nil, ""),
+	}
+
+	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}})
+	if err != nil {
+		t.Fatalf("EditLLMRuntime: %v", err)
+	}
+	if draft.LLMCredentialRef != "codereview/custom-openai" {
+		t.Fatalf("LLMCredentialRef = %q, want configured runtime ref", draft.LLMCredentialRef)
 	}
 }
 
@@ -5615,12 +5777,8 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Entity label
-			"", // Keep the derived reviewer secret location
-			"", // Stage reviewer settings
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "Configure new personal access token (PAT) reviewer\n")
 			return initInventoryResult{
@@ -5651,7 +5809,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 	if !strings.Contains(out, "Reviewer detail action") || !strings.Contains(out, "Stage reviewer settings") || !strings.Contains(out, "Back without staging") || !strings.Contains(out, "Entity label") || !strings.Contains(out, "Reviewer secret location") {
 		t.Fatalf("stderr = %q, want reviewer details screen", out)
 	}
-	if strings.Contains(out, "Reviewer entity type") || strings.Contains(out, "Reviewer label action") || strings.Contains(out, "Use this reviewer label") || strings.Contains(out, "Reviewer secret location action") || strings.Contains(out, "Use this reviewer secret location") || strings.Contains(out, "Custom reviewer secret location") || strings.Contains(out, "Use the standard reviewer secret location (recommended)") || strings.Contains(out, "Use a custom reviewer secret location (advanced)") {
+	if strings.Contains(out, "Reviewer label action") || strings.Contains(out, "Use this reviewer label") || strings.Contains(out, "Reviewer secret location action") || strings.Contains(out, "Use this reviewer secret location") || strings.Contains(out, "Custom reviewer secret location") || strings.Contains(out, "Use the standard reviewer secret location (recommended)") || strings.Contains(out, "Use a custom reviewer secret location (advanced)") {
 		t.Fatalf("stderr = %q, want flattened reviewer editor", out)
 	}
 }
@@ -5666,12 +5824,8 @@ func TestHuhInitReviewerEntityPrompterNewTemplateDoesNotInheritCustomSecretLocat
 	}
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Entity label
-			"", // Keep the derived reviewer secret location
-			"", // Stage reviewer settings
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "Configure new GitHub App reviewer\n")
 			return initInventoryResult{
@@ -5775,12 +5929,8 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCustomSecretLocationPersis
 	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Keep the seeded reviewer entity label.
-			"", // Keep the current reviewer secret location.
-			"", // Stage reviewer settings.
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 	}
 
 	nextDraft, back, err := prompter.editExistingReviewerEntity(initReviewerEntityDraftFromConfig(existing), draft)
@@ -5814,12 +5964,8 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerFallbackSeedDoesNotPersist
 	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Keep the seeded fallback reviewer entity label.
-			"", // Keep the current reviewer secret location.
-			"", // Stage reviewer settings.
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 	}
 
 	nextDraft, back, err := prompter.editExistingReviewerEntity(initReviewerEntityDraftFromConfig(existing), draft)
@@ -5849,12 +5995,8 @@ func TestHuhInitReviewerEntityPrompterAccessibleShowsSeededDisplayNamePrompt(t *
 	draft.ReviewerDisplayName = "Old label"
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Keep the seeded reviewer entity label.
-			"", // Keep this reviewer entity's current secret location.
-			"", // Stage reviewer settings.
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 	}
 
 	nextDraft, back, err := prompter.editExistingReviewerEntity(initReviewerEntityDraftFromConfig(existing), draft)
@@ -5882,12 +6024,10 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCanEditLabel(t *testing.T)
 	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"OC Collective bot", // Edit reviewer entity label.
-			"",                  // Keep the current reviewer secret location.
-			"",                  // Stage reviewer settings.
-		}, "\n")),
 		stderr: &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, map[initLinearFieldID]string{
+			initReviewerEntityFieldLabel: "OC Collective bot",
+		}, ""),
 	}
 
 	nextDraft, back, err := prompter.editExistingReviewerEntity(initReviewerEntityDraftFromConfig(existing), draft)
@@ -5911,17 +6051,68 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCanEditLabel(t *testing.T)
 	}
 }
 
+func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T) {
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stderr: &stderr,
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 160, 24)
+			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindPAT))
+			model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+			_, _ = io.WriteString(out, model.View())
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}})
+	if err != nil {
+		t.Fatalf("EditReviewerEntity: %v", err)
+	}
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) {
+		t.Fatalf("draft = %#v, want PAT reviewer", draft)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Reviewer entity",
+		"Configure new personal access token (PAT) reviewer",
+		"Reviewer details",
+		"Personal access token (PAT) reviewer",
+		"Entity label",
+		"Reviewer secret location",
+		"Reviewer action",
+		"Stage reviewer settings",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr missing %q:\n%s", want, out)
+		}
+	}
+	assertContentOrder(t, out, "Reviewer entity", "Reviewer details", "Entity label", "Reviewer secret location", "Reviewer action")
+	if strings.Contains(out, "Back to main menu") {
+		t.Fatalf("stderr = %q, want action-local Back without staging instead of inventory Back", out)
+	}
+}
+
 func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	draft := seedInteractiveInitDraft("work", "work", "work", nil)
 	want := draft
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Back without staging.
-			"",
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, initDetailActionBack),
 	}
 
 	nextDraft, back, err := prompter.editNewReviewerEntity(initReviewerEntityKindUseGitIdentity, draft)
@@ -5944,11 +6135,8 @@ func TestHuhInitReviewerEntityDetailsAccessibleHidesSecretLocationForGitIdentity
 	draft := seedInteractiveInitDraft("work", "work", "work", nil)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // Stage reviewer settings.
-			"",
-		}, "\n")),
-		stderr: &stderr,
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 	}
 
 	nextDraft, back, err := prompter.editNewReviewerEntity(initReviewerEntityKindUseGitIdentity, draft)
@@ -7183,6 +7371,13 @@ func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+			return initDraft{
+				LLMProvider: string(config.LLMProviderOpenAI),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
 			_, _ = io.WriteString(out, "work\n")
@@ -7233,6 +7428,13 @@ func TestHuhInitPrompterAccessibleHidesReviewerEntityLabelForProfileGitAccount(t
 			"",
 		}, "\n")),
 		stderr: &stderr,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+			return initDraft{
+				LLMProvider: string(config.LLMProviderOpenAI),
+				LLMAuth:     string(config.LLMAuthSubscription),
+				LLMAdapter:  string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
 		inventoryRunner: func(prompt initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, prompt.Description+"\n")
 			_, _ = io.WriteString(out, "Create new profile\n")
@@ -8945,6 +9147,269 @@ func TestHuhInitRetentionPrompterBackReturnsNavigateBack(t *testing.T) {
 	}
 }
 
+func TestBubbleTeaInitRetentionEditorShowsLinearGlobalSettingsFlow(t *testing.T) {
+	editor := initRetentionEditor(config.RetentionConfig{})
+	model := newInitLinearEditorModel(editor, 160, 24)
+	view := model.View()
+
+	for _, want := range []string{
+		"Global settings",
+		"Configure behavior that applies across review profiles.",
+		"Run data",
+		"Maximum run-data age in days",
+		"> 90",
+		"Global settings action",
+		"Stage global settings",
+		"Back without staging",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+	assertContentOrder := func(parts ...string) {
+		t.Helper()
+		previous := -1
+		for _, part := range parts {
+			index := strings.Index(view, part)
+			if index < 0 {
+				t.Fatalf("view missing %q:\n%s", part, view)
+			}
+			if index <= previous {
+				t.Fatalf("view order wrong for %q:\n%s", part, view)
+			}
+			previous = index
+		}
+	}
+	assertContentOrder("Global settings", "Run data", "Maximum run-data age in days", "Global settings action")
+}
+
+func TestBubbleTeaInitRetentionPrompterStagesEditedValue(t *testing.T) {
+	thirty := 30
+	prompter := bubbleTeaInitRetentionPrompter{
+		editorRunner: func(editor initLinearEditor, _ io.Reader, _ io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 160, 24)
+			model = focusInitLinearField(t, model, initRetentionFieldMaxAge)
+			model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+			model = typeInitLinearText(t, model, "45")
+			model = focusInitLinearField(t, model, initRetentionFieldAction)
+			updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if cmd == nil {
+				t.Fatal("Update returned nil command, want quit command after staging")
+			}
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	edit, err := prompter.EditRetention(initRetentionPrompt{
+		Retention: config.RetentionConfig{
+			MaxAgeDays:  &thirty,
+			Enforcement: config.RetentionManualOnly,
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditRetention: %v", err)
+	}
+	if !edit.Apply {
+		t.Fatal("edit.Apply = false, want true")
+	}
+	if edit.Retention.MaxAgeDaysValue() != 45 {
+		t.Fatalf("MaxAgeDaysValue = %d, want 45", edit.Retention.MaxAgeDaysValue())
+	}
+	if edit.Retention.Enforcement != config.RetentionManualOnly {
+		t.Fatalf("Enforcement = %q, want preserved manual_only", edit.Retention.Enforcement)
+	}
+}
+
+func TestBubbleTeaInitRetentionPrompterBlankResetsToDefault(t *testing.T) {
+	thirty := 30
+	prompter := bubbleTeaInitRetentionPrompter{
+		editorRunner: func(editor initLinearEditor, _ io.Reader, _ io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 160, 24)
+			model = focusInitLinearField(t, model, initRetentionFieldMaxAge)
+			model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+			model = focusInitLinearField(t, model, initRetentionFieldAction)
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	edit, err := prompter.EditRetention(initRetentionPrompt{
+		Retention: config.RetentionConfig{MaxAgeDays: &thirty},
+	})
+	if err != nil {
+		t.Fatalf("EditRetention: %v", err)
+	}
+	if edit.Retention.MaxAgeDaysValue() != config.DefaultRetentionConfig().MaxAgeDaysValue() {
+		t.Fatalf("MaxAgeDaysValue = %d, want default %d", edit.Retention.MaxAgeDaysValue(), config.DefaultRetentionConfig().MaxAgeDaysValue())
+	}
+}
+
+func TestBubbleTeaInitRetentionPrompterBackReturnsNavigateBack(t *testing.T) {
+	prompter := bubbleTeaInitRetentionPrompter{
+		editorRunner: func(editor initLinearEditor, _ io.Reader, _ io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 160, 24)
+			model = focusInitLinearField(t, model, initRetentionFieldAction)
+			model = selectInitLinearFieldValue(t, model, initRetentionFieldAction, initDetailActionBack)
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	_, err := prompter.EditRetention(initRetentionPrompt{Retention: config.RetentionConfig{}})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditRetention error = %v, want errInitNavigateBack", err)
+	}
+}
+
+func TestBubbleTeaInitRetentionActionKeepsEditorOpenOnValidationError(t *testing.T) {
+	editor := initRetentionEditor(config.RetentionConfig{})
+	model := newInitLinearEditorModel(editor, 160, 24)
+	model = focusInitLinearField(t, model, initRetentionFieldMaxAge)
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitLinearText(t, model, "abc")
+	model = focusInitLinearField(t, model, initRetentionFieldAction)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if cmd != nil {
+		t.Fatal("Update returned quit command, want editor to stay open on validation error")
+	}
+	if next.resultAction != "" {
+		t.Fatalf("resultAction = %q, want empty", next.resultAction)
+	}
+	actionIndex := next.document.fieldIndexByID(initRetentionFieldAction)
+	if actionIndex < 0 || !strings.Contains(next.document[actionIndex].Error, "whole number") {
+		t.Fatalf("action error = %q, want whole-number validation", next.document[actionIndex].Error)
+	}
+}
+
+func TestInitLinearEditorActionQuitClearsFinalView(t *testing.T) {
+	editor := initRetentionEditor(config.RetentionConfig{})
+	model := newInitLinearEditorModel(editor, 160, 24)
+	model = focusInitLinearField(t, model, initRetentionFieldAction)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if cmd == nil {
+		t.Fatal("Update returned nil command, want quit command after staging")
+	}
+	if !next.quitting {
+		t.Fatal("quitting = false, want action quit to clear final rendered frame")
+	}
+	if got := next.View(); got != "" {
+		t.Fatalf("View after action quit = %q, want empty", got)
+	}
+}
+
+func TestInitLinearEditorArrowKeysChangeSelectNotFocus(t *testing.T) {
+	const choiceField initLinearFieldID = "choice"
+	const inputField initLinearFieldID = "input"
+	var document initLinearDocument
+	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
+		huh.NewOption("Alpha", "alpha"),
+		huh.NewOption("Beta", "beta"),
+	}, "alpha")
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 12)
+	choiceIndex := model.document.fieldIndexByID(choiceField)
+
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	if got := model.document.selectedValue(choiceField); got != "beta" {
+		t.Fatalf("selected value after down = %q, want beta", got)
+	}
+	if model.focused != choiceIndex {
+		t.Fatalf("focused after select down = %d, want unchanged choice index %d", model.focused, choiceIndex)
+	}
+
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
+	if got := model.document.selectedValue(choiceField); got != "alpha" {
+		t.Fatalf("selected value after up = %q, want alpha", got)
+	}
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyTab})
+	inputIndex := model.document.fieldIndexByID(inputField)
+	if model.focused != inputIndex {
+		t.Fatalf("focused after tab = %d, want input index %d", model.focused, inputIndex)
+	}
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	if model.focused != inputIndex {
+		t.Fatalf("focused after input down = %d, want unchanged input index %d", model.focused, inputIndex)
+	}
+}
+
+func TestInitLinearEditorArrowKeysDoNotScrollFocusedInput(t *testing.T) {
+	const inputField initLinearFieldID = "input"
+	var document initLinearDocument
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	for i := 0; i < 20; i++ {
+		document.addSection(fmt.Sprintf("Section %02d", i), "Context line")
+	}
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 5)
+	model.viewport.SetYOffset(1)
+
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	if got := model.viewport.YOffset; got != 1 {
+		t.Fatalf("viewport YOffset after input down = %d, want unchanged 1", got)
+	}
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
+	if got := model.viewport.YOffset; got != 1 {
+		t.Fatalf("viewport YOffset after input up = %d, want unchanged 1", got)
+	}
+}
+
+func TestInitLinearEditorOnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
+	const firstField initLinearFieldID = "first"
+	const secondField initLinearFieldID = "second"
+	var document initLinearDocument
+	document.addEditableSelect(firstField, "First", "", []huh.Option[string]{
+		huh.NewOption("Alpha", "alpha"),
+		huh.NewOption("Beta", "beta"),
+	}, "alpha")
+	document.addEditableSelect(secondField, "Second", "", []huh.Option[string]{
+		huh.NewOption("Gamma", "gamma"),
+		huh.NewOption("Delta", "delta"),
+	}, "delta")
+
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 12)
+	if got := strings.Count(model.layout.Content, "> "); got != 1 {
+		t.Fatalf("initial caret count = %d, want 1:\n%s", got, model.layout.Content)
+	}
+	if !strings.Contains(model.layout.Content, "> Alpha") {
+		t.Fatalf("initial content missing focused selected option:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> Delta") {
+		t.Fatalf("initial content shows caret on unfocused selected option:\n%s", model.layout.Content)
+	}
+
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyTab})
+	if got := strings.Count(model.layout.Content, "> "); got != 1 {
+		t.Fatalf("caret count after tab = %d, want 1:\n%s", got, model.layout.Content)
+	}
+	if !strings.Contains(model.layout.Content, "> Delta") {
+		t.Fatalf("content after tab missing focused selected option:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> Alpha") {
+		t.Fatalf("content after tab shows caret on unfocused selected option:\n%s", model.layout.Content)
+	}
+}
+
 func TestValidateRetentionMaxAgeDaysUsesCurrentFieldCopy(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -8981,8 +9446,8 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("initSecretsManagementInventoryRows returned no rows")
 	}
-	if rows[0].Title != "Legacy compatibility (Automatic OS default)" {
-		t.Fatalf("first row title = %q, want legacy compatibility row first", rows[0].Title)
+	if rows[0].Title != "Default credential store (Automatic OS default)" {
+		t.Fatalf("first row title = %q, want default credential-store row first", rows[0].Title)
 	}
 	var foundConfigure bool
 	for _, row := range rows {
@@ -8998,6 +9463,24 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	if len(options) == 0 {
 		t.Fatal("initLegacySecretsBackendOptions returned no options")
 	}
+}
+
+func TestInitSecretsManagementInventoryRowsUsePreferredBackendOrder(t *testing.T) {
+	rows := initSecretsManagementInventoryRows(config.File{})
+	titles := make([]string, 0, len(rows))
+	for _, row := range rows {
+		titles = append(titles, row.Title)
+	}
+	assertContentOrder(t, strings.Join(titles, "\n"),
+		"Default credential store",
+		"Configure new macos keychain profile",
+		"Configure new pass password store profile",
+		"Configure new encrypted file profile",
+		"Configure new 1password desktop app profile",
+		"Configure new 1password service account profile",
+		"Configure new 1password connect profile",
+		"Configure new in-memory store profile",
+	)
 }
 
 func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) {
@@ -9489,7 +9972,7 @@ func TestInitSecretsManagementInventoryRowsDisableUnavailableBackends(t *testing
 }
 
 func TestValidateInitSecretsRequiredSingleLine(t *testing.T) {
-	if err := validateInitSecretsRequiredSingleLine("", true, "1Password vault id"); err == nil || err.Error() != "1Password vault id is required" {
+	if err := validateInitSecretsRequiredSingleLine("", true, "1Password vault name or id"); err == nil || err.Error() != "1Password vault name or id is required" {
 		t.Fatalf("required validator error = %v, want required field failure", err)
 	}
 	if err := validateInitSecretsRequiredSingleLine("https://connect.example", true, "1Password Connect host"); err != nil {
@@ -9508,6 +9991,67 @@ func TestInitSecretsProfileBackendOptionsExcludeUnavailableChoicesUnlessCurrent(
 		for _, value := range values {
 			if value == string(credstore.BackendWinCred) {
 				t.Fatalf("wincred should be excluded from selectable backend options on darwin: %v", values)
+			}
+		}
+	}
+	if !initOnePasswordBackendsAvailable() {
+		for _, backend := range []credstore.Backend{
+			credstore.BackendOPDesktop,
+			credstore.BackendOP,
+			credstore.BackendOPConnect,
+		} {
+			if slices.Contains(values, string(backend)) {
+				t.Fatalf("%s should be excluded from selectable backend options when 1Password is compiled out: %v", backend, values)
+			}
+		}
+	}
+}
+
+func TestInitSecretsProfileBackendOptionsUsePreferredOrder(t *testing.T) {
+	options := initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile))
+	values := make([]string, 0, len(options))
+	for _, option := range options {
+		values = append(values, option.Value)
+	}
+	joined := "\n" + strings.Join(values, "\n") + "\n"
+	want := []string{
+		"\n" + string(credstore.BackendPass) + "\n",
+		"\n" + string(credstore.BackendFile) + "\n",
+	}
+	if initOnePasswordBackendsAvailable() {
+		want = append(want,
+			"\n"+string(credstore.BackendOPDesktop)+"\n",
+			"\n"+string(credstore.BackendOP)+"\n",
+			"\n"+string(credstore.BackendOPConnect)+"\n",
+		)
+	}
+	want = append(want, "\n"+string(credstore.BackendMemory)+"\n")
+	assertContentOrder(t, joined, want...)
+}
+
+func TestInitSecretsManagementLinearEditorHidesOnePasswordCreateTargetsWhenUnavailable(t *testing.T) {
+	if initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are hidden only in keyring_no1password builds")
+	}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	targetIndex := model.document.fieldIndexByID(initSecretsManagementFieldTarget)
+	if targetIndex < 0 {
+		t.Fatal("target field missing")
+	}
+	for _, backend := range []credstore.Backend{
+		credstore.BackendOPDesktop,
+		credstore.BackendOP,
+		credstore.BackendOPConnect,
+	} {
+		targetValue := initConfigureSecretsProfileSelectionPrefix + string(backend)
+		for _, option := range model.document[targetIndex].Options {
+			if option.Value == targetValue {
+				t.Fatalf("target options include %q in keyring_no1password build: %#v", targetValue, model.document[targetIndex].Options)
 			}
 		}
 	}
@@ -9562,6 +10106,507 @@ func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing
 	}
 	if profile.Label != "Encrypted file" {
 		t.Fatalf("profile label = %q, want backend-derived label", profile.Label)
+	}
+}
+
+func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *testing.T) {
+	var stderr bytes.Buffer
+	prompter := huhInitKeyringBackendPrompter{
+		stderr: &stderr,
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 180, 32)
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendFile))
+			_, _ = io.WriteString(out, model.layout.Content)
+			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+	})
+	if err != nil {
+		t.Fatalf("EditKeyringBackend: %v", err)
+	}
+	if !edit.Apply || !edit.HasConfigEdit {
+		t.Fatalf("edit = %#v, want config edit", edit)
+	}
+	profile, ok := edit.Config.Secrets.Profiles["encrypted-file"]
+	if !ok {
+		t.Fatalf("secrets profiles = %#v, want generated encrypted-file profile", edit.Config.Secrets.Profiles)
+	}
+	if profile.Backend.Kind != config.SecretsBackendKind(credstore.BackendFile) {
+		t.Fatalf("backend kind = %q, want file", profile.Backend.Kind)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Secrets management",
+		"Secrets-management target",
+		"Configure new encrypted file profile",
+		"Secrets-management profile",
+		"Secrets-management profile label",
+		"Default secrets-management profile",
+		"Secrets-management action",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr missing %q:\n%s", want, out)
+		}
+	}
+	assertContentOrder(t, out, "Secrets-management target", "Secrets-management profile label", "Default secrets-management profile", "Secrets-management action")
+	if strings.Contains(out, "Back to main menu") {
+		t.Fatalf("stderr = %q, want action-local Back without staging instead of inventory Back", out)
+	}
+	if strings.Contains(out, "1Password vault name or id") {
+		t.Fatalf("stderr = %q, want file backend to hide 1Password-specific fields", out)
+	}
+}
+
+func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t *testing.T) {
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "personal",
+			Profiles: map[string]config.SecretsProfile{
+				"personal": {
+					Label: "1Password",
+					Backend: config.SecretsProfileBackend{
+						Kind:        config.SecretsBackendKind(credstore.BackendOPDesktop),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{VaultID: "Personal"},
+					},
+				},
+				"onepasswordfoo": {
+					Label: "1PasswordFoo",
+					Backend: config.SecretsProfileBackend{
+						Kind:        config.SecretsBackendKind(credstore.BackendOPDesktop),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{VaultID: "Personal"},
+					},
+				},
+			},
+		},
+	}
+	var stderr bytes.Buffer
+	editorCalls := 0
+	prompter := huhInitKeyringBackendPrompter{
+		stderr: &stderr,
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			editorCalls++
+			model := newInitLinearEditorModel(editor, 180, 32)
+			switch editorCalls {
+			case 1:
+				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "onepasswordfoo")
+				model = focusInitLinearField(t, model, initSecretsManagementFieldTarget)
+				updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				next, ok := updated.(initLinearEditorModel)
+				if !ok {
+					t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+				}
+				return next, nil
+			case 2:
+				_, _ = io.WriteString(out, model.View())
+				if !strings.Contains(model.layout.Content, "1PasswordFoo (1Password desktop app) (Staged for deletion)") {
+					t.Fatalf("second editor content missing pending row:\n%s", model.layout.Content)
+				}
+				targetIndex := model.document.fieldIndexByID(initSecretsManagementFieldTarget)
+				targetOptions := model.document[targetIndex].Options
+				if got := targetOptions[len(targetOptions)-1].Value; got != initSecretsManagementRestoreSelectionPrefix+"onepasswordfoo" {
+					t.Fatalf("last target option = %q, want staged deletion restore option last; options = %#v", got, targetOptions)
+				}
+				model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
+				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
+				updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				next, ok := updated.(initLinearEditorModel)
+				if !ok {
+					t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+				}
+				return next, nil
+			default:
+				t.Fatalf("unexpected editor call %d", editorCalls)
+				return initLinearEditorModel{}, nil
+			}
+		},
+	}
+
+	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{Config: cfg})
+	if err != nil {
+		t.Fatalf("EditKeyringBackend: %v", err)
+	}
+	if !edit.Apply || !edit.HasConfigEdit {
+		t.Fatalf("edit = %#v, want config edit", edit)
+	}
+	if _, ok := edit.Config.Secrets.Profiles["onepasswordfoo"]; ok {
+		t.Fatalf("secrets profiles = %#v, want onepasswordfoo removed", edit.Config.Secrets.Profiles)
+	}
+	if _, ok := edit.Config.Secrets.Profiles["personal"]; !ok {
+		t.Fatalf("secrets profiles = %#v, want personal retained", edit.Config.Secrets.Profiles)
+	}
+	if edit.Config.Secrets.DefaultProfile != "personal" {
+		t.Fatalf("default secrets profile = %q, want personal", edit.Config.Secrets.DefaultProfile)
+	}
+	if !strings.Contains(stderr.String(), "1PasswordFoo (1Password desktop app) (Staged for deletion)") {
+		t.Fatalf("stderr = %q, want staged deletion suffix", stderr.String())
+	}
+}
+
+func TestInitSecretsManagementTargetOptionsMovesPendingDeletesToBottomInDeletionOrder(t *testing.T) {
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"personal": {
+					Label:   "Personal",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+	}
+	pendingDeletes := map[string]initPendingSecretsManagementDelete{
+		"alpha": {ID: "alpha", Profile: config.SecretsProfile{
+			Label:   "Alpha",
+			Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+		}},
+		"beta": {ID: "beta", Profile: config.SecretsProfile{
+			Label:   "Beta",
+			Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+		}},
+	}
+
+	options := initSecretsManagementTargetOptions(cfg, pendingDeletes, []string{"alpha", "beta"})
+	values := make([]string, 0, len(options))
+	for _, option := range options {
+		values = append(values, option.Value)
+	}
+	wantSuffix := []string{
+		initSecretsManagementRestoreSelectionPrefix + "alpha",
+		initSecretsManagementRestoreSelectionPrefix + "beta",
+	}
+	if len(values) < len(wantSuffix) || !reflect.DeepEqual(values[len(values)-len(wantSuffix):], wantSuffix) {
+		t.Fatalf("target option values = %#v, want pending deletes last in staging order %#v", values, wantSuffix)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorDeleteActionOnlyAppliesToConfiguredProfiles(t *testing.T) {
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "personal",
+			Profiles: map[string]config.SecretsProfile{
+				"personal": {
+					Label:   "1Password",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+				"unused": {
+					Label:   "Unused",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+	}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendFile))
+	actionIndex := model.document.fieldIndexByID(initSecretsManagementFieldAction)
+	if actionIndex < 0 {
+		t.Fatal("action field missing")
+	}
+	for _, option := range model.document[actionIndex].Options {
+		if option.Value == initSecretsManagementActionDelete {
+			t.Fatalf("create-new target exposes delete action: %#v", model.document[actionIndex].Options)
+		}
+	}
+
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "personal")
+	targetIndex := model.document.fieldIndexByID(initSecretsManagementFieldTarget)
+	for _, option := range model.document[targetIndex].Options {
+		if option.Value == "personal" && option.Deletable {
+			t.Fatalf("default secrets-management profile option is deletable: %#v", option)
+		}
+	}
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "unused")
+	foundDeletable := false
+	for _, option := range model.document[targetIndex].Options {
+		if option.Value == "unused" {
+			foundDeletable = option.Deletable
+		}
+	}
+	if !foundDeletable {
+		t.Fatalf("target options = %#v, want non-default configured profile to be deletable", model.document[targetIndex].Options)
+	}
+}
+
+func TestInitLinearEditorCtrlWDeletesPreviousWord(t *testing.T) {
+	const inputField initLinearFieldID = "input"
+	var document initLinearDocument
+	document.addEditableInput(inputField, "Input", "", "hello brave world", nil)
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 12)
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlW})
+
+	if got := model.document.fieldValue(inputField); got != "hello brave " {
+		t.Fatalf("input after ctrl+w = %q, want previous word deleted", got)
+	}
+	if got := model.document[model.document.fieldIndexByID(inputField)].Cursor; got != len("hello brave ") {
+		t.Fatalf("cursor after ctrl+w = %d, want end of remaining text", got)
+	}
+}
+
+func TestInitLinearEditorAlignsFieldDescriptionsWithFieldTitles(t *testing.T) {
+	var document initLinearDocument
+	document.addSection("Section", "Section description")
+	document.addEditableInput("input", "Input", "Input description wraps with field title alignment.", "value", nil)
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 80, 12)
+
+	if !strings.Contains(model.layout.Content, "\nInput\nInput description") {
+		t.Fatalf("layout content does not align input description with title:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "\n  Input\n") || strings.Contains(model.layout.Content, "\n  Input description") {
+		t.Fatalf("layout content has stale field-title indentation:\n%s", model.layout.Content)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorOnlyFocusedSelectChangesAndShowsCaret(t *testing.T) {
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"work-secrets": {
+					Label: "Work secrets",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendFile),
+					},
+				},
+			},
+		},
+	}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "work-secrets")
+	model = focusInitLinearField(t, model, initSecretsManagementFieldBackend)
+
+	targetBefore := model.document.selectedValue(initSecretsManagementFieldTarget)
+	defaultBefore := model.document.selectedValue(initSecretsManagementFieldDefault)
+	actionBefore := model.document.selectedValue(initSecretsManagementFieldAction)
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+
+	if got := model.document.selectedValue(initSecretsManagementFieldTarget); got != targetBefore {
+		t.Fatalf("target selection = %q, want unchanged %q", got, targetBefore)
+	}
+	if got := model.document.selectedValue(initSecretsManagementFieldDefault); got != defaultBefore {
+		t.Fatalf("default selection = %q, want unchanged %q", got, defaultBefore)
+	}
+	if got := model.document.selectedValue(initSecretsManagementFieldAction); got != actionBefore {
+		t.Fatalf("action selection = %q, want unchanged %q", got, actionBefore)
+	}
+	if got := strings.Count(model.layout.Content, "> "); got != 1 {
+		t.Fatalf("caret count = %d, want 1:\n%s", got, model.layout.Content)
+	}
+	targetLine := -1
+	for index, line := range strings.Split(model.layout.Content, "\n") {
+		if strings.TrimSpace(line) == "Work secrets (Encrypted file)" {
+			targetLine = index
+			break
+		}
+	}
+	if targetLine < 0 {
+		t.Fatalf("target selected line missing:\n%s", model.layout.Content)
+	}
+	if !model.layout.SelectedLines[targetLine] {
+		t.Fatalf("target selected line is not marked selected; selected lines = %#v\n%s", model.layout.SelectedLines, model.layout.Content)
+	}
+	for _, unfocusedSelected := range []string{
+		"> Work secrets (Encrypted file)",
+		"> No, keep the current default secrets-management profile",
+		"> Stage secrets-management settings",
+	} {
+		if strings.Contains(model.layout.Content, unfocusedSelected) {
+			t.Fatalf("content shows active caret on unfocused selected row %q:\n%s", unfocusedSelected, model.layout.Content)
+		}
+	}
+}
+
+func TestInitSecretsManagementLinearEditorCreateBackendTargetLocksBackend(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOP))
+
+	backendIndex := model.document.fieldIndexByID(initSecretsManagementFieldBackend)
+	if backendIndex < 0 {
+		t.Fatal("backend field missing")
+	}
+	backend := model.document[backendIndex]
+	if got := model.document.selectedValue(initSecretsManagementFieldBackend); got != string(credstore.BackendOP) {
+		t.Fatalf("selected backend = %q, want op", got)
+	}
+	if !backend.Hidden {
+		t.Fatalf("backend field hidden = false, want create-new target to hide redundant backend selector")
+	}
+	sectionIndex := model.document.fieldIndexByID(initSecretsManagementSectionProfile)
+	if sectionIndex < 0 {
+		t.Fatal("profile section missing")
+	}
+	if !strings.Contains(model.document[sectionIndex].Description, "Selected target: Configure new 1password service account profile") {
+		t.Fatalf("profile section description = %q, want selected-target context", model.document[sectionIndex].Description)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+
+	if got := model.document.fieldValue(initSecretsManagementFieldLabel); got != "1Password" {
+		t.Fatalf("profile label = %q, want friendly 1Password default", got)
+	}
+	if got := model.document.selectedValue(initSecretsManagementFieldBackend); got != string(credstore.BackendOPDesktop) {
+		t.Fatalf("selected backend = %q, want op-desktop", got)
+	}
+	for _, hidden := range []initLinearFieldID{
+		initSecretsManagementFieldBackend,
+		initSecretsManagementFieldItemTitlePrefix,
+		initSecretsManagementSectionDesktop,
+		initSecretsManagementFieldDesktopAccountID,
+	} {
+		index := model.document.fieldIndexByID(hidden)
+		if index < 0 {
+			t.Fatalf("field %q missing", hidden)
+		}
+		if !model.document[index].Hidden {
+			t.Fatalf("field %q hidden = false, want hidden for create-new desktop profile", hidden)
+		}
+	}
+	out := model.layout.Content
+	for _, want := range []string{
+		"1Password vault name or id",
+		"1Password secret name",
+		"1Password item tag",
+		"1Password request timeout",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("desktop content missing %q:\n%s", want, out)
+		}
+	}
+	for _, hiddenText := range []string{
+		"Secrets-management backend",
+		"1Password item title prefix",
+		"1Password desktop",
+		"1Password desktop account id",
+	} {
+		if strings.Contains(out, hiddenText) {
+			t.Fatalf("desktop content includes hidden advanced field %q:\n%s", hiddenText, out)
+		}
+	}
+	assertContentOrder(t, out, "1Password vault name or id", "1Password secret name", "1Password item tag", "1Password request timeout")
+}
+
+func TestInitSecretsManagementLinearEditorShowsOnePasswordBackendRolloverDescriptions(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	tests := []struct {
+		name string
+		kind string
+		want string
+	}{
+		{name: "service account", kind: string(credstore.BackendOP), want: "CI or server environments"},
+		{name: "connect", kind: string(credstore.BackendOPConnect), want: "Connect API endpoint"},
+		{name: "desktop", kind: string(credstore.BackendOPDesktop), want: "Most common for local use"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			editor := initSecretsManagementLinearEditor(cfg)
+			model := newInitLinearEditorModel(editor, 180, 32)
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(tc.kind))
+			index := model.document.fieldIndexByID(initSecretsManagementFieldBackend)
+			if index < 0 {
+				t.Fatal("backend field missing")
+			}
+			if !strings.Contains(model.document[index].Description, tc.want) {
+				t.Fatalf("backend description = %q, want %q", model.document[index].Description, tc.want)
+			}
+		})
+	}
+}
+
+func TestInitSecretsManagementEditStoresOnePasswordVaultNameOrIDAsEntered(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model.setFieldValue(initSecretsManagementFieldVaultID, "Employee")
+	edit, err := initSecretsManagementEditFromDocument(cfg, model.document)
+	if err != nil {
+		t.Fatalf("initSecretsManagementEditFromDocument: %v", err)
+	}
+	profile := edit.Config.Secrets.Profiles["1password"]
+	if profile.Backend.OnePassword == nil {
+		t.Fatal("saved onepassword config = nil")
+	}
+	if got := profile.Backend.OnePassword.VaultID; got != "Employee" {
+		t.Fatalf("saved vault reference = %q, want entered vault name", got)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorConfiguredProfileKeepsBackendEditable(t *testing.T) {
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"work-secrets": {
+					Label: "Work secrets",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendFile),
+					},
+				},
+			},
+		},
+	}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "work-secrets")
+
+	index := model.document.fieldIndexByID(initSecretsManagementFieldBackend)
+	if index < 0 {
+		t.Fatal("backend field missing")
+	}
+	if len(model.document[index].Options) <= 1 {
+		t.Fatalf("configured profile backend options = %#v, want editable backend choices", model.document[index].Options)
+	}
+	if strings.Contains(model.document[index].Description, "fixed by the selected create-new target") {
+		t.Fatalf("configured profile backend description says locked: %q", model.document[index].Description)
 	}
 }
 
@@ -9675,8 +10720,8 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	}
 	out := stderr.String()
 	for _, want := range []string{
-		"Configure LLM runtimes (2)",
 		"Configure reviewer entities (3)",
+		"Configure LLM runtimes (2)",
 		"Configure review profiles (1)",
 		"Configure global settings",
 		"Configure secrets management",
@@ -9693,6 +10738,13 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	if strings.Contains(out, "Configure review profiles v2") {
 		t.Fatalf("stderr = %q, want temporary v2 menu item removed", out)
 	}
+	assertContentOrder(t, out,
+		"Configure reviewer entities (3)",
+		"Configure LLM runtimes (2)",
+		"Configure review profiles (1)",
+		"Configure global settings",
+		"Configure secrets management",
+	)
 }
 
 func TestHuhInitMenuPrompterAccessibleSelectsSecretsManagement(t *testing.T) {
@@ -9716,6 +10768,49 @@ func TestHuhInitMenuPrompterAccessibleSelectsSecretsManagement(t *testing.T) {
 	}
 	if action != initMenuActionSecretsManagement {
 		t.Fatalf("action = %q, want secrets management", action)
+	}
+}
+
+func TestHuhInitMenuPrompterDefaultStartsAtTopWhenProfileIsActive(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitMenuPrompter{
+		stdin:  strings.NewReader("\n"),
+		stderr: &stderr,
+	}
+	action, err := prompter.ChooseAction(initMenuPrompt{
+		HasWorkspace:         true,
+		ActiveProfileName:    "default",
+		LLMRuntimeCount:      2,
+		ReviewerEntityCount:  3,
+		ReviewProfileCount:   1,
+		CanConfigureLLM:      true,
+		CanConfigureReviewer: true,
+		CanSave:              true,
+	})
+	if err != nil {
+		t.Fatalf("ChooseAction: %v", err)
+	}
+	if action != initMenuActionReviewerEntities {
+		t.Fatalf("action = %q, want first main-menu configuration item", action)
+	}
+}
+
+func TestHuhInitMenuPrompterDefaultStartsAtProfileSetupBeforeWorkspace(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitMenuPrompter{
+		stdin:  strings.NewReader("\n"),
+		stderr: &stderr,
+	}
+	action, err := prompter.ChooseAction(initMenuPrompt{
+		ReviewProfileCount: 1,
+	})
+	if err != nil {
+		t.Fatalf("ChooseAction: %v", err)
+	}
+	if action != initMenuActionReviewProfiles {
+		t.Fatalf("action = %q, want review profile setup before dependent workflows are enabled", action)
 	}
 }
 
@@ -9747,7 +10842,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"1", // Configure LLM runtimes (disabled)
+			"2", // Configure LLM runtimes (disabled)
 			"7", // Discard staged changes and exit
 			"",
 		}, "\n")),
@@ -9856,7 +10951,7 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"github.com/open-cli-collective",
 		"Git scope",
 		"Git scope host",
-		"> github.enterprise",
+		"github.enterprise",
 		"Reviewer entity",
 		"OCC reviewer (GitHub App reviewer)",
 		"LLM runtime",
@@ -9864,18 +10959,18 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"Minimum reviewer model tier",
 		"Model tier mapping",
 		"large model",
-		"> claude-opus-4-7",
+		"claude-opus-4-7",
 		"Additional reviewer-agent directories (optional)",
 		"/opt/codereview/agents",
 		"Review Policy",
-		"> Request changes",
-		"> Enable self-approve",
-		"> Auto-resolve",
-		"> 24h",
+		"Request changes",
+		"Enable self-approve",
+		"Auto-resolve",
+		"24h",
 		"Git secrets storage label",
-		"> codereview/custom-git",
+		"codereview/custom-git",
 		"Profile action",
-		"> Stage profile settings",
+		"Stage profile settings",
 		"Back without staging",
 	} {
 		if !strings.Contains(content, want) {
@@ -9932,10 +11027,10 @@ func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *test
 		key  tea.KeyType
 	}{
 		{name: "enter", key: tea.KeyEnter},
-		{name: "down", key: tea.KeyDown},
+		{name: "tab", key: tea.KeyTab},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 240, 19)
+			model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 240, 24)
 			model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tc.key})
 
 			if model.focused != routeIndex {
@@ -9958,6 +11053,97 @@ func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *test
 				t.Fatalf("view still uses caret on focused title instead of active rail:\n%s", model.View())
 			}
 		})
+	}
+}
+
+func TestInitProfileV2ArrowKeysChangeSelectNotFocus(t *testing.T) {
+	const choiceField initProfileV2FieldID = "choice"
+	const inputField initProfileV2FieldID = "input"
+	var document initProfileV2Document
+	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
+		huh.NewOption("Alpha", "alpha"),
+		huh.NewOption("Beta", "beta"),
+	}, "alpha")
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 120, 12)
+	choiceIndex := model.document.fieldIndexByID(choiceField)
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	if got := model.document.selectedValue(choiceField); got != "beta" {
+		t.Fatalf("selected value after down = %q, want beta", got)
+	}
+	if model.focused != choiceIndex {
+		t.Fatalf("focused after select down = %d, want unchanged choice index %d", model.focused, choiceIndex)
+	}
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
+	if got := model.document.selectedValue(choiceField); got != "alpha" {
+		t.Fatalf("selected value after up = %q, want alpha", got)
+	}
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyTab})
+	inputIndex := model.document.fieldIndexByID(inputField)
+	if model.focused != inputIndex {
+		t.Fatalf("focused after tab = %d, want input index %d", model.focused, inputIndex)
+	}
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	if model.focused != inputIndex {
+		t.Fatalf("focused after input down = %d, want unchanged input index %d", model.focused, inputIndex)
+	}
+}
+
+func TestInitProfileV2ArrowKeysDoNotScrollFocusedInput(t *testing.T) {
+	const inputField initProfileV2FieldID = "input"
+	var document initProfileV2Document
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	for i := 0; i < 20; i++ {
+		document.addSection(fmt.Sprintf("Section %02d", i), "Context line")
+	}
+	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 120, 5)
+	model.viewport.SetYOffset(1)
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	if got := model.viewport.YOffset; got != 1 {
+		t.Fatalf("viewport YOffset after input down = %d, want unchanged 1", got)
+	}
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
+	if got := model.viewport.YOffset; got != 1 {
+		t.Fatalf("viewport YOffset after input up = %d, want unchanged 1", got)
+	}
+}
+
+func TestInitProfileV2OnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
+	const firstField initProfileV2FieldID = "first"
+	const secondField initProfileV2FieldID = "second"
+	var document initProfileV2Document
+	document.addEditableSelect(firstField, "First", "", []huh.Option[string]{
+		huh.NewOption("Alpha", "alpha"),
+		huh.NewOption("Beta", "beta"),
+	}, "alpha")
+	document.addEditableSelect(secondField, "Second", "", []huh.Option[string]{
+		huh.NewOption("Gamma", "gamma"),
+		huh.NewOption("Delta", "delta"),
+	}, "delta")
+
+	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 120, 12)
+	if got := strings.Count(model.layout.Content, "> "); got != 1 {
+		t.Fatalf("initial caret count = %d, want 1:\n%s", got, model.layout.Content)
+	}
+	if !strings.Contains(model.layout.Content, "> Alpha") {
+		t.Fatalf("initial content missing focused selected option:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> Delta") {
+		t.Fatalf("initial content shows caret on unfocused selected option:\n%s", model.layout.Content)
+	}
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyTab})
+	if got := strings.Count(model.layout.Content, "> "); got != 1 {
+		t.Fatalf("caret count after tab = %d, want 1:\n%s", got, model.layout.Content)
+	}
+	if !strings.Contains(model.layout.Content, "> Delta") {
+		t.Fatalf("content after tab missing focused selected option:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> Alpha") {
+		t.Fatalf("content after tab shows caret on unfocused selected option:\n%s", model.layout.Content)
 	}
 }
 
@@ -10020,7 +11206,7 @@ func TestInitProfileV2TextInputsDraftProfileNameAndRoutes(t *testing.T) {
 
 func TestInitProfileV2TextInputsClearRoutes(t *testing.T) {
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT"), 160, 24)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyTab})
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
 
 	draft, err := model.validatedDraft()
@@ -10050,7 +11236,7 @@ func TestInitProfileV2TextInputsShowLocalErrors(t *testing.T) {
 
 	t.Run("routes", func(t *testing.T) {
 		model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT"), 160, 24)
-		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyTab})
 		model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
 		model = typeInitProfileV2Text(t, model, "not-a-route")
 
@@ -10157,7 +11343,7 @@ func TestInitProfileV2GitScopeCustomEditsDraft(t *testing.T) {
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
 	model = typeInitProfileV2Text(t, model, "gitlab.com")
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitAuth)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyLeft})
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
 
 	draft, err := model.validatedDraft()
 	if err != nil {
@@ -10234,7 +11420,7 @@ func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
 }
 
 func TestInitProfileV2NoRuntimeBootstrapRequestsExistingFlow(t *testing.T) {
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", nil, nil), 160, 24)
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", nil, nil), 160, 40)
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldLLMRuntime)
 	if !strings.Contains(model.View(), "Configure a new LLM runtime first") {
 		t.Fatalf("view missing no-runtime bootstrap option:\n%s", model.View())
@@ -10268,7 +11454,7 @@ func TestInitProfileV2ModelMapInputsDraftOverridesAndClears(t *testing.T) {
 		config.ModelMap{
 			string(config.ModelTierLarge): "claude-opus-4-7",
 		},
-	), 160, 24)
+	), 160, 40)
 
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierSmall))
 	if !strings.Contains(model.View(), "> |") {
@@ -10362,7 +11548,7 @@ func TestInitProfileV2AgentSourcesTextareaDraftsNormalizedSources(t *testing.T) 
 func TestInitProfileV2AgentSourcesEnterMovesFocusWithoutDestroyingNavigation(t *testing.T) {
 	editor := newTestInitProfileV2EditorWithAgentSources("monit", "github.com/SignalFT", nil)
 	editor.Document.addEditableInput(initProfileV2FieldID("after_agent_sources"), "After agent sources", "", "next", nil)
-	model := newInitProfileV2ReadOnlyModel(editor, 48, 10)
+	model := newInitProfileV2ReadOnlyModel(editor, 48, 24)
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldAgentSources)
 	model = typeInitProfileV2Text(t, model, strings.Repeat("/tmp/very-long-agent-source-path/", 5))
 
@@ -10371,8 +11557,8 @@ func TestInitProfileV2AgentSourcesEnterMovesFocusWithoutDestroyingNavigation(t *
 	if got := model.document[model.focused].Title; got != "After agent sources" {
 		t.Fatalf("focused field = %q, want next field after textarea", got)
 	}
-	if !strings.Contains(model.View(), "After agent sources") {
-		t.Fatalf("view missing next field after leaving long textarea:\n%s", model.View())
+	if !strings.Contains(model.layout.Content, "After agent sources") {
+		t.Fatalf("layout missing next field after leaving long textarea:\n%s", model.layout.Content)
 	}
 }
 
@@ -10385,7 +11571,7 @@ func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
 		true,
 		nil,
 		initCustomGitScopeSelection,
-	), 160, 24)
+	), 160, 40)
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewMajorEvent, string(config.ReviewMajorEventRequestChanges))
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldSelfApprove, initSelfApproveEnable)
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldResolveThreads, string(config.ResolveThreadsAuto))
@@ -10424,7 +11610,10 @@ func TestInitProfileV2ReviewPolicyRejectsInvalidDuration(t *testing.T) {
 	model = typeInitProfileV2Text(t, model, "tomorrow")
 
 	if !strings.Contains(model.View(), "invalid duration") {
-		t.Fatalf("view missing duration validation error:\n%s", model.View())
+		index := model.document.fieldIndexByID(initProfileV2FieldResolveAfter)
+		if index < 0 || !strings.Contains(model.document[index].Error, "invalid duration") {
+			t.Fatalf("duration field error = %q, want invalid duration", model.document[index].Error)
+		}
 	}
 	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "invalid duration") {
 		t.Fatalf("validatedDraft error = %v, want duration validation", err)
@@ -10447,7 +11636,7 @@ func TestInitProfileV2GitStorageLabelDraftsCustomLabel(t *testing.T) {
 		true,
 		gitScopes,
 		"github-work",
-	), 160, 24)
+	), 160, 40)
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitStorageLabel)
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
 	model = typeInitProfileV2Text(t, model, "codereview/custom-monit-git")
@@ -10479,7 +11668,10 @@ func TestInitProfileV2GitStorageLabelRejectsInvalidCredentialRef(t *testing.T) {
 	model = typeInitProfileV2Text(t, model, "not-a-ref")
 
 	if !strings.Contains(model.View(), "credential ref") {
-		t.Fatalf("view missing credential-ref validation error:\n%s", model.View())
+		index := model.document.fieldIndexByID(initProfileV2FieldGitStorageLabel)
+		if index < 0 || !strings.Contains(model.document[index].Error, "credential ref") {
+			t.Fatalf("git storage label field error = %q, want credential-ref validation", model.document[index].Error)
+		}
 	}
 	if _, err := model.validatedDraft(); err == nil {
 		t.Fatal("validatedDraft error = nil, want credential-ref validation")
@@ -10745,6 +11937,101 @@ func TestBubbleTeaInitProfileV2PrompterBackWithoutStagingReturnsToChooser(t *tes
 	}
 	if inventoryCalls != 2 || editorCalls != 1 {
 		t.Fatalf("calls = inventory:%d editor:%d, want chooser re-entry after one unstaged editor exit", inventoryCalls, editorCalls)
+	}
+}
+
+func updateInitLinearEditorModel(t *testing.T, model initLinearEditorModel, msg tea.Msg) initLinearEditorModel {
+	t.Helper()
+	updated, _ := model.Update(msg)
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	return next
+}
+
+func typeInitLinearText(t *testing.T, model initLinearEditorModel, text string) initLinearEditorModel {
+	t.Helper()
+	for _, r := range text {
+		model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	return model
+}
+
+func focusInitLinearField(t *testing.T, model initLinearEditorModel, id initLinearFieldID) initLinearEditorModel {
+	t.Helper()
+	index := model.document.fieldIndexByID(id)
+	if index < 0 {
+		t.Fatalf("field %q missing", id)
+	}
+	model.focused = index
+	model.relayout()
+	model.ensureFocusedVisible()
+	return model
+}
+
+func selectInitLinearFieldValue(t *testing.T, model initLinearEditorModel, id initLinearFieldID, value string) initLinearEditorModel {
+	t.Helper()
+	index := model.document.fieldIndexByID(id)
+	if index < 0 {
+		t.Fatalf("field %q missing", id)
+	}
+	model.selectFieldValue(id, value)
+	model.afterFieldChange(index)
+	model.relayout()
+	model.ensureFocusedVisible()
+	if got := model.document.selectedValue(id); got != value {
+		t.Fatalf("field %q selected value = %q, want %q", id, got, value)
+	}
+	return model
+}
+
+func stageReviewerEntityEditorRunner(t *testing.T, edits map[initLinearFieldID]string, action string) initReviewerEntityEditorRunner {
+	t.Helper()
+	if action == "" {
+		action = initDetailActionEdit
+	}
+	return func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+		model := newInitLinearEditorModel(editor, 160, 60)
+		for id, value := range edits {
+			model.setFieldValue(id, value)
+			index := model.document.fieldIndexByID(id)
+			if index < 0 {
+				t.Fatalf("field %q missing", id)
+			}
+			model.afterFieldChange(index)
+		}
+		model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+		model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, action)
+		_, _ = io.WriteString(out, model.View())
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		next, ok := updated.(initLinearEditorModel)
+		if !ok {
+			t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+		}
+		return next, nil
+	}
+}
+
+func stageLLMRuntimeEditorRunner(t *testing.T, selections map[initLinearFieldID]string, action string) initLLMRuntimeEditorRunner {
+	t.Helper()
+	if action == "" {
+		action = initDetailActionEdit
+	}
+	return func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+		model := newInitLinearEditorModel(editor, 160, 60)
+		for id, value := range selections {
+			model = selectInitLinearFieldValue(t, model, id, value)
+		}
+		model = focusInitLinearField(t, model, initLLMRuntimeFieldAction)
+		model = selectInitLinearFieldValue(t, model, initLLMRuntimeFieldAction, action)
+		_, _ = io.WriteString(out, model.View())
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		next, ok := updated.(initLinearEditorModel)
+		if !ok {
+			t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+		}
+		return next, nil
 	}
 }
 
@@ -12392,7 +13679,7 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 	}
 }
 
-func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoStaysInCategoryUntilBack(t *testing.T) {
+func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
 		DefaultProfile: "work",
@@ -12458,14 +13745,14 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoStaysInCategoryUntilB
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
 	if reviewerCalls != 3 {
-		t.Fatalf("reviewerCalls = %d, want delete, undo, then Back in-category", reviewerCalls)
+		t.Fatalf("reviewerCalls = %d, want delete, undo, then back inside reviewer category", reviewerCalls)
 	}
 	if len(menu.prompts) != 2 {
-		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+		t.Fatalf("menu prompts = %#v, want main menu before reviewer category and after backing out", menu.prompts)
 	}
 }
 
-func TestInitInteractiveMenuFocusedReviewerEntityStageStaysInCategoryUntilBack(t *testing.T) {
+func TestInitInteractiveMenuFocusedReviewerEntityStageReturnsToMenu(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -12494,11 +13781,6 @@ func TestInitInteractiveMenuFocusedReviewerEntityStageStaysInCategoryUntilBack(t
 				draft.ReviewerEnabled = true
 				draft.ReviewerAuth = string(config.GitAuthModePAT)
 				return draft, nil
-			case 2:
-				if got := prompt.Context.ProfileReviewerEntities["work"]; got != "reviewer-pat" {
-					t.Fatalf("ProfileReviewerEntities[work] = %q, want reviewer-pat after staged reviewer edit", got)
-				}
-				return initDraft{}, errInitNavigateBack
 			default:
 				t.Fatalf("unexpected reviewer prompt #%d", reviewerCalls)
 				return initDraft{}, nil
@@ -12518,15 +13800,18 @@ func TestInitInteractiveMenuFocusedReviewerEntityStageStaysInCategoryUntilBack(t
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if reviewerCalls != 2 {
-		t.Fatalf("reviewerCalls = %d, want staged reviewer edit then Back in-category", reviewerCalls)
+	if reviewerCalls != 1 {
+		t.Fatalf("reviewerCalls = %d, want one staged reviewer edit", reviewerCalls)
 	}
 	if len(menu.prompts) != 2 {
-		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+		t.Fatalf("menu prompts = %#v, want main menu before category entry and after stage", menu.prompts)
+	}
+	if !menu.prompts[1].CanSave {
+		t.Fatalf("post-stage menu prompt = %#v, want staged reviewer edit to be saveable", menu.prompts[1])
 	}
 }
 
-func TestInitInteractiveMenuFocusedLLMRuntimeStageStaysInCategoryUntilBack(t *testing.T) {
+func TestInitInteractiveMenuFocusedLLMRuntimeStageReturnsToMenu(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -12556,11 +13841,6 @@ func TestInitInteractiveMenuFocusedLLMRuntimeStageStaysInCategoryUntilBack(t *te
 				draft.LLMAuth = string(config.LLMAuthSubscription)
 				draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
 				return draft, nil
-			case 2:
-				if got := prompt.Context.ProfileLLMRuntimes["work"]; got != "codex-cli" {
-					t.Fatalf("ProfileLLMRuntimes[work] = %q, want codex-cli after staged runtime edit", got)
-				}
-				return initDraft{}, errInitNavigateBack
 			default:
 				t.Fatalf("unexpected LLM prompt #%d", llmCalls)
 				return initDraft{}, nil
@@ -12574,15 +13854,18 @@ func TestInitInteractiveMenuFocusedLLMRuntimeStageStaysInCategoryUntilBack(t *te
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if llmCalls != 2 {
-		t.Fatalf("llmCalls = %d, want staged runtime edit then Back in-category", llmCalls)
+	if llmCalls != 1 {
+		t.Fatalf("llmCalls = %d, want one staged runtime edit", llmCalls)
 	}
 	if len(menu.prompts) != 2 {
-		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+		t.Fatalf("menu prompts = %#v, want main menu before category entry and after stage", menu.prompts)
+	}
+	if !menu.prompts[1].CanSave {
+		t.Fatalf("post-stage menu prompt = %#v, want staged runtime edit to be saveable", menu.prompts[1])
 	}
 }
 
-func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoStaysInCategoryUntilBack(t *testing.T) {
+func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -12641,10 +13924,10 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoStaysInCategoryUntilBack(
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
 	if llmCalls != 3 {
-		t.Fatalf("llmCalls = %d, want delete, undo, then Back in-category", llmCalls)
+		t.Fatalf("llmCalls = %d, want delete, undo, then back inside LLM category", llmCalls)
 	}
 	if len(menu.prompts) != 2 {
-		t.Fatalf("menu prompts = %#v, want main menu only before category entry and after explicit Back", menu.prompts)
+		t.Fatalf("menu prompts = %#v, want main menu before LLM category and after backing out", menu.prompts)
 	}
 }
 
@@ -13100,7 +14383,7 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 			t.Fatalf("profile notes = %#v, want deferred git note for %s", profile.Notes, name)
 		}
 	}
-	if !strings.Contains(stdout.String(), "Initialized 2 profile(s)") || !strings.Contains(stdout.String(), "- home: needs follow-up") || !strings.Contains(stdout.String(), "- work: needs follow-up") {
+	if !strings.Contains(stdout.String(), "Saved staged init changes") || !strings.Contains(stdout.String(), "- review profiles: 2") || !strings.Contains(stdout.String(), "- home: needs follow-up") || !strings.Contains(stdout.String(), "- work: needs follow-up") {
 		t.Fatalf("stdout = %q, want readiness summary for both profiles", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "set-credential --ref codereview/home --key "+credentials.GitTokenKey) || !strings.Contains(stderr.String(), "set-credential --ref codereview/work --key "+credentials.GitTokenKey) {
@@ -13186,7 +14469,7 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 	if cfg.Profiles["default"].Git.CredentialRef != "codereview/default" {
 		t.Fatalf("default profile git ref = %q, want codereview/default", cfg.Profiles["default"].Git.CredentialRef)
 	}
-	if !strings.Contains(stdout.String(), "Initialized 1 profile(s)") || !strings.Contains(stdout.String(), "- default: ready") {
+	if !strings.Contains(stdout.String(), "Saved staged init changes") || !strings.Contains(stdout.String(), "- review profiles: 1") || !strings.Contains(stdout.String(), "- credential secrets: 1 ref") || !strings.Contains(stdout.String(), "- default: ready") {
 		t.Fatalf("stdout = %q, want ready summary for default profile", stdout.String())
 	}
 	if strings.Contains(stderr.String(), "set-credential --ref") {
@@ -13703,6 +14986,52 @@ func TestApplyInteractiveInitSessionPlanConfigSaveFailureAfterKeyringWritesRepor
 	}
 }
 
+func TestApplyInteractiveInitSessionPlanSummarizesSecretsManagementOnlyChanges(t *testing.T) {
+	var stdout bytes.Buffer
+	opts := &root.Options{
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	profile := basicProfile("default")
+	original := config.File{
+		DefaultProfile: "default",
+		Profiles:       map[string]config.Profile{"default": profile},
+	}
+	next := original
+	next.Secrets = config.SecretsConfig{
+		DefaultProfile: "one-password",
+		Profiles: map[string]config.SecretsProfile{
+			"one-password": {
+				Label: "1Password",
+				Backend: config.SecretsProfileBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
+					OnePassword: &config.SecretsProfileOnePasswordConfig{
+						VaultID: "Personal",
+					},
+				},
+			},
+		},
+	}
+	plan := initSessionPlan{
+		path:        filepath.Join(t.TempDir(), "config.yml"),
+		originalCfg: original,
+		cfg:         next,
+	}
+	err := applyInteractiveInitSessionPlan(opts, initDeps{
+		saveConfig: func(string, config.File) error { return nil },
+	}, plan)
+	if err != nil {
+		t.Fatalf("applyInteractiveInitSessionPlan: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Saved staged init changes") || !strings.Contains(out, "- secrets management: 1 profile") {
+		t.Fatalf("stdout = %q, want secrets-management summary", out)
+	}
+	if strings.Contains(out, "Initialized 0 profile(s)") {
+		t.Fatalf("stdout = %q, want no profile-only initialization summary", out)
+	}
+}
+
 func TestApplyInteractiveInitSessionPlanPartialKeyringWriteFailureReportsCleanup(t *testing.T) {
 	store := newFakeInitStore(nil)
 	store.setBundleFunc = func(profile string, kv map[string]string, _ ...credstore.SetOpt) (credstore.Result, error) {
@@ -13864,6 +15193,76 @@ func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsProfilesIndependent
 	}
 	if got := workStore.bundles["work"][credentials.GitTokenKey]; got != "work-token" {
 		t.Fatalf("work store token = %q, want work-token", got)
+	}
+}
+
+func TestApplyInteractiveInitSessionPlanNamedSecretsProfileWriteFailureStopsConfigSave(t *testing.T) {
+	store := newFakeInitStore(nil)
+	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
+		return credstore.Result{}, errors.New("backend vault unreachable")
+	}
+	opts := &root.Options{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "work-1password",
+			Profiles: map[string]config.SecretsProfile{
+				"work-1password": {
+					Label: "Work 1Password",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{
+							VaultID: "Not A Real Vault",
+						},
+					},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	if err != nil {
+		t.Fatalf("Resolve work secrets profile: %v", err)
+	}
+	plan := initSessionPlan{
+		path:         filepath.Join(t.TempDir(), "config.yml"),
+		cfg:          cfg,
+		profileNames: []string{"work"},
+		writes: map[string]map[string]string{
+			"codereview/work": {credentials.GitTokenKey: "work-token"},
+		},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "git",
+				Ref:     "codereview/work",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			SecretsProfile: resolved,
+		}},
+	}
+	err = applyInteractiveInitSessionPlan(opts, initDeps{
+		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, _ string, _ bool, _ config.File) (initStore, error) {
+			if resolved.ID != "work-1password" {
+				t.Fatalf("opened secrets profile %q, want work-1password", resolved.ID)
+			}
+			return store, nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("legacy openStore called for named secrets-profile write")
+			return nil, nil
+		},
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite backend write failure")
+			return nil
+		},
+	}, plan)
+	if err == nil || !strings.Contains(err.Error(), "backend vault unreachable") {
+		t.Fatalf("applyInteractiveInitSessionPlan error = %v, want backend write failure", err)
 	}
 }
 
@@ -15371,6 +16770,21 @@ type initKeyringBackendPrompterFunc func(initKeyringBackendPrompt) (initKeyringB
 
 func (f initKeyringBackendPrompterFunc) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 	return f(prompt)
+}
+
+func assertContentOrder(t *testing.T, content string, parts ...string) {
+	t.Helper()
+	previous := -1
+	for _, part := range parts {
+		index := strings.Index(content, part)
+		if index < 0 {
+			t.Fatalf("content missing %q:\n%s", part, content)
+		}
+		if index <= previous {
+			t.Fatalf("content order wrong for %q:\n%s", part, content)
+		}
+		previous = index
+	}
 }
 
 type fakeInitMenuPrompter struct {

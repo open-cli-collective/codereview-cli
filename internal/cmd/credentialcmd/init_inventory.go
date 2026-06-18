@@ -210,8 +210,8 @@ func orderInitInventoryRows(rows []initInventoryRow) []initInventoryRow {
 	}
 	ordered := make([]initInventoryRow, 0, len(rows))
 	ordered = append(ordered, grouped[initInventoryRowKindActive]...)
-	ordered = append(ordered, grouped[initInventoryRowKindPending]...)
 	ordered = append(ordered, grouped[initInventoryRowKindCommand]...)
+	ordered = append(ordered, grouped[initInventoryRowKindPending]...)
 	return ordered
 }
 

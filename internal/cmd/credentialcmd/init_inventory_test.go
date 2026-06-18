@@ -20,7 +20,7 @@ func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *t
 		Rows: []initInventoryRow{
 			{ID: "app", Title: "GitHub App reviewer: org-bot", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
 			{ID: "pat", Title: "PAT reviewer", FilterValue: "default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "create-pat", Title: "Configure new personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
@@ -32,20 +32,20 @@ func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *t
 	for _, item := range model.list.VisibleItems() {
 		got = append(got, item.(initInventoryItem).row.ID)
 	}
-	want := []string{"pat", "restore-app", "create-pat", "back"}
+	want := []string{"pat", "create-pat", "back", "restore-app"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("visible item ids = %#v, want %#v", got, want)
 	}
 }
 
-func TestInitInventoryReordersRowsIntoActivePendingAndCommandGroups(t *testing.T) {
+func TestInitInventoryReordersRowsIntoActiveCommandAndPendingGroups(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:  "Reviewer entity",
 		Width:  80,
 		Height: 20,
 		Rows: []initInventoryRow{
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
-			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
 		},
 	})
@@ -54,15 +54,15 @@ func TestInitInventoryReordersRowsIntoActivePendingAndCommandGroups(t *testing.T
 	for _, row := range model.rows {
 		got = append(got, row.ID)
 	}
-	want := []string{"pat", "restore-app", "back"}
+	want := []string{"pat", "back", "restore-app"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ordered row ids = %#v, want %#v", got, want)
 	}
 	if model.rows[1].Description != "" {
-		t.Fatalf("pending description = %q, want empty description", model.rows[1].Description)
+		t.Fatalf("command description = %q, want empty description", model.rows[1].Description)
 	}
 	if model.rows[2].Description != "" {
-		t.Fatalf("command description = %q, want empty description", model.rows[2].Description)
+		t.Fatalf("pending description = %q, want empty description", model.rows[2].Description)
 	}
 }
 
@@ -114,10 +114,11 @@ func TestInitInventoryRestoreKeyRestoresPendingRow(t *testing.T) {
 		Width:  80,
 		Height: 20,
 		Rows: []initInventoryRow{
-			{ID: "work", Title: "work (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "work", Title: "work (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
+	model.list.Select(1)
 
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	resultModel := next.(initInventoryModel)
@@ -154,7 +155,7 @@ func TestInitInventoryFilterAppliedStillAllowsEnterAndRestore(t *testing.T) {
 		Height: 20,
 		Rows: []initInventoryRow{
 			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
@@ -167,7 +168,7 @@ func TestInitInventoryFilterAppliedStillAllowsEnterAndRestore(t *testing.T) {
 	}
 
 	model.list.SetFilterText("default")
-	model.list.Select(1)
+	model.list.Select(2)
 	restoreNext, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	restoreResult := restoreNext.(initInventoryModel).Result()
 	if restoreResult.Action != initInventoryActionRestore || restoreResult.Row.ID != "restore-app" {
@@ -299,7 +300,7 @@ func TestInitInventoryViewClearsAfterQuitActions(t *testing.T) {
 				Title: "Review Profile",
 				Rows: []initInventoryRow{
 					{ID: "work", Title: "work", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-					{ID: "old-work", Title: "Restore work (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+					{ID: "old-work", Title: "work (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 				},
 			})
 			model.list.Select(tt.selection)
@@ -386,7 +387,7 @@ func TestInitLLMRuntimeInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	if got, want := rows[0].Title, "Configured: Claude CLI subscription (claude-cli)"; got != want {
 		t.Fatalf("rows[0].Title = %q, want %q", got, want)
 	}
-	if got, want := rows[1].Title, "Restore LLM runtime codex-cli (staged for deletion)"; got != want {
+	if got, want := rows[1].Title, "codex-cli (Staged for deletion)"; got != want {
 		t.Fatalf("rows[1].Title = %q, want %q", got, want)
 	}
 	if !strings.Contains(rows[0].FilterValue, "claude-cli") || !strings.Contains(rows[0].FilterValue, "Claude CLI subscription") {
@@ -427,7 +428,7 @@ func TestInitProfileInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	if got, want := rows[0].Title, "home"; got != want {
 		t.Fatalf("rows[0].Title = %q, want %q", got, want)
 	}
-	if got, want := rows[1].Title, "Restore work (staged for deletion)"; got != want {
+	if got, want := rows[1].Title, "work (Staged for deletion)"; got != want {
 		t.Fatalf("rows[1].Title = %q, want %q", got, want)
 	}
 	if !strings.Contains(rows[0].FilterValue, "home") || !strings.Contains(rows[0].FilterValue, "github.com") {
@@ -544,7 +545,7 @@ func TestInitLLMRuntimeInventoryDeterministicRunnerReturnsRestoreAction(t *testi
 		Height: 20,
 		Mode:   initInventoryModeDeterministic,
 		Messages: []tea.Msg{
-			tea.KeyMsg{Type: tea.KeyDown},
+			tea.KeyMsg{Type: tea.KeyEnd},
 			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")},
 		},
 		Rows: rows,
@@ -574,7 +575,7 @@ func TestInitInventoryViewShowsContextualHelpBindings(t *testing.T) {
 		Height:      20,
 		Rows: []initInventoryRow{
 			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-			{ID: "restore-pat", Title: "PAT reviewer: old-reviewer (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "restore-pat", Title: "PAT reviewer: old-reviewer (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
@@ -599,7 +600,7 @@ func TestInitInventoryViewShowsContextualHelpBindings(t *testing.T) {
 		}
 	}
 
-	model.list.Select(1)
+	model.list.Select(2)
 	out = model.View()
 	if !strings.Contains(out, "r") || !strings.Contains(out, "restore") {
 		t.Fatalf("view = %q, want restore help for selected restorable row", out)
@@ -608,7 +609,7 @@ func TestInitInventoryViewShowsContextualHelpBindings(t *testing.T) {
 		t.Fatalf("view = %q, did not want delete help for selected restorable row", out)
 	}
 
-	model.list.Select(2)
+	model.list.Select(1)
 	out = model.View()
 	for _, unwanted := range []string{"delete", "restore"} {
 		if strings.Contains(out, unwanted) {

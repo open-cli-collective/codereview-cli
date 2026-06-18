@@ -461,6 +461,7 @@ type initWorkspaceDraft struct {
 
 type initSessionPlan struct {
 	path           string
+	originalCfg    config.File
 	cfg            config.File
 	profileNames   []string
 	profileRefs    map[string][]config.CredentialRef
@@ -830,6 +831,9 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 		if err != nil {
 			return err
 		}
+		if deps.finalizePrompter == nil {
+			return applyInteractiveInitSessionPlan(opts, deps, plan)
+		}
 		action, err := chooseInteractiveInitFinalizeAction(opts, deps, plan)
 		if errors.Is(err, errInitNavigateBack) {
 			continue
@@ -903,12 +907,14 @@ type huhInitLLMRuntimePrompter struct {
 	stderr          io.Writer
 	checker         func(initLLMRuntimePreset) string
 	inventoryRunner initInventoryRunner
+	editorRunner    initLLMRuntimeEditorRunner
 }
 
 type huhInitReviewerEntityPrompter struct {
 	stdin           io.Reader
 	stderr          io.Writer
 	inventoryRunner initInventoryRunner
+	editorRunner    initReviewerEntityEditorRunner
 }
 
 type huhInitFinalizePrompter struct {
@@ -978,6 +984,7 @@ type huhInitKeyringBackendPrompter struct {
 	stdin           io.Reader
 	stderr          io.Writer
 	inventoryRunner initInventoryRunner
+	editorRunner    initSecretsManagementEditorRunner
 }
 
 const (
@@ -1021,10 +1028,6 @@ func newHuhInitReviewPolicyPrompter(opts *root.Options) initReviewPolicyPrompter
 
 func newHuhInitRoutesPrompter(opts *root.Options) initRoutesPrompter {
 	return huhInitRoutesPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
-}
-
-func newHuhInitRetentionPrompter(opts *root.Options) initRetentionPrompter {
-	return huhInitRetentionPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 func newHuhInitKeyringBackendPrompter(opts *root.Options) initKeyringBackendPrompter {
@@ -1423,7 +1426,7 @@ func editInteractiveInitLLMRuntimeStep(cmd *cobra.Command, opts *root.Options, f
 			}
 		}
 	}
-	return session, true, nil
+	return session, false, nil
 }
 
 func loopInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
@@ -1500,7 +1503,7 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 			}
 		}
 	}
-	return session, true, nil
+	return session, false, nil
 }
 
 func propagateSharedReviewerEntityChanges(priorCfg config.File, updatedCfg config.File, activeProfileName string, previousEntity initReviewerEntityDraft, nextEntity initReviewerEntityDraft) config.File {
@@ -1569,13 +1572,10 @@ func editInteractiveInitSecretsManagement(_ *cobra.Command, opts *root.Options, 
 }
 
 func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction, error) {
-	action := initMenuActionReviewProfiles
-	if prompt.CanSave {
-		action = initMenuActionSave
-	}
+	action := initMenuInitialAction(prompt)
 	options := []huh.Option[initMenuAction]{
-		huh.NewOption(fmt.Sprintf("Configure LLM runtimes (%d)", prompt.LLMRuntimeCount), initMenuActionLLMRuntimes),
 		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
+		huh.NewOption(fmt.Sprintf("Configure LLM runtimes (%d)", prompt.LLMRuntimeCount), initMenuActionLLMRuntimes),
 		huh.NewOption(fmt.Sprintf("Configure review profiles (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfiles),
 		huh.NewOption("Configure global settings", initMenuActionGlobalSettings),
 		huh.NewOption("Configure secrets management", initMenuActionSecretsManagement),
@@ -1613,6 +1613,16 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 		return "", err
 	}
 	return action, nil
+}
+
+func initMenuInitialAction(prompt initMenuPrompt) initMenuAction {
+	if prompt.CanConfigureReviewer {
+		return initMenuActionReviewerEntities
+	}
+	if prompt.CanConfigureLLM {
+		return initMenuActionLLMRuntimes
+	}
+	return initMenuActionReviewProfiles
 }
 
 func initMenuDescription(prompt initMenuPrompt) string {
@@ -1685,6 +1695,13 @@ func initFinalizeDescription(prompt initFinalizePrompt) string {
 }
 
 func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
+	if p.inventoryRunner == nil {
+		return p.editLLMRuntimeLinear(prompt)
+	}
+	return p.editLLMRuntimeInventory(prompt)
+}
+
+func (p huhInitLLMRuntimePrompter) editLLMRuntimeInventory(prompt initLLMRuntimePrompt) (initDraft, error) {
 	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
@@ -1744,60 +1761,7 @@ func (p huhInitLLMRuntimePrompter) editSelectedLLMRuntime(ctx initPromptContext,
 }
 
 func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(seed initDraft) (initDraft, bool, error) {
-	draft := seed
-	runtime := initLLMRuntimeDraftFromSeedDraft(draft)
-	detailTitle := "LLM Runtime Details"
-	detailDescription := initLLMRuntimeSelectionDescription(runtime, p.runtimeAvailabilityNote(runtime.Preset))
-	editAction := initDetailActionEdit
-	editForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewNote().
-				Title("Runtime details").
-				Description(detailDescription),
-			huh.NewSelect[string]().
-				Title("Runtime detail action").
-				Options(
-					huh.NewOption("Stage these runtime details", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&editAction),
-			huh.NewSelect[string]().
-				Title("LLM provider").
-				Options(
-					huh.NewOption("Anthropic", string(config.LLMProviderAnthropic)),
-					huh.NewOption("OpenAI", string(config.LLMProviderOpenAI)),
-					huh.NewOption("Pi", string(config.LLMProviderPi)),
-				).
-				Value(&draft.LLMProvider),
-			huh.NewSelect[string]().
-				Title("LLM auth mode").
-				Options(
-					huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
-					huh.NewOption("API key", string(config.LLMAuthAPIKey)),
-				).
-				Value(&draft.LLMAuth),
-			huh.NewSelect[string]().
-				Title("LLM adapter").
-				Options(
-					huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
-					huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
-					huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
-					huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
-					huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
-				).
-				Value(&draft.LLMAdapter),
-		).Title(detailTitle),
-	)
-	back, err := runBackableInitForm(editForm, p.stdin, p.stderr)
-	if err != nil {
-		return initDraft{}, false, err
-	}
-	if back || editAction == initDetailActionBack {
-		return initDraft{}, true, nil
-	}
-	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
-	applyLLMRuntimeSelection(&draft, resolvedRuntimePreset)
-	return draft, false, nil
+	return p.editLLMRuntimeDetailsLinear(seed)
 }
 
 func (p huhInitLLMRuntimePrompter) chooseLLMRuntimeDeleteReplacement(prompt initLLMRuntimePrompt, deletedRuntimeName string, seed initDraft) (initDraft, error) {
@@ -1942,6 +1906,13 @@ func (p huhInitLLMRuntimePrompter) runtimeAvailabilityNote(preset initLLMRuntime
 }
 
 func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
+	if p.inventoryRunner == nil {
+		return p.editReviewerEntityLinear(prompt)
+	}
+	return p.editReviewerEntityInventory(prompt)
+}
+
+func (p huhInitReviewerEntityPrompter) editReviewerEntityInventory(prompt initReviewerEntityPrompt) (initDraft, error) {
 	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
@@ -2009,80 +1980,7 @@ func (p huhInitReviewerEntityPrompter) editNewReviewerEntity(kind initReviewerEn
 }
 
 func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
-	editDraft := seed
-	kind := entity.Kind
-	applyReviewerEntitySelection(&editDraft, string(kind))
-	if kind == initReviewerEntityKindUseGitIdentity {
-		action := initDetailActionEdit
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Reviewer detail action").
-					Options(
-						huh.NewOption("Stage reviewer settings", initDetailActionEdit),
-						huh.NewOption("Back without staging", initDetailActionBack),
-					).
-					Value(&action),
-			).Title("Reviewer Entity Details"),
-		)
-		back, err := runBackableInitForm(form, p.stdin, p.stderr)
-		if err != nil {
-			return initDraft{}, false, err
-		}
-		if back || action == initDetailActionBack {
-			return initDraft{}, true, nil
-		}
-		return editDraft, false, nil
-	}
-
-	standardReviewerRef, err := standardReviewerCredentialRef(editDraft.ProfileName)
-	if err != nil {
-		return initDraft{}, false, err
-	}
-	labelInput, explicitDisplayName, fallbackLabelSeed := reviewerEntityEditorLabelSeed(entity)
-	if !preserveCurrentLocation {
-		// New entities start from a blank editable label even when the kind has a fallback display shape.
-		labelInput = ""
-	}
-	reviewerSecretLocation := ""
-	if preserveCurrentLocation {
-		if currentRef := strings.TrimSpace(editDraft.ReviewerCredentialRef); currentRef != "" {
-			reviewerSecretLocation = currentRef
-		} else {
-			reviewerSecretLocation = standardReviewerRef
-		}
-	}
-	action := initDetailActionEdit
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Entity label").
-				Description("Choose a human-friendly name for this reviewer entity. Leave blank to clear any existing custom label.").
-				Value(&labelInput).
-				Validate(validateOptionalDisplayName),
-			huh.NewInput().
-				Title("Reviewer secret location").
-				Description("Leave blank to use the standard reviewer secret location for this profile. Replace the value only if you need a custom location.").
-				Value(&reviewerSecretLocation).
-				Validate(validateOptionalCredentialRef),
-			huh.NewSelect[string]().
-				Title("Reviewer detail action").
-				Options(
-					huh.NewOption("Stage reviewer settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
-		).Title("Reviewer Entity Details"),
-	)
-	back, err := runBackableInitForm(form, p.stdin, p.stderr)
-	if err != nil {
-		return initDraft{}, false, err
-	}
-	if back || action == initDetailActionBack {
-		return initDraft{}, true, nil
-	}
-	finalizeReviewerEntityEditorDraft(&editDraft, explicitDisplayName, fallbackLabelSeed, labelInput, reviewerSecretLocation, standardReviewerRef, preserveCurrentLocation)
-	return editDraft, false, nil
+	return p.editReviewerEntityFieldsLinear(entity, seed, preserveCurrentLocation)
 }
 
 func finalizeReviewerEntityEditorDraft(editDraft *initDraft, explicitDisplayName string, fallbackLabelSeed string, labelInput string, reviewerSecretLocation string, standardReviewerRef string, preserveCurrentLocation bool) {
@@ -3295,15 +3193,19 @@ func defaultInitLLMRuntimeAvailabilityNote(preset initLLMRuntimePreset) string {
 }
 
 func profileDeletePendingLabel(name string) string {
-	return fmt.Sprintf("Restore %s (staged for deletion)", name)
+	return initPendingDeleteLabel(name)
 }
 
 func reviewerEntityDeletePendingLabel(name string) string {
-	return fmt.Sprintf("Restore reviewer entity %s (staged for deletion)", name)
+	return initPendingDeleteLabel(name)
 }
 
 func llmRuntimeDeletePendingLabel(name string) string {
-	return fmt.Sprintf("Restore LLM runtime %s (staged for deletion)", name)
+	return initPendingDeleteLabel(name)
+}
+
+func initPendingDeleteLabel(label string) string {
+	return fmt.Sprintf("%s (Staged for deletion)", strings.TrimSpace(label))
 }
 
 func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runtimes map[string]initLLMRuntimeDraft) {
@@ -4400,6 +4302,7 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 	entries = refreshInteractiveCredentialPlan(entries, projectInitPlannedWriteKeys(writes), satisfiedRefs)
 	return initSessionPlan{
 		path:           session.path,
+		originalCfg:    cloneInitConfigFile(session.originalCfg),
 		cfg:            cloneInitConfigFile(session.cfg),
 		profileNames:   profileNames,
 		profileRefs:    profileRefs,
@@ -5520,7 +5423,7 @@ func parseInitRoutePRURL(raw string) (gitprovider.PRRef, error) {
 func collectInteractiveInitRetentionConfig(opts *root.Options, deps initDeps, cfg config.File) (config.File, error) {
 	prompter := deps.retentionPrompter
 	if prompter == nil {
-		prompter = newHuhInitRetentionPrompter(opts)
+		prompter = newBubbleTeaInitRetentionPrompter(opts)
 	}
 	edit, err := prompter.EditRetention(initRetentionPrompt{
 		Retention: cfg.Data.Retention,
@@ -6291,7 +6194,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 		}
 		return err
 	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Initialized %d profile(s)\n", len(plan.profileNames)); err != nil {
+	if err := writeInteractiveInitSessionSummary(opts.Stdout, plan); err != nil {
 		return err
 	}
 	for _, readiness := range buildInteractiveInitProfileReadiness(plan) {
@@ -6314,6 +6217,72 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 		}
 	}
 	return writeErr
+}
+
+func writeInteractiveInitSessionSummary(w io.Writer, plan initSessionPlan) error {
+	if _, err := fmt.Fprintln(w, "Saved staged init changes"); err != nil {
+		return err
+	}
+	for _, line := range interactiveInitSessionSummaryLines(plan) {
+		if _, err := fmt.Fprintf(w, "- %s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func interactiveInitSessionSummaryLines(plan initSessionPlan) []string {
+	lines := []string{}
+	if len(plan.profileNames) > 0 {
+		lines = append(lines, fmt.Sprintf("review profiles: %d", len(plan.profileNames)))
+	}
+	if !reflect.DeepEqual(plan.originalCfg.RepositoryProfiles, plan.cfg.RepositoryProfiles) {
+		lines = append(lines, fmt.Sprintf("repository routes: %d", len(plan.cfg.RepositoryProfiles)))
+	}
+	if !reflect.DeepEqual(plan.originalCfg.Secrets, plan.cfg.Secrets) {
+		if changed := changedInitSecretsManagementProfileCount(plan.originalCfg.Secrets, plan.cfg.Secrets); changed > 0 {
+			lines = append(lines, fmt.Sprintf("secrets management: %d %s", changed, pluralizeInitSummary(changed, "profile", "profiles")))
+		} else {
+			lines = append(lines, "secrets management")
+		}
+	}
+	if !reflect.DeepEqual(plan.originalCfg.Keyring, plan.cfg.Keyring) {
+		lines = append(lines, "default credential store")
+	}
+	if !reflect.DeepEqual(plan.originalCfg.Data.Retention, plan.cfg.Data.Retention) {
+		lines = append(lines, "global settings")
+	}
+	if len(plan.writes) > 0 {
+		lines = append(lines, fmt.Sprintf("credential secrets: %d %s", len(plan.writes), pluralizeInitSummary(len(plan.writes), "ref", "refs")))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "configuration saved")
+	}
+	return lines
+}
+
+func changedInitSecretsManagementProfileCount(before, after config.SecretsConfig) int {
+	ids := map[string]struct{}{}
+	for id := range before.Profiles {
+		ids[id] = struct{}{}
+	}
+	for id := range after.Profiles {
+		ids[id] = struct{}{}
+	}
+	changed := 0
+	for id := range ids {
+		if !reflect.DeepEqual(before.Profiles[id], after.Profiles[id]) {
+			changed++
+		}
+	}
+	return changed
+}
+
+func pluralizeInitSummary(count int, singular string, plural string) string {
+	if count == 1 {
+		return singular
+	}
+	return plural
 }
 
 func hasDeferredLLMCredential(entries []initCredentialPlanEntry) bool {
