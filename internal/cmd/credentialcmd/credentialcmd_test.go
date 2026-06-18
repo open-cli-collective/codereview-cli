@@ -6286,7 +6286,7 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 			t.Fatalf("stderr missing %q:\n%s", want, out)
 		}
 	}
-	assertContentOrder(t, out, "Reviewer entity", "Reviewer details", "Entity label", "Reviewer secret location", "Reviewer action")
+	assertContentOrder(t, out, "Reviewer entity", "Reviewer details", "Entity label", "Reviewer secret location", "Reviewer credential status", "Reviewer action")
 	if strings.Contains(out, "Back to main menu") {
 		t.Fatalf("stderr = %q, want action-local Back without staging instead of inventory Back", out)
 	}
@@ -6344,6 +6344,7 @@ func TestHuhInitReviewerEntityPrompterGitHubAppLinearFlowShowsCredentialBundleCo
 			t.Fatalf("stderr missing %q:\n%s", want, out)
 		}
 	}
+	assertContentOrder(t, out, "Reviewer secret location", "Reviewer credential status", "Reviewer action")
 }
 
 func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.T) {
@@ -14182,6 +14183,47 @@ func TestInitReviewerCredentialStatusDeferPreservesPartialExistingKeys(t *testin
 	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppInstallationIDKey, initReviewerCredentialKeyOptional)
 }
 
+func TestInitReviewerCredentialStatusSelectionFiltersByAuthMode(t *testing.T) {
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": basicProfile("work")}},
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{
+			{
+				Ref: config.CredentialRef{
+					Purpose: "reviewer_credentials",
+					Ref:     "codereview/work-reviewer",
+					Mode:    string(config.GitAuthModeGitHubApp),
+				},
+				Keys: []initReviewerCredentialKeyStatus{
+					{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyStaged},
+					{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyStaged},
+				},
+			},
+			{
+				Ref: config.CredentialRef{
+					Purpose: "reviewer_credentials",
+					Ref:     "codereview/work-reviewer",
+					Mode:    string(config.GitAuthModePAT),
+				},
+				Keys: []initReviewerCredentialKeyStatus{
+					{Key: credentials.GitTokenKey, Required: true, State: initReviewerCredentialKeyMissing},
+				},
+			},
+		},
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", nil)
+
+	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seed, string(initReviewerEntityKindPAT), "codereview/work-reviewer")
+	if !ok {
+		t.Fatal("PAT status missing")
+	}
+	assertReviewerCredentialKeyState(t, status, credentials.GitTokenKey, initReviewerCredentialKeyMissing)
+	assertReviewerCredentialKeyAbsent(t, status, credentials.GitHubAppIDKey)
+	assertReviewerCredentialKeyAbsent(t, status, credentials.GitHubAppPrivateKeyKey)
+}
+
 func TestInitReviewerCredentialStatusBackendUnavailableDoesNotLeakOrBlock(t *testing.T) {
 	entry := initCredentialPlanEntry{
 		Ref: config.CredentialRef{
@@ -14372,6 +14414,15 @@ func assertReviewerCredentialKeyState(t *testing.T, status initReviewerCredentia
 		}
 	}
 	t.Fatalf("missing key %q in %#v", key, status.Keys)
+}
+
+func assertReviewerCredentialKeyAbsent(t *testing.T, status initReviewerCredentialStatus, key string) {
+	t.Helper()
+	for _, row := range status.Keys {
+		if row.Key == key {
+			t.Fatalf("unexpected key %q in %#v", key, status.Keys)
+		}
+	}
 }
 
 func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(t *testing.T) {
