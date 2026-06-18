@@ -1,0 +1,254 @@
+package credentialcmd
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+)
+
+type initReviewerCredentialKeyState string
+
+const (
+	initReviewerCredentialKeyMissing         initReviewerCredentialKeyState = "missing"
+	initReviewerCredentialKeyExisting        initReviewerCredentialKeyState = "existing"
+	initReviewerCredentialKeyStaged          initReviewerCredentialKeyState = "staged"
+	initReviewerCredentialKeySkippedOptional initReviewerCredentialKeyState = "skipped optional"
+	initReviewerCredentialKeyDeferred        initReviewerCredentialKeyState = "deferred"
+	initReviewerCredentialKeyOptional        initReviewerCredentialKeyState = "optional"
+	initReviewerCredentialKeyUnavailable     initReviewerCredentialKeyState = "status unavailable"
+)
+
+type initReviewerCredentialStatus struct {
+	Ref            config.CredentialRef
+	SecretsProfile credentials.ResolvedSecretsProfile
+	Keys           []initReviewerCredentialKeyStatus
+	Unavailable    string
+}
+
+type initReviewerCredentialKeyStatus struct {
+	Key      string
+	Required bool
+	State    initReviewerCredentialKeyState
+}
+
+func currentInteractiveInitReviewerEntityPromptContext(opts *root.Options, deps initDeps, session initSessionDraft) initPromptContext {
+	ctx := currentInteractiveInitInventoryPromptContext(session)
+	ctx.ReviewerCredentialStatuses = buildInteractiveInitReviewerCredentialStatuses(opts, deps, session)
+	return ctx
+}
+
+func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps initDeps, session initSessionDraft) []initReviewerCredentialStatus {
+	if session.workspace == nil {
+		return nil
+	}
+	plannedWriteKeys := projectInitPlannedWriteKeys(session.writes)
+	entries := interactiveInitReviewerCredentialPlanEntries(session, plannedWriteKeys)
+	statuses := make([]initReviewerCredentialStatus, 0, len(entries))
+	stores := map[string]initStore{}
+	defer func() {
+		for _, store := range stores {
+			if store != nil {
+				_ = store.Close()
+			}
+		}
+	}()
+	for _, entry := range entries {
+		if entry.Ref.Purpose != "reviewer_credentials" || entry.State == initCredentialPlanStateClearRef {
+			continue
+		}
+		existing := map[string]bool{}
+		unavailable := ""
+		storeKey := initCredentialStoreKey(entry.SecretsProfile)
+		store := stores[storeKey]
+		if store == nil {
+			if !canOpenInitStoreForReviewerStatus(deps, entry) {
+				unavailable = "credential backend status unavailable"
+			} else {
+				opened, err := openInitStoreForEntry(deps, opts, session.backendFlagSet, session.cfg, entry)
+				if err != nil || opened == nil {
+					unavailable = "credential backend status unavailable"
+				} else {
+					store = opened
+					stores[storeKey] = store
+				}
+			}
+		}
+		if store != nil {
+			keys, err := existingInitCredentialKeys(store, entry.Ref.Ref)
+			if err != nil {
+				unavailable = "credential backend status unavailable"
+			} else {
+				existing = keys
+			}
+		}
+		statuses = append(statuses, initReviewerCredentialStatusFromEntry(entry, session.writes[entry.Ref.Ref], session.credentialDecisions, existing, unavailable))
+	}
+	return statuses
+}
+
+func canOpenInitStoreForReviewerStatus(deps initDeps, entry initCredentialPlanEntry) bool {
+	if entry.SecretsProfile.IsNamed() {
+		return deps.openResolvedStore != nil
+	}
+	return deps.openStore != nil
+}
+
+func interactiveInitReviewerCredentialPlanEntries(session initSessionDraft, plannedWriteKeys map[string][]string) []initCredentialPlanEntry {
+	profile := session.workspace.profile
+	if currentProfile, ok := session.cfg.Profiles[session.workspace.profileName]; ok {
+		profile = currentProfile
+	}
+	entries, err := planInitCredentialsWithConfig(session.cfg, session.workspace.previousProfile, profile, plannedWriteKeys)
+	if err == nil && hasInitReviewerCredentialPlanEntry(entries) {
+		return refreshInteractiveCredentialPlan(entries, plannedWriteKeys, session.satisfiedRefs)
+	}
+	return refreshInteractiveCredentialPlan(session.workspace.credentialPlan, plannedWriteKeys, session.satisfiedRefs)
+}
+
+func hasInitReviewerCredentialPlanEntry(entries []initCredentialPlanEntry) bool {
+	for _, entry := range entries {
+		if entry.Ref.Purpose == "reviewer_credentials" {
+			return true
+		}
+	}
+	return false
+}
+
+func initReviewerCredentialStatusFromEntry(entry initCredentialPlanEntry, planned map[string]string, decisions map[initCredentialDecisionKey]initCredentialDecisionKind, existing map[string]bool, unavailable string) initReviewerCredentialStatus {
+	status := initReviewerCredentialStatus{
+		Ref:            entry.Ref,
+		SecretsProfile: entry.SecretsProfile,
+		Unavailable:    unavailable,
+		Keys:           make([]initReviewerCredentialKeyStatus, 0, len(entry.KeySpecs)),
+	}
+	for _, spec := range entry.KeySpecs {
+		status.Keys = append(status.Keys, initReviewerCredentialKeyStatus{
+			Key:      spec.Key,
+			Required: spec.Required,
+			State:    deriveInitReviewerCredentialKeyState(entry, spec, planned, decisions, existing, unavailable != ""),
+		})
+	}
+	return status
+}
+
+func deriveInitReviewerCredentialKeyState(entry initCredentialPlanEntry, spec credentials.KeySpec, planned map[string]string, decisions map[initCredentialDecisionKey]initCredentialDecisionKind, existing map[string]bool, unavailable bool) initReviewerCredentialKeyState {
+	if _, ok := planned[spec.Key]; ok {
+		return initReviewerCredentialKeyStaged
+	}
+	decision := decisions[initCredentialDecisionMapKey(entry, spec.Key)]
+	if decision == initCredentialDecisionSkipOptional && !spec.Required {
+		return initReviewerCredentialKeySkippedOptional
+	}
+	if existing[spec.Key] {
+		return initReviewerCredentialKeyExisting
+	}
+	if decision == initCredentialDecisionDefer && spec.Required {
+		return initReviewerCredentialKeyDeferred
+	}
+	if unavailable {
+		return initReviewerCredentialKeyUnavailable
+	}
+	if spec.Required {
+		return initReviewerCredentialKeyMissing
+	}
+	return initReviewerCredentialKeyOptional
+}
+
+func initReviewerCredentialStatusForSelection(ctx initPromptContext, seed initDraft, selection string) (initReviewerCredentialStatus, bool) {
+	state, err := reviewerEntityEditorStateForSelection(ctx, seed, selection)
+	if err != nil || state.kind == initReviewerEntityKindUseGitIdentity {
+		return initReviewerCredentialStatus{}, false
+	}
+	ref := strings.TrimSpace(state.seed.ReviewerCredentialRef)
+	if ref == "" {
+		ref = state.standardReviewerRef
+	}
+	if ref == "" {
+		return initReviewerCredentialStatus{}, false
+	}
+	authMode := reviewerCredentialAuthModeForKind(state.kind)
+	statusRef := config.CredentialRef{
+		Purpose: "reviewer_credentials",
+		Ref:     ref,
+		Mode:    string(authMode),
+	}
+	for _, status := range ctx.ReviewerCredentialStatuses {
+		if status.Ref.Purpose == statusRef.Purpose && status.Ref.Ref == statusRef.Ref && status.Ref.Mode == statusRef.Mode {
+			return status, true
+		}
+	}
+	return synthesizeReviewerCredentialStatus(ctx, statusRef), true
+}
+
+func synthesizeReviewerCredentialStatus(ctx initPromptContext, ref config.CredentialRef) initReviewerCredentialStatus {
+	status := initReviewerCredentialStatus{Ref: ref}
+	if ctx.ExistingProfile != nil {
+		if resolved, err := credentials.ResolveSecretsProfileForProfile(ctx.ExistingConfig, *ctx.ExistingProfile); err == nil {
+			status.SecretsProfile = resolved
+		} else {
+			status.Unavailable = "credential backend status unavailable"
+		}
+	}
+	specs, err := credentials.KeySpecsForPurpose(ref)
+	if err != nil {
+		status.Unavailable = "credential status unavailable"
+		return status
+	}
+	for _, spec := range specs {
+		keyState := initReviewerCredentialKeyMissing
+		if !spec.Required {
+			keyState = initReviewerCredentialKeyOptional
+		}
+		status.Keys = append(status.Keys, initReviewerCredentialKeyStatus{
+			Key:      spec.Key,
+			Required: spec.Required,
+			State:    keyState,
+		})
+	}
+	return status
+}
+
+func reviewerCredentialAuthModeForKind(kind initReviewerEntityKind) config.GitAuthMode {
+	switch kind {
+	case initReviewerEntityKindGitHubApp:
+		return config.GitAuthModeGitHubApp
+	case initReviewerEntityKindPAT, initReviewerEntityKindUseGitIdentity:
+		return config.GitAuthModePAT
+	default:
+		return config.GitAuthModePAT
+	}
+}
+
+func initReviewerCredentialStatusDescription(status initReviewerCredentialStatus) string {
+	var lines []string
+	lines = append(lines, "Destination: "+initReviewerCredentialDestinationDescription(status))
+	if strings.TrimSpace(status.Unavailable) != "" {
+		lines = append(lines, strings.TrimSpace(status.Unavailable)+".")
+	}
+	for _, key := range status.Keys {
+		lines = append(lines, fmt.Sprintf("- %s: %s", key.Key, key.State))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func initReviewerCredentialDestinationDescription(status initReviewerCredentialStatus) string {
+	ref := strings.TrimSpace(status.Ref.Ref)
+	if ref == "" {
+		ref = "(standard reviewer secret location)"
+	}
+	backend := strings.TrimSpace(status.SecretsProfile.Backend)
+	store := strings.TrimSpace(status.SecretsProfile.DisplayName())
+	switch {
+	case store != "" && backend != "":
+		return fmt.Sprintf("%s via %s (%s)", ref, store, backend)
+	case store != "":
+		return fmt.Sprintf("%s via %s", ref, store)
+	case backend != "":
+		return fmt.Sprintf("%s via %s", ref, backend)
+	default:
+		return ref
+	}
+}

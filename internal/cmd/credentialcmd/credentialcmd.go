@@ -226,6 +226,7 @@ type initPromptContext struct {
 	ProfileGitScopes             map[string]string
 	ReviewerEntities             map[string]initReviewerEntityDraft
 	ProfileReviewerEntities      map[string]string
+	ReviewerCredentialStatuses   []initReviewerCredentialStatus
 	SecretsProfiles              []config.EffectiveSecretsProfile
 	ProfileSecretsProfiles       map[string]string
 	BrokenProfileSecretsProfiles map[string]string
@@ -1470,7 +1471,7 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	if prompter == nil {
 		prompter = newHuhInitReviewerEntityPrompter(opts)
 	}
-	promptCtx := currentInteractiveInitInventoryPromptContext(session)
+	promptCtx := currentInteractiveInitReviewerEntityPromptContext(opts, deps, session)
 	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: promptCtx})
 	if errors.Is(err, errInitNavigateBack) {
 		return session, false, nil
