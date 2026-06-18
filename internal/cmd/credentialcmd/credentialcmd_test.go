@@ -5429,7 +5429,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanMarkConfiguredRuntimeForDeletion(
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Replacement: Template Codex CLI subscription
+			"1", // Replacement: Template Codex CLI subscription
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -5479,7 +5479,7 @@ func TestHuhInitLLMRuntimePrompterReplacementChoosesConfiguredTemplate(t *testin
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Replacement: Template Codex CLI subscription
+			"1", // Replacement: Template Codex CLI subscription
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -5528,7 +5528,7 @@ func TestHuhInitLLMRuntimePrompterReplacementBackExcludesDeletedRuntime(t *testi
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"7", // Back to runtime details
+			"6", // Back to runtime details
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -5552,6 +5552,9 @@ func TestHuhInitLLMRuntimePrompterReplacementBackExcludesDeletedRuntime(t *testi
 	}
 	if strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") {
 		t.Fatalf("stderr = %q, want deleted runtime excluded from replacement choices", out)
+	}
+	if strings.Contains(out, "Template: Claude CLI subscription") {
+		t.Fatalf("stderr = %q, want deleted runtime equivalent template excluded from replacement choices", out)
 	}
 }
 
@@ -5668,13 +5671,38 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 		stderr: &stderr,
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 160, 60)
-			model = selectInitLinearFieldValue(t, model, initLLMRuntimeFieldReplacement, string(initLLMRuntimePresetCodexCLISubscription))
 			model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
 			_, _ = io.WriteString(out, model.View())
-			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+			updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 			next, ok := updated.(initLinearEditorModel)
 			if !ok {
 				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			if cmd != nil {
+				t.Fatal("delete shortcut returned quit command before choosing replacement")
+			}
+			if next.resultAction != "" {
+				t.Fatalf("resultAction after delete shortcut = %q, want empty until replacement is staged", next.resultAction)
+			}
+			if next.document.fieldHidden(initLLMRuntimeFieldReplacement) {
+				t.Fatal("replacement field hidden after delete shortcut")
+			}
+			if next.document[next.focused].ID != initLLMRuntimeFieldReplacement {
+				t.Fatalf("focused field after delete shortcut = %q, want replacement field", next.document[next.focused].ID)
+			}
+			replacementIndex := next.document.fieldIndexByID(initLLMRuntimeFieldReplacement)
+			for _, option := range next.document[replacementIndex].Options {
+				if strings.Contains(option.Label, "Claude CLI subscription") {
+					t.Fatalf("replacement options include deleted runtime equivalent: %#v", option)
+				}
+			}
+			next = selectInitLinearFieldValue(t, next, initLLMRuntimeFieldReplacement, string(initLLMRuntimePresetCodexCLISubscription))
+			next = focusInitLinearField(t, next, initLLMRuntimeFieldAction)
+			_, _ = io.WriteString(out, "\n\nAfter delete shortcut:\n"+next.View())
+			updated, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok = updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T after staging, want initLinearEditorModel", updated)
 			}
 			return next, nil
 		},
@@ -5698,8 +5726,12 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
 		t.Fatalf("draft replacement = %#v, want codex-cli replacement", draft)
 	}
-	if !strings.Contains(stderr.String(), "d delete") {
-		t.Fatalf("stderr = %q, want delete shortcut help", stderr.String())
+	out := stderr.String()
+	if !strings.Contains(out, "d delete") {
+		t.Fatalf("stderr = %q, want delete shortcut help", out)
+	}
+	if !strings.Contains(out, "Replacement LLM runtime") || !strings.Contains(out, "Stage runtime deletion") {
+		t.Fatalf("stderr = %q, want inline replacement and delete staging action", out)
 	}
 }
 
@@ -9316,6 +9348,33 @@ func TestInitLinearEditorActionQuitClearsFinalView(t *testing.T) {
 	}
 	if got := next.View(); got != "" {
 		t.Fatalf("View after action quit = %q, want empty", got)
+	}
+}
+
+func TestInitLinearEditorDefaultDeleteShortcutStillQuits(t *testing.T) {
+	const choiceField initLinearFieldID = "choice"
+	var document initLinearDocument
+	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
+		huh.NewOption("Configured item", "configured"),
+	}, "configured")
+	editor := initLinearEditor{Document: document}
+	model := newInitLinearEditorModel(editor, 120, 12)
+	index := model.document.fieldIndexByID(choiceField)
+	model.document[index].Options[0].Deletable = true
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if cmd == nil {
+		t.Fatal("delete shortcut returned nil command, want default quit behavior")
+	}
+	if next.resultAction != initLinearResultActionDelete {
+		t.Fatalf("resultAction = %q, want delete", next.resultAction)
+	}
+	if !next.quitting {
+		t.Fatal("quitting = false, want default delete shortcut to quit")
 	}
 }
 

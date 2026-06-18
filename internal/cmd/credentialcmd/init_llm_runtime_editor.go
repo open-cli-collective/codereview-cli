@@ -160,7 +160,7 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 		huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
 	}, seed.LLMAdapter)
 	document.addEditableSelect(initLLMRuntimeFieldReplacement, "Replacement LLM runtime", "Choose the runtime that should replace this deleted runtime for every affected profile.", replacementOptions, normalizeInitStringSelectionValue("", replacementOptions), initLinearFieldOptions{Hidden: true})
-	document.addEditableSelect(initLLMRuntimeFieldAction, "Runtime action", "", initLLMRuntimeActionOptions(ctx, selection), initDetailActionEdit)
+	document.addEditableSelect(initLLMRuntimeFieldAction, "Runtime action", "", initLLMRuntimeActionOptions(ctx, selection, false), initDetailActionEdit)
 	editor := initLinearEditor{
 		Document: document,
 		OnFieldChange: func(model *initLinearEditorModel, index int) {
@@ -173,6 +173,28 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 				id == initLLMRuntimeFieldReplacement {
 				initLLMRuntimeSyncLinearFields(model, ctx, seed, availabilityNote, true)
 			}
+		},
+		OnDelete: func(model *initLinearEditorModel, index int) (bool, tea.Cmd) {
+			if index < 0 || index >= len(model.document) {
+				return false, nil
+			}
+			if model.document[index].ID != initLLMRuntimeFieldSelection {
+				return false, nil
+			}
+			selection := model.document.selectedValue(initLLMRuntimeFieldSelection)
+			if _, configured := ctx.LLMRuntimes[selection]; !configured {
+				return false, nil
+			}
+			actionIndex := model.document.fieldIndexByID(initLLMRuntimeFieldAction)
+			if actionIndex >= 0 {
+				model.document[actionIndex].Options = initLinearOptionsFromHuh(initLLMRuntimeActionOptions(ctx, selection, true), initLLMRuntimeActionDelete)
+			}
+			initLLMRuntimeSyncLinearFields(model, ctx, seed, availabilityNote, true)
+			replacementIndex := model.document.fieldIndexByID(initLLMRuntimeFieldReplacement)
+			if replacementIndex >= 0 && !model.document[replacementIndex].Hidden {
+				model.focused = replacementIndex
+			}
+			return true, nil
 		},
 		OnEnter: func(model *initLinearEditorModel) (bool, tea.Cmd) {
 			if model.focused < 0 || model.focused >= len(model.document) {
@@ -190,6 +212,13 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 				model.resultAction = initDetailActionEdit
 				return true, tea.Quit
 			case initLLMRuntimeActionDelete:
+				replacement := model.document.selectedValue(initLLMRuntimeFieldReplacement)
+				if replacement == "" || replacement == model.document.selectedValue(initLLMRuntimeFieldSelection) {
+					model.document[model.focused].Error = "choose a replacement LLM runtime before staging deletion"
+					model.relayout()
+					model.ensureFocusedVisible()
+					return true, nil
+				}
 				model.resultAction = initLLMRuntimeActionDelete
 				return true, tea.Quit
 			case initLLMRuntimeActionRestore:
@@ -282,7 +311,7 @@ func initLLMRuntimeRestoreSelectionName(selection string) (string, bool) {
 	return strings.TrimPrefix(selection, initLLMRuntimeRestoreSelectionPrefix), true
 }
 
-func initLLMRuntimeActionOptions(ctx initPromptContext, selection string) []huh.Option[string] {
+func initLLMRuntimeActionOptions(_ initPromptContext, selection string, includeDelete bool) []huh.Option[string] {
 	if _, ok := initLLMRuntimeRestoreSelectionName(selection); ok {
 		return []huh.Option[string]{
 			huh.NewOption("Back without staging", initDetailActionBack),
@@ -291,19 +320,45 @@ func initLLMRuntimeActionOptions(ctx initPromptContext, selection string) []huh.
 	options := []huh.Option[string]{
 		huh.NewOption("Stage these runtime details", initDetailActionEdit),
 	}
+	if includeDelete {
+		options = append(options, huh.NewOption("Stage runtime deletion", initLLMRuntimeActionDelete))
+	}
 	options = append(options, huh.NewOption("Back without staging", initDetailActionBack))
 	return options
 }
 
 func initLLMRuntimeReplacementOptions(ctx initPromptContext, deletedRuntimeName string) []huh.Option[string] {
 	options := make([]huh.Option[string], 0, len(ctx.LLMRuntimes)+6)
+	deletedKey, hasDeletedKey := initLLMRuntimeSelectionIdentityKey(deletedRuntimeName, ctx.LLMRuntimes)
 	for _, option := range initLLMRuntimeOptions(ctx.LLMRuntimes) {
 		if option.Value == deletedRuntimeName {
 			continue
 		}
+		if hasDeletedKey {
+			candidateKey, ok := initLLMRuntimeSelectionIdentityKey(option.Value, ctx.LLMRuntimes)
+			if ok && candidateKey == deletedKey {
+				continue
+			}
+		}
 		options = append(options, option)
 	}
 	return dedupeInitStringOptions(options)
+}
+
+func initLLMRuntimeSelectionIdentityKey(selection string, runtimes map[string]initLLMRuntimeDraft) (string, bool) {
+	if runtime, ok := runtimes[selection]; ok {
+		return runtime.identityKey(), true
+	}
+	if selection == initCustomLLMRuntimeSelection {
+		return "", false
+	}
+	var draft initDraft
+	applyLLMRuntimeSelection(&draft, selection)
+	runtime := initLLMRuntimeDraftFromSeedDraft(draft)
+	if runtime.Provider == "" || runtime.Auth == "" || runtime.Adapter == "" {
+		return "", false
+	}
+	return runtime.identityKey(), true
 }
 
 func initLLMRuntimeSyncLinearFields(model *initLinearEditorModel, ctx initPromptContext, seed initDraft, availabilityNote func(initLLMRuntimePreset) string, resetDetails bool) {
@@ -312,9 +367,9 @@ func initLLMRuntimeSyncLinearFields(model *initLinearEditorModel, ctx initPrompt
 	actionIndex := model.document.fieldIndexByID(initLLMRuntimeFieldAction)
 	if actionIndex >= 0 {
 		selectedAction := model.document.selectedValue(initLLMRuntimeFieldAction)
-		model.document[actionIndex].Options = initLinearOptionsFromHuh(initLLMRuntimeActionOptions(ctx, selection), selectedAction)
+		model.document[actionIndex].Options = initLinearOptionsFromHuh(initLLMRuntimeActionOptions(ctx, selection, selectedAction == initLLMRuntimeActionDelete), selectedAction)
 		if model.document.selectedValue(initLLMRuntimeFieldAction) == "" {
-			model.document[actionIndex].Options = initLinearOptionsFromHuh(initLLMRuntimeActionOptions(ctx, selection), initDetailActionEdit)
+			model.document[actionIndex].Options = initLinearOptionsFromHuh(initLLMRuntimeActionOptions(ctx, selection, false), initDetailActionEdit)
 		}
 	}
 	action := model.document.selectedValue(initLLMRuntimeFieldAction)
