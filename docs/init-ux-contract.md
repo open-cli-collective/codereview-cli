@@ -191,6 +191,25 @@ uses those keys. Final commit remains the only write boundary for staged secret
 values, and the final readiness summary should continue to report follow-up
 credential work without leaking values.
 
+All credential-bearing init flows should show equivalent non-secret destination
+context before collecting secret values. This includes Git credentials, reviewer
+PAT/GitHub App credentials, and LLM API keys handled by the shared credential
+collector.
+
+Destination summaries should include:
+
+- credential storage ref
+- resolved secrets-management profile label/id when a named profile applies
+- resolved backend display label, including platform-specific automatic OS
+  default copy such as `Automatic OS default (macOS Keychain)`
+- configured 1Password vault, item title prefix, item tag, item field title, and
+  other non-secret routing labels when present
+
+Destination summaries must be non-fatal. If a profile/backend destination cannot
+be resolved, the flow should show non-secret unavailable copy and continue to the
+existing credential choice. They must never read or display backend token values;
+environment variable names may be shown only as backend-auth env var names.
+
 ## Draft-Local Reuse Rules
 
 LLM runtimes and reviewer entities are reusable **within the current interactive
@@ -300,6 +319,9 @@ Instead:
   profile is using its Git account or a subscription runtime
 - any advanced path should still explain that these labels are non-secret
   pointers to keyring entries, not the secrets themselves
+- users who need to change where secrets are stored should configure/select a
+  secrets-management profile rather than entering GitHub App IDs, private keys,
+  or API keys in the top-level secrets-management workflow
 
 ## Global Settings Area
 

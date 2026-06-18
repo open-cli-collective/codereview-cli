@@ -24,6 +24,7 @@ const (
 type initReviewerCredentialStatus struct {
 	Ref            config.CredentialRef
 	SecretsProfile credentials.ResolvedSecretsProfile
+	Destination    string
 	Keys           []initReviewerCredentialKeyStatus
 	Unavailable    string
 }
@@ -36,6 +37,10 @@ type initReviewerCredentialKeyStatus struct {
 
 func currentInteractiveInitReviewerEntityPromptContext(opts *root.Options, deps initDeps, session initSessionDraft) initPromptContext {
 	ctx := currentInteractiveInitInventoryPromptContext(session)
+	if opts != nil {
+		ctx.BackendArg = opts.Backend
+	}
+	ctx.BackendFlagSet = session.backendFlagSet
 	ctx.ReviewerCredentialStatuses = buildInteractiveInitReviewerCredentialStatuses(opts, deps, session)
 	return ctx
 }
@@ -84,7 +89,18 @@ func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps ini
 				existing = keys
 			}
 		}
-		statuses = append(statuses, initReviewerCredentialStatusFromEntry(entry, session.writes[entry.Ref.Ref], session.credentialDecisions, existing, unavailable))
+		status := initReviewerCredentialStatusFromEntry(entry, session.writes[entry.Ref.Ref], session.credentialDecisions, existing, unavailable)
+		backendArg := ""
+		if opts != nil {
+			backendArg = opts.Backend
+		}
+		status.Destination = initCredentialDestinationDescription(initCredentialDestinationContext{
+			Entry:          entry,
+			Config:         session.cfg,
+			BackendArg:     backendArg,
+			BackendFlagSet: session.backendFlagSet,
+		})
+		statuses = append(statuses, status)
 	}
 	return statuses
 }
@@ -277,6 +293,15 @@ func synthesizeReviewerCredentialStatus(ctx initPromptContext, ref config.Creden
 			State:    keyState,
 		})
 	}
+	status.Destination = initCredentialDestinationDescription(initCredentialDestinationContext{
+		Entry: initCredentialPlanEntry{
+			Ref:            ref,
+			SecretsProfile: status.SecretsProfile,
+		},
+		Config:         ctx.ExistingConfig,
+		BackendArg:     ctx.BackendArg,
+		BackendFlagSet: ctx.BackendFlagSet,
+	})
 	return status
 }
 
@@ -302,7 +327,11 @@ func reviewerCredentialAuthModeForKind(kind initReviewerEntityKind) config.GitAu
 
 func initReviewerCredentialStatusDescription(status initReviewerCredentialStatus) string {
 	var lines []string
-	lines = append(lines, "Destination: "+initReviewerCredentialDestinationDescription(status))
+	destination := strings.TrimSpace(status.Destination)
+	if destination == "" {
+		destination = "Destination: " + initReviewerCredentialDestinationDescription(status)
+	}
+	lines = append(lines, strings.Split(destination, "\n")...)
 	if strings.TrimSpace(status.Unavailable) != "" {
 		lines = append(lines, strings.TrimSpace(status.Unavailable)+".")
 	}

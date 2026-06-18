@@ -222,6 +222,8 @@ type initPromptContext struct {
 	ExistingProfileNames         []string
 	DefaultProfileName           string
 	ExistingConfig               config.File
+	BackendArg                   string
+	BackendFlagSet               bool
 	GitScopes                    map[string]initGitScopeDraft
 	ProfileGitScopes             map[string]string
 	ReviewerEntities             map[string]initReviewerEntityDraft
@@ -633,6 +635,7 @@ const (
 
 type initCredentialSecretPrompt struct {
 	Entry              initCredentialPlanEntry
+	Destination        string
 	TargetHasRequired  bool
 	TargetHasAnyKeys   bool
 	ClipboardSupported bool
@@ -641,6 +644,7 @@ type initCredentialSecretPrompt struct {
 type initSecretValuePrompt struct {
 	Entry              initCredentialPlanEntry
 	Key                string
+	Destination        string
 	Optional           bool
 	TargetHasKey       bool
 	ClipboardSupported bool
@@ -3325,13 +3329,18 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 		huh.NewOption("Back to main menu", initCredentialSecretActionBack),
 	)
 	choice := options[0].Value
+	fields := []huh.Field{}
+	if destination := strings.TrimSpace(prompt.Destination); destination != "" {
+		fields = append(fields, huh.NewNote().Description(destination))
+	}
+	fields = append(fields,
+		huh.NewSelect[initCredentialSecretAction]().
+			Title(initCredentialSecretPromptTitle(prompt)).
+			Options(options...).
+			Value(&choice),
+	)
 	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initCredentialSecretAction]().
-				Title(initCredentialSecretPromptTitle(prompt)).
-				Options(options...).
-				Value(&choice),
-		),
+		huh.NewGroup(fields...),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
@@ -3373,13 +3382,18 @@ func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) 
 	}
 	options = append(options, huh.NewOption("Back to credential choices", initSecretSourceBack))
 	choice := options[0].Value
+	fields := []huh.Field{}
+	if destination := strings.TrimSpace(prompt.Destination); destination != "" {
+		fields = append(fields, huh.NewNote().Description(destination))
+	}
+	fields = append(fields,
+		huh.NewSelect[initSecretSource]().
+			Title(initSecretSourcePromptTitle(prompt)).
+			Options(options...).
+			Value(&choice),
+	)
 	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[initSecretSource]().
-				Title(initSecretSourcePromptTitle(prompt)).
-				Options(options...).
-				Value(&choice),
-		),
+		huh.NewGroup(fields...),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
@@ -3400,13 +3414,10 @@ func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string
 	action := initDetailActionEdit
 	field := huh.NewInput().
 		Title(fmt.Sprintf("Paste %s%s", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))).
-		Description("Secret input is hidden.").
+		Description(initSecretPasteDescription(prompt)).
 		Value(&value).
 		EchoMode(huh.EchoModePassword).
 		Validate(validateRequiredText("secret value is required"))
-	if prompt.Key == credentials.GitHubAppPrivateKeyKey {
-		field.Description("Secret input is hidden. Clipboard is recommended for multi-line private keys.")
-	}
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
@@ -5742,10 +5753,21 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 		if initCredentialEntryDeferredByDecision(plan.credentialDecisions, entry) {
 			continue
 		}
+		destinationBackend := ""
+		if opts != nil {
+			destinationBackend = opts.Backend
+		}
+		destination := initCredentialDestinationDescription(initCredentialDestinationContext{
+			Entry:          entry,
+			Config:         plan.cfg,
+			BackendArg:     destinationBackend,
+			BackendFlagSet: plan.backendFlagSet,
+		})
 	credentialChoices:
 		for {
 			action, err := prompter.ChooseCredentialAction(initCredentialSecretPrompt{
 				Entry:              entry,
+				Destination:        destination,
 				ClipboardSupported: deps.clipboardSupported(),
 			})
 			if err != nil {
@@ -5778,6 +5800,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			if action == initCredentialSecretActionSetNow && targetHasAnyKeys {
 				action, err = prompter.ChooseCredentialAction(initCredentialSecretPrompt{
 					Entry:              entry,
+					Destination:        destination,
 					TargetHasRequired:  targetHasRequired,
 					TargetHasAnyKeys:   targetHasAnyKeys,
 					ClipboardSupported: deps.clipboardSupported(),
@@ -5818,6 +5841,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 					source, err := prompter.ChooseSecretSource(initSecretValuePrompt{
 						Entry:              entry,
 						Key:                spec.Key,
+						Destination:        destination,
 						Optional:           !spec.Required,
 						TargetHasKey:       targetHasKey,
 						ClipboardSupported: deps.clipboardSupported(),
@@ -5852,6 +5876,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 						value, err := prompter.PasteSecret(initSecretValuePrompt{
 							Entry:              entry,
 							Key:                spec.Key,
+							Destination:        destination,
 							Optional:           !spec.Required,
 							TargetHasKey:       targetHasKey,
 							ClipboardSupported: deps.clipboardSupported(),
@@ -6809,6 +6834,17 @@ func readSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag strin
 		return "", fmt.Errorf("exactly one of %s or %s is required", stdinFlag, envFlag)
 	}
 	return value, nil
+}
+
+func initSecretPasteDescription(prompt initSecretValuePrompt) string {
+	hiddenInputNotice := "Secret input is hidden."
+	if prompt.Key == credentials.GitHubAppPrivateKeyKey {
+		hiddenInputNotice = "Secret input is hidden. Clipboard is recommended for multi-line private keys."
+	}
+	if destination := strings.TrimSpace(prompt.Destination); destination != "" {
+		return destination + "\n" + hiddenInputNotice
+	}
+	return hiddenInputNotice
 }
 
 func readOptionalSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag string) (string, bool, error) {
