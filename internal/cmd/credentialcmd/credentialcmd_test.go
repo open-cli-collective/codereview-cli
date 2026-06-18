@@ -9598,6 +9598,43 @@ func TestInitLinearEditorOnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
 	}
 }
 
+func TestInitLinearEditorSelectMarkerWrapsAndMarksSelectedLines(t *testing.T) {
+	const choiceField initLinearFieldID = "choice"
+	const width = 24
+	var document initLinearDocument
+	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
+		huh.NewOption("Alpha selected option wraps cleanly", "alpha"),
+		huh.NewOption("Beta", "beta"),
+	}, "alpha")
+
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, width, 12)
+	want := "> [x] Alpha selected\n      option wraps\n      cleanly"
+	if !strings.Contains(model.layout.Content, want) {
+		t.Fatalf("wrapped selected option missing marker or aligned continuations:\n%s", model.layout.Content)
+	}
+	lines := strings.Split(model.layout.Content, "\n")
+	start := -1
+	for index, line := range lines {
+		if line == "> [x] Alpha selected" {
+			start = index
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("wrapped selected option start missing:\n%s", model.layout.Content)
+	}
+	for _, index := range []int{start, start + 1, start + 2} {
+		if !model.layout.SelectedLines[index] {
+			t.Fatalf("wrapped selected line %d is not marked selected; selected lines = %#v\n%s", index, model.layout.SelectedLines, model.layout.Content)
+		}
+	}
+	for _, line := range lines {
+		if len(line) > width {
+			t.Fatalf("wrapped line length = %d, want <= %d for %q\n%s", len(line), width, line, model.layout.Content)
+		}
+	}
+}
+
 func TestValidateRetentionMaxAgeDaysUsesCurrentFieldCopy(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -11344,6 +11381,32 @@ func TestInitProfileV2OnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
 	}
 	if strings.Contains(model.layout.Content, "> [x] Alpha") {
 		t.Fatalf("content after tab shows caret on unfocused selected option:\n%s", model.layout.Content)
+	}
+}
+
+func TestInitProfileV2SelectMarkerWrapsUnfocusedSelectedOption(t *testing.T) {
+	const inputField initProfileV2FieldID = "input"
+	const choiceField initProfileV2FieldID = "choice"
+	const width = 24
+	var document initProfileV2Document
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
+		huh.NewOption("Alpha selected option wraps cleanly", "alpha"),
+		huh.NewOption("Beta", "beta"),
+	}, "alpha")
+
+	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, width, 12)
+	want := "  [x] Alpha selected\n      option wraps\n      cleanly"
+	if !strings.Contains(model.layout.Content, want) {
+		t.Fatalf("wrapped unfocused selected option missing marker or aligned continuations:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> [x] Alpha selected") {
+		t.Fatalf("wrapped unfocused selected option shows caret:\n%s", model.layout.Content)
+	}
+	for _, line := range strings.Split(model.layout.Content, "\n") {
+		if len(line) > width {
+			t.Fatalf("wrapped line length = %d, want <= %d for %q\n%s", len(line), width, line, model.layout.Content)
+		}
 	}
 }
 
