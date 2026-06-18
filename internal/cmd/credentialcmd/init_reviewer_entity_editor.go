@@ -9,16 +9,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
+	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
 
 type initReviewerEntityEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
 
 const (
-	initReviewerEntityFieldSelection      initLinearFieldID = "reviewer_entity_selection"
-	initReviewerEntityFieldLabel          initLinearFieldID = "reviewer_entity_label"
-	initReviewerEntityFieldSecretLocation initLinearFieldID = "reviewer_entity_secret_location"
-	initReviewerEntityFieldAction         initLinearFieldID = "reviewer_entity_action"
+	initReviewerEntityFieldSelection        initLinearFieldID = "reviewer_entity_selection"
+	initReviewerEntityFieldLabel            initLinearFieldID = "reviewer_entity_label"
+	initReviewerEntityFieldSecretLocation   initLinearFieldID = "reviewer_entity_secret_location"
+	initReviewerEntityFieldCredentialStatus initLinearFieldID = "reviewer_entity_credential_status"
+	initReviewerEntityFieldAction           initLinearFieldID = "reviewer_entity_action"
 )
 
 const (
@@ -169,6 +171,16 @@ func (s reviewerEntityEditorState) editor() initLinearEditor {
 			reviewerSecretLocation,
 			validateOptionalCredentialRef,
 		)
+		status := synthesizeReviewerCredentialStatus(initPromptContext{}, config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     firstNonEmpty(reviewerSecretLocation, s.standardReviewerRef),
+			Mode:    string(reviewerCredentialAuthModeForKind(s.kind)),
+		})
+		document.addSectionField(
+			initReviewerEntityFieldCredentialStatus,
+			"Reviewer credential status",
+			initReviewerCredentialStatusDescription(status),
+		)
 	}
 	document.addEditableSelect(initReviewerEntityFieldAction, "Reviewer detail action", "", []huh.Option[string]{
 		huh.NewOption("Stage reviewer settings", initDetailActionEdit),
@@ -257,6 +269,7 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 		"",
 		validateOptionalCredentialRef,
 	)
+	document.addSectionField(initReviewerEntityFieldCredentialStatus, "Reviewer credential status", "", initLinearFieldOptions{Hidden: true})
 	document.addEditableSelect(initReviewerEntityFieldAction, "Reviewer action", "", initReviewerEntityActionOptions(ctx, selection), initDetailActionEdit)
 	editor := initLinearEditor{
 		Document: document,
@@ -269,7 +282,7 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 				initReviewerEntitySyncLinearFields(model, ctx, seed, true)
 				return
 			}
-			if id == initReviewerEntityFieldAction {
+			if id == initReviewerEntityFieldAction || id == initReviewerEntityFieldSecretLocation {
 				initReviewerEntitySyncLinearFields(model, ctx, seed, false)
 			}
 		},
@@ -386,6 +399,7 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 	}
 	model.setFieldHidden(initReviewerEntityFieldLabel, hideDetails)
 	model.setFieldHidden(initReviewerEntityFieldSecretLocation, hideDetails)
+	model.setFieldHidden(initReviewerEntityFieldCredentialStatus, hideDetails)
 	if !hideDetails {
 		model.setFieldDescription(initReviewerEntityFieldSecretLocation, reviewerEntitySecretLocationDescription(state.kind))
 	}
@@ -411,6 +425,12 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 		}
 		model.setFieldValue(initReviewerEntityFieldLabel, labelInput)
 		model.setFieldValue(initReviewerEntityFieldSecretLocation, reviewerSecretLocation)
+	}
+	if !hideDetails {
+		reviewerSecretLocation := model.document.fieldValue(initReviewerEntityFieldSecretLocation)
+		if status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seed, selection, reviewerSecretLocation); ok {
+			model.setFieldDescription(initReviewerEntityFieldCredentialStatus, initReviewerCredentialStatusDescription(status))
+		}
 	}
 }
 

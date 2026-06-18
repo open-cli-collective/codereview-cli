@@ -162,6 +162,35 @@ choosing **Commit staged changes and exit**, any pending secret values remain
 draft-only and the session returns to a no-write state. Until final commit
 begins, cancellation must still leave both config and keyring untouched.
 
+Credential status shown inside a subflow must also be draft-driven. Reviewer
+entity setup should show non-secret, per-key credential readiness for the
+selected reviewer credential ref:
+
+- PAT reviewers show `git_token`.
+- GitHub App reviewers show required `github_app_id` and
+  `github_app_private_key`, plus optional `github_app_installation_id`.
+- Each key may be shown as `missing`, `existing`, `staged`, `skipped optional`,
+  `deferred`, `optional`, or `status unavailable`.
+- `missing` means the backend was consulted and no staged or existing value was
+  found for a required key.
+- `existing` means the backend reports a stored value for the key.
+- `staged` means a draft-local value will be written at final commit.
+- `skipped optional` means the user explicitly skipped an optional key in the
+  current draft.
+- `deferred` means the user deferred a required key in the current draft.
+- `optional` means an optional key has no staged, skipped, or existing value.
+- `status unavailable` means the backend or key contract could not be inspected,
+  so the UI must not claim a key is missing.
+- The destination should include the storage label and the resolved
+  secrets-management profile/backend when known.
+
+This status must never show raw secret values. Draft-local writes, defers, and
+optional-key skips should be preserved when the user re-enters reviewer entity
+setup, but they must be filtered out if the reviewer credential ref no longer
+uses those keys. Final commit remains the only write boundary for staged secret
+values, and the final readiness summary should continue to report follow-up
+credential work without leaking values.
+
 ## Draft-Local Reuse Rules
 
 LLM runtimes and reviewer entities are reusable **within the current interactive
