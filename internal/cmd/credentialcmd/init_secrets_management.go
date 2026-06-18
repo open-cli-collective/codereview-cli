@@ -109,7 +109,7 @@ func initSecretsBackendDescription(kind config.SecretsBackendKind) string {
 	case config.SecretsBackendKind(credstore.BackendOPDesktop):
 		return "Use the local 1Password desktop app integration. Most common for local use; best for interactive developer machines with an unlocked desktop app; requires a vault name or id and can optionally pin a desktop account id."
 	case config.SecretsBackendKind(credstore.BackendMemory):
-		return "Keep credentials in memory only. Best suited for tests or CI."
+		return "Keep credentials in memory only for this process. Ephemeral; best suited for tests or CI, not normal local use."
 	default:
 		return ""
 	}
@@ -147,6 +147,23 @@ func initSecretsManagementInventoryDescription() string {
 	return "Choose how cr should store credentials. Secrets-management profiles are reusable store definitions that review profiles can choose later."
 }
 
+func initAutomaticOSDefaultSecretsBackendLabel() string {
+	return initAutomaticOSDefaultSecretsBackendLabelForGOOS(runtime.GOOS)
+}
+
+func initAutomaticOSDefaultSecretsBackendLabelForGOOS(goos string) string {
+	switch goos {
+	case "darwin":
+		return "Automatic OS default (macOS Keychain)"
+	case "windows":
+		return "Automatic OS default (Windows Credential Manager)"
+	case "linux":
+		return "Automatic OS default (Linux Secret Service)"
+	default:
+		return "Automatic OS default"
+	}
+}
+
 func initSecretsManagementInventoryRows(cfg config.File) []initInventoryRow {
 	effective := config.EffectiveSecretsProfiles(cfg)
 	rows := make([]initInventoryRow, 0, len(effective)+len(initSecretsBackendCatalog())+2)
@@ -166,11 +183,11 @@ func initSecretsManagementInventoryRows(cfg config.File) []initInventoryRow {
 	rows = append(rows, initInventoryRow{
 		ID:            initSecretsManagementLegacySelection,
 		Title:         initLegacySecretsManagementInventoryTitle(cfg),
-		Description:   "Global fallback credential store used by profiles that do not choose a named secrets-management profile.",
+		Description:   "Legacy fallback credential store used only by profiles that do not choose a named secrets-management profile.",
 		Kind:          initInventoryRowKindActive,
 		PrimaryAction: initInventoryActionCommand,
 		Selectable:    true,
-		FilterValue:   strings.TrimSpace(strings.Join([]string{"default credential store global fallback keyring backend", strings.TrimSpace(cfg.Keyring.Backend)}, " ")),
+		FilterValue:   strings.TrimSpace(strings.Join([]string{"fallback compatibility legacy credential store keyring backend", strings.TrimSpace(cfg.Keyring.Backend)}, " ")),
 	})
 
 	for _, backend := range initSecretsBackendCatalog() {
@@ -223,9 +240,9 @@ func initLegacySecretsManagementInventoryTitle(cfg config.File) string {
 		}
 	}
 	if backend == config.ProjectedLegacySecretsBackendKind {
-		backendLabel = "Automatic OS default"
+		backendLabel = initAutomaticOSDefaultSecretsBackendLabel()
 	}
-	return fmt.Sprintf("Default credential store (%s)", backendLabel)
+	return fmt.Sprintf("Fallback credential store: %s", backendLabel)
 }
 
 func initSecretsProfileDisplayName(id string, label string) string {
@@ -289,7 +306,7 @@ func initSecretsProfileBackendOptions(current config.SecretsBackendKind) []huh.O
 
 func initLegacySecretsBackendOptions(current string) []huh.Option[string] {
 	options := []huh.Option[string]{
-		huh.NewOption("Automatic OS default", ""),
+		huh.NewOption(initAutomaticOSDefaultSecretsBackendLabel(), ""),
 	}
 	for _, backend := range initSecretsBackendCatalog() {
 		if !backend.LegacyCompatible {
@@ -703,17 +720,17 @@ func (p huhInitKeyringBackendPrompter) editLegacySecretsManagement(currentBacken
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
-				Title("Default credential store backend").
+				Title("Legacy fallback credential store backend").
 				Options(initLegacySecretsBackendOptions(currentBackend)...).
 				Value(&backend),
 			huh.NewSelect[string]().
-				Title("Default credential-store action").
+				Title("Fallback credential-store action").
 				Options(
-					huh.NewOption("Stage default credential-store settings", initDetailActionEdit),
+					huh.NewOption("Stage fallback credential-store settings", initDetailActionEdit),
 					huh.NewOption("Back without staging", initDetailActionBack),
 				).
 				Value(&action),
-		).Title("Default Credential Store"),
+		).Title("Legacy Fallback Credential Store"),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
