@@ -134,8 +134,8 @@ func initSecretsManagementLinearEditorWithPendingOrder(cfg config.File, pendingD
 	var document initLinearDocument
 	document.addSection("Secrets management", initSecretsManagementInventoryDescription())
 	document.addEditableSelect(initSecretsManagementFieldTarget, "Secrets-management target", "", targetOptions, selectedTarget)
-	document.addSectionField(initSecretsManagementSectionLegacy, "Default credential store", "Global fallback credential store used by profiles that do not choose a named secrets-management profile.")
-	document.addEditableSelect(initSecretsManagementFieldLegacyBackend, "Legacy persistent backend", "", initLegacySecretsBackendOptions(cfg.Keyring.Backend), strings.TrimSpace(cfg.Keyring.Backend))
+	document.addSectionField(initSecretsManagementSectionLegacy, "Legacy fallback credential store", "Compatibility path for profiles that do not choose a named secrets-management profile.")
+	document.addEditableSelect(initSecretsManagementFieldLegacyBackend, "Fallback persistent backend", initLegacySecretsBackendFieldDescription(cfg.Keyring.Backend), initLegacySecretsBackendOptions(cfg.Keyring.Backend), strings.TrimSpace(cfg.Keyring.Backend))
 	document.addSectionField(initSecretsManagementSectionProfile, "Secrets-management profile", "Secrets-management profiles are reusable credential-store definitions that review profiles can choose later.")
 	document.addEditableInput(
 		initSecretsManagementFieldLabel,
@@ -178,6 +178,10 @@ func initSecretsManagementLinearEditorWithPendingOrder(cfg config.File, pendingD
 				return
 			}
 			if id == initSecretsManagementFieldBackend {
+				initSecretsManagementSyncLinearFields(model, cfg, pendingDeletes, pendingDeleteOrder, false)
+				return
+			}
+			if id == initSecretsManagementFieldLegacyBackend {
 				initSecretsManagementSyncLinearFields(model, cfg, pendingDeletes, pendingDeleteOrder, false)
 			}
 		},
@@ -336,6 +340,7 @@ func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg con
 	model.setFieldHidden(initSecretsManagementFieldDefault, !profileVisible)
 	initSecretsManagementSetActionOptions(model, !state.Creating && !state.Legacy && !state.Pending)
 	if state.Legacy {
+		model.setFieldDescription(initSecretsManagementFieldLegacyBackend, initLegacySecretsBackendFieldDescription(model.document.selectedValue(initSecretsManagementFieldLegacyBackend)))
 		initSecretsManagementSetOnePasswordHidden(model, true, true, true, true)
 		return
 	}
@@ -499,6 +504,18 @@ func initSecretsManagementBackendFieldDescription(kind config.SecretsBackendKind
 		return strings.TrimSpace(description + " This backend is fixed by the selected create-new target; choose a different target above to create a different backend type.")
 	}
 	return strings.TrimSpace(description + " Use Up/Down here to change the backend for this configured secrets-management profile.")
+}
+
+func initLegacySecretsBackendFieldDescription(backend string) string {
+	trimmed := strings.TrimSpace(backend)
+	if trimmed == "" {
+		return "Use the platform credential store chosen by the OS, such as macOS Keychain on Darwin, Windows Credential Manager on Windows, or Linux Secret Service on Linux."
+	}
+	description := strings.TrimSpace(initSecretsBackendDescription(config.SecretsBackendKind(trimmed)))
+	if description == "" {
+		return "Compatibility backend used only by profiles that do not choose a named secrets-management profile."
+	}
+	return strings.TrimSpace(description + " This is the legacy fallback backend for profiles without a named secrets-management profile.")
 }
 
 func initSecretsManagementSelectedOptionLabel(document initLinearDocument, id initLinearFieldID) string {

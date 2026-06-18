@@ -9866,8 +9866,11 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("initSecretsManagementInventoryRows returned no rows")
 	}
-	if rows[0].Title != "Default credential store (Automatic OS default)" {
-		t.Fatalf("first row title = %q, want default credential-store row first", rows[0].Title)
+	if rows[0].Title != "Fallback credential store: "+initAutomaticOSDefaultSecretsBackendLabel() {
+		t.Fatalf("first row title = %q, want fallback credential-store row first", rows[0].Title)
+	}
+	if !strings.Contains(rows[0].Description, "Legacy fallback credential store") {
+		t.Fatalf("first row description = %q, want legacy fallback wording", rows[0].Description)
 	}
 	var foundConfigure bool
 	for _, row := range rows {
@@ -9883,6 +9886,29 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	if len(options) == 0 {
 		t.Fatal("initLegacySecretsBackendOptions returned no options")
 	}
+	if options[0].Key != initAutomaticOSDefaultSecretsBackendLabel() {
+		t.Fatalf("first legacy backend option = %q, want platform-aware automatic OS default", options[0].Key)
+	}
+}
+
+func TestInitAutomaticOSDefaultSecretsBackendLabelForGOOS(t *testing.T) {
+	tests := []struct {
+		goos string
+		want string
+	}{
+		{goos: "darwin", want: "Automatic OS default (macOS Keychain)"},
+		{goos: "windows", want: "Automatic OS default (Windows Credential Manager)"},
+		{goos: "linux", want: "Automatic OS default (Linux Secret Service)"},
+		{goos: "plan9", want: "Automatic OS default"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			if got := initAutomaticOSDefaultSecretsBackendLabelForGOOS(tt.goos); got != tt.want {
+				t.Fatalf("initAutomaticOSDefaultSecretsBackendLabelForGOOS(%q) = %q, want %q", tt.goos, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestInitSecretsManagementInventoryRowsUsePreferredBackendOrder(t *testing.T) {
@@ -9892,7 +9918,7 @@ func TestInitSecretsManagementInventoryRowsUsePreferredBackendOrder(t *testing.T
 		titles = append(titles, row.Title)
 	}
 	assertContentOrder(t, strings.Join(titles, "\n"),
-		"Default credential store",
+		"Fallback credential store",
 		"Configure new macos keychain profile",
 		"Configure new pass password store profile",
 		"Configure new encrypted file profile",
@@ -10584,6 +10610,45 @@ func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *
 	}
 	if strings.Contains(out, "1Password vault name or id") {
 		t.Fatalf("stderr = %q, want file backend to hide 1Password-specific fields", out)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorShowsLegacyFallbackWording(t *testing.T) {
+	cfg := config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	out := model.layout.Content
+	for _, want := range []string{
+		"Secrets-management target",
+		"Fallback credential store: " + initAutomaticOSDefaultSecretsBackendLabel(),
+		"Legacy fallback credential store",
+		"Compatibility path for profiles that do not choose a named secrets-management profile.",
+		"Fallback persistent backend",
+		initAutomaticOSDefaultSecretsBackendLabel(),
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("initial linear editor output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Default credential store") || strings.Contains(out, "Legacy persistent backend") {
+		t.Fatalf("initial linear editor output contains redundant legacy copy:\n%s", out)
+	}
+
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldLegacyBackend, string(credstore.BackendMemory))
+	index := model.document.fieldIndexByID(initSecretsManagementFieldLegacyBackend)
+	if index < 0 {
+		t.Fatal("legacy backend field missing")
+	}
+	description := model.document[index].Description
+	for _, want := range []string{
+		"Ephemeral",
+		"tests or CI",
+		"not normal local use",
+		"legacy fallback backend",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("legacy backend description = %q, want %q", description, want)
+		}
 	}
 }
 
