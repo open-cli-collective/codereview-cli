@@ -13982,6 +13982,73 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	}
 }
 
+func TestInitCredentialSecretPromptTitleReviewerKeys(t *testing.T) {
+	githubAppEntry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/rianjs-bot",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+	}
+	patEntry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/work-reviewer",
+			Mode:    string(config.GitAuthModePAT),
+		},
+		KeySpecs: []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
+	}
+
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "github app action title",
+			got: initCredentialSecretPromptTitle(initCredentialSecretPrompt{
+				Entry: githubAppEntry,
+			}),
+			want: "How should init handle GitHub App reviewer secrets? (codereview/rianjs-bot) (required: github_app_id, github_app_private_key; optional: github_app_installation_id)",
+		},
+		{
+			name: "pat action title",
+			got: initCredentialSecretPromptTitle(initCredentialSecretPrompt{
+				Entry: patEntry,
+			}),
+			want: "How should init handle PAT reviewer secret? (codereview/work-reviewer)",
+		},
+		{
+			name: "pat key source title",
+			got: initSecretSourcePromptTitle(initSecretValuePrompt{
+				Entry: patEntry,
+				Key:   credentials.GitTokenKey,
+			}),
+			want: "How should init get git_token?",
+		},
+		{
+			name: "github app private key source title",
+			got: initSecretSourcePromptTitle(initSecretValuePrompt{
+				Entry: githubAppEntry,
+				Key:   credentials.GitHubAppPrivateKeyKey,
+			}),
+			want: "How should init get github_app_private_key?",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("title = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
@@ -14214,8 +14281,13 @@ func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.
 		ConfigPath: path,
 	}
 	secretPrompter := &fakeInitSecretPrompter{
-		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+		sources: []initSecretSource{initSecretSourcePaste},
+		pastes:  []string{"reviewer-pat"},
 	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+	})
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -14235,9 +14307,7 @@ func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.
 		}),
 		secretPrompter: secretPrompter,
 		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"work": {credentials.GitTokenKey: "existing-token"},
-			}), nil
+			return store, nil
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -14254,8 +14324,18 @@ func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.
 	if prompt.Entry.Ref.Purpose != "reviewer_credentials" || prompt.Entry.Ref.Mode != string(config.GitAuthModePAT) {
 		t.Fatalf("prompt ref = %#v, want PAT reviewer", prompt.Entry.Ref)
 	}
-	if got := initCredentialRequiredKeys(prompt.Entry); !reflect.DeepEqual(got, []string{credentials.GitTokenKey}) {
-		t.Fatalf("required keys = %#v, want reviewer git_token only", got)
+	if len(secretPrompter.sourcePrompts) != 1 {
+		t.Fatalf("source prompts = %d, want exactly one reviewer PAT key prompt", len(secretPrompter.sourcePrompts))
+	}
+	sourcePrompt := secretPrompter.sourcePrompts[0]
+	if sourcePrompt.Key != credentials.GitTokenKey || sourcePrompt.Optional {
+		t.Fatalf("source prompt = %#v, want required reviewer git_token", sourcePrompt)
+	}
+	if got := initSecretSourcePromptTitle(sourcePrompt); got != "How should init get git_token?" {
+		t.Fatalf("source prompt title = %q, want reviewer git_token prompt", got)
+	}
+	if got := store.bundles["work-reviewer"][credentials.GitTokenKey]; got != "reviewer-pat" {
+		t.Fatalf("stored reviewer PAT = %q, want staged value written at commit", got)
 	}
 	if strings.Contains(stderr.String(), credentials.GitHubAppIDKey) || strings.Contains(stderr.String(), credentials.GitHubAppPrivateKeyKey) {
 		t.Fatalf("stderr = %q, want PAT reviewer flow not GitHub App keys", stderr.String())
@@ -14532,6 +14612,86 @@ func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials
 	}
 	if _, ok := store.bundles["rianjs-bot"]; ok {
 		t.Fatalf("reviewer bundle = %#v, want no credential write on discard", store.bundles["rianjs-bot"])
+	}
+}
+
+func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDoesNotStageOrWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+	})
+	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
+		t.Fatal("SetBundle called after backing out of reviewer secret capture")
+		return credstore.Result{}, nil
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionBack,
+			},
+			sources: []initSecretSource{
+				initSecretSourcePaste,
+				initSecretSourcePaste,
+				initSecretSourceBack,
+			},
+			pastes: []string{"sentinel-app-id", "sentinel-private-key"},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if got.Profiles["work"].ReviewerCredentials != nil {
+		t.Fatalf("reviewer credentials after secret-step back = %#v, want original nil reviewer", got.Profiles["work"].ReviewerCredentials)
+	}
+	// #nosec G304 -- path is a test-controlled temporary config file.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	if strings.Contains(string(raw), "rianjs-bot") || strings.Contains(string(raw), "sentinel") {
+		t.Fatalf("config after secret-step back contains staged reviewer data:\n%s", string(raw))
+	}
+	if _, ok := store.bundles["rianjs-bot"]; ok {
+		t.Fatalf("reviewer bundle = %#v, want no credential write after secret-step back", store.bundles["rianjs-bot"])
 	}
 }
 

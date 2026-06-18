@@ -1489,6 +1489,7 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
 	}
+	rollbackSession := snapshotInitSessionDraft(session)
 	previousProfileName := session.workspace.profileName
 	previousProfile := session.workspace.profile
 	previousCfg := cloneInitConfigFile(session.cfg)
@@ -1523,7 +1524,7 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		if deps.menuPrompter != nil || deps.prompter == nil {
 			session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"reviewer_credentials"})
 			if errors.Is(err, errInitNavigateBack) {
-				return session, false, nil
+				return rollbackSession, false, nil
 			}
 			if err != nil {
 				return initSessionDraft{}, false, err
@@ -3324,23 +3325,10 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 		huh.NewOption("Back to main menu", initCredentialSecretActionBack),
 	)
 	choice := options[0].Value
-	title := fmt.Sprintf("How should init handle %s?", initCredentialSecretBundleLabel(prompt.Entry))
-	if prompt.Entry.Ref.Ref != "" {
-		title = fmt.Sprintf("%s (%s%s)", title, prompt.Entry.Ref.Ref, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))
-	} else if suffix := initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile); suffix != "" {
-		title += suffix
-	}
-	if prompt.Entry.Ref.Purpose == "reviewer_credentials" {
-		summary := initCredentialScopedKeySummary(prompt.Entry)
-		title += summary
-	}
-	if prompt.TargetHasAnyKeys && !prompt.TargetHasRequired {
-		title = fmt.Sprintf("%s Existing values were found; choose set-now to review them key by key.", title)
-	}
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[initCredentialSecretAction]().
-				Title(title).
+				Title(initCredentialSecretPromptTitle(prompt)).
 				Options(options...).
 				Value(&choice),
 		),
@@ -3353,6 +3341,22 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 		return initCredentialSecretActionBack, nil
 	}
 	return choice, nil
+}
+
+func initCredentialSecretPromptTitle(prompt initCredentialSecretPrompt) string {
+	title := fmt.Sprintf("How should init handle %s?", initCredentialSecretBundleLabel(prompt.Entry))
+	if prompt.Entry.Ref.Ref != "" {
+		title = fmt.Sprintf("%s (%s%s)", title, prompt.Entry.Ref.Ref, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))
+	} else if suffix := initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile); suffix != "" {
+		title += suffix
+	}
+	if prompt.Entry.Ref.Purpose == "reviewer_credentials" {
+		title += initCredentialScopedKeySummary(prompt.Entry)
+	}
+	if prompt.TargetHasAnyKeys && !prompt.TargetHasRequired {
+		title = fmt.Sprintf("%s Existing values were found; choose set-now to review them key by key.", title)
+	}
+	return title
 }
 
 func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) (initSecretSource, error) {
@@ -3372,7 +3376,7 @@ func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) 
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[initSecretSource]().
-				Title(fmt.Sprintf("How should init get %s%s?", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))).
+				Title(initSecretSourcePromptTitle(prompt)).
 				Options(options...).
 				Value(&choice),
 		),
@@ -3385,6 +3389,10 @@ func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) 
 		return initSecretSourceBack, nil
 	}
 	return choice, nil
+}
+
+func initSecretSourcePromptTitle(prompt initSecretValuePrompt) string {
+	return fmt.Sprintf("How should init get %s%s?", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))
 }
 
 func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string, error) {
@@ -5041,6 +5049,21 @@ func cloneInitConfigFile(cfg config.File) config.File {
 		cloned.Data.Retention.MaxAgeDays = &value
 	}
 	return cloned
+}
+
+func snapshotInitSessionDraft(session initSessionDraft) initSessionDraft {
+	snapshot := session
+	snapshot.cfg = cloneInitConfigFile(session.cfg)
+	if session.workspace != nil {
+		workspace := *session.workspace
+		snapshot.workspace = &workspace
+	}
+	snapshot.touchedProfiles = copyStringMap(session.touchedProfiles)
+	snapshot.writes = cloneInitWrites(session.writes)
+	snapshot.credentialDecisions = cloneInitCredentialDecisions(session.credentialDecisions)
+	snapshot.overwriteRefs = cloneInitBoolMap(session.overwriteRefs)
+	snapshot.satisfiedRefs = cloneInitBoolMap(session.satisfiedRefs)
+	return snapshot
 }
 
 func cloneInitProfile(profile config.Profile) config.Profile {
