@@ -38,6 +38,7 @@ var initLinearTheme = struct {
 
 type initLinearEnterHandler func(*initLinearEditorModel) (bool, tea.Cmd)
 type initLinearChangeHandler func(*initLinearEditorModel, int)
+type initLinearDeleteHandler func(*initLinearEditorModel, int) (bool, tea.Cmd)
 
 const (
 	initLinearResultActionDelete  = "delete"
@@ -48,6 +49,7 @@ type initLinearEditor struct {
 	Document      initLinearDocument
 	OnEnter       initLinearEnterHandler
 	OnFieldChange initLinearChangeHandler
+	OnDelete      initLinearDeleteHandler
 	Help          string
 	TextareaHelp  string
 }
@@ -61,6 +63,7 @@ type initLinearEditorModel struct {
 	resultAction  string
 	onEnter       initLinearEnterHandler
 	onFieldChange initLinearChangeHandler
+	onDelete      initLinearDeleteHandler
 	help          string
 	textareaHelp  string
 }
@@ -127,6 +130,7 @@ func newInitLinearEditorModel(editor initLinearEditor, width, height int) initLi
 		focused:       editor.Document.firstFocusableField(),
 		onEnter:       editor.OnEnter,
 		onFieldChange: editor.OnFieldChange,
+		onDelete:      editor.OnDelete,
 		help:          help,
 		textareaHelp:  textareaHelp,
 	}
@@ -465,6 +469,11 @@ func (m *initLinearEditorModel) handleFocusedSelectKey(msg tea.KeyMsg) (bool, te
 		initLinearMoveSelection(field, 1)
 	case "d":
 		if selected := initLinearSelectedOption(field); selected != nil && selected.Deletable {
+			if m.onDelete != nil {
+				if handled, cmd := m.onDelete(m, m.focused); handled {
+					return true, cmd
+				}
+			}
 			m.resultAction = initLinearResultActionDelete
 			return true, tea.Quit
 		}

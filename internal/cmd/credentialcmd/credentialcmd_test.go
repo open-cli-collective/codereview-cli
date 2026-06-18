@@ -5429,7 +5429,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanMarkConfiguredRuntimeForDeletion(
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Replacement: Template Codex CLI subscription
+			"1", // Replacement: Template Codex CLI subscription
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -5479,7 +5479,7 @@ func TestHuhInitLLMRuntimePrompterReplacementChoosesConfiguredTemplate(t *testin
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Replacement: Template Codex CLI subscription
+			"1", // Replacement: Template Codex CLI subscription
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -5528,7 +5528,7 @@ func TestHuhInitLLMRuntimePrompterReplacementBackExcludesDeletedRuntime(t *testi
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"7", // Back to runtime details
+			"6", // Back to runtime details
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -5552,6 +5552,9 @@ func TestHuhInitLLMRuntimePrompterReplacementBackExcludesDeletedRuntime(t *testi
 	}
 	if strings.Contains(out, "Configured: Claude CLI subscription (claude-cli)") {
 		t.Fatalf("stderr = %q, want deleted runtime excluded from replacement choices", out)
+	}
+	if strings.Contains(out, "Template: Claude CLI subscription") {
+		t.Fatalf("stderr = %q, want deleted runtime equivalent template excluded from replacement choices", out)
 	}
 }
 
@@ -5668,13 +5671,42 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 		stderr: &stderr,
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 160, 60)
-			model = selectInitLinearFieldValue(t, model, initLLMRuntimeFieldReplacement, string(initLLMRuntimePresetCodexCLISubscription))
 			model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
-			_, _ = io.WriteString(out, model.View())
-			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+			initial := model.View()
+			if strings.Contains(initial, "Stage runtime deletion") {
+				t.Fatalf("initial view exposes delete staging action before delete shortcut:\n%s", initial)
+			}
+			_, _ = io.WriteString(out, initial)
+			updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 			next, ok := updated.(initLinearEditorModel)
 			if !ok {
 				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			if cmd != nil {
+				t.Fatal("delete shortcut returned quit command before choosing replacement")
+			}
+			if next.resultAction != "" {
+				t.Fatalf("resultAction after delete shortcut = %q, want empty until replacement is staged", next.resultAction)
+			}
+			if next.document.fieldHidden(initLLMRuntimeFieldReplacement) {
+				t.Fatal("replacement field hidden after delete shortcut")
+			}
+			if next.document[next.focused].ID != initLLMRuntimeFieldReplacement {
+				t.Fatalf("focused field after delete shortcut = %q, want replacement field", next.document[next.focused].ID)
+			}
+			replacementIndex := next.document.fieldIndexByID(initLLMRuntimeFieldReplacement)
+			for _, option := range next.document[replacementIndex].Options {
+				if strings.Contains(option.Label, "Claude CLI subscription") {
+					t.Fatalf("replacement options include deleted runtime equivalent: %#v", option)
+				}
+			}
+			next = selectInitLinearFieldValue(t, next, initLLMRuntimeFieldReplacement, string(initLLMRuntimePresetCodexCLISubscription))
+			next = focusInitLinearField(t, next, initLLMRuntimeFieldAction)
+			_, _ = io.WriteString(out, "\n\nAfter delete shortcut:\n"+next.View())
+			updated, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok = updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T after staging, want initLinearEditorModel", updated)
 			}
 			return next, nil
 		},
@@ -5698,8 +5730,125 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
 		t.Fatalf("draft replacement = %#v, want codex-cli replacement", draft)
 	}
-	if !strings.Contains(stderr.String(), "d delete") {
-		t.Fatalf("stderr = %q, want delete shortcut help", stderr.String())
+	out := stderr.String()
+	if !strings.Contains(out, "d delete") {
+		t.Fatalf("stderr = %q, want delete shortcut help", out)
+	}
+	if !strings.Contains(out, "Replacement LLM runtime") || !strings.Contains(out, "Stage runtime deletion") {
+		t.Fatalf("stderr = %q, want inline replacement and delete staging action", out)
+	}
+}
+
+func TestInitLLMRuntimeLinearEditorRejectsCustomDeleteReplacementMatchingDeleted(t *testing.T) {
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}
+	seed := seedInteractiveInitDraft(ctx.RequestedProfileName, ctx.ExistingProfileName, ctx.DefaultProfileName, ctx.ExistingProfile)
+	model := newInitLinearEditorModel(initLLMRuntimeLinearEditor(ctx, seed, func(initLLMRuntimePreset) string { return "" }), 160, 60)
+	model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if cmd != nil {
+		t.Fatal("delete shortcut returned quit command before choosing replacement")
+	}
+	for range 4 {
+		updated, cmd = next.Update(tea.KeyMsg{Type: tea.KeyDown})
+		if cmd != nil {
+			t.Fatal("replacement selection returned quit command")
+		}
+		next, ok = updated.(initLinearEditorModel)
+		if !ok {
+			t.Fatalf("Update returned %T while choosing custom replacement", updated)
+		}
+	}
+	if got := next.document.selectedValue(initLLMRuntimeFieldReplacement); got != initCustomLLMRuntimeSelection {
+		t.Fatalf("replacement = %q, want custom compatible runtime", got)
+	}
+	next = focusInitLinearField(t, next, initLLMRuntimeFieldAction)
+	updated, cmd = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok = updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T after staging attempt", updated)
+	}
+	if cmd != nil {
+		t.Fatal("unchanged custom replacement staged deletion, want inline validation error")
+	}
+	if next.resultAction != "" {
+		t.Fatalf("resultAction = %q, want no staged action", next.resultAction)
+	}
+	actionIndex := next.document.fieldIndexByID(initLLMRuntimeFieldAction)
+	if actionIndex < 0 || !strings.Contains(next.document[actionIndex].Error, "choose a replacement LLM runtime") {
+		t.Fatalf("action error = %q, want replacement validation error", next.document[actionIndex].Error)
+	}
+}
+
+func TestInitLLMRuntimeLinearEditorChangingSelectionResetsDeleteMode(t *testing.T) {
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}
+	seed := seedInteractiveInitDraft(ctx.RequestedProfileName, ctx.ExistingProfileName, ctx.DefaultProfileName, ctx.ExistingProfile)
+	model := newInitLinearEditorModel(initLLMRuntimeLinearEditor(ctx, seed, func(initLLMRuntimePreset) string { return "" }), 160, 60)
+	model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if cmd != nil {
+		t.Fatal("delete shortcut returned quit command before choosing replacement")
+	}
+	if got := next.document.selectedValue(initLLMRuntimeFieldAction); got != initLLMRuntimeActionDelete {
+		t.Fatalf("action after delete shortcut = %q, want delete", got)
+	}
+	next = focusInitLinearField(t, next, initLLMRuntimeFieldSelection)
+	updated, cmd = next.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, ok = updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T after changing runtime selection", updated)
+	}
+	if cmd != nil {
+		t.Fatal("changing runtime selection returned quit command")
+	}
+	if got := next.document.selectedValue(initLLMRuntimeFieldAction); got != initDetailActionEdit {
+		t.Fatalf("action after changing runtime selection = %q, want edit", got)
+	}
+	if !next.document.fieldHidden(initLLMRuntimeFieldReplacement) {
+		t.Fatal("replacement field visible after changing runtime selection, want delete mode reset")
+	}
+	actionIndex := next.document.fieldIndexByID(initLLMRuntimeFieldAction)
+	for _, option := range next.document[actionIndex].Options {
+		if option.Value == initLLMRuntimeActionDelete {
+			t.Fatalf("delete action still available after runtime selection changed: %#v", option)
+		}
 	}
 }
 
@@ -9316,6 +9465,33 @@ func TestInitLinearEditorActionQuitClearsFinalView(t *testing.T) {
 	}
 	if got := next.View(); got != "" {
 		t.Fatalf("View after action quit = %q, want empty", got)
+	}
+}
+
+func TestInitLinearEditorDefaultDeleteShortcutStillQuits(t *testing.T) {
+	const choiceField initLinearFieldID = "choice"
+	var document initLinearDocument
+	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
+		huh.NewOption("Configured item", "configured"),
+	}, "configured")
+	editor := initLinearEditor{Document: document}
+	model := newInitLinearEditorModel(editor, 120, 12)
+	index := model.document.fieldIndexByID(choiceField)
+	model.document[index].Options[0].Deletable = true
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if cmd == nil {
+		t.Fatal("delete shortcut returned nil command, want default quit behavior")
+	}
+	if next.resultAction != initLinearResultActionDelete {
+		t.Fatalf("resultAction = %q, want delete", next.resultAction)
+	}
+	if !next.quitting {
+		t.Fatal("quitting = false, want default delete shortcut to quit")
 	}
 }
 
@@ -13928,6 +14104,113 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.
 	}
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu before LLM category and after backing out", menu.prompts)
+	}
+}
+
+func TestInitInteractiveLLMRuntimeDeletePersistsReplacementAndReloadsCleanly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionSave,
+		},
+	}
+	llmCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmCalls++
+			if llmCalls > 2 {
+				t.Fatalf("unexpected LLM prompt #%d", llmCalls)
+			}
+			if llmCalls == 2 {
+				return initDraft{}, errInitNavigateBack
+			}
+			if _, ok := prompt.Context.LLMRuntimes["claude-cli"]; !ok {
+				t.Fatalf("LLMRuntimes = %#v, want configured claude-cli before delete", prompt.Context.LLMRuntimes)
+			}
+			return initDraft{
+				Action:       initDraftActionDeleteLLMRuntime,
+				ActionTarget: "claude-cli",
+				LLMProvider:  string(config.LLMProviderOpenAI),
+				LLMAuth:      string(config.LLMAuthSubscription),
+				LLMAdapter:   string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps save: %v", err)
+	}
+	if llmCalls != 2 {
+		t.Fatalf("llmCalls = %d, want staged runtime delete then category back", llmCalls)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load saved config: %v", err)
+	}
+	work := saved.Profiles["work"]
+	if work.LLM.Provider != config.LLMProviderOpenAI || work.LLM.Auth != config.LLMAuthSubscription || work.LLM.Adapter != config.LLMAdapterCodexCLI {
+		t.Fatalf("saved LLM = %#v, want Codex CLI subscription replacement", work.LLM)
+	}
+	runtimes, profileRuntimes := buildInitLLMRuntimeInventory(saved)
+	if _, ok := runtimes["claude-cli"]; ok {
+		t.Fatalf("saved runtime inventory = %#v, want deleted claude-cli absent", runtimes)
+	}
+	if _, ok := runtimes["codex-cli"]; !ok {
+		t.Fatalf("saved runtime inventory = %#v, want replacement codex-cli present", runtimes)
+	}
+	if got := profileRuntimes["work"]; got != "codex-cli" {
+		t.Fatalf("profile runtime = %q, want codex-cli after save", got)
+	}
+
+	reloadMenu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionExit,
+		},
+	}
+	reloadCalls := 0
+	reloadDeps := initDeps{
+		menuPrompter: reloadMenu,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			reloadCalls++
+			if len(prompt.Context.PendingLLMRuntimeDeletes) != 0 {
+				t.Fatalf("PendingLLMRuntimeDeletes = %#v, want no stale staged deletion on reload", prompt.Context.PendingLLMRuntimeDeletes)
+			}
+			if _, ok := prompt.Context.LLMRuntimes["claude-cli"]; ok {
+				t.Fatalf("reload LLMRuntimes = %#v, want deleted claude-cli absent", prompt.Context.LLMRuntimes)
+			}
+			if _, ok := prompt.Context.LLMRuntimes["codex-cli"]; !ok {
+				t.Fatalf("reload LLMRuntimes = %#v, want codex-cli replacement present", prompt.Context.LLMRuntimes)
+			}
+			return initDraft{}, errInitNavigateBack
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called during reload-only verification")
+			return nil
+		},
+	}
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, reloadDeps); err != nil {
+		t.Fatalf("runInitWithDeps reload: %v", err)
+	}
+	if reloadCalls != 1 {
+		t.Fatalf("reloadCalls = %d, want one reload inventory prompt", reloadCalls)
 	}
 }
 

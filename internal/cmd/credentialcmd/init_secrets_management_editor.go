@@ -436,7 +436,7 @@ func initSecretsManagementSetBackendOptions(model *initLinearEditorModel, curren
 	model.document[index].Options = initLinearOptionsFromHuh(initSecretsProfileBackendOptions(current), selected)
 }
 
-func initSecretsManagementSetActionOptions(model *initLinearEditorModel, canDelete bool) {
+func initSecretsManagementSetActionOptions(model *initLinearEditorModel, _ bool) {
 	index := model.document.fieldIndexByID(initSecretsManagementFieldAction)
 	if index < 0 {
 		return

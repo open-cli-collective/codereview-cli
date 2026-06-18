@@ -1766,13 +1766,7 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetails(seed initDraft) (initDr
 
 func (p huhInitLLMRuntimePrompter) chooseLLMRuntimeDeleteReplacement(prompt initLLMRuntimePrompt, deletedRuntimeName string, seed initDraft) (initDraft, error) {
 	choice := ""
-	options := make([]huh.Option[string], 0, len(prompt.Context.LLMRuntimes)+6)
-	for _, option := range initLLMRuntimeOptions(prompt.Context.LLMRuntimes) {
-		if option.Value == deletedRuntimeName {
-			continue
-		}
-		options = append(options, option)
-	}
+	options := initLLMRuntimeReplacementOptions(prompt.Context, deletedRuntimeName)
 	options = append(options, huh.NewOption("Back to runtime details", initBackSelection))
 	form := huh.NewForm(
 		huh.NewGroup(

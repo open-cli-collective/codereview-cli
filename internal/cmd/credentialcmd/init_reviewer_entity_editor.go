@@ -343,7 +343,7 @@ func initReviewerEntityRestoreSelectionName(selection string) (string, bool) {
 	return strings.TrimPrefix(selection, initReviewerEntityRestoreSelectionPrefix), true
 }
 
-func initReviewerEntityActionOptions(ctx initPromptContext, selection string) []huh.Option[string] {
+func initReviewerEntityActionOptions(_ initPromptContext, selection string) []huh.Option[string] {
 	if _, ok := initReviewerEntityRestoreSelectionName(selection); ok {
 		return []huh.Option[string]{
 			huh.NewOption("Back without staging", initDetailActionBack),
