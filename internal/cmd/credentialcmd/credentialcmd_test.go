@@ -11349,6 +11349,8 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 		"Configure review profiles (1)",
 		"Configure global settings",
 		"Configure secrets management",
+		"Commit staged changes and exit",
+		"Discard staged changes and exit",
 	)
 }
 
