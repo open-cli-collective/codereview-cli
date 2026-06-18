@@ -6921,6 +6921,23 @@ func TestInitCredentialReadinessNoteLabelsPartialGitHubAppOptionalKey(t *testing
 	}
 }
 
+func TestInitProfileReadinessLineIncludesNotes(t *testing.T) {
+	line := initProfileReadinessLine(initProfileReadiness{
+		ProfileName: "work",
+		Ready:       false,
+		Notes:       []string{"reviewer deferred (required: github_app_id, github_app_private_key; optional: github_app_installation_id)"},
+	})
+	for _, want := range []string{
+		"- work: needs follow-up",
+		"required: github_app_id, github_app_private_key",
+		"optional: github_app_installation_id",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line = %q, want %q", line, want)
+		}
+	}
+}
+
 func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileSelection(t *testing.T) {
 	cfg := config.Normalize(config.File{
 		DefaultProfile: "work",

@@ -1681,17 +1681,21 @@ func (p huhInitFinalizePrompter) ChooseFinalizeAction(prompt initFinalizePrompt)
 func initFinalizeDescription(prompt initFinalizePrompt) string {
 	lines := []string{"Review readiness before committing staged config and credential changes."}
 	for _, profile := range prompt.Profiles {
-		status := "ready"
-		if !profile.Ready {
-			status = "needs follow-up"
-		}
-		line := fmt.Sprintf("- %s: %s", profile.ProfileName, status)
-		if len(profile.Notes) > 0 {
-			line += " (" + strings.Join(profile.Notes, "; ") + ")"
-		}
-		lines = append(lines, line)
+		lines = append(lines, initProfileReadinessLine(profile))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func initProfileReadinessLine(profile initProfileReadiness) string {
+	status := "ready"
+	if !profile.Ready {
+		status = "needs follow-up"
+	}
+	line := fmt.Sprintf("- %s: %s", profile.ProfileName, status)
+	if len(profile.Notes) > 0 {
+		line += " (" + strings.Join(profile.Notes, "; ") + ")"
+	}
+	return line
 }
 
 func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
@@ -6230,11 +6234,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 		return err
 	}
 	for _, readiness := range buildInteractiveInitProfileReadiness(plan) {
-		status := "ready"
-		if !readiness.Ready {
-			status = "needs follow-up"
-		}
-		if _, err := fmt.Fprintf(opts.Stdout, "- %s: %s\n", readiness.ProfileName, status); err != nil {
+		if _, err := fmt.Fprintln(opts.Stdout, initProfileReadinessLine(readiness)); err != nil {
 			return err
 		}
 	}
