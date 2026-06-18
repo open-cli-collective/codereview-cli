@@ -70,6 +70,49 @@ func TestDecodeFindings(t *testing.T) {
 		t.Fatalf("finding body was not sanitized: %q", got.Findings[0].Body)
 	}
 
+	aliasGot, err := DecodeFindings([]byte(`{
+		"schema_version": 1,
+		"agent_id": "agent-1",
+		"findings": [{
+			"severity":"major",
+			"file":"main.go",
+			"anchor":{"kind":"file"},
+			"body":"body"
+		}]
+	}`), FindingsOptions{
+		KnownAgents:  opts.KnownAgents,
+		ChangedFiles: opts.ChangedFiles,
+		NewFindingID: newIDQueue("f-alias").next,
+	})
+	if err != nil {
+		t.Fatalf("DecodeFindings file alias: %v", err)
+	}
+	if aliasGot.Findings[0].FilePath != "main.go" || aliasGot.Findings[0].ID != "f-alias" {
+		t.Fatalf("alias finding = %#v, want canonical file path and assigned ID", aliasGot.Findings[0])
+	}
+
+	matchingAliasGot, err := DecodeFindings([]byte(`{
+		"schema_version": 1,
+		"agent_id": "agent-1",
+		"findings": [{
+			"severity":"major",
+			"file_path":"main.go",
+			"file":"main.go",
+			"anchor":{"kind":"file"},
+			"body":"body"
+		}]
+	}`), FindingsOptions{
+		KnownAgents:  opts.KnownAgents,
+		ChangedFiles: opts.ChangedFiles,
+		NewFindingID: newIDQueue("f-matching-alias").next,
+	})
+	if err != nil {
+		t.Fatalf("DecodeFindings matching file alias: %v", err)
+	}
+	if matchingAliasGot.Findings[0].FilePath != "main.go" {
+		t.Fatalf("matching alias file path = %q, want main.go", matchingAliasGot.Findings[0].FilePath)
+	}
+
 	baseOpts := FindingsOptions{KnownAgents: map[string]bool{"agent-1": true}, ChangedFiles: map[string]bool{"main.go": true}, NewFindingID: newIDQueue("f-1", "f-2").next}
 	assertFindingsError(t, baseOpts, `{"schema_version":2,"agent_id":"agent-1","findings":[]}`, "schema_version")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[],"extra":true}`, "unknown field")
@@ -77,6 +120,9 @@ func TestDecodeFindings(t *testing.T) {
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"finding_id":"model-id","severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "finding_id")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"finding_id":null,"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "finding_id")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"bad","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "severity")
+	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","file":"other.go","anchor":{"kind":"file"},"body":"body"}]}`, "file and file_path")
+	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file":"other.go","anchor":{"kind":"file"},"body":"body"}]}`, "changed files")
+	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file":"main.go","anchor":{"kind":"file"},"body":"body","extra":true}]}`, "unknown field")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"other.go","anchor":{"kind":"file"},"body":"body"}]}`, "changed files")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"line","side":"RIGHT"},"body":"body"}]}`, "line anchor requires a positive line")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"  "}]}`, "finding body length out of bounds")

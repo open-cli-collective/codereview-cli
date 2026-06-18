@@ -149,6 +149,53 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	}
 }
 
+func TestDryRunNormalizesReviewerFindingsFileAlias(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsFileAliasJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-file-alias" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].FilePath != "main.go" {
+		t.Fatalf("findings = %#v, want canonical main.go path", result.Findings)
+	}
+	storedFindings, err := store.ListFindings(ctx, "run-file-alias")
+	if err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	if len(storedFindings) != 1 || storedFindings[0].FilePath != "main.go" {
+		t.Fatalf("stored findings = %#v, want canonical main.go path", storedFindings)
+	}
+	data, err := os.ReadFile(result.Artifacts.FindingsJSON) // #nosec G304 -- test reads artifact path returned by the pipeline under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", result.Artifacts.FindingsJSON, err)
+	}
+	if !strings.Contains(string(data), `"file_path": "main.go"`) {
+		t.Fatalf("findings artifact = %s, want canonical file_path", data)
+	}
+	if strings.Contains(string(data), `"file":`) {
+		t.Fatalf("findings artifact leaked file alias: %s", data)
+	}
+}
+
 func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -2813,6 +2860,28 @@ func findingsJSON(agentID, file, severity string, line int, body string) string 
 		"findings": []map[string]any{{
 			"severity":  severity,
 			"file_path": file,
+			"anchor": map[string]any{
+				"kind": "line",
+				"side": "RIGHT",
+				"line": line,
+			},
+			"body": body,
+		}},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func findingsFileAliasJSON(agentID, file, severity string, line int, body string) string {
+	payload := map[string]any{
+		"schema_version": 1,
+		"agent_id":       agentID,
+		"findings": []map[string]any{{
+			"severity": severity,
+			"file":     file,
 			"anchor": map[string]any{
 				"kind": "line",
 				"side": "RIGHT",

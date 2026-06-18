@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
 func TestFakeAdapterAndRunStructured(t *testing.T) {
@@ -84,6 +86,39 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 		if got := len(adapter.Requests()); got != 2 {
 			t.Fatalf("requests = %d, want one retry", got)
+		}
+	})
+
+	t.Run("findings file alias succeeds without validation retry", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{
+			"schema_version": 1,
+			"agent_id": "agent-1",
+			"findings": [{
+				"severity": "major",
+				"file": "main.go",
+				"anchor": {"kind": "file"},
+				"body": "body"
+			}]
+		}`)}})
+
+		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (Findings, error) {
+			return DecodeFindings(data, FindingsOptions{
+				KnownAgents:  map[string]bool{"agent-1": true},
+				ChangedFiles: map[string]bool{"main.go": true},
+				NewFindingID: func() (review.FindingID, error) {
+					return "f-1", nil
+				},
+			})
+		})
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if len(got.Findings) != 1 || got.Findings[0].FilePath != "main.go" {
+			t.Fatalf("findings = %#v, want canonical main.go path", got.Findings)
+		}
+		if requests := adapter.Requests(); len(requests) != 1 {
+			t.Fatalf("requests = %d, want no validation retry", len(requests))
 		}
 	})
 
