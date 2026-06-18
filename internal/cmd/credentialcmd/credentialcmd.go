@@ -438,39 +438,41 @@ type initPlan struct {
 }
 
 type initWorkspaceDraft struct {
-	path               string
-	cfg                config.File
-	previousProfile    *config.Profile
-	profileName        string
-	profile            config.Profile
-	gitScopeName       string
-	gitScopes          map[string]initGitScopeDraft
-	reviewerEntityName string
-	reviewerEntities   map[string]initReviewerEntityDraft
-	llmRuntimeName     string
-	llmRuntimes        map[string]initLLMRuntimeDraft
-	writes             map[string]map[string]string
-	credentialPlan     []initCredentialPlanEntry
-	overwriteRefs      map[string]bool
-	satisfiedRefs      map[string]bool
-	backendFlagSet     bool
-	backendArg         string
-	allowDeferredLLM   bool
-	writeLLMHint       bool
+	path                string
+	cfg                 config.File
+	previousProfile     *config.Profile
+	profileName         string
+	profile             config.Profile
+	gitScopeName        string
+	gitScopes           map[string]initGitScopeDraft
+	reviewerEntityName  string
+	reviewerEntities    map[string]initReviewerEntityDraft
+	llmRuntimeName      string
+	llmRuntimes         map[string]initLLMRuntimeDraft
+	writes              map[string]map[string]string
+	credentialPlan      []initCredentialPlanEntry
+	credentialDecisions map[initCredentialDecisionKey]initCredentialDecisionKind
+	overwriteRefs       map[string]bool
+	satisfiedRefs       map[string]bool
+	backendFlagSet      bool
+	backendArg          string
+	allowDeferredLLM    bool
+	writeLLMHint        bool
 }
 
 type initSessionPlan struct {
-	path           string
-	originalCfg    config.File
-	cfg            config.File
-	profileNames   []string
-	profileRefs    map[string][]config.CredentialRef
-	writes         map[string]map[string]string
-	credentialPlan []initCredentialPlanEntry
-	overwriteRefs  map[string]bool
-	satisfiedRefs  map[string]bool
-	backendFlagSet bool
-	backendArg     string
+	path                string
+	originalCfg         config.File
+	cfg                 config.File
+	profileNames        []string
+	profileRefs         map[string][]config.CredentialRef
+	writes              map[string]map[string]string
+	credentialPlan      []initCredentialPlanEntry
+	credentialDecisions map[initCredentialDecisionKey]initCredentialDecisionKind
+	overwriteRefs       map[string]bool
+	satisfiedRefs       map[string]bool
+	backendFlagSet      bool
+	backendArg          string
 }
 
 type initSessionDraft struct {
@@ -482,6 +484,7 @@ type initSessionDraft struct {
 	workspace                    *initWorkspaceDraft
 	touchedProfiles              map[string]string
 	writes                       map[string]map[string]string
+	credentialDecisions          map[initCredentialDecisionKey]initCredentialDecisionKind
 	overwriteRefs                map[string]bool
 	satisfiedRefs                map[string]bool
 	pendingProfileDeletes        map[string]initPendingProfileDelete
@@ -585,6 +588,21 @@ type initCredentialPlanEntry struct {
 	PlannedWriteKeys    []string
 	MissingRequiredKeys []string
 	State               initCredentialPlanState
+}
+
+type initCredentialDecisionKind string
+
+const (
+	initCredentialDecisionDefer        initCredentialDecisionKind = "defer"
+	initCredentialDecisionSkipOptional initCredentialDecisionKind = "skip_optional"
+)
+
+type initCredentialDecisionKey struct {
+	Store   string
+	Purpose string
+	Mode    string
+	Ref     string
+	Key     string
 }
 
 type initSecretPrompter interface {
@@ -1066,6 +1084,7 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 		backendFlagSet:               cmderr.BackendFlagChanged(cmd),
 		touchedProfiles:              map[string]string{},
 		writes:                       map[string]map[string]string{},
+		credentialDecisions:          map[initCredentialDecisionKey]initCredentialDecisionKind{},
 		overwriteRefs:                map[string]bool{},
 		satisfiedRefs:                map[string]bool{},
 		pendingProfileDeletes:        map[string]initPendingProfileDelete{},
@@ -1491,6 +1510,14 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, nextEntity)
 	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
 	session.requestedProfileName = workspace.profileName
+	if session.workspace != nil {
+		credentialPlan, err := planInitCredentialsWithConfig(session.cfg, workspace.previousProfile, session.workspace.profile, projectInitPlannedWriteKeys(session.writes))
+		if err != nil {
+			return initSessionDraft{}, false, cmderr.Config(err)
+		}
+		session.workspace.previousProfile = workspace.previousProfile
+		session.workspace.credentialPlan = credentialPlan
+	}
 	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, session.workspace.profile) {
 		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
 		if deps.menuPrompter != nil || deps.prompter == nil {
@@ -3297,11 +3324,14 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 		huh.NewOption("Back to main menu", initCredentialSecretActionBack),
 	)
 	choice := options[0].Value
-	title := fmt.Sprintf("How should init handle %s credentials?", initCredentialPurposeLabel(prompt.Entry.Ref.Purpose))
+	title := fmt.Sprintf("How should init handle %s?", initCredentialSecretBundleLabel(prompt.Entry))
 	if prompt.Entry.Ref.Ref != "" {
 		title = fmt.Sprintf("%s (%s%s)", title, prompt.Entry.Ref.Ref, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))
 	} else if suffix := initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile); suffix != "" {
 		title += suffix
+	}
+	if summary := initCredentialScopedKeySummary(prompt.Entry); summary != "" {
+		title += summary
 	}
 	if prompt.TargetHasAnyKeys && !prompt.TargetHasRequired {
 		title = fmt.Sprintf("%s Existing values were found; choose set-now to review them key by key.", title)
@@ -4298,18 +4328,20 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 	overwriteRefs := filterInitBoolMapByRefs(session.overwriteRefs, activeRefs)
 	satisfiedRefs := filterInitBoolMapByRefs(session.satisfiedRefs, activeRefs)
 	entries = refreshInteractiveCredentialPlan(entries, projectInitPlannedWriteKeys(writes), satisfiedRefs)
+	credentialDecisions := filterInitCredentialDecisions(session.credentialDecisions, entries)
 	return initSessionPlan{
-		path:           session.path,
-		originalCfg:    cloneInitConfigFile(session.originalCfg),
-		cfg:            cloneInitConfigFile(session.cfg),
-		profileNames:   profileNames,
-		profileRefs:    profileRefs,
-		writes:         writes,
-		credentialPlan: entries,
-		overwriteRefs:  overwriteRefs,
-		satisfiedRefs:  satisfiedRefs,
-		backendFlagSet: session.backendFlagSet,
-		backendArg:     interactiveInitBackendArg(opts, session.backendFlagSet, session.cfg),
+		path:                session.path,
+		originalCfg:         cloneInitConfigFile(session.originalCfg),
+		cfg:                 cloneInitConfigFile(session.cfg),
+		profileNames:        profileNames,
+		profileRefs:         profileRefs,
+		writes:              writes,
+		credentialPlan:      entries,
+		credentialDecisions: credentialDecisions,
+		overwriteRefs:       overwriteRefs,
+		satisfiedRefs:       satisfiedRefs,
+		backendFlagSet:      session.backendFlagSet,
+		backendArg:          interactiveInitBackendArg(opts, session.backendFlagSet, session.cfg),
 	}, nil
 }
 
@@ -4362,6 +4394,7 @@ func collectInteractiveInitSessionWorkspaceSecrets(opts *root.Options, deps init
 	}
 	workspace := *session.workspace
 	workspace.writes = cloneInitWrites(session.writes)
+	workspace.credentialDecisions = cloneInitCredentialDecisions(session.credentialDecisions)
 	workspace.overwriteRefs = cloneInitBoolMap(session.overwriteRefs)
 	workspace.satisfiedRefs = cloneInitBoolMap(session.satisfiedRefs)
 	workspace.credentialPlan = refreshInteractiveCredentialPlan(entries, projectInitPlannedWriteKeys(workspace.writes), workspace.satisfiedRefs)
@@ -4372,6 +4405,7 @@ func collectInteractiveInitSessionWorkspaceSecrets(opts *root.Options, deps init
 	session.workspace = &nextWorkspace
 	session.cfg = cloneInitConfigFile(nextWorkspace.cfg)
 	session.writes = cloneInitWrites(nextWorkspace.writes)
+	session.credentialDecisions = cloneInitCredentialDecisions(nextWorkspace.credentialDecisions)
 	session.overwriteRefs = cloneInitBoolMap(nextWorkspace.overwriteRefs)
 	session.satisfiedRefs = cloneInitBoolMap(nextWorkspace.satisfiedRefs)
 	return session, nil
@@ -4419,23 +4453,24 @@ func rebuildInteractiveInitWorkspace(session initSessionDraft, profileName strin
 	reviewerEntities, profileReviewerEntityNames := buildInitReviewerEntityInventory(session.cfg)
 	llmRuntimes, profileRuntimeNames := buildInitLLMRuntimeInventory(session.cfg)
 	workspace := initWorkspaceDraft{
-		path:               session.path,
-		cfg:                cloneInitConfigFile(session.cfg),
-		profileName:        profileName,
-		profile:            profile,
-		gitScopeName:       profileGitScopeNames[profileName],
-		gitScopes:          gitScopes,
-		reviewerEntityName: profileReviewerEntityNames[profileName],
-		reviewerEntities:   reviewerEntities,
-		llmRuntimeName:     profileRuntimeNames[profileName],
-		llmRuntimes:        llmRuntimes,
-		writes:             map[string]map[string]string{},
-		overwriteRefs:      map[string]bool{},
-		satisfiedRefs:      map[string]bool{},
-		backendFlagSet:     session.backendFlagSet,
-		backendArg:         interactiveInitBackendArg(&root.Options{}, session.backendFlagSet, session.cfg),
-		allowDeferredLLM:   profile.LLM.Auth == config.LLMAuthAPIKey,
-		writeLLMHint:       profile.LLM.Auth == config.LLMAuthAPIKey,
+		path:                session.path,
+		cfg:                 cloneInitConfigFile(session.cfg),
+		profileName:         profileName,
+		profile:             profile,
+		gitScopeName:        profileGitScopeNames[profileName],
+		gitScopes:           gitScopes,
+		reviewerEntityName:  profileReviewerEntityNames[profileName],
+		reviewerEntities:    reviewerEntities,
+		llmRuntimeName:      profileRuntimeNames[profileName],
+		llmRuntimes:         llmRuntimes,
+		writes:              map[string]map[string]string{},
+		credentialDecisions: map[initCredentialDecisionKey]initCredentialDecisionKind{},
+		overwriteRefs:       map[string]bool{},
+		satisfiedRefs:       map[string]bool{},
+		backendFlagSet:      session.backendFlagSet,
+		backendArg:          interactiveInitBackendArg(&root.Options{}, session.backendFlagSet, session.cfg),
+		allowDeferredLLM:    profile.LLM.Auth == config.LLMAuthAPIKey,
+		writeLLMHint:        profile.LLM.Auth == config.LLMAuthAPIKey,
 	}
 	session.workspace = &workspace
 	session.requestedProfileName = profileName
@@ -5539,6 +5574,47 @@ func initCredentialStoreKey(resolved credentials.ResolvedSecretsProfile) string 
 	return fmt.Sprintf("%s|%s|%s", resolved.ID, resolved.Source, resolved.Backend)
 }
 
+func initCredentialDecisionMapKey(entry initCredentialPlanEntry, key string) initCredentialDecisionKey {
+	return initCredentialDecisionKey{
+		Store:   initCredentialStoreKey(entry.SecretsProfile),
+		Purpose: entry.Ref.Purpose,
+		Mode:    entry.Ref.Mode,
+		Ref:     entry.Ref.Ref,
+		Key:     key,
+	}
+}
+
+func recordInitCredentialEntryDecision(decisions map[initCredentialDecisionKey]initCredentialDecisionKind, entry initCredentialPlanEntry, kind initCredentialDecisionKind) {
+	for _, spec := range entry.KeySpecs {
+		if kind == initCredentialDecisionSkipOptional && spec.Required {
+			continue
+		}
+		if kind == initCredentialDecisionDefer && !spec.Required {
+			continue
+		}
+		decisions[initCredentialDecisionMapKey(entry, spec.Key)] = kind
+	}
+}
+
+func clearInitCredentialEntryDecisions(decisions map[initCredentialDecisionKey]initCredentialDecisionKind, entry initCredentialPlanEntry) {
+	for _, spec := range entry.KeySpecs {
+		delete(decisions, initCredentialDecisionMapKey(entry, spec.Key))
+	}
+}
+
+func initCredentialEntryDeferredByDecision(decisions map[initCredentialDecisionKey]initCredentialDecisionKind, entry initCredentialPlanEntry) bool {
+	required := initCredentialRequiredKeys(entry)
+	if len(required) == 0 {
+		return false
+	}
+	for _, key := range required {
+		if decisions[initCredentialDecisionMapKey(entry, key)] != initCredentialDecisionDefer {
+			return false
+		}
+	}
+	return true
+}
+
 type initWriteGroup struct {
 	Resolved      credentials.ResolvedSecretsProfile
 	Writes        map[string]map[string]string
@@ -5644,12 +5720,18 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 	if plan.satisfiedRefs == nil {
 		plan.satisfiedRefs = map[string]bool{}
 	}
+	if plan.credentialDecisions == nil {
+		plan.credentialDecisions = map[initCredentialDecisionKey]initCredentialDecisionKind{}
+	}
 
 	for _, entry := range plan.credentialPlan {
 		switch entry.State {
 		case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
 			continue
 		case initCredentialPlanStateDefer, initCredentialPlanStateMissingRequired, initCredentialPlanStateOverwriteRef:
+		}
+		if initCredentialEntryDeferredByDecision(plan.credentialDecisions, entry) {
+			continue
 		}
 	credentialChoices:
 		for {
@@ -5664,6 +5746,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 				return initWorkspaceDraft{}, errInitNavigateBack
 			}
 			if action == initCredentialSecretActionDefer {
+				recordInitCredentialEntryDecision(plan.credentialDecisions, entry, initCredentialDecisionDefer)
 				break
 			}
 			activeStore, err := openStore(entry)
@@ -5701,10 +5784,12 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 				if !targetHasRequired {
 					return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential ref %q does not have all required keys", initCredentialPurposeLabel(entry.Ref.Purpose), entry.Ref.Ref))
 				}
+				clearInitCredentialEntryDecisions(plan.credentialDecisions, entry)
 				plan.satisfiedRefs[entry.Ref.Ref] = true
 				break
 			}
 			if action == initCredentialSecretActionDefer {
+				recordInitCredentialEntryDecision(plan.credentialDecisions, entry, initCredentialDecisionDefer)
 				break
 			}
 			if action != initCredentialSecretActionSetNow {
@@ -5715,6 +5800,8 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			entryWrites := map[string]map[string]string{
 				entry.Ref.Ref: copyStringMap(plan.writes[entry.Ref.Ref]),
 			}
+			entryDecisions := cloneInitCredentialDecisions(plan.credentialDecisions)
+			clearInitCredentialEntryDecisions(entryDecisions, entry)
 			for _, spec := range entry.KeySpecs {
 			sourceChoices:
 				for {
@@ -5741,6 +5828,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 						if spec.Required {
 							return initWorkspaceDraft{}, exitcode.Usage(fmt.Errorf("%s credential key %q is required", initCredentialPurposeLabel(entry.Ref.Purpose), spec.Key))
 						}
+						entryDecisions[initCredentialDecisionMapKey(entry, spec.Key)] = initCredentialDecisionSkipOptional
 					case initSecretSourceClipboard:
 						value, err := deps.clipboardRead()
 						if err != nil {
@@ -5790,6 +5878,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			} else {
 				plan.writes[entry.Ref.Ref] = planned
 			}
+			plan.credentialDecisions = entryDecisions
 			if overwriteRef {
 				plan.overwriteRefs[entry.Ref.Ref] = true
 			}
@@ -5819,14 +5908,15 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 		return initSessionPlan{}, cmderr.Credential(err)
 	}
 	workspacePlan := initWorkspaceDraft{
-		cfg:              plan.cfg,
-		writes:           plan.writes,
-		credentialPlan:   plan.credentialPlan,
-		overwriteRefs:    plan.overwriteRefs,
-		satisfiedRefs:    plan.satisfiedRefs,
-		backendFlagSet:   plan.backendFlagSet,
-		backendArg:       plan.backendArg,
-		allowDeferredLLM: true,
+		cfg:                 plan.cfg,
+		writes:              plan.writes,
+		credentialPlan:      plan.credentialPlan,
+		credentialDecisions: plan.credentialDecisions,
+		overwriteRefs:       plan.overwriteRefs,
+		satisfiedRefs:       plan.satisfiedRefs,
+		backendFlagSet:      plan.backendFlagSet,
+		backendArg:          plan.backendArg,
+		allowDeferredLLM:    true,
 	}
 	workspacePlan, err = collectInteractiveInitSecrets(nil, opts, deps, workspacePlan)
 	if err != nil {
@@ -5834,6 +5924,7 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 	}
 	plan.writes = workspacePlan.writes
 	plan.credentialPlan = workspacePlan.credentialPlan
+	plan.credentialDecisions = workspacePlan.credentialDecisions
 	plan.overwriteRefs = workspacePlan.overwriteRefs
 	plan.satisfiedRefs = workspacePlan.satisfiedRefs
 	return plan, nil
@@ -6000,6 +6091,17 @@ func cloneInitBoolMap(values map[string]bool) map[string]bool {
 	return cloned
 }
 
+func cloneInitCredentialDecisions(values map[initCredentialDecisionKey]initCredentialDecisionKind) map[initCredentialDecisionKey]initCredentialDecisionKind {
+	if len(values) == 0 {
+		return map[initCredentialDecisionKey]initCredentialDecisionKind{}
+	}
+	cloned := make(map[initCredentialDecisionKey]initCredentialDecisionKind, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func filterInitWritesByRefs(writes map[string]map[string]string, activeRefs map[string]bool) map[string]map[string]string {
 	filtered := map[string]map[string]string{}
 	for ref, values := range writes {
@@ -6007,6 +6109,29 @@ func filterInitWritesByRefs(writes map[string]map[string]string, activeRefs map[
 			continue
 		}
 		filtered[ref] = copyStringMap(values)
+	}
+	return filtered
+}
+
+func filterInitCredentialDecisions(values map[initCredentialDecisionKey]initCredentialDecisionKind, entries []initCredentialPlanEntry) map[initCredentialDecisionKey]initCredentialDecisionKind {
+	if len(values) == 0 {
+		return map[initCredentialDecisionKey]initCredentialDecisionKind{}
+	}
+	active := map[initCredentialDecisionKey]bool{}
+	for _, entry := range entries {
+		if entry.State == initCredentialPlanStateClearRef {
+			continue
+		}
+		for _, spec := range entry.KeySpecs {
+			active[initCredentialDecisionMapKey(entry, spec.Key)] = true
+		}
+	}
+	filtered := map[initCredentialDecisionKey]initCredentialDecisionKind{}
+	for key, value := range values {
+		if !active[key] {
+			continue
+		}
+		filtered[key] = value
 	}
 	return filtered
 }
@@ -6337,6 +6462,35 @@ func initCredentialPurposeLabel(purpose string) string {
 		return "LLM"
 	default:
 		return purpose
+	}
+}
+
+func initCredentialSecretBundleLabel(entry initCredentialPlanEntry) string {
+	switch entry.Ref.Purpose {
+	case "reviewer_credentials":
+		switch config.GitAuthMode(entry.Ref.Mode) {
+		case config.GitAuthModeGitHubApp:
+			return "GitHub App reviewer secrets"
+		case config.GitAuthModePAT:
+			return "PAT reviewer secret"
+		case config.GitAuthModeOAuthDevice:
+			return "reviewer OAuth credentials"
+		}
+		return "reviewer secrets"
+	case "git":
+		switch config.GitAuthMode(entry.Ref.Mode) {
+		case config.GitAuthModeGitHubApp:
+			return "GitHub App Git secrets"
+		case config.GitAuthModePAT:
+			return "Git token"
+		case config.GitAuthModeOAuthDevice:
+			return "Git OAuth credentials"
+		}
+		return "Git credentials"
+	case "llm":
+		return "LLM credentials"
+	default:
+		return initCredentialPurposeLabel(entry.Ref.Purpose) + " credentials"
 	}
 }
 

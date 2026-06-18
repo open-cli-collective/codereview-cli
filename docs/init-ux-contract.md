@@ -144,19 +144,23 @@ Until the user chooses **Commit staged changes and exit**:
 
 Interactive `init` must offer both:
 
-- **Commit staged changes and exit**: validate the draft, collect or defer
-  required secrets, then write config and keyring state in the defined
-  final commit order
+- **Commit staged changes and exit**: validate the draft, collect or defer any
+  still-unhandled required secrets, then write config and keyring state in the
+  defined final commit order
 - **Discard staged changes and exit**: discard the draft and leave both config and
   keyring untouched
 
-Credential collection belongs near final commit, after the user has assembled the
-profile shape well enough to understand why each secret is needed.
+Credential values may be collected inside the relevant subflow once the user has
+enough local context to understand why each secret is needed. For example,
+reviewer-entity setup may collect PAT or GitHub App reviewer secrets immediately
+after the reviewer settings are staged. Those values remain draft-local until
+commit; final commit still handles untouched or deferred Git, reviewer, and LLM
+credential refs.
 
-If the user cancels during credential collection after choosing **Commit staged
-changes and exit**, any pending secret values remain draft-only and the session
-returns to a no-write state. Until final commit begins, cancellation must still
-leave both config and keyring untouched.
+If the user cancels during credential collection, whether from a subflow or after
+choosing **Commit staged changes and exit**, any pending secret values remain
+draft-only and the session returns to a no-write state. Until final commit
+begins, cancellation must still leave both config and keyring untouched.
 
 ## Draft-Local Reuse Rules
 
