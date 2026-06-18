@@ -3519,6 +3519,86 @@ func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T
 	}
 }
 
+func TestCollectInteractiveInitSecretsPassesDestinationToSharedCredentialPrompts(t *testing.T) {
+	cfg := config.File{
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"team-vault": {
+					Label:   "Team Vault",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+	}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, config.Profile{SecretsProfile: "team-vault"})
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+	}
+	refs := []config.CredentialRef{
+		{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
+		{Purpose: "llm", Ref: "codereview/work-llm", Mode: string(config.LLMAuthAPIKey), Provider: string(config.LLMProviderAnthropic)},
+		{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: string(config.GitAuthModePAT)},
+	}
+	entries := make([]initCredentialPlanEntry, 0, len(refs))
+	for _, ref := range refs {
+		specs, err := credentials.KeySpecsForPurpose(ref)
+		if err != nil {
+			t.Fatalf("KeySpecsForPurpose(%#v): %v", ref, err)
+		}
+		entries = append(entries, initCredentialPlanEntry{
+			Ref:                 ref,
+			SecretsProfile:      resolved,
+			KeySpecs:            specs,
+			MissingRequiredKeys: initCredentialRequiredKeys(initCredentialPlanEntry{KeySpecs: specs}),
+			State:               initCredentialPlanStateMissingRequired,
+		})
+	}
+	prompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{
+			initCredentialSecretActionSetNow,
+			initCredentialSecretActionSetNow,
+			initCredentialSecretActionSetNow,
+		},
+		sources: []initSecretSource{
+			initSecretSourcePaste,
+			initSecretSourcePaste,
+			initSecretSourcePaste,
+		},
+		pastes: []string{"git-token", "llm-key", "reviewer-token"},
+	}
+	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
+		secretPrompter:     prompter,
+		clipboardSupported: func() bool { return false },
+		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+	}, initWorkspaceDraft{
+		cfg:            cfg,
+		credentialPlan: entries,
+	})
+	if err != nil {
+		t.Fatalf("collectInteractiveInitSecrets: %v", err)
+	}
+	if len(workspace.writes) != 3 {
+		t.Fatalf("writes = %#v, want three staged credential refs", workspace.writes)
+	}
+	for _, prompt := range prompter.actionPrompts {
+		if !strings.Contains(prompt.Destination, "Destination: "+prompt.Entry.Ref.Ref+" via Team Vault (Encrypted file)") {
+			t.Fatalf("action prompt destination = %q for %#v", prompt.Destination, prompt.Entry.Ref)
+		}
+	}
+	for _, prompt := range prompter.sourcePrompts {
+		if !strings.Contains(prompt.Destination, "Destination: "+prompt.Entry.Ref.Ref+" via Team Vault (Encrypted file)") {
+			t.Fatalf("source prompt destination = %q for %#v", prompt.Destination, prompt.Entry.Ref)
+		}
+	}
+	for _, prompt := range prompter.pastePrompts {
+		if !strings.Contains(prompt.Destination, "Destination: "+prompt.Entry.Ref.Ref+" via Team Vault (Encrypted file)") {
+			t.Fatalf("paste prompt destination = %q for %#v", prompt.Destination, prompt.Entry.Ref)
+		}
+	}
+}
+
 func TestCollectInteractiveInitSecretsSourceBackReturnsToCredentialChoices(t *testing.T) {
 	store := newFakeInitStore(nil)
 	prompter := &fakeInitSecretPrompter{
@@ -14119,6 +14199,193 @@ func TestInitCredentialSecretPromptTitleReviewerKeys(t *testing.T) {
 				t.Fatalf("title = %q, want %q", tt.got, tt.want)
 			}
 		})
+	}
+}
+
+func TestInitCredentialDestinationDescriptionLegacyAutoUsesPlatformCopy(t *testing.T) {
+	t.Setenv(credentials.BackendEnvVar(), "")
+	entry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
+		SecretsProfile: credentials.ResolvedSecretsProfile{
+			ID:              config.LegacyProjectedSecretsProfileID,
+			Label:           "Legacy default",
+			Backend:         config.ProjectedLegacySecretsBackendKind,
+			Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
+			SelectionSource: credentials.SecretsProfileSelectionLegacyDefault,
+		},
+	}
+
+	description := initCredentialDestinationDescription(initCredentialDestinationContext{
+		Entry: entry,
+		Config: config.File{
+			Profiles: map[string]config.Profile{"work": basicProfile("work")},
+		},
+	})
+
+	for _, want := range []string{
+		"Destination: codereview/work via Legacy default",
+		initAutomaticOSDefaultSecretsBackendLabel(),
+		"Change destination by configuring/selecting a secrets-management profile",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("description = %q, want %q", description, want)
+		}
+	}
+}
+
+func TestInitCredentialDestinationDescriptionNamedOnePasswordShowsRoutingWithoutTokenValues(t *testing.T) {
+	serviceTokenEnv := strings.Join([]string{"OP_SERVICE_ACCOUNT", "TOKEN"}, "_")
+	connectTokenEnv := strings.Join([]string{"OP_CONNECT", "TOKEN"}, "_")
+	t.Setenv(serviceTokenEnv, "sentinel-service-token-value")
+	t.Setenv(connectTokenEnv, "sentinel-connect-token-value")
+	cfg := config.File{
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"team-vault": {
+					Label: "Team Vault",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendOP),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{
+							VaultID:         "Engineering",
+							ItemTitlePrefix: "cr-",
+							ItemTag:         "code-review",
+							ItemFieldTitle:  "credential",
+							ServiceTokenEnv: serviceTokenEnv,
+						},
+					},
+				},
+			},
+		},
+	}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, config.Profile{SecretsProfile: "team-vault"})
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+	}
+
+	description := initCredentialDestinationDescription(initCredentialDestinationContext{
+		Entry: initCredentialPlanEntry{
+			Ref:            config.CredentialRef{Purpose: "reviewer_credentials", Ref: "codereview/rianjs-bot", Mode: string(config.GitAuthModePAT)},
+			SecretsProfile: resolved,
+		},
+		Config: cfg,
+	})
+
+	for _, want := range []string{
+		"Destination: codereview/rianjs-bot via Team Vault (1Password service account)",
+		"Secrets profile: team-vault",
+		"1Password vault: Engineering",
+		"1Password item title prefix: cr-",
+		"1Password item tag: code-review",
+		"1Password item field title: credential",
+		"1Password backend auth env var: " + serviceTokenEnv,
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("description = %q, want %q", description, want)
+		}
+	}
+	for _, leaked := range []string{"sentinel-service-token-value", "sentinel-connect-token-value"} {
+		if strings.Contains(description, leaked) {
+			t.Fatalf("description leaked token value %q: %s", leaked, description)
+		}
+	}
+}
+
+func TestInitCredentialDestinationDescriptionOnePasswordConnectDoesNotReadTokenValue(t *testing.T) {
+	connectTokenEnv := strings.Join([]string{"CUSTOM_CONNECT", "TOKEN"}, "_")
+	t.Setenv(connectTokenEnv, "sentinel-connect-token-value")
+	cfg := config.File{
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"connect-vault": {
+					Label: "Connect Vault",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendOPConnect),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{
+							VaultID:         "Engineering",
+							ConnectHost:     "https://connect.example",
+							ConnectTokenEnv: connectTokenEnv,
+						},
+					},
+				},
+			},
+		},
+	}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, config.Profile{SecretsProfile: "connect-vault"})
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+	}
+
+	description := initCredentialDestinationDescription(initCredentialDestinationContext{
+		Entry: initCredentialPlanEntry{
+			Ref:            config.CredentialRef{Purpose: "llm", Ref: "codereview/work-llm", Mode: string(config.LLMAuthAPIKey), Provider: string(config.LLMProviderAnthropic)},
+			SecretsProfile: resolved,
+		},
+		Config: cfg,
+	})
+
+	for _, want := range []string{
+		"Destination: codereview/work-llm via Connect Vault (1Password Connect)",
+		"1Password Connect host: https://connect.example",
+		"1Password backend auth env var: " + connectTokenEnv,
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("description = %q, want %q", description, want)
+		}
+	}
+	if strings.Contains(description, "sentinel-connect-token-value") {
+		t.Fatalf("description leaked Connect token value: %s", description)
+	}
+}
+
+func TestInitCredentialDestinationDescriptionUnavailableIsNonFatal(t *testing.T) {
+	description := initCredentialDestinationDescription(initCredentialDestinationContext{
+		Entry: initCredentialPlanEntry{
+			Ref: config.CredentialRef{Purpose: "llm", Ref: "codereview/work-llm"},
+			SecretsProfile: credentials.ResolvedSecretsProfile{
+				ID:      "missing-profile",
+				Label:   "Missing Profile",
+				Backend: string(credstore.BackendOPConnect),
+				Source:  config.EffectiveSecretsProfileSourceConfigured,
+			},
+		},
+		Config: config.File{},
+	})
+
+	for _, want := range []string{
+		"Destination: codereview/work-llm",
+		"credential destination unavailable",
+		"Change destination by configuring/selecting a secrets-management profile",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("description = %q, want %q", description, want)
+		}
+	}
+}
+
+func TestHuhInitSecretPrompterAccessibleShowsCredentialDestination(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitSecretPrompter{
+		stdin:  strings.NewReader("\n"),
+		stderr: &stderr,
+	}
+	_, err := prompter.ChooseCredentialAction(initCredentialSecretPrompt{
+		Entry: initCredentialPlanEntry{
+			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
+			SecretsProfile: credentials.ResolvedSecretsProfile{
+				ID:      "team-vault",
+				Label:   "Team Vault",
+				Backend: string(credstore.BackendFile),
+				Source:  config.EffectiveSecretsProfileSourceConfigured,
+			},
+		},
+		Destination: "Destination: codereview/work via Team Vault (Encrypted file)",
+	})
+	if err != nil {
+		t.Fatalf("ChooseCredentialAction: %v", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "Destination: codereview/work via Team Vault (Encrypted file)") {
+		t.Fatalf("stderr = %q, want credential destination note", got)
 	}
 }
 
