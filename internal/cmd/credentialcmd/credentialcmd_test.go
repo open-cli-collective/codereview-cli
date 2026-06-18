@@ -3599,6 +3599,47 @@ func TestCollectInteractiveInitSecretsPassesDestinationToSharedCredentialPrompts
 	}
 }
 
+func TestCollectInteractiveInitSecretsDestinationUsesRawRuntimeBackend(t *testing.T) {
+	t.Setenv(credentials.BackendEnvVar(), "")
+	prompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	}
+	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{Backend: string(credstore.BackendMemory)}, initDeps{
+		secretPrompter:     prompter,
+		clipboardSupported: func() bool { return false },
+	}, initWorkspaceDraft{
+		cfg: config.File{},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
+			SecretsProfile: credentials.ResolvedSecretsProfile{
+				ID:              config.LegacyProjectedSecretsProfileID,
+				Label:           "Legacy default",
+				Backend:         config.ProjectedLegacySecretsBackendKind,
+				Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
+				SelectionSource: credentials.SecretsProfileSelectionLegacyDefault,
+			},
+			KeySpecs:            []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
+			MissingRequiredKeys: []string{credentials.GitTokenKey},
+			State:               initCredentialPlanStateMissingRequired,
+		}},
+		backendFlagSet: true,
+		backendArg:     " --backend memory",
+	})
+	if err != nil {
+		t.Fatalf("collectInteractiveInitSecrets: %v", err)
+	}
+	if len(prompter.actionPrompts) != 1 {
+		t.Fatalf("action prompts = %d, want 1", len(prompter.actionPrompts))
+	}
+	destination := prompter.actionPrompts[0].Destination
+	if !strings.Contains(destination, "Destination: codereview/work via Legacy default (In-memory store)") {
+		t.Fatalf("destination = %q, want raw runtime backend metadata", destination)
+	}
+	if strings.Contains(destination, "credential destination unavailable") {
+		t.Fatalf("destination = %q, want available runtime backend summary", destination)
+	}
+}
+
 func TestCollectInteractiveInitSecretsSourceBackReturnsToCredentialChoices(t *testing.T) {
 	store := newFakeInitStore(nil)
 	prompter := &fakeInitSecretPrompter{
@@ -14334,6 +14375,47 @@ func TestInitCredentialDestinationDescriptionOnePasswordConnectDoesNotReadTokenV
 	}
 	if strings.Contains(description, "sentinel-connect-token-value") {
 		t.Fatalf("description leaked Connect token value: %s", description)
+	}
+}
+
+func TestInitCredentialDestinationDescriptionOnePasswordDesktopShowsAccountID(t *testing.T) {
+	cfg := config.File{
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"desktop-vault": {
+					Label: "Desktop Vault",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{
+							VaultID:          "Engineering",
+							DesktopAccountID: "account-123",
+						},
+					},
+				},
+			},
+		},
+	}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, config.Profile{SecretsProfile: "desktop-vault"})
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+	}
+
+	description := initCredentialDestinationDescription(initCredentialDestinationContext{
+		Entry: initCredentialPlanEntry{
+			Ref:            config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
+			SecretsProfile: resolved,
+		},
+		Config: cfg,
+	})
+
+	for _, want := range []string{
+		"Destination: codereview/work via Desktop Vault (1Password desktop app)",
+		"1Password vault: Engineering",
+		"1Password desktop account id: account-123",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("description = %q, want %q", description, want)
+		}
 	}
 }
 

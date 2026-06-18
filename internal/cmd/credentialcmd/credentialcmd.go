@@ -5764,10 +5764,14 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 		if initCredentialEntryDeferredByDecision(plan.credentialDecisions, entry) {
 			continue
 		}
+		destinationBackend := ""
+		if opts != nil {
+			destinationBackend = opts.Backend
+		}
 		destination := initCredentialDestinationDescription(initCredentialDestinationContext{
 			Entry:          entry,
 			Config:         plan.cfg,
-			BackendArg:     plan.backendArg,
+			BackendArg:     destinationBackend,
 			BackendFlagSet: plan.backendFlagSet,
 		})
 	credentialChoices:
