@@ -105,7 +105,8 @@ type findingsWire struct {
 type findingWire struct {
 	FindingID json.RawMessage `json:"finding_id,omitempty"`
 	Severity  string          `json:"severity"`
-	FilePath  string          `json:"file_path"`
+	FilePath  json.RawMessage `json:"file_path"`
+	FileAlias json.RawMessage `json:"file"`
 	Anchor    anchorWire      `json:"anchor"`
 	Body      string          `json:"body"`
 }
@@ -236,8 +237,12 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 		if capValue, ok := opts.SeverityCaps[severity]; ok && severityCounts[severity] > capValue {
 			return Findings{}, fmt.Errorf("llm: %s severity cap exceeded", severity)
 		}
-		if strings.TrimSpace(found.FilePath) == "" || !opts.ChangedFiles[found.FilePath] {
-			return Findings{}, fmt.Errorf("llm: finding file %q is not in changed files", found.FilePath)
+		filePath, err := found.normalizedFilePath()
+		if err != nil {
+			return Findings{}, err
+		}
+		if strings.TrimSpace(filePath) == "" || !opts.ChangedFiles[filePath] {
+			return Findings{}, fmt.Errorf("llm: finding file %q is not in changed files", filePath)
 		}
 		if len(strings.TrimSpace(found.Body)) == 0 || utf8.RuneCountInString(found.Body) > maxBody {
 			return Findings{}, fmt.Errorf("llm: finding body length out of bounds")
@@ -260,7 +265,7 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 		finding := review.Finding{
 			ID:       id,
 			Severity: severity,
-			FilePath: found.FilePath,
+			FilePath: filePath,
 			Anchor:   anchor,
 			Body:     sanitize(found.Body),
 		}
@@ -270,6 +275,44 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 		result.Findings = append(result.Findings, finding)
 	}
 	return result, nil
+}
+
+func (wire findingWire) normalizedFilePath() (string, error) {
+	filePath, hasFilePath, err := decodeOptionalStringField("file_path", wire.FilePath)
+	if err != nil {
+		return "", err
+	}
+	fileAlias, hasFileAlias, err := decodeOptionalStringField("file", wire.FileAlias)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case hasFilePath && hasFileAlias:
+		if filePath != fileAlias {
+			return "", fmt.Errorf("llm: finding file and file_path values differ")
+		}
+		return filePath, nil
+	case hasFilePath:
+		return filePath, nil
+	case hasFileAlias:
+		return fileAlias, nil
+	default:
+		return "", nil
+	}
+}
+
+func decodeOptionalStringField(name string, raw json.RawMessage) (string, bool, error) {
+	if len(raw) == 0 {
+		return "", false, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", true, fmt.Errorf("llm: finding %s must be a string", name)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", true, fmt.Errorf("llm: finding %s must be a string", name)
+	}
+	return value, true, nil
 }
 
 // DecodeRollup validates and maps Rollup structured output.
