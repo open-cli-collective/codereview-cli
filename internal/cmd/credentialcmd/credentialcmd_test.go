@@ -5672,7 +5672,11 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 160, 60)
 			model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
-			_, _ = io.WriteString(out, model.View())
+			initial := model.View()
+			if strings.Contains(initial, "Stage runtime deletion") {
+				t.Fatalf("initial view exposes delete staging action before delete shortcut:\n%s", initial)
+			}
+			_, _ = io.WriteString(out, initial)
 			updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 			next, ok := updated.(initLinearEditorModel)
 			if !ok {
@@ -14100,6 +14104,113 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.
 	}
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu before LLM category and after backing out", menu.prompts)
+	}
+}
+
+func TestInitInteractiveLLMRuntimeDeletePersistsReplacementAndReloadsCleanly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionSave,
+		},
+	}
+	llmCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmCalls++
+			if llmCalls > 2 {
+				t.Fatalf("unexpected LLM prompt #%d", llmCalls)
+			}
+			if llmCalls == 2 {
+				return initDraft{}, errInitNavigateBack
+			}
+			if _, ok := prompt.Context.LLMRuntimes["claude-cli"]; !ok {
+				t.Fatalf("LLMRuntimes = %#v, want configured claude-cli before delete", prompt.Context.LLMRuntimes)
+			}
+			return initDraft{
+				Action:       initDraftActionDeleteLLMRuntime,
+				ActionTarget: "claude-cli",
+				LLMProvider:  string(config.LLMProviderOpenAI),
+				LLMAuth:      string(config.LLMAuthSubscription),
+				LLMAdapter:   string(config.LLMAdapterCodexCLI),
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps save: %v", err)
+	}
+	if llmCalls != 2 {
+		t.Fatalf("llmCalls = %d, want staged runtime delete then category back", llmCalls)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load saved config: %v", err)
+	}
+	work := saved.Profiles["work"]
+	if work.LLM.Provider != config.LLMProviderOpenAI || work.LLM.Auth != config.LLMAuthSubscription || work.LLM.Adapter != config.LLMAdapterCodexCLI {
+		t.Fatalf("saved LLM = %#v, want Codex CLI subscription replacement", work.LLM)
+	}
+	runtimes, profileRuntimes := buildInitLLMRuntimeInventory(saved)
+	if _, ok := runtimes["claude-cli"]; ok {
+		t.Fatalf("saved runtime inventory = %#v, want deleted claude-cli absent", runtimes)
+	}
+	if _, ok := runtimes["codex-cli"]; !ok {
+		t.Fatalf("saved runtime inventory = %#v, want replacement codex-cli present", runtimes)
+	}
+	if got := profileRuntimes["work"]; got != "codex-cli" {
+		t.Fatalf("profile runtime = %q, want codex-cli after save", got)
+	}
+
+	reloadMenu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionExit,
+		},
+	}
+	reloadCalls := 0
+	reloadDeps := initDeps{
+		menuPrompter: reloadMenu,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			reloadCalls++
+			if len(prompt.Context.PendingLLMRuntimeDeletes) != 0 {
+				t.Fatalf("PendingLLMRuntimeDeletes = %#v, want no stale staged deletion on reload", prompt.Context.PendingLLMRuntimeDeletes)
+			}
+			if _, ok := prompt.Context.LLMRuntimes["claude-cli"]; ok {
+				t.Fatalf("reload LLMRuntimes = %#v, want deleted claude-cli absent", prompt.Context.LLMRuntimes)
+			}
+			if _, ok := prompt.Context.LLMRuntimes["codex-cli"]; !ok {
+				t.Fatalf("reload LLMRuntimes = %#v, want codex-cli replacement present", prompt.Context.LLMRuntimes)
+			}
+			return initDraft{}, errInitNavigateBack
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called during reload-only verification")
+			return nil
+		},
+	}
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, reloadDeps); err != nil {
+		t.Fatalf("runInitWithDeps reload: %v", err)
+	}
+	if reloadCalls != 1 {
+		t.Fatalf("reloadCalls = %d, want one reload inventory prompt", reloadCalls)
 	}
 }
 
