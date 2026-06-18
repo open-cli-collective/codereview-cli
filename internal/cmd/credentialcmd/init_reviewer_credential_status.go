@@ -102,10 +102,11 @@ func interactiveInitReviewerCredentialPlanEntries(session initSessionDraft, plan
 		profile = currentProfile
 	}
 	entries, err := planInitCredentialsWithConfig(session.cfg, session.workspace.previousProfile, profile, plannedWriteKeys)
-	if err == nil && hasInitReviewerCredentialPlanEntry(entries) {
-		return refreshInteractiveCredentialPlan(entries, plannedWriteKeys, session.satisfiedRefs)
+	if err != nil || !hasInitReviewerCredentialPlanEntry(entries) {
+		entries = append([]initCredentialPlanEntry(nil), session.workspace.credentialPlan...)
 	}
-	return refreshInteractiveCredentialPlan(session.workspace.credentialPlan, plannedWriteKeys, session.satisfiedRefs)
+	entries = appendSelectableReviewerCredentialPlanEntries(session, profile, plannedWriteKeys, entries)
+	return refreshInteractiveCredentialPlan(entries, plannedWriteKeys, session.satisfiedRefs)
 }
 
 func hasInitReviewerCredentialPlanEntry(entries []initCredentialPlanEntry) bool {
@@ -115,6 +116,50 @@ func hasInitReviewerCredentialPlanEntry(entries []initCredentialPlanEntry) bool 
 		}
 	}
 	return false
+}
+
+func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, profile config.Profile, plannedWriteKeys map[string][]string, entries []initCredentialPlanEntry) []initCredentialPlanEntry {
+	resolved, err := credentials.ResolveSecretsProfileForProfile(session.cfg, profile)
+	if err != nil {
+		return entries
+	}
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		seen[initCredentialEntryKey(entry.Ref)] = struct{}{}
+	}
+	entities, _ := buildInitReviewerEntityInventory(session.cfg)
+	for _, entity := range entities {
+		if entity.Kind == initReviewerEntityKindUseGitIdentity {
+			continue
+		}
+		ref := config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     strings.TrimSpace(entity.CredentialRef),
+			Mode:    string(entity.AuthMode),
+		}
+		if ref.Ref == "" {
+			continue
+		}
+		key := initCredentialEntryKey(ref)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		specs, err := credentials.KeySpecsForPurpose(ref)
+		if err != nil {
+			continue
+		}
+		entry := initCredentialPlanEntry{
+			Ref:              ref,
+			SecretsProfile:   resolved,
+			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
+			PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
+		}
+		entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
+		entry.State = classifyInitCredentialPlanEntry(entry)
+		entries = append(entries, entry)
+		seen[key] = struct{}{}
+	}
+	return entries
 }
 
 func initReviewerCredentialStatusFromEntry(entry initCredentialPlanEntry, planned map[string]string, decisions map[initCredentialDecisionKey]initCredentialDecisionKind, existing map[string]bool, unavailable string) initReviewerCredentialStatus {
@@ -157,14 +202,17 @@ func deriveInitReviewerCredentialKeyState(entry initCredentialPlanEntry, spec cr
 	return initReviewerCredentialKeyOptional
 }
 
-func initReviewerCredentialStatusForSelection(ctx initPromptContext, seed initDraft, selection string) (initReviewerCredentialStatus, bool) {
+func initReviewerCredentialStatusForSelectionRef(ctx initPromptContext, seed initDraft, selection string, reviewerSecretLocation string) (initReviewerCredentialStatus, bool) {
 	state, err := reviewerEntityEditorStateForSelection(ctx, seed, selection)
 	if err != nil || state.kind == initReviewerEntityKindUseGitIdentity {
 		return initReviewerCredentialStatus{}, false
 	}
-	ref := strings.TrimSpace(state.seed.ReviewerCredentialRef)
+	ref := strings.TrimSpace(reviewerSecretLocation)
 	if ref == "" {
-		ref = state.standardReviewerRef
+		ref = strings.TrimSpace(state.seed.ReviewerCredentialRef)
+		if ref == "" {
+			ref = state.standardReviewerRef
+		}
 	}
 	if ref == "" {
 		return initReviewerCredentialStatus{}, false

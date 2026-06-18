@@ -6346,6 +6346,68 @@ func TestHuhInitReviewerEntityPrompterGitHubAppLinearFlowShowsCredentialBundleCo
 	}
 }
 
+func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.T) {
+	profile := basicProfile("work")
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/old-reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": profile},
+	}
+	entities, profileEntities := buildInitReviewerEntityInventory(cfg)
+	profileCopy := profile
+	ctx := initPromptContext{
+		RequestedProfileName:    "work",
+		ExistingProfileName:     "work",
+		DefaultProfileName:      "work",
+		ExistingProfile:         &profileCopy,
+		ExistingConfig:          cfg,
+		ReviewerEntities:        entities,
+		ProfileReviewerEntities: profileEntities,
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/old-reviewer",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			Keys: []initReviewerCredentialKeyStatus{{
+				Key:      credentials.GitTokenKey,
+				Required: true,
+				State:    initReviewerCredentialKeyExisting,
+			}},
+		}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &profile)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 180, 60)
+	statusIndex := model.document.fieldIndexByID(initReviewerEntityFieldCredentialStatus)
+	if statusIndex < 0 {
+		t.Fatal("reviewer credential status field missing")
+	}
+	initial := model.document[statusIndex].Description
+	if !strings.Contains(initial, "codereview/old-reviewer") || !strings.Contains(initial, credentials.GitTokenKey+": existing") {
+		t.Fatalf("initial status = %q, want old reviewer existing token", initial)
+	}
+
+	locationIndex := model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation)
+	if locationIndex < 0 {
+		t.Fatal("reviewer secret location field missing")
+	}
+	model.document[locationIndex].Value = "codereview/new-reviewer"
+	model.afterFieldChange(locationIndex)
+
+	updated := model.document[statusIndex].Description
+	for _, want := range []string{"Destination: codereview/new-reviewer", credentials.GitTokenKey + ": missing"} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("updated status = %q, want %q", updated, want)
+		}
+	}
+	if strings.Contains(updated, "codereview/old-reviewer") || strings.Contains(updated, credentials.GitTokenKey+": existing") {
+		t.Fatalf("updated status = %q, want old ref existing state cleared", updated)
+	}
+}
+
 func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	draft := seedInteractiveInitDraft("work", "work", "work", nil)
@@ -14223,6 +14285,46 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 	}
 	if strings.Contains(description, "existing-token") {
 		t.Fatalf("description leaked secret value: %s", description)
+	}
+}
+
+func TestInitReviewerCredentialStatusIncludesSelectableReviewerEntities(t *testing.T) {
+	work := basicProfile("work")
+	bot := basicProfile("bot")
+	bot.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/shared-reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": work,
+			"bot":  bot,
+		},
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"shared-reviewer": {credentials.GitTokenKey: "existing-token"},
+	})
+	session := initSessionDraft{
+		cfg: cfg,
+		workspace: &initWorkspaceDraft{
+			profileName: "work",
+			profile:     work,
+		},
+		writes:              map[string]map[string]string{},
+		credentialDecisions: map[initCredentialDecisionKey]initCredentialDecisionKind{},
+	}
+	deps := initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+	}
+
+	statuses := buildInteractiveInitReviewerCredentialStatuses(&root.Options{}, deps, session)
+	status := findReviewerCredentialStatusForTest(t, statuses, "codereview/shared-reviewer", string(config.GitAuthModePAT))
+	assertReviewerCredentialKeyState(t, status, credentials.GitTokenKey, initReviewerCredentialKeyExisting)
+	if strings.Contains(initReviewerCredentialStatusDescription(status), "existing-token") {
+		t.Fatalf("status description leaked secret value: %s", initReviewerCredentialStatusDescription(status))
 	}
 }
 

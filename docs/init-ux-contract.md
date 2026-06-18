@@ -170,7 +170,7 @@ selected reviewer credential ref:
 - GitHub App reviewers show required `github_app_id` and
   `github_app_private_key`, plus optional `github_app_installation_id`.
 - Each key may be shown as `missing`, `existing`, `staged`, `skipped optional`,
-  `deferred`, or `status unavailable`.
+  `deferred`, `optional`, or `status unavailable`.
 - The destination should include the storage label and the resolved
   secrets-management profile/backend when known.
 
