@@ -1574,8 +1574,8 @@ func editInteractiveInitSecretsManagement(_ *cobra.Command, opts *root.Options, 
 func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction, error) {
 	action := initMenuInitialAction(prompt)
 	options := []huh.Option[initMenuAction]{
-		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
 		huh.NewOption(fmt.Sprintf("Configure LLM runtimes (%d)", prompt.LLMRuntimeCount), initMenuActionLLMRuntimes),
+		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
 		huh.NewOption(fmt.Sprintf("Configure review profiles (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfiles),
 		huh.NewOption("Configure global settings", initMenuActionGlobalSettings),
 		huh.NewOption("Configure secrets management", initMenuActionSecretsManagement),
@@ -1616,11 +1616,11 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 }
 
 func initMenuInitialAction(prompt initMenuPrompt) initMenuAction {
-	if prompt.CanConfigureReviewer {
-		return initMenuActionReviewerEntities
-	}
 	if prompt.CanConfigureLLM {
 		return initMenuActionLLMRuntimes
+	}
+	if prompt.CanConfigureReviewer {
+		return initMenuActionReviewerEntities
 	}
 	return initMenuActionReviewProfiles
 }

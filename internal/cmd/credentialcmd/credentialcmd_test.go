@@ -11325,8 +11325,8 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	}
 	out := stderr.String()
 	for _, want := range []string{
-		"Configure reviewer entities (3)",
 		"Configure LLM runtimes (2)",
+		"Configure reviewer entities (3)",
 		"Configure review profiles (1)",
 		"Configure global settings",
 		"Configure secrets management",
@@ -11344,8 +11344,8 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 		t.Fatalf("stderr = %q, want temporary v2 menu item removed", out)
 	}
 	assertContentOrder(t, out,
-		"Configure reviewer entities (3)",
 		"Configure LLM runtimes (2)",
+		"Configure reviewer entities (3)",
 		"Configure review profiles (1)",
 		"Configure global settings",
 		"Configure secrets management",
@@ -11396,8 +11396,25 @@ func TestHuhInitMenuPrompterDefaultStartsAtTopWhenProfileIsActive(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ChooseAction: %v", err)
 	}
+	if action != initMenuActionLLMRuntimes {
+		t.Fatalf("action = %q, want LLM runtimes as first active-workspace configuration item", action)
+	}
+}
+
+func TestInitMenuInitialActionFallsBackToReviewerWhenLLMDisabled(t *testing.T) {
+	action := initMenuInitialAction(initMenuPrompt{
+		HasWorkspace:         true,
+		CanConfigureReviewer: true,
+	})
 	if action != initMenuActionReviewerEntities {
-		t.Fatalf("action = %q, want first main-menu configuration item", action)
+		t.Fatalf("action = %q, want reviewer entities when LLM runtimes are disabled", action)
+	}
+}
+
+func TestInitMenuInitialActionStartsAtReviewProfilesBeforeWorkspace(t *testing.T) {
+	action := initMenuInitialAction(initMenuPrompt{})
+	if action != initMenuActionReviewProfiles {
+		t.Fatalf("action = %q, want review profiles before workspace-dependent actions are enabled", action)
 	}
 }
 
@@ -11447,7 +11464,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Configure LLM runtimes (disabled)
+			"1", // Configure LLM runtimes (disabled)
 			"7", // Discard staged changes and exit
 			"",
 		}, "\n")),
