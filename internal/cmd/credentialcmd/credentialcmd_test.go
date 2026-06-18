@@ -14357,7 +14357,7 @@ func TestInitCredentialDestinationDescriptionNamedOnePasswordShowsRoutingWithout
 		"1Password item title prefix: cr-",
 		"1Password item tag: code-review",
 		"1Password item field title: credential",
-		"1Password backend auth env var: " + serviceTokenEnv,
+		"1Password service account token env var: " + serviceTokenEnv,
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description = %q, want %q", description, want)
@@ -14406,7 +14406,7 @@ func TestInitCredentialDestinationDescriptionOnePasswordConnectDoesNotReadTokenV
 	for _, want := range []string{
 		"Destination: codereview/work-llm via Connect Vault (1Password Connect)",
 		"1Password Connect host: https://connect.example",
-		"1Password backend auth env var: " + connectTokenEnv,
+		"1Password Connect token env var: " + connectTokenEnv,
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description = %q, want %q", description, want)

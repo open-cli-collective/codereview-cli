@@ -6837,14 +6837,14 @@ func readSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag strin
 }
 
 func initSecretPasteDescription(prompt initSecretValuePrompt) string {
-	description := "Secret input is hidden."
+	hiddenInputNotice := "Secret input is hidden."
 	if prompt.Key == credentials.GitHubAppPrivateKeyKey {
-		description = "Secret input is hidden. Clipboard is recommended for multi-line private keys."
+		hiddenInputNotice = "Secret input is hidden. Clipboard is recommended for multi-line private keys."
 	}
 	if destination := strings.TrimSpace(prompt.Destination); destination != "" {
-		description = destination + "\n" + description
+		return destination + "\n" + hiddenInputNotice
 	}
-	return description
+	return hiddenInputNotice
 }
 
 func readOptionalSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag string) (string, bool, error) {

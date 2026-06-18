@@ -53,11 +53,11 @@ func initNamedCredentialDestinationDetails(ctx initCredentialDestinationContext,
 	}
 	backendLabel := initSecretsBackendDisplayLabel(backendKind)
 	lines := []string{}
-	if strings.TrimSpace(resolved.ID) != "" {
-		lines = append(lines, "Secrets profile: "+strings.TrimSpace(resolved.ID))
+	if value := strings.TrimSpace(resolved.ID); value != "" {
+		lines = append(lines, "Secrets profile: "+value)
 	}
-	if strings.TrimSpace(string(backendKind)) != "" {
-		lines = append(lines, "Backend kind: "+strings.TrimSpace(string(backendKind)))
+	if value := strings.TrimSpace(string(backendKind)); value != "" {
+		lines = append(lines, "Backend kind: "+value)
 	}
 	lines = append(lines, initOnePasswordDestinationDetails(profile.Backend)...)
 	return fmt.Sprintf("%s via %s (%s)", ref, displayName, backendLabel), lines
@@ -107,10 +107,10 @@ func initOnePasswordDestinationDetails(backend config.SecretsProfileBackend) []s
 		lines = append(lines, "1Password Connect host: "+value)
 	}
 	if value := strings.TrimSpace(onePassword.ServiceTokenEnv); value != "" {
-		lines = append(lines, "1Password backend auth env var: "+value)
+		lines = append(lines, "1Password service account token env var: "+value)
 	}
 	if value := strings.TrimSpace(onePassword.ConnectTokenEnv); value != "" {
-		lines = append(lines, "1Password backend auth env var: "+value)
+		lines = append(lines, "1Password Connect token env var: "+value)
 	}
 	if value := strings.TrimSpace(onePassword.DesktopAccountID); value != "" {
 		lines = append(lines, "1Password desktop account id: "+value)
