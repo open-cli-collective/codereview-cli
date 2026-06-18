@@ -254,6 +254,10 @@ func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgdown", "f", " ":
 			m.viewport.HalfPageDown()
 			return m, nil
+		case "up", "down", "j", "k":
+			// Up/Down only changes the focused select. Inputs should not leak
+			// these keys to the viewport and scroll the whole form.
+			return m, nil
 		case "home", "g":
 			m.focused = m.document.firstFocusableField()
 			m.relayout()

@@ -32,13 +32,13 @@ func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *t
 	for _, item := range model.list.VisibleItems() {
 		got = append(got, item.(initInventoryItem).row.ID)
 	}
-	want := []string{"pat", "restore-app", "create-pat", "back"}
+	want := []string{"pat", "create-pat", "back", "restore-app"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("visible item ids = %#v, want %#v", got, want)
 	}
 }
 
-func TestInitInventoryReordersRowsIntoActivePendingAndCommandGroups(t *testing.T) {
+func TestInitInventoryReordersRowsIntoActiveCommandAndPendingGroups(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:  "Reviewer entity",
 		Width:  80,
@@ -54,15 +54,15 @@ func TestInitInventoryReordersRowsIntoActivePendingAndCommandGroups(t *testing.T
 	for _, row := range model.rows {
 		got = append(got, row.ID)
 	}
-	want := []string{"pat", "restore-app", "back"}
+	want := []string{"pat", "back", "restore-app"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ordered row ids = %#v, want %#v", got, want)
 	}
 	if model.rows[1].Description != "" {
-		t.Fatalf("pending description = %q, want empty description", model.rows[1].Description)
+		t.Fatalf("command description = %q, want empty description", model.rows[1].Description)
 	}
 	if model.rows[2].Description != "" {
-		t.Fatalf("command description = %q, want empty description", model.rows[2].Description)
+		t.Fatalf("pending description = %q, want empty description", model.rows[2].Description)
 	}
 }
 
@@ -118,6 +118,7 @@ func TestInitInventoryRestoreKeyRestoresPendingRow(t *testing.T) {
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
+	model.list.Select(1)
 
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	resultModel := next.(initInventoryModel)
@@ -167,7 +168,7 @@ func TestInitInventoryFilterAppliedStillAllowsEnterAndRestore(t *testing.T) {
 	}
 
 	model.list.SetFilterText("default")
-	model.list.Select(1)
+	model.list.Select(2)
 	restoreNext, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	restoreResult := restoreNext.(initInventoryModel).Result()
 	if restoreResult.Action != initInventoryActionRestore || restoreResult.Row.ID != "restore-app" {
@@ -544,7 +545,7 @@ func TestInitLLMRuntimeInventoryDeterministicRunnerReturnsRestoreAction(t *testi
 		Height: 20,
 		Mode:   initInventoryModeDeterministic,
 		Messages: []tea.Msg{
-			tea.KeyMsg{Type: tea.KeyDown},
+			tea.KeyMsg{Type: tea.KeyEnd},
 			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")},
 		},
 		Rows: rows,
@@ -599,7 +600,7 @@ func TestInitInventoryViewShowsContextualHelpBindings(t *testing.T) {
 		}
 	}
 
-	model.list.Select(1)
+	model.list.Select(2)
 	out = model.View()
 	if !strings.Contains(out, "r") || !strings.Contains(out, "restore") {
 		t.Fatalf("view = %q, want restore help for selected restorable row", out)
@@ -608,7 +609,7 @@ func TestInitInventoryViewShowsContextualHelpBindings(t *testing.T) {
 		t.Fatalf("view = %q, did not want delete help for selected restorable row", out)
 	}
 
-	model.list.Select(2)
+	model.list.Select(1)
 	out = model.View()
 	for _, unwanted := range []string{"delete", "restore"} {
 		if strings.Contains(out, unwanted) {

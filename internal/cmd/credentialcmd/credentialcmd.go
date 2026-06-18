@@ -6220,7 +6220,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 }
 
 func writeInteractiveInitSessionSummary(w io.Writer, plan initSessionPlan) error {
-	if _, err := fmt.Fprintln(w, "Initialized staged changes"); err != nil {
+	if _, err := fmt.Fprintln(w, "Saved staged init changes"); err != nil {
 		return err
 	}
 	for _, line := range interactiveInitSessionSummaryLines(plan) {

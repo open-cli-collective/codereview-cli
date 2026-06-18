@@ -9354,6 +9354,26 @@ func TestInitLinearEditorArrowKeysChangeSelectNotFocus(t *testing.T) {
 	}
 }
 
+func TestInitLinearEditorArrowKeysDoNotScrollFocusedInput(t *testing.T) {
+	const inputField initLinearFieldID = "input"
+	var document initLinearDocument
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	for i := 0; i < 20; i++ {
+		document.addSection(fmt.Sprintf("Section %02d", i), "Context line")
+	}
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 5)
+	model.viewport.SetYOffset(1)
+
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	if got := model.viewport.YOffset; got != 1 {
+		t.Fatalf("viewport YOffset after input down = %d, want unchanged 1", got)
+	}
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
+	if got := model.viewport.YOffset; got != 1 {
+		t.Fatalf("viewport YOffset after input up = %d, want unchanged 1", got)
+	}
+}
+
 func TestInitLinearEditorOnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
 	const firstField initLinearFieldID = "first"
 	const secondField initLinearFieldID = "second"
@@ -10193,6 +10213,11 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t 
 				if !strings.Contains(model.layout.Content, "1PasswordFoo (1Password desktop app) (Staged for deletion)") {
 					t.Fatalf("second editor content missing pending row:\n%s", model.layout.Content)
 				}
+				targetIndex := model.document.fieldIndexByID(initSecretsManagementFieldTarget)
+				targetOptions := model.document[targetIndex].Options
+				if got := targetOptions[len(targetOptions)-1].Value; got != initSecretsManagementRestoreSelectionPrefix+"onepasswordfoo" {
+					t.Fatalf("last target option = %q, want staged deletion restore option last; options = %#v", got, targetOptions)
+				}
 				model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
 				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
 				updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -10226,6 +10251,44 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t 
 	}
 	if !strings.Contains(stderr.String(), "1PasswordFoo (1Password desktop app) (Staged for deletion)") {
 		t.Fatalf("stderr = %q, want staged deletion suffix", stderr.String())
+	}
+}
+
+func TestInitSecretsManagementTargetOptionsMovesPendingDeletesToBottomInDeletionOrder(t *testing.T) {
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+		Secrets: config.SecretsConfig{
+			Profiles: map[string]config.SecretsProfile{
+				"personal": {
+					Label:   "Personal",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+	}
+	pendingDeletes := map[string]initPendingSecretsManagementDelete{
+		"alpha": {ID: "alpha", Profile: config.SecretsProfile{
+			Label:   "Alpha",
+			Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+		}},
+		"beta": {ID: "beta", Profile: config.SecretsProfile{
+			Label:   "Beta",
+			Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+		}},
+	}
+
+	options := initSecretsManagementTargetOptions(cfg, pendingDeletes, []string{"alpha", "beta"})
+	values := make([]string, 0, len(options))
+	for _, option := range options {
+		values = append(values, option.Value)
+	}
+	wantSuffix := []string{
+		initSecretsManagementRestoreSelectionPrefix + "alpha",
+		initSecretsManagementRestoreSelectionPrefix + "beta",
+	}
+	if len(values) < len(wantSuffix) || !reflect.DeepEqual(values[len(values)-len(wantSuffix):], wantSuffix) {
+		t.Fatalf("target option values = %#v, want pending deletes last in staging order %#v", values, wantSuffix)
 	}
 }
 
@@ -11025,6 +11088,26 @@ func TestInitProfileV2ArrowKeysChangeSelectNotFocus(t *testing.T) {
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
 	if model.focused != inputIndex {
 		t.Fatalf("focused after input down = %d, want unchanged input index %d", model.focused, inputIndex)
+	}
+}
+
+func TestInitProfileV2ArrowKeysDoNotScrollFocusedInput(t *testing.T) {
+	const inputField initProfileV2FieldID = "input"
+	var document initProfileV2Document
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	for i := 0; i < 20; i++ {
+		document.addSection(fmt.Sprintf("Section %02d", i), "Context line")
+	}
+	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 120, 5)
+	model.viewport.SetYOffset(1)
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
+	if got := model.viewport.YOffset; got != 1 {
+		t.Fatalf("viewport YOffset after input down = %d, want unchanged 1", got)
+	}
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
+	if got := model.viewport.YOffset; got != 1 {
+		t.Fatalf("viewport YOffset after input up = %d, want unchanged 1", got)
 	}
 }
 
@@ -14300,7 +14383,7 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 			t.Fatalf("profile notes = %#v, want deferred git note for %s", profile.Notes, name)
 		}
 	}
-	if !strings.Contains(stdout.String(), "Initialized staged changes") || !strings.Contains(stdout.String(), "- review profiles: 2") || !strings.Contains(stdout.String(), "- home: needs follow-up") || !strings.Contains(stdout.String(), "- work: needs follow-up") {
+	if !strings.Contains(stdout.String(), "Saved staged init changes") || !strings.Contains(stdout.String(), "- review profiles: 2") || !strings.Contains(stdout.String(), "- home: needs follow-up") || !strings.Contains(stdout.String(), "- work: needs follow-up") {
 		t.Fatalf("stdout = %q, want readiness summary for both profiles", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "set-credential --ref codereview/home --key "+credentials.GitTokenKey) || !strings.Contains(stderr.String(), "set-credential --ref codereview/work --key "+credentials.GitTokenKey) {
@@ -14386,7 +14469,7 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 	if cfg.Profiles["default"].Git.CredentialRef != "codereview/default" {
 		t.Fatalf("default profile git ref = %q, want codereview/default", cfg.Profiles["default"].Git.CredentialRef)
 	}
-	if !strings.Contains(stdout.String(), "Initialized staged changes") || !strings.Contains(stdout.String(), "- review profiles: 1") || !strings.Contains(stdout.String(), "- credential secrets: 1 ref") || !strings.Contains(stdout.String(), "- default: ready") {
+	if !strings.Contains(stdout.String(), "Saved staged init changes") || !strings.Contains(stdout.String(), "- review profiles: 1") || !strings.Contains(stdout.String(), "- credential secrets: 1 ref") || !strings.Contains(stdout.String(), "- default: ready") {
 		t.Fatalf("stdout = %q, want ready summary for default profile", stdout.String())
 	}
 	if strings.Contains(stderr.String(), "set-credential --ref") {
@@ -14941,7 +15024,7 @@ func TestApplyInteractiveInitSessionPlanSummarizesSecretsManagementOnlyChanges(t
 		t.Fatalf("applyInteractiveInitSessionPlan: %v", err)
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "Initialized staged changes") || !strings.Contains(out, "- secrets management: 1 profile") {
+	if !strings.Contains(out, "Saved staged init changes") || !strings.Contains(out, "- secrets management: 1 profile") {
 		t.Fatalf("stdout = %q, want secrets-management summary", out)
 	}
 	if strings.Contains(out, "Initialized 0 profile(s)") {
