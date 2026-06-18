@@ -13758,6 +13758,114 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	}
 }
 
+func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/work",
+				},
+				LLM: config.LLMConfig{
+					Provider: config.LLMProviderAnthropic,
+					Auth:     config.LLMAuthSubscription,
+					Adapter:  config.LLMAdapterClaudeCLI,
+				},
+			},
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	reviewerPrompterCalls := 0
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			if reviewerPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+			draft.ReviewerDisplayName = "rianjs-bot"
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"work": {
+					credentials.GitTokenKey: "existing-token",
+				},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := got.Profiles["work"]
+	if profile.ReviewerCredentials == nil {
+		t.Fatal("reviewer credentials = nil, want deferred GitHub App reviewer saved")
+	}
+	if profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp ||
+		profile.ReviewerCredentials.CredentialRef != "codereview/rianjs-bot" ||
+		profile.ReviewerCredentials.DisplayName != "rianjs-bot" {
+		t.Fatalf("reviewer credentials = %#v, want rianjs-bot GitHub App reviewer", profile.ReviewerCredentials)
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"Saved staged init changes",
+		"- work: needs follow-up",
+		"reviewer deferred",
+		"required: " + credentials.GitHubAppIDKey + ", " + credentials.GitHubAppPrivateKeyKey,
+		"optional: " + credentials.GitHubAppInstallationIDKey,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %q", out, want)
+		}
+	}
+	errOut := stderr.String()
+	for _, want := range []string{
+		"Next: cr set-credential --ref codereview/rianjs-bot --key " + credentials.GitHubAppIDKey + " --stdin",
+		"Next: cr set-credential --ref codereview/rianjs-bot --key " + credentials.GitHubAppPrivateKeyKey + " --stdin",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+	if strings.Contains(errOut, " --key "+credentials.GitHubAppInstallationIDKey+" ") {
+		t.Fatalf("stderr = %q, want optional installation id omitted from required follow-up commands", errOut)
+	}
+}
+
 func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRef(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
