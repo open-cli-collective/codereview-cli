@@ -11482,6 +11482,29 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	}
 }
 
+func TestHuhInitMenuPrompterAccessibleRejectsDisabledReviewerUntilProfileExists(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitMenuPrompter{
+		stdin: strings.NewReader(strings.Join([]string{
+			"2", // Configure reviewer entities (disabled)
+			"7", // Discard staged changes and exit
+			"",
+		}, "\n")),
+		stderr: &stderr,
+	}
+	action, err := prompter.ChooseAction(initMenuPrompt{})
+	if err != nil {
+		t.Fatalf("ChooseAction: %v", err)
+	}
+	if action == initMenuActionReviewerEntities {
+		t.Fatalf("action = %q, want disabled reviewer selection to be rejected", action)
+	}
+	if !strings.Contains(stderr.String(), "configure a review profile before editing reviewer entities") {
+		t.Fatalf("stderr = %q, want disabled-reviewer validation message", stderr.String())
+	}
+}
+
 func TestHuhInitMenuPrompterAccessibleSelectsReviewProfiles(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
