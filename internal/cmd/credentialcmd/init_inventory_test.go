@@ -20,7 +20,7 @@ func TestInitInventoryVisibleItemsKeepPendingAndCommandsOrderedDuringFilter(t *t
 		Rows: []initInventoryRow{
 			{ID: "app", Title: "GitHub App reviewer: org-bot", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
 			{ID: "pat", Title: "PAT reviewer", FilterValue: "default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "create-pat", Title: "Configure new personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
@@ -45,7 +45,7 @@ func TestInitInventoryReordersRowsIntoActivePendingAndCommandGroups(t *testing.T
 		Height: 20,
 		Rows: []initInventoryRow{
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
-			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
 		},
 	})
@@ -114,7 +114,7 @@ func TestInitInventoryRestoreKeyRestoresPendingRow(t *testing.T) {
 		Width:  80,
 		Height: 20,
 		Rows: []initInventoryRow{
-			{ID: "work", Title: "work (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "work", Title: "work (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
@@ -154,7 +154,7 @@ func TestInitInventoryFilterAppliedStillAllowsEnterAndRestore(t *testing.T) {
 		Height: 20,
 		Rows: []initInventoryRow{
 			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "restore-app", Title: "GitHub App reviewer: old-bot (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})
@@ -299,7 +299,7 @@ func TestInitInventoryViewClearsAfterQuitActions(t *testing.T) {
 				Title: "Review Profile",
 				Rows: []initInventoryRow{
 					{ID: "work", Title: "work", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-					{ID: "old-work", Title: "Restore work (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+					{ID: "old-work", Title: "work (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 				},
 			})
 			model.list.Select(tt.selection)
@@ -386,7 +386,7 @@ func TestInitLLMRuntimeInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	if got, want := rows[0].Title, "Configured: Claude CLI subscription (claude-cli)"; got != want {
 		t.Fatalf("rows[0].Title = %q, want %q", got, want)
 	}
-	if got, want := rows[1].Title, "Restore LLM runtime codex-cli (staged for deletion)"; got != want {
+	if got, want := rows[1].Title, "codex-cli (Staged for deletion)"; got != want {
 		t.Fatalf("rows[1].Title = %q, want %q", got, want)
 	}
 	if !strings.Contains(rows[0].FilterValue, "claude-cli") || !strings.Contains(rows[0].FilterValue, "Claude CLI subscription") {
@@ -427,7 +427,7 @@ func TestInitProfileInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	if got, want := rows[0].Title, "home"; got != want {
 		t.Fatalf("rows[0].Title = %q, want %q", got, want)
 	}
-	if got, want := rows[1].Title, "Restore work (staged for deletion)"; got != want {
+	if got, want := rows[1].Title, "work (Staged for deletion)"; got != want {
 		t.Fatalf("rows[1].Title = %q, want %q", got, want)
 	}
 	if !strings.Contains(rows[0].FilterValue, "home") || !strings.Contains(rows[0].FilterValue, "github.com") {
@@ -574,7 +574,7 @@ func TestInitInventoryViewShowsContextualHelpBindings(t *testing.T) {
 		Height:      20,
 		Rows: []initInventoryRow{
 			{ID: "pat", Title: "PAT reviewer: default-reviewer", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
-			{ID: "restore-pat", Title: "PAT reviewer: old-reviewer (staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "restore-pat", Title: "PAT reviewer: old-reviewer (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
 			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
 		},
 	})

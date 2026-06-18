@@ -4741,12 +4741,12 @@ func TestHuhInitPrompterAccessibleCanRestorePendingDeletedProfile(t *testing.T) 
 	prompter := huhInitPrompter{
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Restore work (staged for deletion)\n")
+			_, _ = io.WriteString(out, "work (Staged for deletion)\n")
 			return initInventoryResult{
 				Action: initInventoryActionRestore,
 				Row: initInventoryRow{
 					ID:    "work",
-					Title: "Restore work (staged for deletion)",
+					Title: "work (Staged for deletion)",
 				},
 			}, nil
 		},
@@ -4772,7 +4772,7 @@ func TestHuhInitPrompterAccessibleCanRestorePendingDeletedProfile(t *testing.T) 
 	if draft.Action != initDraftActionUndoDeleteProfile || draft.ActionTarget != "work" {
 		t.Fatalf("draft undo action = %#v, want restore work", draft)
 	}
-	if !strings.Contains(stderr.String(), "Restore work (staged for deletion)") {
+	if !strings.Contains(stderr.String(), "work (Staged for deletion)") {
 		t.Fatalf("stderr = %q, want restore label", stderr.String())
 	}
 }
@@ -4827,12 +4827,12 @@ func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t
 	prompter := huhInitReviewerEntityPrompter{
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Restore reviewer entity reviewer-github-app (staged for deletion)\n")
+			_, _ = io.WriteString(out, "reviewer-github-app (Staged for deletion)\n")
 			return initInventoryResult{
 				Action: initInventoryActionRestore,
 				Row: initInventoryRow{
 					ID:    "reviewer-github-app",
-					Title: "Restore reviewer entity reviewer-github-app (staged for deletion)",
+					Title: "reviewer-github-app (Staged for deletion)",
 				},
 			}, nil
 		},
@@ -4857,7 +4857,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleCanRestorePendingDeletedEntity(t
 	if draft.Action != initDraftActionUndoDeleteReviewerEntity || draft.ActionTarget != "reviewer-github-app" {
 		t.Fatalf("draft undo reviewer action = %#v, want reviewer-github-app restore", draft)
 	}
-	if !strings.Contains(stderr.String(), "Restore reviewer entity reviewer-github-app (staged for deletion)") {
+	if !strings.Contains(stderr.String(), "reviewer-github-app (Staged for deletion)") {
 		t.Fatalf("stderr = %q, want reviewer restore label", stderr.String())
 	}
 }
@@ -5562,12 +5562,12 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *t
 	prompter := huhInitLLMRuntimePrompter{
 		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
-			_, _ = io.WriteString(out, "Restore LLM runtime claude-cli (staged for deletion)\n")
+			_, _ = io.WriteString(out, "claude-cli (Staged for deletion)\n")
 			return initInventoryResult{
 				Action: initInventoryActionRestore,
 				Row: initInventoryRow{
 					ID:    "claude-cli",
-					Title: "Restore LLM runtime claude-cli (staged for deletion)",
+					Title: "claude-cli (Staged for deletion)",
 				},
 			}, nil
 		},
@@ -5590,7 +5590,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *t
 	if draft.Action != initDraftActionUndoDeleteLLMRuntime || draft.ActionTarget != "claude-cli" {
 		t.Fatalf("draft undo runtime action = %#v, want claude-cli restore", draft)
 	}
-	if !strings.Contains(stderr.String(), "Restore LLM runtime claude-cli (staged for deletion)") {
+	if !strings.Contains(stderr.String(), "claude-cli (Staged for deletion)") {
 		t.Fatalf("stderr = %q, want runtime restore label", stderr.String())
 	}
 }
@@ -5666,9 +5666,18 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
 		stderr: &stderr,
-		editorRunner: stageLLMRuntimeEditorRunner(t, map[initLinearFieldID]string{
-			initLLMRuntimeFieldReplacement: string(initLLMRuntimePresetCodexCLISubscription),
-		}, initLLMRuntimeActionDelete),
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 160, 60)
+			model = selectInitLinearFieldValue(t, model, initLLMRuntimeFieldReplacement, string(initLLMRuntimePresetCodexCLISubscription))
+			model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
+			_, _ = io.WriteString(out, model.View())
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
 	}
 
 	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: initPromptContext{
@@ -5689,8 +5698,8 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 	if draft.LLMProvider != string(config.LLMProviderOpenAI) || draft.LLMAdapter != string(config.LLMAdapterCodexCLI) {
 		t.Fatalf("draft replacement = %#v, want codex-cli replacement", draft)
 	}
-	if !strings.Contains(stderr.String(), "Replacement LLM runtime") {
-		t.Fatalf("stderr = %q, want inline replacement selector", stderr.String())
+	if !strings.Contains(stderr.String(), "d delete") {
+		t.Fatalf("stderr = %q, want delete shortcut help", stderr.String())
 	}
 }
 
@@ -10138,6 +10147,138 @@ func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *
 	}
 }
 
+func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t *testing.T) {
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "personal",
+			Profiles: map[string]config.SecretsProfile{
+				"personal": {
+					Label: "1Password",
+					Backend: config.SecretsProfileBackend{
+						Kind:        config.SecretsBackendKind(credstore.BackendOPDesktop),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{VaultID: "Personal"},
+					},
+				},
+				"onepasswordfoo": {
+					Label: "1PasswordFoo",
+					Backend: config.SecretsProfileBackend{
+						Kind:        config.SecretsBackendKind(credstore.BackendOPDesktop),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{VaultID: "Personal"},
+					},
+				},
+			},
+		},
+	}
+	var stderr bytes.Buffer
+	editorCalls := 0
+	prompter := huhInitKeyringBackendPrompter{
+		stderr: &stderr,
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			editorCalls++
+			model := newInitLinearEditorModel(editor, 180, 32)
+			switch editorCalls {
+			case 1:
+				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "onepasswordfoo")
+				model = focusInitLinearField(t, model, initSecretsManagementFieldTarget)
+				updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				next, ok := updated.(initLinearEditorModel)
+				if !ok {
+					t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+				}
+				return next, nil
+			case 2:
+				_, _ = io.WriteString(out, model.View())
+				if !strings.Contains(model.layout.Content, "1PasswordFoo (1Password desktop app) (Staged for deletion)") {
+					t.Fatalf("second editor content missing pending row:\n%s", model.layout.Content)
+				}
+				model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
+				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
+				updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				next, ok := updated.(initLinearEditorModel)
+				if !ok {
+					t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+				}
+				return next, nil
+			default:
+				t.Fatalf("unexpected editor call %d", editorCalls)
+				return initLinearEditorModel{}, nil
+			}
+		},
+	}
+
+	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{Config: cfg})
+	if err != nil {
+		t.Fatalf("EditKeyringBackend: %v", err)
+	}
+	if !edit.Apply || !edit.HasConfigEdit {
+		t.Fatalf("edit = %#v, want config edit", edit)
+	}
+	if _, ok := edit.Config.Secrets.Profiles["onepasswordfoo"]; ok {
+		t.Fatalf("secrets profiles = %#v, want onepasswordfoo removed", edit.Config.Secrets.Profiles)
+	}
+	if _, ok := edit.Config.Secrets.Profiles["personal"]; !ok {
+		t.Fatalf("secrets profiles = %#v, want personal retained", edit.Config.Secrets.Profiles)
+	}
+	if edit.Config.Secrets.DefaultProfile != "personal" {
+		t.Fatalf("default secrets profile = %q, want personal", edit.Config.Secrets.DefaultProfile)
+	}
+	if !strings.Contains(stderr.String(), "1PasswordFoo (1Password desktop app) (Staged for deletion)") {
+		t.Fatalf("stderr = %q, want staged deletion suffix", stderr.String())
+	}
+}
+
+func TestInitSecretsManagementLinearEditorDeleteActionOnlyAppliesToConfiguredProfiles(t *testing.T) {
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "personal",
+			Profiles: map[string]config.SecretsProfile{
+				"personal": {
+					Label:   "1Password",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+				"unused": {
+					Label:   "Unused",
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+	}
+	editor := initSecretsManagementLinearEditor(cfg)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendFile))
+	actionIndex := model.document.fieldIndexByID(initSecretsManagementFieldAction)
+	if actionIndex < 0 {
+		t.Fatal("action field missing")
+	}
+	for _, option := range model.document[actionIndex].Options {
+		if option.Value == initSecretsManagementActionDelete {
+			t.Fatalf("create-new target exposes delete action: %#v", model.document[actionIndex].Options)
+		}
+	}
+
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "personal")
+	targetIndex := model.document.fieldIndexByID(initSecretsManagementFieldTarget)
+	for _, option := range model.document[targetIndex].Options {
+		if option.Value == "personal" && option.Deletable {
+			t.Fatalf("default secrets-management profile option is deletable: %#v", option)
+		}
+	}
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "unused")
+	foundDeletable := false
+	for _, option := range model.document[targetIndex].Options {
+		if option.Value == "unused" {
+			foundDeletable = option.Deletable
+		}
+	}
+	if !foundDeletable {
+		t.Fatalf("target options = %#v, want non-default configured profile to be deletable", model.document[targetIndex].Options)
+	}
+}
+
 func TestInitLinearEditorCtrlWDeletesPreviousWord(t *testing.T) {
 	const inputField initLinearFieldID = "input"
 	var document initLinearDocument
@@ -13480,7 +13621,6 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *test
 	menu := &fakeInitMenuPrompter{
 		actions: []initMenuAction{
 			initMenuActionReviewerEntities,
-			initMenuActionReviewerEntities,
 			initMenuActionExit,
 		},
 	}
@@ -13506,6 +13646,8 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *test
 					Action:       initDraftActionUndoDeleteReviewerEntity,
 					ActionTarget: "reviewer-github-app",
 				}, nil
+			case 3:
+				return initDraft{}, errInitNavigateBack
 			default:
 				t.Fatalf("unexpected reviewer prompt #%d", reviewerCalls)
 				return initDraft{}, nil
@@ -13519,11 +13661,11 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *test
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if reviewerCalls != 2 {
-		t.Fatalf("reviewerCalls = %d, want delete then undo after returning to menu", reviewerCalls)
+	if reviewerCalls != 3 {
+		t.Fatalf("reviewerCalls = %d, want delete, undo, then back inside reviewer category", reviewerCalls)
 	}
-	if len(menu.prompts) != 3 {
-		t.Fatalf("menu prompts = %#v, want main menu before delete, before undo, and before exit", menu.prompts)
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want main menu before reviewer category and after backing out", menu.prompts)
 	}
 }
 
@@ -13655,7 +13797,6 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.
 	menu := &fakeInitMenuPrompter{
 		actions: []initMenuAction{
 			initMenuActionLLMRuntimes,
-			initMenuActionLLMRuntimes,
 			initMenuActionExit,
 		},
 	}
@@ -13684,6 +13825,8 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.
 					Action:       initDraftActionUndoDeleteLLMRuntime,
 					ActionTarget: "claude-cli",
 				}, nil
+			case 3:
+				return initDraft{}, errInitNavigateBack
 			default:
 				t.Fatalf("unexpected LLM prompt #%d", llmCalls)
 				return initDraft{}, nil
@@ -13697,11 +13840,11 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if llmCalls != 2 {
-		t.Fatalf("llmCalls = %d, want delete then undo after returning to menu", llmCalls)
+	if llmCalls != 3 {
+		t.Fatalf("llmCalls = %d, want delete, undo, then back inside LLM category", llmCalls)
 	}
-	if len(menu.prompts) != 3 {
-		t.Fatalf("menu prompts = %#v, want main menu before delete, before undo, and before exit", menu.prompts)
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want main menu before LLM category and after backing out", menu.prompts)
 	}
 }
 

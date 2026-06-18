@@ -3,6 +3,7 @@ package credentialcmd
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,19 +40,64 @@ const (
 	initSecretsManagementSectionDesktop        initLinearFieldID = "secrets_management_section_desktop"
 	initSecretsManagementDefaultNo             string            = "no"
 	initSecretsManagementDefaultYes            string            = "yes"
+	initSecretsManagementActionDelete          string            = "delete"
 )
 
+const initSecretsManagementRestoreSelectionPrefix = "__restore_secrets_management__:"
+
+type initPendingSecretsManagementDelete struct {
+	ID      string
+	Profile config.SecretsProfile
+}
+
 func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
-	editor := initSecretsManagementLinearEditor(prompt.Config)
-	model, err := p.runSecretsManagementEditor(editor)
-	if err != nil {
-		return initKeyringBackendEdit{}, err
-	}
-	switch model.resultAction {
-	case initDetailActionEdit:
-		return initSecretsManagementEditFromDocument(prompt.Config, model.document)
-	default:
-		return initKeyringBackendEdit{}, errInitNavigateBack
+	working := cloneInitConfigFile(prompt.Config)
+	pendingDeletes := map[string]initPendingSecretsManagementDelete{}
+	for {
+		editor := initSecretsManagementLinearEditorWithPending(working, pendingDeletes)
+		model, err := p.runSecretsManagementEditor(editor)
+		if err != nil {
+			return initKeyringBackendEdit{}, err
+		}
+		switch model.resultAction {
+		case initDetailActionEdit:
+			return initSecretsManagementEditFromDocument(working, model.document)
+		case initLinearResultActionDelete:
+			selection := model.document.selectedValue(initSecretsManagementFieldTarget)
+			profile, ok := working.Secrets.Profiles[selection]
+			if !ok {
+				return initKeyringBackendEdit{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, selection)
+			}
+			nextCfg, _, err := configedit.RemoveSecretsProfile(working, selection)
+			if err != nil {
+				return initKeyringBackendEdit{}, err
+			}
+			pendingDeletes[selection] = initPendingSecretsManagementDelete{ID: selection, Profile: profile}
+			working = nextCfg
+		case initLinearResultActionRestore:
+			selection := model.document.selectedValue(initSecretsManagementFieldTarget)
+			id, ok := initSecretsManagementRestoreSelectionName(selection)
+			if !ok {
+				continue
+			}
+			pending, ok := pendingDeletes[id]
+			if !ok {
+				continue
+			}
+			patch := configedit.SecretsProfilePatch{Backend: &pending.Profile.Backend}
+			if strings.TrimSpace(pending.Profile.Label) != "" {
+				label := pending.Profile.Label
+				patch.Label = &label
+			}
+			nextCfg, _, _, err := configedit.SetSecretsProfile(working, id, patch)
+			if err != nil {
+				return initKeyringBackendEdit{}, err
+			}
+			delete(pendingDeletes, id)
+			working = nextCfg
+		default:
+			return initKeyringBackendEdit{}, errInitNavigateBack
+		}
 	}
 }
 
@@ -72,7 +118,11 @@ func (p huhInitKeyringBackendPrompter) runSecretsManagementEditor(editor initLin
 }
 
 func initSecretsManagementLinearEditor(cfg config.File) initLinearEditor {
-	targetOptions := initSecretsManagementTargetOptions(cfg)
+	return initSecretsManagementLinearEditorWithPending(cfg, nil)
+}
+
+func initSecretsManagementLinearEditorWithPending(cfg config.File, pendingDeletes map[string]initPendingSecretsManagementDelete) initLinearEditor {
+	targetOptions := initSecretsManagementTargetOptions(cfg, pendingDeletes)
 	selectedTarget := normalizeInitStringSelectionValue("", targetOptions)
 	var document initLinearDocument
 	document.addSection("Secrets management", initSecretsManagementInventoryDescription())
@@ -117,11 +167,11 @@ func initSecretsManagementLinearEditor(cfg config.File) initLinearEditor {
 			}
 			id := model.document[index].ID
 			if id == initSecretsManagementFieldTarget {
-				initSecretsManagementSyncLinearFields(model, cfg, true)
+				initSecretsManagementSyncLinearFields(model, cfg, pendingDeletes, true)
 				return
 			}
 			if id == initSecretsManagementFieldBackend {
-				initSecretsManagementSyncLinearFields(model, cfg, false)
+				initSecretsManagementSyncLinearFields(model, cfg, pendingDeletes, false)
 			}
 		},
 		OnEnter: func(model *initLinearEditorModel) (bool, tea.Cmd) {
@@ -145,26 +195,51 @@ func initSecretsManagementLinearEditor(cfg config.File) initLinearEditor {
 				}
 				model.resultAction = initDetailActionEdit
 				return true, tea.Quit
+			case initSecretsManagementActionDelete:
+				if _, err := initSecretsManagementEditFromDocument(cfg, model.document); err != nil {
+					model.document[model.focused].Error = err.Error()
+					model.relayout()
+					model.ensureFocusedVisible()
+					return true, nil
+				}
+				model.resultAction = initDetailActionEdit
+				return true, tea.Quit
 			default:
 				return true, nil
 			}
 		},
 	}
 	model := newInitLinearEditorModel(editor, 100, 28)
-	initSecretsManagementSyncLinearFields(&model, cfg, true)
+	initSecretsManagementSyncLinearFields(&model, cfg, pendingDeletes, true)
 	editor.Document = model.document
 	return editor
 }
 
-func initSecretsManagementTargetOptions(cfg config.File) []huh.Option[string] {
+func initSecretsManagementTargetOptions(cfg config.File, pendingDeletes map[string]initPendingSecretsManagementDelete) []huh.Option[string] {
 	rows := initSecretsManagementInventoryRows(cfg)
-	options := make([]huh.Option[string], 0, len(rows))
+	options := make([]huh.Option[string], 0, len(rows)+len(pendingDeletes))
+	commandOptions := make([]huh.Option[string], 0, len(rows))
 	for _, row := range rows {
 		if row.ID == initBackSelection || !row.Selectable {
 			continue
 		}
-		options = append(options, huh.NewOption(row.Title, row.ID))
+		option := huh.NewOption(row.Title, row.ID)
+		if row.Kind == initInventoryRowKindActive && row.ID != initSecretsManagementLegacySelection {
+			options = append(options, option)
+			continue
+		}
+		commandOptions = append(commandOptions, option)
 	}
+	pendingIDs := make([]string, 0, len(pendingDeletes))
+	for id := range pendingDeletes {
+		pendingIDs = append(pendingIDs, id)
+	}
+	sort.Strings(pendingIDs)
+	for _, id := range pendingIDs {
+		pending := pendingDeletes[id]
+		options = append(options, huh.NewOption(initPendingDeleteLabel(initSecretsProfilePendingDeleteTitle(id, pending.Profile)), initSecretsManagementRestoreSelectionPrefix+id))
+	}
+	options = append(options, commandOptions...)
 	return dedupeInitStringOptions(options)
 }
 
@@ -174,6 +249,7 @@ type initSecretsManagementSelectionState struct {
 	IsDefault bool
 	Creating  bool
 	Legacy    bool
+	Pending   bool
 }
 
 func initSecretsManagementSelectionStateForDocument(cfg config.File, document initLinearDocument) (initSecretsManagementSelectionState, error) {
@@ -190,6 +266,9 @@ func initSecretsManagementSelectionStateForSelection(cfg config.File, selection 
 			Creating: true,
 		}, nil
 	}
+	if id, ok := initSecretsManagementRestoreSelectionName(selection); ok {
+		return initSecretsManagementSelectionState{ID: id, Pending: true}, nil
+	}
 	profile, ok := cfg.Secrets.Profiles[selection]
 	if !ok {
 		return initSecretsManagementSelectionState{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, selection)
@@ -201,19 +280,28 @@ func initSecretsManagementSelectionStateForSelection(cfg config.File, selection 
 	}, nil
 }
 
-func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg config.File, resetDetails bool) {
+func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg config.File, pendingDeletes map[string]initPendingSecretsManagementDelete, resetDetails bool) {
 	state, err := initSecretsManagementSelectionStateForDocument(cfg, model.document)
 	if err != nil {
 		return
 	}
-	profileVisible := !state.Legacy
+	initSecretsManagementSetTargetOptions(model, cfg, pendingDeletes, model.document.selectedValue(initSecretsManagementFieldTarget))
+	profileSectionVisible := !state.Legacy
+	profileVisible := profileSectionVisible && !state.Pending
 	model.setFieldHidden(initSecretsManagementSectionLegacy, !state.Legacy)
 	model.setFieldHidden(initSecretsManagementFieldLegacyBackend, !state.Legacy)
-	model.setFieldHidden(initSecretsManagementSectionProfile, !profileVisible)
+	model.setFieldHidden(initSecretsManagementSectionProfile, !profileSectionVisible)
 	model.setFieldHidden(initSecretsManagementFieldLabel, !profileVisible)
 	model.setFieldHidden(initSecretsManagementFieldBackend, !profileVisible || state.Creating)
 	model.setFieldHidden(initSecretsManagementFieldDefault, !profileVisible)
+	initSecretsManagementSetActionOptions(model, !state.Creating && !state.Legacy && !state.Pending)
 	if state.Legacy {
+		initSecretsManagementSetOnePasswordHidden(model, true, true, true, true)
+		return
+	}
+	if state.Pending {
+		model.setFieldHidden(initSecretsManagementFieldAction, false)
+		model.setFieldDescription(initSecretsManagementSectionProfile, "This secrets-management profile is staged for deletion. Press r while it is selected to restore it.")
 		initSecretsManagementSetOnePasswordHidden(model, true, true, true, true)
 		return
 	}
@@ -270,6 +358,24 @@ func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg con
 	model.setFieldHidden(initSecretsManagementSectionDesktop, !opDesktop || model.document.fieldHidden(initSecretsManagementFieldDesktopAccountID))
 }
 
+func initSecretsManagementSetTargetOptions(model *initLinearEditorModel, cfg config.File, pendingDeletes map[string]initPendingSecretsManagementDelete, selected string) {
+	index := model.document.fieldIndexByID(initSecretsManagementFieldTarget)
+	if index < 0 {
+		return
+	}
+	options := initLinearOptionsFromHuh(initSecretsManagementTargetOptions(cfg, pendingDeletes), selected)
+	for optionIndex := range options {
+		option := &options[optionIndex]
+		if _, configured := cfg.Secrets.Profiles[option.Value]; configured {
+			option.Deletable = strings.TrimSpace(cfg.Secrets.DefaultProfile) != option.Value
+		}
+		if _, restorable := initSecretsManagementRestoreSelectionName(option.Value); restorable {
+			option.Restorable = true
+		}
+	}
+	model.document[index].Options = options
+}
+
 func initSecretsManagementSetBackendOptions(model *initLinearEditorModel, current config.SecretsBackendKind, locked bool) {
 	index := model.document.fieldIndexByID(initSecretsManagementFieldBackend)
 	if index < 0 {
@@ -290,6 +396,22 @@ func initSecretsManagementSetBackendOptions(model *initLinearEditorModel, curren
 	model.document[index].Options = initLinearOptionsFromHuh(initSecretsProfileBackendOptions(current), selected)
 }
 
+func initSecretsManagementSetActionOptions(model *initLinearEditorModel, canDelete bool) {
+	index := model.document.fieldIndexByID(initSecretsManagementFieldAction)
+	if index < 0 {
+		return
+	}
+	selected := model.document.selectedValue(initSecretsManagementFieldAction)
+	options := []huh.Option[string]{
+		huh.NewOption("Stage secrets-management settings", initDetailActionEdit),
+		huh.NewOption("Back without staging", initDetailActionBack),
+	}
+	if selected == initSecretsManagementActionDelete {
+		selected = initDetailActionEdit
+	}
+	model.document[index].Options = initLinearOptionsFromHuh(options, selected)
+}
+
 func initSecretsManagementBackendOptionLabel(kind config.SecretsBackendKind) string {
 	if backend, ok := initSecretsBackendByKind(kind); ok {
 		label := backend.Label
@@ -303,6 +425,9 @@ func initSecretsManagementBackendOptionLabel(kind config.SecretsBackendKind) str
 
 func initSecretsManagementProfileSectionDescription(document initLinearDocument, state initSecretsManagementSelectionState) string {
 	target := initSecretsManagementSelectedOptionLabel(document, initSecretsManagementFieldTarget)
+	if state.Pending && target != "" {
+		return fmt.Sprintf("Selected target: %s. This profile is staged for deletion. Press r to restore it.", target)
+	}
 	if state.Creating && target != "" {
 		return fmt.Sprintf("Selected target: %s. Fields below configure that new secrets-management profile.", target)
 	}
@@ -310,6 +435,22 @@ func initSecretsManagementProfileSectionDescription(document initLinearDocument,
 		return fmt.Sprintf("Selected target: %s. Fields below edit this configured secrets-management profile.", target)
 	}
 	return "Secrets-management profiles are reusable credential-store definitions that review profiles can choose later."
+}
+
+func initSecretsManagementRestoreSelectionName(selection string) (string, bool) {
+	if !strings.HasPrefix(selection, initSecretsManagementRestoreSelectionPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(selection, initSecretsManagementRestoreSelectionPrefix), true
+}
+
+func initSecretsProfilePendingDeleteTitle(id string, profile config.SecretsProfile) string {
+	return initSecretsProfileInventoryTitle(config.EffectiveSecretsProfile{
+		ID:      id,
+		Label:   profile.Label,
+		Backend: string(profile.Backend.Kind),
+		Source:  config.EffectiveSecretsProfileSourceConfigured,
+	})
 }
 
 func initSecretsManagementBackendFieldDescription(kind config.SecretsBackendKind, locked bool) string {
@@ -358,6 +499,19 @@ func initSecretsManagementEditFromDocument(cfg config.File, document initLinearD
 	if state.Legacy {
 		working.Keyring.Backend = strings.TrimSpace(document.selectedValue(initSecretsManagementFieldLegacyBackend))
 		return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: config.Normalize(working)}, nil
+	}
+	if state.Pending {
+		return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: config.Normalize(working)}, nil
+	}
+	if document.selectedValue(initSecretsManagementFieldAction) == initSecretsManagementActionDelete {
+		if state.Creating || state.ID == "" {
+			return initKeyringBackendEdit{}, fmt.Errorf("only configured secrets-management profiles can be deleted")
+		}
+		nextCfg, _, err := configedit.RemoveSecretsProfile(working, state.ID)
+		if err != nil {
+			return initKeyringBackendEdit{}, err
+		}
+		return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: nextCfg}, nil
 	}
 	edit, err := initSecretsManagementProfileEditFromDocument(state, document)
 	if err != nil {

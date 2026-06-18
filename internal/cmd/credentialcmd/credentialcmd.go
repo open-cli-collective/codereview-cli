@@ -1398,10 +1398,10 @@ func editInteractiveInitLLMRuntimeStep(cmd *cobra.Command, opts *root.Options, f
 	case initDraftActionNone:
 	case initDraftActionDeleteLLMRuntime:
 		session, err := deleteInteractiveInitLLMRuntime(session, draft.ActionTarget, initLLMRuntimeDraftFromSeedDraft(draft))
-		return session, false, err
+		return session, err == nil, err
 	case initDraftActionUndoDeleteLLMRuntime:
 		session, err := undoInteractiveInitLLMRuntimeDelete(session, draft.ActionTarget)
-		return session, false, err
+		return session, err == nil, err
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported LLM-runtime draft action %q", draft.Action)
 	}
@@ -1463,10 +1463,10 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	case initDraftActionNone:
 	case initDraftActionDeleteReviewerEntity:
 		session, err := deleteInteractiveInitReviewerEntity(session, draft.ActionTarget)
-		return session, false, err
+		return session, err == nil, err
 	case initDraftActionUndoDeleteReviewerEntity:
 		session, err := undoInteractiveInitReviewerEntityDelete(session, draft.ActionTarget)
-		return session, false, err
+		return session, err == nil, err
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
 	}
@@ -3193,15 +3193,19 @@ func defaultInitLLMRuntimeAvailabilityNote(preset initLLMRuntimePreset) string {
 }
 
 func profileDeletePendingLabel(name string) string {
-	return fmt.Sprintf("Restore %s (staged for deletion)", name)
+	return initPendingDeleteLabel(name)
 }
 
 func reviewerEntityDeletePendingLabel(name string) string {
-	return fmt.Sprintf("Restore reviewer entity %s (staged for deletion)", name)
+	return initPendingDeleteLabel(name)
 }
 
 func llmRuntimeDeletePendingLabel(name string) string {
-	return fmt.Sprintf("Restore LLM runtime %s (staged for deletion)", name)
+	return initPendingDeleteLabel(name)
+}
+
+func initPendingDeleteLabel(label string) string {
+	return fmt.Sprintf("%s (Staged for deletion)", strings.TrimSpace(label))
 }
 
 func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runtimes map[string]initLLMRuntimeDraft) {

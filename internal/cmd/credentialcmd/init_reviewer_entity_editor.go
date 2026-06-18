@@ -346,15 +346,11 @@ func initReviewerEntityRestoreSelectionName(selection string) (string, bool) {
 func initReviewerEntityActionOptions(ctx initPromptContext, selection string) []huh.Option[string] {
 	if _, ok := initReviewerEntityRestoreSelectionName(selection); ok {
 		return []huh.Option[string]{
-			huh.NewOption("Restore selected reviewer entity", initReviewerEntityActionRestore),
 			huh.NewOption("Back without staging", initDetailActionBack),
 		}
 	}
 	options := []huh.Option[string]{
 		huh.NewOption("Stage reviewer settings", initDetailActionEdit),
-	}
-	if _, configured := ctx.ReviewerEntities[selection]; configured {
-		options = append(options, huh.NewOption("Mark reviewer entity for deletion", initReviewerEntityActionDelete))
 	}
 	options = append(options, huh.NewOption("Back without staging", initDetailActionBack))
 	return options
@@ -362,6 +358,7 @@ func initReviewerEntityActionOptions(ctx initPromptContext, selection string) []
 
 func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPromptContext, seed initDraft, resetDetails bool) {
 	selection := model.document.selectedValue(initReviewerEntityFieldSelection)
+	initReviewerEntitySetSelectionOptions(model, ctx, selection)
 	actionIndex := model.document.fieldIndexByID(initReviewerEntityFieldAction)
 	if actionIndex >= 0 {
 		selectedAction := model.document.selectedValue(initReviewerEntityFieldAction)
@@ -410,6 +407,24 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 		model.setFieldValue(initReviewerEntityFieldLabel, labelInput)
 		model.setFieldValue(initReviewerEntityFieldSecretLocation, reviewerSecretLocation)
 	}
+}
+
+func initReviewerEntitySetSelectionOptions(model *initLinearEditorModel, ctx initPromptContext, selected string) {
+	index := model.document.fieldIndexByID(initReviewerEntityFieldSelection)
+	if index < 0 {
+		return
+	}
+	options := initLinearOptionsFromHuh(initReviewerEntityLinearSelectionOptions(ctx), selected)
+	for optionIndex := range options {
+		option := &options[optionIndex]
+		if _, configured := ctx.ReviewerEntities[option.Value]; configured {
+			option.Deletable = true
+		}
+		if _, restorable := initReviewerEntityRestoreSelectionName(option.Value); restorable {
+			option.Restorable = true
+		}
+	}
+	model.document[index].Options = options
 }
 
 func reviewerEntityEditorStateForSelection(ctx initPromptContext, seed initDraft, selection string) (reviewerEntityEditorState, error) {

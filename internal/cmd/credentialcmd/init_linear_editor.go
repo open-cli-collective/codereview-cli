@@ -39,6 +39,11 @@ var initLinearTheme = struct {
 type initLinearEnterHandler func(*initLinearEditorModel) (bool, tea.Cmd)
 type initLinearChangeHandler func(*initLinearEditorModel, int)
 
+const (
+	initLinearResultActionDelete  = "delete"
+	initLinearResultActionRestore = "restore"
+)
+
 type initLinearEditor struct {
 	Document      initLinearDocument
 	OnEnter       initLinearEnterHandler
@@ -82,9 +87,11 @@ type initLinearFieldOptions struct {
 }
 
 type initLinearOption struct {
-	Label    string
-	Value    string
-	Selected bool
+	Label      string
+	Value      string
+	Selected   bool
+	Deletable  bool
+	Restorable bool
 }
 
 type initLinearLayout struct {
@@ -147,10 +154,13 @@ func (m initLinearEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ensureFocusedVisible()
 			return m, nil
 		}
-		if m.handleFocusedSelectKey(msg) {
+		if handled, cmd := m.handleFocusedSelectKey(msg); handled {
 			m.relayout()
 			m.ensureFocusedVisible()
-			return m, nil
+			if cmd != nil {
+				m.quitting = true
+			}
+			return m, cmd
 		}
 		if m.onEnter != nil && msg.String() == "enter" {
 			handled, cmd := m.onEnter(&m)
@@ -202,11 +212,26 @@ func (m initLinearEditorModel) View() string {
 	if m.quitting {
 		return ""
 	}
+	help := m.currentHelp()
+	return m.styleVisibleViewport() + "\n\n" + initLinearTheme.help.Render(help)
+}
+
+func (m initLinearEditorModel) currentHelp() string {
 	help := m.help
 	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Kind == initLinearFieldTextarea {
 		help = m.textareaHelp
 	}
-	return m.styleVisibleViewport() + "\n\n" + initLinearTheme.help.Render(help)
+	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Kind == initLinearFieldSelect {
+		if selected := initLinearSelectedOption(&m.document[m.focused]); selected != nil {
+			if selected.Deletable && !strings.Contains(help, "d delete") {
+				help += " - d delete"
+			}
+			if selected.Restorable && !strings.Contains(help, "r restore") {
+				help += " - r restore"
+			}
+		}
+	}
+	return help
 }
 
 func (d *initLinearDocument) addSection(title, description string) {
@@ -421,24 +446,48 @@ func (m *initLinearEditorModel) handleFocusedInputKey(msg tea.KeyMsg) bool {
 	return true
 }
 
-func (m *initLinearEditorModel) handleFocusedSelectKey(msg tea.KeyMsg) bool {
+func (m *initLinearEditorModel) handleFocusedSelectKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if m.focused < 0 || m.focused >= len(m.document) {
-		return false
+		return false, nil
 	}
 	field := &m.document[m.focused]
 	if field.Kind != initLinearFieldSelect || !field.Editable || len(field.Options) == 0 {
-		return false
+		return false, nil
 	}
 	switch msg.String() {
 	case "up", "k":
 		initLinearMoveSelection(field, -1)
 	case "down", "j", " ":
 		initLinearMoveSelection(field, 1)
+	case "d":
+		if selected := initLinearSelectedOption(field); selected != nil && selected.Deletable {
+			m.resultAction = initLinearResultActionDelete
+			return true, tea.Quit
+		}
+		return false, nil
+	case "r":
+		if selected := initLinearSelectedOption(field); selected != nil && selected.Restorable {
+			m.resultAction = initLinearResultActionRestore
+			return true, tea.Quit
+		}
+		return false, nil
 	default:
-		return false
+		return false, nil
 	}
 	m.afterFieldChange(m.focused)
-	return true
+	return true, nil
+}
+
+func initLinearSelectedOption(field *initLinearField) *initLinearOption {
+	if field == nil {
+		return nil
+	}
+	for index := range field.Options {
+		if field.Options[index].Selected {
+			return &field.Options[index]
+		}
+	}
+	return nil
 }
 
 func initLinearMoveSelection(field *initLinearField, offset int) {
