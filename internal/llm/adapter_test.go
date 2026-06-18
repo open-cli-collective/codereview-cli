@@ -122,6 +122,44 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 	})
 
+	t.Run("findings file alias succeeds after validation retry", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"bad":true}`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{
+			"schema_version": 1,
+			"agent_id": "agent-1",
+			"findings": [{
+				"severity": "major",
+				"file": "main.go",
+				"anchor": {"kind": "file"},
+				"body": "body"
+			}]
+		}`)}})
+
+		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (Findings, error) {
+			return DecodeFindings(data, FindingsOptions{
+				KnownAgents:  map[string]bool{"agent-1": true},
+				ChangedFiles: map[string]bool{"main.go": true},
+				NewFindingID: func() (review.FindingID, error) {
+					return "f-1", nil
+				},
+			})
+		})
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if len(got.Findings) != 1 || got.Findings[0].FilePath != "main.go" {
+			t.Fatalf("findings = %#v, want canonical main.go path", got.Findings)
+		}
+		requests := adapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("requests = %d, want one validation retry", len(requests))
+		}
+		if !strings.Contains(requests[1].Prompt, "failed validation") {
+			t.Fatalf("retry prompt = %q, want validation suffix", requests[1].Prompt)
+		}
+	})
+
 	t.Run("start and wait errors are not schema retries", func(t *testing.T) {
 		startErr := errors.New("start failed")
 		adapter := &FakeAdapter{}
