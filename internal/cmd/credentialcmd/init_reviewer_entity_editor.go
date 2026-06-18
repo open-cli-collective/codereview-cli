@@ -8,6 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
 
 type initReviewerEntityEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
@@ -132,7 +134,7 @@ func newReviewerEntityEditorState(entity initReviewerEntityDraft, seed initDraft
 func (s reviewerEntityEditorState) editor() initLinearEditor {
 	var document initLinearDocument
 	document.addSection("Reviewer entity", reviewerEntitySelectionDescription())
-	document.addSection("Reviewer entity type", reviewerEntityKindDetailLabel(s.kind))
+	document.addSection("Reviewer entity type", reviewerEntityKindDetailDescription(s.kind))
 	if s.kind != initReviewerEntityKindUseGitIdentity {
 		labelInput, _, _ := reviewerEntityEditorLabelSeed(initReviewerEntityDraft{
 			Kind:          s.kind,
@@ -163,7 +165,7 @@ func (s reviewerEntityEditorState) editor() initLinearEditor {
 		document.addEditableInput(
 			initReviewerEntityFieldSecretLocation,
 			"Reviewer secret location",
-			"Leave blank to use the standard reviewer secret location for this profile. Replace the value only if you need a custom location.",
+			reviewerEntitySecretLocationDescription(s.kind),
 			reviewerSecretLocation,
 			validateOptionalCredentialRef,
 		)
@@ -251,7 +253,7 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 	document.addEditableInput(
 		initReviewerEntityFieldSecretLocation,
 		"Reviewer secret location",
-		"Leave blank to use the standard reviewer secret location for this profile. Replace the value only if you need a custom location.",
+		reviewerEntitySecretLocationDescription(state.kind),
 		"",
 		validateOptionalCredentialRef,
 	)
@@ -373,7 +375,7 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 	}
 	detailsIndex := model.document.fieldIndexByTitle("Reviewer details")
 	if detailsIndex >= 0 {
-		model.document[detailsIndex].Description = reviewerEntityKindDetailLabel(state.kind)
+		model.document[detailsIndex].Description = reviewerEntityKindDetailDescription(state.kind)
 	}
 	hideDetails := state.kind == initReviewerEntityKindUseGitIdentity
 	if _, restore := initReviewerEntityRestoreSelectionName(selection); restore {
@@ -384,6 +386,9 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 	}
 	model.setFieldHidden(initReviewerEntityFieldLabel, hideDetails)
 	model.setFieldHidden(initReviewerEntityFieldSecretLocation, hideDetails)
+	if !hideDetails {
+		model.setFieldDescription(initReviewerEntityFieldSecretLocation, reviewerEntitySecretLocationDescription(state.kind))
+	}
 	if resetDetails && !hideDetails {
 		labelInput, _, _ := reviewerEntityEditorLabelSeed(initReviewerEntityDraft{
 			Kind:          state.kind,
@@ -439,6 +444,22 @@ func reviewerEntityEditorStateForSelection(ctx initPromptContext, seed initDraft
 	candidate := seed
 	applyReviewerEntityInventorySelection(&candidate, selection, ctx.ReviewerEntities)
 	return newReviewerEntityEditorState(initReviewerEntityDraft{Kind: initReviewerEntityKind(selection)}, candidate, false)
+}
+
+func reviewerEntityKindDetailDescription(kind initReviewerEntityKind) string {
+	label := reviewerEntityKindDetailLabel(kind)
+	if kind != initReviewerEntityKindGitHubApp {
+		return label
+	}
+	return label + ". Required credential keys: " + credentials.GitHubAppIDKey + ", " + credentials.GitHubAppPrivateKeyKey + ". Optional credential key: " + credentials.GitHubAppInstallationIDKey + "."
+}
+
+func reviewerEntitySecretLocationDescription(kind initReviewerEntityKind) string {
+	base := "Leave blank to use the standard reviewer secret location for this profile. Replace the value only if you need a custom location."
+	if kind != initReviewerEntityKindGitHubApp {
+		return base
+	}
+	return base + " This is a non-secret credential-store ref such as codereview/work-reviewer, not the GitHub App ID or private key. Store required secrets " + credentials.GitHubAppIDKey + " and " + credentials.GitHubAppPrivateKeyKey + " at this ref; " + credentials.GitHubAppInstallationIDKey + " is optional."
 }
 
 func initReviewerEntityDraftFromDocument(ctx initPromptContext, seed initDraft, document initLinearDocument) (initDraft, error) {
