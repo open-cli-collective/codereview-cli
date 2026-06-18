@@ -664,13 +664,22 @@ func initLinearAppendFieldLines(lines *[]string, selectedLines map[int]bool, fie
 		}
 	case initLinearFieldSelect:
 		for _, option := range field.Options {
-			prefix := "  "
-			if focused && option.Selected {
-				prefix = "> "
-			}
+			prefix := initSelectOptionPrefix(focused, option.Selected)
 			initLinearAppendWrappedWithPrefixMarked(lines, selectedLines, prefix, option.Label, width, option.Selected)
 		}
 	}
+}
+
+func initSelectOptionPrefix(focused bool, selected bool) string {
+	focusMarker := "  "
+	if focused && selected {
+		focusMarker = "> "
+	}
+	selectedMarker := "[ ] "
+	if selected {
+		selectedMarker = "[x] "
+	}
+	return focusMarker + selectedMarker
 }
 
 func initLinearAppendWrappedWithPrefix(lines *[]string, prefix string, text string, width int) {

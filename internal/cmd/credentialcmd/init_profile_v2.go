@@ -993,10 +993,7 @@ func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, fo
 		}
 	case initProfileV2FieldSelect:
 		for _, option := range field.Options {
-			prefix := "  "
-			if focused && option.Selected {
-				prefix = "> "
-			}
+			prefix := initSelectOptionPrefix(focused, option.Selected)
 			initProfileV2AppendWrappedWithPrefix(lines, prefix, option.Label, width)
 		}
 	}
