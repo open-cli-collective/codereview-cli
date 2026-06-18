@@ -5644,8 +5644,11 @@ func TestHuhInitLLMRuntimePrompterDefaultUsesLinearRuntimeFlow(t *testing.T) {
 		"Configured: Claude CLI subscription (claude-cli)",
 		"Runtime details",
 		"LLM provider",
+		"[x] Anthropic",
 		"LLM auth mode",
+		"[x] Subscription",
 		"LLM adapter",
+		"[x] Claude CLI",
 		"Runtime action",
 		"Stage these runtime details",
 	} {
@@ -9567,10 +9570,16 @@ func TestInitLinearEditorOnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
 	if got := strings.Count(model.layout.Content, "> "); got != 1 {
 		t.Fatalf("initial caret count = %d, want 1:\n%s", got, model.layout.Content)
 	}
-	if !strings.Contains(model.layout.Content, "> Alpha") {
+	if !strings.Contains(model.layout.Content, "> [x] Alpha") {
 		t.Fatalf("initial content missing focused selected option:\n%s", model.layout.Content)
 	}
-	if strings.Contains(model.layout.Content, "> Delta") {
+	if !strings.Contains(model.layout.Content, "  [x] Delta") {
+		t.Fatalf("initial content missing unfocused selected option marker:\n%s", model.layout.Content)
+	}
+	if !strings.Contains(model.layout.Content, "  [ ] Beta") {
+		t.Fatalf("initial content missing unselected option marker:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> [x] Delta") {
 		t.Fatalf("initial content shows caret on unfocused selected option:\n%s", model.layout.Content)
 	}
 
@@ -9578,11 +9587,51 @@ func TestInitLinearEditorOnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
 	if got := strings.Count(model.layout.Content, "> "); got != 1 {
 		t.Fatalf("caret count after tab = %d, want 1:\n%s", got, model.layout.Content)
 	}
-	if !strings.Contains(model.layout.Content, "> Delta") {
+	if !strings.Contains(model.layout.Content, "> [x] Delta") {
 		t.Fatalf("content after tab missing focused selected option:\n%s", model.layout.Content)
 	}
-	if strings.Contains(model.layout.Content, "> Alpha") {
+	if !strings.Contains(model.layout.Content, "  [x] Alpha") {
+		t.Fatalf("content after tab missing unfocused selected option marker:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> [x] Alpha") {
 		t.Fatalf("content after tab shows caret on unfocused selected option:\n%s", model.layout.Content)
+	}
+}
+
+func TestInitLinearEditorSelectMarkerWrapsAndMarksSelectedLines(t *testing.T) {
+	const choiceField initLinearFieldID = "choice"
+	const width = 24
+	var document initLinearDocument
+	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
+		huh.NewOption("Alpha selected option wraps cleanly", "alpha"),
+		huh.NewOption("Beta", "beta"),
+	}, "alpha")
+
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, width, 12)
+	want := "> [x] Alpha selected\n      option wraps\n      cleanly"
+	if !strings.Contains(model.layout.Content, want) {
+		t.Fatalf("wrapped selected option missing marker or aligned continuations:\n%s", model.layout.Content)
+	}
+	lines := strings.Split(model.layout.Content, "\n")
+	start := -1
+	for index, line := range lines {
+		if line == "> [x] Alpha selected" {
+			start = index
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("wrapped selected option start missing:\n%s", model.layout.Content)
+	}
+	for _, index := range []int{start, start + 1, start + 2} {
+		if !model.layout.SelectedLines[index] {
+			t.Fatalf("wrapped selected line %d is not marked selected; selected lines = %#v\n%s", index, model.layout.SelectedLines, model.layout.Content)
+		}
+	}
+	for _, line := range lines {
+		if len(line) > width {
+			t.Fatalf("wrapped line length = %d, want <= %d for %q\n%s", len(line), width, line, model.layout.Content)
+		}
 	}
 }
 
@@ -10586,7 +10635,7 @@ func TestInitSecretsManagementLinearEditorOnlyFocusedSelectChangesAndShowsCaret(
 	}
 	targetLine := -1
 	for index, line := range strings.Split(model.layout.Content, "\n") {
-		if strings.TrimSpace(line) == "Work secrets (Encrypted file)" {
+		if strings.TrimSpace(line) == "[x] Work secrets (Encrypted file)" {
 			targetLine = index
 			break
 		}
@@ -10597,10 +10646,13 @@ func TestInitSecretsManagementLinearEditorOnlyFocusedSelectChangesAndShowsCaret(
 	if !model.layout.SelectedLines[targetLine] {
 		t.Fatalf("target selected line is not marked selected; selected lines = %#v\n%s", model.layout.SelectedLines, model.layout.Content)
 	}
+	if !strings.Contains(model.layout.Content, "  [x] Work secrets (Encrypted file)") {
+		t.Fatalf("content missing selected marker on unfocused target row:\n%s", model.layout.Content)
+	}
 	for _, unfocusedSelected := range []string{
-		"> Work secrets (Encrypted file)",
-		"> No, keep the current default secrets-management profile",
-		"> Stage secrets-management settings",
+		"> [x] Work secrets (Encrypted file)",
+		"> [x] No, keep the current default secrets-management profile",
+		"> [x] Stage secrets-management settings",
 	} {
 		if strings.Contains(model.layout.Content, unfocusedSelected) {
 			t.Fatalf("content shows active caret on unfocused selected row %q:\n%s", unfocusedSelected, model.layout.Content)
@@ -11304,10 +11356,16 @@ func TestInitProfileV2OnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
 	if got := strings.Count(model.layout.Content, "> "); got != 1 {
 		t.Fatalf("initial caret count = %d, want 1:\n%s", got, model.layout.Content)
 	}
-	if !strings.Contains(model.layout.Content, "> Alpha") {
+	if !strings.Contains(model.layout.Content, "> [x] Alpha") {
 		t.Fatalf("initial content missing focused selected option:\n%s", model.layout.Content)
 	}
-	if strings.Contains(model.layout.Content, "> Delta") {
+	if !strings.Contains(model.layout.Content, "  [x] Delta") {
+		t.Fatalf("initial content missing unfocused selected option marker:\n%s", model.layout.Content)
+	}
+	if !strings.Contains(model.layout.Content, "  [ ] Beta") {
+		t.Fatalf("initial content missing unselected option marker:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> [x] Delta") {
 		t.Fatalf("initial content shows caret on unfocused selected option:\n%s", model.layout.Content)
 	}
 
@@ -11315,11 +11373,40 @@ func TestInitProfileV2OnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
 	if got := strings.Count(model.layout.Content, "> "); got != 1 {
 		t.Fatalf("caret count after tab = %d, want 1:\n%s", got, model.layout.Content)
 	}
-	if !strings.Contains(model.layout.Content, "> Delta") {
+	if !strings.Contains(model.layout.Content, "> [x] Delta") {
 		t.Fatalf("content after tab missing focused selected option:\n%s", model.layout.Content)
 	}
-	if strings.Contains(model.layout.Content, "> Alpha") {
+	if !strings.Contains(model.layout.Content, "  [x] Alpha") {
+		t.Fatalf("content after tab missing unfocused selected option marker:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> [x] Alpha") {
 		t.Fatalf("content after tab shows caret on unfocused selected option:\n%s", model.layout.Content)
+	}
+}
+
+func TestInitProfileV2SelectMarkerWrapsUnfocusedSelectedOption(t *testing.T) {
+	const inputField initProfileV2FieldID = "input"
+	const choiceField initProfileV2FieldID = "choice"
+	const width = 24
+	var document initProfileV2Document
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
+		huh.NewOption("Alpha selected option wraps cleanly", "alpha"),
+		huh.NewOption("Beta", "beta"),
+	}, "alpha")
+
+	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, width, 12)
+	want := "  [x] Alpha selected\n      option wraps\n      cleanly"
+	if !strings.Contains(model.layout.Content, want) {
+		t.Fatalf("wrapped unfocused selected option missing marker or aligned continuations:\n%s", model.layout.Content)
+	}
+	if strings.Contains(model.layout.Content, "> [x] Alpha selected") {
+		t.Fatalf("wrapped unfocused selected option shows caret:\n%s", model.layout.Content)
+	}
+	for _, line := range strings.Split(model.layout.Content, "\n") {
+		if len(line) > width {
+			t.Fatalf("wrapped line length = %d, want <= %d for %q\n%s", len(line), width, line, model.layout.Content)
+		}
 	}
 }
 
