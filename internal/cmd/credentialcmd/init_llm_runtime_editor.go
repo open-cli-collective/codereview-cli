@@ -168,6 +168,9 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 				return
 			}
 			id := model.document[index].ID
+			if id == initLLMRuntimeFieldSelection && model.document.selectedValue(initLLMRuntimeFieldAction) == initLLMRuntimeActionDelete {
+				model.selectFieldValue(initLLMRuntimeFieldAction, initDetailActionEdit)
+			}
 			if id == initLLMRuntimeFieldSelection ||
 				id == initLLMRuntimeFieldAction ||
 				id == initLLMRuntimeFieldReplacement {
@@ -213,7 +216,9 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 				return true, tea.Quit
 			case initLLMRuntimeActionDelete:
 				replacement := model.document.selectedValue(initLLMRuntimeFieldReplacement)
-				if replacement == "" || replacement == model.document.selectedValue(initLLMRuntimeFieldSelection) {
+				if replacement == "" ||
+					replacement == model.document.selectedValue(initLLMRuntimeFieldSelection) ||
+					initLLMRuntimeDeleteReplacementMatchesDeleted(seed, ctx, model.document) {
 					model.document[model.focused].Error = "choose a replacement LLM runtime before staging deletion"
 					model.relayout()
 					model.ensureFocusedVisible()
@@ -359,6 +364,15 @@ func initLLMRuntimeSelectionIdentityKey(selection string, runtimes map[string]in
 		return "", false
 	}
 	return runtime.identityKey(), true
+}
+
+func initLLMRuntimeDeleteReplacementMatchesDeleted(seed initDraft, ctx initPromptContext, document initLinearDocument) bool {
+	deletedKey, ok := initLLMRuntimeSelectionIdentityKey(document.selectedValue(initLLMRuntimeFieldSelection), ctx.LLMRuntimes)
+	if !ok {
+		return false
+	}
+	replacementDraft := initLLMRuntimeDraftForDeleteFromLinearDocument(seed, ctx, document)
+	return initLLMRuntimeDraftFromSeedDraft(replacementDraft).identityKey() == deletedKey
 }
 
 func initLLMRuntimeSyncLinearFields(model *initLinearEditorModel, ctx initPromptContext, seed initDraft, availabilityNote func(initLLMRuntimePreset) string, resetDetails bool) {

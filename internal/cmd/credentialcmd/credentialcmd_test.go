@@ -5735,6 +5735,119 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 	}
 }
 
+func TestInitLLMRuntimeLinearEditorRejectsCustomDeleteReplacementMatchingDeleted(t *testing.T) {
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}
+	seed := seedInteractiveInitDraft(ctx.RequestedProfileName, ctx.ExistingProfileName, ctx.DefaultProfileName, ctx.ExistingProfile)
+	model := newInitLinearEditorModel(initLLMRuntimeLinearEditor(ctx, seed, func(initLLMRuntimePreset) string { return "" }), 160, 60)
+	model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if cmd != nil {
+		t.Fatal("delete shortcut returned quit command before choosing replacement")
+	}
+	for range 4 {
+		updated, cmd = next.Update(tea.KeyMsg{Type: tea.KeyDown})
+		if cmd != nil {
+			t.Fatal("replacement selection returned quit command")
+		}
+		next, ok = updated.(initLinearEditorModel)
+		if !ok {
+			t.Fatalf("Update returned %T while choosing custom replacement", updated)
+		}
+	}
+	if got := next.document.selectedValue(initLLMRuntimeFieldReplacement); got != initCustomLLMRuntimeSelection {
+		t.Fatalf("replacement = %q, want custom compatible runtime", got)
+	}
+	next = focusInitLinearField(t, next, initLLMRuntimeFieldAction)
+	updated, cmd = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok = updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T after staging attempt", updated)
+	}
+	if cmd != nil {
+		t.Fatal("unchanged custom replacement staged deletion, want inline validation error")
+	}
+	if next.resultAction != "" {
+		t.Fatalf("resultAction = %q, want no staged action", next.resultAction)
+	}
+	actionIndex := next.document.fieldIndexByID(initLLMRuntimeFieldAction)
+	if actionIndex < 0 || !strings.Contains(next.document[actionIndex].Error, "choose a replacement LLM runtime") {
+		t.Fatalf("action error = %q, want replacement validation error", next.document[actionIndex].Error)
+	}
+}
+
+func TestInitLLMRuntimeLinearEditorChangingSelectionResetsDeleteMode(t *testing.T) {
+	existing := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": existing},
+	}
+	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       cfg,
+		LLMRuntimes:          llmRuntimes,
+		ProfileLLMRuntimes:   profileLLMRuntimes,
+	}
+	seed := seedInteractiveInitDraft(ctx.RequestedProfileName, ctx.ExistingProfileName, ctx.DefaultProfileName, ctx.ExistingProfile)
+	model := newInitLinearEditorModel(initLLMRuntimeLinearEditor(ctx, seed, func(initLLMRuntimePreset) string { return "" }), 160, 60)
+	model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if cmd != nil {
+		t.Fatal("delete shortcut returned quit command before choosing replacement")
+	}
+	if got := next.document.selectedValue(initLLMRuntimeFieldAction); got != initLLMRuntimeActionDelete {
+		t.Fatalf("action after delete shortcut = %q, want delete", got)
+	}
+	next = focusInitLinearField(t, next, initLLMRuntimeFieldSelection)
+	updated, cmd = next.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, ok = updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T after changing runtime selection", updated)
+	}
+	if cmd != nil {
+		t.Fatal("changing runtime selection returned quit command")
+	}
+	if got := next.document.selectedValue(initLLMRuntimeFieldAction); got != initDetailActionEdit {
+		t.Fatalf("action after changing runtime selection = %q, want edit", got)
+	}
+	if !next.document.fieldHidden(initLLMRuntimeFieldReplacement) {
+		t.Fatal("replacement field visible after changing runtime selection, want delete mode reset")
+	}
+	actionIndex := next.document.fieldIndexByID(initLLMRuntimeFieldAction)
+	for _, option := range next.document[actionIndex].Options {
+		if option.Value == initLLMRuntimeActionDelete {
+			t.Fatalf("delete action still available after runtime selection changed: %#v", option)
+		}
+	}
+}
+
 func TestHuhInitLLMRuntimePrompterDefaultPreservesConfiguredAPIKeyRuntimeRef(t *testing.T) {
 	existing := basicProfile("work")
 	existing.LLM = config.LLMConfig{
