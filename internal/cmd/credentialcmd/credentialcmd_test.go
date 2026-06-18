@@ -565,10 +565,13 @@ func TestInitNonInteractiveWritesGitHubAppReviewerConfigOnly(t *testing.T) {
 	if reviewer == nil || reviewer.AuthMode != config.GitAuthModeGitHubApp || reviewer.CredentialRef != "codereview/default-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want github_app codereview/default-reviewer", reviewer)
 	}
-	for _, key := range []string{credentials.GitHubAppIDKey, credentials.GitHubAppPrivateKeyKey, credentials.GitHubAppInstallationIDKey} {
+	for _, key := range []string{credentials.GitHubAppIDKey, credentials.GitHubAppPrivateKeyKey} {
 		if !strings.Contains(errOut.String(), "--key "+key+" --stdin") {
 			t.Fatalf("stderr = %q, want setup hint for %s", errOut.String(), key)
 		}
+	}
+	if strings.Contains(errOut.String(), "--key "+credentials.GitHubAppInstallationIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want optional installation id omitted from required setup hints", errOut.String())
 	}
 	if strings.Contains(out.String()+errOut.String(), "private-key-value") {
 		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
@@ -3820,6 +3823,36 @@ func TestWriteInitCredentialPlanHintsUsesMissingRequiredKeysOnly(t *testing.T) {
 	}
 }
 
+func TestWriteInitCredentialPlanHintsForDeferredGitHubAppUsesRequiredKeysOnly(t *testing.T) {
+	var stderr bytes.Buffer
+	entry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/rianjs-bot",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+		State: initCredentialPlanStateDefer,
+	}
+
+	if err := writeInitCredentialPlanHints(&stderr, "", entry); err != nil {
+		t.Fatalf("writeInitCredentialPlanHints: %v", err)
+	}
+	got := stderr.String()
+	for _, key := range []string{credentials.GitHubAppIDKey, credentials.GitHubAppPrivateKeyKey} {
+		if !strings.Contains(got, "cr set-credential --ref codereview/rianjs-bot --key "+key+" --stdin") {
+			t.Fatalf("stderr = %q, want required setup hint for %s", got, key)
+		}
+	}
+	if strings.Contains(got, "--key "+credentials.GitHubAppInstallationIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want optional installation id omitted from required setup hints", got)
+	}
+}
+
 func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
@@ -6257,6 +6290,56 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 	}
 }
 
+func TestHuhInitReviewerEntityPrompterGitHubAppLinearFlowShowsCredentialBundleCopy(t *testing.T) {
+	existing := basicProfile("work")
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stderr: &stderr,
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 160, 60)
+			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+			model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+			_, _ = io.WriteString(out, model.View())
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}})
+	if err != nil {
+		t.Fatalf("EditReviewerEntity: %v", err)
+	}
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModeGitHubApp) {
+		t.Fatalf("draft = %#v, want GitHub App reviewer", draft)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"GitHub App reviewer. Required credential keys",
+		"Reviewer secret location",
+		"non-secret",
+		"credential-store ref",
+		credentials.GitHubAppIDKey,
+		credentials.GitHubAppPrivateKeyKey,
+		"Optional credential key: " + credentials.GitHubAppInstallationIDKey,
+		credentials.GitHubAppInstallationIDKey + " is optional",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	draft := seedInteractiveInitDraft("work", "work", "work", nil)
@@ -6279,6 +6362,42 @@ func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 	}
 	if !reflect.DeepEqual(draft, want) {
 		t.Fatalf("draft mutated on details Back:\n got: %#v\nwant: %#v", draft, want)
+	}
+}
+
+func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	var stderr bytes.Buffer
+	prompter := huhInitReviewerEntityPrompter{
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
+	}
+
+	nextDraft, back, err := prompter.editNewReviewerEntity(initReviewerEntityKindGitHubApp, draft)
+	if err != nil {
+		t.Fatalf("editNewReviewerEntity: %v", err)
+	}
+	if back {
+		t.Fatal("back = true, want staged GitHub App reviewer details")
+	}
+	if !nextDraft.ReviewerEnabled || nextDraft.ReviewerAuth != string(config.GitAuthModeGitHubApp) {
+		t.Fatalf("draft = %#v, want GitHub App reviewer", nextDraft)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"GitHub App reviewer. Required credential keys",
+		"Reviewer secret location",
+		"non-secret",
+		"credential-store ref",
+		credentials.GitHubAppIDKey,
+		credentials.GitHubAppPrivateKeyKey,
+		"Optional credential key: " + credentials.GitHubAppInstallationIDKey,
+		credentials.GitHubAppInstallationIDKey + " is optional",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -6740,6 +6859,82 @@ func TestInitCredentialReadinessNoteNamesSelectedSecretsProfile(t *testing.T) {
 	})
 	if !strings.Contains(note, "Git via Team Vault deferred") {
 		t.Fatalf("note = %q, want named selected secrets-management profile", note)
+	}
+	if strings.Contains(note, "required:") {
+		t.Fatalf("note = %q, want single-key deferred credentials to keep concise readiness copy", note)
+	}
+}
+
+func TestInitCredentialReadinessNoteLabelsGitHubAppRequiredAndOptionalKeys(t *testing.T) {
+	note := initCredentialReadinessNote(initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/rianjs-bot",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+		State: initCredentialPlanStateDefer,
+	})
+	for _, want := range []string{
+		"reviewer deferred",
+		"required: " + credentials.GitHubAppIDKey + ", " + credentials.GitHubAppPrivateKeyKey,
+		"optional: " + credentials.GitHubAppInstallationIDKey,
+	} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note = %q, want %q", note, want)
+		}
+	}
+	if strings.Contains(note, "missing "+credentials.GitHubAppInstallationIDKey) || strings.Contains(note, "required: "+credentials.GitHubAppInstallationIDKey) {
+		t.Fatalf("note = %q, want installation id labeled optional only", note)
+	}
+}
+
+func TestInitCredentialReadinessNoteLabelsPartialGitHubAppOptionalKey(t *testing.T) {
+	note := initCredentialReadinessNote(initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/rianjs-bot",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+		MissingRequiredKeys: []string{credentials.GitHubAppPrivateKeyKey},
+		State:               initCredentialPlanStateMissingRequired,
+	})
+	for _, want := range []string{
+		"reviewer missing required " + credentials.GitHubAppPrivateKeyKey,
+		"optional: " + credentials.GitHubAppInstallationIDKey,
+	} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note = %q, want %q", note, want)
+		}
+	}
+	if strings.Contains(note, "missing "+credentials.GitHubAppInstallationIDKey) || strings.Contains(note, "required "+credentials.GitHubAppInstallationIDKey) {
+		t.Fatalf("note = %q, want optional installation id not treated as required", note)
+	}
+}
+
+func TestInitProfileReadinessLineIncludesNotes(t *testing.T) {
+	line := initProfileReadinessLine(initProfileReadiness{
+		ProfileName: "work",
+		Ready:       false,
+		Notes:       []string{"reviewer deferred (required: github_app_id, github_app_private_key; optional: github_app_installation_id)"},
+	})
+	for _, want := range []string{
+		"- work: needs follow-up",
+		"required: github_app_id, github_app_private_key",
+		"optional: github_app_installation_id",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line = %q, want %q", line, want)
+		}
 	}
 }
 
@@ -13560,6 +13755,114 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	}
 	if cfg.Keyring.Backend != "memory" || cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("global settings after reviewer rebuild = %#v / %#v, want memory + 14/at_write", cfg.Keyring, cfg.Data.Retention)
+	}
+}
+
+func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": {
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					CredentialRef: "codereview/work",
+				},
+				LLM: config.LLMConfig{
+					Provider: config.LLMProviderAnthropic,
+					Auth:     config.LLMAuthSubscription,
+					Adapter:  config.LLMAdapterClaudeCLI,
+				},
+			},
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	reviewerPrompterCalls := 0
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			reviewerPrompterCalls++
+			if reviewerPrompterCalls > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft.ReviewerEnabled = true
+			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+			draft.ReviewerDisplayName = "rianjs-bot"
+			return draft, nil
+		}),
+		secretPrompter: &fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(map[string]map[string]string{
+				"work": {
+					credentials.GitTokenKey: "existing-token",
+				},
+			}), nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := got.Profiles["work"]
+	if profile.ReviewerCredentials == nil {
+		t.Fatal("reviewer credentials = nil, want deferred GitHub App reviewer saved")
+	}
+	if profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp ||
+		profile.ReviewerCredentials.CredentialRef != "codereview/rianjs-bot" ||
+		profile.ReviewerCredentials.DisplayName != "rianjs-bot" {
+		t.Fatalf("reviewer credentials = %#v, want rianjs-bot GitHub App reviewer", profile.ReviewerCredentials)
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"Saved staged init changes",
+		"- work: needs follow-up",
+		"reviewer deferred",
+		"required: " + credentials.GitHubAppIDKey + ", " + credentials.GitHubAppPrivateKeyKey,
+		"optional: " + credentials.GitHubAppInstallationIDKey,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %q", out, want)
+		}
+	}
+	errOut := stderr.String()
+	for _, want := range []string{
+		"Next: cr set-credential --ref codereview/rianjs-bot --key " + credentials.GitHubAppIDKey + " --stdin",
+		"Next: cr set-credential --ref codereview/rianjs-bot --key " + credentials.GitHubAppPrivateKeyKey + " --stdin",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+	if strings.Contains(errOut, " --key "+credentials.GitHubAppInstallationIDKey+" ") {
+		t.Fatalf("stderr = %q, want optional installation id omitted from required follow-up commands", errOut)
 	}
 }
 

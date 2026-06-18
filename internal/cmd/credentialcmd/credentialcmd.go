@@ -1681,17 +1681,21 @@ func (p huhInitFinalizePrompter) ChooseFinalizeAction(prompt initFinalizePrompt)
 func initFinalizeDescription(prompt initFinalizePrompt) string {
 	lines := []string{"Review readiness before committing staged config and credential changes."}
 	for _, profile := range prompt.Profiles {
-		status := "ready"
-		if !profile.Ready {
-			status = "needs follow-up"
-		}
-		line := fmt.Sprintf("- %s: %s", profile.ProfileName, status)
-		if len(profile.Notes) > 0 {
-			line += " (" + strings.Join(profile.Notes, "; ") + ")"
-		}
-		lines = append(lines, line)
+		lines = append(lines, initProfileReadinessLine(profile))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func initProfileReadinessLine(profile initProfileReadiness) string {
+	status := "ready"
+	if !profile.Ready {
+		status = "needs follow-up"
+	}
+	line := fmt.Sprintf("- %s: %s", profile.ProfileName, status)
+	if len(profile.Notes) > 0 {
+		line += " (" + strings.Join(profile.Notes, "; ") + ")"
+	}
+	return line
 }
 
 func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
@@ -6138,14 +6142,52 @@ func initCredentialReadinessNote(entry initCredentialPlanEntry) string {
 	case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
 		return ""
 	case initCredentialPlanStateDefer:
-		return label + " deferred"
+		return label + " deferred" + initCredentialScopedKeySummary(entry)
 	case initCredentialPlanStateOverwriteRef, initCredentialPlanStateMissingRequired:
 		if len(entry.MissingRequiredKeys) == 0 {
-			return label + " needs setup"
+			return label + " needs setup" + initCredentialScopedKeySummary(entry)
+		}
+		if initCredentialShouldSummarizeKeys(entry) {
+			return fmt.Sprintf("%s missing required %s%s", label, strings.Join(entry.MissingRequiredKeys, ", "), initCredentialOptionalKeySummary(entry))
 		}
 		return fmt.Sprintf("%s missing %s", label, strings.Join(entry.MissingRequiredKeys, ", "))
 	}
 	return ""
+}
+
+func initCredentialScopedKeySummary(entry initCredentialPlanEntry) string {
+	if !initCredentialShouldSummarizeKeys(entry) {
+		return ""
+	}
+	return initCredentialKeySummary(entry)
+}
+
+func initCredentialShouldSummarizeKeys(entry initCredentialPlanEntry) bool {
+	return len(entry.KeySpecs) > 1
+}
+
+func initCredentialKeySummary(entry initCredentialPlanEntry) string {
+	required := initCredentialRequiredKeys(entry)
+	optional := initCredentialOptionalKeys(entry)
+	if len(required) == 0 && len(optional) == 0 {
+		return ""
+	}
+	parts := []string{}
+	if len(required) > 0 {
+		parts = append(parts, "required: "+strings.Join(required, ", "))
+	}
+	if len(optional) > 0 {
+		parts = append(parts, "optional: "+strings.Join(optional, ", "))
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+func initCredentialOptionalKeySummary(entry initCredentialPlanEntry) string {
+	optional := initCredentialOptionalKeys(entry)
+	if len(optional) == 0 {
+		return ""
+	}
+	return " (optional: " + strings.Join(optional, ", ") + ")"
 }
 
 func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan initSessionPlan) error {
@@ -6192,11 +6234,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 		return err
 	}
 	for _, readiness := range buildInteractiveInitProfileReadiness(plan) {
-		status := "ready"
-		if !readiness.Ready {
-			status = "needs follow-up"
-		}
-		if _, err := fmt.Fprintf(opts.Stdout, "- %s: %s\n", readiness.ProfileName, status); err != nil {
+		if _, err := fmt.Fprintln(opts.Stdout, initProfileReadinessLine(readiness)); err != nil {
 			return err
 		}
 	}
@@ -6426,10 +6464,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 func writeInitCredentialPlanHints(w io.Writer, backendArg string, entry initCredentialPlanEntry) error {
 	keys := entry.MissingRequiredKeys
 	if len(keys) == 0 {
-		keys = make([]string, 0, len(entry.KeySpecs))
-		for _, spec := range entry.KeySpecs {
-			keys = append(keys, spec.Key)
-		}
+		keys = initCredentialRequiredKeys(entry)
 	}
 	hintPrefix := "Next"
 	if hintLabel := initSecretsProfileHintLabel(entry.SecretsProfile); hintLabel != "" {
@@ -6441,6 +6476,28 @@ func writeInitCredentialPlanHints(w io.Writer, backendArg string, entry initCred
 		}
 	}
 	return nil
+}
+
+func initCredentialRequiredKeys(entry initCredentialPlanEntry) []string {
+	keys := make([]string, 0, len(entry.KeySpecs))
+	for _, spec := range entry.KeySpecs {
+		if !spec.Required {
+			continue
+		}
+		keys = append(keys, spec.Key)
+	}
+	return keys
+}
+
+func initCredentialOptionalKeys(entry initCredentialPlanEntry) []string {
+	keys := make([]string, 0, len(entry.KeySpecs))
+	for _, spec := range entry.KeySpecs {
+		if spec.Required {
+			continue
+		}
+		keys = append(keys, spec.Key)
+	}
+	return keys
 }
 
 func projectInitPlannedWriteKeys(writes map[string]map[string]string) map[string][]string {
