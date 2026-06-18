@@ -121,6 +121,8 @@ func TestDecodeFindings(t *testing.T) {
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"finding_id":null,"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "finding_id")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"bad","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "severity")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","file":"other.go","anchor":{"kind":"file"},"body":"body"}]}`, "file and file_path")
+	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":null,"file":"main.go","anchor":{"kind":"file"},"body":"body"}]}`, "file_path must be a string")
+	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file":null,"anchor":{"kind":"file"},"body":"body"}]}`, "file must be a string")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file":"other.go","anchor":{"kind":"file"},"body":"body"}]}`, "changed files")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file":"main.go","anchor":{"kind":"file"},"body":"body","extra":true}]}`, "unknown field")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"other.go","anchor":{"kind":"file"},"body":"body"}]}`, "changed files")

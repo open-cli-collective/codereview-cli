@@ -105,8 +105,8 @@ type findingsWire struct {
 type findingWire struct {
 	FindingID json.RawMessage `json:"finding_id,omitempty"`
 	Severity  string          `json:"severity"`
-	FilePath  *string         `json:"file_path"`
-	FileAlias *string         `json:"file"`
+	FilePath  json.RawMessage `json:"file_path"`
+	FileAlias json.RawMessage `json:"file"`
 	Anchor    anchorWire      `json:"anchor"`
 	Body      string          `json:"body"`
 }
@@ -278,19 +278,41 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 }
 
 func (wire findingWire) normalizedFilePath() (string, error) {
+	filePath, hasFilePath, err := decodeOptionalStringField("file_path", wire.FilePath)
+	if err != nil {
+		return "", err
+	}
+	fileAlias, hasFileAlias, err := decodeOptionalStringField("file", wire.FileAlias)
+	if err != nil {
+		return "", err
+	}
 	switch {
-	case wire.FilePath != nil && wire.FileAlias != nil:
-		if *wire.FilePath != *wire.FileAlias {
+	case hasFilePath && hasFileAlias:
+		if filePath != fileAlias {
 			return "", fmt.Errorf("llm: finding file and file_path values differ")
 		}
-		return *wire.FilePath, nil
-	case wire.FilePath != nil:
-		return *wire.FilePath, nil
-	case wire.FileAlias != nil:
-		return *wire.FileAlias, nil
+		return filePath, nil
+	case hasFilePath:
+		return filePath, nil
+	case hasFileAlias:
+		return fileAlias, nil
 	default:
 		return "", nil
 	}
+}
+
+func decodeOptionalStringField(name string, raw json.RawMessage) (string, bool, error) {
+	if len(raw) == 0 {
+		return "", false, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", true, fmt.Errorf("llm: finding %s must be a string", name)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", true, fmt.Errorf("llm: finding %s must be a string", name)
+	}
+	return value, true, nil
 }
 
 // DecodeRollup validates and maps Rollup structured output.
