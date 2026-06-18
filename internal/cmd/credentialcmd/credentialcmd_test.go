@@ -10598,6 +10598,71 @@ func TestHuhInitKeyringBackendPrompterAccessibleLegacyFallbackFormShowsFallbackC
 	}
 }
 
+func TestHuhInitKeyringBackendPrompterInventoryLegacyFallbackStagesBackend(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	memoryChoice := 0
+	for index, option := range initLegacySecretsBackendOptions("") {
+		if option.Value == string(credstore.BackendMemory) {
+			memoryChoice = index + 1
+			break
+		}
+	}
+	if memoryChoice == 0 {
+		t.Fatal("memory backend option missing from legacy fallback backend options")
+	}
+	var stderr bytes.Buffer
+	callCount := 0
+	prompter := huhInitKeyringBackendPrompter{
+		stdin:  strings.NewReader(fmt.Sprintf("%d\n1\n", memoryChoice)),
+		stderr: &stderr,
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return initInventoryResult{
+					Action: initInventoryActionCommand,
+					Row: initInventoryRow{
+						ID:    initSecretsManagementLegacySelection,
+						Title: initLegacySecretsManagementInventoryTitle(config.File{}),
+					},
+				}, nil
+			case 2:
+				return initInventoryResult{
+					Action: initInventoryActionBack,
+					Row:    initInventoryRow{ID: initBackSelection},
+				}, nil
+			default:
+				t.Fatalf("unexpected inventory call %d", callCount)
+				return initInventoryResult{}, nil
+			}
+		},
+	}
+
+	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+	})
+	if err != nil {
+		t.Fatalf("EditKeyringBackend: %v", err)
+	}
+	if !edit.Apply || !edit.HasConfigEdit {
+		t.Fatalf("edit = %#v, want staged config edit", edit)
+	}
+	if got := edit.Config.Keyring.Backend; got != string(credstore.BackendMemory) {
+		t.Fatalf("keyring.backend = %q, want memory after legacy fallback inventory path", got)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Legacy fallback credential store backend",
+		"Fallback credential-store action",
+		"Stage fallback credential-store settings",
+		"In-memory store",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("legacy fallback inventory path output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitKeyringBackendPrompter{
@@ -10691,6 +10756,15 @@ func TestInitSecretsManagementLinearEditorShowsLegacyFallbackWording(t *testing.
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("legacy backend description = %q, want %q", description, want)
+		}
+	}
+	for _, want := range []string{
+		"Keep credentials in memory only for this process.",
+		"Ephemeral; best suited for tests or CI, not normal local use.",
+		"[x] In-memory store",
+	} {
+		if !strings.Contains(model.layout.Content, want) {
+			t.Fatalf("memory-selected linear editor output missing %q:\n%s", want, model.layout.Content)
 		}
 	}
 }
