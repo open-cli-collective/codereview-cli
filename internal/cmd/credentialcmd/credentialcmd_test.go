@@ -3640,6 +3640,45 @@ func TestCollectInteractiveInitSecretsDestinationUsesRawRuntimeBackend(t *testin
 	}
 }
 
+func TestCollectInteractiveInitSecretsDestinationUsesInferredDefaultBackend(t *testing.T) {
+	t.Setenv(credentials.BackendEnvVar(), "")
+	prompter := &fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	}
+	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
+		secretPrompter:     prompter,
+		clipboardSupported: func() bool { return false },
+	}, initWorkspaceDraft{
+		cfg: config.File{},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
+			SecretsProfile: credentials.ResolvedSecretsProfile{
+				ID:              config.LegacyProjectedSecretsProfileID,
+				Label:           "Legacy default",
+				Backend:         config.ProjectedLegacySecretsBackendKind,
+				Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
+				SelectionSource: credentials.SecretsProfileSelectionLegacyDefault,
+			},
+			KeySpecs:            []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
+			MissingRequiredKeys: []string{credentials.GitTokenKey},
+			State:               initCredentialPlanStateMissingRequired,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("collectInteractiveInitSecrets: %v", err)
+	}
+	if len(prompter.actionPrompts) != 1 {
+		t.Fatalf("action prompts = %d, want 1", len(prompter.actionPrompts))
+	}
+	destination := prompter.actionPrompts[0].Destination
+	if !strings.Contains(destination, initAutomaticOSDefaultSecretsBackendLabel()) {
+		t.Fatalf("destination = %q, want inferred automatic backend copy", destination)
+	}
+	if strings.Contains(destination, "credential destination unavailable") {
+		t.Fatalf("destination = %q, want available inferred backend summary", destination)
+	}
+}
+
 func TestCollectInteractiveInitSecretsSourceBackReturnsToCredentialChoices(t *testing.T) {
 	store := newFakeInitStore(nil)
 	prompter := &fakeInitSecretPrompter{
@@ -14471,6 +14510,44 @@ func TestHuhInitSecretPrompterAccessibleShowsCredentialDestination(t *testing.T)
 	}
 }
 
+func TestHuhInitSecretPrompterAccessibleSecretSourceShowsCredentialDestination(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var stderr bytes.Buffer
+	prompter := huhInitSecretPrompter{
+		stdin:  strings.NewReader("\n"),
+		stderr: &stderr,
+	}
+	_, err := prompter.ChooseSecretSource(initSecretValuePrompt{
+		Entry: initCredentialPlanEntry{
+			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
+		},
+		Key:         credentials.GitTokenKey,
+		Destination: "Destination: codereview/work via Team Vault (Encrypted file)",
+	})
+	if err != nil {
+		t.Fatalf("ChooseSecretSource: %v", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "Destination: codereview/work via Team Vault (Encrypted file)") {
+		t.Fatalf("stderr = %q, want credential destination note", got)
+	}
+}
+
+func TestInitSecretPasteDescriptionKeepsDestinationForGitHubAppPrivateKey(t *testing.T) {
+	description := initSecretPasteDescription(initSecretValuePrompt{
+		Key:         credentials.GitHubAppPrivateKeyKey,
+		Destination: "Destination: codereview/rianjs-bot via Team Vault (Encrypted file)",
+	})
+
+	for _, want := range []string{
+		"Destination: codereview/rianjs-bot via Team Vault (Encrypted file)",
+		"Clipboard is recommended for multi-line private keys",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("description = %q, want %q", description, want)
+		}
+	}
+}
+
 func TestInitReviewerCredentialStatusStates(t *testing.T) {
 	entry := initCredentialPlanEntry{
 		Ref: config.CredentialRef{
@@ -14629,8 +14706,17 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 			DefaultProfile: "work-1password",
 			Profiles: map[string]config.SecretsProfile{
 				"work-1password": {
-					Label:   "Work Vault",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendOPDesktop)},
+					Label: "Work Vault",
+					Backend: config.SecretsProfileBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
+						OnePassword: &config.SecretsProfileOnePasswordConfig{
+							VaultID:          "Engineering",
+							ItemTitlePrefix:  "cr-",
+							ItemTag:          "code-review",
+							ItemFieldTitle:   "credential",
+							DesktopAccountID: "account-123",
+						},
+					},
 				},
 			},
 		},
@@ -14667,7 +14753,18 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 		t.Fatalf("opened secrets profiles = %#v, want work-1password", opened)
 	}
 	description := initReviewerCredentialStatusDescription(status)
-	for _, want := range []string{"Destination: codereview/work-reviewer via Work Vault", string(credstore.BackendOPDesktop)} {
+	if strings.TrimSpace(status.Destination) == "" {
+		t.Fatalf("status.Destination is empty; description fell back to legacy formatter: %q", description)
+	}
+	for _, want := range []string{
+		"Destination: codereview/work-reviewer via Work Vault (1Password desktop app)",
+		string(credstore.BackendOPDesktop),
+		"1Password vault: Engineering",
+		"1Password item title prefix: cr-",
+		"1Password item tag: code-review",
+		"1Password item field title: credential",
+		"1Password desktop account id: account-123",
+	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description = %q, want %q", description, want)
 		}

@@ -3412,23 +3412,12 @@ func initSecretSourcePromptTitle(prompt initSecretValuePrompt) string {
 func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string, error) {
 	var value string
 	action := initDetailActionEdit
-	description := "Secret input is hidden."
-	if destination := strings.TrimSpace(prompt.Destination); destination != "" {
-		description = destination + "\n" + description
-	}
 	field := huh.NewInput().
 		Title(fmt.Sprintf("Paste %s%s", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))).
-		Description(description).
+		Description(initSecretPasteDescription(prompt)).
 		Value(&value).
 		EchoMode(huh.EchoModePassword).
 		Validate(validateRequiredText("secret value is required"))
-	if prompt.Key == credentials.GitHubAppPrivateKeyKey {
-		privateKeyDescription := "Secret input is hidden. Clipboard is recommended for multi-line private keys."
-		if destination := strings.TrimSpace(prompt.Destination); destination != "" {
-			privateKeyDescription = destination + "\n" + privateKeyDescription
-		}
-		field.Description(privateKeyDescription)
-	}
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
@@ -6845,6 +6834,17 @@ func readSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag strin
 		return "", fmt.Errorf("exactly one of %s or %s is required", stdinFlag, envFlag)
 	}
 	return value, nil
+}
+
+func initSecretPasteDescription(prompt initSecretValuePrompt) string {
+	description := "Secret input is hidden."
+	if prompt.Key == credentials.GitHubAppPrivateKeyKey {
+		description = "Secret input is hidden. Clipboard is recommended for multi-line private keys."
+	}
+	if destination := strings.TrimSpace(prompt.Destination); destination != "" {
+		description = destination + "\n" + description
+	}
+	return description
 }
 
 func readOptionalSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag string) (string, bool, error) {
