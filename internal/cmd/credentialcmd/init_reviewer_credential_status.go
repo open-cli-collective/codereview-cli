@@ -224,20 +224,20 @@ func initReviewerCredentialStatusForSelectionRef(ctx initPromptContext, seed ini
 	if err != nil || state.kind == initReviewerEntityKindUseGitIdentity {
 		return initReviewerCredentialStatus{}, false
 	}
-	ref := strings.TrimSpace(reviewerSecretLocation)
-	if ref == "" {
-		ref = strings.TrimSpace(state.seed.ReviewerCredentialRef)
-		if ref == "" {
-			ref = state.standardReviewerRef
+	effectiveCredentialRef := strings.TrimSpace(reviewerSecretLocation)
+	if effectiveCredentialRef == "" {
+		effectiveCredentialRef = strings.TrimSpace(state.seed.ReviewerCredentialRef)
+		if effectiveCredentialRef == "" {
+			effectiveCredentialRef = state.standardReviewerRef
 		}
 	}
-	if ref == "" {
+	if effectiveCredentialRef == "" {
 		return initReviewerCredentialStatus{}, false
 	}
 	authMode := reviewerCredentialAuthModeForKind(state.kind)
 	statusRef := config.CredentialRef{
 		Purpose: "reviewer_credentials",
-		Ref:     ref,
+		Ref:     effectiveCredentialRef,
 		Mode:    string(authMode),
 	}
 	for _, status := range ctx.ReviewerCredentialStatuses {
@@ -245,7 +245,8 @@ func initReviewerCredentialStatusForSelectionRef(ctx initPromptContext, seed ini
 			return status, true
 		}
 	}
-	if ctx.ReviewerCredentialStatuses != nil {
+	backendStatusesWereComputed := ctx.ReviewerCredentialStatuses != nil
+	if backendStatusesWereComputed {
 		return synthesizeUnavailableReviewerCredentialStatus(ctx, statusRef), true
 	}
 	return synthesizeReviewerCredentialStatus(ctx, statusRef), true
@@ -317,12 +318,12 @@ func initReviewerCredentialDestinationDescription(status initReviewerCredentialS
 		ref = "(standard reviewer secret location)"
 	}
 	backend := strings.TrimSpace(status.SecretsProfile.Backend)
-	store := strings.TrimSpace(status.SecretsProfile.DisplayName())
+	storeLabel := strings.TrimSpace(status.SecretsProfile.DisplayName())
 	switch {
-	case store != "" && backend != "":
-		return fmt.Sprintf("%s via %s (%s)", ref, store, backend)
-	case store != "":
-		return fmt.Sprintf("%s via %s", ref, store)
+	case storeLabel != "" && backend != "":
+		return fmt.Sprintf("%s via %s (%s)", ref, storeLabel, backend)
+	case storeLabel != "":
+		return fmt.Sprintf("%s via %s", ref, storeLabel)
 	case backend != "":
 		return fmt.Sprintf("%s via %s", ref, backend)
 	default:

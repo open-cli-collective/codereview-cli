@@ -171,6 +171,16 @@ selected reviewer credential ref:
   `github_app_private_key`, plus optional `github_app_installation_id`.
 - Each key may be shown as `missing`, `existing`, `staged`, `skipped optional`,
   `deferred`, `optional`, or `status unavailable`.
+- `missing` means the backend was consulted and no staged or existing value was
+  found for a required key.
+- `existing` means the backend reports a stored value for the key.
+- `staged` means a draft-local value will be written at final commit.
+- `skipped optional` means the user explicitly skipped an optional key in the
+  current draft.
+- `deferred` means the user deferred a required key in the current draft.
+- `optional` means an optional key has no staged, skipped, or existing value.
+- `status unavailable` means the backend or key contract could not be inspected,
+  so the UI must not claim a key is missing.
 - The destination should include the storage label and the resolved
   secrets-management profile/backend when known.
 
