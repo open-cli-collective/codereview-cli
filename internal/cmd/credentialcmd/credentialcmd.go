@@ -6138,14 +6138,28 @@ func initCredentialReadinessNote(entry initCredentialPlanEntry) string {
 	case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
 		return ""
 	case initCredentialPlanStateDefer:
-		return label + " deferred" + initCredentialKeySummary(entry)
+		return label + " deferred" + initCredentialScopedKeySummary(entry)
 	case initCredentialPlanStateOverwriteRef, initCredentialPlanStateMissingRequired:
 		if len(entry.MissingRequiredKeys) == 0 {
-			return label + " needs setup" + initCredentialKeySummary(entry)
+			return label + " needs setup" + initCredentialScopedKeySummary(entry)
 		}
-		return fmt.Sprintf("%s missing required %s%s", label, strings.Join(entry.MissingRequiredKeys, ", "), initCredentialOptionalKeySummary(entry))
+		if initCredentialShouldSummarizeKeys(entry) {
+			return fmt.Sprintf("%s missing required %s%s", label, strings.Join(entry.MissingRequiredKeys, ", "), initCredentialOptionalKeySummary(entry))
+		}
+		return fmt.Sprintf("%s missing %s", label, strings.Join(entry.MissingRequiredKeys, ", "))
 	}
 	return ""
+}
+
+func initCredentialScopedKeySummary(entry initCredentialPlanEntry) string {
+	if !initCredentialShouldSummarizeKeys(entry) {
+		return ""
+	}
+	return initCredentialKeySummary(entry)
+}
+
+func initCredentialShouldSummarizeKeys(entry initCredentialPlanEntry) bool {
+	return len(entry.KeySpecs) > 1
 }
 
 func initCredentialKeySummary(entry initCredentialPlanEntry) string {

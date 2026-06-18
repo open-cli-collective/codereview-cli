@@ -6860,6 +6860,9 @@ func TestInitCredentialReadinessNoteNamesSelectedSecretsProfile(t *testing.T) {
 	if !strings.Contains(note, "Git via Team Vault deferred") {
 		t.Fatalf("note = %q, want named selected secrets-management profile", note)
 	}
+	if strings.Contains(note, "required:") {
+		t.Fatalf("note = %q, want single-key deferred credentials to keep concise readiness copy", note)
+	}
 }
 
 func TestInitCredentialReadinessNoteLabelsGitHubAppRequiredAndOptionalKeys(t *testing.T) {
@@ -6887,6 +6890,34 @@ func TestInitCredentialReadinessNoteLabelsGitHubAppRequiredAndOptionalKeys(t *te
 	}
 	if strings.Contains(note, "missing "+credentials.GitHubAppInstallationIDKey) || strings.Contains(note, "required: "+credentials.GitHubAppInstallationIDKey) {
 		t.Fatalf("note = %q, want installation id labeled optional only", note)
+	}
+}
+
+func TestInitCredentialReadinessNoteLabelsPartialGitHubAppOptionalKey(t *testing.T) {
+	note := initCredentialReadinessNote(initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/rianjs-bot",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+		MissingRequiredKeys: []string{credentials.GitHubAppPrivateKeyKey},
+		State:               initCredentialPlanStateMissingRequired,
+	})
+	for _, want := range []string{
+		"reviewer missing required " + credentials.GitHubAppPrivateKeyKey,
+		"optional: " + credentials.GitHubAppInstallationIDKey,
+	} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note = %q, want %q", note, want)
+		}
+	}
+	if strings.Contains(note, "missing "+credentials.GitHubAppInstallationIDKey) || strings.Contains(note, "required "+credentials.GitHubAppInstallationIDKey) {
+		t.Fatalf("note = %q, want optional installation id not treated as required", note)
 	}
 }
 
