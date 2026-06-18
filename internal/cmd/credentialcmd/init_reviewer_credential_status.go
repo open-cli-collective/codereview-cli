@@ -127,6 +127,18 @@ func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, pro
 	for _, entry := range entries {
 		seen[initCredentialEntryKey(entry.Ref)] = struct{}{}
 	}
+	if standardRef, err := credentials.FormatRef(session.workspace.profileName + "-reviewer"); err == nil {
+		entries = appendReviewerCredentialPlanEntry(entries, seen, resolved, plannedWriteKeys, config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     standardRef,
+			Mode:    string(config.GitAuthModePAT),
+		})
+		entries = appendReviewerCredentialPlanEntry(entries, seen, resolved, plannedWriteKeys, config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     standardRef,
+			Mode:    string(config.GitAuthModeGitHubApp),
+		})
+	}
 	entities, _ := buildInitReviewerEntityInventory(session.cfg)
 	for _, entity := range entities {
 		if entity.Kind == initReviewerEntityKindUseGitIdentity {
@@ -140,25 +152,30 @@ func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, pro
 		if ref.Ref == "" {
 			continue
 		}
-		key := initCredentialEntryKey(ref)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		specs, err := credentials.KeySpecsForPurpose(ref)
-		if err != nil {
-			continue
-		}
-		entry := initCredentialPlanEntry{
-			Ref:              ref,
-			SecretsProfile:   resolved,
-			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
-			PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
-		}
-		entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
-		entry.State = classifyInitCredentialPlanEntry(entry)
-		entries = append(entries, entry)
-		seen[key] = struct{}{}
+		entries = appendReviewerCredentialPlanEntry(entries, seen, resolved, plannedWriteKeys, ref)
 	}
+	return entries
+}
+
+func appendReviewerCredentialPlanEntry(entries []initCredentialPlanEntry, seen map[string]struct{}, resolved credentials.ResolvedSecretsProfile, plannedWriteKeys map[string][]string, ref config.CredentialRef) []initCredentialPlanEntry {
+	key := initCredentialEntryKey(ref)
+	if _, ok := seen[key]; ok {
+		return entries
+	}
+	specs, err := credentials.KeySpecsForPurpose(ref)
+	if err != nil {
+		return entries
+	}
+	entry := initCredentialPlanEntry{
+		Ref:              ref,
+		SecretsProfile:   resolved,
+		KeySpecs:         append([]credentials.KeySpec(nil), specs...),
+		PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
+	}
+	entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
+	entry.State = classifyInitCredentialPlanEntry(entry)
+	entries = append(entries, entry)
+	seen[key] = struct{}{}
 	return entries
 }
 
@@ -228,6 +245,9 @@ func initReviewerCredentialStatusForSelectionRef(ctx initPromptContext, seed ini
 			return status, true
 		}
 	}
+	if ctx.ReviewerCredentialStatuses != nil {
+		return synthesizeUnavailableReviewerCredentialStatus(ctx, statusRef), true
+	}
 	return synthesizeReviewerCredentialStatus(ctx, statusRef), true
 }
 
@@ -255,6 +275,15 @@ func synthesizeReviewerCredentialStatus(ctx initPromptContext, ref config.Creden
 			Required: spec.Required,
 			State:    keyState,
 		})
+	}
+	return status
+}
+
+func synthesizeUnavailableReviewerCredentialStatus(ctx initPromptContext, ref config.CredentialRef) initReviewerCredentialStatus {
+	status := synthesizeReviewerCredentialStatus(ctx, ref)
+	status.Unavailable = "credential backend status unavailable"
+	for i := range status.Keys {
+		status.Keys[i].State = initReviewerCredentialKeyUnavailable
 	}
 	return status
 }

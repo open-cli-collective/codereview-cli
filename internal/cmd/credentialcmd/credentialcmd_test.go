@@ -6398,7 +6398,7 @@ func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.
 	model.afterFieldChange(locationIndex)
 
 	updated := model.document[statusIndex].Description
-	for _, want := range []string{"Destination: codereview/new-reviewer", credentials.GitTokenKey + ": missing"} {
+	for _, want := range []string{"Destination: codereview/new-reviewer", "credential backend status unavailable", credentials.GitTokenKey + ": status unavailable"} {
 		if !strings.Contains(updated, want) {
 			t.Fatalf("updated status = %q, want %q", updated, want)
 		}
@@ -13909,6 +13909,11 @@ func TestInitInteractiveMenuFocusedBackKeepsSessionUntouched(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	store := newFakeInitStore(nil)
+	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
+		t.Fatal("SetBundle should not run after focused Back navigation")
+		return credstore.Result{}, nil
+	}
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -13924,8 +13929,7 @@ func TestInitInteractiveMenuFocusedBackKeepsSessionUntouched(t *testing.T) {
 			return initDraft{}, errInitNavigateBack
 		}),
 		openStore: func(string, bool, config.File) (initStore, error) {
-			t.Fatal("openStore should not run for focused Back navigation")
-			return nil, nil
+			return store, nil
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -14210,10 +14214,7 @@ func TestInitReviewerCredentialStatusBackendUnavailableDoesNotLeakOrBlock(t *tes
 	}
 
 	statuses := buildInteractiveInitReviewerCredentialStatuses(&root.Options{}, deps, session)
-	if len(statuses) != 1 {
-		t.Fatalf("statuses = %#v, want one status", statuses)
-	}
-	status := statuses[0]
+	status := findReviewerCredentialStatusForTest(t, statuses, "codereview/work-reviewer", string(config.GitAuthModePAT))
 	assertReviewerCredentialKeyState(t, status, credentials.GitTokenKey, initReviewerCredentialKeyUnavailable)
 	description := initReviewerCredentialStatusDescription(status)
 	if !strings.Contains(description, "credential backend status unavailable") {
@@ -14269,10 +14270,7 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 	}
 
 	statuses := buildInteractiveInitReviewerCredentialStatuses(&root.Options{}, deps, session)
-	if len(statuses) != 1 {
-		t.Fatalf("statuses = %#v, want one reviewer status", statuses)
-	}
-	status := statuses[0]
+	status := findReviewerCredentialStatusForTest(t, statuses, "codereview/work-reviewer", string(config.GitAuthModePAT))
 	assertReviewerCredentialKeyState(t, status, credentials.GitTokenKey, initReviewerCredentialKeyExisting)
 	if !reflect.DeepEqual(opened, []string{"work-1password"}) {
 		t.Fatalf("opened secrets profiles = %#v, want work-1password", opened)
@@ -14322,6 +14320,41 @@ func TestInitReviewerCredentialStatusIncludesSelectableReviewerEntities(t *testi
 
 	statuses := buildInteractiveInitReviewerCredentialStatuses(&root.Options{}, deps, session)
 	status := findReviewerCredentialStatusForTest(t, statuses, "codereview/shared-reviewer", string(config.GitAuthModePAT))
+	assertReviewerCredentialKeyState(t, status, credentials.GitTokenKey, initReviewerCredentialKeyExisting)
+	if strings.Contains(initReviewerCredentialStatusDescription(status), "existing-token") {
+		t.Fatalf("status description leaked secret value: %s", initReviewerCredentialStatusDescription(status))
+	}
+}
+
+func TestInitReviewerCredentialStatusIncludesStandardTemplateRefs(t *testing.T) {
+	work := basicProfile("work")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": work},
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work-reviewer": {credentials.GitTokenKey: "existing-token"},
+	})
+	session := initSessionDraft{
+		cfg: cfg,
+		workspace: &initWorkspaceDraft{
+			profileName: "work",
+			profile:     work,
+		},
+		writes:              map[string]map[string]string{},
+		credentialDecisions: map[initCredentialDecisionKey]initCredentialDecisionKind{},
+	}
+	deps := initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+	}
+
+	ctx := currentInteractiveInitReviewerEntityPromptContext(&root.Options{}, deps, session)
+	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seedInteractiveInitDraft("work", "work", "work", &work), string(initReviewerEntityKindPAT), "")
+	if !ok {
+		t.Fatal("PAT template status missing")
+	}
 	assertReviewerCredentialKeyState(t, status, credentials.GitTokenKey, initReviewerCredentialKeyExisting)
 	if strings.Contains(initReviewerCredentialStatusDescription(status), "existing-token") {
 		t.Fatalf("status description leaked secret value: %s", initReviewerCredentialStatusDescription(status))
@@ -15372,7 +15405,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 	}
 }
 
-func TestInitInteractiveMenuFocusedReviewerEntityDoesNotOpenStoreForPromptContext(t *testing.T) {
+func TestInitInteractiveMenuFocusedReviewerEntityPromptContextIncludesCredentialStatus(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
@@ -15384,6 +15417,13 @@ func TestInitInteractiveMenuFocusedReviewerEntityDoesNotOpenStoreForPromptContex
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work-reviewer": {credentials.GitTokenKey: "existing-token"},
+	})
+	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
+		t.Fatal("SetBundle should not run while building focused reviewer prompt context")
+		return credstore.Result{}, nil
+	}
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -15391,12 +15431,13 @@ func TestInitInteractiveMenuFocusedReviewerEntityDoesNotOpenStoreForPromptContex
 				initMenuActionExit,
 			},
 		},
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			status := findReviewerCredentialStatusForTest(t, prompt.Context.ReviewerCredentialStatuses, "codereview/work-reviewer", string(config.GitAuthModePAT))
+			assertReviewerCredentialKeyState(t, status, credentials.GitTokenKey, initReviewerCredentialKeyExisting)
 			return initDraft{}, errInitNavigateBack
 		}),
 		openStore: func(string, bool, config.File) (initStore, error) {
-			t.Fatal("openStore should not run for focused reviewer prompt context")
-			return nil, nil
+			return store, nil
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
