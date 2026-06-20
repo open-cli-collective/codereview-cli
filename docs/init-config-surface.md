@@ -48,20 +48,20 @@ intentionally unsupported.
 | config.repository_profiles[].match.host | Route wizard derives from selected profile host or pasted PR URL. | Existing `cr config route set --host`. | Required for a route. Existing host is pre-populated and normalized. | Must match the target profile's `git.host`. Host edits on a profile with routes are blocked or reconciled by #185. | #177 route helper, #185 PR URL derivation and host/profile validation tests. |
 | config.repository_profiles[].match.namespace | Route wizard asks for owner/org or derives from PR URL. | Existing `cr config route set --namespace`. | Required for a route. Existing namespace is pre-populated. | Overwrite validates non-empty and preserves repo-vs-namespace route identity. | #177 route helper. #185 namespace route tests. |
 | config.repository_profiles[].match.repos[] | Route wizard supports namespace-wide route when omitted or repo-specific routes when provided. | Existing repeatable `cr config route set --repo` and `cr config route unset --repo`. | Omitted means namespace-wide route. Existing repos are pre-populated in deterministic order. | Preserve on skip. Add/edit/remove dedupes and sorts via shared route helper. Clear repos converts only when the user explicitly chooses namespace-wide routing. | #177 route helper. #185 repo route and namespace conversion tests. |
-| config.profiles.<name> | Core profile wizard selects existing profile, creates a new profile, or renames an existing profile. | Existing global `--profile` with `cr init --non-interactive` owns scripted create/replace. Scripted rename is intentionally unsupported by init and belongs to future profile-management command design. | Empty global `--profile` means `default` during current init. Existing profile names are pre-populated. | Create requires a valid profile body. Rename preserves credential refs by default, updates default_profile and routes, and does not delete old keyring entries. | #177 profile rename helper. #180 tests create/select/rename and validation. |
+| config.profiles.<name> | Core profile wizard selects existing profile, creates a new profile, or renames an existing profile. | Existing global `--profile` with `cr init --non-interactive` owns scripted create/replace. Scripted rename is intentionally unsupported by init and belongs to future profile-management command design. | Empty global `--profile` means `default` during current init. Existing profile names are pre-populated. | Create requires a valid profile body. Rename preserves credential locations by default, updates default_profile and routes, and does not delete old credential-store entries. | #177 profile rename helper. #180 tests create/select/rename and validation. |
 | config.profiles.<name>.git.host | Core profile wizard edits Git host. | Existing `cr init --git-host`; existing route commands own route-safe scripted changes. | Current init defaults to `github.com`. Existing value is pre-populated. | Set validates non-empty normalized host. If routes reference the profile and reconciliation is not selected, block or defer the edit. | #180 blocks/defer route-unsafe host edits. #185 implements reconciliation tests. |
 | config.profiles.<name>.git.auth_mode | Core profile wizard chooses `pat` or `github_app`; `oauth_device` remains reserved. | `cr init --git-auth-mode`, parallel to existing reviewer auth mode. Current init otherwise defaults user Git auth to PAT. | Existing value is pre-populated. New profile defaults to `pat`. | Overwrite only to supported v1 modes. Switching auth modes re-plans credential keys but does not delete old secrets. | #179 credential-ref/key-spec planner. #180 auth-mode prompt tests. |
 | config.profiles.<name>.git.credential.store | User Git auth chooses an existing credential store before any secret ingress. | Interactive credential-writing flows and scripted `cr set-credential --store`. | New profiles start with `local-os` selected. Existing store id is pre-populated. | Must be `local-os` or a configured store id. Store setup is not available inline from this flow. | #356 explicit destination tests. |
 | config.profiles.<name>.git.credential.name | User Git auth names the credential bundle before any secret ingress. | Interactive credential-writing flows and scripted `cr set-credential --name`. | New profile defaults to `codereview/<profile>`. Existing name is pre-populated and preserved by default. | Must use the `codereview/<profile>` credential grammar. It must differ from other credentials in the same profile when the store also matches. | #356 explicit credential-location tests. |
 | config.profiles.<name>.git.identity_cache | Not shown as an editable init field. Preserve only. | Intentionally unsupported for init and config mutation. Runtime identity refresh owns it. | Existing cache is preserved. New profiles omit it. | Preserve unless a future explicit cache invalidation ticket owns behavior. Profile rename does not rewrite cache contents. | Preserve-only regression in #177/#180. |
-| config.profiles.<name>.reviewer_credentials | Optional reviewer credential section. Wizard supports skip, preserve, enable, edit, or clear reviewer config. | Existing `cr init --reviewer-credential-ref` and `--reviewer-auth-mode` own enable/edit. `cr init --disable-reviewer` owns scripted removal. | Omitted means posting uses Git credentials. Existing section is pre-populated. | Clear removes the whole section. Enable requires auth mode and credential ref. Ref must differ from Git and LLM refs. | #179 planner and #180 optional section tests. #181 secret ingress tests. |
+| config.profiles.<name>.reviewer_credentials | Optional reviewer credential section. Wizard supports skip, preserve, enable, edit, or clear reviewer config. | Existing `cr init --reviewer-credential-ref` and `--reviewer-auth-mode` own enable/edit. `cr init --disable-reviewer` owns scripted removal. | Omitted means posting uses Git credentials. Existing section is pre-populated. | Clear removes the whole section. Enable requires auth mode and credential location. The store/name pair must differ from Git and LLM credential locations. | #179 planner and #180 optional section tests. #181 secret ingress tests. |
 | config.profiles.<name>.reviewer_credentials.auth_mode | Reviewer wizard chooses PAT or GitHub App; `oauth_device` remains reserved. | Existing `cr init --reviewer-auth-mode`. | Current init defaults reviewer mode to `pat` when reviewer credentials are requested. Existing value is pre-populated. | Overwrite only to supported v1 modes. Switching modes re-plans key specs and preserves old secrets unless explicit overwrite/migration occurs. | #179 credential bundle tests for PAT and GitHub App. |
 | config.profiles.<name>.reviewer_credentials.credential.store | Reviewer Git auth chooses an existing credential store before any secret ingress. | Interactive credential-writing flows and scripted `cr set-credential --store`. | New reviewer credentials start with `local-os` selected unless the user chooses another configured store. Existing store id is pre-populated. | Must be `local-os` or a configured store id. Store setup is not available inline from this flow. | #356 explicit destination tests. |
 | config.profiles.<name>.reviewer_credentials.credential.name | Reviewer Git auth names the credential bundle before any secret ingress. | Interactive credential-writing flows and scripted `cr set-credential --name`. | New reviewer section defaults to `codereview/<profile>-reviewer`, or `codereview/<label>-reviewer` when the user types a new reviewer entity label. Existing name is pre-populated and preserved. | Must use the `codereview/<profile>` credential grammar. It must differ from Git and LLM credentials in the same profile when the store also matches. | #356 explicit credential-location tests. |
 | config.profiles.<name>.reviewer_credentials.display_name | Reviewer wizard lets the user set or clear a human-friendly label for a separate reviewer entity. | Interactive `cr init` only for now. No dedicated scripted owner yet. | Empty means chooser labels fall back to deterministic credential-ref/profile-derived text. Existing value is pre-populated. | Preserve on skip. Overwrite trims surrounding whitespace. Clear is valid and returns the entity to fallback labeling. Conflicting labels across profiles that share one reviewer identity do not create duplicate identities; the shared chooser entry falls back to deterministic identity text until one label wins. | #244 tests round-trip, validation, shared-identity conflict fallback, and chooser labeling. |
 | config.profiles.<name>.reviewer_credentials.identity_cache | Not shown as an editable init field. Preserve only. | Intentionally unsupported for init and config mutation. Runtime identity refresh owns it. | Existing cache is preserved. New reviewer sections omit it. | Preserve unless a future explicit cache invalidation ticket owns behavior. | Preserve-only regression in #177/#180. |
 | config.profiles.<name>.llm.provider | Core profile wizard chooses provider. | Existing `cr init --llm-provider`. | Current init defaults to `anthropic`. Existing value is pre-populated. | Overwrite validates provider and may require compatible auth/adapter/key specs. | #179 provider credential planning. #180 provider/auth/adapter compatibility tests. |
-| config.profiles.<name>.llm.auth | Core profile wizard chooses subscription or API key auth. | Existing `cr init --llm-auth`. | Current init defaults to `subscription`. Existing value is pre-populated. | Subscription requires empty `llm.credential_ref`; API key requires a provider-supported ref and secret plan. | #179 planner tests subscription/API-key transitions. #181 ingress tests. |
+| config.profiles.<name>.llm.auth | Core profile wizard chooses subscription or API key auth. | Existing `cr init --llm-auth`. | Current init defaults to `subscription`. Existing value is pre-populated. | Subscription requires empty `llm.credential`; API key requires a provider-supported credential location and secret plan. | #179 planner tests subscription/API-key transitions. #181 ingress tests. |
 | config.profiles.<name>.llm.adapter | Core profile wizard chooses compatible adapter. | Existing `cr init --llm-adapter`. | Current init defaults to `claude_cli`. Existing value is pre-populated. | Overwrite validates provider/auth compatibility, including `openai+codex_cli+subscription` and `pi+pi_rpc+subscription`. | #180 compatibility tests. |
 | config.profiles.<name>.llm.credential.store | LLM API-key auth chooses an existing credential store before any secret ingress. | Interactive credential-writing flows and scripted `cr set-credential --store`. | Omitted for subscription auth. API-key auth starts with `local-os` selected unless the user chooses another configured store. Existing store id is pre-populated. | Must be empty for subscription auth. Must be `local-os` or a configured store id for API-key auth. Store setup is not available inline from this flow. | #356 explicit destination tests. |
 | config.profiles.<name>.llm.credential.name | LLM API-key auth names the credential bundle before any secret ingress. | Interactive credential-writing flows and scripted `cr set-credential --name`. | Omitted for subscription auth. API-key auth defaults to `codereview/<profile>-llm`. Existing name is pre-populated. | Must be empty for subscription auth. Must use the `codereview/<profile>` credential grammar for API-key auth. It must differ from Git/reviewer credentials in the same profile when the store also matches. | #356 explicit credential-location tests. |
@@ -95,12 +95,12 @@ Profile selection and mutation is shared by #177 and consumed by #180:
   name.
 - Renaming a profile updates `config.repository_profiles[].profile` entries
   that point at the old name.
-- Renaming a profile preserves all existing credential refs by default, even
-  refs that look auto-generated. This avoids stranding existing keyring
-  entries.
-- A wizard may offer credential-ref regeneration only when #181 has explicit
-  migration or overwrite behavior for the affected keyring entries.
-- Rename never deletes old keyring profiles implicitly.
+- Renaming a profile preserves all existing credential locations by default,
+  even names that look auto-generated. This avoids stranding existing
+  credential-store entries.
+- A wizard may offer credential-name regeneration only when #181 has explicit
+  migration or overwrite behavior for the affected credential-store entries.
+- Rename never deletes old credential-store entries implicitly.
 - Rename preserves `git.identity_cache` and
   `reviewer_credentials.identity_cache`. Cache invalidation requires a future
   dedicated owner.
@@ -134,20 +134,21 @@ profile.
 
 ## Credential Bundle Matrix
 
-Credential refs are non-secret config. Secret values are written only through
-the existing credential store plumbing. #179 owns ref/key-spec planning; #181
-owns interactive secret ingress.
+Credential locations are non-secret config: each write has an explicit store and
+name. Secret values are written only through the existing credential store
+plumbing. #179 owns credential-name/key-spec planning; #181 owns interactive
+secret ingress.
 
-| Purpose | Auth/provider | Ref default | Required keys | Optional keys | Keep/defer/overwrite semantics | Migration rule |
+| Purpose | Auth/provider | Name default | Required keys | Optional keys | Keep/defer/overwrite semantics | Migration rule |
 |---------|---------------|-------------|---------------|---------------|--------------------------------|----------------|
-| User Git auth | `pat` | `codereview/<profile>` | `git_token` | None | Keep preserves existing ref and key. Defer stores ref and prints follow-up `cr set-credential`. Overwrite writes `git_token` through keyring only. | Profile rename preserves ref. Regenerate only with explicit key migration or overwrite. |
-| Reviewer Git auth | `pat` | `codereview/<profile>-reviewer`, or label-derived for new interactive reviewer entities | `git_token` | None | Interactive reviewer setup collects `git_token` inline before staging a new or changed reviewer ref. Keep preserves an unchanged existing ref. Clearing the reviewer section removes the ref from config but does not delete secrets. | Profile rename and reviewer label edits preserve existing refs. No implicit ref migration. |
-| User or reviewer Git auth | `github_app` | Same purpose-specific defaults as PAT | `github_app_id`, `github_app_private_key` | `github_app_installation_id` | Keep preserves bundle. Interactive reviewer setup collects required GitHub App keys inline before staging a new or changed reviewer ref; optional installation ID may be left blank. Scripted/deferred flows print one follow-up command per required key. Overwrite writes only keys the user provided, with required-key validation before saving. | Migration is bundle-wide and explicit only: never leave config pointing at a partially moved bundle. |
+| User Git auth | `pat` | `codereview/<profile>` | `git_token` | None | Keep preserves existing store/name and key. Defer stores the credential location and prints follow-up `cr set-credential --store ... --name ...`. Overwrite writes `git_token` through the selected credential store only. | Profile rename preserves the credential location. Regenerate only with explicit key migration or overwrite. |
+| Reviewer Git auth | `pat` | `codereview/<profile>-reviewer`, or label-derived for new interactive reviewer entities | `git_token` | None | Interactive reviewer setup collects `git_token` inline before staging a new or changed reviewer credential location. Keep preserves an unchanged credential location. Clearing the reviewer section removes the location from config but does not delete secrets. | Profile rename and reviewer label edits preserve existing credential locations. No implicit rename/migration. |
+| User or reviewer Git auth | `github_app` | Same purpose-specific defaults as PAT | `github_app_id`, `github_app_private_key` | `github_app_installation_id` | Keep preserves bundle. Interactive reviewer setup collects required GitHub App keys inline before staging a new or changed reviewer credential location; optional installation ID may be left blank. Scripted/deferred flows print one follow-up command per required key. Overwrite writes only keys the user provided, with required-key validation before saving. | Migration is bundle-wide and explicit only: never leave config pointing at a partially moved bundle. |
 | Git auth | `oauth_device` | None | None | None | Unsupported in v1. The wizard must not offer it as a selectable mode. | Future OAuth work must amend this document. |
-| LLM API key | `anthropic` + `api_key` | `codereview/<profile>-llm` | `anthropic_api_key` | None | Keep preserves existing ref. Defer stores ref only if the key already exists or follow-up is clearly rendered. Overwrite writes provider key through keyring. | Preserve custom refs on rename. Regeneration requires explicit migration/overwrite. |
+| LLM API key | `anthropic` + `api_key` | `codereview/<profile>-llm` | `anthropic_api_key` | None | Keep preserves existing credential location. Defer stores the location only if the key already exists or follow-up is clearly rendered. Overwrite writes provider key through the selected credential store. | Preserve custom locations on rename. Regeneration requires explicit migration/overwrite. |
 | LLM API key | `openai` + `api_key` | `codereview/<profile>-llm` | `openai_api_key` | None | Same as Anthropic API-key auth. | Same as Anthropic API-key auth. |
-| LLM adapter-managed auth | `subscription` | No ref | None | None | Keep/preserve leaves empty ref. Switching from API key to subscription clears `llm.credential_ref` only after confirmation. | No keyring migration because config no longer points at a ref. |
-| LLM Pi auth | `pi` + `subscription` + `pi_rpc` | No ref | None | None | Supported adapter-managed mode. | No keyring migration. |
+| LLM adapter-managed auth | `subscription` | No credential location | None | None | Keep/preserve leaves `llm.credential` empty. Switching from API key to subscription clears `llm.credential` only after confirmation. | No credential-store migration because config no longer points at a location. |
+| LLM Pi auth | `pi` + `subscription` + `pi_rpc` | No credential location | None | None | Supported adapter-managed mode. | No credential-store migration. |
 | LLM Pi API key | `pi` + `api_key` | None | None | None | Unsupported in v1. The wizard must not offer this combination. | Future Pi API-key support must amend this document. |
 
 Secret ingress rules:
@@ -191,17 +192,14 @@ Scripted installs should remain readable. The intended shape is:
    `cr config llm models`, and `cr config retention` for narrow idempotent
    mutations.
 
-Persistent `keyring.backend` selection now belongs to `cr init
---non-interactive` through `--keyring-backend` and
-`--reset-keyring-backend`. There is still no standalone `cr config
-keyring ...` command. For backward compatibility, init may also persist a
-runtime `--backend` when the command writes credentials or configures API-key
-LLM auth; that older path remains supported but is no longer the recommended
-scripted contract.
+Credential storage is configured from the interactive main menu under
+**Configure secrets storage**. Scripted credential writes must choose a
+destination explicitly with `cr set-credential --store <id> --name <name>`.
+The root `--backend` flag remains runtime-only compatibility behavior and must
+not become durable config.
 
 #187 adds only the durable init flags assigned to it in the inventory table:
-`--git-auth-mode`, `--keyring-backend`, `--reset-keyring-backend`,
-`--disable-reviewer`, `--llm-reviewer-model-tier`,
+`--git-auth-mode`, `--disable-reviewer`, `--llm-reviewer-model-tier`,
 `--clear-llm-reviewer-model-tier`, and `--set-default`.
 It must not add a nested multi-route grammar, model-map flags, literal secret
 flags, or hidden YAML-in-a-flag structures.
@@ -213,7 +211,7 @@ The following flags are intentionally not durable init configuration.
 | Command | Flags | Rationale |
 |---------|-------|-----------|
 | Global/root | `--version` | Process output only. |
-| Global/root | `--backend` | Runtime credential backend selector. It may persist `keyring.backend` only through explicit init/config backend semantics; most invocations remain one-shot. |
+| Global/root | `--backend` | Compatibility runtime credential backend selector. It cannot override explicit credential-store destinations and must not persist to config. |
 | Global/root | `--profile` | Runtime profile selector. It participates in init profile selection but is not itself a durable field. |
 | `cr review` execution mode | `--dry-run`, `--no-post`, `--rerun`, `--retry-posts` | Per-run execution behavior, not profile policy. |
 | `cr review` output/audit | `--json`, `--verbose` | Presentation and diagnostic controls. |
@@ -223,7 +221,7 @@ The following flags are intentionally not durable init configuration.
 | `cr review` posting gates | `--fail-on`, `--allow-self-review`, `--allow-self-approve`, `--no-resolve-threads` | One-shot live review gates. Durable self-approval and thread policy are `review_policy.allow_self_approve` and `review_policy.resolve_threads`. |
 | `cr init` control | `--non-interactive`, `--replace-profile` | Command flow controls. They select scripted mode and replacement behavior but do not create durable config fields. |
 | `cr init` secret ingress | `--git-token-stdin`, `--git-token-from-env`, `--reviewer-token-stdin`, `--reviewer-token-from-env`, `--llm-api-key-stdin`, `--llm-api-key-from-env`, `--overwrite` | Secret ingress and overwrite controls. They may be part of init interaction, but their values must never become config. |
-| `cr set-credential` | `--ref`, `--key`, `--stdin`, `--from-env`, `--overwrite`, `--json` | Credential-store operation, not config schema. |
+| `cr set-credential` | `--store`, `--name`, `--key`, `--stdin`, `--from-env`, `--overwrite`, `--json` | Credential-store operation, not config schema. |
 | `cr config` read/output | `--json`, `--dry-run` where present | Presentation or preview-only behavior. |
 | `cr config route` | `--host`, `--namespace`, `--repo` | Command arguments for route mutation. The durable result is `repository_profiles`. |
 | `cr config llm models reset` | `--provider` | Safety guard for reset, not stored config. |
@@ -242,12 +240,12 @@ The following flags are intentionally not durable init configuration.
 - #177: shared mutation helpers for profile rename, routes, agent sources,
   retention validation, and optional clear/reset behavior.
 - #178: `cr config retention` command surface.
-- #179: credential-ref and key-spec planning.
+- #179: credential-location and key-spec planning.
 - #180: non-secret core interactive wizard.
 - #181: interactive secret ingress and safe keyring writes.
 - #182: interactive `llm.model_map`.
 - #183: interactive `agent_sources` and `review_policy`.
-- #184: interactive global `data.retention` and legacy secrets-management `keyring.backend`.
+- #184: interactive global `data.retention` and secrets-storage settings.
 - #185: interactive repository routes and host reconciliation.
 - #186: scripted installer documentation.
 - #187: maintainable non-interactive init parity flags.

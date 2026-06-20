@@ -118,7 +118,7 @@ func canOpenInitStoreForReviewerStatus(deps initDeps, entry initCredentialPlanEn
 	if entry.SecretsProfile.IsNamed() {
 		return deps.openResolvedStore != nil
 	}
-	return deps.openStore != nil
+	return deps.openResolvedStore != nil || deps.openStore != nil
 }
 
 func interactiveInitReviewerCredentialPlanEntries(session initSessionDraft, plannedWriteKeys map[string][]string) []initCredentialPlanEntry {
@@ -361,7 +361,7 @@ func initReviewerCredentialStatusDescription(status initReviewerCredentialStatus
 		}
 		lines = append(lines, trimmed)
 	}
-	lines = append(lines, "This is a credential-store ref, not a PAT, GitHub App ID, private key, or installation ID.")
+	lines = append(lines, "This is a credential name, not a PAT, GitHub App ID, private key, or installation ID.")
 	if strings.TrimSpace(status.Unavailable) != "" {
 		lines = append(lines, strings.TrimSpace(status.Unavailable)+".")
 	}

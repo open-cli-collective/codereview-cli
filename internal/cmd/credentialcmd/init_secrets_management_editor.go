@@ -276,12 +276,11 @@ func removeInitSecretsManagementPendingDeleteOrder(order []string, id string) []
 }
 
 type initSecretsManagementSelectionState struct {
-	Profile   config.SecretsProfile
-	ID        string
-	IsDefault bool
-	Creating  bool
-	BuiltIn   bool
-	Pending   bool
+	Profile  config.SecretsProfile
+	ID       string
+	Creating bool
+	BuiltIn  bool
+	Pending  bool
 }
 
 func initSecretsManagementSelectionStateForDocument(cfg config.File, document initLinearDocument) (initSecretsManagementSelectionState, error) {
@@ -577,7 +576,6 @@ func initSecretsManagementEditFromDocumentWithDiscovery(cfg config.File, documen
 		if state.Creating || state.ID == "" {
 			return initKeyringBackendEdit{}, fmt.Errorf("only configured credential stores can be deleted")
 		}
-		working.Secrets.DefaultProfile = ""
 		nextCfg, _, err := configedit.RemoveSecretsProfile(working, state.ID)
 		if err != nil {
 			return initKeyringBackendEdit{}, err

@@ -58,7 +58,7 @@ func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 	if _, err := store.SetBundle("home", map[string]string{credentials.GitTokenKey: token}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle home: %v", err)
 	}
-	path := saveTestConfig(t, testConfig())
+	path := saveTestConfig(t, fileBackendConfig(t))
 	var auths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auths = append(auths, r.Header.Get("Authorization"))
@@ -67,9 +67,7 @@ func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 	defer server.Close()
 	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
 		return &githubResolver{
-			cfg:                cfg,
-			backend:            string(credstore.BackendFile),
-			backendFlagChanged: true,
+			cfg: cfg,
 			options: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
@@ -103,16 +101,11 @@ func TestMeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing.T) {
 		t.Fatalf("SetBundle home: %v", err)
 	}
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
-	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
-			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-			},
-		},
+	cfg.Secrets.Stores[testFileCredentialStoreID] = config.SecretsStore{
+		DisplayName: "Work File Store",
+		Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 	}
+	cfg = withCredentialStore(cfg, testFileCredentialStoreID)
 	path := saveTestConfig(t, cfg)
 	var auths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +174,11 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 		t.Fatalf("SetBundle reviewer: %v", err)
 	}
 	cfg := testConfig()
-	cfg.Keyring.Backend = "file"
+	cfg.Secrets.Stores[testFileCredentialStoreID] = config.SecretsStore{
+		DisplayName: "Test File Store",
+		Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+	}
+	cfg = withCredentialStore(cfg, testFileCredentialStoreID)
 	work := cfg.Profiles["work"]
 	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
 	cfg.Profiles["work"] = work
@@ -209,9 +206,7 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	defer server.Close()
 	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
 		return &githubResolver{
-			cfg:                cfg,
-			backend:            string(credstore.BackendFile),
-			backendFlagChanged: true,
+			cfg: cfg,
 			options: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
@@ -434,8 +429,7 @@ func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
 	if _, err := store.SetBundle("work", map[string]string{credentials.GitTokenKey: "git-token"}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle work: %v", err)
 	}
-	cfg := testConfig()
-	cfg.Keyring.Backend = "file"
+	cfg := fileBackendConfig(t)
 	work := cfg.Profiles["work"]
 	work.Git.Host = "localhost:1"
 	cfg.Profiles["work"] = work
@@ -471,8 +465,7 @@ func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T)
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle home: %v", err)
 	}
-	cfg := testConfig()
-	cfg.Keyring.Backend = "file"
+	cfg := fileBackendConfig(t)
 	home := cfg.Profiles["home"]
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
 	cfg.Profiles["home"] = home
@@ -510,8 +503,7 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle home: %v", err)
 	}
-	cfg := testConfig()
-	cfg.Keyring.Backend = "file"
+	cfg := fileBackendConfig(t)
 	home := cfg.Profiles["home"]
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
 	home.ReviewerCredentials = nil
@@ -540,9 +532,7 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 	defer server.Close()
 	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
 		return &githubResolver{
-			cfg:                cfg,
-			backend:            string(credstore.BackendFile),
-			backendFlagChanged: true,
+			cfg: cfg,
 			options: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
@@ -572,14 +562,19 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 
 func TestMeReservedAuthModeExitCode(t *testing.T) {
 	path := writeRawTestConfig(t, `default_profile: home
-keyring:
-  backend: memory
+secrets:
+  stores:
+    test-memory:
+      backend:
+        kind: memory
 profiles:
   home:
     git:
       host: github.com
       auth_mode: oauth_device
-      credential_ref: codereview/home
+      credential:
+        store: test-memory
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription
@@ -605,17 +600,24 @@ profiles:
 
 func TestMeReviewerGitHubAppAuthModeUsesResolver(t *testing.T) {
 	path := writeRawTestConfig(t, `default_profile: work
-keyring:
-  backend: memory
+secrets:
+  stores:
+    test-memory:
+      backend:
+        kind: memory
 profiles:
   work:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/work
+      credential:
+        store: test-memory
+        name: codereview/work
     reviewer_credentials:
       auth_mode: github_app
-      credential_ref: codereview/work-reviewer
+      credential:
+        store: test-memory
+        name: codereview/work-reviewer
     llm:
       provider: anthropic
       auth: subscription
@@ -642,14 +644,19 @@ profiles:
 
 func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
 	path := writeRawTestConfig(t, `default_profile: home
-keyring:
-  backend: memory
+secrets:
+  stores:
+    test-memory:
+      backend:
+        kind: memory
 profiles:
   home:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/home
+      credential:
+        store: test-memory
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription
@@ -658,10 +665,14 @@ profiles:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/work
+      credential:
+        store: test-memory
+        name: codereview/work
     reviewer_credentials:
       auth_mode: oauth_device
-      credential_ref: codereview/work-reviewer
+      credential:
+        store: test-memory
+        name: codereview/work-reviewer
     llm:
       provider: anthropic
       auth: subscription
@@ -684,14 +695,19 @@ profiles:
 
 func TestMeAllReservedGitAuthModeWithReviewerDoesNotOpenResolverFactory(t *testing.T) {
 	path := writeRawTestConfig(t, `default_profile: home
-keyring:
-  backend: memory
+secrets:
+  stores:
+    test-memory:
+      backend:
+        kind: memory
 profiles:
   home:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/home
+      credential:
+        store: test-memory
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription
@@ -700,10 +716,14 @@ profiles:
     git:
       host: github.com
       auth_mode: oauth_device
-      credential_ref: codereview/work
+      credential:
+        store: test-memory
+        name: codereview/work
     reviewer_credentials:
       auth_mode: pat
-      credential_ref: codereview/work-reviewer
+      credential:
+        store: test-memory
+        name: codereview/work-reviewer
     llm:
       provider: anthropic
       auth: subscription
@@ -782,31 +802,11 @@ func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 	}))
 	defer server.Close()
 
+	resolverCfg := fileBackendConfig(t)
+	resolverCfg.DefaultProfile = "work"
+	resolverCfg.Profiles = map[string]config.Profile{"work": resolverCfg.Profiles["work"]}
 	resolver := &githubResolver{
-		cfg: config.File{
-			DefaultProfile: "work",
-			Keyring:        config.KeyringConfig{Backend: "file"},
-			Profiles: map[string]config.Profile{
-				"work": {
-					Git: config.GitConfig{
-						Host:          "github.com",
-						AuthMode:      config.GitAuthModePAT,
-						CredentialRef: "codereview/work",
-					},
-					ReviewerCredentials: &config.ReviewerCredentials{
-						AuthMode:      config.GitAuthModePAT,
-						CredentialRef: "codereview/work-reviewer",
-					},
-					LLM: config.LLMConfig{
-						Provider: config.LLMProviderAnthropic,
-						Auth:     config.LLMAuthSubscription,
-						Adapter:  config.LLMAdapterClaudeCLI,
-					},
-				},
-			},
-		},
-		backend:            string(credstore.BackendFile),
-		backendFlagChanged: true,
+		cfg: resolverCfg,
 		options: githubprovider.Options{
 			BaseURL:    server.URL,
 			GraphQLURL: server.URL + "/graphql",
@@ -839,51 +839,41 @@ func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 func TestOrgDeploymentPrestagedMultiRefCredentialsHealthChecks(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
-	path := saveTestConfig(t, config.File{
-		DefaultProfile: "work",
-		Keyring:        config.KeyringConfig{Backend: "file"},
-		Profiles: map[string]config.Profile{
-			"work": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/work",
-				},
-				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/work-reviewer",
-				},
-				LLM: config.LLMConfig{
-					Provider:      config.LLMProviderAnthropic,
-					Auth:          config.LLMAuthAPIKey,
-					Adapter:       config.LLMAdapterAnthropicAPI,
-					CredentialRef: "codereview/work-llm",
-				},
-				AgentSources: []string{"~/.config/codereview/agents"},
-				ReviewPolicy: config.ReviewPolicy{
-					MajorEvent: config.ReviewMajorEventComment,
-				},
-			},
-		},
-	})
+	cfg := fileBackendConfig(t)
+	cfg.DefaultProfile = "work"
+	work := cfg.Profiles["work"]
+	work.LLM = config.LLMConfig{
+		Provider:      config.LLMProviderAnthropic,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterAnthropicAPI,
+		Credential:    config.CredentialLocation{Store: testFileCredentialStoreID, Name: "codereview/work-llm"},
+		CredentialRef: "codereview/work-llm",
+	}
+	work.AgentSources = []string{"~/.config/codereview/agents"}
+	work.ReviewPolicy = config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment}
+	cfg.Profiles = map[string]config.Profile{"work": work}
+	path := saveTestConfig(t, cfg)
 
 	runOrgDeploymentCommand(t, path, strings.NewReader("user-token"), nil, []string{
 		"set-credential",
-		"--ref", "codereview/work",
+		"--store", testFileCredentialStoreID,
+		"--name", "codereview/work",
 		"--key", credentials.GitTokenKey,
 		"--stdin",
 		"--overwrite",
 	})
 	runOrgDeploymentCommand(t, path, strings.NewReader("reviewer-token"), nil, []string{
 		"set-credential",
-		"--ref", "codereview/work-reviewer",
+		"--store", testFileCredentialStoreID,
+		"--name", "codereview/work-reviewer",
 		"--key", credentials.GitTokenKey,
 		"--stdin",
 		"--overwrite",
 	})
 	runOrgDeploymentCommand(t, path, strings.NewReader("llm-token"), nil, []string{
 		"set-credential",
-		"--ref", "codereview/work-llm",
+		"--store", testFileCredentialStoreID,
+		"--name", "codereview/work-llm",
 		"--key", credentials.AnthropicAPIKeyKey,
 		"--stdin",
 		"--overwrite",
@@ -1076,6 +1066,34 @@ func openFileStore(t *testing.T) *credstore.Store {
 	return store
 }
 
+const testFileCredentialStoreID = "test-file"
+
+func fileBackendConfig(t *testing.T) config.File {
+	t.Helper()
+	cfg := testConfig()
+	cfg.Secrets.Stores[testFileCredentialStoreID] = config.SecretsStore{
+		DisplayName: "Test File Store",
+		Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+	}
+	return withCredentialStore(cfg, testFileCredentialStoreID)
+}
+
+func withCredentialStore(cfg config.File, storeID string) config.File {
+	for name, profile := range cfg.Profiles {
+		if profile.Git.Credential.Name != "" {
+			profile.Git.Credential.Store = storeID
+		}
+		if profile.ReviewerCredentials != nil && profile.ReviewerCredentials.Credential.Name != "" {
+			profile.ReviewerCredentials.Credential.Store = storeID
+		}
+		if profile.LLM.Credential.Name != "" {
+			profile.LLM.Credential.Store = storeID
+		}
+		cfg.Profiles[name] = profile
+	}
+	return cfg
+}
+
 func testPrivateKeyPEM(t *testing.T) string {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -1089,12 +1107,20 @@ func testPrivateKeyPEM(t *testing.T) string {
 func testConfig() config.File {
 	return config.File{
 		DefaultProfile: "home",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Secrets: config.SecretsConfig{
+			Stores: map[string]config.SecretsStore{
+				"test-memory": {
+					DisplayName: "Test Memory Store",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
+				},
+			},
+		},
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
 					CredentialRef: "codereview/home",
 					IdentityCache: "old-home",
 				},
@@ -1109,11 +1135,13 @@ func testConfig() config.File {
 				Git: config.GitConfig{
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
 					CredentialRef: "codereview/work",
 					IdentityCache: "work-user-cache",
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
 					CredentialRef: "codereview/work-reviewer",
 					IdentityCache: "old-bot",
 				},

@@ -1276,9 +1276,8 @@ func TestEffectiveSecretsStores(t *testing.T) {
 				ID:          LocalOSCredentialStoreID,
 				DisplayName: "OS credential store",
 				Label:       "OS credential store",
-				Backend:     ProjectedLegacySecretsBackendKind,
+				Backend:     ProjectedOSCredentialStoreBackendKind,
 				ReadOnly:    true,
-				IsDefault:   true,
 				Source:      EffectiveSecretsStoreSourceBuiltIn,
 			},
 			{
@@ -1309,9 +1308,8 @@ func TestEffectiveSecretsStores(t *testing.T) {
 			ID:          LocalOSCredentialStoreID,
 			DisplayName: "OS credential store",
 			Label:       "OS credential store",
-			Backend:     ProjectedLegacySecretsBackendKind,
+			Backend:     ProjectedOSCredentialStoreBackendKind,
 			ReadOnly:    true,
-			IsDefault:   true,
 			Source:      EffectiveSecretsStoreSourceBuiltIn,
 		}}
 		if !reflect.DeepEqual(got, want) {

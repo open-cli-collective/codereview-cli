@@ -19,8 +19,8 @@ const (
 	// ServiceName is the credential-ref service segment owned by cr.
 	ServiceName = "codereview"
 
-	// BackendSourceSecretsProfile records that a named secrets-management
-	// profile selected the active credential backend.
+	// BackendSourceSecretsProfile is retained for old callers that still use
+	// the previous secrets-profile naming.
 	BackendSourceSecretsProfile credstore.Source = "secrets_profile"
 	// BackendSourceCredentialStore records that an explicit credential-store
 	// destination selected the active credential backend.
@@ -50,8 +50,8 @@ const (
 )
 
 var (
-	// ErrWrongService means a credential ref points at another CLI's keyring namespace.
-	ErrWrongService = errors.New("credentials: credential ref uses wrong service")
+	// ErrWrongService means a credential name points at another CLI's keyring namespace.
+	ErrWrongService = errors.New("credentials: credential name uses wrong service")
 	// ErrInvalidBackendSelection means a CLI/config backend selector was malformed.
 	ErrInvalidBackendSelection = errors.New("credentials: invalid backend selection")
 )
@@ -61,26 +61,23 @@ func AllowedKeys() []string {
 	return []string{GitTokenKey, GitHubAppIDKey, GitHubAppPrivateKeyKey, GitHubAppInstallationIDKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
 }
 
-// Ref is a parsed cr credential ref.
+// Ref is a parsed cr credential name.
 type Ref struct {
 	Service string
 	Profile string
 	Full    string
 }
 
-// SecretsProfileSelectionSource identifies why a secrets-management profile was selected.
+// SecretsProfileSelectionSource identifies why a credential store was selected.
 type SecretsProfileSelectionSource string
 
 const (
-	// SecretsProfileSelectionExplicit means the active profile selected a named
-	// secrets-management profile directly.
+	// SecretsProfileSelectionExplicit means the credential location selected a
+	// configured store directly.
 	SecretsProfileSelectionExplicit SecretsProfileSelectionSource = "profile"
-	// SecretsProfileSelectionDefault means the configured global default
-	// secrets-management profile selected the store.
-	SecretsProfileSelectionDefault SecretsProfileSelectionSource = "default_profile"
-	// SecretsProfileSelectionLegacyDefault means no named secrets-management
-	// profile applied, so legacy backend fallback rules selected the store.
-	SecretsProfileSelectionLegacyDefault SecretsProfileSelectionSource = "legacy_fallback"
+	// SecretsProfileSelectionBuiltInOS means the credential location selected
+	// the built-in OS credential store.
+	SecretsProfileSelectionBuiltInOS SecretsProfileSelectionSource = "local_os"
 )
 
 // ResolvedSecretsProfile is the typed runtime store-selection result.
@@ -162,7 +159,7 @@ func ResolveCredentialStore(cfg config.File, storeID string) (ResolvedCredential
 			Label:           "OS credential store",
 			Backend:         string(backend),
 			Source:          config.EffectiveSecretsStoreSourceBuiltIn,
-			SelectionSource: SecretsProfileSelectionLegacyDefault,
+			SelectionSource: SecretsProfileSelectionBuiltInOS,
 		}, nil
 	}
 	store, ok := cfg.Secrets.Stores[storeID]
@@ -192,8 +189,8 @@ func ResolveCredentialStoreForLocation(cfg config.File, location config.Credenti
 	return ResolveCredentialStore(cfg, location.Store)
 }
 
-// ResolveSecretsProfileForProfile resolves the effective secrets-management
-// profile for one review profile.
+// ResolveSecretsProfileForProfile resolves the effective credential store for
+// one review profile.
 func ResolveSecretsProfileForProfile(cfg config.File, profile config.Profile) (ResolvedSecretsProfile, error) {
 	if selection := strings.TrimSpace(profile.SecretsProfile); selection != "" {
 		return ResolveCredentialStore(cfg, selection)
@@ -205,8 +202,8 @@ func ResolveSecretsProfileForProfile(cfg config.File, profile config.Profile) (R
 	return ResolveCredentialStoreForLocation(cfg, profile.Git.Credential)
 }
 
-// ResolveSecretsProfileForRef resolves the effective secrets-management profile
-// for a low-level credential ref write/read, optionally narrowed by the global
+// ResolveSecretsProfileForRef resolves the effective credential store for a
+// low-level credential-name write/read, optionally narrowed by the global
 // --profile selection.
 func ResolveSecretsProfileForRef(cfg config.File, ref string, selectedProfile string) (ResolvedSecretsProfile, error) {
 	selectedProfile = strings.TrimSpace(selectedProfile)
@@ -219,16 +216,16 @@ func ResolveSecretsProfileForRef(cfg config.File, ref string, selectedProfile st
 		if len(matches) == 0 {
 			owners := profilesDeclaringCredentialRef(cfg, ref)
 			if len(owners) == 0 {
-				return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential ref %q is not declared by selected profile %q", config.ErrInvalid, ref, selectedProfile)
+				return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential name %q is not declared by selected profile %q", config.ErrInvalid, ref, selectedProfile)
 			}
-			return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential ref %q is not declared by selected profile %q; declared by %s", config.ErrInvalid, ref, selectedProfile, strings.Join(ownerNames(owners), ", "))
+			return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential name %q is not declared by selected profile %q; declared by %s", config.ErrInvalid, ref, selectedProfile, strings.Join(ownerNames(owners), ", "))
 		}
 		return ResolveCredentialStore(cfg, matches[0].Store)
 	}
 
 	owners := profilesDeclaringCredentialRef(cfg, ref)
 	if len(owners) == 0 {
-		return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential ref %q is not declared by any profile", config.ErrInvalid, ref)
+		return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential name %q is not declared by any profile", config.ErrInvalid, ref)
 	}
 	matches := matchingCredentialRefs(owners[0].Profile, ref)
 	resolved, err := ResolveCredentialStore(cfg, matches[0].Store)
@@ -250,7 +247,7 @@ func ResolveSecretsProfileForRef(cfg config.File, ref string, selectedProfile st
 }
 
 // StoreOptionsForResolvedProfile builds credstore options for one resolved
-// secrets-management profile.
+// credential store.
 func StoreOptionsForResolvedProfile(flagValue string, flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (credstore.Options, error) {
 	return StoreOptionsForResolvedStore(flagValue, flagSet, cfg, resolved)
 }
@@ -294,7 +291,7 @@ func OpenResolvedStore(flagValue string, flagSet bool, cfg config.File, resolved
 	}
 	store, err := credstore.Open(ServiceName, &opts)
 	if err != nil {
-		return nil, fmt.Errorf("credentials: opening secrets-management profile %q (%s): %w", resolved.DisplayName(), resolved.Backend, err)
+		return nil, fmt.Errorf("credentials: opening credential store %q (%s): %w", resolved.DisplayName(), resolved.Backend, err)
 	}
 	return store, nil
 }
@@ -393,14 +390,14 @@ func resolveConfiguredSecretsProfile(cfg config.File, id string, selectionSource
 func resolveLegacySecretsProfile(cfg config.File) ResolvedSecretsProfile {
 	backend := strings.TrimSpace(cfg.Keyring.Backend)
 	if backend == "" {
-		backend = config.ProjectedLegacySecretsBackendKind
+		backend = config.ProjectedOSCredentialStoreBackendKind
 	}
 	return ResolvedSecretsProfile{
-		ID:              config.LegacyProjectedSecretsProfileID,
-		Label:           "Legacy default",
+		ID:              config.LocalOSCredentialStoreID,
+		Label:           "OS credential store",
 		Backend:         backend,
 		Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
-		SelectionSource: SecretsProfileSelectionLegacyDefault,
+		SelectionSource: SecretsProfileSelectionBuiltInOS,
 	}
 }
 
@@ -443,7 +440,7 @@ func ambiguousSecretsProfileError(ref string, cfg config.File, owners []credenti
 		}
 		details = append(details, fmt.Sprintf("%s -> %s (%s)", owner.Name, resolved.DisplayName(), resolved.ID))
 	}
-	return fmt.Errorf("%w: credential ref %q is declared by profiles using different secrets-management profiles; pass --profile to disambiguate: %s", config.ErrInvalid, ref, strings.Join(details, "; "))
+	return fmt.Errorf("%w: credential name %q is declared by profiles using different credential stores; pass --profile to disambiguate: %s", config.ErrInvalid, ref, strings.Join(details, "; "))
 }
 
 // BackendMetadata reports the selected backend/source without opening the store.
@@ -491,7 +488,7 @@ func rejectLegacyOnePasswordBackend(kind credstore.Backend) error {
 	if !config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kind)) {
 		return nil
 	}
-	return fmt.Errorf("%w: backend %q is only supported through named secrets-management profiles", ErrInvalidBackendSelection, kind)
+	return fmt.Errorf("%w: backend %q is only supported through configured credential stores", ErrInvalidBackendSelection, kind)
 }
 
 // KeyStatus reports the presence state for one declared keyring key.
@@ -523,7 +520,7 @@ type KeySpec struct {
 	Required bool
 }
 
-// KeySpecsForPurpose returns the exact keyring keys expected for a config credential ref.
+// KeySpecsForPurpose returns the exact keyring keys expected for a configured credential location.
 func KeySpecsForPurpose(ref config.CredentialRef) ([]KeySpec, error) {
 	switch ref.Purpose {
 	case "git", "reviewer_credentials":
@@ -559,7 +556,7 @@ func KeySpecsForPurpose(ref config.CredentialRef) ([]KeySpec, error) {
 	}
 }
 
-// KeyForPurpose returns the single required keyring key expected for a config credential ref.
+// KeyForPurpose returns the single required keyring key expected for a configured credential location.
 func KeyForPurpose(ref config.CredentialRef) (string, error) {
 	specs, err := KeySpecsForPurpose(ref)
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 )
 
-func TestRenderConfigTextStoredCredentialRefs(t *testing.T) {
+func TestRenderConfigTextStoredCredentialNames(t *testing.T) {
 	var out bytes.Buffer
 	show := NewConfigShow("work", workProfile(), dataConfig(), []CredentialStatus{
 		credentialStatus("git", "codereview/work", "pat", "git_token", true),
@@ -25,9 +25,9 @@ func TestRenderConfigTextStoredCredentialRefs(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"Profile: work",
-		"Credential ref: codereview/work",
-		"Credential ref: codereview/work-reviewer",
-		"Credential ref: codereview/work-llm",
+		"Credential name: codereview/work",
+		"Credential name: codereview/work-reviewer",
+		"Credential name: codereview/work-llm",
 		"git_token: present",
 		"anthropic_api_key: present",
 		"Allow self approve: true",
@@ -56,7 +56,7 @@ func TestRenderConfigTextSubscriptionCredentialIsAdapterManaged(t *testing.T) {
 	if !strings.Contains(got, "Reviewer credentials: self-review uses git credentials") {
 		t.Fatalf("text output missing self-review note:\n%s", got)
 	}
-	if !strings.Contains(got, "Credential ref: adapter-managed; not stored by cr") {
+	if !strings.Contains(got, "Credential name: adapter-managed; not stored by cr") {
 		t.Fatalf("text output missing adapter-managed credential note:\n%s", got)
 	}
 }
@@ -82,18 +82,17 @@ func TestRenderConfigTextOpenAIAPIKeyStatus(t *testing.T) {
 	}
 }
 
-func TestRenderConfigTextSecretsManagementProfiles(t *testing.T) {
+func TestRenderConfigTextCredentialStores(t *testing.T) {
 	var out bytes.Buffer
 	show := NewConfigShow("work", workProfile(), dataConfig(), nil)
 	show.Backend = "memory"
-	show.BackendSource = "config"
+	show.BackendSource = "credential_store"
 	show.SecretsProfiles = []config.EffectiveSecretsProfile{
 		{
-			ID:        config.LocalOSCredentialStoreID,
-			Label:     "macOS Login Keychain",
-			Backend:   "memory",
-			IsDefault: true,
-			Source:    config.EffectiveSecretsStoreSourceBuiltIn,
+			ID:      config.LocalOSCredentialStoreID,
+			Label:   "macOS Login Keychain",
+			Backend: "memory",
+			Source:  config.EffectiveSecretsStoreSourceBuiltIn,
 		},
 		{
 			ID:      "personal-keychain",
@@ -108,8 +107,8 @@ func TestRenderConfigTextSecretsManagementProfiles(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"Keyring backend: memory",
-		"Keyring backend source: config",
+		"Credential backend: memory",
+		"Credential backend source: credential_store",
 		"Credential stores:",
 		"  - local-os: macOS Login Keychain (memory)",
 		"    Source: built_in",
@@ -202,13 +201,13 @@ func TestRenderConfigTextExactHomeShape(t *testing.T) {
 Git:
   Host: github.com
   Auth mode: pat
-  Credential ref: codereview/home
+  Credential name: codereview/home
 Reviewer credentials: self-review uses git credentials
 LLM:
   Provider: anthropic
   Auth: subscription
   Adapter: claude_cli
-  Credential ref: adapter-managed; not stored by cr
+  Credential name: adapter-managed; not stored by cr
   Model map:
     small: <unset> (unset)
     medium: claude-sonnet-4-6 (built_in)
@@ -405,7 +404,7 @@ func TestRenderConfigSecretsProfilesText(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigSecretsProfiles{
 		Profiles: []ConfigSecretsProfile{
-			{ID: "local-os", Label: "macOS Login Keychain", Backend: "memory", Source: "built_in", IsDefault: true},
+			{ID: "local-os", Label: "macOS Login Keychain", Backend: "memory", Source: "built_in"},
 			{ID: "work", Label: "Work Keychain", Backend: "keychain", Source: "configured"},
 		},
 	}
@@ -442,11 +441,10 @@ func TestRenderConfigSecretsProfilesJSON(t *testing.T) {
 func TestRenderConfigSecretsProfileText(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigSecretsProfile{
-		ID:        "local-os",
-		Label:     "macOS Login Keychain",
-		Backend:   "memory",
-		Source:    "built_in",
-		IsDefault: true,
+		ID:      "local-os",
+		Label:   "macOS Login Keychain",
+		Backend: "memory",
+		Source:  "built_in",
 	}
 
 	if err := RenderConfigSecretsProfileText(&out, result); err != nil {
@@ -529,60 +527,6 @@ func TestRenderConfigSecretsProfileJSONWithOnePasswordDetails(t *testing.T) {
 		t.Fatalf("RenderConfigSecretsProfileJSON with 1Password: %v", err)
 	}
 	var decoded ConfigSecretsProfile
-	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
-		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
-	}
-	if !reflect.DeepEqual(decoded, result) {
-		t.Fatalf("decoded = %#v, want %#v", decoded, result)
-	}
-}
-
-func TestRenderConfigSecretsProfileDefaultText(t *testing.T) {
-	var out bytes.Buffer
-	result := ConfigSecretsProfileDefault{
-		DefaultProfile: &ConfigSecretsProfile{
-			ID:      "work",
-			Label:   "Work Keychain",
-			Backend: "keychain",
-			Source:  "configured",
-		},
-	}
-
-	if err := RenderConfigSecretsProfileDefaultText(&out, result); err != nil {
-		t.Fatalf("RenderConfigSecretsProfileDefaultText: %v", err)
-	}
-	want := "Credential store: work\nDisplay name: Work Keychain\nBackend: keychain\nSource: configured\n"
-	if out.String() != want {
-		t.Fatalf("text output = %q, want %q", out.String(), want)
-	}
-}
-
-func TestRenderConfigSecretsProfileDefaultTextNone(t *testing.T) {
-	var out bytes.Buffer
-
-	if err := RenderConfigSecretsProfileDefaultText(&out, ConfigSecretsProfileDefault{}); err != nil {
-		t.Fatalf("RenderConfigSecretsProfileDefaultText: %v", err)
-	}
-	if out.String() != "Credential store: none\n" {
-		t.Fatalf("text output = %q, want none text", out.String())
-	}
-}
-
-func TestRenderConfigSecretsProfileDefaultJSON(t *testing.T) {
-	var out bytes.Buffer
-	result := ConfigSecretsProfileDefault{
-		DefaultProfile: &ConfigSecretsProfile{
-			ID:      "work",
-			Label:   "Work Keychain",
-			Backend: "keychain",
-			Source:  "configured",
-		},
-	}
-
-	if err := RenderConfigSecretsProfileDefaultJSON(&out, result); err != nil {
-		t.Fatalf("RenderConfigSecretsProfileDefaultJSON: %v", err)
-	}
-	var decoded ConfigSecretsProfileDefault
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
@@ -715,7 +659,7 @@ func TestRenderConfigClearTextIncludesResetFields(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigClear{
 		Backend:              "file",
-		BackendSource:        "config",
+		BackendSource:        "credential_store",
 		Cleared:              []ClearedCredentialRef{{Ref: "codereview/work", Keys: []string{"git_token"}}},
 		ConfigProfileRemoved: "work",
 		DefaultProfile:       "home",
@@ -744,7 +688,7 @@ func TestRenderConfigClearTextIncludesDryRun(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigClear{
 		Backend:       "file",
-		BackendSource: "config",
+		BackendSource: "credential_store",
 		DryRun:        true,
 		Cleared:       []ClearedCredentialRef{{Ref: "codereview/work", Keys: []string{"git_token"}}},
 	}
@@ -771,7 +715,7 @@ func TestRenderConfigClearTextIncludesSelectedCredentialStore(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigClear{
 		Backend:       "file",
-		BackendSource: "secrets_profile",
+		BackendSource: "credential_store",
 		ActiveSecretsProfile: &ConfigSecretsProfile{
 			ID:      "work-file",
 			Label:   "Work File Store",
@@ -798,7 +742,7 @@ func TestRenderConfigClearTextIncludesCacheErrorWithoutPath(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigClear{
 		Backend:       "file",
-		BackendSource: "config",
+		BackendSource: "credential_store",
 		Cache:         &CacheClear{Status: "error", Error: "xdg cache unavailable"},
 	}
 

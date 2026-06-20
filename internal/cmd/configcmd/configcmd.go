@@ -41,6 +41,12 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	configCmd := &cobra.Command{
 		Use:   "config",
 		Short: "Inspect cr configuration",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("unknown config command %q", args[0]))
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -1125,18 +1131,15 @@ func configPath(opts *root.Options) (string, error) {
 
 func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg config.File, resolvedSecretsProfile credentials.ResolvedSecretsProfile) (credstore.Backend, credstore.Source, error) {
 	if store != nil {
-		backend, source := store.Backend()
-		if resolvedSecretsProfile.IsNamed() {
-			return backend, credentials.BackendSourceSecretsProfile, nil
-		}
-		return backend, source, nil
+		backend, _ := store.Backend()
+		return backend, credentials.BackendSourceCredentialStore, nil
 	}
 	if resolvedSecretsProfile.IsNamed() {
 		backend, err := credstore.ParseBackend(resolvedSecretsProfile.Backend)
 		if err != nil {
 			return "", "", fmt.Errorf("%w: %w", credentials.ErrInvalidBackendSelection, err)
 		}
-		return backend, credentials.BackendSourceSecretsProfile, nil
+		return backend, credentials.BackendSourceCredentialStore, nil
 	}
 	return credentials.BackendMetadata(flagValue, flagSet, cfg)
 }
@@ -1211,10 +1214,11 @@ func clearCredentialBundle(store *credstore.Store, profile string, dryRun bool) 
 
 func resolvedSecretsProfileViewPtr(resolved credentials.ResolvedSecretsProfile) *view.ConfigSecretsProfile {
 	return &view.ConfigSecretsProfile{
-		ID:      resolved.ID,
-		Label:   resolved.Label,
-		Backend: resolved.Backend,
-		Source:  string(resolved.Source),
+		ID:       resolved.ID,
+		Label:    resolved.Label,
+		Backend:  resolved.Backend,
+		ReadOnly: resolved.Source == config.EffectiveSecretsStoreSourceBuiltIn,
+		Source:   string(resolved.Source),
 	}
 }
 

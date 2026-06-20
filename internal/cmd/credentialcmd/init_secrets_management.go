@@ -365,7 +365,7 @@ func initSecretsProfileIDFromLabel(label string, kind config.SecretsBackendKind,
 	if base == "" {
 		base = "secrets-profile"
 	}
-	if base == config.LegacyProjectedSecretsProfileID {
+	if base == config.LocalOSCredentialStoreID {
 		base = "secrets-profile"
 	}
 	candidate := base

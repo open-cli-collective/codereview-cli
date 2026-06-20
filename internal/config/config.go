@@ -62,10 +62,9 @@ type KeyringConfig struct {
 type SecretsConfig struct {
 	Stores map[string]SecretsStore `yaml:"stores,omitempty" json:"stores,omitempty"`
 
-	// Deprecated compatibility fields. They are intentionally not part of the
+	// Deprecated compatibility alias. It is intentionally not part of the
 	// YAML/JSON schema.
-	DefaultProfile string                    `yaml:"-" json:"-"`
-	Profiles       map[string]SecretsProfile `yaml:"-" json:"-"`
+	Profiles map[string]SecretsProfile `yaml:"-" json:"-"`
 }
 
 // SecretsStore is one named configured credential store.
@@ -137,8 +136,7 @@ type EffectiveSecretsProfileSource = EffectiveSecretsStoreSource
 const (
 	EffectiveSecretsProfileSourceConfigured      EffectiveSecretsProfileSource = EffectiveSecretsStoreSourceConfigured
 	EffectiveSecretsProfileSourceProjectedLegacy EffectiveSecretsProfileSource = EffectiveSecretsStoreSourceBuiltIn
-	LegacyProjectedSecretsProfileID                                            = LocalOSCredentialStoreID
-	ProjectedLegacySecretsBackendKind                                          = "auto"
+	ProjectedOSCredentialStoreBackendKind                                      = "auto"
 )
 
 // EffectiveSecretsStore is the presentation-safe credential-store inventory
@@ -151,8 +149,7 @@ type EffectiveSecretsStore struct {
 	Source      EffectiveSecretsStoreSource `json:"source"`
 
 	// Compatibility fields for old callers while UI/runtime are rewritten.
-	Label     string `json:"label,omitempty"`
-	IsDefault bool   `json:"is_default,omitempty"`
+	Label string `json:"label,omitempty"`
 }
 
 // EffectiveSecretsProfile is the old in-memory name for EffectiveSecretsStore.
@@ -675,9 +672,8 @@ func EffectiveSecretsStores(cfg File) []EffectiveSecretsStore {
 		ID:          LocalOSCredentialStoreID,
 		DisplayName: "OS credential store",
 		Label:       "OS credential store",
-		Backend:     ProjectedLegacySecretsBackendKind,
+		Backend:     ProjectedOSCredentialStoreBackendKind,
 		ReadOnly:    true,
-		IsDefault:   true,
 		Source:      EffectiveSecretsStoreSourceBuiltIn,
 	}}
 
@@ -704,17 +700,6 @@ func EffectiveSecretsStores(cfg File) []EffectiveSecretsStore {
 // EffectiveSecretsProfiles is the old in-memory name for EffectiveSecretsStores.
 func EffectiveSecretsProfiles(cfg File) []EffectiveSecretsProfile {
 	return EffectiveSecretsStores(cfg)
-}
-
-// EffectiveDefaultSecretsProfile returns the built-in OS store compatibility
-// projection. New credential-writing flows require explicit destination choice.
-func EffectiveDefaultSecretsProfile(cfg File) (EffectiveSecretsProfile, bool) {
-	for _, profile := range EffectiveSecretsProfiles(cfg) {
-		if profile.ID == LocalOSCredentialStoreID {
-			return profile, true
-		}
-	}
-	return EffectiveSecretsProfile{}, false
 }
 
 // ResolveProfile returns the requested profile, or the default profile when
@@ -1249,7 +1234,6 @@ func (cfg File) normalized() File {
 }
 
 func (s SecretsConfig) normalized() SecretsConfig {
-	s.DefaultProfile = strings.TrimSpace(s.DefaultProfile)
 	if s.Stores == nil {
 		s.Stores = map[string]SecretsStore{}
 	}

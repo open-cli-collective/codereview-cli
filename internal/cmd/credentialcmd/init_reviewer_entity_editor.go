@@ -870,12 +870,12 @@ func reviewerEntityKindDetailDescription(kind initReviewerEntityKind) string {
 }
 
 func reviewerEntitySecretLocationDescription(kind initReviewerEntityKind) string {
-	base := "Credential-store ref for this reviewer. This is where cr stores secret values; it is not a PAT, GitHub App ID, private key, or installation ID. Change it only if you need a custom credential-store location."
+	base := "Credential name for this reviewer. This is where cr stores secret values in the selected credential store; it is not a PAT, GitHub App ID, private key, or installation ID. Change it only if you need a custom credential-store location."
 	if kind == initReviewerEntityKindPAT {
-		return base + " Store required secret " + credentials.GitTokenKey + " at this ref."
+		return base + " Store required secret " + credentials.GitTokenKey + " at this name."
 	}
 	if kind == initReviewerEntityKindGitHubApp {
-		return base + " Store required secrets " + credentials.GitHubAppIDKey + " and " + credentials.GitHubAppPrivateKeyKey + " at this ref; " + credentials.GitHubAppInstallationIDKey + " is optional."
+		return base + " Store required secrets " + credentials.GitHubAppIDKey + " and " + credentials.GitHubAppPrivateKeyKey + " at this name; " + credentials.GitHubAppInstallationIDKey + " is optional."
 	}
 	return base
 }

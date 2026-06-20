@@ -63,22 +63,21 @@ make build
 
 ## Platform Support
 
-`cr` stores secrets in the OS credential store through the shared
-`cli-common/credstore` library.
+`cr` stores secrets in explicit credential stores through the shared
+`cli-common/credstore` library. A built-in `local-os` store is always available
+for the current user.
 
-| Platform | Default credential backend |
+| Platform | Built-in `local-os` backend |
 |----------|----------------------------|
 | macOS | Keychain |
 | Windows | Credential Manager |
 | Linux | Secret Service |
 
-Supported backend names are `keychain`, `wincred`, `secret-service`, `file`,
-`pass`, and `memory`. Backend selection precedence is:
-
-1. `--backend <name>`
-2. `CODEREVIEW_KEYRING_BACKEND=<name>`
-3. `keyring.backend` in `config.yml`
-4. OS default
+Configured stores can also target `1Password` desktop, service account, or
+Connect backends, `pass`, encrypted file storage, or in-memory storage. Configure
+additional stores from interactive `cr init` under **Configure secrets
+storage**. The built-in `local-os` store is read-only configuration and cannot
+be removed.
 
 Secrets are never written to `config.yml`. Non-secret config lives in the
 `codereview` config directory resolved by the operating system, and durable
@@ -157,8 +156,7 @@ cr --profile work init --non-interactive \
   --llm-provider anthropic \
   --llm-auth subscription \
   --llm-adapter claude_cli \
-  --llm-reviewer-model-tier medium \
-  --keyring-backend file
+  --llm-reviewer-model-tier medium
 
 cr --profile work config route set \
   --host github.com \
@@ -169,7 +167,8 @@ cr --profile work config agent-source add ~/.config/codereview/agents
 cr --profile work config llm models set medium claude-sonnet-4-6
 cr config retention set --max-age-days 30 --enforcement manual_only
 printf '%s' "$GITHUB_TOKEN" | cr set-credential \
-  --ref codereview/work \
+  --store local-os \
+  --name codereview/work \
   --key git_token \
   --stdin \
   --overwrite
@@ -177,16 +176,11 @@ printf '%s' "$GITHUB_TOKEN" | cr set-credential \
 
 Use `cr config route` for repository routing, `cr config agent-source` for
 trusted source paths, `cr config llm models` for `llm.model_map`, and
-`cr config retention` for durable run-data policy. Use `cr init
---non-interactive --keyring-backend <backend>` to persist a keyring backend,
-`--reset-keyring-backend` to clear it, `--disable-reviewer` to remove separate
-reviewer credentials, `--llm-reviewer-model-tier` or
+`cr config retention` for durable run-data policy. Use interactive `cr init` to
+configure additional credential stores. Use `--disable-reviewer` to remove
+separate reviewer credentials, `--llm-reviewer-model-tier` or
 `--clear-llm-reviewer-model-tier` for the durable reviewer baseline, and
-`--set-default` to make the target profile the default during init. For
-backward compatibility, init may still persist a runtime `--backend` when the
-command writes credentials or configures API-key LLM auth, but the explicit
-`--keyring-backend` / `--reset-keyring-backend` flags are the readable
-scripted surface to prefer.
+`--set-default` to make the target profile the default during init.
 
 ```yaml
 default_profile: personal
@@ -230,17 +224,18 @@ Add or replace one credential later:
 
 ```bash
 printf '%s' "$GITHUB_TOKEN" | cr set-credential \
-  --ref codereview/default \
+  --store local-os \
+  --name codereview/default \
   --key git_token \
   --stdin \
   --overwrite
 ```
 
-Credential refs use the `codereview/<profile>` service/profile form. `cr`
-accepts secrets by `--stdin` or `--from-env` during setup and credential writes;
-it does not read runtime tokens directly from arbitrary environment variables.
-Reviewer credentials use a separate credential ref that also stores key
-`git_token`; keep it distinct from the user Git ref.
+Credential names use the visible `codereview/<name>` form. `cr` accepts secrets
+by `--stdin` or `--from-env` during setup and credential writes; it does not
+read runtime tokens directly from arbitrary environment variables. Reviewer
+credentials use a separate credential name that also stores key `git_token`;
+keep it distinct from the user Git credential in the same store.
 
 ### Org Deployment / MDM
 
@@ -271,27 +266,39 @@ permissions needed by the enabled review workflow:
 Thread resolution uses the pull request review-thread GraphQL surface, so keep
 Pull requests write access when `review_policy.resolve_threads` is enabled.
 
-Either omit `keyring.backend` to use the platform default, or set it
-per-platform and run `set-credential` with the same backend selection.
-
 Example non-secret config template:
 
 ```yaml
 default_profile: work
+secrets:
+  stores:
+    work-1password:
+      display_name: 1Password Work
+      backend:
+        kind: op-desktop
+        onepassword:
+          account_url: signalft.1password.com
+          vault_name: Employee
 profiles:
   work:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/work
+      credential:
+        store: local-os
+        name: codereview/work
     reviewer_credentials:
       auth_mode: github_app
-      credential_ref: codereview/work-reviewer-app
+      credential:
+        store: work-1password
+        name: codereview/work-reviewer-app
     llm:
       provider: anthropic
       auth: api_key
       adapter: anthropic_api
-      credential_ref: codereview/work-llm
+      credential:
+        store: work-1password
+        name: codereview/work-llm
       model_map:
         medium: claude-sonnet-4-6
     agent_sources:
@@ -301,7 +308,7 @@ profiles:
 ```
 
 For adapter-managed LLM credentials, use `auth: subscription` and omit
-`llm.credential_ref`. Codex-backed profiles must set `provider: openai`,
+`llm.credential`. Codex-backed profiles must set `provider: openai`,
 `auth: subscription`, and `adapter: codex_cli` together. Pi-backed profiles
 must set `provider: pi`, `auth: subscription`, and `adapter: pi_rpc` together:
 
@@ -402,32 +409,37 @@ cr --profile work init --non-interactive \
   --llm-credential-ref codereview/work-llm
 
 printf '%s' "$USER_GITHUB_TOKEN" | cr set-credential \
-  --ref codereview/work \
+  --store local-os \
+  --name codereview/work \
   --key git_token \
   --stdin \
   --overwrite
 
 printf '%s' "$GITHUB_APP_ID" | cr set-credential \
-  --ref codereview/work-reviewer-app \
+  --store local-os \
+  --name codereview/work-reviewer-app \
   --key github_app_id \
   --stdin \
   --overwrite
 
 printf '%s' "$GITHUB_APP_PRIVATE_KEY" | cr set-credential \
-  --ref codereview/work-reviewer-app \
+  --store local-os \
+  --name codereview/work-reviewer-app \
   --key github_app_private_key \
   --stdin \
   --overwrite
 
 # Optional: needed for cr me and other commands without repository context.
 printf '%s' "$GITHUB_APP_INSTALLATION_ID" | cr set-credential \
-  --ref codereview/work-reviewer-app \
+  --store local-os \
+  --name codereview/work-reviewer-app \
   --key github_app_installation_id \
   --stdin \
   --overwrite
 
 printf '%s' "$ANTHROPIC_API_KEY" | cr set-credential \
-  --ref codereview/work-llm \
+  --store local-os \
+  --name codereview/work-llm \
   --key anthropic_api_key \
   --stdin \
   --overwrite
@@ -466,14 +478,14 @@ Run `cr config show` to inspect the active profile and credential status.
 
 ```yaml
 default_profile: default
-keyring:
-  backend: keychain
 profiles:
   default:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/default
+      credential:
+        store: local-os
+        name: codereview/default
     llm:
       provider: anthropic
       auth: subscription
@@ -507,9 +519,8 @@ Supported values:
 | `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
-logged-in CLI or local runtime. `api_key` LLM auth requires
-`llm.credential_ref` and stores a provider-specific API key in the credential
-backend.
+logged-in CLI or local runtime. `api_key` LLM auth requires `llm.credential`
+and stores a provider-specific API key in the selected credential store.
 
 Reviewer agents use provider-neutral `model_tier` values as minimum floors. At
 runtime, `cr` combines the profile's `llm.reviewer_model_tier` baseline with
@@ -578,14 +589,14 @@ Credential key matrix:
 
 | Profile field | Purpose | Auth/provider | Required keys | Optional keys | v1 behavior |
 |---------------|---------|---------------|---------------|---------------|-------------|
-| `git.credential_ref` | User Git host auth | `pat` | `git_token` | None | Supported |
-| `reviewer_credentials.credential_ref` | Reviewer Git host auth | `pat` | `git_token` | None | Supported; must use a distinct ref from `git.credential_ref` in the same profile |
-| `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `github_app` | `github_app_id`, `github_app_private_key` | `github_app_installation_id` | Supported for GitHub. `cr review` can discover the installation from the PR repository when the optional installation ID is omitted; commands without repository context require it |
-| `git.credential_ref` / `reviewer_credentials.credential_ref` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
-| `llm.credential_ref` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
-| `llm.credential_ref` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
-| Omitted `llm.credential_ref` | Adapter-managed LLM auth | `subscription` + `anthropic`/`openai`/`pi` | None | None | Supported; credentials are owned by the selected adapter. `openai + codex_cli` is best-effort/beta until Codex exposes an explicit all-tools-disabled flag |
-| `llm.credential_ref` | Pi direct API auth | `api_key` + `pi` | None | None | Unsupported; use adapter-managed `subscription` auth with `pi_rpc` |
+| `git.credential` | User Git host auth | `pat` | `git_token` | None | Supported |
+| `reviewer_credentials.credential` | Reviewer Git host auth | `pat` | `git_token` | None | Supported; must use a distinct credential location from `git.credential` in the same profile |
+| `git.credential` / `reviewer_credentials.credential` | Git host auth | `github_app` | `github_app_id`, `github_app_private_key` | `github_app_installation_id` | Supported for GitHub. `cr review` can discover the installation from the PR repository when the optional installation ID is omitted; commands without repository context require it |
+| `git.credential` / `reviewer_credentials.credential` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
+| `llm.credential` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
+| `llm.credential` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
+| Omitted `llm.credential` | Adapter-managed LLM auth | `subscription` + `anthropic`/`openai`/`pi` | None | None | Supported; credentials are owned by the selected adapter. `openai + codex_cli` is best-effort/beta until Codex exposes an explicit all-tools-disabled flag |
+| `llm.credential` | Pi direct API auth | `api_key` + `pi` | None | None | Unsupported; use adapter-managed `subscription` auth with `pi_rpc` |
 
 Upgrade note: pre-matrix versions used the generic `llm_api_key` key for direct
 LLM API credentials. Re-provision API-key LLM refs with `anthropic_api_key` or
@@ -679,7 +690,7 @@ All commands accept the global flags:
 | Flag | Semantics |
 |------|-----------|
 | `--profile <name>` | Select a configured profile and bypass repo-aware routing. When omitted, PR-aware commands may use `repository_profiles`, then fall back to `default_profile`; during `init`, empty means `default`. |
-| `--backend <name>` | Select the credential backend for this invocation. One of `keychain`, `wincred`, `secret-service`, `file`, `pass`, `memory`. |
+| `--backend <name>` | Compatibility/runtime backend selector. It cannot override an explicit credential store destination. |
 
 ### `cr`
 
@@ -715,17 +726,17 @@ Flags:
 |------|-----------|
 | `--non-interactive` | Required in v1. Run without prompts. |
 | `--git-host <host>` | Git host, default `github.com`. The PR host must match this value. |
-| `--git-credential-ref <ref>` | Credential ref for Git auth. Defaults to `codereview/<profile>`. |
+| `--git-credential-ref <name>` | Credential name for Git auth. Defaults to `codereview/<profile>`. |
 | `--git-token-stdin` | Read the Git token from stdin and write key `git_token`. |
 | `--git-token-from-env <env>` | Read the Git token from an environment variable and write key `git_token`. |
-| `--reviewer-credential-ref <ref>` | Credential ref for reviewer Git auth. Defaults to `codereview/<profile>-reviewer` when reviewer credentials are requested. |
+| `--reviewer-credential-ref <name>` | Credential name for reviewer Git auth. Defaults to `codereview/<profile>-reviewer` when reviewer credentials are requested. |
 | `--reviewer-auth-mode <mode>` | Reviewer Git auth mode, default `pat`. `github_app` writes config and prints follow-up credential commands. |
 | `--reviewer-token-stdin` | Read the reviewer Git token from stdin and write key `git_token`; PAT reviewer auth only. |
 | `--reviewer-token-from-env <env>` | Read the reviewer Git token from an environment variable and write key `git_token`; PAT reviewer auth only. |
 | `--llm-provider <provider>` | LLM provider, default `anthropic`; also selects whether API-key ingress writes `anthropic_api_key` or `openai_api_key`. `pi` is adapter-managed and does not accept API-key ingress. |
-| `--llm-auth <mode>` | LLM auth mode, default `subscription`. Use `api_key` for keyring-managed direct API keys. |
+| `--llm-auth <mode>` | LLM auth mode, default `subscription`. Use `api_key` for credential-store-managed direct API keys. |
 | `--llm-adapter <adapter>` | LLM adapter, default `claude_cli`. |
-| `--llm-credential-ref <ref>` | Credential ref for LLM API-key auth. Defaults to `codereview/<profile>-llm` when `--llm-auth api_key`. |
+| `--llm-credential-ref <name>` | Credential name for LLM API-key auth. Defaults to `codereview/<profile>-llm` when `--llm-auth api_key`. |
 | `--llm-api-key-stdin` | Read the LLM API key from stdin and write `anthropic_api_key` or `openai_api_key` according to `--llm-provider`. |
 | `--llm-api-key-from-env <env>` | Read the LLM API key from an environment variable and write `anthropic_api_key` or `openai_api_key` according to `--llm-provider`. |
 | `--agent-source <path>` | Add a trusted agent source directory. Repeatable. |
@@ -737,7 +748,7 @@ Flags:
 | `--replace-profile` | Replace an existing profile config. |
 
 Only one stdin secret ingress flag may be used at a time. PAT reviewer
-credentials use key `git_token` under their own credential ref, so
+credentials use key `git_token` under their own credential name, so
 `--reviewer-credential-ref` must differ from `--git-credential-ref`. GitHub App
 reviewer credentials use `github_app_id` and `github_app_private_key`, plus
 optional `github_app_installation_id`; `init` does not accept reviewer token
@@ -749,25 +760,26 @@ ingress flag. `--allow-self-review` is intentionally runtime-only on
 ### `cr set-credential`
 
 ```text
-cr set-credential --ref <ref> --key <key> (--stdin | --from-env <env>) [flags]
+cr set-credential --store <id> --name <credential-name> --key <key> (--stdin | --from-env <env>) [flags]
 ```
 
-Writes one secret value to the credential store. Globally allowed keys are
+Writes one secret value to the selected credential store. Globally allowed keys are
 `git_token`, `github_app_id`, `github_app_private_key`,
 `github_app_installation_id`, `anthropic_api_key`, and `openai_api_key`. When
-`config.yml` declares the target ref, `set-credential` narrows that global
-allowlist to the exact key set expected for that ref. PAT user Git refs and PAT
-reviewer refs use `git_token`; GitHub App refs use `github_app_id`,
+`config.yml` declares the target credential location, `set-credential` narrows
+that global allowlist to the exact key set expected for that credential. PAT
+user Git credentials and PAT reviewer credentials use `git_token`; GitHub App credentials use `github_app_id`,
 `github_app_private_key`, and optional `github_app_installation_id`; Anthropic
-LLM API-key refs use `anthropic_api_key`; OpenAI LLM API-key refs use
+LLM API-key credentials use `anthropic_api_key`; OpenAI LLM API-key credentials use
 `openai_api_key`.
 
 Flags:
 
 | Flag | Semantics |
 |------|-----------|
-| `--ref <ref>` | Required credential ref, such as `codereview/default`. |
-| `--key <key>` | Required key name. Git refs accept the keys described in the credential key matrix; LLM API-key refs accept `anthropic_api_key` or `openai_api_key`. |
+| `--store <id>` | Required credential store id, such as `local-os` or a configured store. |
+| `--name <credential-name>` | Required credential name, such as `codereview/default`. |
+| `--key <key>` | Required key name. Git credentials accept the keys described in the credential key matrix; LLM API-key credentials accept `anthropic_api_key` or `openai_api_key`. |
 | `--stdin` | Read the secret from stdin. |
 | `--from-env <env>` | Read the secret from an environment variable. |
 | `--overwrite` | Replace an existing key. Without it, existing keys are not overwritten. |
@@ -782,9 +794,9 @@ cr config show [--json]
 ```
 
 Shows the resolved active profile, selected credential backend and source,
-credential refs, non-secret profile config, review policy, and data retention.
-For each declared credential ref, it reports whether expected keys are present
-and labels optional keys as optional.
+credential locations, non-secret profile config, review policy, and data
+retention. For each declared credential location, it reports whether expected
+keys are present and labels optional keys as optional.
 For each configured agent source, it reports deployment-material status,
 canonical path, warnings, and SHA-256 fingerprint prefix without inlining agent
 definition contents.
@@ -863,7 +875,7 @@ Flags:
 | Flag | Semantics |
 |------|-----------|
 | `--all` | Also remove the active profile from `config.yml` and clear the disposable cache root. Inactive profiles and durable data are not touched. |
-| `--dry-run` | Report the credential refs, config profile reset, and cache cleanup that would happen without deleting credentials, config, cache, or data. |
+| `--dry-run` | Report the credential locations, config profile reset, and cache cleanup that would happen without deleting credentials, config, cache, or data. |
 | `--json` | Emit a JSON result. |
 
 Without `--all`, this removes secret keyring entries only and leaves
@@ -1194,7 +1206,7 @@ The HTTP cache is under the OS cache directory for the `cr` binary.
 Releases before this state-layout alignment wrote data/cache below a nested
 `codereview` child inside the `cr` root. Commands that write review state
 migrate those legacy entries into the `cr` root without changing config or
-credential refs.
+credential locations.
 
 ### Posting, Markers, And Idempotency
 

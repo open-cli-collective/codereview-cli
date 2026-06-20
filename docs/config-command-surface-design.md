@@ -15,7 +15,7 @@ This document is the semantic parent for:
 - `#166`: `cr config route` management commands
 - `#169`: `cr config resolve-profile` route preview
 - `#168`: `cr config agent-source` management commands
-- `#294`: `cr config secrets-profile` management commands
+- `#294`: `cr config credential-store` inspection commands
 
 Related but out of scope for this batch:
 
@@ -50,9 +50,9 @@ The codebase already supports:
 
 The missing piece is command coverage. Today `cr config` exposes `show`,
 `clear`, and `llm models`, but path/default/route/route-preview/agent-source
-operations still require manual YAML edits. Named secrets-management profiles
-also need a non-interactive command surface, but that surface must remain
-config-only until the later secrets-profile resolver/selection tickets land.
+operations still require manual YAML edits. Credential-store inspection is
+available through `cr config credential-store`; creating, editing, and deleting
+configured stores belongs to the interactive `cr init` secrets-storage flow.
 
 ## Shared Command Rules
 
@@ -237,40 +237,30 @@ Path normalization contract:
 This keeps mutation semantics deterministic and local-string-based rather than
 filesystem-state-based.
 
-### `#294`: secrets-management profile mutation
+### `#294`: credential-store inspection
 
 Owns:
 
-- `cr config secrets-profile list [--json]`
-- `cr config secrets-profile get <id> [--json]`
-- `cr config secrets-profile set <id> [--backend <kind>] [--label <text>] [--clear-label] [--op-timeout <duration>] [--op-vault-id <id>] [--op-item-title-prefix <text>] [--op-item-tag <text>] [--op-item-field-title <text>] [--op-connect-host <url>] [--op-connect-token-env <name>] [--op-service-token-env <name>] [--op-desktop-account-id <id>]`
-- `cr config secrets-profile default get [--json]`
-- `cr config secrets-profile default set <id>`
-- `cr config secrets-profile default unset`
-- `cr config secrets-profile remove <id>`
+- `cr config credential-store list [--json]`
+- `cr config credential-store get <id> [--json]`
 
 Must not own:
 
 - secret ingress or secret-value printing
-- runtime credential routing away from legacy `keyring.backend`
-- review-profile references to secrets-management profiles before the later selection tickets
+- creating, editing, deleting, or selecting credential stores for a write
+- any user-facing credential-store default
 
 Required semantics:
 
-- `list` and `default get` report the effective secrets-profile inventory/default, including the projected `legacy-default` compatibility entry when no explicit profiles exist
-- `default set` and `default unset` mutate only `config.secrets.default_profile`
-- `default set` rejects `legacy-default` because it is reserved/projected, not configured state
-- `set` is patch-style:
-  - create requires `--backend`
-  - update preserves omitted fields
-  - `--clear-label` explicitly clears the label
-  - `--label` plus `--clear-label` is a usage error
-  - whitespace-only `--label` is rejected
-  - update requires at least one mutation flag
-  - `--backend op`, `--backend op-connect`, and `--backend op-desktop` also require `--op-vault-id`; `op-connect` additionally requires `--op-connect-host`
-- `remove` is idempotent for already-absent configured profiles, but rejects `legacy-default` and blocks removing the configured default profile until it is unset or moved
+- `list` reports the effective credential-store inventory, including the
+  read-only built-in `local-os` store
+- `get` reports one effective credential store by id
+- configured stores are listed after `local-os` in stable order
+- `local-os` is projected and is never persisted under `secrets.stores`
+- JSON output must not include an `is_default` field for credential stores
 - backend validation must reuse shared credstore metadata rather than duplicating backend-name knowledge in command code
-- this ticket is config-only: mixed configs with both `keyring.backend` and `secrets.*` keep legacy runtime backend behavior until the later resolver ticket changes credential selection
+- old `config secrets-profile ...` subcommands are rejected instead of acting as
+  compatibility aliases
 
 ## `init` Boundary
 
@@ -300,7 +290,7 @@ The likely future design questions remain:
 
 - whether profile mutation should be patch-like or declarative replacement
 - whether field-specific subcommands and `profile set` should coexist
-- how profile mutation should interact with credential refs and route safety
+- how profile mutation should interact with credential locations and route safety
 
 Those questions belong to later work after the current true-up lands.
 

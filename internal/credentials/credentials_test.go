@@ -378,11 +378,11 @@ func TestResolveCredentialStoreForProfileAndRef(t *testing.T) {
 		t.Fatalf("PlatformOSBackend(%s): %v", runtime.GOOS, err)
 	}
 	wantLegacy := ResolvedSecretsProfile{
-		ID:              config.LegacyProjectedSecretsProfileID,
+		ID:              config.LocalOSCredentialStoreID,
 		Label:           "OS credential store",
 		Backend:         string(platformBackend),
 		Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
-		SelectionSource: SecretsProfileSelectionLegacyDefault,
+		SelectionSource: SecretsProfileSelectionBuiltInOS,
 	}
 	if !reflect.DeepEqual(legacyResolved, wantLegacy) {
 		t.Fatalf("legacy resolved secrets profile = %#v, want %#v", legacyResolved, wantLegacy)

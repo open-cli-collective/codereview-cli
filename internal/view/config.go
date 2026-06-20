@@ -72,12 +72,12 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 		return err
 	}
 	if show.Backend != "" {
-		if err := writeKV(w, "Keyring backend", show.Backend); err != nil {
+		if err := writeKV(w, "Credential backend", show.Backend); err != nil {
 			return err
 		}
 	}
 	if show.BackendSource != "" {
-		if err := writeKV(w, "Keyring backend source", show.BackendSource); err != nil {
+		if err := writeKV(w, "Credential backend source", show.BackendSource); err != nil {
 			return err
 		}
 	}
@@ -112,7 +112,7 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 	if err := writeKV(w, "  Auth mode", string(show.Profile.Git.AuthMode)); err != nil {
 		return err
 	}
-	if err := writeKV(w, "  Credential ref", show.Profile.Git.CredentialRef); err != nil {
+	if err := writeKV(w, "  Credential name", show.Profile.Git.CredentialRef); err != nil {
 		return err
 	}
 	if err := writeOptionalKV(w, "  Identity cache", show.Profile.Git.IdentityCache); err != nil {
@@ -130,7 +130,7 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 		if err := writeKV(w, "  Auth mode", string(show.Profile.ReviewerCredentials.AuthMode)); err != nil {
 			return err
 		}
-		if err := writeKV(w, "  Credential ref", show.Profile.ReviewerCredentials.CredentialRef); err != nil {
+		if err := writeKV(w, "  Credential name", show.Profile.ReviewerCredentials.CredentialRef); err != nil {
 			return err
 		}
 		if err := writeOptionalKV(w, "  Identity cache", show.Profile.ReviewerCredentials.IdentityCache); err != nil {
@@ -151,10 +151,10 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 		return err
 	}
 	if show.LLMCredential.Mode == "stored_ref" {
-		if err := writeKV(w, "  Credential ref", show.LLMCredential.Ref); err != nil {
+		if err := writeKV(w, "  Credential name", show.LLMCredential.Ref); err != nil {
 			return err
 		}
-	} else if err := writeKV(w, "  Credential ref", "adapter-managed; not stored by cr"); err != nil {
+	} else if err := writeKV(w, "  Credential name", "adapter-managed; not stored by cr"); err != nil {
 		return err
 	}
 	if err := renderConfigModelMap(w, show.Profile.LLM); err != nil {
@@ -336,23 +336,23 @@ type ConfigRoutes struct {
 	Routes []ConfigRoute `json:"routes"`
 }
 
-// ConfigSecretsProfiles is the presentation model for `cr config secrets-profile list`.
+// ConfigSecretsProfiles is the presentation model for `cr config credential-store list`.
 type ConfigSecretsProfiles struct {
 	Profiles []ConfigSecretsProfile `json:"profiles"`
 }
 
-// ConfigSecretsProfile is one effective secrets-management profile summary.
+// ConfigSecretsProfile is one effective credential store summary.
 type ConfigSecretsProfile struct {
 	ID          string                              `json:"id"`
 	Label       string                              `json:"label,omitempty"`
 	Backend     string                              `json:"backend"`
 	BackendInfo *ConfigSecretsProfileBackendDetails `json:"backend_info,omitempty"`
-	IsDefault   bool                                `json:"is_default,omitempty"`
+	ReadOnly    bool                                `json:"read_only,omitempty"`
 	Source      string                              `json:"source"`
 }
 
 // ConfigSecretsProfileBackendDetails is the safe presentation wrapper for
-// backend-specific non-secret secrets-profile metadata.
+// backend-specific non-secret credential-store metadata.
 type ConfigSecretsProfileBackendDetails struct {
 	OnePassword *ConfigSecretsProfileOnePassword `json:"onepassword,omitempty"`
 }
@@ -372,7 +372,7 @@ type ConfigSecretsProfileOnePassword struct {
 	DesktopAccountEnv      string `json:"desktop_account_env,omitempty"`
 }
 
-// DisplayName returns the best user-facing secrets-profile label.
+// DisplayName returns the best user-facing credential-store label.
 func (p ConfigSecretsProfile) DisplayName() string {
 	if strings.TrimSpace(p.Label) != "" {
 		return strings.TrimSpace(p.Label)
@@ -380,12 +380,7 @@ func (p ConfigSecretsProfile) DisplayName() string {
 	return strings.TrimSpace(p.ID)
 }
 
-// ConfigSecretsProfileDefault is the presentation model for `cr config secrets-profile default get`.
-type ConfigSecretsProfileDefault struct {
-	DefaultProfile *ConfigSecretsProfile `json:"default_profile,omitempty"`
-}
-
-// RenderConfigSecretsProfilesText writes a stable human-readable secrets-profile listing.
+// RenderConfigSecretsProfilesText writes a stable human-readable credential-store listing.
 func RenderConfigSecretsProfilesText(w io.Writer, result ConfigSecretsProfiles) error {
 	if len(result.Profiles) == 0 {
 		_, err := fmt.Fprintln(w, "Credential stores: none")
@@ -403,14 +398,14 @@ func RenderConfigSecretsProfilesText(w io.Writer, result ConfigSecretsProfiles) 
 	return nil
 }
 
-// RenderConfigSecretsProfilesJSON writes the secrets-profile listing as indented JSON.
+// RenderConfigSecretsProfilesJSON writes the credential-store listing as indented JSON.
 func RenderConfigSecretsProfilesJSON(w io.Writer, result ConfigSecretsProfiles) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(result)
 }
 
-// RenderConfigSecretsProfileText writes one stable human-readable secrets-profile summary.
+// RenderConfigSecretsProfileText writes one stable human-readable credential-store summary.
 func RenderConfigSecretsProfileText(w io.Writer, profile ConfigSecretsProfile) error {
 	if err := writeKV(w, "Credential store", profile.ID); err != nil {
 		return err
@@ -451,36 +446,11 @@ func RenderConfigSecretsProfileText(w io.Writer, profile ConfigSecretsProfile) e
 	return nil
 }
 
-// RenderConfigSecretsProfileJSON writes one secrets-profile summary as indented JSON.
+// RenderConfigSecretsProfileJSON writes one credential-store summary as indented JSON.
 func RenderConfigSecretsProfileJSON(w io.Writer, profile ConfigSecretsProfile) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(profile)
-}
-
-// RenderConfigSecretsProfileDefaultText writes the selected credential-store summary.
-func RenderConfigSecretsProfileDefaultText(w io.Writer, result ConfigSecretsProfileDefault) error {
-	if result.DefaultProfile == nil {
-		_, err := fmt.Fprintln(w, "Credential store: none")
-		return err
-	}
-	if err := writeKV(w, "Credential store", result.DefaultProfile.ID); err != nil {
-		return err
-	}
-	if err := writeOptionalKV(w, "Display name", result.DefaultProfile.Label); err != nil {
-		return err
-	}
-	if err := writeKV(w, "Backend", result.DefaultProfile.Backend); err != nil {
-		return err
-	}
-	return writeKV(w, "Source", result.DefaultProfile.Source)
-}
-
-// RenderConfigSecretsProfileDefaultJSON writes the selected credential-store summary as indented JSON.
-func RenderConfigSecretsProfileDefaultJSON(w io.Writer, result ConfigSecretsProfileDefault) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
 }
 
 // ConfigRoute is one repository-profile route.
@@ -619,10 +589,10 @@ type CacheClear struct {
 
 // RenderConfigClearText writes a stable human-readable clear summary.
 func RenderConfigClearText(w io.Writer, result ConfigClear) error {
-	if err := writeKV(w, "Keyring backend", result.Backend); err != nil {
+	if err := writeKV(w, "Credential backend", result.Backend); err != nil {
 		return err
 	}
-	if err := writeKV(w, "Keyring backend source", result.BackendSource); err != nil {
+	if err := writeKV(w, "Credential backend source", result.BackendSource); err != nil {
 		return err
 	}
 	if result.ActiveSecretsProfile != nil {
