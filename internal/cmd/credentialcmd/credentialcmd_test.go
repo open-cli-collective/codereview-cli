@@ -17,6 +17,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/creack/pty"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -12135,12 +12136,19 @@ func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 		"cr init",
 		"Active profile: default",
 		"Configure secrets management",
+		"Credential-store profiles and default destination",
 		"Configure LLM runtimes",
+		"2 runtimes configured",
 		"Configure reviewer entities",
+		"3 reviewer entities configured",
 		"Configure review profiles",
+		"1 profile configured",
 		"Configure global settings",
+		"Data retention and global defaults",
 		"Commit staged changes and exit",
+		"Write staged config and credential changes",
 		"Discard staged changes and exit",
+		"Leave without writing staged changes",
 	)
 	if !strings.Contains(out, ">") {
 		t.Fatalf("view missing selected-row caret:\n%s", out)
@@ -12159,6 +12167,20 @@ func TestInitMenuQDiscardsAndExits(t *testing.T) {
 	}
 	if result.result != initMenuActionExit || !result.quitting {
 		t.Fatalf("result = %#v, want discard exit", result)
+	}
+}
+
+func TestRunInitMenuExecutesBubbleTeaPath(t *testing.T) {
+	var stderr bytes.Buffer
+	action, err := runInitMenu(initMenuPrompt{HasWorkspace: true}, strings.NewReader("q"), &stderr)
+	if err != nil {
+		t.Fatalf("runInitMenu: %v", err)
+	}
+	if action != initMenuActionExit {
+		t.Fatalf("action = %q, want discard exit", action)
+	}
+	if strings.Contains(stderr.String(), "Configure LLM runtimes (") {
+		t.Fatalf("stderr contains old inline count suffix:\n%s", stderr.String())
 	}
 }
 
@@ -12210,6 +12232,22 @@ func TestInitMenuUseAccessibleFallback(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	if !initMenuUseAccessibleFallback(strings.NewReader(""), &bytes.Buffer{}) {
 		t.Fatal("non-file test streams should use accessible fallback")
+	}
+}
+
+func TestInitMenuUseAccessibleFallbackRecognizesTerminalFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PTY test is Unix-only")
+	}
+	t.Setenv("TERM", "xterm")
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	defer master.Close()
+	defer slave.Close()
+	if initMenuUseAccessibleFallback(slave, slave) {
+		t.Fatal("PTY-backed terminal files should use Bubble Tea menu")
 	}
 }
 
