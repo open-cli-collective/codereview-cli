@@ -6464,6 +6464,9 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 		}
 	}
 	assertContentOrder(t, out, "Reviewer entity", "Reviewer details", "Entity label", "Reviewer secret location", "Reviewer credential status", "Reviewer action")
+	if strings.Contains(out, "reviewer-pat") {
+		t.Fatalf("stderr leaked reviewer PAT value:\n%s", out)
+	}
 	if strings.Contains(out, "Back to main menu") {
 		t.Fatalf("stderr = %q, want action-local Back without staging instead of inventory Back", out)
 	}
@@ -6537,6 +6540,11 @@ func TestHuhInitReviewerEntityPrompterGitHubAppLinearFlowShowsCredentialBundleCo
 		}
 	}
 	assertContentOrder(t, out, "Reviewer secret location", "Reviewer credential status", "Reviewer action")
+	for _, leaked := range []string{"12345", privateKey} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("stderr leaked GitHub App secret value %q:\n%s", leaked, out)
+		}
+	}
 }
 
 func TestReviewerEntityLinearEditorNewLabelDerivesDefaultSecretLocation(t *testing.T) {
@@ -7080,6 +7088,11 @@ func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testi
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr missing %q:\n%s", want, out)
+		}
+	}
+	for _, leaked := range []string{"12345", privateKey} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("stderr leaked GitHub App secret value %q:\n%s", leaked, out)
 		}
 	}
 }
@@ -18435,6 +18448,80 @@ func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsProfilesIndependent
 	}
 	if got := workStore.bundles["work"][credentials.GitTokenKey]; got != "work-token" {
 		t.Fatalf("work store token = %q, want work-token", got)
+	}
+}
+
+func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *testing.T) {
+	workStore := newFakeInitStore(nil)
+	profile := basicProfile("work")
+	profile.SecretsProfile = "work-file"
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "work-file",
+			Profiles: map[string]config.SecretsProfile{
+				"work-file": {
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{"work": profile},
+	}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+	if err != nil {
+		t.Fatalf("Resolve work secrets profile: %v", err)
+	}
+	plan := initSessionPlan{
+		path:         filepath.Join(t.TempDir(), "config.yml"),
+		cfg:          cfg,
+		profileNames: []string{"work"},
+		writes: map[string]map[string]string{
+			"codereview/work-reviewer": {
+				credentials.GitHubAppIDKey:         "12345",
+				credentials.GitHubAppPrivateKeyKey: "private-key",
+			},
+		},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			SecretsProfile: resolved,
+			KeySpecs: []credentials.KeySpec{
+				{Key: credentials.GitHubAppIDKey, Required: true},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+			},
+			State: initCredentialPlanStateWrite,
+		}},
+	}
+
+	err = applyInteractiveInitSessionPlan(&root.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("legacy openStore called for named reviewer secrets")
+			return nil, nil
+		},
+		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, _ string, _ bool, _ config.File) (initStore, error) {
+			if resolved.ID != "work-file" {
+				t.Fatalf("opened secrets profile %q, want work-file", resolved.ID)
+			}
+			return workStore, nil
+		},
+		saveConfig: func(string, config.File) error { return nil },
+	}, plan)
+	if err != nil {
+		t.Fatalf("applyInteractiveInitSessionPlan: %v", err)
+	}
+	if got := workStore.bundles["work-reviewer"][credentials.GitHubAppIDKey]; got != "12345" {
+		t.Fatalf("stored reviewer app id = %q, want named-store value", got)
+	}
+	if got := workStore.bundles["work-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != "private-key" {
+		t.Fatalf("stored reviewer private key = %q, want named-store value", got)
 	}
 }
 
