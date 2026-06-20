@@ -46,6 +46,7 @@ type initPendingSecretsManagementDelete struct {
 
 func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 	working := config.Normalize(cloneInitConfigFile(prompt.Config))
+	p.writeSecretsStorageDiscoveryNotice()
 	desktopDiscovery := p.discoverOnePasswordDesktop()
 	pendingDeletes := map[string]initPendingSecretsManagementDelete{}
 	pendingDeleteOrder := []string{}
@@ -97,6 +98,15 @@ func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyri
 			return initKeyringBackendEdit{}, errInitNavigateBack
 		}
 	}
+}
+
+func (p huhInitKeyringBackendPrompter) writeSecretsStorageDiscoveryNotice() {
+	if p.stderr == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(p.stderr, "Checking available secrets storage backends.")
+	_, _ = fmt.Fprintln(p.stderr, "You may see permission prompts from 1Password, macOS, or your terminal app.")
+	_, _ = fmt.Fprintln(p.stderr)
 }
 
 func (p huhInitKeyringBackendPrompter) runSecretsManagementEditor(editor initLinearEditor) (initLinearEditorModel, error) {

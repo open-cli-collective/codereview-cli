@@ -11139,6 +11139,43 @@ func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *
 	}
 }
 
+func TestHuhInitKeyringBackendPrompterWritesDiscoveryNoticeBeforeOnePasswordProbe(t *testing.T) {
+	var stderr bytes.Buffer
+	probeSawNotice := false
+	prompter := huhInitKeyringBackendPrompter{
+		stderr: &stderr,
+		onePasswordCmdRunner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if strings.Join(args, " ") == "account list --format=json" {
+				out := stderr.String()
+				probeSawNotice = strings.Contains(out, "Checking available secrets storage backends.") &&
+					strings.Contains(out, "You may see permission prompts")
+			}
+			return nil, os.ErrNotExist
+		},
+		editorRunner: func(editor initLinearEditor, _ io.Reader, _ io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 180, 32)
+			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionBack)
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	_, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditKeyringBackend error = %v, want navigate back", err)
+	}
+	if !probeSawNotice {
+		t.Fatalf("1Password probe ran before discovery notice; stderr = %q", stderr.String())
+	}
+}
+
 func TestInitSecretsManagementLinearEditorShowsBuiltInOSStoreReadOnly(t *testing.T) {
 	cfg := config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"}
 	editor := initSecretsManagementLinearEditor(cfg)
