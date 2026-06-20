@@ -5701,7 +5701,7 @@ type initWriteGroup struct {
 	Resolved      credentials.ResolvedSecretsProfile
 	Writes        map[string]map[string]string
 	OverwriteRefs map[string]bool
-	Entries       map[string]initCredentialPlanEntry
+	Entries       map[string][]initCredentialPlanEntry
 }
 
 func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string]map[string]string, overwriteRefs map[string]bool) ([]initWriteGroup, error) {
@@ -5711,7 +5711,7 @@ func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string
 		return []initWriteGroup{{
 			Writes:        writes,
 			OverwriteRefs: overwriteRefs,
-			Entries:       map[string]initCredentialPlanEntry{},
+			Entries:       map[string][]initCredentialPlanEntry{},
 		}}, nil
 	}
 	groups := map[string]*initWriteGroup{}
@@ -5727,12 +5727,12 @@ func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string
 				Resolved:      entry.SecretsProfile,
 				Writes:        map[string]map[string]string{},
 				OverwriteRefs: map[string]bool{},
-				Entries:       map[string]initCredentialPlanEntry{},
+				Entries:       map[string][]initCredentialPlanEntry{},
 			}
 			groups[key] = group
 		}
 		group.Writes[entry.Ref.Ref] = bundle
-		group.Entries[entry.Ref.Ref] = entry
+		group.Entries[entry.Ref.Ref] = append(group.Entries[entry.Ref.Ref], entry)
 		if overwriteRefs[entry.Ref.Ref] {
 			group.OverwriteRefs[entry.Ref.Ref] = true
 		}
@@ -7033,7 +7033,7 @@ func preflightNoOverwrite(store initStore, writes map[string]map[string]string, 
 	return nil
 }
 
-func writeBundles(store initStore, writes map[string]map[string]string, overwriteAll bool, overwriteRefs map[string]bool, entries map[string]initCredentialPlanEntry) ([]string, error) {
+func writeBundles(store initStore, writes map[string]map[string]string, overwriteAll bool, overwriteRefs map[string]bool, entries map[string][]initCredentialPlanEntry) ([]string, error) {
 	var writtenRefs []string
 	for _, ref := range sortedRefs(writes) {
 		parsed, err := credentials.ParseRef(ref)
@@ -7055,7 +7055,7 @@ func writeBundles(store initStore, writes map[string]map[string]string, overwrit
 			}
 			return writtenRefs, err
 		}
-		if err := deleteStaleReviewerCredentialKeys(store, entryForWriteRef(entries, ref)); err != nil {
+		if err := deleteStaleReviewerCredentialKeys(store, entriesForWriteRef(entries, ref)); err != nil {
 			cleanupRefs := append([]string(nil), writtenRefs...)
 			cleanupRefs = append(cleanupRefs, ref)
 			return writtenRefs, fmt.Errorf("init wrote credentials before failing to delete stale keys on %s; credential refs needing cleanup: %v: %w", ref, cleanupRefs, err)
@@ -7065,22 +7065,31 @@ func writeBundles(store initStore, writes map[string]map[string]string, overwrit
 	return writtenRefs, nil
 }
 
-func entryForWriteRef(entries map[string]initCredentialPlanEntry, ref string) initCredentialPlanEntry {
+func entriesForWriteRef(entries map[string][]initCredentialPlanEntry, ref string) []initCredentialPlanEntry {
 	if entries == nil {
-		return initCredentialPlanEntry{}
+		return nil
 	}
 	return entries[ref]
 }
 
-func deleteStaleReviewerCredentialKeys(store initStore, entry initCredentialPlanEntry) error {
-	if entry.Ref.Purpose != "reviewer_credentials" || strings.TrimSpace(entry.Ref.Ref) == "" {
+func deleteStaleReviewerCredentialKeys(store initStore, entries []initCredentialPlanEntry) error {
+	if len(entries) == 0 {
 		return nil
 	}
-	staleKeys := staleReviewerCredentialKeys(entry)
+	ref := entries[0].Ref
+	if ref.Purpose != "reviewer_credentials" || strings.TrimSpace(ref.Ref) == "" {
+		return nil
+	}
+	for _, entry := range entries[1:] {
+		if entry.Ref.Purpose != ref.Purpose || entry.Ref.Ref != ref.Ref {
+			return nil
+		}
+	}
+	staleKeys := staleReviewerCredentialKeys(entries)
 	if len(staleKeys) == 0 {
 		return nil
 	}
-	parsed, err := credentials.ParseRef(entry.Ref.Ref)
+	parsed, err := credentials.ParseRef(ref.Ref)
 	if err != nil {
 		return err
 	}
@@ -7103,10 +7112,12 @@ func deleteStaleReviewerCredentialKeys(store initStore, entry initCredentialPlan
 	return nil
 }
 
-func staleReviewerCredentialKeys(entry initCredentialPlanEntry) []string {
-	current := make(map[string]struct{}, len(entry.KeySpecs))
-	for _, spec := range entry.KeySpecs {
-		current[spec.Key] = struct{}{}
+func staleReviewerCredentialKeys(entries []initCredentialPlanEntry) []string {
+	current := map[string]struct{}{}
+	for _, entry := range entries {
+		for _, spec := range entry.KeySpecs {
+			current[spec.Key] = struct{}{}
+		}
 	}
 	candidates := []string{
 		credentials.GitTokenKey,

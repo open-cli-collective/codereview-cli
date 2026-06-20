@@ -6693,6 +6693,65 @@ func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecrets(t *testin
 	}
 }
 
+func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecretsWhenStatusUnavailable(t *testing.T) {
+	profile := basicProfile("work")
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/existing-reviewer",
+		DisplayName:   "Existing reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": profile},
+	}
+	entities, profileEntities := buildInitReviewerEntityInventory(cfg)
+	profileCopy := profile
+	ctx := initPromptContext{
+		RequestedProfileName:    "work",
+		ExistingProfileName:     "work",
+		DefaultProfileName:      "work",
+		ExistingProfile:         &profileCopy,
+		ExistingConfig:          cfg,
+		ReviewerEntities:        entities,
+		ProfileReviewerEntities: profileEntities,
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/existing-reviewer",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			Unavailable: "credential backend status unavailable",
+			Keys: []initReviewerCredentialKeyStatus{{
+				Key:      credentials.GitTokenKey,
+				Required: true,
+				State:    initReviewerCredentialKeyUnavailable,
+			}},
+		}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &profile)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/new-reviewer")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation))
+	model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	changed, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if changed.resultAction != "" {
+		t.Fatalf("changed ref resultAction = %q, want validation to block staging", changed.resultAction)
+	}
+	actionIndex := changed.document.fieldIndexByID(initReviewerEntityFieldAction)
+	if actionIndex < 0 {
+		t.Fatal("action field missing")
+	}
+	if got := changed.document[actionIndex].Error; !strings.Contains(got, credentials.GitTokenKey) {
+		t.Fatalf("changed ref action error = %q, want missing PAT credential", got)
+	}
+}
+
 func TestReviewerEntityLinearEditorGitHubAppRequiresInlineSecretsBeforeStaging(t *testing.T) {
 	existing := basicProfile("work")
 	ctx := initPromptContext{
@@ -19699,7 +19758,7 @@ func TestWriteBundlesDeletesStaleReviewerKeysAfterAuthModeSwitch(t *testing.T) {
 			credentials.GitHubAppIDKey:         "12345",
 			credentials.GitHubAppPrivateKeyKey: "private-key",
 		},
-	}, false, nil, map[string]initCredentialPlanEntry{"codereview/work-reviewer": entry})
+	}, false, nil, map[string][]initCredentialPlanEntry{"codereview/work-reviewer": {entry}})
 	if err != nil {
 		t.Fatalf("writeBundles: %v", err)
 	}
@@ -19711,6 +19770,52 @@ func TestWriteBundlesDeletesStaleReviewerKeysAfterAuthModeSwitch(t *testing.T) {
 	}
 	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
 		t.Fatalf("github_app_id exists = %t, err = %v; want written", ok, err)
+	}
+}
+
+func TestWriteBundlesKeepsStaleReviewerKeysRequiredByAnotherActiveMode(t *testing.T) {
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendMemory,
+	})
+	if err != nil {
+		t.Fatalf("Open memory store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.SetBundle("shared-reviewer", map[string]string{credentials.GitTokenKey: "existing-pat"}); err != nil {
+		t.Fatalf("seed shared reviewer PAT bundle: %v", err)
+	}
+	patEntry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/shared-reviewer",
+			Mode:    string(config.GitAuthModePAT),
+		},
+		KeySpecs: []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
+	}
+	appEntry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/shared-reviewer",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+	}
+
+	if _, err := writeBundles(store, map[string]map[string]string{
+		"codereview/shared-reviewer": {
+			credentials.GitHubAppIDKey:         "12345",
+			credentials.GitHubAppPrivateKeyKey: "private-key",
+		},
+	}, false, nil, map[string][]initCredentialPlanEntry{"codereview/shared-reviewer": {appEntry, patEntry}}); err != nil {
+		t.Fatalf("writeBundles: %v", err)
+	}
+	if ok, err := store.Exists("shared-reviewer", credentials.GitTokenKey); err != nil || !ok {
+		t.Fatalf("git_token exists = %t, err = %v; want retained for active PAT entry", ok, err)
 	}
 }
 

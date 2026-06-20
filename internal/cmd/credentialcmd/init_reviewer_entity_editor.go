@@ -566,7 +566,7 @@ func validateReviewerEntityInlineCredentials(ctx initPromptContext, seed initDra
 	if reviewerEntityPreservesExistingCredentialRefWithoutWrites(state, document) {
 		return nil
 	}
-	missing := missingReviewerEntityInlineCredentialKeys(state, status)
+	missing := missingReviewerEntityInlineCredentialKeys(state, status, document)
 	if len(missing) > 0 {
 		return fmt.Errorf("set reviewer credentials before staging: %s", strings.Join(missing, ", "))
 	}
@@ -645,8 +645,9 @@ func initReviewerCredentialStatusListContainsUnavailable(statuses []initReviewer
 	return false
 }
 
-func missingReviewerEntityInlineCredentialKeys(state reviewerEntityEditorState, status initReviewerCredentialStatus) []string {
+func missingReviewerEntityInlineCredentialKeys(state reviewerEntityEditorState, status initReviewerCredentialStatus, document initLinearDocument) []string {
 	var missing []string
+	keepsCurrentRef := reviewerEntityKeepsCurrentCredentialRef(state, document)
 	for _, key := range status.Keys {
 		if !key.Required {
 			continue
@@ -655,7 +656,7 @@ func missingReviewerEntityInlineCredentialKeys(state reviewerEntityEditorState, 
 		case initReviewerCredentialKeyExisting, initReviewerCredentialKeyStaged:
 			continue
 		case initReviewerCredentialKeyUnavailable:
-			if state.preserveCurrentLocation {
+			if keepsCurrentRef {
 				continue
 			}
 		case initReviewerCredentialKeyMissing, initReviewerCredentialKeyDeferred, initReviewerCredentialKeySkippedOptional, initReviewerCredentialKeyOptional:
@@ -663,6 +664,11 @@ func missingReviewerEntityInlineCredentialKeys(state reviewerEntityEditorState, 
 		missing = append(missing, key.Key)
 	}
 	return missing
+}
+
+func reviewerEntityKeepsCurrentCredentialRef(state reviewerEntityEditorState, document initLinearDocument) bool {
+	return state.preserveCurrentLocation &&
+		strings.TrimSpace(document.fieldValue(initReviewerEntityFieldSecretLocation)) == strings.TrimSpace(state.seed.ReviewerCredentialRef)
 }
 
 func applyReviewerEntityCredentialDraftFromDocument(editDraft *initDraft, ctx initPromptContext, seed initDraft, state reviewerEntityEditorState, document initLinearDocument) {
@@ -682,7 +688,7 @@ func applyReviewerEntityCredentialDraftFromDocument(editDraft *initDraft, ctx in
 	editDraft.ReviewerCredentialWriteRef = ref
 	editDraft.ReviewerCredentialWrites = writes
 	editDraft.ReviewerCredentialOverwrite = overwrite
-	editDraft.ReviewerCredentialSatisfied = reviewerEntityPreservesExistingCredentialRefWithoutWrites(state, document) || len(missingReviewerEntityInlineCredentialKeys(state, status)) == 0
+	editDraft.ReviewerCredentialSatisfied = reviewerEntityPreservesExistingCredentialRefWithoutWrites(state, document) || len(missingReviewerEntityInlineCredentialKeys(state, status, document)) == 0
 }
 
 func reviewerEntityCredentialWritesFromDocument(status initReviewerCredentialStatus, document initLinearDocument) (map[string]string, bool) {
