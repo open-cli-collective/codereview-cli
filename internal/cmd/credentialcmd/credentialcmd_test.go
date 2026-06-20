@@ -33,12 +33,13 @@ import (
 func TestSetCredentialStdinJSONWritesFileBackend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	hermeticFileBackend(t)
+	saveCredentialTestConfig(t, path, testFileCredentialStoreConfig("work"))
 	cmd, out, _ := newTestCommand(path, strings.NewReader("distinctive-token\n"))
 
 	err := root.Execute(cmd, []string{
-		"--backend", "file",
 		"set-credential",
-		"--ref", "codereview/work",
+		"--store", testFileCredentialStoreID,
+		"--name", "codereview/work",
 		"--key", credentials.GitTokenKey,
 		"--stdin",
 		"--json",
@@ -53,40 +54,31 @@ func TestSetCredentialStdinJSONWritesFileBackend(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.Ref != "codereview/work" || got.Key != credentials.GitTokenKey || !got.Written {
+	if got.Store != testFileCredentialStoreID || got.Name != "codereview/work" || got.Key != credentials.GitTokenKey || !got.Written {
 		t.Fatalf("credential write JSON = %#v, want written git token", got)
 	}
-	if got.Backend != "file" || got.BackendSource != "explicit" {
-		t.Fatalf("backend JSON = (%q,%q), want (file,explicit)", got.Backend, got.BackendSource)
+	if got.Backend != "file" || got.BackendSource != string(credentials.BackendSourceCredentialStore) {
+		t.Fatalf("backend JSON = (%q,%q), want (file,credential_store)", got.Backend, got.BackendSource)
 	}
 	assertStored(t, "work", credentials.GitTokenKey, "distinctive-token")
 }
 
-func TestSetCredentialUsesSelectedSecretsProfileStore(t *testing.T) {
+func TestSetCredentialUsesExplicitConfiguredStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	hermeticFileBackend(t)
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
-		Secrets: config.SecretsConfig{
-			DefaultProfile: "work-file",
-			Profiles: map[string]config.SecretsProfile{
-				"work-file": {
-					Label:   "Work File Store",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-				},
-			},
-		},
+		Secrets:        testFileSecretsConfig(),
 		Profiles: map[string]config.Profile{
-			"work": basicProfile("work"),
+			"work": profileWithCredentialStore(basicProfile("work"), testFileCredentialStoreID),
 		},
 	})
 	cmd, out, _ := newTestCommand(path, strings.NewReader("distinctive-token\n"))
 
 	err := root.Execute(cmd, []string{
-		"--backend", "file",
 		"set-credential",
-		"--ref", "codereview/work",
+		"--store", testFileCredentialStoreID,
+		"--name", "codereview/work",
 		"--key", credentials.GitTokenKey,
 		"--stdin",
 		"--json",
@@ -98,8 +90,8 @@ func TestSetCredentialUsesSelectedSecretsProfileStore(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.Backend != "file" || got.BackendSource != "explicit" {
-		t.Fatalf("backend JSON = (%q,%q), want (file,explicit)", got.Backend, got.BackendSource)
+	if got.Backend != "file" || got.BackendSource != string(credentials.BackendSourceCredentialStore) {
+		t.Fatalf("backend JSON = (%q,%q), want (file,credential_store)", got.Backend, got.BackendSource)
 	}
 	assertStored(t, "work", credentials.GitTokenKey, "distinctive-token")
 }
@@ -109,7 +101,8 @@ func TestSetCredentialRejectsLiteralIngress(t *testing.T) {
 
 	err := root.Execute(cmd, []string{
 		"set-credential",
-		"--ref", "codereview/work",
+		"--store", config.LocalOSCredentialStoreID,
+		"--name", "codereview/work",
 		"--key", credentials.GitTokenKey,
 		"--value=distinctive-token",
 	})
@@ -135,9 +128,9 @@ func TestSetCredentialRejectsDisallowedKeysBeforeIngress(t *testing.T) {
 			cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), failReader{})
 
 			err := root.Execute(cmd, []string{
-				"--backend", "memory",
 				"set-credential",
-				"--ref", "codereview/work",
+				"--store", config.LocalOSCredentialStoreID,
+				"--name", "codereview/work",
 				"--key", key,
 				"--stdin",
 			})
@@ -156,17 +149,17 @@ func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
 		DefaultProfile: "work",
-		Keyring:        config.KeyringConfig{Backend: "file"},
+		Secrets:        testFileSecretsConfig(),
 		Profiles: map[string]config.Profile{
-			"work": apiKeyProfile("work", config.LLMProviderAnthropic),
+			"work": profileWithCredentialStore(apiKeyProfile("work", config.LLMProviderAnthropic), testFileCredentialStoreID),
 		},
 	})
 
 	cmd, _, _ := newTestCommand(path, failReader{})
 	err := root.Execute(cmd, []string{
-		"--backend", "file",
 		"set-credential",
-		"--ref", "codereview/work-llm",
+		"--store", testFileCredentialStoreID,
+		"--name", "codereview/work-llm",
 		"--key", credentials.OpenAIAPIKeyKey,
 		"--stdin",
 	})
@@ -180,9 +173,9 @@ func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
 
 	cmd, _, _ = newTestCommand(path, strings.NewReader("openai-token"))
 	err = root.Execute(cmd, []string{
-		"--backend", "file",
 		"set-credential",
-		"--ref", "codereview/ad-hoc-openai",
+		"--store", testFileCredentialStoreID,
+		"--name", "codereview/ad-hoc-openai",
 		"--key", credentials.OpenAIAPIKeyKey,
 		"--stdin",
 	})
@@ -193,9 +186,9 @@ func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
 
 	cmd, _, _ = newTestCommand(path, strings.NewReader("anthropic-token"))
 	err = root.Execute(cmd, []string{
-		"--backend", "file",
 		"set-credential",
-		"--ref", "codereview/work-llm",
+		"--store", testFileCredentialStoreID,
+		"--name", "codereview/work-llm",
 		"--key", credentials.AnthropicAPIKeyKey,
 		"--stdin",
 	})
@@ -211,14 +204,18 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
 		DefaultProfile: "work",
-		Keyring:        config.KeyringConfig{Backend: "file"},
+		Secrets:        testFileSecretsConfig(),
 		Profiles: map[string]config.Profile{
-			"work": basicProfile("work"),
+			"work": profileWithCredentialStore(basicProfile("work"), testFileCredentialStoreID),
 		},
 	}
 	work := cfg.Profiles["work"]
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
+		AuthMode: config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{
+			Store: testFileCredentialStoreID,
+			Name:  "codereview/work-reviewer",
+		},
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg.Profiles["work"] = work
@@ -226,9 +223,9 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 
 	cmd, _, _ := newTestCommand(path, failReader{})
 	err := root.Execute(cmd, []string{
-		"--backend", "file",
 		"set-credential",
-		"--ref", "codereview/work-reviewer",
+		"--store", testFileCredentialStoreID,
+		"--name", "codereview/work-reviewer",
 		"--key", credentials.GitTokenKey,
 		"--stdin",
 	})
@@ -249,9 +246,9 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 	} {
 		cmd, _, _ = newTestCommand(path, strings.NewReader(write.value))
 		err = root.Execute(cmd, []string{
-			"--backend", "file",
 			"set-credential",
-			"--ref", "codereview/work-reviewer",
+			"--store", testFileCredentialStoreID,
+			"--name", "codereview/work-reviewer",
 			"--key", write.key,
 			"--stdin",
 		})
@@ -295,9 +292,9 @@ profiles:
 		{
 			name: "stdin",
 			args: []string{
-				"--backend", "file",
 				"set-credential",
-				"--ref", "codereview/future",
+				"--store", config.LocalOSCredentialStoreID,
+				"--name", "codereview/future",
 				"--key", credentials.GitTokenKey,
 				"--stdin",
 			},
@@ -307,9 +304,9 @@ profiles:
 		{
 			name: "from-env",
 			args: []string{
-				"--backend", "file",
 				"set-credential",
-				"--ref", "codereview/future",
+				"--store", config.LocalOSCredentialStoreID,
+				"--name", "codereview/future",
 				"--key", credentials.GitTokenKey,
 				"--from-env", "CR_FUTURE_TOKEN",
 			},
@@ -335,12 +332,66 @@ profiles:
 }
 
 func TestSetCredentialExitCodeClasses(t *testing.T) {
-	t.Run("invalid backend flag", func(t *testing.T) {
+	t.Run("missing explicit destination", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			args []string
+			want string
+		}{
+			{
+				name: "store",
+				args: []string{"set-credential", "--name", "codereview/work", "--key", credentials.GitTokenKey, "--stdin"},
+				want: "--store is required",
+			},
+			{
+				name: "name",
+				args: []string{"set-credential", "--store", config.LocalOSCredentialStoreID, "--key", credentials.GitTokenKey, "--stdin"},
+				want: "--name is required",
+			},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), failReader{})
+				err := root.Execute(cmd, tt.args)
+				if got := exitcode.FromError(err); got != exitcode.UsageError {
+					t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+				}
+				if err == nil || !strings.Contains(err.Error(), tt.want) {
+					t.Fatalf("error = %v, want %q", err, tt.want)
+				}
+				if strings.Contains(err.Error(), "secret ingress was read") {
+					t.Fatalf("set-credential read secret ingress before rejecting missing destination: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("unknown store", func(t *testing.T) {
+		cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), failReader{})
+		err := root.Execute(cmd, []string{
+			"set-credential",
+			"--store", "missing-store",
+			"--name", "codereview/work",
+			"--key", credentials.GitTokenKey,
+			"--stdin",
+		})
+		if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+			t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.AuthConfigError, err)
+		}
+		if !errors.Is(err, config.ErrSecretsStoreNotFound) {
+			t.Fatalf("error = %v, want ErrSecretsStoreNotFound", err)
+		}
+		if strings.Contains(err.Error(), "secret ingress was read") {
+			t.Fatalf("set-credential read secret ingress before rejecting unknown store: %v", err)
+		}
+	})
+
+	t.Run("backend flag conflicts with credential store", func(t *testing.T) {
 		cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("token"))
 		err := root.Execute(cmd, []string{
 			"--backend", "bogus",
 			"set-credential",
-			"--ref", "codereview/work",
+			"--store", config.LocalOSCredentialStoreID,
+			"--name", "codereview/work",
 			"--key", credentials.GitTokenKey,
 			"--stdin",
 		})
@@ -352,9 +403,9 @@ func TestSetCredentialExitCodeClasses(t *testing.T) {
 	t.Run("disallowed key", func(t *testing.T) {
 		cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("token"))
 		err := root.Execute(cmd, []string{
-			"--backend", "memory",
 			"set-credential",
-			"--ref", "codereview/work",
+			"--store", config.LocalOSCredentialStoreID,
+			"--name", "codereview/work",
 			"--key", "bad_key",
 			"--stdin",
 		})
@@ -366,9 +417,9 @@ func TestSetCredentialExitCodeClasses(t *testing.T) {
 	t.Run("json error envelope", func(t *testing.T) {
 		cmd, out, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("token"))
 		err := root.Execute(cmd, []string{
-			"--backend", "memory",
 			"set-credential",
-			"--ref", "codereview/work",
+			"--store", config.LocalOSCredentialStoreID,
+			"--name", "codereview/work",
 			"--key", "bad_key",
 			"--stdin",
 			"--json",
@@ -380,7 +431,7 @@ func TestSetCredentialExitCodeClasses(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 			t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 		}
-		if got.Written || got.Error == "" || got.Ref != "codereview/work" || got.Key != "bad_key" {
+		if got.Written || got.Error == "" || got.Store != config.LocalOSCredentialStoreID || got.Name != "codereview/work" || got.Key != "bad_key" {
 			t.Fatalf("credential write JSON = %#v, want written=false error envelope", got)
 		}
 	})
@@ -388,9 +439,9 @@ func TestSetCredentialExitCodeClasses(t *testing.T) {
 	t.Run("wrong service ref", func(t *testing.T) {
 		cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("token"))
 		err := root.Execute(cmd, []string{
-			"--backend", "memory",
 			"set-credential",
-			"--ref", "other/work",
+			"--store", config.LocalOSCredentialStoreID,
+			"--name", "other/work",
 			"--key", credentials.GitTokenKey,
 			"--stdin",
 		})
@@ -402,11 +453,13 @@ func TestSetCredentialExitCodeClasses(t *testing.T) {
 	t.Run("file backend without passphrase", func(t *testing.T) {
 		t.Setenv("XDG_DATA_HOME", t.TempDir())
 		t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "")
-		cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("token"))
+		path := filepath.Join(t.TempDir(), "config.yml")
+		saveCredentialTestConfig(t, path, testFileCredentialStoreConfig("work"))
+		cmd, _, _ := newTestCommand(path, strings.NewReader("token"))
 		err := root.Execute(cmd, []string{
-			"--backend", "file",
 			"set-credential",
-			"--ref", "codereview/work",
+			"--store", testFileCredentialStoreID,
+			"--name", "codereview/work",
 			"--key", credentials.GitTokenKey,
 			"--stdin",
 		})
@@ -418,11 +471,13 @@ func TestSetCredentialExitCodeClasses(t *testing.T) {
 	t.Run("existing without overwrite", func(t *testing.T) {
 		hermeticFileBackend(t)
 		seedFileBackend(t, "work", credentials.GitTokenKey, "first")
-		cmd, _, _ := newTestCommand(filepath.Join(t.TempDir(), "config.yml"), strings.NewReader("second"))
+		path := filepath.Join(t.TempDir(), "config.yml")
+		saveCredentialTestConfig(t, path, testFileCredentialStoreConfig("work"))
+		cmd, _, _ := newTestCommand(path, strings.NewReader("second"))
 		err := root.Execute(cmd, []string{
-			"--backend", "file",
 			"set-credential",
-			"--ref", "codereview/work",
+			"--store", testFileCredentialStoreID,
+			"--name", "codereview/work",
 			"--key", credentials.GitTokenKey,
 			"--stdin",
 		})
@@ -1115,8 +1170,8 @@ func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	if cfg.Keyring.Backend != "" {
 		t.Fatalf("keyring.backend = %q, want empty runtime-only backend", cfg.Keyring.Backend)
 	}
-	if !strings.Contains(errOut.String(), "cr --backend memory set-credential") {
-		t.Fatalf("stderr = %q, want backend-preserving set-credential hint", errOut.String())
+	if !strings.Contains(errOut.String(), "cr set-credential --store local-os --name codereview/default --key git_token --stdin") {
+		t.Fatalf("stderr = %q, want explicit local-os set-credential hint", errOut.String())
 	}
 }
 
@@ -1142,8 +1197,8 @@ func TestInitReviewerConfigOnlyCarriesBackendIntoCredentialHint(t *testing.T) {
 	if reviewer == nil || reviewer.CredentialRef != "codereview/default-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want codereview/default-reviewer", reviewer)
 	}
-	if got := errOut.String(); !strings.Contains(got, "cr --backend file set-credential --ref codereview/default-reviewer --key git_token --stdin") {
-		t.Fatalf("stderr = %q, want backend-preserving reviewer set-credential hint", got)
+	if got := errOut.String(); !strings.Contains(got, "cr set-credential --store local-os --name codereview/default-reviewer --key git_token --stdin") {
+		t.Fatalf("stderr = %q, want explicit reviewer set-credential hint", got)
 	}
 	store := openFileStore(t)
 	defer store.Close()
@@ -1201,7 +1256,7 @@ func TestInitAPIKeyAuthWithExistingKeyDoesNotPrintLLMFollowUpHint(t *testing.T) 
 	if strings.Contains(out.String()+errOut.String(), "llm-token") {
 		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
 	}
-	if strings.Contains(errOut.String(), "--ref codereview/default-llm") {
+	if strings.Contains(errOut.String(), "--name codereview/default-llm") {
 		t.Fatalf("stderr = %q, want no llm follow-up hint when key already exists", errOut.String())
 	}
 }
@@ -1291,7 +1346,7 @@ func TestInitReplaceProfileRefOverwriteEmitsFollowUpHint(t *testing.T) {
 	if got.Profiles["work"].Git.CredentialRef != "codereview/rotated-git" {
 		t.Fatalf("git ref = %q, want rotated-git", got.Profiles["work"].Git.CredentialRef)
 	}
-	if !strings.Contains(errOut.String(), "set-credential --ref codereview/rotated-git --key git_token --stdin") {
+	if !strings.Contains(errOut.String(), "set-credential --store local-os --name codereview/rotated-git --key git_token --stdin") {
 		t.Fatalf("stderr = %q, want overwrite-ref follow-up hint", errOut.String())
 	}
 }
@@ -3991,7 +4046,7 @@ func TestWriteInitCredentialPlanHintsForDeferredGitHubAppUsesRequiredKeysOnly(t 
 	}
 	got := stderr.String()
 	for _, key := range []string{credentials.GitHubAppIDKey, credentials.GitHubAppPrivateKeyKey} {
-		if !strings.Contains(got, "cr set-credential --ref codereview/rianjs-bot --key "+key+" --stdin") {
+		if !strings.Contains(got, "cr set-credential --store local-os --name codereview/rianjs-bot --key "+key+" --stdin") {
 			t.Fatalf("stderr = %q, want required setup hint for %s", got, key)
 		}
 	}
@@ -7698,7 +7753,7 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if got := stderr.String(); !strings.Contains(got, "Next via Team Vault: cr set-credential --ref codereview/work --key "+credentials.GitTokenKey+" --stdin") {
+	if got := stderr.String(); !strings.Contains(got, "Next via Team Vault: cr set-credential --store team-vault --name codereview/work --key "+credentials.GitTokenKey+" --stdin") {
 		t.Fatalf("stderr = %q, want deferred hint naming the selected secrets-management profile", got)
 	}
 }
@@ -9090,10 +9145,10 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	if profile.LLM.ReviewerModelTier != config.ModelTierSmall {
 		t.Fatalf("reviewer_model_tier = %q, want small", profile.LLM.ReviewerModelTier)
 	}
-	if !strings.Contains(stderr.String(), "set-credential --ref codereview/custom-office-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
+	if !strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/custom-office-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
 		t.Fatalf("stderr = %q, want deferred llm follow-up hint", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "set-credential --ref codereview/office-git --key "+credentials.GitHubAppIDKey+" --stdin") {
+	if !strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/office-git --key "+credentials.GitHubAppIDKey+" --stdin") {
 		t.Fatalf("stderr = %q, want github app git follow-up hint", stderr.String())
 	}
 	if route := cfg.RepositoryProfiles[0]; route.Profile != "office" {
@@ -10918,12 +10973,12 @@ func TestInitInteractiveKeyringBackendPreserveSetResetAndConflict(t *testing.T) 
 			wantBackend: "memory",
 		},
 		{
-			name:        "reset runtime only backend keeps hint",
+			name:        "reset runtime only backend keeps explicit store hint",
 			existing:    "file",
 			edit:        initKeyringBackendEdit{Apply: true, Backend: ""},
 			runtime:     "memory",
 			wantBackend: "",
-			wantHint:    "--backend memory",
+			wantHint:    "cr set-credential --store local-os --name codereview/work-llm --key openai_api_key --stdin",
 		},
 		{
 			name:    "runtime conflict",
@@ -15858,7 +15913,7 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHint
 	if !strings.Contains(stdout.String(), "- work: ready") {
 		t.Fatalf("stdout = %q, want ready profile after inline reviewer credentials", stdout.String())
 	}
-	if strings.Contains(stdout.String(), "reviewer deferred") || strings.Contains(stderr.String(), "set-credential --ref codereview/rianjs-bot") {
+	if strings.Contains(stdout.String(), "reviewer deferred") || strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/rianjs-bot") {
 		t.Fatalf("stdout/stderr kept follow-up hint:\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
 	}
 }
@@ -15937,7 +15992,7 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndD
 	if _, ok := store.bundles["rianjs-bot"][credentials.GitHubAppInstallationIDKey]; ok {
 		t.Fatalf("installation id stored unexpectedly: %#v", store.bundles["rianjs-bot"])
 	}
-	if strings.Contains(stderr.String(), "set-credential --ref codereview/rianjs-bot") {
+	if strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/rianjs-bot") {
 		t.Fatalf("stderr = %q, want no follow-up hints after set-now reviewer flow", stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "- work: ready") {
@@ -16362,7 +16417,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 	if strings.Contains(out, "old-reviewer") {
 		t.Fatalf("output kept stale reviewer ref:\n%s", out)
 	}
-	if strings.Contains(out, "set-credential --ref codereview/new-reviewer") {
+	if strings.Contains(out, "set-credential --store local-os --name codereview/new-reviewer") {
 		t.Fatalf("output kept follow-up hint for inline reviewer ref:\n%s", out)
 	}
 	if _, ok := store.bundles["old-reviewer"]; ok {
@@ -17817,7 +17872,7 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 	if !strings.Contains(stdout.String(), "Saved staged init changes") || !strings.Contains(stdout.String(), "- review profiles: 2") || !strings.Contains(stdout.String(), "- home: needs follow-up") || !strings.Contains(stdout.String(), "- work: needs follow-up") {
 		t.Fatalf("stdout = %q, want readiness summary for both profiles", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "set-credential --ref codereview/home --key "+credentials.GitTokenKey) || !strings.Contains(stderr.String(), "set-credential --ref codereview/work --key "+credentials.GitTokenKey) {
+	if !strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/home --key "+credentials.GitTokenKey) || !strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/work --key "+credentials.GitTokenKey) {
 		t.Fatalf("stderr = %q, want follow-up hints for both deferred profiles", stderr.String())
 	}
 }
@@ -17903,7 +17958,7 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 	if !strings.Contains(stdout.String(), "Saved staged init changes") || !strings.Contains(stdout.String(), "- review profiles: 1") || !strings.Contains(stdout.String(), "- credential secrets: 1 ref") || !strings.Contains(stdout.String(), "- default: ready") {
 		t.Fatalf("stdout = %q, want ready summary for default profile", stdout.String())
 	}
-	if strings.Contains(stderr.String(), "set-credential --ref") {
+	if strings.Contains(stderr.String(), "set-credential --store") {
 		t.Fatalf("stderr = %q, want no follow-up credential hints after SetNow flow", stderr.String())
 	}
 }
@@ -18015,10 +18070,10 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 	if !strings.Contains(stdout.String(), "- home: ready") || !strings.Contains(stdout.String(), "- work: needs follow-up") {
 		t.Fatalf("stdout = %q, want mixed readiness summary", stdout.String())
 	}
-	if strings.Contains(stderr.String(), "set-credential --ref codereview/home --key "+credentials.GitTokenKey) {
+	if strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/home --key "+credentials.GitTokenKey) {
 		t.Fatalf("stderr = %q, want no follow-up hint for ready home profile", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "set-credential --ref codereview/work --key "+credentials.GitTokenKey) {
+	if !strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/work --key "+credentials.GitTokenKey) {
 		t.Fatalf("stderr = %q, want follow-up hint for deferred work profile", stderr.String())
 	}
 }
@@ -19609,7 +19664,7 @@ func TestInitInteractivePersistsExplicitBackendForDeferredLLM(t *testing.T) {
 	if strings.Contains(stderr.String(), "cr --backend file set-credential") {
 		t.Fatalf("stderr = %q, want persisted backend to drop explicit backend hint", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "cr set-credential --ref codereview/default-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
+	if !strings.Contains(stderr.String(), "cr set-credential --store local-os --name codereview/default-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
 		t.Fatalf("stderr = %q, want deferred llm follow-up hint without backend flag", stderr.String())
 	}
 }
@@ -19664,7 +19719,7 @@ func TestInitInteractiveCollectsClipboardGitSecretWithoutHint(t *testing.T) {
 	if strings.Contains(stdout.String()+stderr.String(), "clipboard-token") {
 		t.Fatalf("interactive init leaked secret: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
-	if strings.Contains(stderr.String(), "set-credential --ref codereview/default --key "+credentials.GitTokenKey) {
+	if strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/default --key "+credentials.GitTokenKey) {
 		t.Fatalf("stderr = %q, want no stale follow-up hint after collected secret", stderr.String())
 	}
 	if savedCfg.DefaultProfile != "default" {
@@ -19718,7 +19773,7 @@ func TestInitInteractiveDeferDoesNotRequireKeyringAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "set-credential --ref codereview/default --key "+credentials.GitTokenKey+" --stdin") {
+	if !strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/default --key "+credentials.GitTokenKey+" --stdin") {
 		t.Fatalf("stderr = %q, want deferred git follow-up hint", stderr.String())
 	}
 }
@@ -19824,7 +19879,7 @@ func TestInitInteractiveCanKeepExistingSecretsAfterInspectingTargetRef(t *testin
 	if got := store.bundles["default"][credentials.GitTokenKey]; got != "existing-token" {
 		t.Fatalf("stored git token = %q, want existing-token", got)
 	}
-	if strings.Contains(stderr.String(), "set-credential --ref codereview/default --key "+credentials.GitTokenKey) {
+	if strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/default --key "+credentials.GitTokenKey) {
 		t.Fatalf("stderr = %q, want no follow-up hint after keeping existing secret", stderr.String())
 	}
 }
@@ -19930,7 +19985,7 @@ func TestInitInteractiveCollectsProviderSpecificLLMKey(t *testing.T) {
 	if got := store.bundles["default-llm"][credentials.OpenAIAPIKeyKey]; got != "openai-key" {
 		t.Fatalf("openai api key = %q, want openai-key", got)
 	}
-	if strings.Contains(stderr.String(), "set-credential --ref codereview/default-llm --key "+credentials.OpenAIAPIKeyKey) {
+	if strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/default-llm --key "+credentials.OpenAIAPIKeyKey) {
 		t.Fatalf("stderr = %q, want no stale llm follow-up hint after collected key", stderr.String())
 	}
 }
@@ -20791,6 +20846,41 @@ func openFileStore(t *testing.T) *credstore.Store {
 		t.Fatalf("Open file backend: %v", err)
 	}
 	return store
+}
+
+const testFileCredentialStoreID = "test-file"
+
+func testFileSecretsConfig() config.SecretsConfig {
+	return config.SecretsConfig{
+		Stores: map[string]config.SecretsStore{
+			testFileCredentialStoreID: {
+				DisplayName: "Test File Store",
+				Backend: config.SecretsStoreBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendFile),
+				},
+			},
+		},
+	}
+}
+
+func testFileCredentialStoreConfig(profileName string) config.File {
+	profile := profileWithCredentialStore(basicProfile(profileName), testFileCredentialStoreID)
+	return config.File{
+		DefaultProfile: profileName,
+		Secrets:        testFileSecretsConfig(),
+		Profiles:       map[string]config.Profile{profileName: profile},
+	}
+}
+
+func profileWithCredentialStore(profile config.Profile, storeID string) config.Profile {
+	profile.Git.Credential.Store = storeID
+	if profile.ReviewerCredentials != nil {
+		profile.ReviewerCredentials.Credential.Store = storeID
+	}
+	if profile.LLM.Credential.Name != "" {
+		profile.LLM.Credential.Store = storeID
+	}
+	return profile
 }
 
 func basicProfile(profile string) config.Profile {

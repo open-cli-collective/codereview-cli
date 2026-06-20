@@ -692,7 +692,9 @@ func RenderConfigClearJSON(w io.Writer, result ConfigClear) error {
 
 // CredentialWrite is the JSON envelope for `cr set-credential`.
 type CredentialWrite struct {
-	Ref           string `json:"ref"`
+	Ref           string `json:"ref,omitempty"`
+	Store         string `json:"store,omitempty"`
+	Name          string `json:"name,omitempty"`
 	Key           string `json:"key"`
 	Backend       string `json:"backend,omitempty"`
 	BackendSource string `json:"backend_source,omitempty"`

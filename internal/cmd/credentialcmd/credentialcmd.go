@@ -39,6 +39,8 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 
 type setCredentialOptions struct {
 	ref       string
+	store     string
+	name      string
 	key       string
 	stdin     bool
 	fromEnv   string
@@ -49,8 +51,8 @@ type setCredentialOptions struct {
 func newSetCredentialCommand(opts *root.Options) *cobra.Command {
 	var flags setCredentialOptions
 	cmd := &cobra.Command{
-		Use:   "set-credential",
-		Short: "Write one secret value to cr's credential store",
+		Use:   "set-credential --store <id> --name <credential-name> --key <key>",
+		Short: "Write one secret value to a credential store",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				return exitcode.Usage(fmt.Errorf("set-credential takes no arguments"))
@@ -71,21 +73,30 @@ func newSetCredentialCommand(opts *root.Options) *cobra.Command {
 			return err
 		},
 	}
-	cmd.Flags().StringVar(&flags.ref, "ref", "", "Credential ref (<service>/<profile>)")
+	cmd.Flags().StringVar(&flags.store, "store", "", "Credential store id")
+	cmd.Flags().StringVar(&flags.name, "name", "", "Credential name (<service>/<profile>)")
 	cmd.Flags().StringVar(&flags.key, "key", "", "Credential key")
 	cmd.Flags().BoolVar(&flags.stdin, "stdin", false, "Read the secret value from stdin")
 	cmd.Flags().StringVar(&flags.fromEnv, "from-env", "", "Read the secret value from this environment variable")
 	cmd.Flags().BoolVar(&flags.overwrite, "overwrite", false, "Replace an existing credential")
 	cmd.Flags().BoolVar(&flags.json, "json", false, "Emit JSON")
+	cmd.Flags().StringVar(&flags.ref, "ref", "", "Deprecated compatibility flag; use --name")
+	_ = cmd.Flags().MarkHidden("ref")
 	return cmd
 }
 
 func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentialOptions) (view.CredentialWrite, error) {
-	result := view.CredentialWrite{Ref: flags.ref, Key: flags.key}
-	if flags.ref == "" {
-		return result, exitcode.Usage(fmt.Errorf("--ref is required"))
+	result := view.CredentialWrite{Store: flags.store, Name: flags.name, Key: flags.key}
+	if flags.ref != "" {
+		return result, exitcode.Usage(fmt.Errorf("--ref has been replaced by --name"))
 	}
-	parsed, err := credentials.ParseRef(flags.ref)
+	if flags.store == "" {
+		return result, exitcode.Usage(fmt.Errorf("--store is required"))
+	}
+	if flags.name == "" {
+		return result, exitcode.Usage(fmt.Errorf("--name is required"))
+	}
+	parsed, err := credentials.ParseRef(flags.name)
 	if err != nil {
 		return result, exitcode.Usage(err)
 	}
@@ -96,26 +107,23 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 	if err != nil {
 		return result, cmderr.Config(err)
 	}
-	if err := credentials.ValidateAllowedKeyForConfig(cfg, flags.ref, flags.key); err != nil {
+	if err := credentials.ValidateAllowedKeyForConfig(cfg, flags.name, flags.key); err != nil {
 		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrUnsupported) {
 			return result, cmderr.Config(err)
 		}
 		return result, exitcode.Usage(err)
 	}
 	backendFlagChanged := cmderr.BackendFlagChanged(cmd)
-	var resolvedSecretsProfile credentials.ResolvedSecretsProfile
-	var store *credstore.Store
-	if backendFlagChanged {
-		store, err = credentials.OpenStore(opts.Backend, true, cfg)
-	} else {
-		resolvedSecretsProfile, err = credentials.ResolveSecretsProfileForRef(cfg, flags.ref, opts.Profile)
-		if err != nil {
-			return result, exitcode.AuthConfig(err)
-		}
-		store, err = credentials.OpenResolvedStore(opts.Backend, false, cfg, resolvedSecretsProfile)
-	}
+	resolvedStore, err := credentials.ResolveCredentialStore(cfg, flags.store)
 	if err != nil {
-		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrSecretsStoreNotFound) {
+			return result, cmderr.Config(err)
+		}
+		return result, exitcode.AuthConfig(err)
+	}
+	store, err := credentials.OpenResolvedStore(opts.Backend, backendFlagChanged, cfg, resolvedStore)
+	if err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) || errors.Is(err, config.ErrSecretsStoreNotFound) {
 			return result, cmderr.Config(err)
 		}
 		return result, cmderr.Credential(err)
@@ -125,13 +133,9 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 	if err != nil {
 		return result, exitcode.Usage(err)
 	}
-	backend, source := store.Backend()
+	backend, _ := store.Backend()
 	result.Backend = string(backend)
-	if !backendFlagChanged && resolvedSecretsProfile.IsNamed() {
-		result.BackendSource = string(credentials.BackendSourceSecretsProfile)
-	} else {
-		result.BackendSource = string(source)
-	}
+	result.BackendSource = string(credentials.BackendSourceCredentialStore)
 	setOpts := []credstore.SetOpt{}
 	if flags.overwrite {
 		setOpts = append(setOpts, credstore.WithOverwrite())
@@ -141,7 +145,7 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 	}
 	result.Written = true
 	if !flags.json {
-		_, err = fmt.Fprintf(opts.Stderr, "wrote %s to %s via %s\n", flags.key, flags.ref, backend)
+		_, err = fmt.Fprintf(opts.Stderr, "wrote %s to %s in %s via %s\n", flags.key, flags.name, resolvedStore.DisplayName(), backend)
 	}
 	return result, err
 }
@@ -7009,8 +7013,15 @@ func writeInitCredentialPlanHints(w io.Writer, backendArg string, entry initCred
 	if hintLabel := initSecretsProfileHintLabel(entry.SecretsProfile); hintLabel != "" {
 		hintPrefix += hintLabel
 	}
+	storeID := strings.TrimSpace(entry.Ref.Store)
+	if storeID == "" {
+		storeID = strings.TrimSpace(entry.SecretsProfile.ID)
+	}
+	if storeID == "" {
+		storeID = config.LocalOSCredentialStoreID
+	}
 	for _, key := range keys {
-		if _, err := fmt.Fprintf(w, "%s: cr%s set-credential --ref %s --key %s --stdin\n", hintPrefix, backendArg, entry.Ref.Ref, key); err != nil {
+		if _, err := fmt.Fprintf(w, "%s: cr set-credential --store %s --name %s --key %s --stdin\n", hintPrefix, storeID, entry.Ref.Ref, key); err != nil {
 			return err
 		}
 	}
