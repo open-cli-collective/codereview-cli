@@ -158,7 +158,7 @@ func (m initMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch keyMsg.String() {
-	case "ctrl+c", "q", "esc":
+	case "q":
 		m.result = initMenuActionExit
 		m.quitting = true
 		return m, tea.Quit

@@ -12162,6 +12162,46 @@ func TestInitMenuQDiscardsAndExits(t *testing.T) {
 	}
 }
 
+func TestInitMenuDisabledRowsShowErrorWithoutQuitting(t *testing.T) {
+	tests := []struct {
+		action initMenuAction
+		reason string
+	}{
+		{
+			action: initMenuActionLLMRuntimes,
+			reason: "configure a review profile before editing LLM runtimes",
+		},
+		{
+			action: initMenuActionReviewerEntities,
+			reason: "configure a review profile before editing reviewer entities",
+		},
+		{
+			action: initMenuActionSave,
+			reason: "configure a review profile before committing changes",
+		},
+	}
+	for _, tt := range tests {
+		model := newInitMenuModel(initMenuPrompt{})
+		model.selected = initMenuSelectedIndex(model.items, tt.action)
+
+		next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		result := next.(initMenuModel)
+
+		if cmd != nil {
+			t.Fatalf("%s: cmd = %#v, want no quit command", tt.action, cmd)
+		}
+		if result.quitting || result.result != "" {
+			t.Fatalf("%s: result = %#v, want stay in menu without action", tt.action, result)
+		}
+		if !strings.Contains(result.err, tt.reason) {
+			t.Fatalf("%s: err = %q, want %q", tt.action, result.err, tt.reason)
+		}
+		if !strings.Contains(result.View(), "! "+tt.reason) {
+			t.Fatalf("%s: view missing rendered error:\n%s", tt.action, result.View())
+		}
+	}
+}
+
 func TestInitMenuUseAccessibleFallback(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	if !initMenuUseAccessibleFallback(os.Stdin, os.Stderr) {
