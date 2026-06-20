@@ -331,12 +331,23 @@ func initReviewerCredentialStatusDescription(status initReviewerCredentialStatus
 	if destination == "" {
 		destination = "Destination: " + initReviewerCredentialDestinationDescription(status)
 	}
-	lines = append(lines, strings.Split(destination, "\n")...)
+	for _, line := range strings.Split(destination, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "Change destination by ") {
+			continue
+		}
+		lines = append(lines, trimmed)
+	}
+	lines = append(lines, "This is a credential-store ref, not a PAT, GitHub App ID, private key, or installation ID.")
 	if strings.TrimSpace(status.Unavailable) != "" {
 		lines = append(lines, strings.TrimSpace(status.Unavailable)+".")
 	}
+	keyWidth := 0
 	for _, key := range status.Keys {
-		lines = append(lines, fmt.Sprintf("- %s: %s", key.Key, key.State))
+		keyWidth = max(keyWidth, len(key.Key))
+	}
+	for _, key := range status.Keys {
+		lines = append(lines, fmt.Sprintf("%-*s  %s", keyWidth, key.Key, key.State))
 	}
 	return strings.Join(lines, "\n")
 }

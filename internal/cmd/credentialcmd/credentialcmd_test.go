@@ -5129,8 +5129,11 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stderr:       &stderr,
-		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
+		stderr: &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, map[initLinearFieldID]string{
+			initReviewerEntityFieldGitHubAppID:         "12345",
+			initReviewerEntityFieldGitHubAppPrivateKey: testReviewerGitHubAppPrivateKey(),
+		}, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "custom-work-reviewer (PAT reviewer)\n")
 			return initInventoryResult{
@@ -6122,8 +6125,10 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stderr:       &stderr,
-		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
+		stderr: &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, map[initLinearFieldID]string{
+			initReviewerEntityFieldGitToken: "reviewer-pat",
+		}, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "Configure new personal access token (PAT) reviewer\n")
 			return initInventoryResult{
@@ -6169,8 +6174,11 @@ func TestHuhInitReviewerEntityPrompterNewTemplateDoesNotInheritCustomSecretLocat
 	}
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stderr:       &stderr,
-		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
+		stderr: &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, map[initLinearFieldID]string{
+			initReviewerEntityFieldGitHubAppID:         "12345",
+			initReviewerEntityFieldGitHubAppPrivateKey: testReviewerGitHubAppPrivateKey(),
+		}, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "Configure new GitHub App reviewer\n")
 			return initInventoryResult{
@@ -6404,6 +6412,8 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 160, 60)
 			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindPAT))
+			model.setFieldValue(initReviewerEntityFieldGitToken, "reviewer-pat")
+			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitToken))
 			model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
 			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
 			_, _ = io.WriteString(out, model.View())
@@ -6429,6 +6439,9 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) {
 		t.Fatalf("draft = %#v, want PAT reviewer", draft)
 	}
+	if got := draft.ReviewerCredentialWrites[credentials.GitTokenKey]; got != "reviewer-pat" {
+		t.Fatalf("staged reviewer PAT = %q, want inline token", got)
+	}
 	out := stderr.String()
 	for _, want := range []string{
 		"Reviewer entity",
@@ -6438,7 +6451,11 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 		"Entity label",
 		"Reviewer secret location",
 		"Reviewer credential status",
-		credentials.GitTokenKey + ": missing",
+		"This is a credential-store ref, not a PAT",
+		credentials.GitTokenKey,
+		"staged",
+		"Reviewer credential values",
+		"GitHub PAT",
 		"Reviewer action",
 		"Stage reviewer settings",
 	} {
@@ -6455,11 +6472,16 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 func TestHuhInitReviewerEntityPrompterGitHubAppLinearFlowShowsCredentialBundleCopy(t *testing.T) {
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
+	privateKey := testReviewerGitHubAppPrivateKey()
 	prompter := huhInitReviewerEntityPrompter{
 		stderr: &stderr,
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 160, 60)
 			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+			model.setFieldValue(initReviewerEntityFieldGitHubAppID, "12345")
+			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppID))
+			model.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, privateKey)
+			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
 			model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
 			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
 			_, _ = io.WriteString(out, model.View())
@@ -6485,26 +6507,386 @@ func TestHuhInitReviewerEntityPrompterGitHubAppLinearFlowShowsCredentialBundleCo
 	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModeGitHubApp) {
 		t.Fatalf("draft = %#v, want GitHub App reviewer", draft)
 	}
+	if got := draft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]; got != "12345" {
+		t.Fatalf("staged app id = %q, want inline app id", got)
+	}
+	if got := draft.ReviewerCredentialWrites[credentials.GitHubAppPrivateKeyKey]; got != privateKey {
+		t.Fatalf("staged private key = %q, want inline private key", got)
+	}
 	out := stderr.String()
 	for _, want := range []string{
 		"GitHub App reviewer. Required credential keys",
 		"Reviewer secret location",
-		"non-secret",
 		"credential-store ref",
+		"This is a credential-store ref, not a PAT",
 		"Reviewer credential status",
-		credentials.GitHubAppIDKey + ": missing",
-		credentials.GitHubAppPrivateKeyKey + ": missing",
-		credentials.GitHubAppInstallationIDKey + ":",
 		credentials.GitHubAppIDKey,
 		credentials.GitHubAppPrivateKeyKey,
+		credentials.GitHubAppInstallationIDKey,
+		"staged",
+		credentials.GitHubAppIDKey,
+		credentials.GitHubAppPrivateKeyKey,
+		"Reviewer credential values",
+		"GitHub App ID",
+		"GitHub App private key",
 		"Optional credential key: " + credentials.GitHubAppInstallationIDKey,
-		credentials.GitHubAppInstallationIDKey + " is optional",
+		"optional",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr missing %q:\n%s", want, out)
 		}
 	}
 	assertContentOrder(t, out, "Reviewer secret location", "Reviewer credential status", "Reviewer action")
+}
+
+func TestReviewerEntityLinearEditorNewLabelDerivesDefaultSecretLocation(t *testing.T) {
+	existing := basicProfile("work")
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+
+	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
+	labelIndex := model.document.fieldIndexByID(initReviewerEntityFieldLabel)
+	if labelIndex < 0 {
+		t.Fatal("label field missing")
+	}
+	model.afterFieldChange(labelIndex)
+
+	if got, want := model.document.fieldValue(initReviewerEntityFieldSecretLocation), "codereview/rianjs-bot-reviewer"; got != want {
+		t.Fatalf("secret location = %q, want label-derived %q", got, want)
+	}
+	status := model.document[model.document.fieldIndexByID(initReviewerEntityFieldCredentialStatus)].Description
+	if !strings.Contains(status, "Destination: codereview/rianjs-bot-reviewer") {
+		t.Fatalf("status = %q, want label-derived destination", status)
+	}
+	if !strings.Contains(status, credentials.GitHubAppIDKey) || !strings.Contains(status, string(initReviewerCredentialKeyMissing)) || strings.Contains(status, string(initReviewerCredentialKeyUnavailable)) {
+		t.Fatalf("status = %q, want label-derived ref to show missing required keys, not unavailable", status)
+	}
+}
+
+func TestReviewerEntityLinearEditorManualSecretLocationStopsLabelDerivedUpdates(t *testing.T) {
+	existing := basicProfile("work")
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindPAT))
+
+	model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/custom-reviewer")
+	locationIndex := model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation)
+	if locationIndex < 0 {
+		t.Fatal("secret location field missing")
+	}
+	model.afterFieldChange(locationIndex)
+
+	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
+	labelIndex := model.document.fieldIndexByID(initReviewerEntityFieldLabel)
+	if labelIndex < 0 {
+		t.Fatal("label field missing")
+	}
+	model.afterFieldChange(labelIndex)
+
+	if got, want := model.document.fieldValue(initReviewerEntityFieldSecretLocation), "codereview/custom-reviewer"; got != want {
+		t.Fatalf("secret location = %q, want manual override %q", got, want)
+	}
+}
+
+func TestReviewerEntityLinearEditorExistingReviewerLabelDoesNotMigrateRef(t *testing.T) {
+	profile := basicProfile("work")
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/existing-reviewer",
+		DisplayName:   "Old label",
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": profile},
+	}
+	entities, profileEntities := buildInitReviewerEntityInventory(cfg)
+	profileCopy := profile
+	ctx := initPromptContext{
+		RequestedProfileName:    "work",
+		ExistingProfileName:     "work",
+		DefaultProfileName:      "work",
+		ExistingProfile:         &profileCopy,
+		ExistingConfig:          cfg,
+		ReviewerEntities:        entities,
+		ProfileReviewerEntities: profileEntities,
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &profile)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+
+	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
+	labelIndex := model.document.fieldIndexByID(initReviewerEntityFieldLabel)
+	if labelIndex < 0 {
+		t.Fatal("label field missing")
+	}
+	model.afterFieldChange(labelIndex)
+
+	if got, want := model.document.fieldValue(initReviewerEntityFieldSecretLocation), "codereview/existing-reviewer"; got != want {
+		t.Fatalf("secret location = %q, want existing ref %q", got, want)
+	}
+}
+
+func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecrets(t *testing.T) {
+	profile := basicProfile("work")
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/existing-reviewer",
+		DisplayName:   "Existing reviewer",
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &profile)
+	state, err := newReviewerEntityEditorState(initReviewerEntityDraft{
+		Kind:          initReviewerEntityKindPAT,
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/existing-reviewer",
+		DisplayName:   "Existing reviewer",
+	}, seed, true)
+	if err != nil {
+		t.Fatalf("newReviewerEntityEditorState: %v", err)
+	}
+	model := newInitLinearEditorModel(state.editor(), 120, 40)
+	model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	unchanged, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if unchanged.resultAction != initDetailActionEdit {
+		t.Fatalf("unchanged existing ref resultAction = %q, want staged without re-entering secrets", unchanged.resultAction)
+	}
+
+	model = newInitLinearEditorModel(state.editor(), 120, 40)
+	model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/new-reviewer")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation))
+	model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	changed, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if changed.resultAction != "" {
+		t.Fatalf("changed ref resultAction = %q, want validation to block staging", changed.resultAction)
+	}
+	actionIndex := changed.document.fieldIndexByID(initReviewerEntityFieldAction)
+	if actionIndex < 0 {
+		t.Fatal("action field missing")
+	}
+	if got := changed.document[actionIndex].Error; !strings.Contains(got, credentials.GitTokenKey) {
+		t.Fatalf("changed ref action error = %q, want missing PAT credential", got)
+	}
+}
+
+func TestReviewerEntityLinearEditorGitHubAppRequiresInlineSecretsBeforeStaging(t *testing.T) {
+	existing := basicProfile("work")
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldLabel))
+	model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	blocked, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if blocked.resultAction != "" {
+		t.Fatalf("resultAction = %q, want validation to keep editor open", blocked.resultAction)
+	}
+	actionIndex := blocked.document.fieldIndexByID(initReviewerEntityFieldAction)
+	if actionIndex < 0 {
+		t.Fatal("action field missing")
+	}
+	if got := blocked.document[actionIndex].Error; !strings.Contains(got, credentials.GitHubAppIDKey) || !strings.Contains(got, credentials.GitHubAppPrivateKeyKey) {
+		t.Fatalf("action error = %q, want missing GitHub App required keys", got)
+	}
+
+	blocked.setFieldValue(initReviewerEntityFieldGitHubAppID, "12345")
+	blocked.afterFieldChange(blocked.document.fieldIndexByID(initReviewerEntityFieldGitHubAppID))
+	privateKey := strings.Join([]string{
+		"-----BEGIN PRIVATE KEY-----",
+		"abc123",
+		"-----END PRIVATE KEY-----",
+	}, "\n")
+	blocked.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, privateKey)
+	blocked.afterFieldChange(blocked.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
+	blocked = focusInitLinearField(t, blocked, initReviewerEntityFieldAction)
+	blocked = selectInitLinearFieldValue(t, blocked, initReviewerEntityFieldAction, initDetailActionEdit)
+
+	updated, _ = blocked.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	staged, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if staged.resultAction != initDetailActionEdit {
+		t.Fatalf("resultAction = %q, want staged reviewer settings", staged.resultAction)
+	}
+	draft, err := initReviewerEntityDraftFromDocument(ctx, seed, staged.document)
+	if err != nil {
+		t.Fatalf("initReviewerEntityDraftFromDocument: %v", err)
+	}
+	if got, want := draft.ReviewerCredentialWriteRef, "codereview/rianjs-bot-reviewer"; got != want {
+		t.Fatalf("ReviewerCredentialWriteRef = %q, want %q", got, want)
+	}
+	if got := draft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]; got != "12345" {
+		t.Fatalf("staged github_app_id = %q, want 12345", got)
+	}
+	if got := draft.ReviewerCredentialWrites[credentials.GitHubAppPrivateKeyKey]; got != privateKey {
+		t.Fatalf("staged private key = %q, want multiline key", got)
+	}
+	if _, ok := draft.ReviewerCredentialWrites[credentials.GitHubAppInstallationIDKey]; ok {
+		t.Fatalf("optional installation id staged unexpectedly: %#v", draft.ReviewerCredentialWrites)
+	}
+}
+
+func TestReviewerEntityLinearEditorLabelDerivedRefDoesNotMarkMissingStatusAsOverwrite(t *testing.T) {
+	existing := basicProfile("work")
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			Keys: []initReviewerCredentialKeyStatus{
+				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyMissing},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
+				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyOptional},
+			},
+		}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldLabel))
+	model.setFieldValue(initReviewerEntityFieldGitHubAppID, "12345")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppID))
+	model.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, testReviewerGitHubAppPrivateKey())
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
+
+	draft, err := initReviewerEntityDraftFromDocument(ctx, seed, model.document)
+	if err != nil {
+		t.Fatalf("initReviewerEntityDraftFromDocument: %v", err)
+	}
+	if got, want := draft.ReviewerCredentialWriteRef, "codereview/rianjs-bot-reviewer"; got != want {
+		t.Fatalf("ReviewerCredentialWriteRef = %q, want %q", got, want)
+	}
+	if draft.ReviewerCredentialOverwrite {
+		t.Fatalf("ReviewerCredentialOverwrite = true, want missing label-derived ref to preserve no-overwrite preflight")
+	}
+}
+
+func TestReviewerEntityLinearEditorManualRefDoesNotMarkUnavailableStatusAsOverwrite(t *testing.T) {
+	existing := basicProfile("work")
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			Keys: []initReviewerCredentialKeyStatus{
+				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyMissing},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
+				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyOptional},
+			},
+		}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+	model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/manual-reviewer")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation))
+	model.setFieldValue(initReviewerEntityFieldGitHubAppID, "12345")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppID))
+	model.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, testReviewerGitHubAppPrivateKey())
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
+
+	draft, err := initReviewerEntityDraftFromDocument(ctx, seed, model.document)
+	if err != nil {
+		t.Fatalf("initReviewerEntityDraftFromDocument: %v", err)
+	}
+	if got, want := draft.ReviewerCredentialWriteRef, "codereview/manual-reviewer"; got != want {
+		t.Fatalf("ReviewerCredentialWriteRef = %q, want %q", got, want)
+	}
+	if draft.ReviewerCredentialOverwrite {
+		t.Fatalf("ReviewerCredentialOverwrite = true, want unavailable manual ref to preserve no-overwrite preflight")
+	}
+}
+
+func TestReviewerEntityLinearEditorLabelDerivedRefPreservesBackendUnavailableStatus(t *testing.T) {
+	existing := basicProfile("work")
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		DefaultProfileName:   "work",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			Unavailable: "credential backend status unavailable",
+			Keys: []initReviewerCredentialKeyStatus{
+				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyUnavailable},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyUnavailable},
+				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyUnavailable},
+			},
+		}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldLabel))
+
+	status := model.document[model.document.fieldIndexByID(initReviewerEntityFieldCredentialStatus)].Description
+	if !strings.Contains(status, "Destination: codereview/rianjs-bot-reviewer") ||
+		!strings.Contains(status, "credential backend status unavailable") ||
+		!strings.Contains(status, string(initReviewerCredentialKeyUnavailable)) {
+		t.Fatalf("status = %q, want label-derived ref to preserve backend-unavailable state", status)
+	}
+	if strings.Contains(status, string(initReviewerCredentialKeyMissing)) {
+		t.Fatalf("status = %q, want unavailable instead of missing when backend status pass failed", status)
+	}
 }
 
 func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.T) {
@@ -6547,7 +6929,7 @@ func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.
 		t.Fatal("reviewer credential status field missing")
 	}
 	initial := model.document[statusIndex].Description
-	if !strings.Contains(initial, "codereview/old-reviewer") || !strings.Contains(initial, credentials.GitTokenKey+": existing") {
+	if !strings.Contains(initial, "codereview/old-reviewer") || !strings.Contains(initial, credentials.GitTokenKey) || !strings.Contains(initial, string(initReviewerCredentialKeyExisting)) {
 		t.Fatalf("initial status = %q, want old reviewer existing token", initial)
 	}
 
@@ -6559,12 +6941,12 @@ func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.
 	model.afterFieldChange(locationIndex)
 
 	updated := model.document[statusIndex].Description
-	for _, want := range []string{"Destination: codereview/new-reviewer", "credential backend status unavailable", credentials.GitTokenKey + ": status unavailable"} {
+	for _, want := range []string{"Destination: codereview/new-reviewer", "credential backend status unavailable", credentials.GitTokenKey, string(initReviewerCredentialKeyUnavailable)} {
 		if !strings.Contains(updated, want) {
 			t.Fatalf("updated status = %q, want %q", updated, want)
 		}
 	}
-	if strings.Contains(updated, "codereview/old-reviewer") || strings.Contains(updated, credentials.GitTokenKey+": existing") {
+	if strings.Contains(updated, "codereview/old-reviewer") || strings.Contains(updated, string(initReviewerCredentialKeyExisting)) {
 		t.Fatalf("updated status = %q, want old ref existing state cleared", updated)
 	}
 }
@@ -6598,9 +6980,13 @@ func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testi
 	t.Setenv("TERM", "dumb")
 	draft := seedInteractiveInitDraft("work", "work", "work", nil)
 	var stderr bytes.Buffer
+	privateKey := testReviewerGitHubAppPrivateKey()
 	prompter := huhInitReviewerEntityPrompter{
-		stderr:       &stderr,
-		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
+		stderr: &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, map[initLinearFieldID]string{
+			initReviewerEntityFieldGitHubAppID:         "12345",
+			initReviewerEntityFieldGitHubAppPrivateKey: privateKey,
+		}, ""),
 	}
 
 	nextDraft, back, err := prompter.editNewReviewerEntity(initReviewerEntityKindGitHubApp, draft)
@@ -6613,16 +6999,25 @@ func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testi
 	if !nextDraft.ReviewerEnabled || nextDraft.ReviewerAuth != string(config.GitAuthModeGitHubApp) {
 		t.Fatalf("draft = %#v, want GitHub App reviewer", nextDraft)
 	}
+	if got := nextDraft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]; got != "12345" {
+		t.Fatalf("staged app id = %q, want inline app id", got)
+	}
+	if got := nextDraft.ReviewerCredentialWrites[credentials.GitHubAppPrivateKeyKey]; got != privateKey {
+		t.Fatalf("staged private key = %q, want inline private key", got)
+	}
 	out := stderr.String()
 	for _, want := range []string{
 		"GitHub App reviewer. Required credential keys",
 		"Reviewer secret location",
-		"non-secret",
 		"credential-store ref",
+		"This is a credential-store ref, not a PAT",
+		"Reviewer credential values",
+		"GitHub App ID",
+		"GitHub App private key",
 		credentials.GitHubAppIDKey,
 		credentials.GitHubAppPrivateKeyKey,
 		"Optional credential key: " + credentials.GitHubAppInstallationIDKey,
-		credentials.GitHubAppInstallationIDKey + " is optional",
+		"optional",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr missing %q:\n%s", want, out)
@@ -9965,7 +10360,7 @@ func TestInitLinearEditorArrowKeysDoNotScrollFocusedInput(t *testing.T) {
 		document.addSection(fmt.Sprintf("Section %02d", i), "Context line")
 	}
 	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 5)
-	model.viewport.SetYOffset(1)
+	model.setYOffset(1)
 
 	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
 	if got := model.viewport.YOffset; got != 1 {
@@ -11199,6 +11594,26 @@ func TestInitLinearEditorAlignsFieldDescriptionsWithFieldTitles(t *testing.T) {
 	}
 	if strings.Contains(model.layout.Content, "\n  Input\n") || strings.Contains(model.layout.Content, "\n  Input description") {
 		t.Fatalf("layout content has stale field-title indentation:\n%s", model.layout.Content)
+	}
+}
+
+func TestInitLinearEditorPreservesExplicitDescriptionNewlines(t *testing.T) {
+	var document initLinearDocument
+	document.addSection("Status", "first status line\nsecond_key  missing\nthird_key   optional")
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 80, 12)
+
+	for _, want := range []string{
+		"first status line",
+		"second_key  missing",
+		"third_key   optional",
+	} {
+		if !strings.Contains(model.layout.Content, want) {
+			t.Fatalf("layout content missing %q:\n%s", want, model.layout.Content)
+		}
+	}
+	if strings.Contains(model.layout.Content, "first status line second_key") ||
+		strings.Contains(model.layout.Content, "second_key\nmissing") {
+		t.Fatalf("layout content collapsed or split explicit description lines:\n%s", model.layout.Content)
 	}
 }
 
@@ -12919,6 +13334,12 @@ func stageReviewerEntityEditorRunner(t *testing.T, edits map[initLinearFieldID]s
 		next, ok := updated.(initLinearEditorModel)
 		if !ok {
 			t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+		}
+		if action == initDetailActionEdit && next.resultAction == "" {
+			actionIndex := next.document.fieldIndexByID(initReviewerEntityFieldAction)
+			if actionIndex >= 0 && strings.TrimSpace(next.document[actionIndex].Error) != "" {
+				t.Fatalf("reviewer editor validation blocked staging: %s", next.document[actionIndex].Error)
+			}
 		}
 		return next, nil
 	}
@@ -14871,7 +15292,101 @@ func assertReviewerCredentialKeyAbsent(t *testing.T, status initReviewerCredenti
 	}
 }
 
-func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(t *testing.T) {
+func testReviewerGitHubAppPrivateKey() string {
+	return strings.Join([]string{
+		"-----BEGIN PRIVATE KEY-----",
+		"abc123",
+		"-----END PRIVATE KEY-----",
+	}, "\n")
+}
+
+func stageDraftInlineGitHubAppReviewerCredentials(draft *initDraft, ref string, appID string, privateKey string) {
+	draft.ReviewerCredentialWriteRef = ref
+	draft.ReviewerCredentialWrites = map[string]string{
+		credentials.GitHubAppIDKey:         appID,
+		credentials.GitHubAppPrivateKeyKey: privateKey,
+	}
+	draft.ReviewerCredentialSatisfied = true
+}
+
+func stageDraftInlinePATReviewerCredential(draft *initDraft, ref string, token string) {
+	draft.ReviewerCredentialWriteRef = ref
+	draft.ReviewerCredentialWrites = map[string]string{
+		credentials.GitTokenKey: token,
+	}
+	draft.ReviewerCredentialSatisfied = true
+}
+
+func TestMergeReviewerCredentialDraftWritesDropsStaleKeysWhenAuthModeChanges(t *testing.T) {
+	ref := "codereview/shared-reviewer"
+	privateKey := testReviewerGitHubAppPrivateKey()
+
+	t.Run("PAT to GitHub App", func(t *testing.T) {
+		session := initSessionDraft{}
+		patDraft := initDraft{ReviewerAuth: string(config.GitAuthModePAT)}
+		stageDraftInlinePATReviewerCredential(&patDraft, ref, "old-token")
+		patDraft.ReviewerCredentialOverwrite = true
+		session = mergeReviewerCredentialDraftWrites(session, patDraft)
+
+		appDraft := initDraft{ReviewerAuth: string(config.GitAuthModeGitHubApp)}
+		stageDraftInlineGitHubAppReviewerCredentials(&appDraft, ref, "12345", privateKey)
+		session = mergeReviewerCredentialDraftWrites(session, appDraft)
+
+		if _, ok := session.writes[ref][credentials.GitTokenKey]; ok {
+			t.Fatalf("writes[%q] kept stale PAT key: %#v", ref, session.writes[ref])
+		}
+		if got := session.writes[ref][credentials.GitHubAppIDKey]; got != "12345" {
+			t.Fatalf("github_app_id = %q, want current GitHub App staged value", got)
+		}
+		if got := session.writes[ref][credentials.GitHubAppPrivateKeyKey]; got != privateKey {
+			t.Fatalf("github_app_private_key = %q, want current GitHub App staged value", got)
+		}
+		if session.overwriteRefs[ref] {
+			t.Fatalf("overwriteRefs[%q] = true, want stale overwrite flag cleared", ref)
+		}
+
+		profile := basicProfile("work")
+		profile.ReviewerCredentials = &config.ReviewerCredentials{
+			AuthMode:      config.GitAuthModeGitHubApp,
+			CredentialRef: ref,
+		}
+		if _, err := planInitCredentialsWithConfig(config.File{Profiles: map[string]config.Profile{"work": profile}}, nil, profile, projectInitPlannedWriteKeys(session.writes)); err != nil {
+			t.Fatalf("planInitCredentialsWithConfig: %v", err)
+		}
+	})
+
+	t.Run("GitHub App to PAT", func(t *testing.T) {
+		session := initSessionDraft{}
+		appDraft := initDraft{ReviewerAuth: string(config.GitAuthModeGitHubApp)}
+		stageDraftInlineGitHubAppReviewerCredentials(&appDraft, ref, "12345", privateKey)
+		session = mergeReviewerCredentialDraftWrites(session, appDraft)
+
+		patDraft := initDraft{ReviewerAuth: string(config.GitAuthModePAT)}
+		stageDraftInlinePATReviewerCredential(&patDraft, ref, "new-token")
+		session = mergeReviewerCredentialDraftWrites(session, patDraft)
+
+		if _, ok := session.writes[ref][credentials.GitHubAppIDKey]; ok {
+			t.Fatalf("writes[%q] kept stale GitHub App key: %#v", ref, session.writes[ref])
+		}
+		if _, ok := session.writes[ref][credentials.GitHubAppPrivateKeyKey]; ok {
+			t.Fatalf("writes[%q] kept stale GitHub App private key: %#v", ref, session.writes[ref])
+		}
+		if got := session.writes[ref][credentials.GitTokenKey]; got != "new-token" {
+			t.Fatalf("git_token = %q, want current PAT staged value", got)
+		}
+
+		profile := basicProfile("work")
+		profile.ReviewerCredentials = &config.ReviewerCredentials{
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: ref,
+		}
+		if _, err := planInitCredentialsWithConfig(config.File{Profiles: map[string]config.Profile{"work": profile}}, nil, profile, projectInitPlannedWriteKeys(session.writes)); err != nil {
+			t.Fatalf("planInitCredentialsWithConfig: %v", err)
+		}
+	})
+}
+
+func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHints(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
 		DefaultProfile: "work",
@@ -14893,6 +15408,7 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(
 	saveCredentialTestConfig(t, path, cfg)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	privateKey := testReviewerGitHubAppPrivateKey()
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
@@ -14900,6 +15416,12 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(
 		ConfigPath: path,
 	}
 	reviewerPrompterCalls := 0
+	secretPrompter := &fakeInitSecretPrompter{}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {
+			credentials.GitTokenKey: "existing-token",
+		},
+	})
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -14920,17 +15442,12 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
 			draft.ReviewerDisplayName = "rianjs-bot"
+			stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "12345", privateKey)
 			return draft, nil
 		}),
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
-		},
+		secretPrompter: secretPrompter,
 		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"work": {
-					credentials.GitTokenKey: "existing-token",
-				},
-			}), nil
+			return store, nil
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -14953,33 +15470,27 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerDeferEmitsReadinessAndHints(
 		profile.ReviewerCredentials.DisplayName != "rianjs-bot" {
 		t.Fatalf("reviewer credentials = %#v, want rianjs-bot GitHub App reviewer", profile.ReviewerCredentials)
 	}
-	out := stdout.String()
-	for _, want := range []string{
-		"Saved staged init changes",
-		"- work: needs follow-up",
-		"reviewer deferred",
-		"required: " + credentials.GitHubAppIDKey + ", " + credentials.GitHubAppPrivateKeyKey,
-		"optional: " + credentials.GitHubAppInstallationIDKey,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("stdout = %q, want %q", out, want)
-		}
+	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
+		t.Fatalf("secret prompts = actions:%d sources:%d, want inline reviewer credential collection only", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
 	}
-	errOut := stderr.String()
-	for _, want := range []string{
-		"Next: cr set-credential --ref codereview/rianjs-bot --key " + credentials.GitHubAppIDKey + " --stdin",
-		"Next: cr set-credential --ref codereview/rianjs-bot --key " + credentials.GitHubAppPrivateKeyKey + " --stdin",
-	} {
-		if !strings.Contains(errOut, want) {
-			t.Fatalf("stderr = %q, want %q", errOut, want)
-		}
+	if got := store.bundles["rianjs-bot"][credentials.GitHubAppIDKey]; got != "12345" {
+		t.Fatalf("stored app id = %q, want staged inline value", got)
 	}
-	if strings.Contains(errOut, " --key "+credentials.GitHubAppInstallationIDKey+" ") {
-		t.Fatalf("stderr = %q, want optional installation id omitted from required follow-up commands", errOut)
+	if got := store.bundles["rianjs-bot"][credentials.GitHubAppPrivateKeyKey]; got != privateKey {
+		t.Fatalf("stored private key = %q, want staged inline private key", got)
+	}
+	if _, ok := store.bundles["rianjs-bot"][credentials.GitHubAppInstallationIDKey]; ok {
+		t.Fatalf("installation id stored unexpectedly: %#v", store.bundles["rianjs-bot"])
+	}
+	if !strings.Contains(stdout.String(), "- work: ready") {
+		t.Fatalf("stdout = %q, want ready profile after inline reviewer credentials", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "reviewer deferred") || strings.Contains(stderr.String(), "set-credential --ref codereview/rianjs-bot") {
+		t.Fatalf("stdout/stderr kept follow-up hint:\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
 	}
 }
 
-func TestInitInteractiveMenuFocusedGitHubAppReviewerSetNowPromptsBeforeCommitAndDoesNotRepeat(t *testing.T) {
+func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndDoesNotRepeat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
 		DefaultProfile: "work",
@@ -15002,24 +15513,8 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerSetNowPromptsBeforeCommitAnd
 			initMenuActionSave,
 		},
 	}
-	privateKey := strings.Join([]string{
-		"-----BEGIN PRIVATE KEY-----",
-		"abc123",
-		"-----END PRIVATE KEY-----",
-	}, "\n")
-	var actionMenuPromptCounts []int
-	secretPrompter := &fakeInitSecretPrompter{
-		actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
-		sources: []initSecretSource{
-			initSecretSourcePaste,
-			initSecretSourcePaste,
-			initSecretSourceSkip,
-		},
-		pastes: []string{"12345", privateKey},
-		onAction: func(initCredentialSecretPrompt) {
-			actionMenuPromptCounts = append(actionMenuPromptCounts, len(menu.prompts))
-		},
-	}
+	privateKey := testReviewerGitHubAppPrivateKey()
+	secretPrompter := &fakeInitSecretPrompter{}
 	store := newFakeInitStore(map[string]map[string]string{
 		"work": {credentials.GitTokenKey: "existing-token"},
 	})
@@ -15039,6 +15534,7 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerSetNowPromptsBeforeCommitAnd
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
 			draft.ReviewerDisplayName = "rianjs-bot"
+			stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "12345", privateKey)
 			return draft, nil
 		}),
 		secretPrompter: secretPrompter,
@@ -15053,23 +15549,11 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerSetNowPromptsBeforeCommitAnd
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if !reflect.DeepEqual(actionMenuPromptCounts, []int{1}) {
-		t.Fatalf("action prompt menu counts = %#v, want prompt after reviewer menu action and before commit", actionMenuPromptCounts)
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %d, want reviewer menu then save", len(menu.prompts))
 	}
-	if len(secretPrompter.actionPrompts) != 1 {
-		t.Fatalf("action prompts = %d, want reviewer credential prompt once", len(secretPrompter.actionPrompts))
-	}
-	actionPrompt := secretPrompter.actionPrompts[0]
-	if actionPrompt.Entry.Ref.Purpose != "reviewer_credentials" || actionPrompt.Entry.Ref.Mode != string(config.GitAuthModeGitHubApp) {
-		t.Fatalf("action prompt ref = %#v, want GitHub App reviewer credentials", actionPrompt.Entry.Ref)
-	}
-	gotKeys := make([]string, 0, len(secretPrompter.sourcePrompts))
-	for _, prompt := range secretPrompter.sourcePrompts {
-		gotKeys = append(gotKeys, prompt.Key)
-	}
-	wantKeys := []string{credentials.GitHubAppIDKey, credentials.GitHubAppPrivateKeyKey, credentials.GitHubAppInstallationIDKey}
-	if !reflect.DeepEqual(gotKeys, wantKeys) {
-		t.Fatalf("source prompt keys = %#v, want %#v", gotKeys, wantKeys)
+	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
+		t.Fatalf("secret prompts = actions:%d sources:%d, want no separate reviewer credential prompt", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
 	}
 	if got := store.bundles["rianjs-bot"][credentials.GitHubAppIDKey]; got != "12345" {
 		t.Fatalf("stored app id = %q, want staged value written at commit", got)
@@ -15088,6 +15572,176 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerSetNowPromptsBeforeCommitAnd
 	}
 }
 
+func TestInitInteractiveMenuLabelDerivedReviewerRefDoesNotOverwriteUnconfiguredExistingBundle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+		"rianjs-bot-reviewer": {
+			credentials.GitHubAppIDKey:         "existing-app-id",
+			credentials.GitHubAppPrivateKeyKey: "existing-private-key",
+		},
+	})
+	privateKey := testReviewerGitHubAppPrivateKey()
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			model := newInitLinearEditorModel(initReviewerEntityLinearEditor(prompt.Context, seed), 160, 60)
+			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+			model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
+			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldLabel))
+			model.setFieldValue(initReviewerEntityFieldGitHubAppID, "12345")
+			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppID))
+			model.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, privateKey)
+			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
+			model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			if next.resultAction != initDetailActionEdit {
+				t.Fatalf("resultAction = %q, want staged reviewer settings; action error = %q", next.resultAction, next.document[next.document.fieldIndexByID(initReviewerEntityFieldAction)].Error)
+			}
+			return initReviewerEntityDraftFromDocument(prompt.Context, seed, next.document)
+		}),
+		secretPrompter: &fakeInitSecretPrompter{},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite existing label-derived reviewer bundle conflict")
+			return nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err == nil || !strings.Contains(err.Error(), credstore.ErrExists.Error()) {
+		t.Fatalf("runInitWithDeps error = %v, want no-overwrite conflict", err)
+	}
+	if got := store.bundles["rianjs-bot-reviewer"][credentials.GitHubAppIDKey]; got != "existing-app-id" {
+		t.Fatalf("stored github_app_id = %q, want existing value preserved after conflict", got)
+	}
+	if got := store.bundles["rianjs-bot-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != "existing-private-key" {
+		t.Fatalf("stored private key = %q, want existing value preserved after conflict", got)
+	}
+	if strings.Contains(stdout.String(), "Saved staged init changes") {
+		t.Fatalf("stdout = %q, want save blocked by no-overwrite conflict", stdout.String())
+	}
+}
+
+func TestInitInteractiveMenuManualReviewerRefDoesNotOverwriteUnconfiguredExistingBundle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles: map[string]config.Profile{
+			"work": basicProfile("work"),
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		ConfigPath: path,
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+		"manual-reviewer": {
+			credentials.GitHubAppIDKey:         "existing-app-id",
+			credentials.GitHubAppPrivateKeyKey: "existing-private-key",
+		},
+	})
+	privateKey := testReviewerGitHubAppPrivateKey()
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionReviewerEntities,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+			seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			model := newInitLinearEditorModel(initReviewerEntityLinearEditor(prompt.Context, seed), 160, 60)
+			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+			model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/manual-reviewer")
+			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation))
+			model.setFieldValue(initReviewerEntityFieldGitHubAppID, "12345")
+			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppID))
+			model.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, privateKey)
+			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
+			model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			if next.resultAction != initDetailActionEdit {
+				t.Fatalf("resultAction = %q, want staged reviewer settings; action error = %q", next.resultAction, next.document[next.document.fieldIndexByID(initReviewerEntityFieldAction)].Error)
+			}
+			return initReviewerEntityDraftFromDocument(prompt.Context, seed, next.document)
+		}),
+		secretPrompter: &fakeInitSecretPrompter{},
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: func(string, config.File) error {
+			t.Fatal("saveConfig called despite existing manual reviewer bundle conflict")
+			return nil
+		},
+	}
+
+	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	if err == nil || !strings.Contains(err.Error(), credstore.ErrExists.Error()) {
+		t.Fatalf("runInitWithDeps error = %v, want no-overwrite conflict", err)
+	}
+	if got := store.bundles["manual-reviewer"][credentials.GitHubAppIDKey]; got != "existing-app-id" {
+		t.Fatalf("stored github_app_id = %q, want existing value preserved after conflict", got)
+	}
+	if got := store.bundles["manual-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != "existing-private-key" {
+		t.Fatalf("stored private key = %q, want existing value preserved after conflict", got)
+	}
+	if strings.Contains(stdout.String(), "Saved staged init changes") {
+		t.Fatalf("stdout = %q, want save blocked by no-overwrite conflict", stdout.String())
+	}
+}
+
 func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
@@ -15102,11 +15756,7 @@ func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.
 		Stderr:     &stderr,
 		ConfigPath: path,
 	}
-	secretPrompter := &fakeInitSecretPrompter{
-		actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
-		sources: []initSecretSource{initSecretSourcePaste},
-		pastes:  []string{"reviewer-pat"},
-	}
+	secretPrompter := &fakeInitSecretPrompter{}
 	store := newFakeInitStore(map[string]map[string]string{
 		"work": {credentials.GitTokenKey: "existing-token"},
 	})
@@ -15125,6 +15775,7 @@ func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModePAT)
 			draft.ReviewerCredentialRef = "codereview/work-reviewer"
+			stageDraftInlinePATReviewerCredential(&draft, draft.ReviewerCredentialRef, "reviewer-pat")
 			return draft, nil
 		}),
 		secretPrompter: secretPrompter,
@@ -15139,22 +15790,8 @@ func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if len(secretPrompter.actionPrompts) != 1 {
-		t.Fatalf("action prompts = %d, want one PAT reviewer prompt", len(secretPrompter.actionPrompts))
-	}
-	prompt := secretPrompter.actionPrompts[0]
-	if prompt.Entry.Ref.Purpose != "reviewer_credentials" || prompt.Entry.Ref.Mode != string(config.GitAuthModePAT) {
-		t.Fatalf("prompt ref = %#v, want PAT reviewer", prompt.Entry.Ref)
-	}
-	if len(secretPrompter.sourcePrompts) != 1 {
-		t.Fatalf("source prompts = %d, want exactly one reviewer PAT key prompt", len(secretPrompter.sourcePrompts))
-	}
-	sourcePrompt := secretPrompter.sourcePrompts[0]
-	if sourcePrompt.Key != credentials.GitTokenKey || sourcePrompt.Optional {
-		t.Fatalf("source prompt = %#v, want required reviewer git_token", sourcePrompt)
-	}
-	if got := initSecretSourcePromptTitle(sourcePrompt); got != "How should init get git_token?" {
-		t.Fatalf("source prompt title = %q, want reviewer git_token prompt", got)
+	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
+		t.Fatalf("secret prompts = actions:%d sources:%d, want no separate reviewer PAT prompt", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
 	}
 	if got := store.bundles["work-reviewer"][credentials.GitTokenKey]; got != "reviewer-pat" {
 		t.Fatalf("stored reviewer PAT = %q, want staged value written at commit", got)
@@ -15222,8 +15859,15 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 		ConfigPath: path,
 	}
 	reviewerPrompterCalls := 0
-	secretPrompter := &fakeInitSecretPrompter{
-		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	secretPrompter := &fakeInitSecretPrompter{}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+	})
+	store.setBundleFunc = func(profile string, kv map[string]string, opts ...credstore.SetOpt) (credstore.Result, error) {
+		if profile == "rianjs-bot" {
+			t.Fatalf("SetBundle called for stale reviewer ref with %#v", kv)
+		}
+		return credstore.Result{}, nil
 	}
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
@@ -15244,6 +15888,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 				draft.ReviewerEnabled = true
 				draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 				draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "12345", testReviewerGitHubAppPrivateKey())
 			case 2:
 				draft.ReviewerEnabled = false
 			default:
@@ -15253,9 +15898,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 		}),
 		secretPrompter: secretPrompter,
 		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"work": {credentials.GitTokenKey: "existing-token"},
-			}), nil
+			return store, nil
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -15265,8 +15908,8 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if len(secretPrompter.actionPrompts) != 1 {
-		t.Fatalf("action prompts = %d, want only initial deferred reviewer prompt", len(secretPrompter.actionPrompts))
+	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
+		t.Fatalf("secret prompts = actions:%d sources:%d, want no separate reviewer credential prompt", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
 	}
 	if strings.Contains(stdout.String(), "reviewer deferred") || strings.Contains(stderr.String(), "rianjs-bot") {
 		t.Fatalf("stdout/stderr kept stale reviewer decision:\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
@@ -15295,12 +15938,10 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 		ConfigPath: path,
 	}
 	reviewerPrompterCalls := 0
-	secretPrompter := &fakeInitSecretPrompter{
-		actions: []initCredentialSecretAction{
-			initCredentialSecretActionDefer,
-			initCredentialSecretActionDefer,
-		},
-	}
+	secretPrompter := &fakeInitSecretPrompter{}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "existing-token"},
+	})
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
@@ -15320,8 +15961,10 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 			switch reviewerPrompterCalls {
 			case 1:
 				draft.ReviewerCredentialRef = "codereview/old-reviewer"
+				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "old-app-id", testReviewerGitHubAppPrivateKey())
 			case 2:
 				draft.ReviewerCredentialRef = "codereview/new-reviewer"
+				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "new-app-id", testReviewerGitHubAppPrivateKey())
 			default:
 				return initDraft{}, errInitNavigateBack
 			}
@@ -15329,9 +15972,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 		}),
 		secretPrompter: secretPrompter,
 		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"work": {credentials.GitTokenKey: "existing-token"},
-			}), nil
+			return store, nil
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
@@ -15341,15 +15982,21 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if len(secretPrompter.actionPrompts) != 2 {
-		t.Fatalf("action prompts = %d, want old and new reviewer prompts", len(secretPrompter.actionPrompts))
+	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
+		t.Fatalf("secret prompts = actions:%d sources:%d, want no separate reviewer credential prompt", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
 	}
 	out := stdout.String() + "\n" + stderr.String()
 	if strings.Contains(out, "old-reviewer") {
 		t.Fatalf("output kept stale reviewer ref:\n%s", out)
 	}
-	if !strings.Contains(out, "codereview/new-reviewer") {
-		t.Fatalf("output = %q, want follow-up hint for new reviewer ref", out)
+	if strings.Contains(out, "set-credential --ref codereview/new-reviewer") {
+		t.Fatalf("output kept follow-up hint for inline reviewer ref:\n%s", out)
+	}
+	if _, ok := store.bundles["old-reviewer"]; ok {
+		t.Fatalf("old reviewer bundle = %#v, want stale inline write filtered", store.bundles["old-reviewer"])
+	}
+	if got := store.bundles["new-reviewer"][credentials.GitHubAppIDKey]; got != "new-app-id" {
+		t.Fatalf("new reviewer app id = %q, want active inline write", got)
 	}
 	got, err := config.Load(path)
 	if err != nil {
@@ -15392,17 +16039,10 @@ func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+			stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "sentinel-app-id", "sentinel-private-key")
 			return draft, nil
 		}),
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
-			sources: []initSecretSource{
-				initSecretSourcePaste,
-				initSecretSourcePaste,
-				initSecretSourceSkip,
-			},
-			pastes: []string{"sentinel-app-id", "sentinel-private-key"},
-		},
+		secretPrompter: &fakeInitSecretPrompter{},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return store, nil
 		},
@@ -15437,17 +16077,16 @@ func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials
 	}
 }
 
-func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDiscardsPartialSecretWrites(t *testing.T) {
+func TestInitInteractiveMenuReviewerBackWithoutStagingDiscardsInlineSecretWrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
 		DefaultProfile: "work",
 		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
 	}
 	saveCredentialTestConfig(t, path, cfg)
-	var stdout bytes.Buffer
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
-		Stdout:     &stdout,
+		Stdout:     &bytes.Buffer{},
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
@@ -15462,32 +16101,13 @@ func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDiscardsPartialSec
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
 				initMenuActionReviewerEntities,
-				initMenuActionSave,
+				initMenuActionExit,
 			},
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
-			return initFinalizeActionSave, nil
-		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
-			draft.ReviewerEnabled = true
-			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
-			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
-			return draft, nil
+			return initDraft{}, errInitNavigateBack
 		}),
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{
-				initCredentialSecretActionSetNow,
-				initCredentialSecretActionBack,
-				initCredentialSecretActionDefer,
-			},
-			sources: []initSecretSource{
-				initSecretSourcePaste,
-				initSecretSourcePaste,
-				initSecretSourceBack,
-			},
-			pastes: []string{"sentinel-app-id", "sentinel-private-key"},
-		},
+		secretPrompter: &fakeInitSecretPrompter{},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return store, nil
 		},
@@ -15503,9 +16123,8 @@ func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDiscardsPartialSec
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	reviewer := got.Profiles["work"].ReviewerCredentials
-	if reviewer == nil || reviewer.CredentialRef != "codereview/rianjs-bot" {
-		t.Fatalf("reviewer credentials after secret-step back = %#v, want staged reviewer saved after final defer", reviewer)
+	if got.Profiles["work"].ReviewerCredentials != nil {
+		t.Fatalf("reviewer credentials after back = %#v, want original nil reviewer", got.Profiles["work"].ReviewerCredentials)
 	}
 	// #nosec G304 -- path is a test-controlled temporary config file.
 	raw, err := os.ReadFile(path)
@@ -15516,10 +16135,7 @@ func TestInitInteractiveMenuReviewerSetNowBackDuringSecretStepDiscardsPartialSec
 		t.Fatalf("config after secret-step back contains partial secret values:\n%s", string(raw))
 	}
 	if _, ok := store.bundles["rianjs-bot"]; ok {
-		t.Fatalf("reviewer bundle = %#v, want no credential write after secret-step back", store.bundles["rianjs-bot"])
-	}
-	if !strings.Contains(stdout.String(), "reviewer deferred") {
-		t.Fatalf("stdout = %q, want final defer hint after backing out of focused secret step", stdout.String())
+		t.Fatalf("reviewer bundle = %#v, want no credential write after back without staging", store.bundles["rianjs-bot"])
 	}
 }
 
@@ -15559,6 +16175,7 @@ func TestInitInteractiveMenuReviewerCredentialStatusShowsStagedOnReentry(t *test
 				draft.ReviewerEnabled = true
 				draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 				draft.ReviewerCredentialRef = "codereview/rianjs-bot"
+				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "sentinel-app-id", "sentinel-private-key")
 				return draft, nil
 			case 2:
 				if len(prompt.Context.ReviewerCredentialStatuses) == 0 {
@@ -15567,7 +16184,7 @@ func TestInitInteractiveMenuReviewerCredentialStatusShowsStagedOnReentry(t *test
 				status := findReviewerCredentialStatusForTest(t, prompt.Context.ReviewerCredentialStatuses, "codereview/rianjs-bot", string(config.GitAuthModeGitHubApp))
 				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppIDKey, initReviewerCredentialKeyStaged)
 				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyStaged)
-				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppInstallationIDKey, initReviewerCredentialKeySkippedOptional)
+				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppInstallationIDKey, initReviewerCredentialKeyOptional)
 				description := initReviewerCredentialStatusDescription(status)
 				if strings.Contains(description, "sentinel") {
 					t.Fatalf("status leaked secret value: %s", description)
@@ -15577,15 +16194,7 @@ func TestInitInteractiveMenuReviewerCredentialStatusShowsStagedOnReentry(t *test
 				return initDraft{}, errInitNavigateBack
 			}
 		}),
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
-			sources: []initSecretSource{
-				initSecretSourcePaste,
-				initSecretSourcePaste,
-				initSecretSourceSkip,
-			},
-			pastes: []string{"sentinel-app-id", "sentinel-private-key"},
-		},
+		secretPrompter: &fakeInitSecretPrompter{},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return store, nil
 		},

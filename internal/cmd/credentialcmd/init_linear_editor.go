@@ -3,6 +3,7 @@ package credentialcmd
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -81,12 +82,15 @@ type initLinearField struct {
 	Focusable   bool
 	Editable    bool
 	Hidden      bool
+	Secret      bool
+	AutoManaged bool
 	Error       string
 	Validate    func(string) error
 }
 
 type initLinearFieldOptions struct {
 	Hidden bool
+	Secret bool
 }
 
 type initLinearOption struct {
@@ -190,10 +194,10 @@ func (m initLinearEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ensureFocusedVisible()
 			return m, nil
 		case "pgup", "b":
-			m.viewport.HalfPageUp()
+			m.setYOffset(m.viewport.YOffset - max(m.viewport.Height/2, 1))
 			return m, nil
 		case "pgdown", "f", " ":
-			m.viewport.HalfPageDown()
+			m.setYOffset(m.viewport.YOffset + max(m.viewport.Height/2, 1))
 			return m, nil
 		case "up", "down", "j", "k":
 			// Up/Down only changes the focused select. Inputs should not leak
@@ -211,9 +215,7 @@ func (m initLinearEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	var cmd tea.Cmd
-	m.viewport, cmd = m.viewport.Update(msg)
-	return m, cmd
+	return m, nil
 }
 
 func (m initLinearEditorModel) View() string {
@@ -264,8 +266,18 @@ func (d *initLinearDocument) addEditableInput(id initLinearFieldID, title, descr
 	d.addInputField(initLinearFieldInput, id, title, description, value, true, validate, mergedInitLinearFieldOptions(options))
 }
 
+func (d *initLinearDocument) addEditableSecretInput(id initLinearFieldID, title, description, value string, validate func(string) error, options ...initLinearFieldOptions) {
+	merged := mergedInitLinearFieldOptions(options)
+	merged.Secret = true
+	d.addInputField(initLinearFieldInput, id, title, description, value, true, validate, merged)
+}
+
 func (d *initLinearDocument) addEditableTextarea(id initLinearFieldID, title, description, value string) {
 	d.addInputField(initLinearFieldTextarea, id, title, description, value, true, nil, initLinearFieldOptions{})
+}
+
+func (d *initLinearDocument) addEditableSecretTextarea(id initLinearFieldID, title, description, value string) {
+	d.addInputField(initLinearFieldTextarea, id, title, description, value, true, nil, initLinearFieldOptions{Secret: true})
 }
 
 func (d *initLinearDocument) addInputField(kind initLinearFieldKind, id initLinearFieldID, title, description, value string, editable bool, validate func(string) error, options initLinearFieldOptions) {
@@ -279,6 +291,7 @@ func (d *initLinearDocument) addInputField(kind initLinearFieldKind, id initLine
 		Focusable:   true,
 		Editable:    editable,
 		Hidden:      options.Hidden,
+		Secret:      options.Secret,
 		Validate:    validate,
 	})
 }
@@ -288,6 +301,9 @@ func mergedInitLinearFieldOptions(options []initLinearFieldOptions) initLinearFi
 	for _, option := range options {
 		if option.Hidden {
 			merged.Hidden = true
+		}
+		if option.Secret {
+			merged.Secret = true
 		}
 	}
 	return merged
@@ -587,7 +603,15 @@ func (m *initLinearEditorModel) setFieldHidden(id initLinearFieldID, hidden bool
 
 func (m *initLinearEditorModel) relayout() {
 	m.layout = initLinearLayoutDocument(m.document, m.viewport.Width, m.focused)
-	m.viewport.SetContent(m.layout.Content)
+	m.setYOffset(m.viewport.YOffset)
+}
+
+func (m *initLinearEditorModel) setYOffset(offset int) {
+	m.viewport.YOffset = min(max(offset, 0), m.maxYOffset())
+}
+
+func (m initLinearEditorModel) maxYOffset() int {
+	return max(m.layout.Lines-max(m.viewport.Height, 1), 0)
 }
 
 func (m *initLinearEditorModel) ensureFocusedVisible() {
@@ -600,15 +624,15 @@ func (m *initLinearEditorModel) ensureFocusedVisible() {
 	bottom := top + height
 	switch {
 	case bounds.Start < top:
-		m.viewport.SetYOffset(bounds.Start)
+		m.setYOffset(bounds.Start)
 	case bounds.Start >= bottom:
-		m.viewport.SetYOffset(bounds.Start)
+		m.setYOffset(bounds.Start)
 	case bounds.End > bottom:
 		if bounds.End-bounds.Start >= height {
-			m.viewport.SetYOffset(bounds.Start)
+			m.setYOffset(bounds.Start)
 			return
 		}
-		m.viewport.SetYOffset(max(bounds.End-height, 0))
+		m.setYOffset(max(bounds.End-height, 0))
 	}
 }
 
@@ -651,6 +675,9 @@ func initLinearAppendFieldLines(lines *[]string, selectedLines map[int]bool, fie
 		if focused && field.Editable {
 			value = initLinearValueWithCursor(value, field.Cursor)
 		}
+		if field.Secret {
+			value = initLinearMaskedSecretValue(field.Value, field.Cursor, focused && field.Editable)
+		}
 		valueLines := strings.Split(value, "\n")
 		if len(valueLines) == 0 {
 			valueLines = []string{""}
@@ -668,6 +695,37 @@ func initLinearAppendFieldLines(lines *[]string, selectedLines map[int]bool, fie
 			initLinearAppendWrappedWithPrefixMarked(lines, selectedLines, prefix, option.Label, width, option.Selected)
 		}
 	}
+}
+
+func initLinearMaskedSecretValue(value string, cursor int, focused bool) string {
+	lines := strings.Split(value, "\n")
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	cursorLine := 0
+	cursorColumn := cursor
+	seen := 0
+	if focused {
+		for index, line := range lines {
+			lineLen := len([]rune(line))
+			if cursor <= seen+lineLen {
+				cursorLine = index
+				cursorColumn = max(cursor-seen, 0)
+				break
+			}
+			seen += lineLen + 1
+			cursorLine = index
+			cursorColumn = lineLen
+		}
+	}
+	for index, line := range lines {
+		masked := strings.Repeat("*", len([]rune(line)))
+		if focused && index == cursorLine {
+			masked = initLinearValueWithCursor(masked, min(cursorColumn, len([]rune(masked))))
+		}
+		lines[index] = masked
+	}
+	return strings.Join(lines, "\n")
 }
 
 func initSelectOptionPrefix(focused bool, selected bool) string {
@@ -688,28 +746,54 @@ func initLinearAppendWrappedWithPrefix(lines *[]string, prefix string, text stri
 
 func initLinearAppendWrappedWithPrefixMarked(lines *[]string, selectedLines map[int]bool, prefix string, text string, width int, selected bool) {
 	start := len(*lines)
-	available := max(width-len([]rune(prefix)), 1)
-	remaining := []rune(strings.TrimSpace(text))
+	for _, rawLine := range strings.Split(text, "\n") {
+		initLinearAppendWrappedLineWithPrefix(lines, prefix, rawLine, width)
+	}
+	markInitLinearSelectedLines(selectedLines, selected, start, len(*lines))
+}
+
+func initLinearAppendWrappedLineWithPrefix(lines *[]string, prefix string, text string, width int) {
+	remaining := trimInitLinearSpaceRunes([]rune(text))
 	if len(remaining) == 0 {
 		*lines = append(*lines, prefix)
-		markInitLinearSelectedLines(selectedLines, selected, start, len(*lines))
 		return
 	}
-	for len(remaining) > available {
-		cut := available
-		for cut > 0 && remaining[cut] != ' ' {
-			cut--
+	linePrefix := prefix
+	for len(remaining) > 0 {
+		available := max(width-len([]rune(linePrefix)), 1)
+		cut := len(remaining)
+		if cut > available {
+			cut = available
+			for index := cut - 1; index > 0; index-- {
+				if remaining[index] == ' ' {
+					cut = index
+					break
+				}
+			}
 		}
 		if cut <= 0 {
-			cut = available
+			cut = min(available, len(remaining))
 		}
-		*lines = append(*lines, prefix+strings.TrimSpace(string(remaining[:cut])))
-		remaining = []rune(strings.TrimSpace(string(remaining[cut:])))
-		prefix = strings.Repeat(" ", len([]rune(prefix)))
-		available = max(width-len([]rune(prefix)), 1)
+		segmentRunes := trimInitLinearSpaceRunes(remaining[:cut])
+		if len(segmentRunes) == 0 {
+			segmentRunes = remaining[:cut]
+		}
+		*lines = append(*lines, linePrefix+string(segmentRunes))
+		remaining = trimInitLinearSpaceRunes(remaining[cut:])
+		linePrefix = strings.Repeat(" ", len([]rune(prefix)))
 	}
-	*lines = append(*lines, prefix+string(remaining))
-	markInitLinearSelectedLines(selectedLines, selected, start, len(*lines))
+}
+
+func trimInitLinearSpaceRunes(value []rune) []rune {
+	start := 0
+	for start < len(value) && unicode.IsSpace(value[start]) {
+		start++
+	}
+	end := len(value)
+	for end > start && unicode.IsSpace(value[end-1]) {
+		end--
+	}
+	return value[start:end]
 }
 
 func markInitLinearSelectedLines(selectedLines map[int]bool, selected bool, start int, end int) {
@@ -722,7 +806,7 @@ func markInitLinearSelectedLines(selectedLines map[int]bool, selected bool, star
 }
 
 func (m initLinearEditorModel) styleVisibleViewport() string {
-	lines := strings.Split(m.viewport.View(), "\n")
+	lines := m.visibleViewportLines()
 	activeStart := -1
 	activeEnd := -1
 	if m.focused >= 0 && m.focused < len(m.layout.Bounds) {
@@ -736,6 +820,16 @@ func (m initLinearEditorModel) styleVisibleViewport() string {
 		lines[index] = m.styleViewportLine(line, active, selected)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m initLinearEditorModel) visibleViewportLines() []string {
+	if m.layout.Content == "" {
+		return []string{""}
+	}
+	lines := strings.Split(m.layout.Content, "\n")
+	top := min(max(m.viewport.YOffset, 0), len(lines))
+	bottom := min(top+max(m.viewport.Height, 1), len(lines))
+	return append([]string(nil), lines[top:bottom]...)
 }
 
 func (m initLinearEditorModel) styleViewportLine(line string, active bool, selected bool) string {

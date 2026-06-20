@@ -253,33 +253,37 @@ const (
 )
 
 type initDraft struct {
-	Action                initDraftAction
-	ActionTarget          string
-	OriginalProfileName   string
-	ProfileName           string
-	MakeDefault           bool
-	GitHost               string
-	GitAuth               string
-	GitCredentialRef      string
-	ReviewerEnabled       bool
-	ReviewerAuth          string
-	ReviewerCredentialRef string
-	ReviewerDisplayName   string
-	SecretsProfile        string
-	LLMProvider           string
-	LLMAuth               string
-	LLMAdapter            string
-	LLMReviewerModelTier  string
-	LLMCredentialRef      string
-	AdvancedStorageLabels bool
-	RoutesSet             bool
-	Routes                []configedit.RepositoryRouteSpec
-	ModelMapSet           bool
-	ModelMap              config.ModelMap
-	AgentSourcesSet       bool
-	AgentSources          []string
-	ReviewPolicySet       bool
-	ReviewPolicy          config.ReviewPolicy
+	Action                      initDraftAction
+	ActionTarget                string
+	OriginalProfileName         string
+	ProfileName                 string
+	MakeDefault                 bool
+	GitHost                     string
+	GitAuth                     string
+	GitCredentialRef            string
+	ReviewerEnabled             bool
+	ReviewerAuth                string
+	ReviewerCredentialRef       string
+	ReviewerDisplayName         string
+	ReviewerCredentialWriteRef  string
+	ReviewerCredentialWrites    map[string]string
+	ReviewerCredentialOverwrite bool
+	ReviewerCredentialSatisfied bool
+	SecretsProfile              string
+	LLMProvider                 string
+	LLMAuth                     string
+	LLMAdapter                  string
+	LLMReviewerModelTier        string
+	LLMCredentialRef            string
+	AdvancedStorageLabels       bool
+	RoutesSet                   bool
+	Routes                      []configedit.RepositoryRouteSpec
+	ModelMapSet                 bool
+	ModelMap                    config.ModelMap
+	AgentSourcesSet             bool
+	AgentSources                []string
+	ReviewPolicySet             bool
+	ReviewPolicy                config.ReviewPolicy
 }
 
 type initModelMapPrompt struct {
@@ -1494,8 +1498,6 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
 	}
-	previousProfileName := session.workspace.profileName
-	previousProfile := session.workspace.profile
 	previousCfg := cloneInitConfigFile(session.cfg)
 	previousEntity := initReviewerEntityDraft{}
 	if draft.ActionTarget != "" {
@@ -1515,6 +1517,7 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, nextEntity)
 	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
 	session.requestedProfileName = workspace.profileName
+	session = mergeReviewerCredentialDraftWrites(session, draft)
 	if session.workspace != nil {
 		credentialPlan, err := planInitCredentialsWithConfig(session.cfg, workspace.previousProfile, session.workspace.profile, projectInitPlannedWriteKeys(session.writes))
 		if err != nil {
@@ -1523,19 +1526,75 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		session.workspace.previousProfile = workspace.previousProfile
 		session.workspace.credentialPlan = credentialPlan
 	}
-	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, session.workspace.profile) {
-		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		if deps.menuPrompter != nil || deps.prompter == nil {
-			session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"reviewer_credentials"})
-			if errors.Is(err, errInitNavigateBack) {
-				return session, false, nil
-			}
-			if err != nil {
-				return initSessionDraft{}, false, err
-			}
+	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+	return session, false, nil
+}
+
+func mergeReviewerCredentialDraftWrites(session initSessionDraft, draft initDraft) initSessionDraft {
+	ref := strings.TrimSpace(draft.ReviewerCredentialWriteRef)
+	if ref == "" {
+		return session
+	}
+	if session.writes == nil {
+		session.writes = map[string]map[string]string{}
+	}
+	if session.overwriteRefs == nil {
+		session.overwriteRefs = map[string]bool{}
+	}
+	if session.satisfiedRefs == nil {
+		session.satisfiedRefs = map[string]bool{}
+	}
+	if session.writes[ref] != nil {
+		session.writes[ref] = filterInitCredentialWritesForDraftReviewerMode(session.writes[ref], draft)
+		if len(session.writes[ref]) == 0 {
+			delete(session.writes, ref)
 		}
 	}
-	return session, false, nil
+	if len(draft.ReviewerCredentialWrites) > 0 {
+		for key, value := range draft.ReviewerCredentialWrites {
+			addWrite(session.writes, ref, key, value)
+		}
+	}
+	if draft.ReviewerCredentialOverwrite {
+		session.overwriteRefs[ref] = true
+	} else {
+		delete(session.overwriteRefs, ref)
+	}
+	if draft.ReviewerCredentialSatisfied {
+		session.satisfiedRefs[ref] = true
+	} else {
+		delete(session.satisfiedRefs, ref)
+	}
+	return session
+}
+
+func filterInitCredentialWritesForDraftReviewerMode(writes map[string]string, draft initDraft) map[string]string {
+	if len(writes) == 0 {
+		return writes
+	}
+	ref := config.CredentialRef{
+		Purpose: "reviewer_credentials",
+		Ref:     strings.TrimSpace(draft.ReviewerCredentialWriteRef),
+		Mode:    strings.TrimSpace(draft.ReviewerAuth),
+	}
+	if ref.Mode == "" {
+		ref.Mode = string(config.GitAuthModePAT)
+	}
+	specs, err := credentials.KeySpecsForPurpose(ref)
+	if err != nil {
+		return writes
+	}
+	allowed := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		allowed[spec.Key] = struct{}{}
+	}
+	filtered := make(map[string]string, len(writes))
+	for key, value := range writes {
+		if _, ok := allowed[key]; ok {
+			filtered[key] = value
+		}
+	}
+	return filtered
 }
 
 func propagateSharedReviewerEntityChanges(priorCfg config.File, updatedCfg config.File, activeProfileName string, previousEntity initReviewerEntityDraft, nextEntity initReviewerEntityDraft) config.File {
