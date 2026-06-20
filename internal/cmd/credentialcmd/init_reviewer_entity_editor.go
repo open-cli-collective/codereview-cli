@@ -507,6 +507,9 @@ func reviewerCredentialRefFromLabel(label string) (string, bool) {
 }
 
 func initReviewerEntityCredentialFieldKey(id initLinearFieldID) string {
+	// This mapper intentionally accepts every linear-editor field ID but only reviewer
+	// credential value fields produce credential-store keys.
+	//nolint:exhaustive
 	switch id {
 	case initReviewerEntityFieldGitToken:
 		return credentials.GitTokenKey
@@ -516,42 +519,6 @@ func initReviewerEntityCredentialFieldKey(id initLinearFieldID) string {
 		return credentials.GitHubAppPrivateKeyKey
 	case initReviewerEntityFieldGitHubAppInstallationID:
 		return credentials.GitHubAppInstallationIDKey
-	case initRetentionFieldMaxAge,
-		initRetentionFieldAction,
-		initLLMRuntimeFieldSelection,
-		initLLMRuntimeFieldProvider,
-		initLLMRuntimeFieldAuth,
-		initLLMRuntimeFieldAdapter,
-		initLLMRuntimeFieldReplacement,
-		initLLMRuntimeFieldAction,
-		initReviewerEntityFieldSelection,
-		initReviewerEntityFieldLabel,
-		initReviewerEntityFieldSecretLocation,
-		initReviewerEntityFieldCredentialStatus,
-		initReviewerEntityFieldCredentialValues,
-		initReviewerEntityFieldAction,
-		initSecretsManagementFieldTarget,
-		initSecretsManagementFieldLegacyBackend,
-		initSecretsManagementFieldLabel,
-		initSecretsManagementFieldBackend,
-		initSecretsManagementFieldVaultID,
-		initSecretsManagementFieldTimeout,
-		initSecretsManagementFieldItemTitlePrefix,
-		initSecretsManagementFieldItemTag,
-		initSecretsManagementFieldItemFieldTitle,
-		initSecretsManagementFieldConnectHost,
-		initSecretsManagementFieldConnectTokenEnv,
-		initSecretsManagementFieldServiceTokenEnv,
-		initSecretsManagementFieldDesktopAccountID,
-		initSecretsManagementFieldDefault,
-		initSecretsManagementFieldAction,
-		initSecretsManagementSectionLegacy,
-		initSecretsManagementSectionProfile,
-		initSecretsManagementSectionOnePassword,
-		initSecretsManagementSectionConnect,
-		initSecretsManagementSectionServiceAccount,
-		initSecretsManagementSectionDesktop:
-		return ""
 	default:
 		return ""
 	}
