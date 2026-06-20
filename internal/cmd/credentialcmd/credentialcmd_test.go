@@ -19819,6 +19819,189 @@ func TestWriteBundlesKeepsStaleReviewerKeysRequiredByAnotherActiveMode(t *testin
 	}
 }
 
+func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{
+		"work-reviewer": {
+			credentials.GitTokenKey:                "old-reviewer-pat",
+			credentials.GitHubAppIDKey:             "12345",
+			credentials.GitHubAppPrivateKeyKey:     "private-key",
+			credentials.GitHubAppInstallationIDKey: "67890",
+		},
+	})
+	profile := basicProfile("work")
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+		DisplayName:   "work bot",
+	}
+	cfg := config.File{
+		DefaultProfile: "work",
+		Profiles:       map[string]config.Profile{"work": profile},
+	}
+	refs, err := config.CredentialRefs(profile)
+	if err != nil {
+		t.Fatalf("CredentialRefs: %v", err)
+	}
+	plan := initSessionPlan{
+		path:         filepath.Join(t.TempDir(), "config.yml"),
+		cfg:          cfg,
+		profileNames: []string{"work"},
+		profileRefs:  map[string][]config.CredentialRef{"work": refs},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			PreviousRef: &config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			KeySpecs: []credentials.KeySpec{
+				{Key: credentials.GitHubAppIDKey, Required: true},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+			},
+			State: initCredentialPlanStateKeepExisting,
+		}},
+	}
+	var saved bool
+	err = applyInteractiveInitSessionPlan(&root.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+		saveConfig: func(string, config.File) error {
+			saved = true
+			return nil
+		},
+	}, plan)
+	if err != nil {
+		t.Fatalf("applyInteractiveInitSessionPlan: %v", err)
+	}
+	if !saved {
+		t.Fatal("saveConfig was not called")
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || ok {
+		t.Fatalf("stale git_token exists = %t, err = %v; want deleted", ok, err)
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
+		t.Fatalf("github_app_id exists = %t, err = %v; want retained", ok, err)
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppPrivateKeyKey); err != nil || !ok {
+		t.Fatalf("github_app_private_key exists = %t, err = %v; want retained", ok, err)
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppInstallationIDKey); err != nil || !ok {
+		t.Fatalf("github_app_installation_id exists = %t, err = %v; want retained", ok, err)
+	}
+}
+
+func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{
+		"work-reviewer": {
+			credentials.GitTokenKey:            "old-reviewer-pat",
+			credentials.GitHubAppIDKey:         "12345",
+			credentials.GitHubAppPrivateKeyKey: "private-key",
+		},
+	})
+	profile := basicProfile("work")
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+		DisplayName:   "work bot",
+	}
+	plan := initPlan{
+		path:        filepath.Join(t.TempDir(), "config.yml"),
+		cfg:         config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": profile}},
+		profileName: "work",
+		profile:     profile,
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			PreviousRef: &config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			KeySpecs: []credentials.KeySpec{
+				{Key: credentials.GitHubAppIDKey, Required: true},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+			},
+			State: initCredentialPlanStateKeepExisting,
+		}},
+	}
+
+	err := applyInitPlan(&root.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, initOptions{}, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+		saveConfig: func(string, config.File) error {
+			return nil
+		},
+	}, plan)
+	if err != nil {
+		t.Fatalf("applyInitPlan: %v", err)
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || ok {
+		t.Fatalf("stale git_token exists = %t, err = %v; want deleted", ok, err)
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
+		t.Fatalf("github_app_id exists = %t, err = %v; want retained", ok, err)
+	}
+}
+
+func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{
+		"shared-reviewer": {
+			credentials.GitTokenKey:            "existing-pat",
+			credentials.GitHubAppIDKey:         "12345",
+			credentials.GitHubAppPrivateKeyKey: "private-key",
+		},
+	})
+	appEntry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/shared-reviewer",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		PreviousRef: &config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/shared-reviewer",
+			Mode:    string(config.GitAuthModePAT),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+		State: initCredentialPlanStateKeepExisting,
+	}
+	patEntry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/shared-reviewer",
+			Mode:    string(config.GitAuthModePAT),
+		},
+		KeySpecs: []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
+		State:    initCredentialPlanStateKeepExisting,
+	}
+
+	groups := groupStaleReviewerCredentialCleanupsByStore([]initCredentialPlanEntry{appEntry, patEntry})
+	if len(groups) != 1 {
+		t.Fatalf("cleanup groups = %#v, want one group", groups)
+	}
+	cleanedRefs, err := deleteStaleReviewerCredentialKeysForRefs(store, groups[0].Entries)
+	if err != nil {
+		t.Fatalf("deleteStaleReviewerCredentialKeysForRefs: %v", err)
+	}
+	if len(cleanedRefs) != 0 {
+		t.Fatalf("cleaned refs = %#v, want none because both modes are active", cleanedRefs)
+	}
+	if ok, err := store.Exists("shared-reviewer", credentials.GitTokenKey); err != nil || !ok {
+		t.Fatalf("git_token exists = %t, err = %v; want retained for active PAT entry", ok, err)
+	}
+}
+
 type fakeInitSecretPrompter struct {
 	actions       []initCredentialSecretAction
 	sources       []initSecretSource
