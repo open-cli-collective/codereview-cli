@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
@@ -16,11 +17,16 @@ import (
 type initReviewerEntityEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
 
 const (
-	initReviewerEntityFieldSelection        initLinearFieldID = "reviewer_entity_selection"
-	initReviewerEntityFieldLabel            initLinearFieldID = "reviewer_entity_label"
-	initReviewerEntityFieldSecretLocation   initLinearFieldID = "reviewer_entity_secret_location"
-	initReviewerEntityFieldCredentialStatus initLinearFieldID = "reviewer_entity_credential_status"
-	initReviewerEntityFieldAction           initLinearFieldID = "reviewer_entity_action"
+	initReviewerEntityFieldSelection               initLinearFieldID = "reviewer_entity_selection"
+	initReviewerEntityFieldLabel                   initLinearFieldID = "reviewer_entity_label"
+	initReviewerEntityFieldSecretLocation          initLinearFieldID = "reviewer_entity_secret_location"
+	initReviewerEntityFieldCredentialStatus        initLinearFieldID = "reviewer_entity_credential_status"
+	initReviewerEntityFieldCredentialValues        initLinearFieldID = "reviewer_entity_credential_values"
+	initReviewerEntityFieldGitToken                initLinearFieldID = "reviewer_entity_git_token"
+	initReviewerEntityFieldGitHubAppID             initLinearFieldID = "reviewer_entity_github_app_id"
+	initReviewerEntityFieldGitHubAppPrivateKey     initLinearFieldID = "reviewer_entity_github_app_private_key"
+	initReviewerEntityFieldGitHubAppInstallationID initLinearFieldID = "reviewer_entity_github_app_installation_id"
+	initReviewerEntityFieldAction                  initLinearFieldID = "reviewer_entity_action"
 )
 
 const (
@@ -64,18 +70,18 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityLinear(prompt initRevie
 	}
 }
 
-func (p huhInitReviewerEntityPrompter) editReviewerEntityFieldsLinear(entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
+func (p huhInitReviewerEntityPrompter) editReviewerEntityFieldsLinear(ctx initPromptContext, entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
 	editorState, err := newReviewerEntityEditorState(entity, seed, preserveCurrentLocation)
 	if err != nil {
 		return initDraft{}, false, err
 	}
-	model, err := p.runReviewerEntityEditor(editorState.editor())
+	model, err := p.runReviewerEntityEditor(editorState.editor(ctx))
 	if err != nil {
 		return initDraft{}, false, err
 	}
 	switch model.resultAction {
 	case initDetailActionEdit:
-		draft, err := editorState.draftFromDocument(model.document)
+		draft, err := editorState.draftFromDocument(ctx, model.document)
 		if err != nil {
 			return initDraft{}, false, err
 		}
@@ -133,7 +139,7 @@ func newReviewerEntityEditorState(entity initReviewerEntityDraft, seed initDraft
 	}, nil
 }
 
-func (s reviewerEntityEditorState) editor() initLinearEditor {
+func (s reviewerEntityEditorState) editor(ctx initPromptContext) initLinearEditor {
 	var document initLinearDocument
 	document.addSection("Reviewer entity", reviewerEntitySelectionDescription())
 	document.addSection("Reviewer entity type", reviewerEntityKindDetailDescription(s.kind))
@@ -149,12 +155,10 @@ func (s reviewerEntityEditorState) editor() initLinearEditor {
 		if !s.preserveCurrentLocation {
 			labelInput = ""
 		}
-		reviewerSecretLocation := ""
+		reviewerSecretLocation := s.standardReviewerRef
 		if s.preserveCurrentLocation {
 			if currentRef := strings.TrimSpace(s.seed.ReviewerCredentialRef); currentRef != "" {
 				reviewerSecretLocation = currentRef
-			} else {
-				reviewerSecretLocation = s.standardReviewerRef
 			}
 		}
 		document.addEditableInput(
@@ -171,7 +175,10 @@ func (s reviewerEntityEditorState) editor() initLinearEditor {
 			reviewerSecretLocation,
 			validateOptionalCredentialRef,
 		)
-		status := synthesizeReviewerCredentialStatus(initPromptContext{}, config.CredentialRef{
+		if locationIndex := document.fieldIndexByID(initReviewerEntityFieldSecretLocation); locationIndex >= 0 {
+			document[locationIndex].AutoManaged = !s.preserveCurrentLocation
+		}
+		status := synthesizeReviewerCredentialStatus(ctx, config.CredentialRef{
 			Purpose: "reviewer_credentials",
 			Ref:     firstNonEmpty(reviewerSecretLocation, s.standardReviewerRef),
 			Mode:    string(reviewerCredentialAuthModeForKind(s.kind)),
@@ -181,6 +188,7 @@ func (s reviewerEntityEditorState) editor() initLinearEditor {
 			"Reviewer credential status",
 			initReviewerCredentialStatusDescription(status),
 		)
+		addReviewerEntityCredentialValueFields(&document, s.kind, false)
 	}
 	document.addEditableSelect(initReviewerEntityFieldAction, "Reviewer detail action", "", []huh.Option[string]{
 		huh.NewOption("Stage reviewer settings", initDetailActionEdit),
@@ -201,7 +209,7 @@ func (s reviewerEntityEditorState) editor() initLinearEditor {
 				model.resultAction = initDetailActionBack
 				return true, tea.Quit
 			case initDetailActionEdit:
-				if _, err := s.draftFromDocument(model.document); err != nil {
+				if _, err := s.draftFromDocument(ctx, model.document); err != nil {
 					model.document[model.focused].Error = err.Error()
 					model.relayout()
 					model.ensureFocusedVisible()
@@ -213,10 +221,27 @@ func (s reviewerEntityEditorState) editor() initLinearEditor {
 				return true, nil
 			}
 		},
+		OnFieldChange: func(model *initLinearEditorModel, index int) {
+			if index < 0 || index >= len(model.document) || s.kind == initReviewerEntityKindUseGitIdentity {
+				return
+			}
+			id := model.document[index].ID
+			if id == initReviewerEntityFieldSecretLocation {
+				model.document[index].AutoManaged = false
+			}
+			if id == initReviewerEntityFieldLabel {
+				initReviewerEntityMaybeUpdateAutoSecretLocation(model, s)
+			}
+			if id == initReviewerEntityFieldLabel ||
+				id == initReviewerEntityFieldSecretLocation ||
+				initReviewerEntityCredentialFieldKey(id) != "" {
+				initReviewerEntityRefreshCredentialStatus(model, ctx, s.seed, s)
+			}
+		},
 	}
 }
 
-func (s reviewerEntityEditorState) draftFromDocument(document initLinearDocument) (initDraft, error) {
+func (s reviewerEntityEditorState) draftFromDocument(ctx initPromptContext, document initLinearDocument) (initDraft, error) {
 	editDraft := s.seed
 	applyReviewerEntitySelection(&editDraft, string(s.kind))
 	if s.kind == initReviewerEntityKindUseGitIdentity {
@@ -230,7 +255,11 @@ func (s reviewerEntityEditorState) draftFromDocument(document initLinearDocument
 	if err := validateOptionalCredentialRef(reviewerSecretLocation); err != nil {
 		return initDraft{}, err
 	}
+	if err := validateReviewerEntityInlineCredentials(ctx, s.seed, s, document); err != nil {
+		return initDraft{}, err
+	}
 	finalizeReviewerEntityEditorDraft(&editDraft, s.explicitDisplayName, s.fallbackLabelSeed, labelInput, reviewerSecretLocation, s.standardReviewerRef, s.preserveCurrentLocation)
+	applyReviewerEntityCredentialDraftFromDocument(&editDraft, ctx, s.seed, s, document)
 	return editDraft, nil
 }
 
@@ -270,6 +299,7 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 		validateOptionalCredentialRef,
 	)
 	document.addSectionField(initReviewerEntityFieldCredentialStatus, "Reviewer credential status", "", initLinearFieldOptions{Hidden: true})
+	addReviewerEntityCredentialValueFields(&document, state.kind, true)
 	document.addEditableSelect(initReviewerEntityFieldAction, "Reviewer action", "", initReviewerEntityActionOptions(ctx, selection), initDetailActionEdit)
 	editor := initLinearEditor{
 		Document: document,
@@ -282,7 +312,13 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 				initReviewerEntitySyncLinearFields(model, ctx, seed, true)
 				return
 			}
-			if id == initReviewerEntityFieldAction || id == initReviewerEntityFieldSecretLocation {
+			if id == initReviewerEntityFieldSecretLocation {
+				model.document[index].AutoManaged = false
+			}
+			if id == initReviewerEntityFieldAction ||
+				id == initReviewerEntityFieldLabel ||
+				id == initReviewerEntityFieldSecretLocation ||
+				initReviewerEntityCredentialFieldKey(id) != "" {
 				initReviewerEntitySyncLinearFields(model, ctx, seed, false)
 			}
 		},
@@ -371,6 +407,320 @@ func initReviewerEntityActionOptions(_ initPromptContext, selection string) []hu
 	return options
 }
 
+func addReviewerEntityCredentialValueFields(document *initLinearDocument, kind initReviewerEntityKind, hidden bool) {
+	document.addSectionField(
+		initReviewerEntityFieldCredentialValues,
+		"Reviewer credential values",
+		"Enter required reviewer secrets here. Values are hidden, staged in memory, and written only when you Commit staged changes and exit.",
+		initLinearFieldOptions{Hidden: hidden},
+	)
+	document.addEditableSecretInput(
+		initReviewerEntityFieldGitToken,
+		"GitHub PAT",
+		"Required for PAT reviewers. Leave blank only when the status above already shows git_token as existing or staged.",
+		"",
+		nil,
+		initLinearFieldOptions{Hidden: hidden || kind != initReviewerEntityKindPAT},
+	)
+	document.addEditableSecretInput(
+		initReviewerEntityFieldGitHubAppID,
+		"GitHub App ID",
+		"Required for GitHub App reviewers. This is stored as github_app_id at the destination above.",
+		"",
+		nil,
+		initLinearFieldOptions{Hidden: hidden || kind != initReviewerEntityKindGitHubApp},
+	)
+	document.addEditableSecretTextarea(
+		initReviewerEntityFieldGitHubAppPrivateKey,
+		"GitHub App private key",
+		"Required for GitHub App reviewers. Paste the PEM private key; ctrl+j or alt+enter inserts a newline.",
+		"",
+	)
+	if index := document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey); index >= 0 {
+		(*document)[index].Hidden = hidden || kind != initReviewerEntityKindGitHubApp
+	}
+	document.addEditableSecretInput(
+		initReviewerEntityFieldGitHubAppInstallationID,
+		"GitHub App installation ID",
+		"Optional. Leave blank unless this reviewer must pin a specific installation.",
+		"",
+		nil,
+		initLinearFieldOptions{Hidden: hidden || kind != initReviewerEntityKindGitHubApp},
+	)
+}
+
+func initReviewerEntitySetCredentialFieldsHidden(model *initLinearEditorModel, kind initReviewerEntityKind, hideDetails bool) {
+	hidePAT := hideDetails || kind != initReviewerEntityKindPAT
+	hideGitHubApp := hideDetails || kind != initReviewerEntityKindGitHubApp
+	model.setFieldHidden(initReviewerEntityFieldCredentialValues, hideDetails)
+	model.setFieldHidden(initReviewerEntityFieldGitToken, hidePAT)
+	model.setFieldHidden(initReviewerEntityFieldGitHubAppID, hideGitHubApp)
+	model.setFieldHidden(initReviewerEntityFieldGitHubAppPrivateKey, hideGitHubApp)
+	model.setFieldHidden(initReviewerEntityFieldGitHubAppInstallationID, hideGitHubApp)
+}
+
+func initReviewerEntityClearCredentialFieldValues(model *initLinearEditorModel) {
+	for _, id := range []initLinearFieldID{
+		initReviewerEntityFieldGitToken,
+		initReviewerEntityFieldGitHubAppID,
+		initReviewerEntityFieldGitHubAppPrivateKey,
+		initReviewerEntityFieldGitHubAppInstallationID,
+	} {
+		model.setFieldValue(id, "")
+	}
+}
+
+func initReviewerEntityMaybeUpdateAutoSecretLocation(model *initLinearEditorModel, state reviewerEntityEditorState) {
+	locationIndex := model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation)
+	if locationIndex < 0 || !model.document[locationIndex].AutoManaged {
+		return
+	}
+	model.setFieldValue(initReviewerEntityFieldSecretLocation, initReviewerEntityDefaultSecretLocation(state, model.document.fieldValue(initReviewerEntityFieldLabel)))
+	if locationIndex = model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation); locationIndex >= 0 {
+		model.document[locationIndex].AutoManaged = true
+	}
+}
+
+func initReviewerEntityDefaultSecretLocation(state reviewerEntityEditorState, labelInput string) string {
+	if state.preserveCurrentLocation {
+		if currentRef := strings.TrimSpace(state.seed.ReviewerCredentialRef); currentRef != "" {
+			return currentRef
+		}
+		return state.standardReviewerRef
+	}
+	if ref, ok := reviewerCredentialRefFromLabel(labelInput); ok {
+		return ref
+	}
+	return state.standardReviewerRef
+}
+
+func reviewerCredentialRefFromLabel(label string) (string, bool) {
+	segment := credstore.EscapeRefSegment(strings.TrimSpace(label))
+	if segment == "" {
+		return "", false
+	}
+	ref, err := credentials.FormatRef(segment + "-reviewer")
+	if err != nil {
+		return "", false
+	}
+	return ref, true
+}
+
+func initReviewerEntityCredentialFieldKey(id initLinearFieldID) string {
+	// This mapper intentionally accepts every linear-editor field ID but only reviewer
+	// credential value fields produce credential-store keys.
+	//nolint:exhaustive
+	switch id {
+	case initReviewerEntityFieldGitToken:
+		return credentials.GitTokenKey
+	case initReviewerEntityFieldGitHubAppID:
+		return credentials.GitHubAppIDKey
+	case initReviewerEntityFieldGitHubAppPrivateKey:
+		return credentials.GitHubAppPrivateKeyKey
+	case initReviewerEntityFieldGitHubAppInstallationID:
+		return credentials.GitHubAppInstallationIDKey
+	default:
+		return ""
+	}
+}
+
+func initReviewerEntityCredentialFieldID(key string) initLinearFieldID {
+	switch key {
+	case credentials.GitTokenKey:
+		return initReviewerEntityFieldGitToken
+	case credentials.GitHubAppIDKey:
+		return initReviewerEntityFieldGitHubAppID
+	case credentials.GitHubAppPrivateKeyKey:
+		return initReviewerEntityFieldGitHubAppPrivateKey
+	case credentials.GitHubAppInstallationIDKey:
+		return initReviewerEntityFieldGitHubAppInstallationID
+	default:
+		return ""
+	}
+}
+
+func initReviewerCredentialStatusWithDocumentWrites(status initReviewerCredentialStatus, document initLinearDocument) initReviewerCredentialStatus {
+	status.Keys = append([]initReviewerCredentialKeyStatus(nil), status.Keys...)
+	for index, key := range status.Keys {
+		fieldID := initReviewerEntityCredentialFieldID(key.Key)
+		if fieldID == "" || document.fieldHidden(fieldID) {
+			continue
+		}
+		if strings.TrimSpace(credentials.TrimSecretIngress(document.fieldValue(fieldID))) == "" {
+			continue
+		}
+		status.Keys[index].State = initReviewerCredentialKeyStaged
+	}
+	return status
+}
+
+func validateReviewerEntityInlineCredentials(ctx initPromptContext, seed initDraft, state reviewerEntityEditorState, document initLinearDocument) error {
+	if state.kind == initReviewerEntityKindUseGitIdentity {
+		return nil
+	}
+	ref := strings.TrimSpace(document.fieldValue(initReviewerEntityFieldSecretLocation))
+	if ref == "" {
+		return fmt.Errorf("reviewer secret location is required")
+	}
+	status, ok := reviewerCredentialStatusForDocument(ctx, seed, state, document)
+	if !ok {
+		return fmt.Errorf("reviewer credential status unavailable")
+	}
+	if reviewerEntityPreservesExistingCredentialRefWithoutWrites(state, document) {
+		return nil
+	}
+	missing := missingReviewerEntityInlineCredentialKeys(state, status, document)
+	if len(missing) > 0 {
+		return fmt.Errorf("set reviewer credentials before staging: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func reviewerEntityPreservesExistingCredentialRefWithoutWrites(state reviewerEntityEditorState, document initLinearDocument) bool {
+	if !state.preserveCurrentLocation {
+		return false
+	}
+	if strings.TrimSpace(document.fieldValue(initReviewerEntityFieldSecretLocation)) != strings.TrimSpace(state.seed.ReviewerCredentialRef) {
+		return false
+	}
+	writes, _ := reviewerEntityCredentialWritesFromDocument(synthesizeReviewerCredentialStatus(initPromptContext{}, config.CredentialRef{
+		Purpose: "reviewer_credentials",
+		Ref:     strings.TrimSpace(state.seed.ReviewerCredentialRef),
+		Mode:    string(reviewerCredentialAuthModeForKind(state.kind)),
+	}), document)
+	return len(writes) == 0
+}
+
+func reviewerCredentialStatusForDocument(ctx initPromptContext, seed initDraft, state reviewerEntityEditorState, document initLinearDocument) (initReviewerCredentialStatus, bool) {
+	status, ok := baseReviewerCredentialStatusForDocument(ctx, seed, state, document)
+	if !ok {
+		return initReviewerCredentialStatus{}, false
+	}
+	return initReviewerCredentialStatusWithDocumentWrites(status, document), true
+}
+
+func baseReviewerCredentialStatusForDocument(ctx initPromptContext, seed initDraft, state reviewerEntityEditorState, document initLinearDocument) (initReviewerCredentialStatus, bool) {
+	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seed, string(state.kind), document.fieldValue(initReviewerEntityFieldSecretLocation))
+	if !ok {
+		return initReviewerCredentialStatus{}, false
+	}
+	if initReviewerEntityUsesAutoDefaultSecretLocation(state, document) && !initReviewerCredentialStatusListContains(ctx.ReviewerCredentialStatuses, status.Ref) {
+		if initReviewerCredentialStatusListContainsUnavailable(ctx.ReviewerCredentialStatuses) {
+			status = synthesizeUnavailableReviewerCredentialStatus(ctx, status.Ref)
+		} else {
+			status = synthesizeReviewerCredentialStatus(ctx, status.Ref)
+		}
+	}
+	return status, true
+}
+
+func initReviewerEntityUsesAutoDefaultSecretLocation(state reviewerEntityEditorState, document initLinearDocument) bool {
+	if state.preserveCurrentLocation {
+		return false
+	}
+	locationIndex := document.fieldIndexByID(initReviewerEntityFieldSecretLocation)
+	if locationIndex < 0 || !document[locationIndex].AutoManaged {
+		return false
+	}
+	return strings.TrimSpace(document.fieldValue(initReviewerEntityFieldSecretLocation)) == strings.TrimSpace(initReviewerEntityDefaultSecretLocation(state, document.fieldValue(initReviewerEntityFieldLabel)))
+}
+
+func initReviewerCredentialStatusListContains(statuses []initReviewerCredentialStatus, ref config.CredentialRef) bool {
+	for _, status := range statuses {
+		if status.Ref.Purpose == ref.Purpose && status.Ref.Ref == ref.Ref && status.Ref.Mode == ref.Mode && status.Ref.Provider == ref.Provider {
+			return true
+		}
+	}
+	return false
+}
+
+func initReviewerCredentialStatusListContainsUnavailable(statuses []initReviewerCredentialStatus) bool {
+	for _, status := range statuses {
+		if strings.TrimSpace(status.Unavailable) != "" {
+			return true
+		}
+		for _, key := range status.Keys {
+			if key.State == initReviewerCredentialKeyUnavailable {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func missingReviewerEntityInlineCredentialKeys(state reviewerEntityEditorState, status initReviewerCredentialStatus, document initLinearDocument) []string {
+	var missing []string
+	keepsCurrentRef := reviewerEntityKeepsCurrentCredentialRef(state, document)
+	for _, key := range status.Keys {
+		if !key.Required {
+			continue
+		}
+		switch key.State {
+		case initReviewerCredentialKeyExisting, initReviewerCredentialKeyStaged:
+			continue
+		case initReviewerCredentialKeyUnavailable:
+			if keepsCurrentRef {
+				continue
+			}
+		case initReviewerCredentialKeyMissing, initReviewerCredentialKeyDeferred, initReviewerCredentialKeySkippedOptional, initReviewerCredentialKeyOptional:
+		}
+		missing = append(missing, key.Key)
+	}
+	return missing
+}
+
+func reviewerEntityKeepsCurrentCredentialRef(state reviewerEntityEditorState, document initLinearDocument) bool {
+	return state.preserveCurrentLocation &&
+		strings.TrimSpace(document.fieldValue(initReviewerEntityFieldSecretLocation)) == strings.TrimSpace(state.seed.ReviewerCredentialRef)
+}
+
+func applyReviewerEntityCredentialDraftFromDocument(editDraft *initDraft, ctx initPromptContext, seed initDraft, state reviewerEntityEditorState, document initLinearDocument) {
+	originalStatus, ok := baseReviewerCredentialStatusForDocument(ctx, seed, state, document)
+	if !ok {
+		return
+	}
+	status := initReviewerCredentialStatusWithDocumentWrites(originalStatus, document)
+	ref := strings.TrimSpace(status.Ref.Ref)
+	if ref == "" {
+		ref = strings.TrimSpace(document.fieldValue(initReviewerEntityFieldSecretLocation))
+	}
+	if ref == "" {
+		return
+	}
+	writes, overwrite := reviewerEntityCredentialWritesFromDocument(originalStatus, document)
+	editDraft.ReviewerCredentialWriteRef = ref
+	editDraft.ReviewerCredentialWriteStore = status.SecretsProfile
+	editDraft.ReviewerCredentialWrites = writes
+	editDraft.ReviewerCredentialOverwrite = overwrite
+	editDraft.ReviewerCredentialSatisfied = reviewerEntityPreservesExistingCredentialRefWithoutWrites(state, document) || len(missingReviewerEntityInlineCredentialKeys(state, status, document)) == 0
+}
+
+func reviewerEntityCredentialWritesFromDocument(status initReviewerCredentialStatus, document initLinearDocument) (map[string]string, bool) {
+	writes := map[string]string{}
+	keyStates := make(map[string]initReviewerCredentialKeyState, len(status.Keys))
+	for _, key := range status.Keys {
+		keyStates[key.Key] = key.State
+	}
+	overwrite := false
+	for _, key := range status.Keys {
+		fieldID := initReviewerEntityCredentialFieldID(key.Key)
+		if fieldID == "" || document.fieldHidden(fieldID) {
+			continue
+		}
+		value := credentials.TrimSecretIngress(document.fieldValue(fieldID))
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		writes[key.Key] = value
+		switch keyStates[key.Key] {
+		case initReviewerCredentialKeyExisting:
+			overwrite = true
+		case initReviewerCredentialKeyMissing, initReviewerCredentialKeyStaged, initReviewerCredentialKeyDeferred, initReviewerCredentialKeySkippedOptional, initReviewerCredentialKeyOptional, initReviewerCredentialKeyUnavailable:
+		}
+	}
+	return writes, overwrite
+}
+
 func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPromptContext, seed initDraft, resetDetails bool) {
 	selection := model.document.selectedValue(initReviewerEntityFieldSelection)
 	initReviewerEntitySetSelectionOptions(model, ctx, selection)
@@ -400,6 +750,7 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 	model.setFieldHidden(initReviewerEntityFieldLabel, hideDetails)
 	model.setFieldHidden(initReviewerEntityFieldSecretLocation, hideDetails)
 	model.setFieldHidden(initReviewerEntityFieldCredentialStatus, hideDetails)
+	initReviewerEntitySetCredentialFieldsHidden(model, state.kind, hideDetails)
 	if !hideDetails {
 		model.setFieldDescription(initReviewerEntityFieldSecretLocation, reviewerEntitySecretLocationDescription(state.kind))
 	}
@@ -415,22 +766,32 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 		if !state.preserveCurrentLocation {
 			labelInput = ""
 		}
-		reviewerSecretLocation := ""
+		reviewerSecretLocation := state.standardReviewerRef
 		if state.preserveCurrentLocation {
 			if currentRef := strings.TrimSpace(state.seed.ReviewerCredentialRef); currentRef != "" {
 				reviewerSecretLocation = currentRef
-			} else {
-				reviewerSecretLocation = state.standardReviewerRef
 			}
+		} else {
+			reviewerSecretLocation = initReviewerEntityDefaultSecretLocation(state, labelInput)
 		}
 		model.setFieldValue(initReviewerEntityFieldLabel, labelInput)
 		model.setFieldValue(initReviewerEntityFieldSecretLocation, reviewerSecretLocation)
+		if locationIndex := model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation); locationIndex >= 0 {
+			model.document[locationIndex].AutoManaged = !state.preserveCurrentLocation
+		}
+		initReviewerEntityClearCredentialFieldValues(model)
+	}
+	if !hideDetails && !resetDetails {
+		initReviewerEntityMaybeUpdateAutoSecretLocation(model, state)
 	}
 	if !hideDetails {
-		reviewerSecretLocation := model.document.fieldValue(initReviewerEntityFieldSecretLocation)
-		if status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seed, selection, reviewerSecretLocation); ok {
-			model.setFieldDescription(initReviewerEntityFieldCredentialStatus, initReviewerCredentialStatusDescription(status))
-		}
+		initReviewerEntityRefreshCredentialStatus(model, ctx, seed, state)
+	}
+}
+
+func initReviewerEntityRefreshCredentialStatus(model *initLinearEditorModel, ctx initPromptContext, seed initDraft, state reviewerEntityEditorState) {
+	if status, ok := reviewerCredentialStatusForDocument(ctx, seed, state, model.document); ok {
+		model.setFieldDescription(initReviewerEntityFieldCredentialStatus, initReviewerCredentialStatusDescription(status))
 	}
 }
 
@@ -475,11 +836,14 @@ func reviewerEntityKindDetailDescription(kind initReviewerEntityKind) string {
 }
 
 func reviewerEntitySecretLocationDescription(kind initReviewerEntityKind) string {
-	base := "Leave blank to use the standard reviewer secret location for this profile. Replace the value only if you need a custom location."
-	if kind != initReviewerEntityKindGitHubApp {
-		return base
+	base := "Credential-store ref for this reviewer. This is where cr stores secret values; it is not a PAT, GitHub App ID, private key, or installation ID. Change it only if you need a custom credential-store location."
+	if kind == initReviewerEntityKindPAT {
+		return base + " Store required secret " + credentials.GitTokenKey + " at this ref."
 	}
-	return base + " This is a non-secret credential-store ref such as codereview/work-reviewer, not the GitHub App ID or private key. Store required secrets " + credentials.GitHubAppIDKey + " and " + credentials.GitHubAppPrivateKeyKey + " at this ref; " + credentials.GitHubAppInstallationIDKey + " is optional."
+	if kind == initReviewerEntityKindGitHubApp {
+		return base + " Store required secrets " + credentials.GitHubAppIDKey + " and " + credentials.GitHubAppPrivateKeyKey + " at this ref; " + credentials.GitHubAppInstallationIDKey + " is optional."
+	}
+	return base
 }
 
 func initReviewerEntityDraftFromDocument(ctx initPromptContext, seed initDraft, document initLinearDocument) (initDraft, error) {
@@ -488,5 +852,23 @@ func initReviewerEntityDraftFromDocument(ctx initPromptContext, seed initDraft, 
 	if err != nil {
 		return initDraft{}, err
 	}
-	return state.draftFromDocument(document)
+	editDraft := state.seed
+	applyReviewerEntitySelection(&editDraft, string(state.kind))
+	if state.kind == initReviewerEntityKindUseGitIdentity {
+		return editDraft, nil
+	}
+	labelInput := document.fieldValue(initReviewerEntityFieldLabel)
+	if err := validateOptionalDisplayName(labelInput); err != nil {
+		return initDraft{}, err
+	}
+	reviewerSecretLocation := document.fieldValue(initReviewerEntityFieldSecretLocation)
+	if err := validateOptionalCredentialRef(reviewerSecretLocation); err != nil {
+		return initDraft{}, err
+	}
+	if err := validateReviewerEntityInlineCredentials(ctx, seed, state, document); err != nil {
+		return initDraft{}, err
+	}
+	finalizeReviewerEntityEditorDraft(&editDraft, state.explicitDisplayName, state.fallbackLabelSeed, labelInput, reviewerSecretLocation, state.standardReviewerRef, state.preserveCurrentLocation)
+	applyReviewerEntityCredentialDraftFromDocument(&editDraft, ctx, seed, state, document)
+	return editDraft, nil
 }

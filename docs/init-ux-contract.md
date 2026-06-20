@@ -144,18 +144,18 @@ Until the user chooses **Commit staged changes and exit**:
 
 Interactive `init` must offer both:
 
-- **Commit staged changes and exit**: validate the draft, collect or defer any
-  still-unhandled required secrets, then write config and keyring state in the
-  defined final commit order
+- **Commit staged changes and exit**: validate the draft, write any staged
+  secret values, then write config and keyring state in the defined final
+  commit order
 - **Discard staged changes and exit**: discard the draft and leave both config and
   keyring untouched
 
 Credential values may be collected inside the relevant subflow once the user has
-enough local context to understand why each secret is needed. For example,
-reviewer-entity setup may collect PAT or GitHub App reviewer secrets immediately
-after the reviewer settings are staged. Those values remain draft-local until
-commit; final commit still handles untouched or deferred Git, reviewer, and LLM
-credential refs.
+enough local context to understand why each secret is needed. Reviewer-entity
+setup collects the required PAT or GitHub App reviewer secrets inline on the
+reviewer details page before a new reviewer can be staged. Those values remain
+draft-local until commit; final commit still handles untouched or deferred Git
+and LLM credential refs.
 
 If the user cancels during credential collection, whether from a subflow or after
 choosing **Commit staged changes and exit**, any pending secret values remain
@@ -177,7 +177,9 @@ selected reviewer credential ref:
 - `staged` means a draft-local value will be written at final commit.
 - `skipped optional` means the user explicitly skipped an optional key in the
   current draft.
-- `deferred` means the user deferred a required key in the current draft.
+- `deferred` means the user deferred a required key in the current draft. New
+  interactive reviewer setup should not offer deferral for required reviewer
+  keys; they must be entered inline before staging.
 - `optional` means an optional key has no staged, skipped, or existing value.
 - `status unavailable` means the backend or key contract could not be inspected,
   so the UI must not claim a key is missing.
@@ -313,6 +315,10 @@ Primary-path users should not be asked for `credential_ref` values directly.
 Instead:
 
 - defaults should be generated automatically
+- new reviewer defaults may follow the typed entity label, for example
+  `rianjs-bot` becomes `codereview/rianjs-bot-reviewer`
+- changing an existing reviewer label must not migrate or rename the existing
+  credential-store ref
 - users who need an override may edit the relevant inline **storage label**
   fields for Git, reviewer, or LLM secrets
 - irrelevant reviewer/LLM storage-label fields should stay hidden when the

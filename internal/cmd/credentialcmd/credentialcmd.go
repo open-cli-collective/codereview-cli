@@ -253,33 +253,38 @@ const (
 )
 
 type initDraft struct {
-	Action                initDraftAction
-	ActionTarget          string
-	OriginalProfileName   string
-	ProfileName           string
-	MakeDefault           bool
-	GitHost               string
-	GitAuth               string
-	GitCredentialRef      string
-	ReviewerEnabled       bool
-	ReviewerAuth          string
-	ReviewerCredentialRef string
-	ReviewerDisplayName   string
-	SecretsProfile        string
-	LLMProvider           string
-	LLMAuth               string
-	LLMAdapter            string
-	LLMReviewerModelTier  string
-	LLMCredentialRef      string
-	AdvancedStorageLabels bool
-	RoutesSet             bool
-	Routes                []configedit.RepositoryRouteSpec
-	ModelMapSet           bool
-	ModelMap              config.ModelMap
-	AgentSourcesSet       bool
-	AgentSources          []string
-	ReviewPolicySet       bool
-	ReviewPolicy          config.ReviewPolicy
+	Action                       initDraftAction
+	ActionTarget                 string
+	OriginalProfileName          string
+	ProfileName                  string
+	MakeDefault                  bool
+	GitHost                      string
+	GitAuth                      string
+	GitCredentialRef             string
+	ReviewerEnabled              bool
+	ReviewerAuth                 string
+	ReviewerCredentialRef        string
+	ReviewerDisplayName          string
+	ReviewerCredentialWriteRef   string
+	ReviewerCredentialWriteStore credentials.ResolvedSecretsProfile
+	ReviewerCredentialWrites     map[string]string
+	ReviewerCredentialOverwrite  bool
+	ReviewerCredentialSatisfied  bool
+	SecretsProfile               string
+	LLMProvider                  string
+	LLMAuth                      string
+	LLMAdapter                   string
+	LLMReviewerModelTier         string
+	LLMCredentialRef             string
+	AdvancedStorageLabels        bool
+	RoutesSet                    bool
+	Routes                       []configedit.RepositoryRouteSpec
+	ModelMapSet                  bool
+	ModelMap                     config.ModelMap
+	AgentSourcesSet              bool
+	AgentSources                 []string
+	ReviewPolicySet              bool
+	ReviewPolicy                 config.ReviewPolicy
 }
 
 type initModelMapPrompt struct {
@@ -487,6 +492,7 @@ type initSessionDraft struct {
 	workspace                    *initWorkspaceDraft
 	touchedProfiles              map[string]string
 	writes                       map[string]map[string]string
+	credentialWriteStores        map[string]credentials.ResolvedSecretsProfile
 	credentialDecisions          map[initCredentialDecisionKey]initCredentialDecisionKind
 	overwriteRefs                map[string]bool
 	satisfiedRefs                map[string]bool
@@ -567,6 +573,7 @@ type initStore interface {
 	Exists(profile, key string) (bool, error)
 	ListBundle(profile string) ([]string, error)
 	SetBundle(profile string, kv map[string]string, opts ...credstore.SetOpt) (credstore.Result, error)
+	Delete(profile, key string) error
 	Close() error
 }
 
@@ -1494,8 +1501,6 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
 	}
-	previousProfileName := session.workspace.profileName
-	previousProfile := session.workspace.profile
 	previousCfg := cloneInitConfigFile(session.cfg)
 	previousEntity := initReviewerEntityDraft{}
 	if draft.ActionTarget != "" {
@@ -1515,6 +1520,7 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, nextEntity)
 	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
 	session.requestedProfileName = workspace.profileName
+	session = mergeReviewerCredentialDraftWrites(session, draft)
 	if session.workspace != nil {
 		credentialPlan, err := planInitCredentialsWithConfig(session.cfg, workspace.previousProfile, session.workspace.profile, projectInitPlannedWriteKeys(session.writes))
 		if err != nil {
@@ -1523,19 +1529,81 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		session.workspace.previousProfile = workspace.previousProfile
 		session.workspace.credentialPlan = credentialPlan
 	}
-	if previousProfileName != workspace.profileName || !reflect.DeepEqual(previousProfile, session.workspace.profile) {
-		session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
-		if deps.menuPrompter != nil || deps.prompter == nil {
-			session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"reviewer_credentials"})
-			if errors.Is(err, errInitNavigateBack) {
-				return session, false, nil
-			}
-			if err != nil {
-				return initSessionDraft{}, false, err
-			}
+	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
+	return session, false, nil
+}
+
+func mergeReviewerCredentialDraftWrites(session initSessionDraft, draft initDraft) initSessionDraft {
+	ref := strings.TrimSpace(draft.ReviewerCredentialWriteRef)
+	if ref == "" {
+		return session
+	}
+	if session.writes == nil {
+		session.writes = map[string]map[string]string{}
+	}
+	if session.overwriteRefs == nil {
+		session.overwriteRefs = map[string]bool{}
+	}
+	if session.satisfiedRefs == nil {
+		session.satisfiedRefs = map[string]bool{}
+	}
+	if session.credentialWriteStores == nil {
+		session.credentialWriteStores = map[string]credentials.ResolvedSecretsProfile{}
+	}
+	hadStagedWrites := len(session.writes[ref]) > 0
+	if session.writes[ref] != nil {
+		session.writes[ref] = filterInitCredentialWritesForDraftReviewerMode(session.writes[ref], draft)
+		if len(session.writes[ref]) == 0 {
+			delete(session.writes, ref)
 		}
 	}
-	return session, false, nil
+	hasNewWrites := len(draft.ReviewerCredentialWrites) > 0
+	if hasNewWrites {
+		for key, value := range draft.ReviewerCredentialWrites {
+			addWrite(session.writes, ref, key, value)
+		}
+	}
+	if draft.ReviewerCredentialOverwrite {
+		session.overwriteRefs[ref] = true
+	} else if hasNewWrites || !hadStagedWrites {
+		delete(session.overwriteRefs, ref)
+	}
+	if draft.ReviewerCredentialSatisfied {
+		session.satisfiedRefs[ref] = true
+	} else {
+		delete(session.satisfiedRefs, ref)
+	}
+	session.credentialWriteStores[ref] = draft.ReviewerCredentialWriteStore
+	return session
+}
+
+func filterInitCredentialWritesForDraftReviewerMode(writes map[string]string, draft initDraft) map[string]string {
+	if len(writes) == 0 {
+		return writes
+	}
+	ref := config.CredentialRef{
+		Purpose: "reviewer_credentials",
+		Ref:     strings.TrimSpace(draft.ReviewerCredentialWriteRef),
+		Mode:    strings.TrimSpace(draft.ReviewerAuth),
+	}
+	if ref.Mode == "" {
+		ref.Mode = string(config.GitAuthModePAT)
+	}
+	specs, err := credentials.KeySpecsForPurpose(ref)
+	if err != nil {
+		return writes
+	}
+	allowed := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		allowed[spec.Key] = struct{}{}
+	}
+	filtered := make(map[string]string, len(writes))
+	for key, value := range writes {
+		if _, ok := allowed[key]; ok {
+			filtered[key] = value
+		}
+	}
+	return filtered
 }
 
 func propagateSharedReviewerEntityChanges(priorCfg config.File, updatedCfg config.File, activeProfileName string, previousEntity initReviewerEntityDraft, nextEntity initReviewerEntityDraft) config.File {
@@ -1980,7 +2048,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityInventory(prompt initRe
 		applyReviewerEntityInventorySelection(&candidateDraft, selection, prompt.Context.ReviewerEntities)
 		entity, existingEntity := prompt.Context.ReviewerEntities[selection]
 		if existingEntity {
-			detailDraft, back, err := p.editExistingReviewerEntity(entity, candidateDraft)
+			detailDraft, back, err := p.editExistingReviewerEntity(prompt.Context, entity, candidateDraft)
 			if err != nil {
 				return initDraft{}, err
 			}
@@ -1990,7 +2058,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityInventory(prompt initRe
 			detailDraft.ActionTarget = selection
 			return detailDraft, nil
 		}
-		detailDraft, back, err := p.editNewReviewerEntity(initReviewerEntityKind(selection), candidateDraft)
+		detailDraft, back, err := p.editNewReviewerEntity(prompt.Context, initReviewerEntityKind(selection), candidateDraft)
 		if err != nil {
 			return initDraft{}, err
 		}
@@ -2001,16 +2069,16 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityInventory(prompt initRe
 	}
 }
 
-func (p huhInitReviewerEntityPrompter) editExistingReviewerEntity(entity initReviewerEntityDraft, seed initDraft) (initDraft, bool, error) {
-	return p.editReviewerEntityFields(entity, seed, true)
+func (p huhInitReviewerEntityPrompter) editExistingReviewerEntity(ctx initPromptContext, entity initReviewerEntityDraft, seed initDraft) (initDraft, bool, error) {
+	return p.editReviewerEntityFields(ctx, entity, seed, true)
 }
 
-func (p huhInitReviewerEntityPrompter) editNewReviewerEntity(kind initReviewerEntityKind, seed initDraft) (initDraft, bool, error) {
-	return p.editReviewerEntityFields(initReviewerEntityDraft{Kind: kind}, seed, false)
+func (p huhInitReviewerEntityPrompter) editNewReviewerEntity(ctx initPromptContext, kind initReviewerEntityKind, seed initDraft) (initDraft, bool, error) {
+	return p.editReviewerEntityFields(ctx, initReviewerEntityDraft{Kind: kind}, seed, false)
 }
 
-func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
-	return p.editReviewerEntityFieldsLinear(entity, seed, preserveCurrentLocation)
+func (p huhInitReviewerEntityPrompter) editReviewerEntityFields(ctx initPromptContext, entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
+	return p.editReviewerEntityFieldsLinear(ctx, entity, seed, preserveCurrentLocation)
 }
 
 func finalizeReviewerEntityEditorDraft(editDraft *initDraft, explicitDisplayName string, fallbackLabelSeed string, labelInput string, reviewerSecretLocation string, standardReviewerRef string, preserveCurrentLocation bool) {
@@ -4347,6 +4415,8 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 	writes := filterInitWritesByRefs(session.writes, activeRefs)
 	overwriteRefs := filterInitBoolMapByRefs(session.overwriteRefs, activeRefs)
 	satisfiedRefs := filterInitBoolMapByRefs(session.satisfiedRefs, activeRefs)
+	writeStores := filterInitCredentialWriteStoresByRefs(session.credentialWriteStores, activeRefs)
+	writes, overwriteRefs, satisfiedRefs = filterInteractiveInitStagedCredentialStateByStore(writes, overwriteRefs, satisfiedRefs, writeStores, entries)
 	entries = refreshInteractiveCredentialPlan(entries, projectInitPlannedWriteKeys(writes), satisfiedRefs)
 	credentialDecisions := filterInitCredentialDecisions(session.credentialDecisions, entries)
 	return initSessionPlan{
@@ -5641,6 +5711,11 @@ type initWriteGroup struct {
 	OverwriteRefs map[string]bool
 }
 
+type initReviewerCredentialCleanupGroup struct {
+	Resolved credentials.ResolvedSecretsProfile
+	Entries  map[string][]initCredentialPlanEntry
+}
+
 func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string]map[string]string, overwriteRefs map[string]bool) ([]initWriteGroup, error) {
 	if len(entries) == 0 {
 		// An empty credential plan means init is using the legacy/default store
@@ -5681,6 +5756,125 @@ func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string
 		out = append(out, *groups[key])
 	}
 	return out, nil
+}
+
+func groupStaleReviewerCredentialCleanupsByStore(cfg config.File, entries []initCredentialPlanEntry) ([]initReviewerCredentialCleanupGroup, error) {
+	activeByStoreRef, resolvedByStore, err := activeReviewerCredentialEntriesByStoreRef(cfg, entries)
+	if err != nil {
+		return nil, err
+	}
+	cleanupRefsByStore := map[string]map[string]struct{}{}
+	for _, entry := range entries {
+		if !initCredentialEntryUsesActiveReviewerRef(entry) {
+			continue
+		}
+		storeKey := initCredentialStoreKey(entry.SecretsProfile)
+		if initCredentialEntryChangesReviewerModeInPlace(entry) {
+			if cleanupRefsByStore[storeKey] == nil {
+				cleanupRefsByStore[storeKey] = map[string]struct{}{}
+			}
+			cleanupRefsByStore[storeKey][entry.Ref.Ref] = struct{}{}
+		}
+	}
+
+	storeKeys := make([]string, 0, len(cleanupRefsByStore))
+	for storeKey := range cleanupRefsByStore {
+		storeKeys = append(storeKeys, storeKey)
+	}
+	sort.Strings(storeKeys)
+	groups := make([]initReviewerCredentialCleanupGroup, 0, len(storeKeys))
+	for _, storeKey := range storeKeys {
+		group := initReviewerCredentialCleanupGroup{
+			Resolved: resolvedByStore[storeKey],
+			Entries:  map[string][]initCredentialPlanEntry{},
+		}
+		refs := make([]string, 0, len(cleanupRefsByStore[storeKey]))
+		for ref := range cleanupRefsByStore[storeKey] {
+			refs = append(refs, ref)
+		}
+		sort.Strings(refs)
+		for _, ref := range refs {
+			activeEntries := activeByStoreRef[storeKey][ref]
+			if len(activeEntries) == 0 {
+				continue
+			}
+			group.Entries[ref] = activeEntries
+		}
+		if len(group.Entries) > 0 {
+			groups = append(groups, group)
+		}
+	}
+	return groups, nil
+}
+
+func activeReviewerCredentialEntriesByStoreRef(cfg config.File, fallback []initCredentialPlanEntry) (map[string]map[string][]initCredentialPlanEntry, map[string]credentials.ResolvedSecretsProfile, error) {
+	activeByStoreRef := map[string]map[string][]initCredentialPlanEntry{}
+	resolvedByStore := map[string]credentials.ResolvedSecretsProfile{}
+	if len(cfg.Profiles) == 0 {
+		for _, entry := range fallback {
+			if !initCredentialEntryUsesActiveReviewerRef(entry) {
+				continue
+			}
+			addActiveReviewerCredentialEntry(activeByStoreRef, resolvedByStore, entry)
+		}
+		return activeByStoreRef, resolvedByStore, nil
+	}
+	profileNames := make([]string, 0, len(cfg.Profiles))
+	for profileName := range cfg.Profiles {
+		profileNames = append(profileNames, profileName)
+	}
+	sort.Strings(profileNames)
+	for _, profileName := range profileNames {
+		profile := cfg.Profiles[profileName]
+		resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+		if err != nil {
+			return nil, nil, err
+		}
+		refs, err := config.CredentialRefs(profile)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, ref := range refs {
+			if ref.Purpose != "reviewer_credentials" || strings.TrimSpace(ref.Ref) == "" {
+				continue
+			}
+			specs, err := credentials.KeySpecsForPurpose(ref)
+			if err != nil {
+				return nil, nil, err
+			}
+			addActiveReviewerCredentialEntry(activeByStoreRef, resolvedByStore, initCredentialPlanEntry{
+				Ref:            ref,
+				SecretsProfile: resolved,
+				KeySpecs:       append([]credentials.KeySpec(nil), specs...),
+				State:          initCredentialPlanStateKeepExisting,
+			})
+		}
+	}
+	return activeByStoreRef, resolvedByStore, nil
+}
+
+func addActiveReviewerCredentialEntry(activeByStoreRef map[string]map[string][]initCredentialPlanEntry, resolvedByStore map[string]credentials.ResolvedSecretsProfile, entry initCredentialPlanEntry) {
+	storeKey := initCredentialStoreKey(entry.SecretsProfile)
+	resolvedByStore[storeKey] = entry.SecretsProfile
+	if activeByStoreRef[storeKey] == nil {
+		activeByStoreRef[storeKey] = map[string][]initCredentialPlanEntry{}
+	}
+	activeByStoreRef[storeKey][entry.Ref.Ref] = append(activeByStoreRef[storeKey][entry.Ref.Ref], entry)
+}
+
+func initCredentialEntryUsesActiveReviewerRef(entry initCredentialPlanEntry) bool {
+	return entry.State != initCredentialPlanStateClearRef &&
+		entry.Ref.Purpose == "reviewer_credentials" &&
+		strings.TrimSpace(entry.Ref.Ref) != ""
+}
+
+func initCredentialEntryChangesReviewerModeInPlace(entry initCredentialPlanEntry) bool {
+	if !initCredentialEntryUsesActiveReviewerRef(entry) || entry.PreviousRef == nil {
+		return false
+	}
+	return entry.PreviousRef.Purpose == entry.Ref.Purpose &&
+		entry.PreviousRef.Ref == entry.Ref.Ref &&
+		entry.PreviousRef.Mode != entry.Ref.Mode
 }
 
 func openInitStoreForEntry(deps initDeps, opts *root.Options, flagSet bool, cfg config.File, entry initCredentialPlanEntry) (initStore, error) {
@@ -6147,6 +6341,66 @@ func filterInitWritesByRefs(writes map[string]map[string]string, activeRefs map[
 	return filtered
 }
 
+func filterInitCredentialWriteStoresByRefs(values map[string]credentials.ResolvedSecretsProfile, activeRefs map[string]bool) map[string]credentials.ResolvedSecretsProfile {
+	filtered := map[string]credentials.ResolvedSecretsProfile{}
+	for ref, resolved := range values {
+		if !activeRefs[ref] {
+			continue
+		}
+		filtered[ref] = resolved
+	}
+	return filtered
+}
+
+func filterInteractiveInitStagedCredentialStateByStore(
+	writes map[string]map[string]string,
+	overwriteRefs map[string]bool,
+	satisfiedRefs map[string]bool,
+	writeStores map[string]credentials.ResolvedSecretsProfile,
+	entries []initCredentialPlanEntry,
+) (map[string]map[string]string, map[string]bool, map[string]bool) {
+	currentStores := activeInitCredentialStoresByRef(entries)
+	for ref, stagedStore := range writeStores {
+		if initCredentialStoreBindingEmpty(stagedStore) {
+			continue
+		}
+		if initCredentialStoreListContains(currentStores[ref], stagedStore) {
+			continue
+		}
+		delete(writes, ref)
+		delete(overwriteRefs, ref)
+		delete(satisfiedRefs, ref)
+	}
+	return writes, overwriteRefs, satisfiedRefs
+}
+
+func initCredentialStoreBindingEmpty(resolved credentials.ResolvedSecretsProfile) bool {
+	return resolved.ID == "" && resolved.Source == "" && resolved.Backend == ""
+}
+
+func activeInitCredentialStoresByRef(entries []initCredentialPlanEntry) map[string][]credentials.ResolvedSecretsProfile {
+	stores := map[string][]credentials.ResolvedSecretsProfile{}
+	for _, entry := range entries {
+		if entry.State == initCredentialPlanStateClearRef || strings.TrimSpace(entry.Ref.Ref) == "" {
+			continue
+		}
+		if initCredentialStoreListContains(stores[entry.Ref.Ref], entry.SecretsProfile) {
+			continue
+		}
+		stores[entry.Ref.Ref] = append(stores[entry.Ref.Ref], entry.SecretsProfile)
+	}
+	return stores
+}
+
+func initCredentialStoreListContains(values []credentials.ResolvedSecretsProfile, target credentials.ResolvedSecretsProfile) bool {
+	for _, value := range values {
+		if sameInitCredentialStore(value, target) {
+			return true
+		}
+	}
+	return false
+}
+
 func filterInitCredentialDecisions(values map[initCredentialDecisionKey]initCredentialDecisionKind, entries []initCredentialPlanEntry) map[initCredentialDecisionKey]initCredentialDecisionKind {
 	if len(values) == 0 {
 		return map[initCredentialDecisionKey]initCredentialDecisionKind{}
@@ -6356,6 +6610,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 		}
 		return err
 	}
+	touchedCredentialRefs := map[string]struct{}{}
 	if len(plan.writes) > 0 {
 		groups, err := groupInitWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
 		if err != nil {
@@ -6377,16 +6632,26 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 				_ = store.Close()
 				return cmderr.Credential(err)
 			}
+			for ref := range group.Writes {
+				touchedCredentialRefs[ref] = struct{}{}
+			}
 			_ = store.Close()
 		}
+	}
+	cleanupGroups, err := groupStaleReviewerCredentialCleanupsByStore(plan.cfg, plan.credentialPlan)
+	if err != nil {
+		return cmderr.Config(err)
 	}
 	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
 		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
 			return cmderr.Config(err)
 		}
-		if len(plan.writes) > 0 {
-			return fmt.Errorf("init wrote credentials but failed to save config; credential refs needing cleanup: %v: %w", sortedRefs(plan.writes), err)
+		if len(touchedCredentialRefs) > 0 {
+			return fmt.Errorf("init updated credentials but failed to save config; credential refs needing cleanup: %v: %w", sortedCredentialRefSet(touchedCredentialRefs), err)
 		}
+		return err
+	}
+	if err := applyStaleReviewerCredentialCleanups(opts, deps, plan.backendFlagSet, plan.cfg, cleanupGroups); err != nil {
 		return err
 	}
 	if err := writeInteractiveInitSessionSummary(opts.Stdout, plan); err != nil {
@@ -6527,9 +6792,30 @@ func initSecretsProfileHintLabel(resolved credentials.ResolvedSecretsProfile) st
 	return initSecretsProfilePromptSuffix(resolved)
 }
 
+func applyStaleReviewerCredentialCleanups(opts *root.Options, deps initDeps, backendFlagSet bool, cfg config.File, groups []initReviewerCredentialCleanupGroup) error {
+	for _, group := range groups {
+		store, err := openInitStoreForEntry(deps, opts, backendFlagSet, cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
+		if err != nil {
+			return cmderr.Credential(fmt.Errorf("init saved config before failing to open credential store for stale reviewer cleanup; stale credential refs needing manual cleanup: %v: %w", sortedCredentialEntryRefs(group.Entries), err))
+		}
+		cleanedRefs, err := deleteStaleReviewerCredentialKeysForRefs(store, group.Entries)
+		if err != nil {
+			_ = store.Close()
+			return cmderr.Credential(fmt.Errorf("init saved config before failing to delete stale reviewer keys on %s; stale credential refs needing manual cleanup: %v: %w", firstUncleanedReviewerCredentialRef(group.Entries, cleanedRefs), sortedCredentialEntryRefs(group.Entries), err))
+		}
+		_ = store.Close()
+	}
+	return nil
+}
+
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
 	var store initStore
 	var primaryResolved credentials.ResolvedSecretsProfile
+	cleanupGroups, err := groupStaleReviewerCredentialCleanupsByStore(plan.cfg, plan.credentialPlan)
+	if err != nil {
+		return cmderr.Config(err)
+	}
+	needsPrimaryStore := len(plan.writes) > 0 || (plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.allowDeferredLLM)
 	openPrimaryStore := func() (initStore, credentials.ResolvedSecretsProfile, error) {
 		if store != nil {
 			return store, primaryResolved, nil
@@ -6552,7 +6838,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 		primaryResolved = entry.SecretsProfile
 		return store, primaryResolved, nil
 	}
-	if len(plan.writes) > 0 || (plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.allowDeferredLLM) {
+	if needsPrimaryStore {
 		var err error
 		store, primaryResolved, err = openPrimaryStore()
 		if err != nil {
@@ -6583,6 +6869,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 			return exitcode.Usage(fmt.Errorf("api_key LLM auth requires --llm-api-key-stdin or --llm-api-key-from-env"))
 		}
 	}
+	touchedCredentialRefs := map[string]struct{}{}
 	if len(plan.writes) > 0 {
 		groups, err := groupInitWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
 		if err != nil {
@@ -6610,31 +6897,37 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 			if _, err := writeBundles(groupStore, group.Writes, flags.overwrite, group.OverwriteRefs); err != nil {
 				return cmderr.Credential(err)
 			}
+			for ref := range group.Writes {
+				touchedCredentialRefs[ref] = struct{}{}
+			}
 		}
 	}
 	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
 		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
 			return cmderr.Config(err)
 		}
-		if len(plan.writes) > 0 {
-			return fmt.Errorf("init wrote credentials but failed to save config for profile %q; credential refs needing cleanup: %v: %w", plan.profileName, sortedRefs(plan.writes), err)
+		if len(touchedCredentialRefs) > 0 {
+			return fmt.Errorf("init updated credentials but failed to save config for profile %q; credential refs needing cleanup: %v: %w", plan.profileName, sortedCredentialRefSet(touchedCredentialRefs), err)
 		}
+		return err
+	}
+	if err := applyStaleReviewerCredentialCleanups(opts, deps, plan.backendFlagSet, plan.cfg, cleanupGroups); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(opts.Stdout, "Initialized profile %s\n", plan.profileName); err != nil {
 		return err
 	}
-	var err error
+	var writeErr error
 	for _, entry := range plan.credentialPlan {
 		if !shouldWriteInitCredentialHint(entry, plan.writeLLMHint) {
 			continue
 		}
 		hintErr := writeInitCredentialPlanHints(opts.Stderr, plan.backendArg, entry)
-		if err == nil {
-			err = hintErr
+		if writeErr == nil {
+			writeErr = hintErr
 		}
 	}
-	return err
+	return writeErr
 }
 
 func writeInitCredentialPlanHints(w io.Writer, backendArg string, entry initCredentialPlanEntry) error {
@@ -6994,6 +7287,84 @@ func writeBundles(store initStore, writes map[string]map[string]string, overwrit
 	return writtenRefs, nil
 }
 
+func deleteStaleReviewerCredentialKeysForRefs(store initStore, entries map[string][]initCredentialPlanEntry) ([]string, error) {
+	var cleanedRefs []string
+	for _, ref := range sortedCredentialEntryRefs(entries) {
+		deleted, err := deleteStaleReviewerCredentialKeys(store, entries[ref])
+		if deleted {
+			cleanedRefs = append(cleanedRefs, ref)
+		}
+		if err != nil {
+			return cleanedRefs, err
+		}
+	}
+	return cleanedRefs, nil
+}
+
+func deleteStaleReviewerCredentialKeys(store initStore, entries []initCredentialPlanEntry) (bool, error) {
+	if len(entries) == 0 {
+		return false, nil
+	}
+	ref := entries[0].Ref
+	if ref.Purpose != "reviewer_credentials" || strings.TrimSpace(ref.Ref) == "" {
+		return false, nil
+	}
+	for _, entry := range entries[1:] {
+		if entry.Ref.Purpose != ref.Purpose || entry.Ref.Ref != ref.Ref {
+			return false, nil
+		}
+	}
+	staleKeys := staleReviewerCredentialKeys(entries)
+	if len(staleKeys) == 0 {
+		return false, nil
+	}
+	parsed, err := credentials.ParseRef(ref.Ref)
+	if err != nil {
+		return false, err
+	}
+	existingKeys, err := store.ListBundle(parsed.Profile)
+	if err != nil {
+		return false, err
+	}
+	existing := make(map[string]struct{}, len(existingKeys))
+	for _, key := range existingKeys {
+		existing[key] = struct{}{}
+	}
+	deleted := false
+	for _, key := range staleKeys {
+		if _, ok := existing[key]; !ok {
+			continue
+		}
+		if err := store.Delete(parsed.Profile, key); err != nil {
+			return deleted, err
+		}
+		deleted = true
+	}
+	return deleted, nil
+}
+
+func staleReviewerCredentialKeys(entries []initCredentialPlanEntry) []string {
+	current := map[string]struct{}{}
+	for _, entry := range entries {
+		for _, spec := range entry.KeySpecs {
+			current[spec.Key] = struct{}{}
+		}
+	}
+	candidates := []string{
+		credentials.GitTokenKey,
+		credentials.GitHubAppIDKey,
+		credentials.GitHubAppPrivateKeyKey,
+		credentials.GitHubAppInstallationIDKey,
+	}
+	var stale []string
+	for _, key := range candidates {
+		if _, ok := current[key]; !ok {
+			stale = append(stale, key)
+		}
+	}
+	return stale
+}
+
 func sortedRefs(writes map[string]map[string]string) []string {
 	refs := make([]string, 0, len(writes))
 	for ref := range writes {
@@ -7001,6 +7372,37 @@ func sortedRefs(writes map[string]map[string]string) []string {
 	}
 	sort.Strings(refs)
 	return refs
+}
+
+func sortedCredentialEntryRefs(entries map[string][]initCredentialPlanEntry) []string {
+	refs := make([]string, 0, len(entries))
+	for ref := range entries {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	return refs
+}
+
+func sortedCredentialRefSet(refs map[string]struct{}) []string {
+	out := make([]string, 0, len(refs))
+	for ref := range refs {
+		out = append(out, ref)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func firstUncleanedReviewerCredentialRef(entries map[string][]initCredentialPlanEntry, cleanedRefs []string) string {
+	cleaned := make(map[string]struct{}, len(cleanedRefs))
+	for _, ref := range cleanedRefs {
+		cleaned[ref] = struct{}{}
+	}
+	for _, ref := range sortedCredentialEntryRefs(entries) {
+		if _, ok := cleaned[ref]; !ok {
+			return ref
+		}
+	}
+	return ""
 }
 
 func sortedKeys(values map[string]string) []string {
