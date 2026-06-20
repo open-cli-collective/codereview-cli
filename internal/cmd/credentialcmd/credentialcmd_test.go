@@ -15386,6 +15386,29 @@ func TestMergeReviewerCredentialDraftWritesDropsStaleKeysWhenAuthModeChanges(t *
 	})
 }
 
+func TestMergeReviewerCredentialDraftWritesPreservesOverwriteFlagOnNoSecretReentry(t *testing.T) {
+	ref := "codereview/work-reviewer"
+	session := initSessionDraft{}
+	firstDraft := initDraft{ReviewerAuth: string(config.GitAuthModePAT)}
+	stageDraftInlinePATReviewerCredential(&firstDraft, ref, "replacement-token")
+	firstDraft.ReviewerCredentialOverwrite = true
+	session = mergeReviewerCredentialDraftWrites(session, firstDraft)
+
+	secondDraft := initDraft{
+		ReviewerAuth:                string(config.GitAuthModePAT),
+		ReviewerCredentialWriteRef:  ref,
+		ReviewerCredentialSatisfied: true,
+	}
+	session = mergeReviewerCredentialDraftWrites(session, secondDraft)
+
+	if got := session.writes[ref][credentials.GitTokenKey]; got != "replacement-token" {
+		t.Fatalf("staged git_token = %q, want replacement retained", got)
+	}
+	if !session.overwriteRefs[ref] {
+		t.Fatalf("overwriteRefs[%q] = false, want retained for existing staged replacement", ref)
+	}
+}
+
 func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHints(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
@@ -19634,7 +19657,7 @@ func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
 	written, err := writeBundles(store, map[string]map[string]string{
 		"codereview/a": {credentials.GitTokenKey: "new"},
 		"codereview/b": {credentials.GitTokenKey: "conflict"},
-	}, false, nil)
+	}, false, nil, nil)
 	if err == nil {
 		t.Fatal("writeBundles error = nil, want conflict")
 	}
@@ -19643,6 +19666,51 @@ func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "credential refs needing cleanup: [codereview/a]") {
 		t.Fatalf("error = %v, want cleanup ref", err)
+	}
+}
+
+func TestWriteBundlesDeletesStaleReviewerKeysAfterAuthModeSwitch(t *testing.T) {
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendMemory,
+	})
+	if err != nil {
+		t.Fatalf("Open memory store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.SetBundle("work-reviewer", map[string]string{credentials.GitTokenKey: "old-reviewer-pat"}); err != nil {
+		t.Fatalf("seed reviewer PAT bundle: %v", err)
+	}
+	entry := initCredentialPlanEntry{
+		Ref: config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Ref:     "codereview/work-reviewer",
+			Mode:    string(config.GitAuthModeGitHubApp),
+		},
+		KeySpecs: []credentials.KeySpec{
+			{Key: credentials.GitHubAppIDKey, Required: true},
+			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+		},
+	}
+
+	written, err := writeBundles(store, map[string]map[string]string{
+		"codereview/work-reviewer": {
+			credentials.GitHubAppIDKey:         "12345",
+			credentials.GitHubAppPrivateKeyKey: "private-key",
+		},
+	}, false, nil, map[string]initCredentialPlanEntry{"codereview/work-reviewer": entry})
+	if err != nil {
+		t.Fatalf("writeBundles: %v", err)
+	}
+	if !reflect.DeepEqual(written, []string{"codereview/work-reviewer"}) {
+		t.Fatalf("written refs = %#v, want work reviewer", written)
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || ok {
+		t.Fatalf("stale git_token exists = %t, err = %v; want deleted", ok, err)
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
+		t.Fatalf("github_app_id exists = %t, err = %v; want written", ok, err)
 	}
 }
 
@@ -19749,6 +19817,14 @@ func (s *fakeInitStore) SetBundle(profile string, kv map[string]string, opts ...
 	}
 	sort.Strings(written)
 	return credstore.Result{Written: written}, nil
+}
+
+func (s *fakeInitStore) Delete(profile, key string) error {
+	if _, ok := s.bundles[profile][key]; !ok {
+		return credstore.ErrNotFound
+	}
+	delete(s.bundles[profile], key)
+	return nil
 }
 
 func (s *fakeInitStore) Close() error { return nil }

@@ -571,6 +571,7 @@ type initStore interface {
 	Exists(profile, key string) (bool, error)
 	ListBundle(profile string) ([]string, error)
 	SetBundle(profile string, kv map[string]string, opts ...credstore.SetOpt) (credstore.Result, error)
+	Delete(profile, key string) error
 	Close() error
 }
 
@@ -1544,20 +1545,22 @@ func mergeReviewerCredentialDraftWrites(session initSessionDraft, draft initDraf
 	if session.satisfiedRefs == nil {
 		session.satisfiedRefs = map[string]bool{}
 	}
+	hadStagedWrites := len(session.writes[ref]) > 0
 	if session.writes[ref] != nil {
 		session.writes[ref] = filterInitCredentialWritesForDraftReviewerMode(session.writes[ref], draft)
 		if len(session.writes[ref]) == 0 {
 			delete(session.writes, ref)
 		}
 	}
-	if len(draft.ReviewerCredentialWrites) > 0 {
+	hasNewWrites := len(draft.ReviewerCredentialWrites) > 0
+	if hasNewWrites {
 		for key, value := range draft.ReviewerCredentialWrites {
 			addWrite(session.writes, ref, key, value)
 		}
 	}
 	if draft.ReviewerCredentialOverwrite {
 		session.overwriteRefs[ref] = true
-	} else {
+	} else if hasNewWrites || !hadStagedWrites {
 		delete(session.overwriteRefs, ref)
 	}
 	if draft.ReviewerCredentialSatisfied {
@@ -5698,6 +5701,7 @@ type initWriteGroup struct {
 	Resolved      credentials.ResolvedSecretsProfile
 	Writes        map[string]map[string]string
 	OverwriteRefs map[string]bool
+	Entries       map[string]initCredentialPlanEntry
 }
 
 func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string]map[string]string, overwriteRefs map[string]bool) ([]initWriteGroup, error) {
@@ -5707,6 +5711,7 @@ func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string
 		return []initWriteGroup{{
 			Writes:        writes,
 			OverwriteRefs: overwriteRefs,
+			Entries:       map[string]initCredentialPlanEntry{},
 		}}, nil
 	}
 	groups := map[string]*initWriteGroup{}
@@ -5722,10 +5727,12 @@ func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string
 				Resolved:      entry.SecretsProfile,
 				Writes:        map[string]map[string]string{},
 				OverwriteRefs: map[string]bool{},
+				Entries:       map[string]initCredentialPlanEntry{},
 			}
 			groups[key] = group
 		}
 		group.Writes[entry.Ref.Ref] = bundle
+		group.Entries[entry.Ref.Ref] = entry
 		if overwriteRefs[entry.Ref.Ref] {
 			group.OverwriteRefs[entry.Ref.Ref] = true
 		}
@@ -6432,7 +6439,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 				_ = store.Close()
 				return cmderr.Credential(err)
 			}
-			if _, err := writeBundles(store, group.Writes, false, group.OverwriteRefs); err != nil {
+			if _, err := writeBundles(store, group.Writes, false, group.OverwriteRefs, group.Entries); err != nil {
 				_ = store.Close()
 				return cmderr.Credential(err)
 			}
@@ -6666,7 +6673,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 					return cmderr.Credential(err)
 				}
 			}
-			if _, err := writeBundles(groupStore, group.Writes, flags.overwrite, group.OverwriteRefs); err != nil {
+			if _, err := writeBundles(groupStore, group.Writes, flags.overwrite, group.OverwriteRefs, group.Entries); err != nil {
 				return cmderr.Credential(err)
 			}
 		}
@@ -7026,7 +7033,7 @@ func preflightNoOverwrite(store initStore, writes map[string]map[string]string, 
 	return nil
 }
 
-func writeBundles(store initStore, writes map[string]map[string]string, overwriteAll bool, overwriteRefs map[string]bool) ([]string, error) {
+func writeBundles(store initStore, writes map[string]map[string]string, overwriteAll bool, overwriteRefs map[string]bool, entries map[string]initCredentialPlanEntry) ([]string, error) {
 	var writtenRefs []string
 	for _, ref := range sortedRefs(writes) {
 		parsed, err := credentials.ParseRef(ref)
@@ -7048,9 +7055,72 @@ func writeBundles(store initStore, writes map[string]map[string]string, overwrit
 			}
 			return writtenRefs, err
 		}
+		if err := deleteStaleReviewerCredentialKeys(store, entryForWriteRef(entries, ref)); err != nil {
+			cleanupRefs := append([]string(nil), writtenRefs...)
+			cleanupRefs = append(cleanupRefs, ref)
+			return writtenRefs, fmt.Errorf("init wrote credentials before failing to delete stale keys on %s; credential refs needing cleanup: %v: %w", ref, cleanupRefs, err)
+		}
 		writtenRefs = append(writtenRefs, ref)
 	}
 	return writtenRefs, nil
+}
+
+func entryForWriteRef(entries map[string]initCredentialPlanEntry, ref string) initCredentialPlanEntry {
+	if entries == nil {
+		return initCredentialPlanEntry{}
+	}
+	return entries[ref]
+}
+
+func deleteStaleReviewerCredentialKeys(store initStore, entry initCredentialPlanEntry) error {
+	if entry.Ref.Purpose != "reviewer_credentials" || strings.TrimSpace(entry.Ref.Ref) == "" {
+		return nil
+	}
+	staleKeys := staleReviewerCredentialKeys(entry)
+	if len(staleKeys) == 0 {
+		return nil
+	}
+	parsed, err := credentials.ParseRef(entry.Ref.Ref)
+	if err != nil {
+		return err
+	}
+	existingKeys, err := store.ListBundle(parsed.Profile)
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]struct{}, len(existingKeys))
+	for _, key := range existingKeys {
+		existing[key] = struct{}{}
+	}
+	for _, key := range staleKeys {
+		if _, ok := existing[key]; !ok {
+			continue
+		}
+		if err := store.Delete(parsed.Profile, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func staleReviewerCredentialKeys(entry initCredentialPlanEntry) []string {
+	current := make(map[string]struct{}, len(entry.KeySpecs))
+	for _, spec := range entry.KeySpecs {
+		current[spec.Key] = struct{}{}
+	}
+	candidates := []string{
+		credentials.GitTokenKey,
+		credentials.GitHubAppIDKey,
+		credentials.GitHubAppPrivateKeyKey,
+		credentials.GitHubAppInstallationIDKey,
+	}
+	var stale []string
+	for _, key := range candidates {
+		if _, ok := current[key]; !ok {
+			stale = append(stale, key)
+		}
+	}
+	return stale
 }
 
 func sortedRefs(writes map[string]map[string]string) []string {
