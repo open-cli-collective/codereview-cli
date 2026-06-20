@@ -516,6 +516,42 @@ func initReviewerEntityCredentialFieldKey(id initLinearFieldID) string {
 		return credentials.GitHubAppPrivateKeyKey
 	case initReviewerEntityFieldGitHubAppInstallationID:
 		return credentials.GitHubAppInstallationIDKey
+	case initRetentionFieldMaxAge,
+		initRetentionFieldAction,
+		initLLMRuntimeFieldSelection,
+		initLLMRuntimeFieldProvider,
+		initLLMRuntimeFieldAuth,
+		initLLMRuntimeFieldAdapter,
+		initLLMRuntimeFieldReplacement,
+		initLLMRuntimeFieldAction,
+		initReviewerEntityFieldSelection,
+		initReviewerEntityFieldLabel,
+		initReviewerEntityFieldSecretLocation,
+		initReviewerEntityFieldCredentialStatus,
+		initReviewerEntityFieldCredentialValues,
+		initReviewerEntityFieldAction,
+		initSecretsManagementFieldTarget,
+		initSecretsManagementFieldLegacyBackend,
+		initSecretsManagementFieldLabel,
+		initSecretsManagementFieldBackend,
+		initSecretsManagementFieldVaultID,
+		initSecretsManagementFieldTimeout,
+		initSecretsManagementFieldItemTitlePrefix,
+		initSecretsManagementFieldItemTag,
+		initSecretsManagementFieldItemFieldTitle,
+		initSecretsManagementFieldConnectHost,
+		initSecretsManagementFieldConnectTokenEnv,
+		initSecretsManagementFieldServiceTokenEnv,
+		initSecretsManagementFieldDesktopAccountID,
+		initSecretsManagementFieldDefault,
+		initSecretsManagementFieldAction,
+		initSecretsManagementSectionLegacy,
+		initSecretsManagementSectionProfile,
+		initSecretsManagementSectionOnePassword,
+		initSecretsManagementSectionConnect,
+		initSecretsManagementSectionServiceAccount,
+		initSecretsManagementSectionDesktop:
+		return ""
 	default:
 		return ""
 	}

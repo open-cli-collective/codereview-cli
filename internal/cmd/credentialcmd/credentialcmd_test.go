@@ -16063,7 +16063,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 	store := newFakeInitStore(map[string]map[string]string{
 		"work": {credentials.GitTokenKey: "existing-token"},
 	})
-	store.setBundleFunc = func(profile string, kv map[string]string, opts ...credstore.SetOpt) (credstore.Result, error) {
+	store.setBundleFunc = func(profile string, kv map[string]string, _ ...credstore.SetOpt) (credstore.Result, error) {
 		if profile == "rianjs-bot" {
 			t.Fatalf("SetBundle called for stale reviewer ref with %#v", kv)
 		}
@@ -16304,7 +16304,7 @@ func TestInitInteractiveMenuReviewerBackWithoutStagingDiscardsInlineSecretWrites
 				initMenuActionExit,
 			},
 		},
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		reviewerPrompter: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
 			return initDraft{}, errInitNavigateBack
 		}),
 		secretPrompter: &fakeInitSecretPrompter{},
