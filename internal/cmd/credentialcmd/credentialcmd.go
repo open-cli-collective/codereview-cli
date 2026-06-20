@@ -1672,15 +1672,14 @@ func editInteractiveInitSecretsManagement(_ *cobra.Command, opts *root.Options, 
 }
 
 func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction, error) {
+	if !initMenuUseAccessibleFallback(p.stdin, p.stderr) {
+		return runInitMenu(prompt, p.stdin, p.stderr)
+	}
 	action := initMenuInitialAction(prompt)
-	options := []huh.Option[initMenuAction]{
-		huh.NewOption(fmt.Sprintf("Configure LLM runtimes (%d)", prompt.LLMRuntimeCount), initMenuActionLLMRuntimes),
-		huh.NewOption(fmt.Sprintf("Configure reviewer entities (%d)", prompt.ReviewerEntityCount), initMenuActionReviewerEntities),
-		huh.NewOption(fmt.Sprintf("Configure review profiles (%d)", prompt.ReviewProfileCount), initMenuActionReviewProfiles),
-		huh.NewOption("Configure global settings", initMenuActionGlobalSettings),
-		huh.NewOption("Configure secrets management", initMenuActionSecretsManagement),
-		huh.NewOption("Commit staged changes and exit", initMenuActionSave),
-		huh.NewOption("Discard staged changes and exit", initMenuActionExit),
+	items := initMenuItems(prompt)
+	options := make([]huh.Option[initMenuAction], 0, len(items))
+	for _, item := range items {
+		options = append(options, huh.NewOption(item.Title, item.Action))
 	}
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -1690,20 +1689,8 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 				Options(options...).
 				Value(&action).
 				Validate(func(value initMenuAction) error {
-					switch value {
-					case initMenuActionLLMRuntimes:
-						if !prompt.CanConfigureLLM {
-							return errors.New("configure a review profile before editing LLM runtimes")
-						}
-					case initMenuActionReviewerEntities:
-						if !prompt.CanConfigureReviewer {
-							return errors.New("configure a review profile before editing reviewer entities")
-						}
-					case initMenuActionSave:
-						if !prompt.CanSave {
-							return errors.New("configure a review profile before committing changes")
-						}
-					case initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionSecretsManagement, initMenuActionExit:
+					if reason := initMenuDisabledReason(prompt, value); reason != "" {
+						return errors.New(reason)
 					}
 					return nil
 				}),
@@ -1716,11 +1703,8 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 }
 
 func initMenuInitialAction(prompt initMenuPrompt) initMenuAction {
-	if prompt.CanConfigureLLM {
-		return initMenuActionLLMRuntimes
-	}
-	if prompt.CanConfigureReviewer {
-		return initMenuActionReviewerEntities
+	if prompt.HasWorkspace {
+		return initMenuActionSecretsManagement
 	}
 	return initMenuActionReviewProfiles
 }
