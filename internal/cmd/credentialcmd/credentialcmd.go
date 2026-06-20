@@ -102,11 +102,18 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 		}
 		return result, exitcode.Usage(err)
 	}
-	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForRef(cfg, flags.ref, opts.Profile)
-	if err != nil {
-		return result, exitcode.AuthConfig(err)
+	backendFlagChanged := cmderr.BackendFlagChanged(cmd)
+	var resolvedSecretsProfile credentials.ResolvedSecretsProfile
+	var store *credstore.Store
+	if backendFlagChanged {
+		store, err = credentials.OpenStore(opts.Backend, true, cfg)
+	} else {
+		resolvedSecretsProfile, err = credentials.ResolveSecretsProfileForRef(cfg, flags.ref, opts.Profile)
+		if err != nil {
+			return result, exitcode.AuthConfig(err)
+		}
+		store, err = credentials.OpenResolvedStore(opts.Backend, false, cfg, resolvedSecretsProfile)
 	}
-	store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
 	if err != nil {
 		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
 			return result, cmderr.Config(err)
@@ -120,7 +127,7 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 	}
 	backend, source := store.Backend()
 	result.Backend = string(backend)
-	if resolvedSecretsProfile.IsNamed() {
+	if !backendFlagChanged && resolvedSecretsProfile.IsNamed() {
 		result.BackendSource = string(credentials.BackendSourceSecretsProfile)
 	} else {
 		result.BackendSource = string(source)

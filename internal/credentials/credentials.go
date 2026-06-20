@@ -22,6 +22,9 @@ const (
 	// BackendSourceSecretsProfile records that a named secrets-management
 	// profile selected the active credential backend.
 	BackendSourceSecretsProfile credstore.Source = "secrets_profile"
+	// BackendSourceCredentialStore records that an explicit credential-store
+	// destination selected the active credential backend.
+	BackendSourceCredentialStore credstore.Source = "credential_store"
 
 	// GitTokenKey stores the Git host access token for PAT auth.
 	GitTokenKey = "git_token"
@@ -89,6 +92,9 @@ type ResolvedSecretsProfile struct {
 	SelectionSource SecretsProfileSelectionSource
 }
 
+// ResolvedCredentialStore is the current name for ResolvedSecretsProfile.
+type ResolvedCredentialStore = ResolvedSecretsProfile
+
 // DisplayName returns the best user-facing label for the resolved store.
 func (r ResolvedSecretsProfile) DisplayName() string {
 	if strings.TrimSpace(r.Label) != "" {
@@ -125,17 +131,78 @@ func ParseRef(ref string) (Ref, error) {
 	return Ref{Service: service, Profile: profile, Full: ref}, nil
 }
 
+// PlatformOSBackend returns the non-configurable OS credential backend for goos.
+func PlatformOSBackend(goos string) (credstore.Backend, error) {
+	switch goos {
+	case "darwin":
+		return credstore.BackendKeychain, nil
+	case "windows":
+		return credstore.BackendWinCred, nil
+	case "linux":
+		return credstore.BackendSecretService, nil
+	default:
+		return "", credstore.ErrBackendNotImplemented
+	}
+}
+
+// ResolveCredentialStore resolves one explicit credential-store ID.
+func ResolveCredentialStore(cfg config.File, storeID string) (ResolvedCredentialStore, error) {
+	cfg = config.Normalize(cfg)
+	storeID = strings.TrimSpace(storeID)
+	if storeID == "" {
+		return ResolvedCredentialStore{}, fmt.Errorf("%w: credential store is required", config.ErrInvalid)
+	}
+	if storeID == config.LocalOSCredentialStoreID {
+		backend, err := PlatformOSBackend(runtime.GOOS)
+		if err != nil {
+			return ResolvedCredentialStore{}, fmt.Errorf("%w: no OS credential store backend for GOOS %q", err, runtime.GOOS)
+		}
+		return ResolvedCredentialStore{
+			ID:              config.LocalOSCredentialStoreID,
+			Label:           "OS credential store",
+			Backend:         string(backend),
+			Source:          config.EffectiveSecretsStoreSourceBuiltIn,
+			SelectionSource: SecretsProfileSelectionLegacyDefault,
+		}, nil
+	}
+	store, ok := cfg.Secrets.Stores[storeID]
+	if !ok {
+		return ResolvedCredentialStore{}, fmt.Errorf("%w: %s", config.ErrSecretsStoreNotFound, storeID)
+	}
+	backend, err := credstore.ParseBackend(string(store.Backend.Kind))
+	if err != nil {
+		return ResolvedCredentialStore{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+	}
+	label := strings.TrimSpace(store.DisplayName)
+	if label == "" {
+		label = storeID
+	}
+	return ResolvedCredentialStore{
+		ID:              storeID,
+		Label:           label,
+		Backend:         string(backend),
+		Source:          config.EffectiveSecretsStoreSourceConfigured,
+		SelectionSource: SecretsProfileSelectionExplicit,
+	}, nil
+}
+
+// ResolveCredentialStoreForLocation resolves the credential store referenced
+// by one configured credential location.
+func ResolveCredentialStoreForLocation(cfg config.File, location config.CredentialLocation) (ResolvedCredentialStore, error) {
+	return ResolveCredentialStore(cfg, location.Store)
+}
+
 // ResolveSecretsProfileForProfile resolves the effective secrets-management
 // profile for one review profile.
 func ResolveSecretsProfileForProfile(cfg config.File, profile config.Profile) (ResolvedSecretsProfile, error) {
-	selection := strings.TrimSpace(profile.SecretsProfile)
-	if selection != "" {
-		return resolveConfiguredSecretsProfile(cfg, selection, SecretsProfileSelectionExplicit)
+	if selection := strings.TrimSpace(profile.SecretsProfile); selection != "" {
+		return ResolveCredentialStore(cfg, selection)
 	}
-	if effectiveDefault, ok := config.EffectiveDefaultSecretsProfile(cfg); ok && effectiveDefault.Source == config.EffectiveSecretsProfileSourceConfigured {
-		return resolvedSecretsProfileFromEffective(effectiveDefault, SecretsProfileSelectionDefault), nil
-	}
-	return resolveLegacySecretsProfile(cfg), nil
+	profile = config.Normalize(config.File{
+		DefaultProfile: "profile",
+		Profiles:       map[string]config.Profile{"profile": profile},
+	}).Profiles["profile"]
+	return ResolveCredentialStoreForLocation(cfg, profile.Git.Credential)
 }
 
 // ResolveSecretsProfileForRef resolves the effective secrets-management profile
@@ -148,26 +215,29 @@ func ResolveSecretsProfileForRef(cfg config.File, ref string, selectedProfile st
 		if !ok {
 			return ResolvedSecretsProfile{}, fmt.Errorf("%w: %s", config.ErrProfileNotFound, selectedProfile)
 		}
-		if len(matchingCredentialRefs(profile, ref)) > 0 {
-			return ResolveSecretsProfileForProfile(cfg, profile)
+		matches := matchingCredentialRefs(profile, ref)
+		if len(matches) == 0 {
+			owners := profilesDeclaringCredentialRef(cfg, ref)
+			if len(owners) == 0 {
+				return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential ref %q is not declared by selected profile %q", config.ErrInvalid, ref, selectedProfile)
+			}
+			return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential ref %q is not declared by selected profile %q; declared by %s", config.ErrInvalid, ref, selectedProfile, strings.Join(ownerNames(owners), ", "))
 		}
-		owners := profilesDeclaringCredentialRef(cfg, ref)
-		if len(owners) == 0 {
-			return ResolveSecretsProfileForProfile(cfg, profile)
-		}
-		return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential ref %q is not declared by selected profile %q; declared by %s", config.ErrInvalid, ref, selectedProfile, strings.Join(ownerNames(owners), ", "))
+		return ResolveCredentialStore(cfg, matches[0].Store)
 	}
 
 	owners := profilesDeclaringCredentialRef(cfg, ref)
 	if len(owners) == 0 {
-		return resolveLegacySecretsProfile(cfg), nil
+		return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential ref %q is not declared by any profile", config.ErrInvalid, ref)
 	}
-	resolved, err := ResolveSecretsProfileForProfile(cfg, owners[0].Profile)
+	matches := matchingCredentialRefs(owners[0].Profile, ref)
+	resolved, err := ResolveCredentialStore(cfg, matches[0].Store)
 	if err != nil {
 		return ResolvedSecretsProfile{}, err
 	}
 	for _, owner := range owners[1:] {
-		next, err := ResolveSecretsProfileForProfile(cfg, owner.Profile)
+		nextMatches := matchingCredentialRefs(owner.Profile, ref)
+		next, err := ResolveCredentialStore(cfg, nextMatches[0].Store)
 		if err != nil {
 			return ResolvedSecretsProfile{}, err
 		}
@@ -182,31 +252,38 @@ func ResolveSecretsProfileForRef(cfg config.File, ref string, selectedProfile st
 // StoreOptionsForResolvedProfile builds credstore options for one resolved
 // secrets-management profile.
 func StoreOptionsForResolvedProfile(flagValue string, flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (credstore.Options, error) {
-	if resolved.IsNamed() {
-		if flagSet {
-			return credstore.Options{}, fmt.Errorf("%w: --backend conflicts with named secrets-management profile %q", config.ErrInvalid, resolved.DisplayName())
-		}
-		profile, ok := cfg.Secrets.Profiles[resolved.ID]
-		if !ok {
-			return credstore.Options{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, resolved.ID)
-		}
-		backend, err := credstore.ParseBackend(resolved.Backend)
-		if err != nil {
-			return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
-		}
-		options := credstore.Options{
-			AllowedKeys: AllowedKeys(),
-			Backend:     backend,
-		}
-		if config.IsOnePasswordSecretsBackend(profile.Backend.Kind) {
-			options.OnePassword, err = onePasswordOptionsFromConfig(profile.Backend)
-			if err != nil {
-				return credstore.Options{}, fmt.Errorf("%w: %w", config.ErrInvalid, err)
-			}
-		}
+	return StoreOptionsForResolvedStore(flagValue, flagSet, cfg, resolved)
+}
+
+// StoreOptionsForResolvedStore builds credstore options for one resolved
+// credential store.
+func StoreOptionsForResolvedStore(flagValue string, flagSet bool, cfg config.File, resolved ResolvedCredentialStore) (credstore.Options, error) {
+	if flagSet {
+		return credstore.Options{}, fmt.Errorf("%w: --backend conflicts with credential store %q", config.ErrInvalid, resolved.DisplayName())
+	}
+	backend, err := credstore.ParseBackend(resolved.Backend)
+	if err != nil {
+		return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+	}
+	options := credstore.Options{
+		AllowedKeys: AllowedKeys(),
+		Backend:     backend,
+	}
+	if resolved.Source != config.EffectiveSecretsStoreSourceConfigured {
 		return options, nil
 	}
-	return StoreOptions(flagValue, flagSet, cfg)
+	cfg = config.Normalize(cfg)
+	store, ok := cfg.Secrets.Stores[resolved.ID]
+	if !ok {
+		return credstore.Options{}, fmt.Errorf("%w: %s", config.ErrSecretsStoreNotFound, resolved.ID)
+	}
+	if config.IsOnePasswordSecretsBackend(store.Backend.Kind) {
+		options.OnePassword, err = onePasswordOptionsFromConfig(store.Backend)
+		if err != nil {
+			return credstore.Options{}, fmt.Errorf("%w: %w", config.ErrInvalid, err)
+		}
+	}
+	return options, nil
 }
 
 // OpenResolvedStore opens the resolved service-scoped keyring store.
@@ -225,7 +302,7 @@ func OpenResolvedStore(flagValue string, flagSet bool, cfg config.File, resolved
 // StoreOptions validates backend selectors and returns credstore options.
 func StoreOptions(flagValue string, flagSet bool, cfg config.File) (credstore.Options, error) {
 	opts := credstore.Options{AllowedKeys: AllowedKeys()}
-	if err := credstore.BindBackendFlag(&opts, flagValue, flagSet, cfg.Keyring.Backend); err != nil {
+	if err := credstore.BindBackendFlag(&opts, flagValue, flagSet, ""); err != nil {
 		return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
 	}
 	if err := rejectLegacyOnePasswordBackend(opts.Backend); err != nil {
@@ -644,29 +721,50 @@ func ExpectedKeysForConfigRef(cfg config.File, ref string) ([]string, error) {
 
 func matchingCredentialRefs(profile config.Profile, ref string) []config.CredentialRef {
 	refs := []config.CredentialRef{}
-	if profile.Git.CredentialRef == ref {
+	gitCredential := normalizedCredentialLocation(profile.Git.Credential, profile.Git.CredentialRef)
+	if gitCredential.Name == ref {
 		refs = append(refs, config.CredentialRef{
 			Purpose: "git",
-			Ref:     profile.Git.CredentialRef,
+			Store:   gitCredential.Store,
+			Ref:     gitCredential.Name,
 			Mode:    string(profile.Git.AuthMode),
 		})
 	}
-	if profile.ReviewerCredentials != nil && profile.ReviewerCredentials.CredentialRef == ref {
-		refs = append(refs, config.CredentialRef{
-			Purpose: "reviewer_credentials",
-			Ref:     profile.ReviewerCredentials.CredentialRef,
-			Mode:    string(profile.ReviewerCredentials.AuthMode),
-		})
+	if profile.ReviewerCredentials != nil {
+		reviewerCredential := normalizedCredentialLocation(profile.ReviewerCredentials.Credential, profile.ReviewerCredentials.CredentialRef)
+		if reviewerCredential.Name == ref {
+			refs = append(refs, config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Store:   reviewerCredential.Store,
+				Ref:     reviewerCredential.Name,
+				Mode:    string(profile.ReviewerCredentials.AuthMode),
+			})
+		}
 	}
-	if profile.LLM.Auth == config.LLMAuthAPIKey && profile.LLM.CredentialRef == ref {
+	llmCredential := normalizedCredentialLocation(profile.LLM.Credential, profile.LLM.CredentialRef)
+	if profile.LLM.Auth == config.LLMAuthAPIKey && llmCredential.Name == ref {
 		refs = append(refs, config.CredentialRef{
 			Purpose:  "llm",
-			Ref:      profile.LLM.CredentialRef,
+			Store:    llmCredential.Store,
+			Ref:      llmCredential.Name,
 			Mode:     string(profile.LLM.Auth),
 			Provider: string(profile.LLM.Provider),
 		})
 	}
 	return refs
+}
+
+func normalizedCredentialLocation(location config.CredentialLocation, legacyRef string) config.CredentialLocation {
+	location.Store = strings.TrimSpace(location.Store)
+	location.Name = strings.TrimSpace(location.Name)
+	legacyRef = strings.TrimSpace(legacyRef)
+	if legacyRef != "" {
+		if location.Store == "" {
+			location.Store = config.LocalOSCredentialStoreID
+		}
+		location.Name = legacyRef
+	}
+	return location
 }
 
 // ValidateAllowedKey fails when key is not in cr's write allowlist.

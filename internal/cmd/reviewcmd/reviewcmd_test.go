@@ -427,6 +427,7 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	profile := cfg.Profiles["work"]
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
+		Credential:    config.CredentialLocation{Store: "test-memory"},
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg.Profiles["work"] = profile
@@ -508,18 +509,16 @@ func TestNewRuntimePassesPRRefForGitHubAppInstallationLookup(t *testing.T) {
 
 func TestNewRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
 	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
+		Stores: map[string]config.SecretsStore{
 			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+				DisplayName: "Work File Store",
+				Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
 			},
 		},
 	}
 	home := cfg.Profiles["home"]
-	home.SecretsProfile = "work-file"
+	home.Git.Credential.Store = "work-file"
 	cfg.Profiles["home"] = home
 	profile := cfg.Profiles["home"]
 	cmd := &cobra.Command{}
@@ -554,18 +553,16 @@ func TestNewRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing
 	}
 
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
 	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
+		Stores: map[string]config.SecretsStore{
 			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+				DisplayName: "Work File Store",
+				Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
 			},
 		},
 	}
 	home := cfg.Profiles["home"]
-	home.SecretsProfile = "work-file"
+	home.Git.Credential.Store = "work-file"
 	cfg.Profiles["home"] = home
 	profile := cfg.Profiles["home"]
 	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
@@ -601,18 +598,16 @@ func TestNewRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing
 
 func TestOpenSelectionRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
 	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
+		Stores: map[string]config.SecretsStore{
 			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+				DisplayName: "Work File Store",
+				Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
 			},
 		},
 	}
 	home := cfg.Profiles["home"]
-	home.SecretsProfile = "work-file"
+	home.Git.Credential.Store = "work-file"
 	cfg.Profiles["home"] = home
 
 	_, err := OpenSelectionRuntime(context.Background(), "memory", true, cfg, cfg.Profiles["home"])
@@ -640,18 +635,16 @@ func TestOpenSelectionRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(
 	}
 
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
 	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
+		Stores: map[string]config.SecretsStore{
 			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+				DisplayName: "Work File Store",
+				Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
 			},
 		},
 	}
 	home := cfg.Profiles["home"]
-	home.SecretsProfile = "work-file"
+	home.Git.Credential.Store = "work-file"
 	cfg.Profiles["home"] = home
 	withReviewRuntimeSeams(t,
 		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
@@ -2003,11 +1996,20 @@ func testConfig() config.File {
 	return config.File{
 		DefaultProfile: "home",
 		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Secrets: config.SecretsConfig{
+			Stores: map[string]config.SecretsStore{
+				"test-memory": {
+					DisplayName: "Test Memory Store",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
+				},
+			},
+		},
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: "test-memory"},
 					CredentialRef: "codereview/home",
 				},
 				LLM: config.LLMConfig{
