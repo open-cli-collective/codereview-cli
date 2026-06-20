@@ -267,9 +267,11 @@ type initDraft struct {
 	MakeDefault                  bool
 	GitHost                      string
 	GitAuth                      string
+	GitCredentialStore           string
 	GitCredentialRef             string
 	ReviewerEnabled              bool
 	ReviewerAuth                 string
+	ReviewerCredentialStore      string
 	ReviewerCredentialRef        string
 	ReviewerDisplayName          string
 	ReviewerCredentialWriteRef   string
@@ -282,6 +284,7 @@ type initDraft struct {
 	LLMAuth                      string
 	LLMAdapter                   string
 	LLMReviewerModelTier         string
+	LLMCredentialStore           string
 	LLMCredentialRef             string
 	AdvancedStorageLabels        bool
 	RoutesSet                    bool
@@ -532,10 +535,11 @@ type initPendingLLMRuntimeDelete struct {
 }
 
 type initGitScopeDraft struct {
-	Name          string
-	Host          string
-	AuthMode      config.GitAuthMode
-	CredentialRef string
+	Name            string
+	Host            string
+	AuthMode        config.GitAuthMode
+	CredentialStore string
+	CredentialRef   string
 }
 
 type initReviewerEntityKind string
@@ -547,11 +551,12 @@ const (
 )
 
 type initReviewerEntityDraft struct {
-	Name          string
-	Kind          initReviewerEntityKind
-	AuthMode      config.GitAuthMode
-	CredentialRef string
-	DisplayName   string
+	Name            string
+	Kind            initReviewerEntityKind
+	AuthMode        config.GitAuthMode
+	CredentialStore string
+	CredentialRef   string
+	DisplayName     string
 }
 
 type initLLMRuntimePreset string
@@ -568,12 +573,13 @@ const (
 )
 
 type initLLMRuntimeDraft struct {
-	Name          string
-	Preset        initLLMRuntimePreset
-	Provider      config.LLMProvider
-	Auth          config.LLMAuth
-	Adapter       config.LLMAdapter
-	CredentialRef string
+	Name            string
+	Preset          initLLMRuntimePreset
+	Provider        config.LLMProvider
+	Auth            config.LLMAuth
+	Adapter         config.LLMAdapter
+	CredentialStore string
+	CredentialRef   string
 }
 
 type initStore interface {
@@ -1620,6 +1626,7 @@ func propagateSharedReviewerEntityChanges(priorCfg config.File, updatedCfg confi
 	}
 	identityKey := previousEntity.identityKey()
 	displayName := normalizeOptionalDisplayName(nextEntity.DisplayName)
+	credentialStore := initCredentialStoreDraftValue(nextEntity.CredentialStore)
 	credentialRef := strings.TrimSpace(nextEntity.CredentialRef)
 	for profileName, previousProfile := range priorCfg.Profiles {
 		if profileName == activeProfileName {
@@ -1636,6 +1643,7 @@ func propagateSharedReviewerEntityChanges(priorCfg config.File, updatedCfg confi
 			continue
 		}
 		profile.ReviewerCredentials.AuthMode = nextEntity.AuthMode
+		profile.ReviewerCredentials.Credential = initCredentialLocation(credentialStore, credentialRef)
 		profile.ReviewerCredentials.CredentialRef = credentialRef
 		profile.ReviewerCredentials.DisplayName = displayName
 		updatedCfg.Profiles[profileName] = profile
@@ -2246,9 +2254,10 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			}
 			gitScopeOptions := initGitScopeOptions(ctx.GitScopes)
 			selectedGit := initGitScopeDraft{
-				Host:          draft.GitHost,
-				AuthMode:      config.GitAuthMode(draft.GitAuth),
-				CredentialRef: strings.TrimSpace(draft.GitCredentialRef),
+				Host:            draft.GitHost,
+				AuthMode:        config.GitAuthMode(draft.GitAuth),
+				CredentialStore: initCredentialStoreDraftValue(draft.GitCredentialStore),
+				CredentialRef:   strings.TrimSpace(draft.GitCredentialRef),
 			}
 			if scopeName := ctx.ProfileGitScopes[selectedProfileName]; scopeName != "" {
 				if scope, ok := ctx.GitScopes[scopeName]; ok {
@@ -2256,13 +2265,6 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 				}
 			}
 			reviewerEntityOptions := initReviewerEntitySelectionOptions(ctx.ReviewerEntities, profileEditorReviewerEntityFallbackLabel(selectedGit, selectedExistingProfile))
-			_, selectedSecretsProfile := initProfileEditorSecretsProfileSelection(
-				ctx.SecretsProfiles,
-				ctx.ProfileSecretsProfiles[selectedProfileName],
-				ctx.BrokenProfileSecretsProfiles[selectedProfileName],
-				initSecretsProfileDefaultOptionLabel(ctx.ExistingConfig),
-				draft,
-			)
 			llmRuntimes := maps.Clone(ctx.LLMRuntimes)
 			if llmRuntimes == nil {
 				llmRuntimes = map[string]initLLMRuntimeDraft{}
@@ -2286,6 +2288,9 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			gitStorageLabel := initEffectiveStorageLabelValue(draft.GitCredentialRef, standardGitCredentialRef)
 			reviewerStorageLabel := initEffectiveStorageLabelValue(draft.ReviewerCredentialRef, standardReviewerCredentialRef)
 			llmStorageLabel := initEffectiveStorageLabelValue(draft.LLMCredentialRef, standardLLMCredentialRef)
+			credentialStoreOptions := initCredentialStoreOptions(ctx.ExistingConfig)
+			gitCredentialStore := initCredentialStoreDraftValue(draft.GitCredentialStore)
+			llmCredentialStore := initCredentialStoreDraftValue(draft.LLMCredentialStore)
 			initialSelectedLLMRuntime := selectedLLMRuntime
 			modelMapLLM := initProfileEditorModelMapLLM(draft, selectedLLMRuntime, llmRuntimes)
 			modelMapFields, modelMapValues := initModelMapEditorFields(modelMapLLM, draft.ModelMap)
@@ -2378,16 +2383,40 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			profileFields = append(profileFields, reviewPolicyFields...)
 			profileFields = append(profileFields,
 				huh.NewNote().
-					Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure."),
+					Title("Git credentials").
+					Description("Choose where this profile's Git credentials are stored. The credential name is the full codereview/... path written to the selected store."),
+				huh.NewSelect[string]().
+					Title("Git credential store").
+					Options(credentialStoreOptions...).
+					Value(&gitCredentialStore),
 				huh.NewInput().
-					Title("Git secrets storage label").
-					Description("Edit only if this profile should use a different Git secret location than the selected Git scope's default. Useful for advanced deployment scenarios. Leave unchanged if you're unsure.").
+					Title("Git credential name").
+					Description("Full credential name under the selected store.").
 					Value(&gitStorageLabel).
-					Validate(validateOptionalCredentialRef),
+					Validate(validateRequiredCredentialRef),
 			)
 			profileFields = append(profileFields, actionFields...)
+			llmCredentialFields := []huh.Field{
+				huh.NewNote().
+					Title("LLM API key credentials").
+					Description("Choose where this profile's LLM API key is stored."),
+				huh.NewSelect[string]().
+					Title("LLM credential store").
+					Options(credentialStoreOptions...).
+					Value(&llmCredentialStore),
+				huh.NewInput().
+					Title("LLM credential name").
+					Description("Full credential name under the selected store.").
+					Value(&llmStorageLabel).
+					Validate(validateRequiredCredentialRef),
+			}
 			form := huh.NewForm(
 				huh.NewGroup(profileFields...).Title("Profile"),
+				huh.NewGroup(llmCredentialFields...).
+					Title("LLM API key credentials").
+					WithHideFunc(func() bool {
+						return !initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes)
+					}),
 				huh.NewGroup(
 					huh.NewSelect[string]().
 						Title("Git scope").
@@ -2462,8 +2491,17 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			llmUsesDefaultBeforeSelection := initStorageLabelUsesDefault(llmStorageLabel, standardLLMCredentialRef)
 			applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
 			applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, ctx.ReviewerEntities)
-			applySecretsProfileSelection(&draft, selectedSecretsProfile)
 			applyLLMRuntimeInventorySelection(&draft, selectedLLMRuntime, llmRuntimes)
+			draft.GitCredentialStore = initCredentialStoreDraftValue(gitCredentialStore)
+			if strings.TrimSpace(gitStorageLabel) != "" {
+				draft.GitCredentialRef = strings.TrimSpace(gitStorageLabel)
+			}
+			if initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes) {
+				draft.LLMCredentialStore = initCredentialStoreDraftValue(llmCredentialStore)
+				if strings.TrimSpace(llmStorageLabel) != "" {
+					draft.LLMCredentialRef = strings.TrimSpace(llmStorageLabel)
+				}
+			}
 			// Inventory selections fill provider/auth/ref fields; rerunning the mode finalizers applies side effects like clearing refs for self-reviewers or subscription runtimes.
 			reviewerMode = string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
 			selectedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
@@ -2612,9 +2650,10 @@ func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDra
 		return initReviewerEntityDraft{Kind: initReviewerEntityKindUseGitIdentity}
 	}
 	entity := initReviewerEntityDraft{
-		AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
-		CredentialRef: strings.TrimSpace(draft.ReviewerCredentialRef),
-		DisplayName:   normalizeOptionalDisplayName(draft.ReviewerDisplayName),
+		AuthMode:        config.GitAuthMode(draft.ReviewerAuth),
+		CredentialStore: initCredentialStoreDraftValue(draft.ReviewerCredentialStore),
+		CredentialRef:   strings.TrimSpace(draft.ReviewerCredentialRef),
+		DisplayName:     normalizeOptionalDisplayName(draft.ReviewerDisplayName),
 	}
 	switch entity.AuthMode {
 	case config.GitAuthModeGitHubApp:
@@ -2668,6 +2707,7 @@ func applyGitScopeSelection(draft *initDraft, selection string, scopes map[strin
 	}
 	draft.GitHost = scope.Host
 	draft.GitAuth = string(scope.AuthMode)
+	draft.GitCredentialStore = initCredentialStoreDraftValue(scope.CredentialStore)
 	if !draft.AdvancedStorageLabels {
 		draft.GitCredentialRef = scope.CredentialRef
 	}
@@ -3120,6 +3160,7 @@ func applyReviewerEntityInventorySelection(draft *initDraft, selection string, e
 	}
 	draft.ReviewerEnabled = entity.Kind != initReviewerEntityKindUseGitIdentity
 	draft.ReviewerAuth = string(entity.AuthMode)
+	draft.ReviewerCredentialStore = initCredentialStoreDraftValue(entity.CredentialStore)
 	draft.ReviewerDisplayName = normalizeOptionalDisplayName(entity.DisplayName)
 	if !draft.AdvancedStorageLabels {
 		draft.ReviewerCredentialRef = entity.CredentialRef
@@ -3149,6 +3190,7 @@ func initLLMRuntimeDraftFromSeedDraft(draft initDraft) initLLMRuntimeDraft {
 		Provider:      config.LLMProvider(draft.LLMProvider),
 		Auth:          config.LLMAuth(draft.LLMAuth),
 		Adapter:       config.LLMAdapter(draft.LLMAdapter),
+		Credential:    initCredentialLocationIfName(draft.LLMCredentialStore, draft.LLMCredentialRef),
 		CredentialRef: strings.TrimSpace(draft.LLMCredentialRef),
 	})
 }
@@ -3307,6 +3349,7 @@ func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runti
 		draft.LLMAuth = string(runtime.Auth)
 		draft.LLMAdapter = string(runtime.Adapter)
 		if !draft.AdvancedStorageLabels {
+			draft.LLMCredentialStore = initCredentialStoreDraftValue(runtime.CredentialStore)
 			draft.LLMCredentialRef = runtime.CredentialRef
 		}
 		return
@@ -3374,6 +3417,7 @@ func applyLLMRuntimeSelection(draft *initDraft, selection string) {
 	draft.LLMAuth = string(runtime.Auth)
 	draft.LLMAdapter = string(runtime.Adapter)
 	if runtime.Auth != config.LLMAuthAPIKey && !draft.AdvancedStorageLabels {
+		draft.LLMCredentialStore = initCredentialStoreDefaultID()
 		draft.LLMCredentialRef = ""
 	}
 }
@@ -3762,6 +3806,14 @@ func validateOptionalCredentialRef(value string) error {
 	return err
 }
 
+func validateRequiredCredentialRef(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("credential name is required")
+	}
+	return validateOptionalCredentialRef(trimmed)
+}
+
 func normalizeOptionalDisplayName(value string) string {
 	return strings.TrimSpace(value)
 }
@@ -3842,26 +3894,31 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		profileName = credstore.DefaultProfile
 	}
 	draft := initDraft{
-		OriginalProfileName: existingProfileName,
-		ProfileName:         profileName,
-		MakeDefault:         existingProfileName == "" && defaultProfileName == "",
-		GitHost:             "github.com",
-		GitAuth:             string(config.GitAuthModePAT),
-		ReviewerAuth:        string(config.GitAuthModePAT),
-		LLMProvider:         string(config.LLMProviderAnthropic),
-		LLMAuth:             string(config.LLMAuthSubscription),
-		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+		OriginalProfileName:     existingProfileName,
+		ProfileName:             profileName,
+		MakeDefault:             existingProfileName == "" && defaultProfileName == "",
+		GitHost:                 "github.com",
+		GitAuth:                 string(config.GitAuthModePAT),
+		GitCredentialStore:      initCredentialStoreDefaultID(),
+		ReviewerAuth:            string(config.GitAuthModePAT),
+		ReviewerCredentialStore: initCredentialStoreDefaultID(),
+		LLMProvider:             string(config.LLMProviderAnthropic),
+		LLMAuth:                 string(config.LLMAuthSubscription),
+		LLMAdapter:              string(config.LLMAdapterClaudeCLI),
+		LLMCredentialStore:      initCredentialStoreDefaultID(),
 	}
 	if existingProfile != nil {
 		draft.MakeDefault = defaultProfileName == existingProfileName
 		draft.GitHost = existingProfile.Git.Host
 		draft.GitAuth = string(existingProfile.Git.AuthMode)
-		draft.GitCredentialRef = existingProfile.Git.CredentialRef
+		draft.GitCredentialStore = initCredentialStoreDraftValue(existingProfile.Git.Credential.Store)
+		draft.GitCredentialRef = firstNonEmpty(existingProfile.Git.Credential.Name, existingProfile.Git.CredentialRef)
 		draft.LLMProvider = string(existingProfile.LLM.Provider)
 		draft.LLMAuth = string(existingProfile.LLM.Auth)
 		draft.LLMAdapter = string(existingProfile.LLM.Adapter)
 		draft.LLMReviewerModelTier = string(existingProfile.LLM.ReviewerModelTier)
-		draft.LLMCredentialRef = existingProfile.LLM.CredentialRef
+		draft.LLMCredentialStore = initCredentialStoreDraftValue(existingProfile.LLM.Credential.Store)
+		draft.LLMCredentialRef = firstNonEmpty(existingProfile.LLM.Credential.Name, existingProfile.LLM.CredentialRef)
 		draft.ModelMap = copyModelMap(existingProfile.LLM.ModelMap)
 		draft.AgentSources = append([]string(nil), existingProfile.AgentSources...)
 		draft.ReviewPolicy = existingProfile.ReviewPolicy
@@ -3869,7 +3926,8 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		if existingProfile.ReviewerCredentials != nil {
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(existingProfile.ReviewerCredentials.AuthMode)
-			draft.ReviewerCredentialRef = existingProfile.ReviewerCredentials.CredentialRef
+			draft.ReviewerCredentialStore = initCredentialStoreDraftValue(existingProfile.ReviewerCredentials.Credential.Store)
+			draft.ReviewerCredentialRef = firstNonEmpty(existingProfile.ReviewerCredentials.Credential.Name, existingProfile.ReviewerCredentials.CredentialRef)
 			draft.ReviewerDisplayName = normalizeOptionalDisplayName(existingProfile.ReviewerCredentials.DisplayName)
 		}
 	}
@@ -4075,6 +4133,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		Git: config.GitConfig{
 			Host:          flags.gitHost,
 			AuthMode:      gitMode,
+			Credential:    initCredentialLocation(config.LocalOSCredentialStoreID, gitRef),
 			CredentialRef: gitRef,
 		},
 		LLM: config.LLMConfig{
@@ -4091,6 +4150,9 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			ResolveAfter:     flags.resolveAfter,
 		},
 	}
+	if llmRef != "" {
+		profile.LLM.Credential = initCredentialLocation(config.LocalOSCredentialStoreID, llmRef)
+	}
 	if flags.clearLLMReviewer {
 		profile.LLM.ReviewerModelTier = ""
 	} else {
@@ -4099,6 +4161,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	if reviewerRequested && !flags.disableReviewer {
 		profile.ReviewerCredentials = &config.ReviewerCredentials{
 			AuthMode:      reviewerMode,
+			Credential:    initCredentialLocation(config.LocalOSCredentialStoreID, reviewerRef),
 			CredentialRef: reviewerRef,
 		}
 	}
@@ -4793,14 +4856,15 @@ func withoutProfile(profiles map[string]config.Profile, removed string) map[stri
 }
 
 func initCredentialEntryKey(ref config.CredentialRef) string {
-	return strings.Join([]string{ref.Purpose, ref.Ref, ref.Mode, ref.Provider}, "\x00")
+	return strings.Join([]string{ref.Store, ref.Purpose, ref.Ref, ref.Mode, ref.Provider}, "\x00")
 }
 
 func initGitScopeDraftFromConfig(git config.GitConfig) initGitScopeDraft {
 	return initGitScopeDraft{
-		Host:          strings.TrimSpace(git.Host),
-		AuthMode:      git.AuthMode,
-		CredentialRef: strings.TrimSpace(git.CredentialRef),
+		Host:            strings.TrimSpace(git.Host),
+		AuthMode:        git.AuthMode,
+		CredentialStore: initCredentialStoreDraftValue(git.Credential.Store),
+		CredentialRef:   strings.TrimSpace(firstNonEmpty(git.Credential.Name, git.CredentialRef)),
 	}
 }
 
@@ -4808,6 +4872,7 @@ func (scope initGitScopeDraft) exportConfig(previous *config.GitConfig) config.G
 	git := config.GitConfig{
 		Host:          strings.TrimSpace(scope.Host),
 		AuthMode:      scope.AuthMode,
+		Credential:    initCredentialLocation(scope.CredentialStore, scope.CredentialRef),
 		CredentialRef: strings.TrimSpace(scope.CredentialRef),
 	}
 	if previous != nil && scope.matchesConfig(*previous) {
@@ -4821,6 +4886,7 @@ func (scope initGitScopeDraft) identityKey() string {
 	return strings.Join([]string{
 		config.NormalizeHost(scope.Host),
 		string(scope.AuthMode),
+		initCredentialStoreDraftValue(scope.CredentialStore),
 		strings.TrimSpace(scope.CredentialRef),
 	}, "\x00")
 }
@@ -4838,7 +4904,8 @@ func (scope initGitScopeDraft) suggestedName() string {
 func (scope initGitScopeDraft) matchesConfig(previous config.GitConfig) bool {
 	return config.NormalizeHost(previous.Host) == config.NormalizeHost(scope.Host) &&
 		previous.AuthMode == scope.AuthMode &&
-		strings.TrimSpace(previous.CredentialRef) == strings.TrimSpace(scope.CredentialRef)
+		initCredentialStoreDraftValue(previous.Credential.Store) == initCredentialStoreDraftValue(scope.CredentialStore) &&
+		strings.TrimSpace(firstNonEmpty(previous.Credential.Name, previous.CredentialRef)) == strings.TrimSpace(scope.CredentialRef)
 }
 
 func buildInitGitScopeInventory(cfg config.File) (map[string]initGitScopeDraft, map[string]string) {
@@ -4884,9 +4951,10 @@ func initReviewerEntityDraftFromConfig(profile config.Profile) initReviewerEntit
 		}
 	}
 	entity := initReviewerEntityDraft{
-		AuthMode:      profile.ReviewerCredentials.AuthMode,
-		CredentialRef: strings.TrimSpace(profile.ReviewerCredentials.CredentialRef),
-		DisplayName:   normalizeOptionalDisplayName(profile.ReviewerCredentials.DisplayName),
+		AuthMode:        profile.ReviewerCredentials.AuthMode,
+		CredentialStore: initCredentialStoreDraftValue(profile.ReviewerCredentials.Credential.Store),
+		CredentialRef:   strings.TrimSpace(firstNonEmpty(profile.ReviewerCredentials.Credential.Name, profile.ReviewerCredentials.CredentialRef)),
+		DisplayName:     normalizeOptionalDisplayName(profile.ReviewerCredentials.DisplayName),
 	}
 	switch profile.ReviewerCredentials.AuthMode {
 	case config.GitAuthModeGitHubApp:
@@ -4903,6 +4971,7 @@ func (entity initReviewerEntityDraft) exportConfig(previous *config.ReviewerCred
 	}
 	reviewer := &config.ReviewerCredentials{
 		AuthMode:      entity.AuthMode,
+		Credential:    initCredentialLocation(entity.CredentialStore, entity.CredentialRef),
 		CredentialRef: strings.TrimSpace(entity.CredentialRef),
 		DisplayName:   normalizeOptionalDisplayName(entity.DisplayName),
 	}
@@ -4919,6 +4988,7 @@ func (entity initReviewerEntityDraft) identityKey() string {
 	return strings.Join([]string{
 		string(entity.Kind),
 		string(entity.AuthMode),
+		initCredentialStoreDraftValue(entity.CredentialStore),
 		strings.TrimSpace(entity.CredentialRef),
 	}, "\x00")
 }
@@ -4938,7 +5008,8 @@ func (entity initReviewerEntityDraft) suggestedName() string {
 func (entity initReviewerEntityDraft) matchesConfig(previous config.ReviewerCredentials) bool {
 	return entity.Kind == initReviewerEntityDraftFromConfig(config.Profile{ReviewerCredentials: &previous}).Kind &&
 		previous.AuthMode == entity.AuthMode &&
-		strings.TrimSpace(previous.CredentialRef) == strings.TrimSpace(entity.CredentialRef)
+		initCredentialStoreDraftValue(previous.Credential.Store) == initCredentialStoreDraftValue(entity.CredentialStore) &&
+		strings.TrimSpace(firstNonEmpty(previous.Credential.Name, previous.CredentialRef)) == strings.TrimSpace(entity.CredentialRef)
 }
 
 func buildInitReviewerEntityInventory(cfg config.File) (map[string]initReviewerEntityDraft, map[string]string) {
@@ -5000,11 +5071,12 @@ func uniqueInitReviewerEntityName(existing map[string]initReviewerEntityDraft, b
 
 func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
 	runtime := initLLMRuntimeDraft{
-		Preset:        initLLMRuntimePresetCustom,
-		Provider:      llm.Provider,
-		Auth:          llm.Auth,
-		Adapter:       llm.Adapter,
-		CredentialRef: strings.TrimSpace(llm.CredentialRef),
+		Preset:          initLLMRuntimePresetCustom,
+		Provider:        llm.Provider,
+		Auth:            llm.Auth,
+		Adapter:         llm.Adapter,
+		CredentialStore: initCredentialStoreDraftValue(llm.Credential.Store),
+		CredentialRef:   strings.TrimSpace(firstNonEmpty(llm.Credential.Name, llm.CredentialRef)),
 	}
 	switch {
 	case runtime.Provider == config.LLMProviderAnthropic && runtime.Auth == config.LLMAuthSubscription && runtime.Adapter == config.LLMAdapterClaudeCLI:
@@ -5031,6 +5103,7 @@ func (runtime initLLMRuntimeDraft) exportConfig() config.LLMConfig {
 		Adapter:  runtime.Adapter,
 	}
 	if runtime.Auth == config.LLMAuthAPIKey {
+		llm.Credential = initCredentialLocation(runtime.CredentialStore, runtime.CredentialRef)
 		llm.CredentialRef = strings.TrimSpace(runtime.CredentialRef)
 	}
 	return llm
@@ -5041,6 +5114,7 @@ func (runtime initLLMRuntimeDraft) identityKey() string {
 		string(runtime.Provider),
 		string(runtime.Auth),
 		string(runtime.Adapter),
+		initCredentialStoreDraftValue(runtime.CredentialStore),
 		strings.TrimSpace(runtime.CredentialRef),
 	}, "\x00")
 }
@@ -5195,6 +5269,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	if profile.Git.CredentialRef == "" {
 		profile.Git.CredentialRef = defaultGitRef
 	}
+	profile.Git.Credential = initCredentialLocation(draft.GitCredentialStore, profile.Git.CredentialRef)
 	// Changing the selected Git scope means any cached resolved identity may belong to the wrong host/auth pair.
 	if previousProfile != nil && !initGitScopeDraftFromConfig(profile.Git).matchesConfig(previousProfile.Git) {
 		profile.Git.IdentityCache = ""
@@ -5211,6 +5286,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 		}
 		reviewer := config.ReviewerCredentials{
 			AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
+			Credential:    initCredentialLocation(draft.ReviewerCredentialStore, reviewerRef),
 			CredentialRef: reviewerRef,
 			DisplayName:   normalizeOptionalDisplayName(draft.ReviewerDisplayName),
 		}
@@ -5235,8 +5311,10 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 			}
 		}
 		profile.LLM.CredentialRef = llmRef
+		profile.LLM.Credential = initCredentialLocationIfName(draft.LLMCredentialStore, llmRef)
 	} else {
 		profile.LLM.CredentialRef = ""
+		profile.LLM.Credential = config.CredentialLocation{}
 	}
 	if draft.ModelMapSet {
 		profile.LLM.ModelMap = normalizeInitModelMap(profile.LLM, draft.ModelMap)
@@ -5710,8 +5788,8 @@ type initReviewerCredentialCleanupGroup struct {
 
 func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string]map[string]string, overwriteRefs map[string]bool) ([]initWriteGroup, error) {
 	if len(entries) == 0 {
-		// An empty credential plan means init is using the legacy/default store
-		// path, represented by the zero-value unresolved selection.
+		// An empty credential plan means init is using the legacy OS store path,
+		// represented by the zero-value unresolved selection.
 		return []initWriteGroup{{
 			Writes:        writes,
 			OverwriteRefs: overwriteRefs,
@@ -5818,10 +5896,6 @@ func activeReviewerCredentialEntriesByStoreRef(cfg config.File, fallback []initC
 	sort.Strings(profileNames)
 	for _, profileName := range profileNames {
 		profile := cfg.Profiles[profileName]
-		resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
-		if err != nil {
-			return nil, nil, err
-		}
 		refs, err := config.CredentialRefs(profile)
 		if err != nil {
 			return nil, nil, err
@@ -5829,6 +5903,10 @@ func activeReviewerCredentialEntriesByStoreRef(cfg config.File, fallback []initC
 		for _, ref := range refs {
 			if ref.Purpose != "reviewer_credentials" || strings.TrimSpace(ref.Ref) == "" {
 				continue
+			}
+			resolved, err := credentials.ResolveCredentialStore(cfg, ref.Store)
+			if err != nil {
+				return nil, nil, err
 			}
 			specs, err := credentials.KeySpecsForPurpose(ref)
 			if err != nil {
@@ -6695,7 +6773,7 @@ func interactiveInitSessionSummaryLines(plan initSessionPlan) []string {
 		}
 	}
 	if !reflect.DeepEqual(plan.originalCfg.Keyring, plan.cfg.Keyring) {
-		lines = append(lines, "default credential store")
+		lines = append(lines, "credential store settings")
 	}
 	if !reflect.DeepEqual(plan.originalCfg.Data.Retention, plan.cfg.Data.Retention) {
 		lines = append(lines, "global settings")
@@ -6979,10 +7057,6 @@ func planInitCredentialsWithConfig(cfg config.File, previousProfile *config.Prof
 	if err != nil {
 		return nil, err
 	}
-	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, desiredProfile)
-	if err != nil {
-		return nil, err
-	}
 	var previousRefs []config.CredentialRef
 	if previousProfile != nil {
 		previousRefs, err = config.CredentialRefs(*previousProfile)
@@ -6998,6 +7072,10 @@ func planInitCredentialsWithConfig(cfg config.File, previousProfile *config.Prof
 
 	entries := make([]initCredentialPlanEntry, 0, len(desiredRefs)+len(previousRefs))
 	for _, ref := range desiredRefs {
+		resolvedStore, err := credentials.ResolveCredentialStore(cfg, ref.Store)
+		if err != nil {
+			return nil, err
+		}
 		specs, err := credentials.KeySpecsForPurpose(ref)
 		if err != nil {
 			return nil, err
@@ -7008,7 +7086,7 @@ func planInitCredentialsWithConfig(cfg config.File, previousProfile *config.Prof
 		}
 		entry := initCredentialPlanEntry{
 			Ref:              ref,
-			SecretsProfile:   resolvedSecretsProfile,
+			SecretsProfile:   resolvedStore,
 			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 			PlannedWriteKeys: writeKeys,
 		}
@@ -7025,9 +7103,14 @@ func planInitCredentialsWithConfig(cfg config.File, previousProfile *config.Prof
 		if _, ok := previousByPurpose[ref.Purpose]; !ok {
 			continue
 		}
+		resolvedStore, err := credentials.ResolveCredentialStore(cfg, ref.Store)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, initCredentialPlanEntry{
-			Ref:   ref,
-			State: initCredentialPlanStateClearRef,
+			Ref:            ref,
+			SecretsProfile: resolvedStore,
+			State:          initCredentialPlanStateClearRef,
 		})
 	}
 	return entries, nil
@@ -7082,6 +7165,7 @@ func classifyInitCredentialPlanEntry(entry initCredentialPlanEntry) initCredenti
 		return initCredentialPlanStateDefer
 	}
 	if entry.PreviousRef.Purpose == entry.Ref.Purpose &&
+		entry.PreviousRef.Store == entry.Ref.Store &&
 		entry.PreviousRef.Ref == entry.Ref.Ref &&
 		entry.PreviousRef.Mode == entry.Ref.Mode &&
 		entry.PreviousRef.Provider == entry.Ref.Provider {

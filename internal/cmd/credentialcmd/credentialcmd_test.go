@@ -859,9 +859,9 @@ func TestPlanInitCredentials(t *testing.T) {
 
 	t.Run("overwrite custom ref without writes is tracked separately", func(t *testing.T) {
 		previous := basicProfile("work")
-		previous.Git.CredentialRef = "codereview/custom-old"
+		previous.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-old"}
 		desired := previous
-		desired.Git.CredentialRef = "codereview/custom-new"
+		desired.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-new"}
 		entries, err := planInitCredentials(&previous, desired, nil)
 		if err != nil {
 			t.Fatalf("planInitCredentials: %v", err)
@@ -1948,6 +1948,7 @@ func TestInitGitScopeDraftRoundTripPreservesIdentityCacheFromPreviousProfile(t *
 	git := config.GitConfig{
 		Host:          "https://github.mycompany.com/",
 		AuthMode:      config.GitAuthModeGitHubApp,
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 		CredentialRef: "codereview/work",
 		IdentityCache: "rianjs-work",
 	}
@@ -1964,14 +1965,16 @@ func TestInitGitScopeDraftExportClearsIdentityCacheWhenShapeChanges(t *testing.T
 	previous := config.GitConfig{
 		Host:          "https://github.mycompany.com/",
 		AuthMode:      config.GitAuthModeGitHubApp,
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 		CredentialRef: "codereview/work",
 		IdentityCache: "rianjs-work",
 	}
 
 	scope := initGitScopeDraft{
-		Host:          "github.mycompany.com",
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-2",
+		Host:            "github.mycompany.com",
+		AuthMode:        config.GitAuthModePAT,
+		CredentialStore: config.LocalOSCredentialStoreID,
+		CredentialRef:   "codereview/work-2",
 	}
 	exported := scope.exportConfig(&previous)
 
@@ -2004,6 +2007,7 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 				p := basicProfile("work")
 				p.ReviewerCredentials = &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 					CredentialRef: "codereview/work-reviewer",
 					IdentityCache: "review-bot",
 				}
@@ -2011,11 +2015,13 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 			}(),
 			previous: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModePAT,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-bot",
 			},
 			want: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModePAT,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-bot",
 			},
@@ -2027,6 +2033,7 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 				p := basicProfile("work")
 				p.ReviewerCredentials = &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModeGitHubApp,
+					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 					CredentialRef: "codereview/work-reviewer",
 					IdentityCache: "review-app",
 				}
@@ -2034,11 +2041,13 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 			}(),
 			previous: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModeGitHubApp,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-app",
 			},
 			want: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModeGitHubApp,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-app",
 			},
@@ -2062,13 +2071,15 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 func TestInitReviewerEntityDraftExportClearsIdentityCacheWhenShapeChanges(t *testing.T) {
 	previous := &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 		CredentialRef: "codereview/work-reviewer",
 		IdentityCache: "review-app",
 	}
 	entity := initReviewerEntityDraft{
-		Kind:          initReviewerEntityKindPAT,
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer-2",
+		Kind:            initReviewerEntityKindPAT,
+		AuthMode:        config.GitAuthModePAT,
+		CredentialStore: config.LocalOSCredentialStoreID,
+		CredentialRef:   "codereview/work-reviewer-2",
 	}
 
 	exported := entity.exportConfig(previous)
@@ -2086,6 +2097,7 @@ func TestBuildInteractiveInitWorkspaceClearsReviewerDisplayNameWhenDraftLeavesIt
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 		CredentialRef: "codereview/work-reviewer",
 		DisplayName:   "Old label",
 	}
@@ -2098,6 +2110,7 @@ func TestBuildInteractiveInitWorkspaceClearsReviewerDisplayNameWhenDraftLeavesIt
 	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
 	draft.ReviewerEnabled = true
 	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	draft.ReviewerCredentialStore = config.LocalOSCredentialStoreID
 	draft.ReviewerCredentialRef = "codereview/work-reviewer"
 	draft.ReviewerDisplayName = ""
 
@@ -2120,8 +2133,8 @@ func TestBuildInitGitScopeInventoryDeduplicatesNormalizedGitHubEnterpriseHost(t 
 	work.Git.Host = "github.mycompany.com"
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
 	work.Git.AuthMode = config.GitAuthModeGitHubApp
-	home.Git.CredentialRef = "codereview/shared-ghe"
-	work.Git.CredentialRef = "codereview/shared-ghe"
+	home.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-ghe"}
+	work.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-ghe"}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
 			"home": home,
@@ -2909,6 +2922,7 @@ func TestInitLLMRuntimeDraftFromConfigRecognizesKnownPresets(t *testing.T) {
 				Provider:      config.LLMProviderAnthropic,
 				Auth:          config.LLMAuthAPIKey,
 				Adapter:       config.LLMAdapterAnthropicAPI,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 				CredentialRef: "codereview/work-llm",
 			},
 			preset: initLLMRuntimePresetAnthropicAPIKey,
@@ -2919,6 +2933,7 @@ func TestInitLLMRuntimeDraftFromConfigRecognizesKnownPresets(t *testing.T) {
 				Provider:      config.LLMProviderOpenAI,
 				Auth:          config.LLMAuthAPIKey,
 				Adapter:       config.LLMAdapterOpenAIAPI,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 				CredentialRef: "codereview/work-llm",
 			},
 			preset: initLLMRuntimePresetOpenAIAPIKey,
@@ -2950,8 +2965,8 @@ func TestInitLLMRuntimeDraftFromConfigRecognizesKnownPresets(t *testing.T) {
 func TestBuildInitLLMRuntimeInventoryDeduplicatesSharedAPIKeyRuntime(t *testing.T) {
 	home := apiKeyProfile("home", config.LLMProviderOpenAI)
 	work := apiKeyProfile("work", config.LLMProviderOpenAI)
-	home.LLM.CredentialRef = "codereview/shared-llm"
-	work.LLM.CredentialRef = "codereview/shared-llm"
+	home.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-llm"}
+	work.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-llm"}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
 			"home": home,
@@ -2997,8 +3012,8 @@ func TestInitLLMRuntimeLabelsDifferentiateSamePresetEntries(t *testing.T) {
 func TestBuildInitLLMRuntimeInventoryKeepsCrossProviderSameRefDistinct(t *testing.T) {
 	openAI := apiKeyProfile("home", config.LLMProviderOpenAI)
 	anthropic := apiKeyProfile("work", config.LLMProviderAnthropic)
-	openAI.LLM.CredentialRef = "codereview/shared-llm"
-	anthropic.LLM.CredentialRef = "codereview/shared-llm"
+	openAI.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-llm"}
+	anthropic.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-llm"}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
 			"home": openAI,
@@ -3232,8 +3247,8 @@ func TestBuildInteractiveInitWorkspaceImportsLLMRuntimeInventory(t *testing.T) {
 	}
 	home := apiKeyProfile("home", config.LLMProviderOpenAI)
 	work := apiKeyProfile("work", config.LLMProviderOpenAI)
-	home.LLM.CredentialRef = "codereview/shared-llm"
-	work.LLM.CredentialRef = "codereview/shared-llm"
+	home.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-llm"}
+	work.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-llm"}
 	cfg := config.File{
 		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
@@ -3268,10 +3283,12 @@ func TestBuildInteractiveInitWorkspaceImportsGitScopeAndReviewerEntityInventory(
 	existing := basicProfile("work")
 	existing.Git.Host = "github.mycompany.com"
 	existing.Git.AuthMode = config.GitAuthModeGitHubApp
+	existing.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/office-git"}
 	existing.Git.CredentialRef = "codereview/office-git"
 	existing.Git.IdentityCache = "git-cache"
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/office-reviewer"},
 		CredentialRef: "codereview/office-reviewer",
 		IdentityCache: "reviewer-cache",
 	}
@@ -3309,15 +3326,16 @@ func TestInitInteractivePromptDrivenFlowStillExportsReviewerNilAfterDraftInvento
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				ProfileName:      "office",
-				MakeDefault:      true,
-				GitHost:          "github.mycompany.com",
-				GitAuth:          string(config.GitAuthModePAT),
-				GitCredentialRef: "codereview/office-git",
-				ReviewerEnabled:  false,
-				LLMProvider:      string(config.LLMProviderAnthropic),
-				LLMAuth:          string(config.LLMAuthSubscription),
-				LLMAdapter:       string(config.LLMAdapterClaudeCLI),
+				ProfileName:        "office",
+				MakeDefault:        true,
+				GitHost:            "github.mycompany.com",
+				GitAuth:            string(config.GitAuthModePAT),
+				GitCredentialStore: config.LocalOSCredentialStoreID,
+				GitCredentialRef:   "codereview/office-git",
+				ReviewerEnabled:    false,
+				LLMProvider:        string(config.LLMProviderAnthropic),
+				LLMAuth:            string(config.LLMAuthSubscription),
+				LLMAdapter:         string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
 		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
@@ -3363,17 +3381,19 @@ func TestInitInteractivePromptDrivenFlowStillExportsSeparateReviewerAfterDraftIn
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				ProfileName:           "office",
-				MakeDefault:           true,
-				GitHost:               "github.mycompany.com",
-				GitAuth:               string(config.GitAuthModePAT),
-				GitCredentialRef:      "codereview/office-git",
-				ReviewerEnabled:       true,
-				ReviewerAuth:          string(config.GitAuthModeGitHubApp),
-				ReviewerCredentialRef: "codereview/office-reviewer",
-				LLMProvider:           string(config.LLMProviderAnthropic),
-				LLMAuth:               string(config.LLMAuthSubscription),
-				LLMAdapter:            string(config.LLMAdapterClaudeCLI),
+				ProfileName:             "office",
+				MakeDefault:             true,
+				GitHost:                 "github.mycompany.com",
+				GitAuth:                 string(config.GitAuthModePAT),
+				GitCredentialStore:      config.LocalOSCredentialStoreID,
+				GitCredentialRef:        "codereview/office-git",
+				ReviewerEnabled:         true,
+				ReviewerAuth:            string(config.GitAuthModeGitHubApp),
+				ReviewerCredentialStore: config.LocalOSCredentialStoreID,
+				ReviewerCredentialRef:   "codereview/office-reviewer",
+				LLMProvider:             string(config.LLMProviderAnthropic),
+				LLMAuth:                 string(config.LLMAuthSubscription),
+				LLMAdapter:              string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
 		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
@@ -3542,17 +3562,23 @@ func TestCollectInteractiveInitSecretsPassesDestinationToSharedCredentialPrompts
 		t.Fatalf("writes = %#v, want three staged credential refs", workspace.writes)
 	}
 	for _, prompt := range prompter.actionPrompts {
-		if !strings.Contains(prompt.Destination, "Destination: "+prompt.Entry.Ref.Ref+" via Team Vault (Encrypted file)") {
+		if !strings.Contains(prompt.Destination, "Destination: Team Vault / "+prompt.Entry.Ref.Ref) ||
+			!strings.Contains(prompt.Destination, "Credential store: team-vault") ||
+			!strings.Contains(prompt.Destination, "Backend kind: file") {
 			t.Fatalf("action prompt destination = %q for %#v", prompt.Destination, prompt.Entry.Ref)
 		}
 	}
 	for _, prompt := range prompter.sourcePrompts {
-		if !strings.Contains(prompt.Destination, "Destination: "+prompt.Entry.Ref.Ref+" via Team Vault (Encrypted file)") {
+		if !strings.Contains(prompt.Destination, "Destination: Team Vault / "+prompt.Entry.Ref.Ref) ||
+			!strings.Contains(prompt.Destination, "Credential store: team-vault") ||
+			!strings.Contains(prompt.Destination, "Backend kind: file") {
 			t.Fatalf("source prompt destination = %q for %#v", prompt.Destination, prompt.Entry.Ref)
 		}
 	}
 	for _, prompt := range prompter.pastePrompts {
-		if !strings.Contains(prompt.Destination, "Destination: "+prompt.Entry.Ref.Ref+" via Team Vault (Encrypted file)") {
+		if !strings.Contains(prompt.Destination, "Destination: Team Vault / "+prompt.Entry.Ref.Ref) ||
+			!strings.Contains(prompt.Destination, "Credential store: team-vault") ||
+			!strings.Contains(prompt.Destination, "Backend kind: file") {
 			t.Fatalf("paste prompt destination = %q for %#v", prompt.Destination, prompt.Entry.Ref)
 		}
 	}
@@ -3591,7 +3617,8 @@ func TestCollectInteractiveInitSecretsDestinationUsesRawRuntimeBackend(t *testin
 		t.Fatalf("action prompts = %d, want 1", len(prompter.actionPrompts))
 	}
 	destination := prompter.actionPrompts[0].Destination
-	if !strings.Contains(destination, "Destination: codereview/work via "+initBuiltInOSCredentialStoreTitle()+" (In-memory store)") {
+	if !strings.Contains(destination, "Destination: "+initBuiltInOSCredentialStoreTitle()+" / codereview/work") ||
+		!strings.Contains(destination, "Backend kind: memory") {
 		t.Fatalf("destination = %q, want raw runtime backend metadata", destination)
 	}
 	if strings.Contains(destination, "credential destination unavailable") {
@@ -3630,8 +3657,9 @@ func TestCollectInteractiveInitSecretsDestinationUsesInferredDefaultBackend(t *t
 		t.Fatalf("action prompts = %d, want 1", len(prompter.actionPrompts))
 	}
 	destination := prompter.actionPrompts[0].Destination
-	if !strings.Contains(destination, initAutomaticOSDefaultSecretsBackendLabel()) {
-		t.Fatalf("destination = %q, want inferred automatic backend copy", destination)
+	if !strings.Contains(destination, "Destination: "+initBuiltInOSCredentialStoreTitle()+" / codereview/work") ||
+		!strings.Contains(destination, "Backend kind: auto") {
+		t.Fatalf("destination = %q, want inferred built-in credential-store copy", destination)
 	}
 	if strings.Contains(destination, "credential destination unavailable") {
 		t.Fatalf("destination = %q, want available inferred backend summary", destination)
@@ -3977,11 +4005,11 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	existing := apiKeyProfile("work", config.LLMProviderOpenAI)
 	existing.Git.Host = "gitlab.com"
 	existing.Git.AuthMode = config.GitAuthModeGitHubApp
-	existing.Git.CredentialRef = "codereview/custom-git"
+	existing.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-git"}
 	existing.LLM.ReviewerModelTier = config.ModelTierMedium
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/custom-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-reviewer"},
 	}
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
@@ -6530,7 +6558,7 @@ func TestReviewerEntityLinearEditorNewLabelDerivesDefaultSecretLocation(t *testi
 		t.Fatalf("secret location = %q, want label-derived %q", got, want)
 	}
 	status := model.document[model.document.fieldIndexByID(initReviewerEntityFieldCredentialStatus)].Description
-	if !strings.Contains(status, "Destination: codereview/rianjs-bot-reviewer") {
+	if !strings.Contains(status, "Destination: "+initBuiltInOSCredentialStoreTitle()+" / codereview/rianjs-bot-reviewer") {
 		t.Fatalf("status = %q, want label-derived destination", status)
 	}
 	if !strings.Contains(status, credentials.GitHubAppIDKey) || !strings.Contains(status, string(initReviewerCredentialKeyMissing)) || strings.Contains(status, string(initReviewerCredentialKeyUnavailable)) {
@@ -6905,7 +6933,7 @@ func TestReviewerEntityLinearEditorLabelDerivedRefPreservesBackendUnavailableSta
 	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldLabel))
 
 	status := model.document[model.document.fieldIndexByID(initReviewerEntityFieldCredentialStatus)].Description
-	if !strings.Contains(status, "Destination: codereview/rianjs-bot-reviewer") ||
+	if !strings.Contains(status, "Destination: "+initBuiltInOSCredentialStoreTitle()+" / codereview/rianjs-bot-reviewer") ||
 		!strings.Contains(status, "credential backend status unavailable") ||
 		!strings.Contains(status, string(initReviewerCredentialKeyUnavailable)) {
 		t.Fatalf("status = %q, want label-derived ref to preserve backend-unavailable state", status)
@@ -6967,7 +6995,7 @@ func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.
 	model.afterFieldChange(locationIndex)
 
 	updated := model.document[statusIndex].Description
-	for _, want := range []string{"Destination: codereview/new-reviewer", "credential backend status unavailable", credentials.GitTokenKey, string(initReviewerCredentialKeyUnavailable)} {
+	for _, want := range []string{"Destination: " + initBuiltInOSCredentialStoreTitle() + " / codereview/new-reviewer", "credential backend status unavailable", credentials.GitTokenKey, string(initReviewerCredentialKeyUnavailable)} {
 		if !strings.Contains(updated, want) {
 			t.Fatalf("updated status = %q, want %q", updated, want)
 		}
@@ -7059,6 +7087,7 @@ func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testi
 func TestHuhInitReviewerEntityDetailsPreservesPromptContextCredentialStore(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft.ReviewerCredentialStore = "work-file"
 	resolved := credentials.ResolvedSecretsProfile{
 		ID:      "work-file",
 		Label:   "Work file",
@@ -7066,9 +7095,20 @@ func TestHuhInitReviewerEntityDetailsPreservesPromptContextCredentialStore(t *te
 		Backend: string(credstore.BackendFile),
 	}
 	ctx := initPromptContext{
+		ExistingConfig: config.File{
+			Secrets: config.SecretsConfig{
+				Stores: map[string]config.SecretsStore{
+					"work-file": {
+						DisplayName: "Work file",
+						Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					},
+				},
+			},
+		},
 		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
 			Ref: config.CredentialRef{
 				Purpose: "reviewer_credentials",
+				Store:   "work-file",
 				Ref:     "codereview/work-reviewer",
 				Mode:    string(config.GitAuthModeGitHubApp),
 			},
@@ -7624,15 +7664,15 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
-				ProfileName:      "work",
-				MakeDefault:      true,
-				GitHost:          "github.com",
-				GitAuth:          string(config.GitAuthModePAT),
-				GitCredentialRef: "codereview/work",
-				SecretsProfile:   "team-vault",
-				LLMProvider:      string(config.LLMProviderAnthropic),
-				LLMAuth:          string(config.LLMAuthSubscription),
-				LLMAdapter:       string(config.LLMAdapterClaudeCLI),
+				ProfileName:        "work",
+				MakeDefault:        true,
+				GitHost:            "github.com",
+				GitAuth:            string(config.GitAuthModePAT),
+				GitCredentialStore: "team-vault",
+				GitCredentialRef:   "codereview/work",
+				LLMProvider:        string(config.LLMProviderAnthropic),
+				LLMAuth:            string(config.LLMAuthSubscription),
+				LLMAdapter:         string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
 		configPath: func(*root.Options) (string, error) { return path, nil },
@@ -7640,10 +7680,10 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
 			return config.File{
 				Profiles: map[string]config.Profile{},
 				Secrets: config.SecretsConfig{
-					Profiles: map[string]config.SecretsProfile{
+					Stores: map[string]config.SecretsStore{
 						"team-vault": {
-							Label:   "Team Vault",
-							Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+							DisplayName: "Team Vault",
+							Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 						},
 					},
 				},
@@ -7701,13 +7741,13 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 	existing := basicProfile("work")
 	existing.Git.CredentialRef = "codereview/work"
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	existing.LLM.Provider = config.LLMProviderAnthropic
 	existing.LLM.Auth = config.LLMAuthAPIKey
 	existing.LLM.Adapter = config.LLMAdapterAnthropicAPI
-	existing.LLM.CredentialRef = "codereview/shared-llm"
+	existing.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-llm"}
 	runtimes := map[string]initLLMRuntimeDraft{
 		"anthropic-runtime": {
 			Name:          "anthropic-runtime",
@@ -7737,9 +7777,10 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 			"", // LLM runtime
 			"", // Reviewer model tier
 			"", // Repository routes
-			"", // Git storage label
-			"", // Reviewer storage label
-			"", // LLM storage label
+			"", // LLM credential store
+			"", // LLM credential name
+			"", // Git credential store
+			"", // Git credential name
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -7778,14 +7819,17 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 	if strings.Contains(out, "Storage label handling") || strings.Contains(out, "Customize storage labels (advanced)") {
 		t.Fatalf("wizard output still shows legacy storage label mode prompt: %q", out)
 	}
-	if !strings.Contains(out, "Git secrets storage label") {
-		t.Fatalf("wizard output missing inline Git storage label prompt: %q", out)
+	if !strings.Contains(out, "Git credentials") || !strings.Contains(out, "Git credential store") || !strings.Contains(out, "Git credential name") {
+		t.Fatalf("wizard output missing inline Git credential prompts: %q", out)
 	}
-	if strings.Contains(out, "Reviewer storage label") || strings.Contains(out, "LLM storage label") {
-		t.Fatalf("wizard output exposed reviewer/LLM storage labels in profile editor: %q", out)
+	if !strings.Contains(out, "LLM API key credentials") || !strings.Contains(out, "LLM credential store") || !strings.Contains(out, "LLM credential name") {
+		t.Fatalf("wizard output missing inline LLM credential prompts for API-key runtime: %q", out)
 	}
-	if !strings.Contains(out, "Useful for advanced deployment scenarios. Leave unchanged if you're unsure.") {
-		t.Fatalf("wizard output missing advanced Git storage-label guidance: %q", out)
+	if strings.Contains(out, "Reviewer storage label") || strings.Contains(out, "LLM storage label") || strings.Contains(out, "Git secrets storage label") {
+		t.Fatalf("wizard output exposed legacy storage-label copy: %q", out)
+	}
+	if !strings.Contains(out, "credential name is the full codereview/... path written to the selected store") {
+		t.Fatalf("wizard output missing explicit credential-name guidance: %q", out)
 	}
 	if draft.AdvancedStorageLabels {
 		t.Fatalf("draft.AdvancedStorageLabels = true, want false when the flattened fields keep their selected defaults")
@@ -7813,7 +7857,8 @@ func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
 			"", // LLM runtime
 			"", // Reviewer model tier
 			"", // Repository routes
-			"", // Git storage label
+			"", // Git credential store
+			"", // Git credential name
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -7848,8 +7893,8 @@ func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
 	if strings.Contains(out, "Storage label handling") {
 		t.Fatalf("wizard output still shows legacy storage label mode prompt: %q", out)
 	}
-	if !strings.Contains(out, "Git secrets storage label") {
-		t.Fatalf("wizard output missing inline git secrets storage label: %q", out)
+	if !strings.Contains(out, "Git credentials") || !strings.Contains(out, "Git credential store") || !strings.Contains(out, "Git credential name") {
+		t.Fatalf("wizard output missing inline Git credential prompts: %q", out)
 	}
 	if !strings.Contains(out, "Profile action") || !strings.Contains(out, "Stage profile settings") {
 		t.Fatalf("wizard output missing profile-level staging action: %q", out)
@@ -7880,19 +7925,21 @@ func TestHuhInitPrompterAccessibleStorageLabelsOnlyExposeGitLabel(t *testing.T) 
 			Adapter:  config.LLMAdapterClaudeCLI,
 		},
 		"z-api-runtime": {
-			Name:          "z-api-runtime",
-			Provider:      config.LLMProviderAnthropic,
-			Auth:          config.LLMAuthAPIKey,
-			Adapter:       config.LLMAdapterAnthropicAPI,
-			CredentialRef: "codereview/shared-llm",
+			Name:            "z-api-runtime",
+			Provider:        config.LLMProviderAnthropic,
+			Auth:            config.LLMAuthAPIKey,
+			Adapter:         config.LLMAdapterAnthropicAPI,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/shared-llm",
 		},
 	}
 	reviewerEntities := map[string]initReviewerEntityDraft{
 		"pat-reviewer": {
-			Name:          "pat-reviewer",
-			Kind:          initReviewerEntityKindPAT,
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/shared-reviewer",
+			Name:            "pat-reviewer",
+			Kind:            initReviewerEntityKindPAT,
+			AuthMode:        config.GitAuthModePAT,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/shared-reviewer",
 		},
 	}
 	var stderr bytes.Buffer
@@ -7905,9 +7952,10 @@ func TestHuhInitPrompterAccessibleStorageLabelsOnlyExposeGitLabel(t *testing.T) 
 			"2", // LLM runtime: z-api-runtime
 			"",  // Reviewer model tier
 			"",  // Repository routes
-			"",  // Git storage label
-			"",  // Reviewer storage label
-			"",  // LLM storage label
+			"",  // LLM credential store
+			"",  // LLM credential name
+			"",  // Git credential store
+			"",  // Git credential name
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -7939,11 +7987,14 @@ func TestHuhInitPrompterAccessibleStorageLabelsOnlyExposeGitLabel(t *testing.T) 
 		t.Fatalf("Run: %v", err)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "Git secrets storage label") {
-		t.Fatalf("stderr = %q, want inline Git storage label", out)
+	if !strings.Contains(out, "Git credentials") || !strings.Contains(out, "Git credential store") || !strings.Contains(out, "Git credential name") {
+		t.Fatalf("stderr = %q, want inline Git credential prompts", out)
 	}
-	if strings.Contains(out, "Reviewer storage label") || strings.Contains(out, "LLM storage label") {
-		t.Fatalf("stderr = %q, want profile editor to omit reviewer/LLM storage labels", out)
+	if !strings.Contains(out, "LLM API key credentials") || !strings.Contains(out, "LLM credential store") || !strings.Contains(out, "LLM credential name") {
+		t.Fatalf("stderr = %q, want inline LLM credential prompts for API-key runtime", out)
+	}
+	if strings.Contains(out, "Reviewer storage label") || strings.Contains(out, "LLM storage label") || strings.Contains(out, "Git secrets storage label") {
+		t.Fatalf("stderr = %q, want profile editor to omit legacy storage-label prompts", out)
 	}
 	_ = draft
 }
@@ -8067,15 +8118,15 @@ func TestInitProfileStorageLabelSelectionTransitionFollowsChangedDefaults(t *tes
 func TestHuhInitPrompterAccessibleStorageLabelsKeepCustomOverridesAcrossSelections(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
-	existing.Git.CredentialRef = "codereview/custom-git"
+	existing.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-git"}
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/custom-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-reviewer"},
 	}
 	existing.LLM.Provider = config.LLMProviderAnthropic
 	existing.LLM.Auth = config.LLMAuthAPIKey
 	existing.LLM.Adapter = config.LLMAdapterAnthropicAPI
-	existing.LLM.CredentialRef = "codereview/custom-llm"
+	existing.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-llm"}
 	cfg := config.File{
 		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
@@ -12388,11 +12439,11 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 	}
 	profile.Git.Host = "github.enterprise"
 	profile.Git.AuthMode = config.GitAuthModeGitHubApp
-	profile.Git.CredentialRef = "codereview/custom-git"
+	profile.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-git"}
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: reviewerRef,
-		DisplayName:   "OCC reviewer",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: reviewerRef},
+		DisplayName: "OCC reviewer",
 	}
 	profile.LLM.ModelMap = config.ModelMap{
 		string(config.ModelTierLarge): "claude-opus-4-7",
@@ -12457,7 +12508,10 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"Enable self-approve",
 		"Auto-resolve",
 		"24h",
-		"Git secrets storage label",
+		"Git credentials",
+		"Git credential store",
+		initBuiltInOSCredentialStoreTitle(),
+		"Git credential name",
 		"codereview/custom-git",
 		"Profile action",
 		"Stage profile settings",
@@ -12493,7 +12547,7 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"Model tier mapping",
 		"Additional reviewer-agent directories (optional)",
 		"Review Policy",
-		"Git secrets storage label",
+		"Git credentials",
 		"Profile action",
 	)
 }
@@ -12677,7 +12731,7 @@ func TestInitProfileV2LayoutWrapsAndMeasuresSmallViewport(t *testing.T) {
 	document.addSection("Profile", "This section has enough words to wrap across multiple lines in a narrow terminal.")
 	document.addInput("Profile name", "Short field that should remain measurable.", "monit")
 	document.addInput("Route entries", "Routes tell cr when to use this profile automatically in a narrow viewport.", "github.com/SignalFT")
-	document.addInput("Git secrets storage label", "Useful for advanced deployment scenarios. Leave unchanged if unsure.", "codereview/monit")
+	document.addInput("Git credential name", "Full credential name under the selected store.", "codereview/monit")
 
 	layout := initProfileV2LayoutDocument(document, 32, document.firstFocusableField())
 	if len(layout.Bounds) != len(document) {
@@ -12903,10 +12957,11 @@ func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
 	// #nosec G101 -- test fixture credential reference, not a secret.
 	reviewerEntities := map[string]initReviewerEntityDraft{
 		"app-reviewer": {
-			Kind:          initReviewerEntityKindGitHubApp,
-			AuthMode:      config.GitAuthModeGitHubApp,
-			CredentialRef: "codereview/app-reviewer",
-			DisplayName:   "enterprise/reviewer-bot",
+			Kind:            initReviewerEntityKindGitHubApp,
+			AuthMode:        config.GitAuthModeGitHubApp,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/app-reviewer",
+			DisplayName:     "enterprise/reviewer-bot",
 		},
 	}
 	llmRuntimes := map[string]initLLMRuntimeDraft{
@@ -12917,11 +12972,12 @@ func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
 			Adapter:  config.LLMAdapterClaudeCLI,
 		},
 		"openai-work": {
-			Preset:        initLLMRuntimePresetOpenAIAPIKey,
-			Provider:      config.LLMProviderOpenAI,
-			Auth:          config.LLMAuthAPIKey,
-			Adapter:       config.LLMAdapterOpenAIAPI,
-			CredentialRef: "codereview/openai-work",
+			Preset:          initLLMRuntimePresetOpenAIAPIKey,
+			Provider:        config.LLMProviderOpenAI,
+			Auth:            config.LLMAuthAPIKey,
+			Adapter:         config.LLMAdapterOpenAIAPI,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/openai-work",
 		},
 	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", reviewerEntities, llmRuntimes), 160, 24)
@@ -13145,12 +13201,13 @@ func TestInitProfileV2ReviewPolicyRejectsInvalidDuration(t *testing.T) {
 	}
 }
 
-func TestInitProfileV2GitStorageLabelDraftsCustomLabel(t *testing.T) {
+func TestInitProfileV2GitCredentialNameDraftsCustomName(t *testing.T) {
 	gitScopes := map[string]initGitScopeDraft{
 		"github-work": {
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/monit",
+			Host:            "github.com",
+			AuthMode:        config.GitAuthModePAT,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/monit",
 		},
 	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
@@ -13162,7 +13219,7 @@ func TestInitProfileV2GitStorageLabelDraftsCustomLabel(t *testing.T) {
 		gitScopes,
 		"github-work",
 	), 160, 40)
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitStorageLabel)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitCredentialName)
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
 	model = typeInitProfileV2Text(t, model, "codereview/custom-monit-git")
 
@@ -13171,14 +13228,14 @@ func TestInitProfileV2GitStorageLabelDraftsCustomLabel(t *testing.T) {
 		t.Fatalf("validatedDraft: %v", err)
 	}
 	if draft.GitCredentialRef != "codereview/custom-monit-git" {
-		t.Fatalf("draft.GitCredentialRef = %q, want custom label", draft.GitCredentialRef)
+		t.Fatalf("draft.GitCredentialRef = %q, want custom credential name", draft.GitCredentialRef)
 	}
-	if !draft.AdvancedStorageLabels {
-		t.Fatal("draft.AdvancedStorageLabels = false, want true for custom Git label")
+	if draft.GitCredentialStore != config.LocalOSCredentialStoreID {
+		t.Fatalf("draft.GitCredentialStore = %q, want local-os", draft.GitCredentialStore)
 	}
 }
 
-func TestInitProfileV2GitStorageLabelRejectsInvalidCredentialRef(t *testing.T) {
+func TestInitProfileV2GitCredentialNameRejectsInvalidCredentialRef(t *testing.T) {
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
 		"monit",
 		"github.com/SignalFT",
@@ -13188,14 +13245,14 @@ func TestInitProfileV2GitStorageLabelRejectsInvalidCredentialRef(t *testing.T) {
 		nil,
 		initCustomGitScopeSelection,
 	), 160, 24)
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitStorageLabel)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitCredentialName)
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
 	model = typeInitProfileV2Text(t, model, "not-a-ref")
 
 	if !strings.Contains(model.View(), "credential ref") {
-		index := model.document.fieldIndexByID(initProfileV2FieldGitStorageLabel)
+		index := model.document.fieldIndexByID(initProfileV2FieldGitCredentialName)
 		if index < 0 || !strings.Contains(model.document[index].Error, "credential ref") {
-			t.Fatalf("git storage label field error = %q, want credential-ref validation", model.document[index].Error)
+			t.Fatalf("git credential name field error = %q, want credential-ref validation", model.document[index].Error)
 		}
 	}
 	if _, err := model.validatedDraft(); err == nil {
@@ -13203,17 +13260,19 @@ func TestInitProfileV2GitStorageLabelRejectsInvalidCredentialRef(t *testing.T) {
 	}
 }
 
-func TestInitProfileV2GitStorageLabelFollowsChangedScopeDefaultWhenUnedited(t *testing.T) {
+func TestInitProfileV2GitCredentialNameFollowsChangedScopeDefaultWhenUnedited(t *testing.T) {
 	gitScopes := map[string]initGitScopeDraft{
 		"old-git": {
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/old-git",
+			Host:            "github.com",
+			AuthMode:        config.GitAuthModePAT,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/old-git",
 		},
 		"new-git": {
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/new-git",
+			Host:            "github.com",
+			AuthMode:        config.GitAuthModePAT,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/new-git",
 		},
 	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
@@ -13233,9 +13292,6 @@ func TestInitProfileV2GitStorageLabelFollowsChangedScopeDefaultWhenUnedited(t *t
 	}
 	if draft.GitCredentialRef != "codereview/new-git" {
 		t.Fatalf("draft.GitCredentialRef = %q, want changed Git scope default", draft.GitCredentialRef)
-	}
-	if draft.AdvancedStorageLabels {
-		t.Fatal("draft.AdvancedStorageLabels = true, want false for unchanged default label")
 	}
 }
 
@@ -13639,6 +13695,9 @@ func newTestInitProfileV2EditorWithSelections(profileName string, routeText stri
 		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 	}
 	llmRuntimeOptions, selectedLLMRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, "", draft)
+	storeOptions := []huh.Option[string]{
+		huh.NewOption(initBuiltInOSCredentialStoreTitle()+" - "+initBuiltInOSCredentialStoreDescription(), config.LocalOSCredentialStoreID),
+	}
 	var document initProfileV2Document
 	document.addSection("Profile", "")
 	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", profileName, validateProfileName)
@@ -13651,12 +13710,14 @@ func newTestInitProfileV2EditorWithSelections(profileName string, routeText stri
 		string(initReviewerEntityKindUseGitIdentity),
 	)
 	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
+	initProfileV2AppendLLMStorageSection(&document, storeOptions, draft.LLMCredentialStore, draft.LLMCredentialRef, !initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes))
 	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
 	return initProfileV2Editor{
-		Draft:            draft,
-		ReviewerEntities: reviewerEntities,
-		LLMRuntimes:      llmRuntimes,
-		Document:         document,
+		Draft:                  draft,
+		ReviewerEntities:       reviewerEntities,
+		LLMRuntimes:            llmRuntimes,
+		CredentialStoreOptions: storeOptions,
+		Document:               document,
 	}
 }
 
@@ -13696,6 +13757,11 @@ func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeT
 		draft.LLMProvider = string(runtime.Provider)
 		draft.LLMAuth = string(runtime.Auth)
 		draft.LLMAdapter = string(runtime.Adapter)
+		draft.LLMCredentialStore = initCredentialStoreDraftValue(runtime.CredentialStore)
+		draft.LLMCredentialRef = runtime.CredentialRef
+	}
+	storeOptions := []huh.Option[string]{
+		huh.NewOption(initBuiltInOSCredentialStoreTitle()+" - "+initBuiltInOSCredentialStoreDescription(), config.LocalOSCredentialStoreID),
 	}
 	var document initProfileV2Document
 	document.addSection("Profile", "")
@@ -13703,11 +13769,13 @@ func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeT
 	initProfileV2AppendRouteSection(&document, routeText)
 	llmRuntimeOptions, normalizedRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, selectedRuntime, draft)
 	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, normalizedRuntime)
+	initProfileV2AppendLLMStorageSection(&document, storeOptions, draft.LLMCredentialStore, draft.LLMCredentialRef, !initLLMStorageLabelRelevant(normalizedRuntime, llmRuntimes))
 	initProfileV2AppendModelMapSection(&document, initProfileEditorModelMapLLM(draft, normalizedRuntime, llmRuntimes), draft.ModelMap)
 	return initProfileV2Editor{
-		Draft:       draft,
-		LLMRuntimes: llmRuntimes,
-		Document:    document,
+		Draft:                  draft,
+		LLMRuntimes:            llmRuntimes,
+		CredentialStoreOptions: storeOptions,
+		Document:               document,
 	}
 }
 
@@ -13739,11 +13807,15 @@ func newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(profileName string,
 		ProfileName:         profileName,
 		GitHost:             "github.com",
 		GitAuth:             string(config.GitAuthModePAT),
+		GitCredentialStore:  config.LocalOSCredentialStoreID,
 		GitCredentialRef:    strings.TrimSpace(gitStorageLabel),
 		LLMProvider:         string(config.LLMProviderAnthropic),
 		LLMAuth:             string(config.LLMAuthSubscription),
 		LLMAdapter:          string(config.LLMAdapterClaudeCLI),
 		ReviewPolicy:        policy,
+	}
+	storeOptions := []huh.Option[string]{
+		huh.NewOption(initBuiltInOSCredentialStoreTitle()+" - "+initBuiltInOSCredentialStoreDescription(), config.LocalOSCredentialStoreID),
 	}
 	var document initProfileV2Document
 	document.addSection("Profile", "")
@@ -13753,10 +13825,11 @@ func newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(profileName string,
 		initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(gitScopes), draft, true)
 	}
 	initProfileV2AppendReviewPolicySection(&document, policy)
-	initProfileV2AppendGitStorageSection(&document, gitStorageLabel)
+	initProfileV2AppendGitStorageSection(&document, storeOptions, config.LocalOSCredentialStoreID, gitStorageLabel)
 	return initProfileV2Editor{
 		Draft:                      draft,
 		GitScopes:                  gitScopes,
+		CredentialStoreOptions:     storeOptions,
 		SelectedGitScope:           selectedGitScope,
 		InitialGitStorageLabel:     gitStorageLabel,
 		GitStorageLabelUsesDefault: gitLabelUsesDefault,
@@ -14447,11 +14520,11 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 	path := filepath.Join(t.TempDir(), "config.yml")
 	profile := basicProfile("work")
 	profile.Git.Host = "gitlab.example.com"
-	profile.Git.CredentialRef = "codereview/work-git"
+	profile.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-git"}
 	profile.Git.IdentityCache = "git-cache"
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/work-reviewer",
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 		IdentityCache: "reviewer-cache",
 	}
 	profile.LLM.ModelMap = config.ModelMap{"medium": "claude-custom"}
@@ -14925,9 +14998,10 @@ func TestInitCredentialDestinationDescriptionLegacyAutoUsesPlatformCopy(t *testi
 	})
 
 	for _, want := range []string{
-		"Destination: codereview/work via " + initBuiltInOSCredentialStoreTitle(),
-		initAutomaticOSDefaultSecretsBackendLabel(),
-		"Change destination by selecting a credential store",
+		"Destination: " + initBuiltInOSCredentialStoreTitle() + " / codereview/work",
+		"Credential store: " + config.LocalOSCredentialStoreID,
+		"Backend kind: auto",
+		"Secret values are collected separately.",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description = %q, want %q", description, want)
@@ -14942,12 +15016,12 @@ func TestInitCredentialDestinationDescriptionNamedOnePasswordShowsRoutingWithout
 	t.Setenv(connectTokenEnv, "sentinel-connect-token-value")
 	cfg := config.File{
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"team-vault": {
-					Label: "Team Vault",
-					Backend: config.SecretsProfileBackend{
+					DisplayName: "Team Vault",
+					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendOP),
-						OnePassword: &config.SecretsProfileOnePasswordConfig{
+						OnePassword: &config.SecretsStoreOnePasswordConfig{
 							VaultID:         "Engineering",
 							ItemTitlePrefix: "cr-",
 							ItemTag:         "code-review",
@@ -14973,8 +15047,9 @@ func TestInitCredentialDestinationDescriptionNamedOnePasswordShowsRoutingWithout
 	})
 
 	for _, want := range []string{
-		"Destination: codereview/rianjs-bot via Team Vault (1Password service account)",
+		"Destination: Team Vault / Engineering / codereview/rianjs-bot",
 		"Credential store: team-vault",
+		"Backend kind: op",
 		"1Password vault: Engineering",
 		"1Password service account token env var: " + serviceTokenEnv,
 	} {
@@ -15003,12 +15078,12 @@ func TestInitCredentialDestinationDescriptionOnePasswordConnectDoesNotReadTokenV
 	t.Setenv(connectTokenEnv, "sentinel-connect-token-value")
 	cfg := config.File{
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"connect-vault": {
-					Label: "Connect Vault",
-					Backend: config.SecretsProfileBackend{
+					DisplayName: "Connect Vault",
+					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendOPConnect),
-						OnePassword: &config.SecretsProfileOnePasswordConfig{
+						OnePassword: &config.SecretsStoreOnePasswordConfig{
 							VaultID:         "Engineering",
 							ConnectHost:     "https://connect.example",
 							ConnectTokenEnv: connectTokenEnv,
@@ -15032,7 +15107,8 @@ func TestInitCredentialDestinationDescriptionOnePasswordConnectDoesNotReadTokenV
 	})
 
 	for _, want := range []string{
-		"Destination: codereview/work-llm via Connect Vault (1Password Connect)",
+		"Destination: Connect Vault / Engineering / codereview/work-llm",
+		"Backend kind: op-connect",
 		"1Password Connect host: https://connect.example",
 		"1Password Connect token env var: " + connectTokenEnv,
 	} {
@@ -15048,12 +15124,12 @@ func TestInitCredentialDestinationDescriptionOnePasswordConnectDoesNotReadTokenV
 func TestInitCredentialDestinationDescriptionOnePasswordDesktopShowsAccountID(t *testing.T) {
 	cfg := config.File{
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"desktop-vault": {
-					Label: "Desktop Vault",
-					Backend: config.SecretsProfileBackend{
+					DisplayName: "Desktop Vault",
+					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
-						OnePassword: &config.SecretsProfileOnePasswordConfig{
+						OnePassword: &config.SecretsStoreOnePasswordConfig{
 							VaultID:          "Engineering",
 							DesktopAccountID: "account-123",
 						},
@@ -15076,7 +15152,8 @@ func TestInitCredentialDestinationDescriptionOnePasswordDesktopShowsAccountID(t 
 	})
 
 	for _, want := range []string{
-		"Destination: codereview/work via Desktop Vault (1Password desktop app)",
+		"Destination: Desktop Vault / Engineering / codereview/work",
+		"Backend kind: op-desktop",
 		"1Password vault: Engineering",
 		"1Password desktop account id: account-123",
 	} {
@@ -15101,9 +15178,11 @@ func TestInitCredentialDestinationDescriptionUnavailableIsNonFatal(t *testing.T)
 	})
 
 	for _, want := range []string{
-		"Destination: codereview/work-llm",
+		"Destination: Missing Profile / codereview/work-llm",
+		"Credential store: missing-profile",
+		"Backend kind: op-connect",
 		"credential destination unavailable",
-		"Change destination by selecting a credential store",
+		"Secret values are collected separately.",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description = %q, want %q", description, want)
@@ -15128,12 +15207,12 @@ func TestHuhInitSecretPrompterAccessibleShowsCredentialDestination(t *testing.T)
 				Source:  config.EffectiveSecretsProfileSourceConfigured,
 			},
 		},
-		Destination: "Destination: codereview/work via Team Vault (Encrypted file)",
+		Destination: "Destination: Team Vault / codereview/work",
 	})
 	if err != nil {
 		t.Fatalf("ChooseCredentialAction: %v", err)
 	}
-	if got := stderr.String(); !strings.Contains(got, "Destination: codereview/work via Team Vault (Encrypted file)") {
+	if got := stderr.String(); !strings.Contains(got, "Destination: Team Vault / codereview/work") {
 		t.Fatalf("stderr = %q, want credential destination note", got)
 	}
 }
@@ -15150,12 +15229,12 @@ func TestHuhInitSecretPrompterAccessibleSecretSourceShowsCredentialDestination(t
 			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
 		},
 		Key:         credentials.GitTokenKey,
-		Destination: "Destination: codereview/work via Team Vault (Encrypted file)",
+		Destination: "Destination: Team Vault / codereview/work",
 	})
 	if err != nil {
 		t.Fatalf("ChooseSecretSource: %v", err)
 	}
-	if got := stderr.String(); !strings.Contains(got, "Destination: codereview/work via Team Vault (Encrypted file)") {
+	if got := stderr.String(); !strings.Contains(got, "Destination: Team Vault / codereview/work") {
 		t.Fatalf("stderr = %q, want credential destination note", got)
 	}
 }
@@ -15163,11 +15242,11 @@ func TestHuhInitSecretPrompterAccessibleSecretSourceShowsCredentialDestination(t
 func TestInitSecretPasteDescriptionKeepsDestinationForGitHubAppPrivateKey(t *testing.T) {
 	description := initSecretPasteDescription(initSecretValuePrompt{
 		Key:         credentials.GitHubAppPrivateKeyKey,
-		Destination: "Destination: codereview/rianjs-bot via Team Vault (Encrypted file)",
+		Destination: "Destination: Team Vault / codereview/rianjs-bot",
 	})
 
 	for _, want := range []string{
-		"Destination: codereview/rianjs-bot via Team Vault (Encrypted file)",
+		"Destination: Team Vault / codereview/rianjs-bot",
 		"Clipboard is recommended for multi-line private keys",
 	} {
 		if !strings.Contains(description, want) {
@@ -15269,7 +15348,7 @@ func TestInitReviewerCredentialStatusSelectionFiltersByAuthMode(t *testing.T) {
 	}
 	seed := seedInteractiveInitDraft("work", "work", "work", nil)
 
-	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seed, string(initReviewerEntityKindPAT), "codereview/work-reviewer")
+	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seed, string(initReviewerEntityKindPAT), config.LocalOSCredentialStoreID, "codereview/work-reviewer")
 	if !ok {
 		t.Fatal("PAT status missing")
 	}
@@ -15323,21 +15402,19 @@ func TestInitReviewerCredentialStatusBackendUnavailableDoesNotLeakOrBlock(t *tes
 
 func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestination(t *testing.T) {
 	profile := basicProfile("work")
-	profile.SecretsProfile = "work-1password"
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: "work-1password", Name: "codereview/work-reviewer"},
 	}
 	cfg := config.File{
 		DefaultProfile: "work",
 		Secrets: config.SecretsConfig{
-			DefaultProfile: "work-1password",
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"work-1password": {
-					Label: "Work Vault",
-					Backend: config.SecretsProfileBackend{
+					DisplayName: "Work Vault",
+					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
-						OnePassword: &config.SecretsProfileOnePasswordConfig{
+						OnePassword: &config.SecretsStoreOnePasswordConfig{
 							VaultID:          "Engineering",
 							ItemTitlePrefix:  "cr-",
 							ItemTag:          "code-review",
@@ -15385,8 +15462,9 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 		t.Fatalf("status.Destination is empty; description fell back to legacy formatter: %q", description)
 	}
 	for _, want := range []string{
-		"Destination: codereview/work-reviewer via Work Vault (1Password desktop app)",
-		string(credstore.BackendOPDesktop),
+		"Destination: Work Vault / Engineering / codereview/work-reviewer",
+		"Credential store: work-1password",
+		"Backend kind: op-desktop",
 		"1Password vault: Engineering",
 		"1Password desktop account id: account-123",
 	} {
@@ -15411,8 +15489,8 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t *testing.T) {
 	originalProfile := basicProfile("work")
 	originalProfile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/work-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 	}
 	originalCfg := config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": originalProfile}}
 	originalResolved, err := credentials.ResolveSecretsProfileForProfile(originalCfg, originalProfile)
@@ -15420,14 +15498,13 @@ func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t 
 		t.Fatalf("Resolve original secrets profile: %v", err)
 	}
 	profile := originalProfile
-	profile.SecretsProfile = "work-file"
+	profile.ReviewerCredentials.Credential.Store = "work-file"
 	cfg := config.File{
 		DefaultProfile: "work",
 		Secrets: config.SecretsConfig{
-			DefaultProfile: "work-file",
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"work-file": {
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
@@ -15533,7 +15610,7 @@ func TestInitReviewerCredentialStatusIncludesStandardTemplateRefs(t *testing.T) 
 	}
 
 	ctx := currentInteractiveInitReviewerEntityPromptContext(&root.Options{}, deps, session)
-	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seedInteractiveInitDraft("work", "work", "work", &work), string(initReviewerEntityKindPAT), "")
+	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seedInteractiveInitDraft("work", "work", "work", &work), string(initReviewerEntityKindPAT), config.LocalOSCredentialStoreID, "")
 	if !ok {
 		t.Fatal("PAT template status missing")
 	}
@@ -20725,6 +20802,7 @@ func basicProfile(profile string) config.Profile {
 		Git: config.GitConfig{
 			Host:          "github.com",
 			AuthMode:      config.GitAuthModePAT,
+			Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 			CredentialRef: ref,
 		},
 		LLM: config.LLMConfig{
@@ -20747,11 +20825,13 @@ func normalizeTestProfile(profile config.Profile) config.Profile {
 
 func apiKeyProfile(profile string, provider config.LLMProvider) config.Profile {
 	p := basicProfile(profile)
+	ref := "codereview/" + profile + "-llm"
 	p.LLM = config.LLMConfig{
 		Provider:      provider,
 		Auth:          config.LLMAuthAPIKey,
 		Adapter:       config.LLMAdapterAnthropicAPI,
-		CredentialRef: "codereview/" + profile + "-llm",
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
+		CredentialRef: ref,
 	}
 	if provider == config.LLMProviderOpenAI {
 		p.LLM.Adapter = config.LLMAdapterOpenAIAPI

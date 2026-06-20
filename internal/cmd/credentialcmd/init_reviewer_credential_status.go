@@ -144,7 +144,13 @@ func hasInitReviewerCredentialPlanEntry(entries []initCredentialPlanEntry) bool 
 }
 
 func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, profile config.Profile, plannedWriteKeys map[string][]string, entries []initCredentialPlanEntry) []initCredentialPlanEntry {
-	resolved, err := credentials.ResolveSecretsProfileForProfile(session.cfg, profile)
+	reviewerStoreID := config.LocalOSCredentialStoreID
+	if profile.ReviewerCredentials != nil {
+		reviewerStoreID = initCredentialStoreDraftValue(profile.ReviewerCredentials.Credential.Store)
+	} else {
+		reviewerStoreID = initCredentialStoreDraftValue(profile.Git.Credential.Store)
+	}
+	resolved, err := credentials.ResolveCredentialStore(session.cfg, reviewerStoreID)
 	if err != nil {
 		return entries
 	}
@@ -155,11 +161,13 @@ func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, pro
 	if standardRef, err := credentials.FormatRef(session.workspace.profileName + "-reviewer"); err == nil {
 		entries = appendReviewerCredentialPlanEntry(entries, seen, resolved, plannedWriteKeys, config.CredentialRef{
 			Purpose: "reviewer_credentials",
+			Store:   reviewerStoreID,
 			Ref:     standardRef,
 			Mode:    string(config.GitAuthModePAT),
 		})
 		entries = appendReviewerCredentialPlanEntry(entries, seen, resolved, plannedWriteKeys, config.CredentialRef{
 			Purpose: "reviewer_credentials",
+			Store:   reviewerStoreID,
 			Ref:     standardRef,
 			Mode:    string(config.GitAuthModeGitHubApp),
 		})
@@ -171,6 +179,7 @@ func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, pro
 		}
 		ref := config.CredentialRef{
 			Purpose: "reviewer_credentials",
+			Store:   initCredentialStoreDraftValue(entity.CredentialStore),
 			Ref:     strings.TrimSpace(entity.CredentialRef),
 			Mode:    string(entity.AuthMode),
 		}
@@ -244,11 +253,12 @@ func deriveInitReviewerCredentialKeyState(entry initCredentialPlanEntry, spec cr
 	return initReviewerCredentialKeyOptional
 }
 
-func initReviewerCredentialStatusForSelectionRef(ctx initPromptContext, seed initDraft, selection string, reviewerSecretLocation string) (initReviewerCredentialStatus, bool) {
+func initReviewerCredentialStatusForSelectionRef(ctx initPromptContext, seed initDraft, selection string, storeID string, reviewerSecretLocation string) (initReviewerCredentialStatus, bool) {
 	state, err := reviewerEntityEditorStateForSelection(ctx, seed, selection)
 	if err != nil || state.kind == initReviewerEntityKindUseGitIdentity {
 		return initReviewerCredentialStatus{}, false
 	}
+	storeID = initCredentialStoreDraftValue(storeID)
 	effectiveCredentialRef := strings.TrimSpace(reviewerSecretLocation)
 	if effectiveCredentialRef == "" {
 		effectiveCredentialRef = strings.TrimSpace(state.seed.ReviewerCredentialRef)
@@ -262,11 +272,15 @@ func initReviewerCredentialStatusForSelectionRef(ctx initPromptContext, seed ini
 	authMode := reviewerCredentialAuthModeForKind(state.kind)
 	statusRef := config.CredentialRef{
 		Purpose: "reviewer_credentials",
+		Store:   storeID,
 		Ref:     effectiveCredentialRef,
 		Mode:    string(authMode),
 	}
 	for _, status := range ctx.ReviewerCredentialStatuses {
-		if status.Ref.Purpose == statusRef.Purpose && status.Ref.Ref == statusRef.Ref && status.Ref.Mode == statusRef.Mode {
+		if status.Ref.Purpose == statusRef.Purpose &&
+			initCredentialStoreDraftValue(status.Ref.Store) == initCredentialStoreDraftValue(statusRef.Store) &&
+			status.Ref.Ref == statusRef.Ref &&
+			status.Ref.Mode == statusRef.Mode {
 			return status, true
 		}
 	}
@@ -279,12 +293,12 @@ func initReviewerCredentialStatusForSelectionRef(ctx initPromptContext, seed ini
 
 func synthesizeReviewerCredentialStatus(ctx initPromptContext, ref config.CredentialRef) initReviewerCredentialStatus {
 	status := initReviewerCredentialStatus{Ref: ref}
-	if ctx.ExistingProfile != nil {
-		if resolved, err := credentials.ResolveSecretsProfileForProfile(ctx.ExistingConfig, *ctx.ExistingProfile); err == nil {
-			status.SecretsProfile = resolved
-		} else {
-			status.Unavailable = "credential backend status unavailable"
-		}
+	storeID := initCredentialStoreDraftValue(ref.Store)
+	status.Ref.Store = storeID
+	if resolved, err := credentials.ResolveCredentialStore(ctx.ExistingConfig, storeID); err == nil {
+		status.SecretsProfile = resolved
+	} else if ctx.ExistingProfile != nil {
+		status.Unavailable = "credential backend status unavailable"
 	}
 	specs, err := credentials.KeySpecsForPurpose(ref)
 	if err != nil {

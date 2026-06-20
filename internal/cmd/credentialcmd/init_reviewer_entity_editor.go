@@ -19,6 +19,7 @@ type initReviewerEntityEditorRunner func(initLinearEditor, io.Reader, io.Writer)
 const (
 	initReviewerEntityFieldSelection               initLinearFieldID = "reviewer_entity_selection"
 	initReviewerEntityFieldLabel                   initLinearFieldID = "reviewer_entity_label"
+	initReviewerEntityFieldCredentialStore         initLinearFieldID = "reviewer_entity_credential_store"
 	initReviewerEntityFieldSecretLocation          initLinearFieldID = "reviewer_entity_secret_location"
 	initReviewerEntityFieldCredentialStatus        initLinearFieldID = "reviewer_entity_credential_status"
 	initReviewerEntityFieldCredentialValues        initLinearFieldID = "reviewer_entity_credential_values"
@@ -168,6 +169,13 @@ func (s reviewerEntityEditorState) editor(ctx initPromptContext) initLinearEdito
 			labelInput,
 			validateOptionalDisplayName,
 		)
+		document.addEditableSelect(
+			initReviewerEntityFieldCredentialStore,
+			"Reviewer credential store",
+			"",
+			initCredentialStoreOptions(ctx.ExistingConfig),
+			normalizeInitStringSelectionValue(initCredentialStoreDraftValue(s.seed.ReviewerCredentialStore), initCredentialStoreOptions(ctx.ExistingConfig)),
+		)
 		document.addEditableInput(
 			initReviewerEntityFieldSecretLocation,
 			"Reviewer secret location",
@@ -180,6 +188,7 @@ func (s reviewerEntityEditorState) editor(ctx initPromptContext) initLinearEdito
 		}
 		status := synthesizeReviewerCredentialStatus(ctx, config.CredentialRef{
 			Purpose: "reviewer_credentials",
+			Store:   initCredentialStoreDraftValue(s.seed.ReviewerCredentialStore),
 			Ref:     firstNonEmpty(reviewerSecretLocation, s.standardReviewerRef),
 			Mode:    string(reviewerCredentialAuthModeForKind(s.kind)),
 		})
@@ -233,6 +242,7 @@ func (s reviewerEntityEditorState) editor(ctx initPromptContext) initLinearEdito
 				initReviewerEntityMaybeUpdateAutoSecretLocation(model, s)
 			}
 			if id == initReviewerEntityFieldLabel ||
+				id == initReviewerEntityFieldCredentialStore ||
 				id == initReviewerEntityFieldSecretLocation ||
 				initReviewerEntityCredentialFieldKey(id) != "" {
 				initReviewerEntityRefreshCredentialStatus(model, ctx, s.seed, s)
@@ -255,6 +265,7 @@ func (s reviewerEntityEditorState) draftFromDocument(ctx initPromptContext, docu
 	if err := validateOptionalCredentialRef(reviewerSecretLocation); err != nil {
 		return initDraft{}, err
 	}
+	editDraft.ReviewerCredentialStore = initCredentialStoreDraftValue(document.selectedValue(initReviewerEntityFieldCredentialStore))
 	if err := validateReviewerEntityInlineCredentials(ctx, s.seed, s, document); err != nil {
 		return initDraft{}, err
 	}
@@ -291,6 +302,13 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 		"",
 		validateOptionalDisplayName,
 	)
+	document.addEditableSelect(
+		initReviewerEntityFieldCredentialStore,
+		"Reviewer credential store",
+		"",
+		initCredentialStoreOptions(ctx.ExistingConfig),
+		normalizeInitStringSelectionValue(initCredentialStoreDraftValue(state.seed.ReviewerCredentialStore), initCredentialStoreOptions(ctx.ExistingConfig)),
+	)
 	document.addEditableInput(
 		initReviewerEntityFieldSecretLocation,
 		"Reviewer secret location",
@@ -317,6 +335,7 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 			}
 			if id == initReviewerEntityFieldAction ||
 				id == initReviewerEntityFieldLabel ||
+				id == initReviewerEntityFieldCredentialStore ||
 				id == initReviewerEntityFieldSecretLocation ||
 				initReviewerEntityCredentialFieldKey(id) != "" {
 				initReviewerEntitySyncLinearFields(model, ctx, seed, false)
@@ -562,6 +581,9 @@ func validateReviewerEntityInlineCredentials(ctx initPromptContext, seed initDra
 	if ref == "" {
 		return fmt.Errorf("reviewer secret location is required")
 	}
+	if strings.TrimSpace(document.selectedValue(initReviewerEntityFieldCredentialStore)) == "" {
+		return fmt.Errorf("reviewer credential store is required")
+	}
 	status, ok := reviewerCredentialStatusForDocument(ctx, seed, state, document)
 	if !ok {
 		return fmt.Errorf("reviewer credential status unavailable")
@@ -583,8 +605,12 @@ func reviewerEntityPreservesExistingCredentialRefWithoutWrites(state reviewerEnt
 	if strings.TrimSpace(document.fieldValue(initReviewerEntityFieldSecretLocation)) != strings.TrimSpace(state.seed.ReviewerCredentialRef) {
 		return false
 	}
+	if initCredentialStoreDraftValue(document.selectedValue(initReviewerEntityFieldCredentialStore)) != initCredentialStoreDraftValue(state.seed.ReviewerCredentialStore) {
+		return false
+	}
 	writes, _ := reviewerEntityCredentialWritesFromDocument(synthesizeReviewerCredentialStatus(initPromptContext{}, config.CredentialRef{
 		Purpose: "reviewer_credentials",
+		Store:   initCredentialStoreDraftValue(state.seed.ReviewerCredentialStore),
 		Ref:     strings.TrimSpace(state.seed.ReviewerCredentialRef),
 		Mode:    string(reviewerCredentialAuthModeForKind(state.kind)),
 	}), document)
@@ -600,7 +626,7 @@ func reviewerCredentialStatusForDocument(ctx initPromptContext, seed initDraft, 
 }
 
 func baseReviewerCredentialStatusForDocument(ctx initPromptContext, seed initDraft, state reviewerEntityEditorState, document initLinearDocument) (initReviewerCredentialStatus, bool) {
-	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seed, string(state.kind), document.fieldValue(initReviewerEntityFieldSecretLocation))
+	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seed, string(state.kind), document.selectedValue(initReviewerEntityFieldCredentialStore), document.fieldValue(initReviewerEntityFieldSecretLocation))
 	if !ok {
 		return initReviewerCredentialStatus{}, false
 	}
@@ -627,7 +653,11 @@ func initReviewerEntityUsesAutoDefaultSecretLocation(state reviewerEntityEditorS
 
 func initReviewerCredentialStatusListContains(statuses []initReviewerCredentialStatus, ref config.CredentialRef) bool {
 	for _, status := range statuses {
-		if status.Ref.Purpose == ref.Purpose && status.Ref.Ref == ref.Ref && status.Ref.Mode == ref.Mode && status.Ref.Provider == ref.Provider {
+		if status.Ref.Purpose == ref.Purpose &&
+			initCredentialStoreDraftValue(status.Ref.Store) == initCredentialStoreDraftValue(ref.Store) &&
+			status.Ref.Ref == ref.Ref &&
+			status.Ref.Mode == ref.Mode &&
+			status.Ref.Provider == ref.Provider {
 			return true
 		}
 	}
@@ -671,6 +701,7 @@ func missingReviewerEntityInlineCredentialKeys(state reviewerEntityEditorState, 
 
 func reviewerEntityKeepsCurrentCredentialRef(state reviewerEntityEditorState, document initLinearDocument) bool {
 	return state.preserveCurrentLocation &&
+		initCredentialStoreDraftValue(document.selectedValue(initReviewerEntityFieldCredentialStore)) == initCredentialStoreDraftValue(state.seed.ReviewerCredentialStore) &&
 		strings.TrimSpace(document.fieldValue(initReviewerEntityFieldSecretLocation)) == strings.TrimSpace(state.seed.ReviewerCredentialRef)
 }
 
@@ -689,6 +720,7 @@ func applyReviewerEntityCredentialDraftFromDocument(editDraft *initDraft, ctx in
 	}
 	writes, overwrite := reviewerEntityCredentialWritesFromDocument(originalStatus, document)
 	editDraft.ReviewerCredentialWriteRef = ref
+	editDraft.ReviewerCredentialStore = initCredentialStoreDraftValue(status.Ref.Store)
 	editDraft.ReviewerCredentialWriteStore = status.SecretsProfile
 	editDraft.ReviewerCredentialWrites = writes
 	editDraft.ReviewerCredentialOverwrite = overwrite
@@ -748,6 +780,7 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 		}
 	}
 	model.setFieldHidden(initReviewerEntityFieldLabel, hideDetails)
+	model.setFieldHidden(initReviewerEntityFieldCredentialStore, hideDetails)
 	model.setFieldHidden(initReviewerEntityFieldSecretLocation, hideDetails)
 	model.setFieldHidden(initReviewerEntityFieldCredentialStatus, hideDetails)
 	initReviewerEntitySetCredentialFieldsHidden(model, state.kind, hideDetails)
@@ -775,6 +808,7 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 			reviewerSecretLocation = initReviewerEntityDefaultSecretLocation(state, labelInput)
 		}
 		model.setFieldValue(initReviewerEntityFieldLabel, labelInput)
+		model.selectFieldValue(initReviewerEntityFieldCredentialStore, initCredentialStoreDraftValue(state.seed.ReviewerCredentialStore))
 		model.setFieldValue(initReviewerEntityFieldSecretLocation, reviewerSecretLocation)
 		if locationIndex := model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation); locationIndex >= 0 {
 			model.document[locationIndex].AutoManaged = !state.preserveCurrentLocation
@@ -865,6 +899,7 @@ func initReviewerEntityDraftFromDocument(ctx initPromptContext, seed initDraft, 
 	if err := validateOptionalCredentialRef(reviewerSecretLocation); err != nil {
 		return initDraft{}, err
 	}
+	editDraft.ReviewerCredentialStore = initCredentialStoreDraftValue(document.selectedValue(initReviewerEntityFieldCredentialStore))
 	if err := validateReviewerEntityInlineCredentials(ctx, seed, state, document); err != nil {
 		return initDraft{}, err
 	}

@@ -1360,45 +1360,39 @@ func (p Profile) normalized() Profile {
 func (g GitConfig) normalized() GitConfig {
 	g.CredentialRef = strings.TrimSpace(g.CredentialRef)
 	g.Credential = g.Credential.normalized()
-	if g.CredentialRef != "" {
+	if g.Credential.Name == "" && g.CredentialRef != "" {
 		if g.Credential.Store == "" {
 			g.Credential.Store = LocalOSCredentialStoreID
 		}
 		g.Credential.Name = g.CredentialRef
 	}
-	if g.CredentialRef == "" {
-		g.CredentialRef = g.Credential.Name
-	}
+	g.CredentialRef = g.Credential.Name
 	return g
 }
 
 func (r ReviewerCredentials) normalized() ReviewerCredentials {
 	r.CredentialRef = strings.TrimSpace(r.CredentialRef)
 	r.Credential = r.Credential.normalized()
-	if r.CredentialRef != "" {
+	if r.Credential.Name == "" && r.CredentialRef != "" {
 		if r.Credential.Store == "" {
 			r.Credential.Store = LocalOSCredentialStoreID
 		}
 		r.Credential.Name = r.CredentialRef
 	}
-	if r.CredentialRef == "" {
-		r.CredentialRef = r.Credential.Name
-	}
+	r.CredentialRef = r.Credential.Name
 	return r
 }
 
 func (l LLMConfig) normalized() LLMConfig {
 	l.CredentialRef = strings.TrimSpace(l.CredentialRef)
 	l.Credential = l.Credential.normalized()
-	if l.CredentialRef != "" {
+	if l.Credential.Name == "" && l.CredentialRef != "" {
 		if l.Credential.Store == "" {
 			l.Credential.Store = LocalOSCredentialStoreID
 		}
 		l.Credential.Name = l.CredentialRef
 	}
-	if l.CredentialRef == "" {
-		l.CredentialRef = l.Credential.Name
-	}
+	l.CredentialRef = l.Credential.Name
 	l.ReviewerModelTier = ModelTier(strings.TrimSpace(string(l.ReviewerModelTier)))
 	if len(l.ModelMap) > 0 {
 		modelMap := make(ModelMap, len(l.ModelMap))

@@ -18,6 +18,7 @@ type initCredentialDestinationContext struct {
 }
 
 func initCredentialDestinationDescription(ctx initCredentialDestinationContext) string {
+	ctx.Config = config.Normalize(ctx.Config)
 	ref := strings.TrimSpace(ctx.Entry.Ref.Ref)
 	if ref == "" {
 		ref = "(standard credential location)"
@@ -25,42 +26,46 @@ func initCredentialDestinationDescription(ctx initCredentialDestinationContext) 
 	destination, details := initCredentialDestinationDetails(ctx, ref)
 	lines := []string{"Destination: " + destination}
 	lines = append(lines, details...)
-	lines = append(lines, "Change destination by selecting a credential store; secret values are collected separately.")
+	lines = append(lines, "Secret values are collected separately.")
 	return strings.Join(lines, "\n")
 }
 
 func initCredentialDestinationDetails(ctx initCredentialDestinationContext, ref string) (string, []string) {
-	resolved := ctx.Entry.SecretsProfile
-	if resolved.IsNamed() {
-		return initNamedCredentialDestinationDetails(ctx, ref)
+	storeID := strings.TrimSpace(ctx.Entry.Ref.Store)
+	if storeID == "" {
+		storeID = strings.TrimSpace(ctx.Entry.SecretsProfile.ID)
 	}
-	return initLegacyCredentialDestinationDetails(ctx, ref)
-}
-
-func initNamedCredentialDestinationDetails(ctx initCredentialDestinationContext, ref string) (string, []string) {
-	resolved := ctx.Entry.SecretsProfile
-	displayName := strings.TrimSpace(resolved.DisplayName())
-	if displayName == "" {
-		displayName = "selected credential store"
+	if storeID == "" {
+		return initLegacyCredentialDestinationDetails(ctx, ref)
 	}
-	profile, ok := ctx.Config.Secrets.Profiles[strings.TrimSpace(resolved.ID)]
-	if !ok {
-		return fmt.Sprintf("%s via %s", ref, displayName), []string{"credential destination unavailable."}
-	}
-	backendKind := profile.Backend.Kind
-	if strings.TrimSpace(string(backendKind)) == "" {
-		backendKind = config.SecretsBackendKind(resolved.Backend)
-	}
-	backendLabel := initSecretsBackendDisplayLabel(backendKind)
+	location := config.CredentialLocation{Store: storeID, Name: ref}
 	lines := []string{}
-	if value := strings.TrimSpace(resolved.ID); value != "" {
+	if value := strings.TrimSpace(storeID); value != "" {
 		lines = append(lines, "Credential store: "+value)
 	}
-	if value := strings.TrimSpace(string(backendKind)); value != "" {
+	if value := strings.TrimSpace(ctx.Entry.SecretsProfile.Backend); value != "" {
 		lines = append(lines, "Backend kind: "+value)
 	}
-	lines = append(lines, initOnePasswordDestinationDetails(profile.Backend)...)
-	return fmt.Sprintf("%s via %s (%s)", ref, displayName, backendLabel), lines
+	destination := initCredentialDestinationLabel(ctx.Config, location)
+	if storeID == config.LocalOSCredentialStoreID && ctx.BackendFlagSet {
+		if backend, _, err := credentials.BackendMetadata(ctx.BackendArg, ctx.BackendFlagSet, ctx.Config); err == nil && strings.TrimSpace(string(backend)) != "" {
+			for i, line := range lines {
+				if strings.HasPrefix(line, "Backend kind: ") {
+					lines[i] = "Backend kind: " + string(backend)
+					break
+				}
+			}
+		}
+	}
+	if profile, ok := ctx.Config.Secrets.Stores[storeID]; ok {
+		lines = append(lines, initOnePasswordDestinationDetails(profile.Backend)...)
+	} else if storeID != config.LocalOSCredentialStoreID {
+		if displayName := strings.TrimSpace(ctx.Entry.SecretsProfile.DisplayName()); displayName != "" {
+			destination = strings.Join([]string{displayName, ref}, " / ")
+		}
+		lines = append(lines, "credential destination unavailable.")
+	}
+	return destination, lines
 }
 
 func initLegacyCredentialDestinationDetails(ctx initCredentialDestinationContext, ref string) (string, []string) {
@@ -88,8 +93,17 @@ func initOnePasswordDestinationDetails(backend config.SecretsProfileBackend) []s
 	}
 	onePassword := backend.OnePassword
 	lines := []string{}
+	if value := strings.TrimSpace(onePassword.VaultName); value != "" {
+		lines = append(lines, "1Password vault: "+value)
+	}
 	if value := strings.TrimSpace(onePassword.VaultID); value != "" {
 		lines = append(lines, "1Password vault: "+value)
+	}
+	if value := strings.TrimSpace(onePassword.AccountURL); value != "" {
+		lines = append(lines, "1Password account: "+value)
+	}
+	if value := strings.TrimSpace(onePassword.AccountID); value != "" {
+		lines = append(lines, "1Password account id: "+value)
 	}
 	if value := strings.TrimSpace(onePassword.ConnectHost); value != "" {
 		lines = append(lines, "1Password Connect host: "+value)
