@@ -89,11 +89,11 @@ func TestRenderConfigTextSecretsManagementProfiles(t *testing.T) {
 	show.BackendSource = "config"
 	show.SecretsProfiles = []config.EffectiveSecretsProfile{
 		{
-			ID:        config.LegacyProjectedSecretsProfileID,
-			Label:     "Legacy default",
+			ID:        config.LocalOSCredentialStoreID,
+			Label:     "macOS Login Keychain",
 			Backend:   "memory",
 			IsDefault: true,
-			Source:    config.EffectiveSecretsProfileSourceProjectedLegacy,
+			Source:    config.EffectiveSecretsStoreSourceBuiltIn,
 		},
 		{
 			ID:      "personal-keychain",
@@ -110,9 +110,9 @@ func TestRenderConfigTextSecretsManagementProfiles(t *testing.T) {
 	for _, want := range []string{
 		"Keyring backend: memory",
 		"Keyring backend source: config",
-		"Secrets management profiles:",
-		"  - legacy-default: Legacy default (memory) [default]",
-		"    Source: projected_legacy",
+		"Credential stores:",
+		"  - local-os: macOS Login Keychain (memory)",
+		"    Source: built_in",
 		"  - personal-keychain: Personal Keychain (keychain)",
 		"    Source: configured",
 	} {
@@ -122,7 +122,7 @@ func TestRenderConfigTextSecretsManagementProfiles(t *testing.T) {
 	}
 }
 
-func TestRenderConfigTextSelectedSecretsManagement(t *testing.T) {
+func TestRenderConfigTextSelectedCredentialStore(t *testing.T) {
 	var out bytes.Buffer
 	show := NewConfigShow("work", workProfile(), dataConfig(), nil)
 	show.ActiveSecretsProfile = &ConfigSecretsProfile{
@@ -137,8 +137,8 @@ func TestRenderConfigTextSelectedSecretsManagement(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"Selected secrets management: Work File Store (file)",
-		"Selected secrets management source: configured",
+		"Selected credential store: Work File Store (file)",
+		"Selected credential store source: configured",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("text output missing %q:\n%s", want, got)
@@ -405,7 +405,7 @@ func TestRenderConfigSecretsProfilesText(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigSecretsProfiles{
 		Profiles: []ConfigSecretsProfile{
-			{ID: "legacy-default", Label: "Legacy default", Backend: "memory", Source: "projected_legacy", IsDefault: true},
+			{ID: "local-os", Label: "macOS Login Keychain", Backend: "memory", Source: "built_in", IsDefault: true},
 			{ID: "work", Label: "Work Keychain", Backend: "keychain", Source: "configured"},
 		},
 	}
@@ -413,7 +413,7 @@ func TestRenderConfigSecretsProfilesText(t *testing.T) {
 	if err := RenderConfigSecretsProfilesText(&out, result); err != nil {
 		t.Fatalf("RenderConfigSecretsProfilesText: %v", err)
 	}
-	want := "Secrets management profiles:\n  - legacy-default: Legacy default (memory, projected_legacy) [default]\n  - work: Work Keychain (keychain, configured)\n"
+	want := "Credential stores:\n  - local-os: macOS Login Keychain (memory, built_in)\n  - work: Work Keychain (keychain, configured)\n"
 	if out.String() != want {
 		t.Fatalf("text output = %q, want %q", out.String(), want)
 	}
@@ -442,17 +442,17 @@ func TestRenderConfigSecretsProfilesJSON(t *testing.T) {
 func TestRenderConfigSecretsProfileText(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigSecretsProfile{
-		ID:        "legacy-default",
-		Label:     "Legacy default",
+		ID:        "local-os",
+		Label:     "macOS Login Keychain",
 		Backend:   "memory",
-		Source:    "projected_legacy",
+		Source:    "built_in",
 		IsDefault: true,
 	}
 
 	if err := RenderConfigSecretsProfileText(&out, result); err != nil {
 		t.Fatalf("RenderConfigSecretsProfileText: %v", err)
 	}
-	want := "Secrets profile: legacy-default\nLabel: Legacy default\nBackend: memory\nSource: projected_legacy\nDefault: true\n"
+	want := "Credential store: local-os\nDisplay name: macOS Login Keychain\nBackend: memory\nSource: built_in\n"
 	if out.String() != want {
 		t.Fatalf("text output = %q, want %q", out.String(), want)
 	}
@@ -478,13 +478,12 @@ func TestRenderConfigSecretsProfileTextWithOnePasswordDetails(t *testing.T) {
 		t.Fatalf("RenderConfigSecretsProfileText with 1Password: %v", err)
 	}
 	want := "" +
-		"Secrets profile: work-op\n" +
+		"Credential store: work-op\n" +
 		"Backend: op\n" +
 		"1Password timeout: 5s\n" +
 		"1Password vault id: vault-123\n" +
 		"1Password service token env: OP_SERVICE_ACCOUNT_TOKEN\n" +
-		"Source: configured\n" +
-		"Default: false\n"
+		"Source: configured\n"
 	if out.String() != want {
 		t.Fatalf("text output = %q, want %q", out.String(), want)
 	}
@@ -552,7 +551,7 @@ func TestRenderConfigSecretsProfileDefaultText(t *testing.T) {
 	if err := RenderConfigSecretsProfileDefaultText(&out, result); err != nil {
 		t.Fatalf("RenderConfigSecretsProfileDefaultText: %v", err)
 	}
-	want := "Default secrets profile: work\nLabel: Work Keychain\nBackend: keychain\nSource: configured\n"
+	want := "Credential store: work\nDisplay name: Work Keychain\nBackend: keychain\nSource: configured\n"
 	if out.String() != want {
 		t.Fatalf("text output = %q, want %q", out.String(), want)
 	}
@@ -564,7 +563,7 @@ func TestRenderConfigSecretsProfileDefaultTextNone(t *testing.T) {
 	if err := RenderConfigSecretsProfileDefaultText(&out, ConfigSecretsProfileDefault{}); err != nil {
 		t.Fatalf("RenderConfigSecretsProfileDefaultText: %v", err)
 	}
-	if out.String() != "Default secrets profile: none\n" {
+	if out.String() != "Credential store: none\n" {
 		t.Fatalf("text output = %q, want none text", out.String())
 	}
 }
@@ -768,7 +767,7 @@ func TestRenderConfigClearTextIncludesDryRun(t *testing.T) {
 	}
 }
 
-func TestRenderConfigClearTextIncludesSelectedSecretsManagement(t *testing.T) {
+func TestRenderConfigClearTextIncludesSelectedCredentialStore(t *testing.T) {
 	var out bytes.Buffer
 	result := ConfigClear{
 		Backend:       "file",
@@ -786,8 +785,8 @@ func TestRenderConfigClearTextIncludesSelectedSecretsManagement(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"Selected secrets management: Work File Store (file)",
-		"Selected secrets management source: configured",
+		"Selected credential store: Work File Store (file)",
+		"Selected credential store source: configured",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("text output missing %q:\n%s", want, got)

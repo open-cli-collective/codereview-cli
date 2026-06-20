@@ -62,12 +62,16 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 		}
 		normalizedLabel = &trimmed
 	}
-	working := cfg
-	working.Secrets.Profiles = cloneSecretsProfiles(cfg.Secrets.Profiles)
+	working := config.Normalize(cfg)
+	working.Secrets.Profiles = cloneSecretsProfiles(working.Secrets.Profiles)
+	working.Secrets.Stores = cloneSecretsProfiles(working.Secrets.Stores)
 	if working.Secrets.Profiles == nil {
 		working.Secrets.Profiles = map[string]config.SecretsProfile{}
 	}
-	existing, existed := working.Secrets.Profiles[id]
+	if working.Secrets.Stores == nil {
+		working.Secrets.Stores = map[string]config.SecretsStore{}
+	}
+	existing, existed := working.Secrets.Stores[id]
 	if !existed && patch.Backend == nil {
 		return config.File{}, false, false, ErrSecretsProfileBackendRequired
 	}
@@ -79,9 +83,11 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 		updated.Backend = *patch.Backend
 	}
 	if normalizedLabel != nil {
+		updated.DisplayName = *normalizedLabel
 		updated.Label = *normalizedLabel
 	}
 	if patch.ClearLabel {
+		updated.DisplayName = ""
 		updated.Label = ""
 	}
 	if !existed && strings.TrimSpace(string(updated.Backend.Kind)) == "" {
@@ -91,6 +97,7 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 		return cfg, false, false, nil
 	}
 	working.Secrets.Profiles[id] = updated
+	working.Secrets.Stores[id] = updated
 	if err := config.Validate(working); err != nil {
 		return config.File{}, false, false, err
 	}
@@ -136,17 +143,22 @@ func RemoveSecretsProfile(cfg config.File, rawID string) (config.File, bool, err
 	if err != nil {
 		return config.File{}, false, err
 	}
-	if cfg.Secrets.DefaultProfile == id {
+	working := config.Normalize(cfg)
+	if working.Secrets.DefaultProfile == id {
 		return config.File{}, false, fmt.Errorf("%w: %s", ErrSecretsProfileDefaultConfigured, id)
 	}
-	if _, ok := cfg.Secrets.Profiles[id]; !ok {
+	if _, ok := working.Secrets.Stores[id]; !ok {
 		return cfg, false, nil
 	}
-	working := cfg
-	working.Secrets.Profiles = cloneSecretsProfiles(cfg.Secrets.Profiles)
+	working.Secrets.Profiles = cloneSecretsProfiles(working.Secrets.Profiles)
+	working.Secrets.Stores = cloneSecretsProfiles(working.Secrets.Stores)
 	delete(working.Secrets.Profiles, id)
+	delete(working.Secrets.Stores, id)
 	if len(working.Secrets.Profiles) == 0 {
 		working.Secrets.Profiles = nil
+	}
+	if len(working.Secrets.Stores) == 0 {
+		working.Secrets.Stores = nil
 	}
 	if err := config.Validate(working); err != nil {
 		return config.File{}, false, err

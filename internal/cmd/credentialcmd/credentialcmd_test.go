@@ -3590,7 +3590,7 @@ func TestCollectInteractiveInitSecretsDestinationUsesRawRuntimeBackend(t *testin
 		t.Fatalf("action prompts = %d, want 1", len(prompter.actionPrompts))
 	}
 	destination := prompter.actionPrompts[0].Destination
-	if !strings.Contains(destination, "Destination: codereview/work via Legacy default (In-memory store)") {
+	if !strings.Contains(destination, "Destination: codereview/work via "+initBuiltInOSCredentialStoreTitle()+" (In-memory store)") {
 		t.Fatalf("destination = %q, want raw runtime backend metadata", destination)
 	}
 	if strings.Contains(destination, "credential destination unavailable") {
@@ -10480,11 +10480,17 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("initSecretsManagementInventoryRows returned no rows")
 	}
-	if rows[0].Title != "Fallback credential store: "+initAutomaticOSDefaultSecretsBackendLabel() {
-		t.Fatalf("first row title = %q, want fallback credential-store row first", rows[0].Title)
+	if rows[0].ID != config.LocalOSCredentialStoreID {
+		t.Fatalf("first row id = %q, want built-in OS credential store first", rows[0].ID)
 	}
-	if !strings.Contains(rows[0].Description, "Legacy fallback credential store") {
-		t.Fatalf("first row description = %q, want legacy fallback wording", rows[0].Description)
+	if rows[0].Title != initBuiltInOSCredentialStoreTitle() {
+		t.Fatalf("first row title = %q, want built-in OS credential-store title", rows[0].Title)
+	}
+	if rows[0].Description != initBuiltInOSCredentialStoreDescription() {
+		t.Fatalf("first row description = %q, want built-in OS credential-store description", rows[0].Description)
+	}
+	if rows[0].Deletable {
+		t.Fatalf("built-in row is deletable: %#v", rows[0])
 	}
 	var foundConfigure bool
 	for _, row := range rows {
@@ -10496,13 +10502,6 @@ func TestHuhInitKeyringBackendPrompterAccessibleShowsField(t *testing.T) {
 	if !foundConfigure {
 		t.Fatalf("rows = %#v, want configure-new backend command copy", rows)
 	}
-	options := initLegacySecretsBackendOptions("")
-	if len(options) == 0 {
-		t.Fatal("initLegacySecretsBackendOptions returned no options")
-	}
-	if options[0].Key != initAutomaticOSDefaultSecretsBackendLabel() {
-		t.Fatalf("first legacy backend option = %q, want platform-aware automatic OS default", options[0].Key)
-	}
 }
 
 func TestInitAutomaticOSDefaultSecretsBackendLabelForGOOS(t *testing.T) {
@@ -10510,10 +10509,10 @@ func TestInitAutomaticOSDefaultSecretsBackendLabelForGOOS(t *testing.T) {
 		goos string
 		want string
 	}{
-		{goos: "darwin", want: "Automatic OS default (macOS Keychain)"},
-		{goos: "windows", want: "Automatic OS default (Windows Credential Manager)"},
-		{goos: "linux", want: "Automatic OS default (Linux Secret Service)"},
-		{goos: "plan9", want: "Automatic OS default"},
+		{goos: "darwin", want: "macOS Login Keychain"},
+		{goos: "windows", want: "Windows Credential Manager"},
+		{goos: "linux", want: "Linux Secret Service"},
+		{goos: "plan9", want: "OS credential store"},
 	}
 
 	for _, tt := range tests {
@@ -10532,13 +10531,12 @@ func TestInitSecretsManagementInventoryRowsUsePreferredBackendOrder(t *testing.T
 		titles = append(titles, row.Title)
 	}
 	assertContentOrder(t, strings.Join(titles, "\n"),
-		"Fallback credential store",
-		"Configure new macos keychain profile",
+		initBuiltInOSCredentialStoreTitle(),
+		"Configure new 1Password desktop app profile",
+		"Configure new 1Password service account profile",
+		"Configure new 1Password Connect profile",
 		"Configure new pass password store profile",
 		"Configure new encrypted file profile",
-		"Configure new 1password desktop app profile",
-		"Configure new 1password service account profile",
-		"Configure new 1password connect profile",
 		"Configure new in-memory store profile",
 	)
 }
@@ -10971,7 +10969,7 @@ func TestInitSecretsProfileIDFromLabelDeconflictsDeterministically(t *testing.T)
 	}
 }
 
-func TestInitSecretsManagementInventoryRowsDisableUnavailableBackends(t *testing.T) {
+func TestInitSecretsManagementInventoryRowsOmitBuiltInBackendsFromConfigureActions(t *testing.T) {
 	rows := initSecretsManagementInventoryRows(config.File{})
 	availability := map[string]bool{}
 	for _, row := range rows {
@@ -10979,22 +10977,17 @@ func TestInitSecretsManagementInventoryRowsDisableUnavailableBackends(t *testing
 			availability[row.ID] = row.Selectable
 		}
 	}
-	switch runtime.GOOS {
-	case "darwin":
-		if !availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendKeychain)] {
-			t.Fatal("macOS keychain backend should be selectable on darwin")
+	for _, backend := range []credstore.Backend{
+		credstore.BackendKeychain,
+		credstore.BackendWinCred,
+		credstore.BackendSecretService,
+	} {
+		if _, ok := availability[initConfigureSecretsProfileSelectionPrefix+string(backend)]; ok {
+			t.Fatalf("%s should not be a configure-new action; OS credential stores are projected as local-os", backend)
 		}
-		if availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendWinCred)] {
-			t.Fatal("wincred backend should not be selectable on darwin")
-		}
-	case "linux":
-		if !availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendSecretService)] {
-			t.Fatal("secret-service backend should be selectable on linux")
-		}
-	case "windows":
-		if !availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendWinCred)] {
-			t.Fatal("wincred backend should be selectable on windows")
-		}
+	}
+	if _, ok := availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendFile)]; !ok {
+		t.Fatalf("encrypted file backend should be configurable: %#v", availability)
 	}
 }
 
@@ -11041,10 +11034,7 @@ func TestInitSecretsProfileBackendOptionsUsePreferredOrder(t *testing.T) {
 		values = append(values, option.Value)
 	}
 	joined := "\n" + strings.Join(values, "\n") + "\n"
-	want := []string{
-		"\n" + string(credstore.BackendPass) + "\n",
-		"\n" + string(credstore.BackendFile) + "\n",
-	}
+	want := []string{}
 	if initOnePasswordBackendsAvailable() {
 		want = append(want,
 			"\n"+string(credstore.BackendOPDesktop)+"\n",
@@ -11052,6 +11042,10 @@ func TestInitSecretsProfileBackendOptionsUsePreferredOrder(t *testing.T) {
 			"\n"+string(credstore.BackendOPConnect)+"\n",
 		)
 	}
+	want = append(want,
+		"\n"+string(credstore.BackendPass)+"\n",
+		"\n"+string(credstore.BackendFile)+"\n",
+	)
 	want = append(want, "\n"+string(credstore.BackendMemory)+"\n")
 	assertContentOrder(t, joined, want...)
 }
@@ -11091,7 +11085,6 @@ func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // keep backend-derived label
 			"", // keep selected backend
-			"", // keep not-default selection
 			"", // stage settings
 		}, "\n")),
 		stderr: &bytes.Buffer{},
@@ -11136,114 +11129,6 @@ func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing
 	}
 }
 
-func TestHuhInitKeyringBackendPrompterAccessibleLegacyFallbackFormShowsFallbackCopy(t *testing.T) {
-	t.Setenv("TERM", "dumb")
-	var stderr bytes.Buffer
-	prompter := huhInitKeyringBackendPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"", // keep selected memory backend
-			"", // stage fallback settings
-			"",
-		}, "\n")),
-		stderr: &stderr,
-	}
-
-	edit, err := prompter.editLegacySecretsManagement(string(credstore.BackendMemory))
-	if err != nil {
-		t.Fatalf("editLegacySecretsManagement: %v", err)
-	}
-	if !edit.Apply || edit.Backend != string(credstore.BackendMemory) {
-		t.Fatalf("edit = %#v, want staged memory fallback backend", edit)
-	}
-	out := stderr.String()
-	for _, want := range []string{
-		"Legacy fallback credential store backend",
-		"Fallback credential-store action",
-		"Stage fallback credential-store settings",
-		initAutomaticOSDefaultSecretsBackendLabel(),
-		"In-memory store",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("legacy fallback form output missing %q:\n%s", want, out)
-		}
-	}
-	for _, stale := range []string{
-		"Default Credential Store",
-		"Default credential store backend",
-		"Default credential-store action",
-		"Stage default credential-store settings",
-	} {
-		if strings.Contains(out, stale) {
-			t.Fatalf("legacy fallback form output contains stale copy %q:\n%s", stale, out)
-		}
-	}
-}
-
-func TestHuhInitKeyringBackendPrompterInventoryLegacyFallbackStagesBackend(t *testing.T) {
-	t.Setenv("TERM", "dumb")
-	memoryChoice := 0
-	for index, option := range initLegacySecretsBackendOptions("") {
-		if option.Value == string(credstore.BackendMemory) {
-			memoryChoice = index + 1
-			break
-		}
-	}
-	if memoryChoice == 0 {
-		t.Fatal("memory backend option missing from legacy fallback backend options")
-	}
-	var stderr bytes.Buffer
-	callCount := 0
-	prompter := huhInitKeyringBackendPrompter{
-		stdin:  strings.NewReader(fmt.Sprintf("%d\n1\n", memoryChoice)),
-		stderr: &stderr,
-		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
-			callCount++
-			switch callCount {
-			case 1:
-				return initInventoryResult{
-					Action: initInventoryActionCommand,
-					Row: initInventoryRow{
-						ID:    initSecretsManagementLegacySelection,
-						Title: initLegacySecretsManagementInventoryTitle(config.File{}),
-					},
-				}, nil
-			case 2:
-				return initInventoryResult{
-					Action: initInventoryActionBack,
-					Row:    initInventoryRow{ID: initBackSelection},
-				}, nil
-			default:
-				t.Fatalf("unexpected inventory call %d", callCount)
-				return initInventoryResult{}, nil
-			}
-		},
-	}
-
-	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
-	})
-	if err != nil {
-		t.Fatalf("EditKeyringBackend: %v", err)
-	}
-	if !edit.Apply || !edit.HasConfigEdit {
-		t.Fatalf("edit = %#v, want staged config edit", edit)
-	}
-	if got := edit.Config.Keyring.Backend; got != string(credstore.BackendMemory) {
-		t.Fatalf("keyring.backend = %q, want memory after legacy fallback inventory path", got)
-	}
-	out := stderr.String()
-	for _, want := range []string{
-		"Legacy fallback credential store backend",
-		"Fallback credential-store action",
-		"Stage fallback credential-store settings",
-		"In-memory store",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("legacy fallback inventory path output missing %q:\n%s", want, out)
-		}
-	}
-}
-
 func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitKeyringBackendPrompter{
@@ -11281,19 +11166,17 @@ func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *
 	}
 	out := stderr.String()
 	for _, want := range []string{
-		"Secrets management",
-		"Secrets-management target",
+		"Secrets storage",
+		"Credential store",
 		"Configure new encrypted file profile",
-		"Secrets-management profile",
-		"Secrets-management profile label",
-		"Default secrets-management profile",
-		"Secrets-management action",
+		"Credential store name",
+		"Secrets-storage action",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr missing %q:\n%s", want, out)
 		}
 	}
-	assertContentOrder(t, out, "Secrets-management target", "Secrets-management profile label", "Default secrets-management profile", "Secrets-management action")
+	assertContentOrder(t, out, "Credential store", "Credential store name", "Secrets-storage action")
 	if strings.Contains(out, "Back to main menu") {
 		t.Fatalf("stderr = %q, want action-local Back without staging instead of inventory Back", out)
 	}
@@ -11302,50 +11185,32 @@ func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *
 	}
 }
 
-func TestInitSecretsManagementLinearEditorShowsLegacyFallbackWording(t *testing.T) {
+func TestInitSecretsManagementLinearEditorShowsBuiltInOSStoreReadOnly(t *testing.T) {
 	cfg := config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
 	out := model.layout.Content
 	for _, want := range []string{
-		"Secrets-management target",
-		"Fallback credential store: " + initAutomaticOSDefaultSecretsBackendLabel(),
-		"Legacy fallback credential store",
-		"Compatibility path for profiles that do not choose a named secrets-management profile.",
-		"Fallback persistent backend",
-		initAutomaticOSDefaultSecretsBackendLabel(),
+		"Secrets storage",
+		"Credential store",
+		initBuiltInOSCredentialStoreTitle(),
+		initBuiltInOSCredentialStoreDescription(),
+		"built-in credential store is always available and cannot be deleted",
+		"Back without staging",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("initial linear editor output missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "Default credential store") || strings.Contains(out, "Legacy persistent backend") {
-		t.Fatalf("initial linear editor output contains redundant legacy copy:\n%s", out)
-	}
-
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldLegacyBackend, string(credstore.BackendMemory))
-	index := model.document.fieldIndexByID(initSecretsManagementFieldLegacyBackend)
-	if index < 0 {
-		t.Fatal("legacy backend field missing")
-	}
-	description := model.document[index].Description
-	for _, want := range []string{
-		"Ephemeral",
-		"tests or CI",
-		"not normal local use",
-		"legacy fallback backend",
+	for _, stale := range []string{
+		"Fallback credential store",
+		"Default credential store",
+		"Default secrets-management profile",
+		"secrets-management profile",
+		"Stage secrets-storage settings",
 	} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("legacy backend description = %q, want %q", description, want)
-		}
-	}
-	for _, want := range []string{
-		"Keep credentials in memory only for this process.",
-		"Ephemeral; best suited for tests or CI, not normal local use.",
-		"[x] In-memory store",
-	} {
-		if !strings.Contains(model.layout.Content, want) {
-			t.Fatalf("memory-selected linear editor output missing %q:\n%s", want, model.layout.Content)
+		if strings.Contains(out, stale) {
+			t.Fatalf("initial linear editor output contains stale copy %q:\n%s", stale, out)
 		}
 	}
 }
@@ -11401,6 +11266,7 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t 
 				if got := targetOptions[len(targetOptions)-1].Value; got != initSecretsManagementRestoreSelectionPrefix+"onepasswordfoo" {
 					t.Fatalf("last target option = %q, want staged deletion restore option last; options = %#v", got, targetOptions)
 				}
+				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initSecretsManagementRestoreSelectionPrefix+"onepasswordfoo")
 				model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
 				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
 				updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -11480,7 +11346,6 @@ func TestInitSecretsManagementLinearEditorDeleteActionOnlyAppliesToConfiguredPro
 		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
 		DefaultProfile: "default",
 		Secrets: config.SecretsConfig{
-			DefaultProfile: "personal",
 			Profiles: map[string]config.SecretsProfile{
 				"personal": {
 					Label:   "1Password",
@@ -11508,10 +11373,17 @@ func TestInitSecretsManagementLinearEditorDeleteActionOnlyAppliesToConfiguredPro
 
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "personal")
 	targetIndex := model.document.fieldIndexByID(initSecretsManagementFieldTarget)
+	foundPersonalDeletable := false
 	for _, option := range model.document[targetIndex].Options {
-		if option.Value == "personal" && option.Deletable {
-			t.Fatalf("default secrets-management profile option is deletable: %#v", option)
+		if option.Value == "personal" {
+			foundPersonalDeletable = option.Deletable
 		}
+		if option.Value == config.LocalOSCredentialStoreID && option.Deletable {
+			t.Fatalf("built-in OS credential store option is deletable: %#v", option)
+		}
+	}
+	if !foundPersonalDeletable {
+		t.Fatalf("target options = %#v, want configured profile to be deletable", model.document[targetIndex].Options)
 	}
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "unused")
 	foundDeletable := false
@@ -11521,7 +11393,7 @@ func TestInitSecretsManagementLinearEditorDeleteActionOnlyAppliesToConfiguredPro
 		}
 	}
 	if !foundDeletable {
-		t.Fatalf("target options = %#v, want non-default configured profile to be deletable", model.document[targetIndex].Options)
+		t.Fatalf("target options = %#v, want configured profile to be deletable", model.document[targetIndex].Options)
 	}
 }
 
@@ -11595,15 +11467,11 @@ func TestInitSecretsManagementLinearEditorOnlyFocusedSelectChangesAndShowsCaret(
 	model = focusInitLinearField(t, model, initSecretsManagementFieldBackend)
 
 	targetBefore := model.document.selectedValue(initSecretsManagementFieldTarget)
-	defaultBefore := model.document.selectedValue(initSecretsManagementFieldDefault)
 	actionBefore := model.document.selectedValue(initSecretsManagementFieldAction)
 	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
 
 	if got := model.document.selectedValue(initSecretsManagementFieldTarget); got != targetBefore {
 		t.Fatalf("target selection = %q, want unchanged %q", got, targetBefore)
-	}
-	if got := model.document.selectedValue(initSecretsManagementFieldDefault); got != defaultBefore {
-		t.Fatalf("default selection = %q, want unchanged %q", got, defaultBefore)
 	}
 	if got := model.document.selectedValue(initSecretsManagementFieldAction); got != actionBefore {
 		t.Fatalf("action selection = %q, want unchanged %q", got, actionBefore)
@@ -11629,8 +11497,7 @@ func TestInitSecretsManagementLinearEditorOnlyFocusedSelectChangesAndShowsCaret(
 	}
 	for _, unfocusedSelected := range []string{
 		"> [x] Work secrets (Encrypted file)",
-		"> [x] No, keep the current default secrets-management profile",
-		"> [x] Stage secrets-management settings",
+		"> [x] Stage secrets-storage settings",
 	} {
 		if strings.Contains(model.layout.Content, unfocusedSelected) {
 			t.Fatalf("content shows active caret on unfocused selected row %q:\n%s", unfocusedSelected, model.layout.Content)
@@ -11665,7 +11532,7 @@ func TestInitSecretsManagementLinearEditorCreateBackendTargetLocksBackend(t *tes
 	if sectionIndex < 0 {
 		t.Fatal("profile section missing")
 	}
-	if !strings.Contains(model.document[sectionIndex].Description, "Selected target: Configure new 1password service account profile") {
+	if !strings.Contains(model.document[sectionIndex].Description, "Selected target: Configure new 1Password service account profile") {
 		t.Fatalf("profile section description = %q, want selected-target context", model.document[sectionIndex].Description)
 	}
 }
@@ -11690,7 +11557,6 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 	}
 	for _, hidden := range []initLinearFieldID{
 		initSecretsManagementFieldBackend,
-		initSecretsManagementFieldItemTitlePrefix,
 		initSecretsManagementSectionDesktop,
 		initSecretsManagementFieldDesktopAccountID,
 	} {
@@ -11705,8 +11571,6 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 	out := model.layout.Content
 	for _, want := range []string{
 		"1Password vault name or id",
-		"1Password secret name",
-		"1Password item tag",
 		"1Password request timeout",
 	} {
 		if !strings.Contains(out, want) {
@@ -11714,16 +11578,17 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 		}
 	}
 	for _, hiddenText := range []string{
-		"Secrets-management backend",
+		"Credential store backend",
 		"1Password item title prefix",
-		"1Password desktop",
+		"1Password secret name",
+		"1Password item tag",
 		"1Password desktop account id",
 	} {
 		if strings.Contains(out, hiddenText) {
 			t.Fatalf("desktop content includes hidden advanced field %q:\n%s", hiddenText, out)
 		}
 	}
-	assertContentOrder(t, out, "1Password vault name or id", "1Password secret name", "1Password item tag", "1Password request timeout")
+	assertContentOrder(t, out, "1Password vault name or id", "1Password request timeout")
 }
 
 func TestInitSecretsManagementLinearEditorShowsOnePasswordBackendRolloverDescriptions(t *testing.T) {
@@ -11941,7 +11806,7 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 		t.Fatalf("actions = %#v, want %#v", actions, wantActions)
 	}
 	assertContentOrder(t, strings.Join(titles, "\n"),
-		"Configure secrets management",
+		"Configure secrets storage",
 		"Configure LLM runtimes",
 		"Configure reviewer entities",
 		"Configure review profiles",
@@ -11976,8 +11841,8 @@ func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 	assertContentOrder(t, out,
 		"cr init",
 		"Active profile: default",
-		"Configure secrets management",
-		"Credential-store profiles and default destination",
+		"Configure secrets storage",
+		"Credential stores for tokens and keys",
 		"Configure LLM runtimes",
 		"2 runtimes configured",
 		"Configure reviewer entities",
@@ -12113,7 +11978,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	}
 	out := stderr.String()
 	for _, want := range []string{
-		"Configure secrets management",
+		"Configure secrets storage",
 		"Configure LLM runtimes",
 		"Configure reviewer entities",
 		"Configure review profiles",
@@ -12135,7 +12000,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 		t.Fatalf("stderr = %q, want fallback labels without old inline count suffixes", out)
 	}
 	assertContentOrder(t, out,
-		"Configure secrets management",
+		"Configure secrets storage",
 		"Configure LLM runtimes",
 		"Configure reviewer entities",
 		"Configure review profiles",
@@ -14857,9 +14722,9 @@ func TestInitCredentialDestinationDescriptionLegacyAutoUsesPlatformCopy(t *testi
 	})
 
 	for _, want := range []string{
-		"Destination: codereview/work via Legacy default",
+		"Destination: codereview/work via " + initBuiltInOSCredentialStoreTitle(),
 		initAutomaticOSDefaultSecretsBackendLabel(),
-		"Change destination by configuring/selecting a secrets-management profile",
+		"Change destination by selecting a credential store",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description = %q, want %q", description, want)
@@ -14906,15 +14771,21 @@ func TestInitCredentialDestinationDescriptionNamedOnePasswordShowsRoutingWithout
 
 	for _, want := range []string{
 		"Destination: codereview/rianjs-bot via Team Vault (1Password service account)",
-		"Secrets profile: team-vault",
+		"Credential store: team-vault",
 		"1Password vault: Engineering",
-		"1Password item title prefix: cr-",
-		"1Password item tag: code-review",
-		"1Password item field title: credential",
 		"1Password service account token env var: " + serviceTokenEnv,
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description = %q, want %q", description, want)
+		}
+	}
+	for _, removed := range []string{
+		"1Password item title prefix",
+		"1Password item tag",
+		"1Password item field title",
+	} {
+		if strings.Contains(description, removed) {
+			t.Fatalf("description contains removed item-control copy %q: %s", removed, description)
 		}
 	}
 	for _, leaked := range []string{"sentinel-service-token-value", "sentinel-connect-token-value"} {
@@ -15029,7 +14900,7 @@ func TestInitCredentialDestinationDescriptionUnavailableIsNonFatal(t *testing.T)
 	for _, want := range []string{
 		"Destination: codereview/work-llm",
 		"credential destination unavailable",
-		"Change destination by configuring/selecting a secrets-management profile",
+		"Change destination by selecting a credential store",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description = %q, want %q", description, want)
@@ -15314,13 +15185,19 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 		"Destination: codereview/work-reviewer via Work Vault (1Password desktop app)",
 		string(credstore.BackendOPDesktop),
 		"1Password vault: Engineering",
-		"1Password item title prefix: cr-",
-		"1Password item tag: code-review",
-		"1Password item field title: credential",
 		"1Password desktop account id: account-123",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description = %q, want %q", description, want)
+		}
+	}
+	for _, removed := range []string{
+		"1Password item title prefix",
+		"1Password item tag",
+		"1Password item field title",
+	} {
+		if strings.Contains(description, removed) {
+			t.Fatalf("description contains removed item-control copy %q: %s", removed, description)
 		}
 	}
 	if strings.Contains(description, "existing-token") {

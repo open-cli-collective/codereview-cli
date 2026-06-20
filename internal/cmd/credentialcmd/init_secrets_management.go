@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	initSecretsManagementLegacySelection = "__legacy_secrets_management__"
 	// #nosec G101 -- selection sentinel, not a credential.
 	initConfigureSecretsProfileSelectionPrefix = "__configure_secrets_profile__:"
 )
@@ -32,24 +31,15 @@ type initSecretsProfileEditorResult struct {
 	Label       string
 	StoredLabel string
 	Backend     config.SecretsProfileBackend
-	UseDefault  bool
-}
-
-type initLegacySecretsManagementEditorResult struct {
-	Apply   bool
-	Backend string
 }
 
 func initSecretsBackendCatalog() []initSecretsBackendPresentation {
 	order := []config.SecretsBackendKind{
-		config.SecretsBackendKind(credstore.BackendKeychain),
-		config.SecretsBackendKind(credstore.BackendWinCred),
-		config.SecretsBackendKind(credstore.BackendSecretService),
-		config.SecretsBackendKind(credstore.BackendPass),
-		config.SecretsBackendKind(credstore.BackendFile),
 		config.SecretsBackendKind(credstore.BackendOPDesktop),
 		config.SecretsBackendKind(credstore.BackendOP),
 		config.SecretsBackendKind(credstore.BackendOPConnect),
+		config.SecretsBackendKind(credstore.BackendPass),
+		config.SecretsBackendKind(credstore.BackendFile),
 		config.SecretsBackendKind(credstore.BackendMemory),
 	}
 	items := make([]initSecretsBackendPresentation, 0, len(order))
@@ -144,54 +134,69 @@ func initSecretsBackendByKind(kind config.SecretsBackendKind) (initSecretsBacken
 }
 
 func initSecretsManagementInventoryDescription() string {
-	return "Choose how cr should store credentials. Secrets-management profiles are reusable store definitions that review profiles can choose later."
+	return "Choose where cr stores credentials. The built-in OS credential store is always available; configured stores are reusable destinations for secrets."
+}
+
+func initBuiltInOSCredentialStoreTitle() string {
+	title, _ := initBuiltInOSCredentialStoreLabelsForGOOS(runtime.GOOS)
+	return title
+}
+
+func initBuiltInOSCredentialStoreDescription() string {
+	_, description := initBuiltInOSCredentialStoreLabelsForGOOS(runtime.GOOS)
+	return description
+}
+
+func initBuiltInOSCredentialStoreLabelsForGOOS(goos string) (string, string) {
+	switch goos {
+	case "darwin":
+		return "macOS Login Keychain", "current macOS user"
+	case "windows":
+		return "Windows Credential Manager", "current Windows user"
+	case "linux":
+		return "Linux Secret Service", "current Linux user"
+	default:
+		return "OS credential store", "current OS user"
+	}
 }
 
 func initAutomaticOSDefaultSecretsBackendLabel() string {
-	return initAutomaticOSDefaultSecretsBackendLabelForGOOS(runtime.GOOS)
+	return initBuiltInOSCredentialStoreTitle()
 }
 
 func initAutomaticOSDefaultSecretsBackendLabelForGOOS(goos string) string {
-	switch goos {
-	case "darwin":
-		return "Automatic OS default (macOS Keychain)"
-	case "windows":
-		return "Automatic OS default (Windows Credential Manager)"
-	case "linux":
-		return "Automatic OS default (Linux Secret Service)"
-	default:
-		return "Automatic OS default"
-	}
+	title, _ := initBuiltInOSCredentialStoreLabelsForGOOS(goos)
+	return title
 }
 
 func initSecretsManagementInventoryRows(cfg config.File) []initInventoryRow {
-	effective := config.EffectiveSecretsProfiles(cfg)
+	effective := config.EffectiveSecretsStores(cfg)
 	rows := make([]initInventoryRow, 0, len(effective)+len(initSecretsBackendCatalog())+2)
-	for _, profile := range effective {
-		if profile.Source != config.EffectiveSecretsProfileSourceConfigured {
+	for _, store := range effective {
+		if store.ID == config.LocalOSCredentialStoreID {
+			rows = append(rows, initInventoryRow{
+				ID:          store.ID,
+				Title:       initBuiltInOSCredentialStoreTitle(),
+				Description: initBuiltInOSCredentialStoreDescription(),
+				Kind:        initInventoryRowKindActive,
+				Selectable:  true,
+				FilterValue: strings.TrimSpace(strings.Join([]string{store.ID, initBuiltInOSCredentialStoreTitle(), initBuiltInOSCredentialStoreDescription()}, " ")),
+			})
 			continue
 		}
-		title := initSecretsProfileInventoryTitle(profile)
+		title := initSecretsProfileInventoryTitle(store)
 		rows = append(rows, initInventoryRow{
-			ID:          profile.ID,
+			ID:          store.ID,
 			Title:       title,
 			Kind:        initInventoryRowKindActive,
 			Selectable:  true,
-			FilterValue: strings.TrimSpace(strings.Join([]string{profile.ID, profile.Label, profile.Backend, title}, " ")),
+			Deletable:   true,
+			FilterValue: strings.TrimSpace(strings.Join([]string{store.ID, store.DisplayName, store.Backend, title}, " ")),
 		})
 	}
-	rows = append(rows, initInventoryRow{
-		ID:            initSecretsManagementLegacySelection,
-		Title:         initLegacySecretsManagementInventoryTitle(cfg),
-		Description:   "Legacy fallback credential store used only by profiles that do not choose a named secrets-management profile.",
-		Kind:          initInventoryRowKindActive,
-		PrimaryAction: initInventoryActionCommand,
-		Selectable:    true,
-		FilterValue:   strings.TrimSpace(strings.Join([]string{"fallback compatibility legacy credential store keyring backend", strings.TrimSpace(cfg.Keyring.Backend)}, " ")),
-	})
 
 	for _, backend := range initSecretsBackendCatalog() {
-		title := fmt.Sprintf("Configure new %s profile", strings.ToLower(initSecretsBackendDisplayLabel(backend.Kind)))
+		title := initConfigureSecretsStoreTitle(backend.Kind)
 		desc := backend.Description
 		if !backend.Available {
 			desc = strings.TrimSpace(strings.Join([]string{desc, "Unavailable in this build."}, " "))
@@ -216,33 +221,34 @@ func initSecretsManagementInventoryRows(cfg config.File) []initInventoryRow {
 	return rows
 }
 
+func initConfigureSecretsStoreTitle(kind config.SecretsBackendKind) string {
+	switch kind {
+	case config.SecretsBackendKind(credstore.BackendOPDesktop):
+		return "Configure new 1Password desktop app profile"
+	case config.SecretsBackendKind(credstore.BackendOP):
+		return "Configure new 1Password service account profile"
+	case config.SecretsBackendKind(credstore.BackendOPConnect):
+		return "Configure new 1Password Connect profile"
+	case config.SecretsBackendKind(credstore.BackendPass):
+		return "Configure new pass password store profile"
+	case config.SecretsBackendKind(credstore.BackendFile):
+		return "Configure new encrypted file profile"
+	case config.SecretsBackendKind(credstore.BackendMemory):
+		return "Configure new in-memory store profile"
+	default:
+		return fmt.Sprintf("Configure new %s profile", strings.ToLower(initSecretsBackendDisplayLabel(kind)))
+	}
+}
+
 func initSecretsProfileInventoryTitle(profile config.EffectiveSecretsProfile) string {
 	backendLabel := profile.Backend
 	if item, ok := initSecretsBackendByKind(config.SecretsBackendKind(profile.Backend)); ok {
 		backendLabel = item.Label
+	} else if profile.Backend != "" {
+		backendLabel = initSecretsBackendDisplayLabel(config.SecretsBackendKind(profile.Backend))
 	}
 	title := fmt.Sprintf("%s (%s)", initSecretsProfileDisplayName(profile.ID, profile.Label), backendLabel)
-	if profile.IsDefault {
-		title += " [default]"
-	}
 	return title
-}
-
-func initLegacySecretsManagementInventoryTitle(cfg config.File) string {
-	backend := strings.TrimSpace(cfg.Keyring.Backend)
-	if backend == "" {
-		backend = config.ProjectedLegacySecretsBackendKind
-	}
-	backendLabel := backend
-	if backend != config.ProjectedLegacySecretsBackendKind {
-		if item, ok := initSecretsBackendByKind(config.SecretsBackendKind(backend)); ok {
-			backendLabel = item.Label
-		}
-	}
-	if backend == config.ProjectedLegacySecretsBackendKind {
-		backendLabel = initAutomaticOSDefaultSecretsBackendLabel()
-	}
-	return fmt.Sprintf("Fallback credential store: %s", backendLabel)
 }
 
 func initSecretsProfileDisplayName(id string, label string) string {
@@ -297,26 +303,6 @@ func initSecretsProfileBackendOptions(current config.SecretsBackendKind) []huh.O
 		}
 		label := backend.Label
 		if !backend.Available && backend.Kind == current {
-			label += " (unavailable in this build; existing config)"
-		}
-		options = append(options, huh.NewOption(label, string(backend.Kind)))
-	}
-	return options
-}
-
-func initLegacySecretsBackendOptions(current string) []huh.Option[string] {
-	options := []huh.Option[string]{
-		huh.NewOption(initAutomaticOSDefaultSecretsBackendLabel(), ""),
-	}
-	for _, backend := range initSecretsBackendCatalog() {
-		if !backend.LegacyCompatible {
-			continue
-		}
-		if !backend.Available && string(backend.Kind) != strings.TrimSpace(current) {
-			continue
-		}
-		label := backend.Label
-		if !backend.Available && string(backend.Kind) == strings.TrimSpace(current) {
 			label += " (unavailable in this build; existing config)"
 		}
 		options = append(options, huh.NewOption(label, string(backend.Kind)))
@@ -439,12 +425,12 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 	if p.inventoryRunner == nil {
 		return p.editKeyringBackendLinear(prompt)
 	}
-	working := cloneInitConfigFile(prompt.Config)
-	original := cloneInitConfigFile(prompt.Config)
+	working := config.Normalize(cloneInitConfigFile(prompt.Config))
+	original := config.Normalize(cloneInitConfigFile(prompt.Config))
 
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
-			Title:       "Secrets Management",
+			Title:       "Secrets Storage",
 			Description: initSecretsManagementInventoryDescription(),
 			Rows:        initSecretsManagementInventoryRows(working),
 			Width:       88,
@@ -463,16 +449,8 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 			return initKeyringBackendEdit{}, fmt.Errorf("unsupported secrets-management inventory action %q", result.Action)
 		case initInventoryActionCommand, initInventoryActionEdit:
 			switch {
-			case result.Row.ID == initSecretsManagementLegacySelection:
-				edit, err := p.editLegacySecretsManagement(working.Keyring.Backend)
-				if err != nil {
-					return initKeyringBackendEdit{}, err
-				}
-				if !edit.Apply {
-					continue
-				}
-				working.Keyring.Backend = strings.TrimSpace(edit.Backend)
-				working = config.Normalize(working)
+			case result.Row.ID == config.LocalOSCredentialStoreID:
+				continue
 			case strings.HasPrefix(result.Row.ID, initConfigureSecretsProfileSelectionPrefix):
 				kind, ok := initSecretsProfileSelectionKind(result.Row.ID)
 				if !ok {
@@ -497,14 +475,6 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 				if err != nil {
 					return initKeyringBackendEdit{}, err
 				}
-				if edit.UseDefault {
-					nextCfg, _, err = configedit.SetDefaultSecretsProfile(nextCfg, id)
-				} else if strings.TrimSpace(working.Secrets.DefaultProfile) == id {
-					nextCfg, _, err = configedit.UnsetDefaultSecretsProfile(nextCfg)
-				}
-				if err != nil {
-					return initKeyringBackendEdit{}, err
-				}
 				working = nextCfg
 			case result.Row.ID == initBackSelection:
 				if initConfigsEqual(original, working) {
@@ -512,11 +482,12 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 				}
 				return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: working}, nil
 			default:
-				existing, ok := working.Secrets.Profiles[result.Row.ID]
+				working = config.Normalize(working)
+				existing, ok := working.Secrets.Stores[result.Row.ID]
 				if !ok {
 					return initKeyringBackendEdit{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, result.Row.ID)
 				}
-				edit, err := p.editSecretsProfile(existing, result.Row.ID, strings.TrimSpace(working.Secrets.DefaultProfile) == result.Row.ID, false)
+				edit, err := p.editSecretsProfile(existing, result.Row.ID, false, false)
 				if err != nil {
 					return initKeyringBackendEdit{}, err
 				}
@@ -536,14 +507,6 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 				if err != nil {
 					return initKeyringBackendEdit{}, err
 				}
-				if edit.UseDefault {
-					nextCfg, _, err = configedit.SetDefaultSecretsProfile(nextCfg, result.Row.ID)
-				} else if strings.TrimSpace(working.Secrets.DefaultProfile) == result.Row.ID {
-					nextCfg, _, err = configedit.UnsetDefaultSecretsProfile(nextCfg)
-				}
-				if err != nil {
-					return initKeyringBackendEdit{}, err
-				}
 				working = nextCfg
 			}
 		case initInventoryActionNone:
@@ -554,7 +517,7 @@ func (p huhInitKeyringBackendPrompter) EditKeyringBackend(prompt initKeyringBack
 	}
 }
 
-func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.SecretsProfile, id string, isDefault bool, creating bool) (initSecretsProfileEditorResult, error) {
+func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.SecretsProfile, id string, _ bool, creating bool) (initSecretsProfileEditorResult, error) {
 	seedProfile := profile
 	if strings.TrimSpace(string(seedProfile.Backend.Kind)) == "" {
 		seedProfile.Backend = normalizeInitSecretsProfileBackend(config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)})
@@ -570,12 +533,8 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 		onePassword = &copyValue
 	}
 	action := initDetailActionEdit
-	useDefault := isDefault
 	timeout := onePassword.Timeout
 	vaultID := onePassword.VaultID
-	itemTitlePrefix := onePassword.ItemTitlePrefix
-	itemTag := onePassword.ItemTag
-	itemFieldTitle := onePassword.ItemFieldTitle
 	connectHost := onePassword.ConnectHost
 	connectTokenEnv := onePassword.ConnectTokenEnv
 	serviceTokenEnv := onePassword.ServiceTokenEnv
@@ -584,19 +543,19 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Secrets-management profile label").
-				Description("Choose a human-friendly label for this secrets-management profile. This is what the init menus will show later.").
+				Title("Credential store name").
+				Description("Choose a human-friendly name for this credential store.").
 				Value(&labelInput).
 				Validate(validateOptionalDisplayName),
 			huh.NewSelect[string]().
-				Title("Secrets-management backend").
+				Title("Credential store backend").
 				Options(initSecretsProfileBackendOptions(seedProfile.Backend.Kind)...).
 				Value(&kindValue),
-		).Title("Secrets Management Profile Details"),
+		).Title("Credential Store Details"),
 		huh.NewGroup(
 			huh.NewInput().
 				Title("1Password vault id").
-				Description("Required for every 1Password-backed secrets-management profile.").
+				Description("Required for every 1Password-backed credential store.").
 				Value(&vaultID).
 				Validate(func(value string) error {
 					return validateInitSecretsRequiredSingleLine(value, config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue)), "1Password vault id")
@@ -613,33 +572,6 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 		).WithHideFunc(func() bool {
 			kind := config.SecretsBackendKind(kindValue)
 			return kind != config.SecretsBackendKind(credstore.BackendOP) && kind != config.SecretsBackendKind(credstore.BackendOPDesktop)
-		}),
-		huh.NewGroup(
-			huh.NewInput().
-				Title("1Password item title prefix").
-				Description("Optional prefix added to stored 1Password item titles.").
-				Value(&itemTitlePrefix).
-				Validate(validateOptionalDisplayName),
-		).WithHideFunc(func() bool {
-			return !config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue))
-		}),
-		huh.NewGroup(
-			huh.NewInput().
-				Title("1Password item tag").
-				Description("Optional 1Password item tag for credentials created through this profile.").
-				Value(&itemTag).
-				Validate(validateOptionalDisplayName),
-		).WithHideFunc(func() bool {
-			return !config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue))
-		}),
-		huh.NewGroup(
-			huh.NewInput().
-				Title("1Password item field title").
-				Description("Optional 1Password field title override.").
-				Value(&itemFieldTitle).
-				Validate(validateOptionalDisplayName),
-		).WithHideFunc(func() bool {
-			return !config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue))
 		}),
 		huh.NewGroup(
 			huh.NewInput().
@@ -680,21 +612,14 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 			return config.SecretsBackendKind(kindValue) != config.SecretsBackendKind(credstore.BackendOPDesktop)
 		}),
 		huh.NewGroup(
-			huh.NewSelect[bool]().
-				Title("Use this as the default secrets-management profile").
-				Options(
-					huh.NewOption("No", false),
-					huh.NewOption("Yes", true),
-				).
-				Value(&useDefault),
 			huh.NewSelect[string]().
-				Title("Secrets-management detail action").
+				Title("Credential store action").
 				Options(
-					huh.NewOption("Stage secrets-management settings", initDetailActionEdit),
+					huh.NewOption("Stage secrets-storage settings", initDetailActionEdit),
 					huh.NewOption("Back without staging", initDetailActionBack),
 				).
 				Value(&action),
-		).Title("Secrets Management Profile Details"),
+		).Title("Credential Store Details"),
 	)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
@@ -703,41 +628,12 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 	if back || action == initDetailActionBack {
 		return initSecretsProfileEditorResult{}, nil
 	}
-	backend := initSecretsProfileBackendFromInputs(kindValue, timeout, vaultID, itemTitlePrefix, itemTag, itemFieldTitle, connectHost, connectTokenEnv, serviceTokenEnv, desktopAccountID)
+	backend := initSecretsProfileBackendFromInputs(kindValue, timeout, vaultID, "", "", "", connectHost, connectTokenEnv, serviceTokenEnv, desktopAccountID)
 	storedLabel := normalizeInitSecretsProfileStoredLabel(labelInput, labelSeed.FallbackValue, labelSeed.StoredLabel, creating)
 	return initSecretsProfileEditorResult{
 		Apply:       true,
 		Label:       strings.TrimSpace(labelInput),
 		StoredLabel: storedLabel,
 		Backend:     backend,
-		UseDefault:  useDefault,
 	}, nil
-}
-
-func (p huhInitKeyringBackendPrompter) editLegacySecretsManagement(currentBackend string) (initLegacySecretsManagementEditorResult, error) {
-	backend := strings.TrimSpace(currentBackend)
-	action := initDetailActionEdit
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Legacy fallback credential store backend").
-				Options(initLegacySecretsBackendOptions(currentBackend)...).
-				Value(&backend),
-			huh.NewSelect[string]().
-				Title("Fallback credential-store action").
-				Options(
-					huh.NewOption("Stage fallback credential-store settings", initDetailActionEdit),
-					huh.NewOption("Back without staging", initDetailActionBack),
-				).
-				Value(&action),
-		).Title("Legacy Fallback Credential Store"),
-	)
-	back, err := runBackableInitForm(form, p.stdin, p.stderr)
-	if err != nil {
-		return initLegacySecretsManagementEditorResult{}, err
-	}
-	if back || action == initDetailActionBack {
-		return initLegacySecretsManagementEditorResult{}, nil
-	}
-	return initLegacySecretsManagementEditorResult{Apply: true, Backend: strings.TrimSpace(backend)}, nil
 }

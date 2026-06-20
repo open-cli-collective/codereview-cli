@@ -79,8 +79,8 @@ func initMenuItems(prompt initMenuPrompt) []initMenuItem {
 	items := []initMenuItem{
 		{
 			Action:      initMenuActionSecretsManagement,
-			Title:       "Configure secrets management",
-			Description: "Credential-store profiles and default destination",
+			Title:       "Configure secrets storage",
+			Description: "Credential stores for tokens and keys",
 		},
 		{
 			Action:      initMenuActionLLMRuntimes,

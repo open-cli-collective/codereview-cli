@@ -25,7 +25,7 @@ func initCredentialDestinationDescription(ctx initCredentialDestinationContext) 
 	destination, details := initCredentialDestinationDetails(ctx, ref)
 	lines := []string{"Destination: " + destination}
 	lines = append(lines, details...)
-	lines = append(lines, "Change destination by configuring/selecting a secrets-management profile; secret values are collected separately.")
+	lines = append(lines, "Change destination by selecting a credential store; secret values are collected separately.")
 	return strings.Join(lines, "\n")
 }
 
@@ -41,7 +41,7 @@ func initNamedCredentialDestinationDetails(ctx initCredentialDestinationContext,
 	resolved := ctx.Entry.SecretsProfile
 	displayName := strings.TrimSpace(resolved.DisplayName())
 	if displayName == "" {
-		displayName = "selected secrets-management profile"
+		displayName = "selected credential store"
 	}
 	profile, ok := ctx.Config.Secrets.Profiles[strings.TrimSpace(resolved.ID)]
 	if !ok {
@@ -54,7 +54,7 @@ func initNamedCredentialDestinationDetails(ctx initCredentialDestinationContext,
 	backendLabel := initSecretsBackendDisplayLabel(backendKind)
 	lines := []string{}
 	if value := strings.TrimSpace(resolved.ID); value != "" {
-		lines = append(lines, "Secrets profile: "+value)
+		lines = append(lines, "Credential store: "+value)
 	}
 	if value := strings.TrimSpace(string(backendKind)); value != "" {
 		lines = append(lines, "Backend kind: "+value)
@@ -64,10 +64,7 @@ func initNamedCredentialDestinationDetails(ctx initCredentialDestinationContext,
 }
 
 func initLegacyCredentialDestinationDetails(ctx initCredentialDestinationContext, ref string) (string, []string) {
-	displayName := strings.TrimSpace(ctx.Entry.SecretsProfile.DisplayName())
-	if displayName == "" {
-		displayName = "Legacy default"
-	}
+	displayName := initBuiltInOSCredentialStoreTitle()
 	backend, source, err := credentials.BackendMetadata(ctx.BackendArg, ctx.BackendFlagSet, ctx.Config)
 	if err != nil {
 		return fmt.Sprintf("%s via %s", ref, displayName), []string{"credential destination unavailable."}
@@ -93,15 +90,6 @@ func initOnePasswordDestinationDetails(backend config.SecretsProfileBackend) []s
 	lines := []string{}
 	if value := strings.TrimSpace(onePassword.VaultID); value != "" {
 		lines = append(lines, "1Password vault: "+value)
-	}
-	if value := strings.TrimSpace(onePassword.ItemTitlePrefix); value != "" {
-		lines = append(lines, "1Password item title prefix: "+value)
-	}
-	if value := strings.TrimSpace(onePassword.ItemTag); value != "" {
-		lines = append(lines, "1Password item tag: "+value)
-	}
-	if value := strings.TrimSpace(onePassword.ItemFieldTitle); value != "" {
-		lines = append(lines, "1Password item field title: "+value)
 	}
 	if value := strings.TrimSpace(onePassword.ConnectHost); value != "" {
 		lines = append(lines, "1Password Connect host: "+value)
