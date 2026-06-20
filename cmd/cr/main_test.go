@@ -144,6 +144,13 @@ cases:
 func TestRunCredentialCommandsDoNotLeakSecrets(t *testing.T) {
 	statedirtest.Hermetic(t)
 	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
+	path, err := config.Path()
+	if err != nil {
+		t.Fatalf("config Path: %v", err)
+	}
+	if err := config.Save(path, mainCredentialCommandTestConfig()); err != nil {
+		t.Fatalf("config Save: %v", err)
+	}
 	const (
 		firstSecret  = "distinctive-secret-one"
 		secondSecret = "distinctive-secret-two"
@@ -158,25 +165,26 @@ func TestRunCredentialCommandsDoNotLeakSecrets(t *testing.T) {
 		wantCode int
 	}{
 		{
-			name: "init",
+			name: "set initial credential",
 			args: []string{
-				"--backend", "file",
-				"init",
-				"--non-interactive",
-				"--git-token-from-env", "CR_TOKEN_ONE",
+				"set-credential",
+				"--store", "test-file",
+				"--name", "codereview/default",
+				"--key", "git_token",
+				"--from-env", "CR_TOKEN_ONE",
 			},
 		},
 		{
 			name:     "config show",
-			args:     []string{"--backend", "file", "config", "show", "--json"},
+			args:     []string{"config", "show", "--json"},
 			wantCode: 0,
 		},
 		{
 			name: "existing credential failure",
 			args: []string{
-				"--backend", "file",
 				"set-credential",
-				"--ref", "codereview/default",
+				"--store", "test-file",
+				"--name", "codereview/default",
 				"--key", "git_token",
 				"--from-env", "CR_TOKEN_TWO",
 			},
@@ -185,9 +193,9 @@ func TestRunCredentialCommandsDoNotLeakSecrets(t *testing.T) {
 		{
 			name: "set overwrite",
 			args: []string{
-				"--backend", "file",
 				"set-credential",
-				"--ref", "codereview/default",
+				"--store", "test-file",
+				"--name", "codereview/default",
 				"--key", "git_token",
 				"--from-env", "CR_TOKEN_TWO",
 				"--overwrite",
@@ -196,7 +204,7 @@ func TestRunCredentialCommandsDoNotLeakSecrets(t *testing.T) {
 		},
 		{
 			name:     "config clear",
-			args:     []string{"--backend", "file", "config", "clear", "--json"},
+			args:     []string{"config", "clear", "--json"},
 			wantCode: 0,
 		},
 	}
@@ -217,13 +225,15 @@ func TestRunCredentialCommandsDoNotLeakSecrets(t *testing.T) {
 func mainTestConfig() config.File {
 	return config.File{
 		DefaultProfile: "home",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/home",
+					Host:     "github.com",
+					AuthMode: config.GitAuthModePAT,
+					Credential: config.CredentialLocation{
+						Store: config.LocalOSCredentialStoreID,
+						Name:  "codereview/home",
+					},
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,
@@ -234,6 +244,25 @@ func mainTestConfig() config.File {
 			},
 		},
 	}
+}
+
+func mainCredentialCommandTestConfig() config.File {
+	cfg := mainTestConfig()
+	cfg.DefaultProfile = "default"
+	cfg.Secrets = config.SecretsConfig{
+		Stores: map[string]config.SecretsStore{
+			"test-file": {
+				DisplayName: "Test file store",
+				Backend: config.SecretsStoreBackend{
+					Kind: config.SecretsBackendKind("file"),
+				},
+			},
+		},
+	}
+	profile := cfg.Profiles["home"]
+	profile.Git.Credential = config.CredentialLocation{Store: "test-file", Name: "codereview/default"}
+	cfg.Profiles = map[string]config.Profile{"default": profile}
+	return cfg
 }
 
 func assertNoSecretLeak(t *testing.T, output string, secrets ...string) {
