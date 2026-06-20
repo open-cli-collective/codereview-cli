@@ -518,6 +518,9 @@ func TestNewRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
 			},
 		},
 	}
+	home := cfg.Profiles["home"]
+	home.SecretsProfile = "work-file"
+	cfg.Profiles["home"] = home
 	profile := cfg.Profiles["home"]
 	cmd := &cobra.Command{}
 	cmd.Flags().String(credstore.BackendFlagName, "", "")
@@ -561,6 +564,9 @@ func TestNewRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing
 			},
 		},
 	}
+	home := cfg.Profiles["home"]
+	home.SecretsProfile = "work-file"
+	cfg.Profiles["home"] = home
 	profile := cfg.Profiles["home"]
 	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
 	withReviewRuntimeSeams(t,
@@ -605,6 +611,9 @@ func TestOpenSelectionRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *tes
 			},
 		},
 	}
+	home := cfg.Profiles["home"]
+	home.SecretsProfile = "work-file"
+	cfg.Profiles["home"] = home
 
 	_, err := OpenSelectionRuntime(context.Background(), "memory", true, cfg, cfg.Profiles["home"])
 	if !errors.Is(err, config.ErrInvalid) {
@@ -641,6 +650,9 @@ func TestOpenSelectionRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(
 			},
 		},
 	}
+	home := cfg.Profiles["home"]
+	home.SecretsProfile = "work-file"
+	cfg.Profiles["home"] = home
 	withReviewRuntimeSeams(t,
 		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			token, err := tokenStore.Get("home", credentials.GitTokenKey)

@@ -5622,7 +5622,7 @@ func validateInteractiveInitConfig(cfg config.File) error {
 
 func validateInteractiveInitGlobalConfig(cfg config.File) error {
 	if len(cfg.Profiles) == 0 || strings.TrimSpace(cfg.DefaultProfile) == "" {
-		if err := config.ValidateKeyring(cfg.Keyring); err != nil {
+		if err := config.ValidateSecrets(cfg.Secrets); err != nil {
 			return err
 		}
 		return config.ValidateRetention(cfg.Data.Retention)

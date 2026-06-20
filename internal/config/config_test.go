@@ -137,7 +137,9 @@ profiles:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/home
+      credential:
+        store: local-os
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription
@@ -160,7 +162,9 @@ profiles:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/home
+      credential:
+        store: local-os
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription
@@ -180,7 +184,9 @@ profiles:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/pi
+      credential:
+        store: local-os
+        name: codereview/pi
     llm:
       provider: pi
       auth: subscription
@@ -211,7 +217,9 @@ profiles:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/codex
+      credential:
+        store: local-os
+        name: codereview/codex
     llm:
       provider: openai
       auth: subscription
@@ -828,9 +836,9 @@ func TestCredentialRefs(t *testing.T) {
 		t.Fatalf("CredentialRefs: %v", err)
 	}
 	want := []CredentialRef{
-		{Purpose: "git", Ref: "codereview/work", Mode: "pat"},
-		{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "pat"},
-		{Purpose: "llm", Ref: "codereview/work-llm", Mode: "api_key", Provider: "anthropic"},
+		{Purpose: "git", Store: LocalOSCredentialStoreID, Ref: "codereview/work", Mode: "pat"},
+		{Purpose: "reviewer_credentials", Store: LocalOSCredentialStoreID, Ref: "codereview/work-reviewer", Mode: "pat"},
+		{Purpose: "llm", Store: LocalOSCredentialStoreID, Ref: "codereview/work-llm", Mode: "api_key", Provider: "anthropic"},
 	}
 	if !reflect.DeepEqual(refs, want) {
 		t.Fatalf("CredentialRefs = %#v, want %#v", refs, want)
@@ -847,9 +855,9 @@ func TestCredentialRefsIncludesGitHubAppModes(t *testing.T) {
 		t.Fatalf("CredentialRefs: %v", err)
 	}
 	want := []CredentialRef{
-		{Purpose: "git", Ref: "codereview/work", Mode: "github_app"},
-		{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "github_app"},
-		{Purpose: "llm", Ref: "codereview/work-llm", Mode: "api_key", Provider: "anthropic"},
+		{Purpose: "git", Store: LocalOSCredentialStoreID, Ref: "codereview/work", Mode: "github_app"},
+		{Purpose: "reviewer_credentials", Store: LocalOSCredentialStoreID, Ref: "codereview/work-reviewer", Mode: "github_app"},
+		{Purpose: "llm", Store: LocalOSCredentialStoreID, Ref: "codereview/work-llm", Mode: "api_key", Provider: "anthropic"},
 	}
 	if !reflect.DeepEqual(refs, want) {
 		t.Fatalf("CredentialRefs = %#v, want %#v", refs, want)
@@ -865,7 +873,7 @@ func TestValidateRejectsMissingDefaultProfile(t *testing.T) {
 	}
 }
 
-func TestValidateSecretsProfiles(t *testing.T) {
+func TestValidateSecretsStores(t *testing.T) {
 	tests := []struct {
 		name    string
 		mutate  func(*File)
@@ -873,39 +881,14 @@ func TestValidateSecretsProfiles(t *testing.T) {
 		wantMsg string
 	}{
 		{
-			name: "valid configured secrets profile",
+			name: "valid configured credential store",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					DefaultProfile: "personal",
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						"personal": {
-							Label: "Personal Keychain",
-							Backend: SecretsProfileBackend{
+							DisplayName: "Personal Keychain",
+							Backend: SecretsStoreBackend{
 								Kind: SecretsBackendKind(credstore.BackendKeychain),
-							},
-						},
-					},
-				}
-			},
-		},
-		{
-			name: "missing configured default secrets profile",
-			mutate: func(cfg *File) {
-				cfg.Secrets = SecretsConfig{DefaultProfile: "missing"}
-			},
-			wantErr: ErrProfileNotFound,
-			wantMsg: `secrets.default_profile "missing"`,
-		},
-		{
-			name: "configured default secrets profile trims surrounding whitespace",
-			mutate: func(cfg *File) {
-				cfg.Secrets = SecretsConfig{
-					DefaultProfile: " work-vault ",
-					Profiles: map[string]SecretsProfile{
-						"work-vault": {
-							Label: "Work File Store",
-							Backend: SecretsProfileBackend{
-								Kind: SecretsBackendKind(credstore.BackendFile),
 							},
 						},
 					},
@@ -916,25 +899,25 @@ func TestValidateSecretsProfiles(t *testing.T) {
 			name: "invalid secrets backend kind",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						"broken": {
-							Backend: SecretsProfileBackend{Kind: "bogus"},
+							Backend: SecretsStoreBackend{Kind: "bogus"},
 						},
 					},
 				}
 			},
 			wantErr: ErrInvalid,
-			wantMsg: `secrets.profiles.broken.backend.kind "bogus" is invalid`,
+			wantMsg: `secrets.stores.broken.backend.kind "bogus" is invalid`,
 		},
 		{
-			name: "valid 1password service account profile defaults token env and timeout",
+			name: "valid 1password service account store defaults token env and timeout",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						"work-op": {
-							Backend: SecretsProfileBackend{
+							Backend: SecretsStoreBackend{
 								Kind: SecretsBackendKind(credstore.BackendOP),
-								OnePassword: &SecretsProfileOnePasswordConfig{
+								OnePassword: &SecretsStoreOnePasswordConfig{
 									VaultID: "vault-123",
 								},
 							},
@@ -944,14 +927,14 @@ func TestValidateSecretsProfiles(t *testing.T) {
 			},
 		},
 		{
-			name: "valid 1password connect profile requires host and defaults token env",
+			name: "valid 1password connect store requires host and defaults token env",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						"work-connect": {
-							Backend: SecretsProfileBackend{
+							Backend: SecretsStoreBackend{
 								Kind: SecretsBackendKind(credstore.BackendOPConnect),
-								OnePassword: &SecretsProfileOnePasswordConfig{
+								OnePassword: &SecretsStoreOnePasswordConfig{
 									VaultID:     "vault-123",
 									ConnectHost: "https://connect.example",
 								},
@@ -962,14 +945,14 @@ func TestValidateSecretsProfiles(t *testing.T) {
 			},
 		},
 		{
-			name: "valid 1password desktop profile permits env fallback account id",
+			name: "valid 1password desktop store permits env fallback account id",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						"work-desktop": {
-							Backend: SecretsProfileBackend{
+							Backend: SecretsStoreBackend{
 								Kind: SecretsBackendKind(credstore.BackendOPDesktop),
-								OnePassword: &SecretsProfileOnePasswordConfig{
+								OnePassword: &SecretsStoreOnePasswordConfig{
 									VaultID: "vault-123",
 								},
 							},
@@ -982,28 +965,28 @@ func TestValidateSecretsProfiles(t *testing.T) {
 			name: "1password service account missing vault id invalid",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						"broken": {
-							Backend: SecretsProfileBackend{
+							Backend: SecretsStoreBackend{
 								Kind:        SecretsBackendKind(credstore.BackendOP),
-								OnePassword: &SecretsProfileOnePasswordConfig{},
+								OnePassword: &SecretsStoreOnePasswordConfig{},
 							},
 						},
 					},
 				}
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "secrets.profiles.broken.backend.onepassword.vault_id is required",
+			wantMsg: "secrets.stores.broken.backend.onepassword.vault_id is required",
 		},
 		{
 			name: "1password connect missing host invalid",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						"broken": {
-							Backend: SecretsProfileBackend{
+							Backend: SecretsStoreBackend{
 								Kind: SecretsBackendKind(credstore.BackendOPConnect),
-								OnePassword: &SecretsProfileOnePasswordConfig{
+								OnePassword: &SecretsStoreOnePasswordConfig{
 									VaultID: "vault-123",
 								},
 							},
@@ -1012,17 +995,17 @@ func TestValidateSecretsProfiles(t *testing.T) {
 				}
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "secrets.profiles.broken.backend.onepassword.connect_host is required",
+			wantMsg: "secrets.stores.broken.backend.onepassword.connect_host is required",
 		},
 		{
 			name: "1password timeout must parse",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						"broken": {
-							Backend: SecretsProfileBackend{
+							Backend: SecretsStoreBackend{
 								Kind: SecretsBackendKind(credstore.BackendOP),
-								OnePassword: &SecretsProfileOnePasswordConfig{
+								OnePassword: &SecretsStoreOnePasswordConfig{
 									VaultID: "vault-123",
 									Timeout: "later",
 								},
@@ -1032,92 +1015,50 @@ func TestValidateSecretsProfiles(t *testing.T) {
 				}
 			},
 			wantErr: ErrInvalid,
-			wantMsg: `secrets.profiles.broken.backend.onepassword.timeout "later" is invalid`,
+			wantMsg: `secrets.stores.broken.backend.onepassword.timeout "later" is invalid`,
 		},
 		{
-			name: "multiline label invalid",
+			name: "multiline display name invalid",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						"broken": {
-							Label:   "line one\nline two",
-							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
+							DisplayName: "line one\nline two",
+							Backend:     SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
 						},
 					},
 				}
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "secrets.profiles.broken.label must be a single line",
+			wantMsg: "secrets.stores.broken.display_name must be a single line",
 		},
 		{
-			name: "reserved projected legacy id is rejected",
+			name: "reserved built-in store id is rejected",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
-						LegacyProjectedSecretsProfileID: {
-							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
+					Stores: map[string]SecretsStore{
+						LocalOSCredentialStoreID: {
+							Backend: SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
 						},
 					},
 				}
 			},
 			wantErr: ErrInvalid,
-			wantMsg: `secrets.profiles.legacy-default is reserved`,
+			wantMsg: `secrets.stores.local-os is reserved`,
 		},
 		{
 			name: "surrounding whitespace in id is rejected",
 			mutate: func(cfg *File) {
 				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
+					Stores: map[string]SecretsStore{
 						" work ": {
-							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
+							Backend: SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendMemory)},
 						},
 					},
 				}
 			},
 			wantErr: ErrInvalid,
-			wantMsg: `secrets.profiles. work  id must not contain surrounding whitespace`,
-		},
-		{
-			name: "profile may select configured secrets profile",
-			mutate: func(cfg *File) {
-				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
-						"work-file": {
-							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
-						},
-					},
-				}
-				profile := cfg.Profiles["home"]
-				profile.SecretsProfile = "work-file"
-				cfg.Profiles["home"] = profile
-			},
-		},
-		{
-			name: "profile rejects projected legacy selection",
-			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.SecretsProfile = LegacyProjectedSecretsProfileID
-				cfg.Profiles["home"] = profile
-			},
-			wantErr: ErrInvalid,
-			wantMsg: `profiles.home.secrets_profile "legacy-default" is reserved`,
-		},
-		{
-			name: "profile rejects missing configured secrets profile",
-			mutate: func(cfg *File) {
-				cfg.Secrets = SecretsConfig{
-					Profiles: map[string]SecretsProfile{
-						"personal": {
-							Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendKeychain)},
-						},
-					},
-				}
-				profile := cfg.Profiles["home"]
-				profile.SecretsProfile = "missing"
-				cfg.Profiles["home"] = profile
-			},
-			wantErr: ErrSecretsProfileNotFound,
-			wantMsg: `profiles.home.secrets_profile "missing"`,
+			wantMsg: `secrets.stores. work  id must not contain surrounding whitespace`,
 		},
 	}
 
@@ -1142,12 +1083,129 @@ func TestValidateSecretsProfiles(t *testing.T) {
 	}
 }
 
-func TestValidateKeyringRejectsLegacyOnePasswordBackends(t *testing.T) {
-	for _, backend := range []string{"op", "op-connect", "op-desktop"} {
-		err := ValidateKeyring(KeyringConfig{Backend: backend})
-		if !errors.Is(err, ErrInvalid) {
-			t.Fatalf("ValidateKeyring(%q) error = %v, want ErrInvalid", backend, err)
-		}
+func TestValidateCredentialLocations(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*File)
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name: "configured store selection",
+			mutate: func(cfg *File) {
+				cfg.Secrets.Stores["work-file"] = SecretsStore{
+					DisplayName: "Work File",
+					Backend:     SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
+				}
+				profile := cfg.Profiles["home"]
+				profile.Git.Credential = CredentialLocation{Store: "work-file", Name: "codereview/home"}
+				profile.Git.CredentialRef = ""
+				cfg.Profiles["home"] = profile
+			},
+		},
+		{
+			name: "missing store",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["home"]
+				profile.Git.Credential = CredentialLocation{Name: "codereview/home"}
+				profile.Git.CredentialRef = ""
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "profiles.home.git.credential.store is required",
+		},
+		{
+			name: "missing name",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["home"]
+				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID}
+				profile.Git.CredentialRef = ""
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "profiles.home.git.credential.name is required",
+		},
+		{
+			name: "unknown configured store",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["home"]
+				profile.Git.Credential = CredentialLocation{Store: "missing", Name: "codereview/home"}
+				profile.Git.CredentialRef = ""
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrSecretsStoreNotFound,
+			wantMsg: `profiles.home.git.credential.store "missing"`,
+		},
+		{
+			name: "credential name invalid grammar",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["home"]
+				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/bad.profile"}
+				profile.Git.CredentialRef = ""
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "profiles.home.git.credential.name is invalid",
+		},
+		{
+			name: "credential name wrong service",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["home"]
+				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "other/home"}
+				profile.Git.CredentialRef = ""
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: `profiles.home.git.credential.name must use service "codereview"`,
+		},
+		{
+			name: "same credential name in different stores",
+			mutate: func(cfg *File) {
+				cfg.Secrets.Stores["work-file"] = SecretsStore{
+					DisplayName: "Work File",
+					Backend:     SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
+				}
+				profile := cfg.Profiles["work"]
+				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
+				profile.Git.CredentialRef = ""
+				profile.ReviewerCredentials.Credential = CredentialLocation{Store: "work-file", Name: "codereview/shared"}
+				profile.ReviewerCredentials.CredentialRef = ""
+				cfg.Profiles["work"] = profile
+			},
+		},
+		{
+			name: "same credential name in same store",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["work"]
+				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
+				profile.Git.CredentialRef = ""
+				profile.ReviewerCredentials.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
+				profile.ReviewerCredentials.CredentialRef = ""
+				cfg.Profiles["work"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "reviewer_credentials.credential must differ from git.credential",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile().normalized()
+			tt.mutate(&cfg)
+			err := Validate(cfg)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("Validate: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Fatalf("Validate error = %v, want message containing %q", err, tt.wantMsg)
+			}
+		})
 	}
 }
 
@@ -1196,122 +1254,132 @@ func TestSecretsProfileBackendNormalizedOnePasswordDefaults(t *testing.T) {
 	}
 }
 
-func TestEffectiveSecretsProfiles(t *testing.T) {
-	t.Run("configured secrets profiles win inventory", func(t *testing.T) {
+func TestEffectiveSecretsStores(t *testing.T) {
+	t.Run("built-in plus configured stores", func(t *testing.T) {
 		cfg := validFile()
-		cfg.Keyring.Backend = string(credstore.BackendMemory)
 		cfg.Secrets = SecretsConfig{
-			DefaultProfile: "work-vault",
-			Profiles: map[string]SecretsProfile{
+			Stores: map[string]SecretsStore{
 				"personal": {
-					Label:   "Personal Keychain",
-					Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendKeychain)},
+					DisplayName: "Personal Keychain",
+					Backend:     SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendKeychain)},
 				},
 				"work-vault": {
-					Label:   "Work File Store",
-					Backend: SecretsProfileBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
+					DisplayName: "Work File Store",
+					Backend:     SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		}
 
-		got := EffectiveSecretsProfiles(cfg)
-		want := []EffectiveSecretsProfile{
+		got := EffectiveSecretsStores(cfg)
+		want := []EffectiveSecretsStore{
 			{
-				ID:      "personal",
-				Label:   "Personal Keychain",
-				Backend: string(credstore.BackendKeychain),
-				Source:  EffectiveSecretsProfileSourceConfigured,
+				ID:          LocalOSCredentialStoreID,
+				DisplayName: "OS credential store",
+				Label:       "OS credential store",
+				Backend:     ProjectedLegacySecretsBackendKind,
+				ReadOnly:    true,
+				IsDefault:   true,
+				Source:      EffectiveSecretsStoreSourceBuiltIn,
 			},
 			{
-				ID:        "work-vault",
-				Label:     "Work File Store",
-				Backend:   string(credstore.BackendFile),
-				IsDefault: true,
-				Source:    EffectiveSecretsProfileSourceConfigured,
+				ID:          "personal",
+				DisplayName: "Personal Keychain",
+				Label:       "Personal Keychain",
+				Backend:     string(credstore.BackendKeychain),
+				Source:      EffectiveSecretsStoreSourceConfigured,
+			},
+			{
+				ID:          "work-vault",
+				DisplayName: "Work File Store",
+				Label:       "Work File Store",
+				Backend:     string(credstore.BackendFile),
+				Source:      EffectiveSecretsStoreSourceConfigured,
 			},
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("EffectiveSecretsProfiles = %#v, want %#v", got, want)
+			t.Fatalf("EffectiveSecretsStores = %#v, want %#v", got, want)
 		}
 	})
 
-	t.Run("legacy keyring backend projects deterministic default", func(t *testing.T) {
+	t.Run("virgin config projects built-in store", func(t *testing.T) {
 		cfg := validFile()
-		cfg.Keyring.Backend = string(credstore.BackendMemory)
 
-		got := EffectiveSecretsProfiles(cfg)
-		want := []EffectiveSecretsProfile{{
-			ID:        LegacyProjectedSecretsProfileID,
-			Label:     "Legacy default",
-			Backend:   string(credstore.BackendMemory),
-			IsDefault: true,
-			Source:    EffectiveSecretsProfileSourceProjectedLegacy,
+		got := EffectiveSecretsStores(cfg)
+		want := []EffectiveSecretsStore{{
+			ID:          LocalOSCredentialStoreID,
+			DisplayName: "OS credential store",
+			Label:       "OS credential store",
+			Backend:     ProjectedLegacySecretsBackendKind,
+			ReadOnly:    true,
+			IsDefault:   true,
+			Source:      EffectiveSecretsStoreSourceBuiltIn,
 		}}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("EffectiveSecretsProfiles = %#v, want %#v", got, want)
-		}
-	})
-
-	t.Run("omitted legacy backend still projects auto default", func(t *testing.T) {
-		cfg := validFile()
-		cfg.Keyring.Backend = ""
-
-		got := EffectiveSecretsProfiles(cfg)
-		want := []EffectiveSecretsProfile{{
-			ID:        LegacyProjectedSecretsProfileID,
-			Label:     "Legacy default",
-			Backend:   ProjectedLegacySecretsBackendKind,
-			IsDefault: true,
-			Source:    EffectiveSecretsProfileSourceProjectedLegacy,
-		}}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("EffectiveSecretsProfiles = %#v, want %#v", got, want)
+			t.Fatalf("EffectiveSecretsStores = %#v, want %#v", got, want)
 		}
 	})
 }
 
-func TestKeyringBackendRoundTripAndValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yml")
-	cfg := validFile()
-	cfg.Keyring.Backend = "memory"
-	if err := Save(path, cfg); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	got, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got.Keyring.Backend != "memory" {
-		t.Fatalf("keyring.backend = %q, want memory", got.Keyring.Backend)
+func TestLoadRejectsOldCredentialStoreSchema(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "keyring backend", body: `default_profile: home
+keyring:
+  backend: memory
+profiles: {}
+`},
+		{name: "secrets default profile", body: `default_profile: home
+secrets:
+  default_profile: work
+profiles: {}
+`},
+		{name: "secrets profiles", body: `default_profile: home
+secrets:
+  profiles:
+    work:
+      backend:
+        kind: memory
+profiles: {}
+`},
+		{name: "profile secrets profile", body: `default_profile: home
+profiles:
+  home:
+    secrets_profile: work
+    git:
+      host: github.com
+      auth_mode: pat
+      credential:
+        store: local-os
+        name: codereview/home
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`},
+		{name: "credential ref", body: `default_profile: home
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential_ref: codereview/home
+    llm:
+      provider: anthropic
+      auth: subscription
+      adapter: claude_cli
+`},
 	}
 
-	cfg.Keyring.Backend = "bogus"
-	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("Validate invalid backend error = %v, want ErrInvalid", err)
-	}
-}
-
-func TestSaveLegacyConfigDoesNotPersistProjectedSecretsProfiles(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yml")
-	cfg := validFile()
-	cfg.Keyring.Backend = string(credstore.BackendMemory)
-
-	if err := Save(path, cfg); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	got, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(got.Secrets.Profiles) != 0 {
-		t.Fatalf("secrets.profiles = %#v, want omitted explicit profiles for legacy config", got.Secrets.Profiles)
-	}
-	if got.Secrets.DefaultProfile != "" {
-		t.Fatalf("secrets.default_profile = %q, want empty for legacy config", got.Secrets.DefaultProfile)
-	}
-	effective := EffectiveSecretsProfiles(got)
-	if len(effective) != 1 || effective[0].ID != LegacyProjectedSecretsProfileID || effective[0].Source != EffectiveSecretsProfileSourceProjectedLegacy {
-		t.Fatalf("EffectiveSecretsProfiles = %#v, want projected legacy default", effective)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			writeFile(t, path, tt.body)
+			if _, err := Load(path); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load error = %v, want ErrInvalid", err)
+			}
+		})
 	}
 }
 
@@ -1409,29 +1477,33 @@ func TestLoadRejectsReservedGitAuthModes(t *testing.T) {
 		body string
 	}{
 		{name: "git oauth_device", body: `default_profile: home
-keyring: {}
 profiles:
   home:
     git:
       host: github.com
       auth_mode: oauth_device
-      credential_ref: codereview/home
+      credential:
+        store: local-os
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription
       adapter: claude_cli
 `},
 		{name: "reviewer oauth_device", body: `default_profile: work
-keyring: {}
 profiles:
   work:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/work
+      credential:
+        store: local-os
+        name: codereview/work
     reviewer_credentials:
       auth_mode: oauth_device
-      credential_ref: codereview/work-reviewer
+      credential:
+        store: local-os
+        name: codereview/work-reviewer
     llm:
       provider: anthropic
       auth: subscription
@@ -1454,16 +1526,19 @@ profiles:
 func TestLoadAcceptsGitHubAppAuthMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	writeFile(t, path, `default_profile: work
-keyring: {}
 profiles:
   work:
     git:
       host: github.com
       auth_mode: github_app
-      credential_ref: codereview/work
+      credential:
+        store: local-os
+        name: codereview/work
     reviewer_credentials:
       auth_mode: github_app
-      credential_ref: codereview/work-reviewer
+      credential:
+        store: local-os
+        name: codereview/work-reviewer
     llm:
       provider: anthropic
       auth: subscription
@@ -1482,16 +1557,19 @@ profiles:
 func TestLoadRejectsMultilineReviewerDisplayName(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	writeFile(t, path, `default_profile: work
-keyring: {}
 profiles:
   work:
     git:
       host: github.com
       auth_mode: github_app
-      credential_ref: codereview/work
+      credential:
+        store: local-os
+        name: codereview/work
     reviewer_credentials:
       auth_mode: github_app
-      credential_ref: codereview/work-reviewer
+      credential:
+        store: local-os
+        name: codereview/work-reviewer
       display_name: |
         line one
         line two
@@ -1550,7 +1628,7 @@ func TestSubscriptionLLMCredentialsAreAdapterManaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CredentialRefs: %v", err)
 	}
-	want := []CredentialRef{{Purpose: "git", Ref: "codereview/home", Mode: "pat"}}
+	want := []CredentialRef{{Purpose: "git", Store: LocalOSCredentialStoreID, Ref: "codereview/home", Mode: "pat"}}
 	if !reflect.DeepEqual(refs, want) {
 		t.Fatalf("CredentialRefs = %#v, want %#v", refs, want)
 	}
@@ -1560,6 +1638,7 @@ func TestAPIKeyLLMRequiresCredentialRef(t *testing.T) {
 	cfg := validFile()
 	profile := cfg.Profiles["work"]
 	profile.LLM.CredentialRef = ""
+	profile.LLM.Credential = CredentialLocation{}
 	cfg.Profiles["work"] = profile
 
 	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
@@ -1580,6 +1659,7 @@ func TestValidateRejectsInvalidCredentialRefs(t *testing.T) {
 		{name: "empty reviewer credential ref", mutate: func(cfg *File) {
 			profile := cfg.Profiles["work"]
 			profile.ReviewerCredentials.CredentialRef = ""
+			profile.ReviewerCredentials.Credential = CredentialLocation{}
 			cfg.Profiles["work"] = profile
 		}},
 		{name: "reviewer credential ref matches git credential ref", mutate: func(cfg *File) {
@@ -1666,7 +1746,9 @@ profiles:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/home
+      credential:
+        store: local-os
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription
@@ -1692,7 +1774,9 @@ profiles:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/home
+      credential:
+        store: local-os
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription

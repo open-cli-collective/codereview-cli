@@ -347,11 +347,11 @@ func TestResolveSecretsProfileForProfileAndRef(t *testing.T) {
 		t.Fatalf("ResolveSecretsProfileForProfile(work): %v", err)
 	}
 	wantWork := ResolvedSecretsProfile{
-		ID:              "work-file",
-		Label:           "Work File Store",
-		Backend:         "file",
-		Source:          config.EffectiveSecretsProfileSourceConfigured,
-		SelectionSource: SecretsProfileSelectionDefault,
+		ID:              config.LegacyProjectedSecretsProfileID,
+		Label:           "Legacy default",
+		Backend:         "memory",
+		Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
+		SelectionSource: SecretsProfileSelectionLegacyDefault,
 	}
 	if !reflect.DeepEqual(workResolved, wantWork) {
 		t.Fatalf("work resolved secrets profile = %#v, want %#v", workResolved, wantWork)
