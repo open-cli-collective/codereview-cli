@@ -12065,6 +12065,114 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCou
 	}
 }
 
+func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
+	items := initMenuItems(initMenuPrompt{
+		HasWorkspace:         true,
+		LLMRuntimeCount:      2,
+		ReviewerEntityCount:  3,
+		ReviewProfileCount:   1,
+		CanConfigureLLM:      true,
+		CanConfigureReviewer: true,
+		CanSave:              true,
+	})
+	var actions []initMenuAction
+	var titles []string
+	var descriptions []string
+	for _, item := range items {
+		actions = append(actions, item.Action)
+		titles = append(titles, item.Title)
+		descriptions = append(descriptions, item.Description)
+		if strings.Contains(item.Title, "(") || strings.Contains(item.Title, ")") {
+			t.Fatalf("menu title %q contains old inline count suffix", item.Title)
+		}
+	}
+	wantActions := []initMenuAction{
+		initMenuActionSecretsManagement,
+		initMenuActionLLMRuntimes,
+		initMenuActionReviewerEntities,
+		initMenuActionReviewProfiles,
+		initMenuActionGlobalSettings,
+		initMenuActionSave,
+		initMenuActionExit,
+	}
+	if !reflect.DeepEqual(actions, wantActions) {
+		t.Fatalf("actions = %#v, want %#v", actions, wantActions)
+	}
+	assertContentOrder(t, strings.Join(titles, "\n"),
+		"Configure secrets management",
+		"Configure LLM runtimes",
+		"Configure reviewer entities",
+		"Configure review profiles",
+		"Configure global settings",
+		"Commit staged changes and exit",
+		"Discard staged changes and exit",
+	)
+	joinedDescriptions := strings.Join(descriptions, "\n")
+	for _, want := range []string{
+		"2 runtimes configured",
+		"3 reviewer entities configured",
+		"1 profile configured",
+	} {
+		if !strings.Contains(joinedDescriptions, want) {
+			t.Fatalf("descriptions = %#v, want %q", descriptions, want)
+		}
+	}
+}
+
+func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
+	model := newInitMenuModel(initMenuPrompt{
+		HasWorkspace:         true,
+		ActiveProfileName:    "default",
+		LLMRuntimeCount:      2,
+		ReviewerEntityCount:  3,
+		ReviewProfileCount:   1,
+		CanConfigureLLM:      true,
+		CanConfigureReviewer: true,
+		CanSave:              true,
+	})
+	out := model.View()
+	assertContentOrder(t, out,
+		"cr init",
+		"Active profile: default",
+		"Configure secrets management",
+		"Configure LLM runtimes",
+		"Configure reviewer entities",
+		"Configure review profiles",
+		"Configure global settings",
+		"Commit staged changes and exit",
+		"Discard staged changes and exit",
+	)
+	if !strings.Contains(out, ">") {
+		t.Fatalf("view missing selected-row caret:\n%s", out)
+	}
+	if strings.Contains(out, "Configure LLM runtimes (2)") || strings.Contains(out, "Configure review profiles (1)") {
+		t.Fatalf("view contains old inline count suffix:\n%s", out)
+	}
+}
+
+func TestInitMenuQDiscardsAndExits(t *testing.T) {
+	model := newInitMenuModel(initMenuPrompt{HasWorkspace: true})
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	result := next.(initMenuModel)
+	if cmd == nil {
+		t.Fatal("cmd = nil, want quit command")
+	}
+	if result.result != initMenuActionExit || !result.quitting {
+		t.Fatalf("result = %#v, want discard exit", result)
+	}
+}
+
+func TestInitMenuUseAccessibleFallback(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	if !initMenuUseAccessibleFallback(os.Stdin, os.Stderr) {
+		t.Fatal("TERM=dumb should use accessible fallback")
+	}
+	t.Setenv("TERM", "xterm")
+	if !initMenuUseAccessibleFallback(strings.NewReader(""), &bytes.Buffer{}) {
+		t.Fatal("non-file test streams should use accessible fallback")
+	}
+}
+
 func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
@@ -12086,11 +12194,11 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	}
 	out := stderr.String()
 	for _, want := range []string{
-		"Configure LLM runtimes (2)",
-		"Configure reviewer entities (3)",
-		"Configure review profiles (1)",
-		"Configure global settings",
 		"Configure secrets management",
+		"Configure LLM runtimes",
+		"Configure reviewer entities",
+		"Configure review profiles",
+		"Configure global settings",
 		"Commit staged changes and exit",
 		"Discard staged changes and exit",
 	} {
@@ -12104,38 +12212,55 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	if strings.Contains(out, "Configure review profiles v2") {
 		t.Fatalf("stderr = %q, want temporary v2 menu item removed", out)
 	}
+	if strings.Contains(out, "Configure LLM runtimes (2)") || strings.Contains(out, "Configure reviewer entities (3)") || strings.Contains(out, "Configure review profiles (1)") {
+		t.Fatalf("stderr = %q, want fallback labels without old inline count suffixes", out)
+	}
 	assertContentOrder(t, out,
-		"Configure LLM runtimes (2)",
-		"Configure reviewer entities (3)",
-		"Configure review profiles (1)",
-		"Configure global settings",
 		"Configure secrets management",
+		"Configure LLM runtimes",
+		"Configure reviewer entities",
+		"Configure review profiles",
+		"Configure global settings",
 		"Commit staged changes and exit",
 		"Discard staged changes and exit",
 	)
 }
 
-func TestHuhInitMenuPrompterAccessibleSelectsSecretsManagement(t *testing.T) {
+func TestHuhInitMenuPrompterAccessibleNumericOrder(t *testing.T) {
 	t.Setenv("TERM", "dumb")
-	var stderr bytes.Buffer
-	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("5\n"),
-		stderr: &stderr,
+	tests := []struct {
+		input string
+		want  initMenuAction
+	}{
+		{input: "1\n", want: initMenuActionSecretsManagement},
+		{input: "2\n", want: initMenuActionLLMRuntimes},
+		{input: "3\n", want: initMenuActionReviewerEntities},
+		{input: "4\n", want: initMenuActionReviewProfiles},
+		{input: "5\n", want: initMenuActionGlobalSettings},
+		{input: "6\n", want: initMenuActionSave},
+		{input: "7\n", want: initMenuActionExit},
 	}
-	action, err := prompter.ChooseAction(initMenuPrompt{
-		HasWorkspace:         true,
-		LLMRuntimeCount:      2,
-		ReviewerEntityCount:  3,
-		ReviewProfileCount:   1,
-		CanConfigureLLM:      true,
-		CanConfigureReviewer: true,
-		CanSave:              true,
-	})
-	if err != nil {
-		t.Fatalf("ChooseAction: %v", err)
-	}
-	if action != initMenuActionSecretsManagement {
-		t.Fatalf("action = %q, want secrets management", action)
+	for _, tt := range tests {
+		var stderr bytes.Buffer
+		prompter := huhInitMenuPrompter{
+			stdin:  strings.NewReader(tt.input),
+			stderr: &stderr,
+		}
+		action, err := prompter.ChooseAction(initMenuPrompt{
+			HasWorkspace:         true,
+			LLMRuntimeCount:      2,
+			ReviewerEntityCount:  3,
+			ReviewProfileCount:   1,
+			CanConfigureLLM:      true,
+			CanConfigureReviewer: true,
+			CanSave:              true,
+		})
+		if err != nil {
+			t.Fatalf("ChooseAction(%q): %v", tt.input, err)
+		}
+		if action != tt.want {
+			t.Fatalf("ChooseAction(%q) = %q, want %q", tt.input, action, tt.want)
+		}
 	}
 }
 
@@ -12159,18 +12284,18 @@ func TestHuhInitMenuPrompterDefaultStartsAtTopWhenProfileIsActive(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ChooseAction: %v", err)
 	}
-	if action != initMenuActionLLMRuntimes {
-		t.Fatalf("action = %q, want LLM runtimes as first active-workspace configuration item", action)
+	if action != initMenuActionSecretsManagement {
+		t.Fatalf("action = %q, want secrets management as first active-workspace configuration item", action)
 	}
 }
 
-func TestInitMenuInitialActionFallsBackToReviewerWhenLLMDisabled(t *testing.T) {
+func TestInitMenuInitialActionStartsAtSecretsManagementWhenWorkspaceIsActive(t *testing.T) {
 	action := initMenuInitialAction(initMenuPrompt{
 		HasWorkspace:         true,
 		CanConfigureReviewer: true,
 	})
-	if action != initMenuActionReviewerEntities {
-		t.Fatalf("action = %q, want reviewer entities when LLM runtimes are disabled", action)
+	if action != initMenuActionSecretsManagement {
+		t.Fatalf("action = %q, want secrets management when workspace is active", action)
 	}
 }
 
@@ -12227,7 +12352,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *te
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"1", // Configure LLM runtimes (disabled)
+			"2", // Configure LLM runtimes (disabled)
 			"7", // Discard staged changes and exit
 			"",
 		}, "\n")),
@@ -12250,7 +12375,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledReviewerUntilProfileExists(
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Configure reviewer entities (disabled)
+			"3", // Configure reviewer entities (disabled)
 			"7", // Discard staged changes and exit
 			"",
 		}, "\n")),
@@ -12265,36 +12390,6 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledReviewerUntilProfileExists(
 	}
 	if !strings.Contains(stderr.String(), "configure a review profile before editing reviewer entities") {
 		t.Fatalf("stderr = %q, want disabled-reviewer validation message", stderr.String())
-	}
-}
-
-func TestHuhInitMenuPrompterAccessibleSelectsReviewProfiles(t *testing.T) {
-	t.Setenv("TERM", "dumb")
-	var stderr bytes.Buffer
-	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("3\n"),
-		stderr: &stderr,
-	}
-	action, err := prompter.ChooseAction(initMenuPrompt{
-		HasWorkspace:         true,
-		LLMRuntimeCount:      2,
-		ReviewerEntityCount:  3,
-		ReviewProfileCount:   1,
-		CanConfigureLLM:      true,
-		CanConfigureReviewer: true,
-		CanSave:              true,
-	})
-	if err != nil {
-		t.Fatalf("ChooseAction: %v", err)
-	}
-	if action != initMenuActionReviewProfiles {
-		t.Fatalf("action = %q, want review profiles", action)
-	}
-	if !strings.Contains(stderr.String(), "Configure review profiles (1)") {
-		t.Fatalf("stderr = %q, want review profile menu entry", stderr.String())
-	}
-	if strings.Contains(stderr.String(), "Configure review profiles v2") {
-		t.Fatalf("stderr = %q, want temporary v2 menu entry removed", stderr.String())
 	}
 }
 

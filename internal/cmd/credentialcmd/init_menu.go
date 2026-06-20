@@ -1,0 +1,230 @@
+package credentialcmd
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/term"
+)
+
+type initMenuItem struct {
+	Action      initMenuAction
+	Title       string
+	Description string
+	Disabled    string
+}
+
+type initMenuModel struct {
+	items    []initMenuItem
+	selected int
+	desc     string
+	err      string
+	result   initMenuAction
+	quitting bool
+}
+
+func runInitMenu(prompt initMenuPrompt, stdin io.Reader, stderr io.Writer) (initMenuAction, error) {
+	model := newInitMenuModel(prompt)
+	program := tea.NewProgram(model, tea.WithInput(stdin), tea.WithOutput(stderr))
+	finalModel, err := program.Run()
+	if err != nil {
+		return "", err
+	}
+	resultModel, ok := finalModel.(initMenuModel)
+	if !ok || resultModel.result == "" {
+		return "", errInitNavigateBack
+	}
+	return resultModel.result, nil
+}
+
+func initMenuUseAccessibleFallback(stdin io.Reader, stderr io.Writer) bool {
+	if strings.EqualFold(os.Getenv("TERM"), "dumb") {
+		return true
+	}
+	stdinFile, ok := stdin.(*os.File)
+	if !ok {
+		return true
+	}
+	stderrFile, ok := stderr.(*os.File)
+	if !ok {
+		return true
+	}
+	return !term.IsTerminal(int(stdinFile.Fd())) || !term.IsTerminal(int(stderrFile.Fd()))
+}
+
+func newInitMenuModel(prompt initMenuPrompt) initMenuModel {
+	items := initMenuItems(prompt)
+	selected := initMenuSelectedIndex(items, initMenuInitialAction(prompt))
+	return initMenuModel{
+		items:    items,
+		selected: selected,
+		desc:     initMenuDescription(prompt),
+	}
+}
+
+func initMenuSelectedIndex(items []initMenuItem, action initMenuAction) int {
+	for index, item := range items {
+		if item.Action == action {
+			return index
+		}
+	}
+	return 0
+}
+
+func initMenuItems(prompt initMenuPrompt) []initMenuItem {
+	items := []initMenuItem{
+		{
+			Action:      initMenuActionSecretsManagement,
+			Title:       "Configure secrets management",
+			Description: "Credential-store profiles and default destination",
+		},
+		{
+			Action:      initMenuActionLLMRuntimes,
+			Title:       "Configure LLM runtimes",
+			Description: initMenuCountDescription(prompt.LLMRuntimeCount, "runtime", "runtimes"),
+		},
+		{
+			Action:      initMenuActionReviewerEntities,
+			Title:       "Configure reviewer entities",
+			Description: initMenuCountDescription(prompt.ReviewerEntityCount, "reviewer entity", "reviewer entities"),
+		},
+		{
+			Action:      initMenuActionReviewProfiles,
+			Title:       "Configure review profiles",
+			Description: initMenuCountDescription(prompt.ReviewProfileCount, "profile", "profiles"),
+		},
+		{
+			Action:      initMenuActionGlobalSettings,
+			Title:       "Configure global settings",
+			Description: "Data retention and global defaults",
+		},
+		{
+			Action:      initMenuActionSave,
+			Title:       "Commit staged changes and exit",
+			Description: "Write staged config and credential changes",
+		},
+		{
+			Action:      initMenuActionExit,
+			Title:       "Discard staged changes and exit",
+			Description: "Leave without writing staged changes",
+		},
+	}
+	for index := range items {
+		items[index].Disabled = initMenuDisabledReason(prompt, items[index].Action)
+		if items[index].Disabled != "" {
+			items[index].Description = "Unavailable: " + items[index].Disabled
+		}
+	}
+	return items
+}
+
+func initMenuCountDescription(count int, singular, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s configured", singular)
+	}
+	return fmt.Sprintf("%d %s configured", count, plural)
+}
+
+func initMenuDisabledReason(prompt initMenuPrompt, action initMenuAction) string {
+	switch action {
+	case initMenuActionLLMRuntimes:
+		if !prompt.CanConfigureLLM {
+			return "configure a review profile before editing LLM runtimes"
+		}
+	case initMenuActionReviewerEntities:
+		if !prompt.CanConfigureReviewer {
+			return "configure a review profile before editing reviewer entities"
+		}
+	case initMenuActionSave:
+		if !prompt.CanSave {
+			return "configure a review profile before committing changes"
+		}
+	case initMenuActionSecretsManagement, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+	}
+	return ""
+}
+
+func (m initMenuModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m initMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch keyMsg.String() {
+	case "ctrl+c", "q", "esc":
+		m.result = initMenuActionExit
+		m.quitting = true
+		return m, tea.Quit
+	case "up", "k", "shift+tab":
+		m.move(-1)
+	case "down", "j", "tab":
+		m.move(1)
+	case "enter":
+		if len(m.items) == 0 {
+			return m, nil
+		}
+		item := m.items[m.selected]
+		if item.Disabled != "" {
+			m.err = item.Disabled
+			return m, nil
+		}
+		m.result = item.Action
+		m.quitting = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m *initMenuModel) move(delta int) {
+	if len(m.items) == 0 {
+		return
+	}
+	m.err = ""
+	m.selected = (m.selected + delta + len(m.items)) % len(m.items)
+}
+
+func (m initMenuModel) View() string {
+	if m.quitting {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, initLinearTheme.title.Render("cr init"))
+	if strings.TrimSpace(m.desc) != "" {
+		lines = append(lines, initLinearTheme.help.Render(m.desc))
+	}
+	lines = append(lines, "")
+	for index, item := range m.items {
+		lines = append(lines, m.renderItem(index, item)...)
+	}
+	if strings.TrimSpace(m.err) != "" {
+		lines = append(lines, "", initLinearTheme.error.Render("! "+m.err))
+	}
+	lines = append(lines, "", initLinearTheme.help.Render("up/k previous - down/j next - enter select - q discard"))
+	return strings.Join(lines, "\n")
+}
+
+func (m initMenuModel) renderItem(index int, item initMenuItem) []string {
+	selected := index == m.selected
+	titleStyle := lipgloss.NewStyle()
+	if item.Disabled != "" {
+		titleStyle = initLinearTheme.help
+	}
+	if selected {
+		titleStyle = initLinearTheme.selected
+	}
+	caret := " "
+	if selected {
+		caret = initLinearTheme.caret.Render(">")
+	}
+	return []string{
+		fmt.Sprintf("%s %s", caret, titleStyle.Render(item.Title)),
+		"  " + initLinearTheme.help.Render(item.Description),
+	}
+}
