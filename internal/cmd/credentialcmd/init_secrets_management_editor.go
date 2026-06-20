@@ -29,6 +29,7 @@ const (
 	initSecretsManagementFieldServiceTokenEnv   initLinearFieldID = "secrets_management_1password_service_token_env"
 	initSecretsManagementFieldDesktopAccountID  initLinearFieldID = "secrets_management_1password_desktop_account_id"
 	initSecretsManagementFieldAction            initLinearFieldID = "secrets_management_action"
+	initSecretsManagementSectionBuiltIn         initLinearFieldID = "secrets_management_section_builtin"
 	initSecretsManagementSectionProfile         initLinearFieldID = "secrets_management_section_profile"
 	initSecretsManagementSectionOnePassword     initLinearFieldID = "secrets_management_section_1password"
 	initSecretsManagementSectionConnect         initLinearFieldID = "secrets_management_section_connect"
@@ -142,8 +143,9 @@ func initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg config.Fi
 	selectedTarget := normalizeInitStringSelectionValue("", targetOptions)
 	var document initLinearDocument
 	document.addSection("Secrets storage", initSecretsManagementInventoryDescription())
-	document.addEditableSelect(initSecretsManagementFieldTarget, "Credential store", "", targetOptions, selectedTarget)
-	document.addSectionField(initSecretsManagementSectionProfile, "Credential store", "Configured credential stores are reusable destinations for secrets.")
+	document.addSectionField(initSecretsManagementSectionBuiltIn, "Built in", initSecretsManagementBuiltInSectionDescription())
+	document.addEditableSelect(initSecretsManagementFieldTarget, "Actions", "Configure a new credential store or edit a configured store.", targetOptions, selectedTarget)
+	document.addSectionField(initSecretsManagementSectionProfile, "Credential store details", "Configured credential stores are reusable destinations for secrets.")
 	document.addEditableInput(
 		initSecretsManagementFieldLabel,
 		"Credential store name",
@@ -229,7 +231,7 @@ func initSecretsManagementTargetOptions(cfg config.File, pendingDeletes map[stri
 	options := make([]huh.Option[string], 0, len(rows)+len(pendingDeletes))
 	commandOptions := make([]huh.Option[string], 0, len(rows))
 	for _, row := range rows {
-		if row.ID == initBackSelection || !row.Selectable {
+		if row.ID == initBackSelection || row.ID == config.LocalOSCredentialStoreID || !row.Selectable {
 			continue
 		}
 		option := huh.NewOption(row.Title, row.ID)
@@ -246,6 +248,14 @@ func initSecretsManagementTargetOptions(cfg config.File, pendingDeletes map[stri
 		options = append(options, huh.NewOption(initPendingDeleteLabel(initSecretsProfilePendingDeleteTitle(id, pending.Profile)), initSecretsManagementRestoreSelectionPrefix+id))
 	}
 	return dedupeInitStringOptions(options)
+}
+
+func initSecretsManagementBuiltInSectionDescription() string {
+	description := strings.TrimSpace(initBuiltInOSCredentialStoreDescription())
+	if description == "" {
+		return fmt.Sprintf("%s\nThis built-in credential store is always available and cannot be deleted.", initBuiltInOSCredentialStoreTitle())
+	}
+	return fmt.Sprintf("%s        %s\nThis built-in credential store is always available and cannot be deleted.", initBuiltInOSCredentialStoreTitle(), description)
 }
 
 func orderedInitSecretsManagementPendingDeleteIDs(pendingDeletes map[string]initPendingSecretsManagementDelete, pendingDeleteOrder []string) []string {

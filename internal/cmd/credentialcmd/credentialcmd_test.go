@@ -11183,22 +11183,26 @@ func TestInitSecretsManagementLinearEditorShowsBuiltInOSStoreReadOnly(t *testing
 	out := model.layout.Content
 	for _, want := range []string{
 		"Secrets storage",
-		"Credential store",
+		"Built in",
 		initBuiltInOSCredentialStoreTitle(),
 		initBuiltInOSCredentialStoreDescription(),
 		"built-in credential store is always available and cannot be deleted",
+		"Actions",
+		"Configure new encrypted file profile",
 		"Back without staging",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("initial linear editor output missing %q:\n%s", want, out)
 		}
 	}
+	if strings.Contains(out, "[x] "+initBuiltInOSCredentialStoreTitle()) || strings.Contains(out, "[ ] "+initBuiltInOSCredentialStoreTitle()) {
+		t.Fatalf("built-in OS store rendered as selectable checkbox row:\n%s", out)
+	}
 	for _, stale := range []string{
 		"Fallback credential store",
 		"Default credential store",
 		"Default secrets-storage profile",
 		"secrets-storage profile",
-		"Stage secrets-storage settings",
 	} {
 		if strings.Contains(out, stale) {
 			t.Fatalf("initial linear editor output contains stale copy %q:\n%s", stale, out)
@@ -11325,6 +11329,15 @@ func TestInitSecretsManagementTargetOptionsMovesPendingDeletesToBottomInDeletion
 	}
 	if len(values) < len(wantSuffix) || !reflect.DeepEqual(values[len(values)-len(wantSuffix):], wantSuffix) {
 		t.Fatalf("target option values = %#v, want pending deletes last in staging order %#v", values, wantSuffix)
+	}
+}
+
+func TestInitSecretsManagementTargetOptionsExcludeBuiltInOSStore(t *testing.T) {
+	options := initSecretsManagementTargetOptions(config.File{}, nil, nil)
+	for _, option := range options {
+		if option.Value == config.LocalOSCredentialStoreID {
+			t.Fatalf("target options include built-in OS store as selectable row: %#v", options)
+		}
 	}
 }
 
