@@ -177,6 +177,18 @@ func (a initOnePasswordDiscoveredAccount) DisplayName() string {
 	return ""
 }
 
+func (a initOnePasswordDiscoveredAccount) Label() string {
+	name := strings.TrimSpace(a.Name)
+	url := strings.TrimSpace(a.URL)
+	if name != "" && url != "" && name != url {
+		return fmt.Sprintf("%s (%s)", name, url)
+	}
+	if name != "" {
+		return name
+	}
+	return a.DisplayName()
+}
+
 func (v initOnePasswordDiscoveredVault) DisplayName() string {
 	for _, value := range []string{v.Name, v.ID} {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -193,6 +205,81 @@ func (d initOnePasswordDesktopDiscovery) HasVaultChoices() bool {
 		}
 	}
 	return false
+}
+
+func (d initOnePasswordDesktopDiscovery) AccountChoiceCount() int {
+	count := 0
+	for _, account := range d.Accounts {
+		if len(account.Vaults) > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func (d initOnePasswordDesktopDiscovery) AccountOptions() []huh.Option[string] {
+	if !d.HasVaultChoices() {
+		return []huh.Option[string]{huh.NewOption("Enter account and vault manually", initOnePasswordManualSelection)}
+	}
+	options := []huh.Option[string]{}
+	for accountIndex, account := range d.Accounts {
+		if len(account.Vaults) == 0 {
+			continue
+		}
+		label := account.Label()
+		if label == "" {
+			continue
+		}
+		options = append(options, huh.NewOption(label, initOnePasswordDesktopAccountSelectionValue(accountIndex)))
+	}
+	if len(options) != 1 {
+		options = append(options, huh.NewOption("Enter account and vault manually", initOnePasswordManualSelection))
+	}
+	return options
+}
+
+func (d initOnePasswordDesktopDiscovery) LinearAccountOptions(selected string) []initLinearOption {
+	selected = d.normalizeAccountSelection(selected)
+	options := initLinearOptionsFromHuh(d.AccountOptions(), selected)
+	if len(options) == 0 {
+		return []initLinearOption{{
+			Label:    "Enter account and vault manually",
+			Value:    initOnePasswordManualSelection,
+			Selected: true,
+		}}
+	}
+	return options
+}
+
+func (d initOnePasswordDesktopDiscovery) VaultOptions(accountSelection string) []huh.Option[string] {
+	account, ok := d.Account(accountSelection)
+	if !ok || len(account.Vaults) == 0 {
+		return []huh.Option[string]{huh.NewOption("Enter vault manually", initOnePasswordManualSelection)}
+	}
+	options := []huh.Option[string]{}
+	for vaultIndex, vault := range account.Vaults {
+		label := vault.DisplayName()
+		if label == "" {
+			continue
+		}
+		options = append(options, huh.NewOption(label, initOnePasswordDesktopVaultSelectionValue(vaultIndex)))
+	}
+	options = append(options, huh.NewOption("Enter vault manually", initOnePasswordManualSelection))
+	return options
+}
+
+func (d initOnePasswordDesktopDiscovery) LinearVaultOptions(accountSelection, selected string) []initLinearOption {
+	accountSelection = d.normalizeAccountSelection(accountSelection)
+	selected = d.normalizeVaultSelection(accountSelection, selected)
+	options := initLinearOptionsFromHuh(d.VaultOptions(accountSelection), selected)
+	if len(options) == 0 {
+		return []initLinearOption{{
+			Label:    "Enter vault manually",
+			Value:    initOnePasswordManualSelection,
+			Selected: true,
+		}}
+	}
+	return options
 }
 
 func (d initOnePasswordDesktopDiscovery) Options() []huh.Option[string] {
@@ -222,6 +309,49 @@ func (d initOnePasswordDesktopDiscovery) LinearOptions(selected string) []initLi
 	return initLinearOptionsFromHuh(d.Options(), selected)
 }
 
+func (d initOnePasswordDesktopDiscovery) Account(value string) (initOnePasswordDiscoveredAccount, bool) {
+	accountIndex, ok := parseInitOnePasswordDesktopAccountSelectionValue(value)
+	if !ok || accountIndex < 0 || accountIndex >= len(d.Accounts) {
+		return initOnePasswordDiscoveredAccount{}, false
+	}
+	account := d.Accounts[accountIndex]
+	if len(account.Vaults) == 0 {
+		return initOnePasswordDiscoveredAccount{}, false
+	}
+	return account, true
+}
+
+func (d initOnePasswordDesktopDiscovery) AccountVaultSelection(accountSelection, vaultSelection string) (initOnePasswordDesktopSelection, bool) {
+	accountIndex, ok := parseInitOnePasswordDesktopAccountSelectionValue(accountSelection)
+	if !ok || accountIndex < 0 || accountIndex >= len(d.Accounts) {
+		return initOnePasswordDesktopSelection{}, false
+	}
+	account := d.Accounts[accountIndex]
+	vaultIndex, ok := parseInitOnePasswordDesktopVaultSelectionValue(vaultSelection)
+	if !ok || vaultIndex < 0 || vaultIndex >= len(account.Vaults) {
+		return initOnePasswordDesktopSelection{}, false
+	}
+	vault := account.Vaults[vaultIndex]
+	return initOnePasswordDesktopSelection{
+		AccountID:  account.ID,
+		AccountURL: account.URL,
+		VaultID:    vault.ID,
+		VaultName:  vault.Name,
+	}, true
+}
+
+func (d initOnePasswordDesktopDiscovery) AccountSelection(accountSelection string) (initOnePasswordDesktopSelection, bool) {
+	accountIndex, ok := parseInitOnePasswordDesktopAccountSelectionValue(accountSelection)
+	if !ok || accountIndex < 0 || accountIndex >= len(d.Accounts) {
+		return initOnePasswordDesktopSelection{}, false
+	}
+	account := d.Accounts[accountIndex]
+	return initOnePasswordDesktopSelection{
+		AccountID:  account.ID,
+		AccountURL: account.URL,
+	}, true
+}
+
 func (d initOnePasswordDesktopDiscovery) Selection(value string) (initOnePasswordDesktopSelection, bool) {
 	accountIndex, vaultIndex, ok := parseInitOnePasswordDesktopSelectionValue(value)
 	if !ok || accountIndex < 0 || accountIndex >= len(d.Accounts) {
@@ -238,6 +368,51 @@ func (d initOnePasswordDesktopDiscovery) Selection(value string) (initOnePasswor
 		VaultID:    vault.ID,
 		VaultName:  vault.Name,
 	}, true
+}
+
+func (d initOnePasswordDesktopDiscovery) AccountSelectionFor(accountID, accountURL string) string {
+	accountID = strings.TrimSpace(accountID)
+	accountURL = strings.TrimSpace(accountURL)
+	for accountIndex, account := range d.Accounts {
+		if len(account.Vaults) == 0 {
+			continue
+		}
+		if accountID != "" && account.ID == accountID {
+			return initOnePasswordDesktopAccountSelectionValue(accountIndex)
+		}
+		if accountURL != "" && account.URL == accountURL {
+			return initOnePasswordDesktopAccountSelectionValue(accountIndex)
+		}
+	}
+	if accountID == "" && accountURL == "" {
+		for accountIndex, account := range d.Accounts {
+			if len(account.Vaults) > 0 {
+				return initOnePasswordDesktopAccountSelectionValue(accountIndex)
+			}
+		}
+	}
+	return initOnePasswordManualSelection
+}
+
+func (d initOnePasswordDesktopDiscovery) VaultSelectionFor(accountSelection, vaultID, vaultName string) string {
+	account, ok := d.Account(accountSelection)
+	if !ok {
+		return initOnePasswordManualSelection
+	}
+	vaultID = strings.TrimSpace(vaultID)
+	vaultName = strings.TrimSpace(vaultName)
+	for vaultIndex, vault := range account.Vaults {
+		if vaultID != "" && vault.ID == vaultID {
+			return initOnePasswordDesktopVaultSelectionValue(vaultIndex)
+		}
+		if vaultName != "" && vault.Name == vaultName {
+			return initOnePasswordDesktopVaultSelectionValue(vaultIndex)
+		}
+	}
+	if vaultID == "" && vaultName == "" && len(account.Vaults) > 0 {
+		return initOnePasswordDesktopVaultSelectionValue(0)
+	}
+	return initOnePasswordManualSelection
 }
 
 func (d initOnePasswordDesktopDiscovery) SelectionFor(accountID, accountURL, vaultID, vaultName string) string {
@@ -268,8 +443,58 @@ func (d initOnePasswordDesktopDiscovery) SelectionFor(accountID, accountURL, vau
 	return initOnePasswordManualSelection
 }
 
+func (d initOnePasswordDesktopDiscovery) normalizeAccountSelection(selected string) string {
+	if selected == initOnePasswordManualSelection && d.AccountChoiceCount() != 1 {
+		return selected
+	}
+	if _, ok := d.Account(selected); ok {
+		return selected
+	}
+	return d.AccountSelectionFor("", "")
+}
+
+func (d initOnePasswordDesktopDiscovery) normalizeVaultSelection(accountSelection, selected string) string {
+	if selected == initOnePasswordManualSelection {
+		return selected
+	}
+	if _, ok := d.AccountVaultSelection(accountSelection, selected); ok {
+		return selected
+	}
+	return d.VaultSelectionFor(accountSelection, "", "")
+}
+
 func initOnePasswordDesktopSelectionValue(accountIndex, vaultIndex int) string {
 	return strconv.Itoa(accountIndex) + ":" + strconv.Itoa(vaultIndex)
+}
+
+func initOnePasswordDesktopAccountSelectionValue(accountIndex int) string {
+	return strconv.Itoa(accountIndex)
+}
+
+func initOnePasswordDesktopVaultSelectionValue(vaultIndex int) string {
+	return strconv.Itoa(vaultIndex)
+}
+
+func parseInitOnePasswordDesktopAccountSelectionValue(value string) (int, bool) {
+	if strings.TrimSpace(value) == "" || value == initOnePasswordManualSelection {
+		return 0, false
+	}
+	accountIndex, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false
+	}
+	return accountIndex, true
+}
+
+func parseInitOnePasswordDesktopVaultSelectionValue(value string) (int, bool) {
+	if strings.TrimSpace(value) == "" || value == initOnePasswordManualSelection {
+		return 0, false
+	}
+	vaultIndex, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false
+	}
+	return vaultIndex, true
 }
 
 func parseInitOnePasswordDesktopSelectionValue(value string) (int, int, bool) {

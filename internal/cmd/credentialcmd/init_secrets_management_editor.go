@@ -22,7 +22,8 @@ const (
 	initSecretsManagementFieldBackend           initLinearFieldID = "secrets_management_backend"
 	initSecretsManagementFieldVaultID           initLinearFieldID = "secrets_management_1password_vault_id"
 	initSecretsManagementFieldTimeout           initLinearFieldID = "secrets_management_1password_timeout"
-	initSecretsManagementFieldDesktopSelection  initLinearFieldID = "secrets_management_1password_desktop_selection"
+	initSecretsManagementFieldDesktopAccount    initLinearFieldID = "secrets_management_1password_desktop_account"
+	initSecretsManagementFieldDesktopVault      initLinearFieldID = "secrets_management_1password_desktop_vault"
 	initSecretsManagementFieldDesktopAccountURL initLinearFieldID = "secrets_management_1password_desktop_account_url"
 	initSecretsManagementFieldConnectHost       initLinearFieldID = "secrets_management_1password_connect_host"
 	initSecretsManagementFieldConnectTokenEnv   initLinearFieldID = "secrets_management_1password_connect_token_env"
@@ -156,7 +157,8 @@ func initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg config.Fi
 	document.addEditableSelect(initSecretsManagementFieldBackend, "Credential store backend", "", initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile)), string(credstore.BackendFile))
 	document.addSectionField(initSecretsManagementSectionOnePassword, "1Password details", "These are non-secret 1Password settings. Tokens are referenced by environment variable name, not collected here.")
 	document.addSectionField(initSecretsManagementSectionDesktop, "1Password desktop", "Desktop app account and vault routing.")
-	document.addEditableSelect(initSecretsManagementFieldDesktopSelection, "1Password account and vault", "Discovered from the local 1Password desktop app. Choose manual entry if this list is incomplete.", desktopDiscovery.Options(), initOnePasswordManualSelection)
+	document.addEditableSelect(initSecretsManagementFieldDesktopAccount, "1Password account", "Discovered from the local 1Password desktop app.", desktopDiscovery.AccountOptions(), initOnePasswordManualSelection)
+	document.addEditableSelect(initSecretsManagementFieldDesktopVault, "1Password vault", "Vaults available in the selected 1Password account. Choose manual entry if this list is incomplete.", desktopDiscovery.VaultOptions(initOnePasswordManualSelection), initOnePasswordManualSelection)
 	document.addEditableInput(initSecretsManagementFieldDesktopAccountURL, "1Password account URL", "Account sign-in address such as signalft.1password.com. Required only when desktop discovery is unavailable or manual entry is selected.", "", validateOptionalDisplayName)
 	document.addEditableInput(initSecretsManagementFieldDesktopAccountID, "1Password account id (advanced)", "Advanced. Optional account id when you need to pin this profile to one signed-in 1Password desktop account.", "", validateOptionalDisplayName)
 	document.addEditableInput(initSecretsManagementFieldVaultID, "1Password vault name or id", "Required for every 1Password-backed credential store. Enter a vault name such as Personal, Employee, or My Vault, or enter a stable vault ID.", "", nil)
@@ -181,7 +183,7 @@ func initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg config.Fi
 				initSecretsManagementSyncLinearFields(model, cfg, pendingDeletes, pendingDeleteOrder, desktopDiscovery, true)
 				return
 			}
-			if id == initSecretsManagementFieldBackend || id == initSecretsManagementFieldDesktopSelection {
+			if id == initSecretsManagementFieldBackend || id == initSecretsManagementFieldDesktopAccount || id == initSecretsManagementFieldDesktopVault {
 				initSecretsManagementSyncLinearFields(model, cfg, pendingDeletes, pendingDeleteOrder, desktopDiscovery, false)
 			}
 		},
@@ -379,13 +381,9 @@ func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg con
 			accountID = onePassword.DesktopAccountID
 		}
 		model.setFieldValue(initSecretsManagementFieldDesktopAccountID, accountID)
-		desktopSelection := desktopDiscovery.SelectionFor(accountID, onePassword.AccountURL, onePassword.VaultID, onePassword.VaultName)
-		if desktopSelection == initOnePasswordManualSelection && state.Creating && accountID == "" && onePassword.AccountURL == "" && onePassword.VaultID == "" && onePassword.VaultName == "" {
-			if options := desktopDiscovery.Options(); len(options) > 0 {
-				desktopSelection = options[0].Value
-			}
-		}
-		initSecretsManagementSetDesktopDiscoveryOptions(model, desktopDiscovery, desktopSelection)
+		accountSelection := desktopDiscovery.AccountSelectionFor(accountID, onePassword.AccountURL)
+		vaultSelection := desktopDiscovery.VaultSelectionFor(accountSelection, onePassword.VaultID, onePassword.VaultName)
+		initSecretsManagementSetDesktopDiscoveryOptions(model, desktopDiscovery, accountSelection, vaultSelection)
 		model.setFieldValue(initSecretsManagementFieldConnectHost, onePassword.ConnectHost)
 		model.setFieldValue(initSecretsManagementFieldConnectTokenEnv, onePassword.ConnectTokenEnv)
 		model.setFieldValue(initSecretsManagementFieldServiceTokenEnv, onePassword.ServiceTokenEnv)
@@ -403,16 +401,23 @@ func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg con
 	opDesktop := kind == config.SecretsBackendKind(credstore.BackendOPDesktop)
 	initSecretsManagementSetOnePasswordHidden(model, !onePassword, !opConnect, !opService, !opDesktop)
 	if opDesktop {
-		initSecretsManagementSetDesktopDiscoveryOptions(model, desktopDiscovery, model.document.selectedValue(initSecretsManagementFieldDesktopSelection))
+		initSecretsManagementSetDesktopDiscoveryOptions(model, desktopDiscovery, model.document.selectedValue(initSecretsManagementFieldDesktopAccount), model.document.selectedValue(initSecretsManagementFieldDesktopVault))
 	}
 	model.setFieldHidden(initSecretsManagementFieldTimeout, !opService && !opDesktop)
 	discoveredDesktop := opDesktop && desktopDiscovery.HasVaultChoices()
-	manualDesktop := opDesktop && (!discoveredDesktop || model.document.selectedValue(initSecretsManagementFieldDesktopSelection) == initOnePasswordManualSelection)
-	model.setFieldHidden(initSecretsManagementFieldDesktopSelection, !discoveredDesktop)
-	model.setFieldHidden(initSecretsManagementFieldDesktopAccountURL, !manualDesktop)
-	model.setFieldHidden(initSecretsManagementFieldDesktopAccountID, !manualDesktop)
-	model.setFieldHidden(initSecretsManagementFieldVaultID, !onePassword || (discoveredDesktop && !manualDesktop))
+	accountSelection := model.document.selectedValue(initSecretsManagementFieldDesktopAccount)
+	vaultSelection := model.document.selectedValue(initSecretsManagementFieldDesktopVault)
+	manualAccount := opDesktop && (!discoveredDesktop || accountSelection == initOnePasswordManualSelection)
+	manualVault := manualAccount || vaultSelection == initOnePasswordManualSelection
+	model.setFieldHidden(initSecretsManagementFieldDesktopAccount, !discoveredDesktop || desktopDiscovery.AccountChoiceCount() <= 1)
+	model.setFieldHidden(initSecretsManagementFieldDesktopVault, !discoveredDesktop || manualAccount)
+	model.setFieldHidden(initSecretsManagementFieldDesktopAccountURL, !manualAccount)
+	model.setFieldHidden(initSecretsManagementFieldDesktopAccountID, !manualAccount)
+	model.setFieldHidden(initSecretsManagementFieldVaultID, !onePassword || (discoveredDesktop && !manualVault))
 	model.setFieldHidden(initSecretsManagementSectionDesktop, !opDesktop)
+	if opDesktop {
+		model.setFieldDescription(initSecretsManagementSectionDesktop, initSecretsManagementDesktopSectionDescription(desktopDiscovery, accountSelection))
+	}
 }
 
 func initSecretsManagementSetTargetOptions(model *initLinearEditorModel, cfg config.File, pendingDeletes map[string]initPendingSecretsManagementDelete, pendingDeleteOrder []string, selected string) {
@@ -454,22 +459,25 @@ func initSecretsManagementSetBackendOptions(model *initLinearEditorModel, curren
 	model.document[index].Options = initLinearOptionsFromHuh(initSecretsProfileBackendOptions(current), selected)
 }
 
-func initSecretsManagementSetDesktopDiscoveryOptions(model *initLinearEditorModel, discovery initOnePasswordDesktopDiscovery, selected string) {
-	index := model.document.fieldIndexByID(initSecretsManagementFieldDesktopSelection)
-	if index < 0 {
-		return
+func initSecretsManagementSetDesktopDiscoveryOptions(model *initLinearEditorModel, discovery initOnePasswordDesktopDiscovery, accountSelection, vaultSelection string) {
+	accountIndex := model.document.fieldIndexByID(initSecretsManagementFieldDesktopAccount)
+	if accountIndex >= 0 {
+		model.document[accountIndex].Options = discovery.LinearAccountOptions(accountSelection)
+		accountSelection = model.document.selectedValue(initSecretsManagementFieldDesktopAccount)
 	}
-	if strings.TrimSpace(selected) == "" {
-		selected = initOnePasswordManualSelection
+	vaultIndex := model.document.fieldIndexByID(initSecretsManagementFieldDesktopVault)
+	if vaultIndex >= 0 {
+		model.document[vaultIndex].Options = discovery.LinearVaultOptions(accountSelection, vaultSelection)
 	}
-	model.document[index].Options = discovery.LinearOptions(selected)
-	if len(model.document[index].Options) == 0 {
-		model.document[index].Options = []initLinearOption{{
-			Label:    "Enter account and vault manually",
-			Value:    initOnePasswordManualSelection,
-			Selected: true,
-		}}
+}
+
+func initSecretsManagementDesktopSectionDescription(discovery initOnePasswordDesktopDiscovery, accountSelection string) string {
+	if discovery.HasVaultChoices() && discovery.AccountChoiceCount() == 1 {
+		if account, ok := discovery.Account(accountSelection); ok {
+			return fmt.Sprintf("Account: %s (only discovered account). Choose a vault below.", account.Label())
+		}
 	}
+	return "Desktop app account and vault routing."
 }
 
 func initSecretsManagementSetActionOptions(model *initLinearEditorModel, allowEdit bool) {
@@ -570,7 +578,8 @@ func initSecretsManagementSetOnePasswordHidden(model *initLinearEditorModel, hid
 	model.setFieldHidden(initSecretsManagementSectionServiceAccount, hideOnePassword || hideService)
 	model.setFieldHidden(initSecretsManagementFieldServiceTokenEnv, hideOnePassword || hideService)
 	model.setFieldHidden(initSecretsManagementSectionDesktop, hideOnePassword || hideDesktop)
-	model.setFieldHidden(initSecretsManagementFieldDesktopSelection, hideOnePassword || hideDesktop)
+	model.setFieldHidden(initSecretsManagementFieldDesktopAccount, hideOnePassword || hideDesktop)
+	model.setFieldHidden(initSecretsManagementFieldDesktopVault, hideOnePassword || hideDesktop)
 	model.setFieldHidden(initSecretsManagementFieldDesktopAccountURL, hideOnePassword || hideDesktop)
 	model.setFieldHidden(initSecretsManagementFieldDesktopAccountID, hideOnePassword || hideDesktop)
 	model.setFieldHidden(initSecretsManagementFieldTimeout, hideOnePassword)
@@ -651,17 +660,26 @@ func initSecretsManagementProfileEditFromDocument(state initSecretsManagementSel
 	vaultName := ""
 	accountID := document.fieldValue(initSecretsManagementFieldDesktopAccountID)
 	accountURL := document.fieldValue(initSecretsManagementFieldDesktopAccountURL)
-	if kind == config.SecretsBackendKind(credstore.BackendOPDesktop) && desktopDiscovery.HasVaultChoices() && document.selectedValue(initSecretsManagementFieldDesktopSelection) != initOnePasswordManualSelection {
-		if selection, ok := desktopDiscovery.Selection(document.selectedValue(initSecretsManagementFieldDesktopSelection)); ok {
+	accountSelection := document.selectedValue(initSecretsManagementFieldDesktopAccount)
+	vaultSelection := document.selectedValue(initSecretsManagementFieldDesktopVault)
+	discoveredDesktop := kind == config.SecretsBackendKind(credstore.BackendOPDesktop) && desktopDiscovery.HasVaultChoices()
+	if discoveredDesktop && accountSelection != initOnePasswordManualSelection {
+		if selection, ok := desktopDiscovery.AccountSelection(accountSelection); ok {
 			accountID = selection.AccountID
 			accountURL = selection.AccountURL
-			vaultValue = selection.VaultID
-			vaultName = selection.VaultName
+		}
+		if vaultSelection != initOnePasswordManualSelection {
+			if selection, ok := desktopDiscovery.AccountVaultSelection(accountSelection, vaultSelection); ok {
+				accountID = selection.AccountID
+				accountURL = selection.AccountURL
+				vaultValue = selection.VaultID
+				vaultName = selection.VaultName
+			}
 		}
 	}
 	if config.IsOnePasswordSecretsBackend(kind) {
 		requiresVault := true
-		if kind == config.SecretsBackendKind(credstore.BackendOPDesktop) && desktopDiscovery.HasVaultChoices() && document.selectedValue(initSecretsManagementFieldDesktopSelection) != initOnePasswordManualSelection {
+		if discoveredDesktop && accountSelection != initOnePasswordManualSelection && vaultSelection != initOnePasswordManualSelection {
 			requiresVault = false
 		}
 		if err := validateInitSecretsRequiredSingleLine(vaultValue, requiresVault, "1Password vault name or id"); err != nil {

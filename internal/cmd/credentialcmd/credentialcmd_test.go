@@ -11666,8 +11666,9 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
 	out := model.layout.Content
 	for _, want := range []string{
-		"1Password account and vault",
-		"Employee (signalft.1password.com)",
+		"Account: signalft.1password.com (only discovered account). Choose a vault below.",
+		"1Password vault",
+		"Employee",
 		"1Password request timeout",
 	} {
 		if !strings.Contains(out, want) {
@@ -11695,6 +11696,159 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 	got := profile.Backend.OnePassword
 	if got.AccountID != "acct-1" || got.AccountURL != "signalft.1password.com" || got.VaultID != "vault-emp" || got.VaultName != "Employee" {
 		t.Fatalf("saved onepassword config = %#v, want discovered account/vault metadata", got)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountThenVault(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	discovery := initOnePasswordDesktopDiscovery{Accounts: []initOnePasswordDiscoveredAccount{
+		{
+			ID:   "acct-1",
+			Name: "SignalFT",
+			URL:  "signalft.1password.com",
+			Vaults: []initOnePasswordDiscoveredVault{{
+				ID:   "vault-emp",
+				Name: "Employee",
+			}},
+		},
+		{
+			ID:   "acct-2",
+			Name: "Personal",
+			URL:  "my.1password.com",
+			Vaults: []initOnePasswordDiscoveredVault{{
+				ID:   "vault-personal",
+				Name: "Personal",
+			}},
+		},
+	}}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	model := newInitLinearEditorModel(editor, 180, 40)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+
+	out := model.layout.Content
+	for _, want := range []string{
+		"1Password account",
+		"SignalFT (signalft.1password.com)",
+		"Personal (my.1password.com)",
+		"1Password vault",
+		"Employee",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("desktop discovery content missing %q:\n%s", want, out)
+		}
+	}
+
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopAccount, initOnePasswordDesktopAccountSelectionValue(1))
+	out = model.layout.Content
+	if !strings.Contains(out, "[x] Personal") {
+		t.Fatalf("vault list did not switch to selected account's vaults:\n%s", out)
+	}
+	if strings.Contains(out, "[x] Employee") {
+		t.Fatalf("vault list still selected first account vault after switching accounts:\n%s", out)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualVaultInSelectedAccount(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	discovery := initOnePasswordDesktopDiscovery{Accounts: []initOnePasswordDiscoveredAccount{{
+		ID:   "acct-1",
+		Name: "SignalFT",
+		URL:  "signalft.1password.com",
+		Vaults: []initOnePasswordDiscoveredVault{{
+			ID:   "vault-emp",
+			Name: "Employee",
+		}},
+	}}}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	model := newInitLinearEditorModel(editor, 180, 40)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopVault, initOnePasswordManualSelection)
+	model.setFieldValue(initSecretsManagementFieldVaultID, "ExternalConfidential")
+
+	edit, err := initSecretsManagementEditFromDocumentWithDiscovery(cfg, model.document, discovery)
+	if err != nil {
+		t.Fatalf("initSecretsManagementEditFromDocumentWithDiscovery: %v", err)
+	}
+	profile := edit.Config.Secrets.Stores["1password"]
+	if profile.Backend.OnePassword == nil {
+		t.Fatal("saved onepassword config = nil")
+	}
+	got := profile.Backend.OnePassword
+	if got.AccountID != "acct-1" || got.AccountURL != "signalft.1password.com" || got.VaultID != "ExternalConfidential" || got.VaultName != "" {
+		t.Fatalf("saved onepassword config = %#v, want selected account and manual vault", got)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualAccount(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	discovery := initOnePasswordDesktopDiscovery{Accounts: []initOnePasswordDiscoveredAccount{
+		{
+			ID:   "acct-1",
+			Name: "SignalFT",
+			URL:  "signalft.1password.com",
+			Vaults: []initOnePasswordDiscoveredVault{{
+				ID:   "vault-emp",
+				Name: "Employee",
+			}},
+		},
+		{
+			ID:   "acct-2",
+			Name: "Personal",
+			URL:  "my.1password.com",
+			Vaults: []initOnePasswordDiscoveredVault{{
+				ID:   "vault-personal",
+				Name: "Personal",
+			}},
+		},
+	}}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	model := newInitLinearEditorModel(editor, 180, 40)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopAccount, initOnePasswordManualSelection)
+	out := model.layout.Content
+	for _, want := range []string{
+		"[x] Enter account and vault manually",
+		"1Password account URL",
+		"1Password account id (advanced)",
+		"1Password vault name or id",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("manual account content missing %q:\n%s", want, out)
+		}
+	}
+	model.setFieldValue(initSecretsManagementFieldDesktopAccountURL, "example.1password.com")
+	model.setFieldValue(initSecretsManagementFieldDesktopAccountID, "acct-manual")
+	model.setFieldValue(initSecretsManagementFieldVaultID, "Engineering")
+
+	edit, err := initSecretsManagementEditFromDocumentWithDiscovery(cfg, model.document, discovery)
+	if err != nil {
+		t.Fatalf("initSecretsManagementEditFromDocumentWithDiscovery: %v", err)
+	}
+	profile := edit.Config.Secrets.Stores["1password"]
+	if profile.Backend.OnePassword == nil {
+		t.Fatal("saved onepassword config = nil")
+	}
+	got := profile.Backend.OnePassword
+	if got.AccountID != "acct-manual" || got.AccountURL != "example.1password.com" || got.VaultID != "Engineering" || got.VaultName != "" {
+		t.Fatalf("saved onepassword config = %#v, want manual account and vault", got)
 	}
 }
 
