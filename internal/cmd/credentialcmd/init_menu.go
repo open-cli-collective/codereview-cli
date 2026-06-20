@@ -187,7 +187,13 @@ func (m *initMenuModel) move(delta int) {
 		return
 	}
 	m.err = ""
-	m.selected = (m.selected + delta + len(m.items)) % len(m.items)
+	for step := 0; step < len(m.items); step++ {
+		next := (m.selected + delta + len(m.items)) % len(m.items)
+		m.selected = next
+		if m.items[next].Disabled == "" {
+			return
+		}
+	}
 }
 
 func (m initMenuModel) View() string {
@@ -216,7 +222,7 @@ func (m initMenuModel) renderItem(index int, item initMenuItem) []string {
 	if item.Disabled != "" {
 		titleStyle = initLinearTheme.help
 	}
-	if selected {
+	if selected && item.Disabled == "" {
 		titleStyle = initLinearTheme.selected
 	}
 	caret := " "

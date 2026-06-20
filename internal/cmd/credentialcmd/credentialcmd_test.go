@@ -12081,6 +12081,26 @@ func TestInitMenuDisabledRowsShowErrorWithoutQuitting(t *testing.T) {
 	}
 }
 
+func TestInitMenuNavigationSkipsDisabledRows(t *testing.T) {
+	model := newInitMenuModel(initMenuPrompt{})
+	if got := model.items[model.selected].Action; got != initMenuActionReviewProfiles {
+		t.Fatalf("initial action = %q, want review profiles", got)
+	}
+
+	model.selected = initMenuSelectedIndex(model.items, initMenuActionSecretsManagement)
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	result := next.(initMenuModel)
+	if got := result.items[result.selected].Action; got != initMenuActionReviewProfiles {
+		t.Fatalf("after down selected action = %q, want review profiles", got)
+	}
+
+	result.selected = initMenuSelectedIndex(result.items, initMenuActionReviewerEntities)
+	out := result.View()
+	if strings.Contains(out, "\x1b[38;5;42mConfigure reviewer entities") {
+		t.Fatalf("disabled selected row rendered with active selected color:\n%s", out)
+	}
+}
+
 func TestInitMenuUseAccessibleFallback(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	if !initMenuUseAccessibleFallback(os.Stdin, os.Stderr) {
