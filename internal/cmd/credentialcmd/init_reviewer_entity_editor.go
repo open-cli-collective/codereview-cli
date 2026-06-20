@@ -178,7 +178,7 @@ func (s reviewerEntityEditorState) editor(ctx initPromptContext) initLinearEdito
 		if locationIndex := document.fieldIndexByID(initReviewerEntityFieldSecretLocation); locationIndex >= 0 {
 			document[locationIndex].AutoManaged = !s.preserveCurrentLocation
 		}
-		status := synthesizeReviewerCredentialStatus(initPromptContext{}, config.CredentialRef{
+		status := synthesizeReviewerCredentialStatus(ctx, config.CredentialRef{
 			Purpose: "reviewer_credentials",
 			Ref:     firstNonEmpty(reviewerSecretLocation, s.standardReviewerRef),
 			Mode:    string(reviewerCredentialAuthModeForKind(s.kind)),
@@ -235,7 +235,7 @@ func (s reviewerEntityEditorState) editor(ctx initPromptContext) initLinearEdito
 			if id == initReviewerEntityFieldLabel ||
 				id == initReviewerEntityFieldSecretLocation ||
 				initReviewerEntityCredentialFieldKey(id) != "" {
-				initReviewerEntityRefreshCredentialStatus(model, initPromptContext{}, s.seed, s)
+				initReviewerEntityRefreshCredentialStatus(model, ctx, s.seed, s)
 			}
 		},
 	}

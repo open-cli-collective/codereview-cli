@@ -5709,7 +5709,6 @@ type initWriteGroup struct {
 	Resolved      credentials.ResolvedSecretsProfile
 	Writes        map[string]map[string]string
 	OverwriteRefs map[string]bool
-	Entries       map[string][]initCredentialPlanEntry
 }
 
 type initReviewerCredentialCleanupGroup struct {
@@ -5724,7 +5723,6 @@ func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string
 		return []initWriteGroup{{
 			Writes:        writes,
 			OverwriteRefs: overwriteRefs,
-			Entries:       map[string][]initCredentialPlanEntry{},
 		}}, nil
 	}
 	groups := map[string]*initWriteGroup{}
@@ -5740,12 +5738,10 @@ func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string
 				Resolved:      entry.SecretsProfile,
 				Writes:        map[string]map[string]string{},
 				OverwriteRefs: map[string]bool{},
-				Entries:       map[string][]initCredentialPlanEntry{},
 			}
 			groups[key] = group
 		}
 		group.Writes[entry.Ref.Ref] = bundle
-		group.Entries[entry.Ref.Ref] = append(group.Entries[entry.Ref.Ref], entry)
 		if overwriteRefs[entry.Ref.Ref] {
 			group.OverwriteRefs[entry.Ref.Ref] = true
 		}
@@ -6632,7 +6628,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 				_ = store.Close()
 				return cmderr.Credential(err)
 			}
-			if _, err := writeBundles(store, group.Writes, false, group.OverwriteRefs, group.Entries); err != nil {
+			if _, err := writeBundles(store, group.Writes, false, group.OverwriteRefs); err != nil {
 				_ = store.Close()
 				return cmderr.Credential(err)
 			}
@@ -6800,10 +6796,7 @@ func applyStaleReviewerCredentialCleanups(opts *root.Options, deps initDeps, bac
 	for _, group := range groups {
 		store, err := openInitStoreForEntry(deps, opts, backendFlagSet, cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
 		if err != nil {
-			if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
-				return cmderr.Config(err)
-			}
-			return cmderr.Credential(err)
+			return cmderr.Credential(fmt.Errorf("init saved config before failing to open credential store for stale reviewer cleanup; stale credential refs needing manual cleanup: %v: %w", sortedCredentialEntryRefs(group.Entries), err))
 		}
 		cleanedRefs, err := deleteStaleReviewerCredentialKeysForRefs(store, group.Entries)
 		if err != nil {
@@ -6901,7 +6894,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 					return cmderr.Credential(err)
 				}
 			}
-			if _, err := writeBundles(groupStore, group.Writes, flags.overwrite, group.OverwriteRefs, group.Entries); err != nil {
+			if _, err := writeBundles(groupStore, group.Writes, flags.overwrite, group.OverwriteRefs); err != nil {
 				return cmderr.Credential(err)
 			}
 			for ref := range group.Writes {
@@ -7267,7 +7260,7 @@ func preflightNoOverwrite(store initStore, writes map[string]map[string]string, 
 	return nil
 }
 
-func writeBundles(store initStore, writes map[string]map[string]string, overwriteAll bool, overwriteRefs map[string]bool, entries map[string][]initCredentialPlanEntry) ([]string, error) {
+func writeBundles(store initStore, writes map[string]map[string]string, overwriteAll bool, overwriteRefs map[string]bool) ([]string, error) {
 	var writtenRefs []string
 	for _, ref := range sortedRefs(writes) {
 		parsed, err := credentials.ParseRef(ref)

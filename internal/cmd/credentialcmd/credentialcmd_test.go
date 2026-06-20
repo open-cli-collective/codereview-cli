@@ -19821,7 +19821,7 @@ func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
 	written, err := writeBundles(store, map[string]map[string]string{
 		"codereview/a": {credentials.GitTokenKey: "new"},
 		"codereview/b": {credentials.GitTokenKey: "conflict"},
-	}, false, nil, nil)
+	}, false, nil)
 	if err == nil {
 		t.Fatal("writeBundles error = nil, want conflict")
 	}
@@ -19845,25 +19845,12 @@ func TestWriteBundlesLeavesStaleReviewerKeysForPostSaveCleanup(t *testing.T) {
 	if _, err := store.SetBundle("work-reviewer", map[string]string{credentials.GitTokenKey: "old-reviewer-pat"}); err != nil {
 		t.Fatalf("seed reviewer PAT bundle: %v", err)
 	}
-	entry := initCredentialPlanEntry{
-		Ref: config.CredentialRef{
-			Purpose: "reviewer_credentials",
-			Ref:     "codereview/work-reviewer",
-			Mode:    string(config.GitAuthModeGitHubApp),
-		},
-		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
-			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
-		},
-	}
-
 	written, err := writeBundles(store, map[string]map[string]string{
 		"codereview/work-reviewer": {
 			credentials.GitHubAppIDKey:         "12345",
 			credentials.GitHubAppPrivateKeyKey: "private-key",
 		},
-	}, false, nil, map[string][]initCredentialPlanEntry{"codereview/work-reviewer": {entry}})
+	}, false, nil)
 	if err != nil {
 		t.Fatalf("writeBundles: %v", err)
 	}
@@ -19890,33 +19877,12 @@ func TestWriteBundlesKeepsStaleReviewerKeysRequiredByAnotherActiveMode(t *testin
 	if _, err := store.SetBundle("shared-reviewer", map[string]string{credentials.GitTokenKey: "existing-pat"}); err != nil {
 		t.Fatalf("seed shared reviewer PAT bundle: %v", err)
 	}
-	patEntry := initCredentialPlanEntry{
-		Ref: config.CredentialRef{
-			Purpose: "reviewer_credentials",
-			Ref:     "codereview/shared-reviewer",
-			Mode:    string(config.GitAuthModePAT),
-		},
-		KeySpecs: []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
-	}
-	appEntry := initCredentialPlanEntry{
-		Ref: config.CredentialRef{
-			Purpose: "reviewer_credentials",
-			Ref:     "codereview/shared-reviewer",
-			Mode:    string(config.GitAuthModeGitHubApp),
-		},
-		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
-			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
-		},
-	}
-
 	if _, err := writeBundles(store, map[string]map[string]string{
 		"codereview/shared-reviewer": {
 			credentials.GitHubAppIDKey:         "12345",
 			credentials.GitHubAppPrivateKeyKey: "private-key",
 		},
-	}, false, nil, map[string][]initCredentialPlanEntry{"codereview/shared-reviewer": {appEntry, patEntry}}); err != nil {
+	}, false, nil); err != nil {
 		t.Fatalf("writeBundles: %v", err)
 	}
 	if ok, err := store.Exists("shared-reviewer", credentials.GitTokenKey); err != nil || !ok {
