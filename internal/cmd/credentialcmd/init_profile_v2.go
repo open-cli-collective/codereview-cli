@@ -418,11 +418,11 @@ const (
 	initProfileV2FieldSelfApprove          initProfileV2FieldID = "self_approve"
 	initProfileV2FieldResolveThreads       initProfileV2FieldID = "resolve_threads"
 	initProfileV2FieldResolveAfter         initProfileV2FieldID = "resolve_after"
-	initProfileV2FieldGitCredentialStore   initProfileV2FieldID = "git_credential_store"
-	initProfileV2FieldGitCredentialName    initProfileV2FieldID = "git_credential_name"
+	initProfileV2FieldGitCredentialStore   initProfileV2FieldID = "git_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldGitCredentialName    initProfileV2FieldID = "git_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
 	initProfileV2FieldLLMCredentialSection initProfileV2FieldID = "llm_credentials_section"
-	initProfileV2FieldLLMCredentialStore   initProfileV2FieldID = "llm_credential_store"
-	initProfileV2FieldLLMCredentialName    initProfileV2FieldID = "llm_credential_name"
+	initProfileV2FieldLLMCredentialStore   initProfileV2FieldID = "llm_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldLLMCredentialName    initProfileV2FieldID = "llm_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
 	initProfileV2FieldProfileAction        initProfileV2FieldID = "profile_action"
 )
 
@@ -818,7 +818,7 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 	return draft, nil
 }
 
-func (m initProfileV2ReadOnlyModel) normalizeStorageLabels(draft *initDraft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime string) error {
+func (m initProfileV2ReadOnlyModel) normalizeStorageLabels(*initDraft, string, string, string) error {
 	return nil
 }
 

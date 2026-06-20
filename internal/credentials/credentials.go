@@ -24,6 +24,7 @@ const (
 	BackendSourceSecretsProfile credstore.Source = "secrets_profile"
 	// BackendSourceCredentialStore records that an explicit credential-store
 	// destination selected the active credential backend.
+	// #nosec G101 -- this is a backend source label, not a secret value.
 	BackendSourceCredentialStore credstore.Source = "credential_store"
 
 	// GitTokenKey stores the Git host access token for PAT auth.
@@ -254,7 +255,7 @@ func StoreOptionsForResolvedProfile(flagValue string, flagSet bool, cfg config.F
 
 // StoreOptionsForResolvedStore builds credstore options for one resolved
 // credential store.
-func StoreOptionsForResolvedStore(flagValue string, flagSet bool, cfg config.File, resolved ResolvedCredentialStore) (credstore.Options, error) {
+func StoreOptionsForResolvedStore(_ string, flagSet bool, cfg config.File, resolved ResolvedCredentialStore) (credstore.Options, error) {
 	if flagSet {
 		return credstore.Options{}, fmt.Errorf("%w: --backend conflicts with credential store %q", config.ErrInvalid, resolved.DisplayName())
 	}
@@ -297,7 +298,7 @@ func OpenResolvedStore(flagValue string, flagSet bool, cfg config.File, resolved
 }
 
 // StoreOptions validates backend selectors and returns credstore options.
-func StoreOptions(flagValue string, flagSet bool, cfg config.File) (credstore.Options, error) {
+func StoreOptions(flagValue string, flagSet bool, _ config.File) (credstore.Options, error) {
 	opts := credstore.Options{AllowedKeys: AllowedKeys()}
 	if err := credstore.BindBackendFlag(&opts, flagValue, flagSet, ""); err != nil {
 		return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
@@ -361,44 +362,6 @@ func onePasswordOptionsFromConfig(backend config.SecretsProfileBackend) (*credst
 		options.Timeout = timeout
 	}
 	return options, nil
-}
-
-func resolvedSecretsProfileFromEffective(profile config.EffectiveSecretsProfile, selectionSource SecretsProfileSelectionSource) ResolvedSecretsProfile {
-	return ResolvedSecretsProfile{
-		ID:              profile.ID,
-		Label:           strings.TrimSpace(profile.Label),
-		Backend:         profile.Backend,
-		Source:          profile.Source,
-		SelectionSource: selectionSource,
-	}
-}
-
-func resolveConfiguredSecretsProfile(cfg config.File, id string, selectionSource SecretsProfileSelectionSource) (ResolvedSecretsProfile, error) {
-	id = strings.TrimSpace(id)
-	for _, profile := range config.EffectiveSecretsProfiles(cfg) {
-		if profile.ID != id {
-			continue
-		}
-		if profile.Source != config.EffectiveSecretsProfileSourceConfigured {
-			break
-		}
-		return resolvedSecretsProfileFromEffective(profile, selectionSource), nil
-	}
-	return ResolvedSecretsProfile{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, id)
-}
-
-func resolveLegacySecretsProfile(cfg config.File) ResolvedSecretsProfile {
-	backend := strings.TrimSpace(cfg.Keyring.Backend)
-	if backend == "" {
-		backend = config.ProjectedOSCredentialStoreBackendKind
-	}
-	return ResolvedSecretsProfile{
-		ID:              config.LocalOSCredentialStoreID,
-		Label:           "OS credential store",
-		Backend:         backend,
-		Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
-		SelectionSource: SecretsProfileSelectionBuiltInOS,
-	}
 }
 
 type credentialRefOwner struct {

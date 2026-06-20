@@ -2832,10 +2832,6 @@ func initProfileEditorSecretsProfileSelectionVisible(profiles []config.Effective
 	return len(profiles) > 0 || strings.TrimSpace(missingSelection) != ""
 }
 
-func initSecretsProfileDefaultOptionLabel(cfg config.File) string {
-	return "Use built-in OS credential store"
-}
-
 func initSecretsProfileLabel(profile config.EffectiveSecretsProfile) string {
 	displayName := strings.TrimSpace(profile.Label)
 	if displayName == "" {
@@ -5692,7 +5688,7 @@ func validateInteractiveInitGlobalConfig(cfg config.File) error {
 	return validateInteractiveInitConfig(cfg)
 }
 
-func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, cfg config.File) string {
+func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, _ config.File) string {
 	if !backendFlagSet {
 		return ""
 	}
@@ -6980,7 +6976,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 	return writeErr
 }
 
-func writeInitCredentialPlanHints(w io.Writer, backendArg string, entry initCredentialPlanEntry) error {
+func writeInitCredentialPlanHints(w io.Writer, _ string, entry initCredentialPlanEntry) error {
 	keys := entry.MissingRequiredKeys
 	if len(keys) == 0 {
 		keys = initCredentialRequiredKeys(entry)

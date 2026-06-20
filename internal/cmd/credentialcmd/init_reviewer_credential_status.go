@@ -144,7 +144,7 @@ func hasInitReviewerCredentialPlanEntry(entries []initCredentialPlanEntry) bool 
 }
 
 func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, profile config.Profile, plannedWriteKeys map[string][]string, entries []initCredentialPlanEntry) []initCredentialPlanEntry {
-	reviewerStoreID := config.LocalOSCredentialStoreID
+	var reviewerStoreID string
 	if profile.ReviewerCredentials != nil {
 		reviewerStoreID = initCredentialStoreDraftValue(profile.ReviewerCredentials.Credential.Store)
 	} else {

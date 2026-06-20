@@ -21,19 +21,6 @@ func initCredentialStoreDraftValue(current string) string {
 	return current
 }
 
-func initCredentialStoreSelection(cfg config.File, current string) string {
-	current = strings.TrimSpace(current)
-	if current == "" {
-		current = initCredentialStoreDefaultID()
-	}
-	for _, store := range config.EffectiveSecretsStores(cfg) {
-		if store.ID == current {
-			return current
-		}
-	}
-	return initCredentialStoreDefaultID()
-}
-
 func initCredentialStoreOptions(cfg config.File) []huh.Option[string] {
 	stores := config.EffectiveSecretsStores(cfg)
 	options := make([]huh.Option[string], 0, len(stores))

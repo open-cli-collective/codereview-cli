@@ -59,7 +59,7 @@ func (p huhInitKeyringBackendPrompter) discoverOnePasswordDesktop() initOnePassw
 }
 
 func runInitOnePasswordCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- this probe intentionally shells out to the configured 1Password CLI executable.
 	return cmd.Output()
 }
 

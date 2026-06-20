@@ -11834,7 +11834,7 @@ func TestInitSecretsManagementLinearEditorConfiguredProfileKeepsBackendEditable(
 }
 
 func TestInitSecretsProfileBackendFromInputsSwitchingAwayFromOnePasswordClearsBackendFields(t *testing.T) {
-	backend := initSecretsProfileBackendFromInputs(initSecretsProfileBackendInput{
+	backend := initSecretsProfileBackendFromInputs(initSecretsProfileBackendInput{ // #nosec G101 -- fixture values are account/env-var names, not secret values.
 		KindValue:       string(credstore.BackendFile),
 		Timeout:         "5s",
 		AccountID:       "desktop-account",

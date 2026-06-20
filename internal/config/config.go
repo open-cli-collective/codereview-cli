@@ -130,13 +130,16 @@ const (
 	EffectiveSecretsStoreSourceConfigured EffectiveSecretsStoreSource = "configured"
 )
 
-// Compatibility names retained during the staged rewrite.
+// EffectiveSecretsProfileSource is a compatibility alias retained during the staged rewrite.
 type EffectiveSecretsProfileSource = EffectiveSecretsStoreSource
 
 const (
-	EffectiveSecretsProfileSourceConfigured      EffectiveSecretsProfileSource = EffectiveSecretsStoreSourceConfigured
+	// EffectiveSecretsProfileSourceConfigured is the compatibility name for a configured credential store.
+	EffectiveSecretsProfileSourceConfigured EffectiveSecretsProfileSource = EffectiveSecretsStoreSourceConfigured
+	// EffectiveSecretsProfileSourceProjectedLegacy is the compatibility name for the built-in OS store.
 	EffectiveSecretsProfileSourceProjectedLegacy EffectiveSecretsProfileSource = EffectiveSecretsStoreSourceBuiltIn
-	ProjectedOSCredentialStoreBackendKind                                      = "auto"
+	// ProjectedOSCredentialStoreBackendKind is the presentation backend for the built-in OS store.
+	ProjectedOSCredentialStoreBackendKind = "auto"
 )
 
 // EffectiveSecretsStore is the presentation-safe credential-store inventory
@@ -1054,7 +1057,7 @@ func validateRepositoryProfiles(cfg File) error {
 
 // ValidateKeyring is retained for in-memory compatibility during the staged
 // rewrite. keyring.backend is no longer part of the config schema.
-func ValidateKeyring(keyring KeyringConfig) error {
+func ValidateKeyring(_ KeyringConfig) error {
 	return nil
 }
 
