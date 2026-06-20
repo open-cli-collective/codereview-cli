@@ -51,6 +51,15 @@ func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps ini
 	}
 	plannedWriteKeys := projectInitPlannedWriteKeys(session.writes)
 	entries := interactiveInitReviewerCredentialPlanEntries(session, plannedWriteKeys)
+	writes, _, satisfiedRefs := filterInteractiveInitStagedCredentialStateByStore(
+		cloneInitWrites(session.writes),
+		map[string]bool{},
+		cloneInitBoolMap(session.satisfiedRefs),
+		session.credentialWriteStores,
+		entries,
+	)
+	plannedWriteKeys = projectInitPlannedWriteKeys(writes)
+	entries = refreshInteractiveCredentialPlan(entries, plannedWriteKeys, satisfiedRefs)
 	statuses := make([]initReviewerCredentialStatus, 0, len(entries))
 	stores := map[string]initStore{}
 	defer func() {
@@ -89,7 +98,7 @@ func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps ini
 				existing = keys
 			}
 		}
-		status := initReviewerCredentialStatusFromEntry(entry, session.writes[entry.Ref.Ref], session.credentialDecisions, existing, unavailable)
+		status := initReviewerCredentialStatusFromEntry(entry, writes[entry.Ref.Ref], session.credentialDecisions, existing, unavailable)
 		backendArg := ""
 		if opts != nil {
 			backendArg = opts.Backend

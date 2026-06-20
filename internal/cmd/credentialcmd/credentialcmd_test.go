@@ -15254,6 +15254,66 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 	}
 }
 
+func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t *testing.T) {
+	originalProfile := basicProfile("work")
+	originalProfile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	originalCfg := config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": originalProfile}}
+	originalResolved, err := credentials.ResolveSecretsProfileForProfile(originalCfg, originalProfile)
+	if err != nil {
+		t.Fatalf("Resolve original secrets profile: %v", err)
+	}
+	profile := originalProfile
+	profile.SecretsProfile = "work-file"
+	cfg := config.File{
+		DefaultProfile: "work",
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "work-file",
+			Profiles: map[string]config.SecretsProfile{
+				"work-file": {
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{"work": profile},
+	}
+	session := initSessionDraft{
+		cfg: cfg,
+		workspace: &initWorkspaceDraft{
+			profileName:     "work",
+			profile:         profile,
+			previousProfile: &originalProfile,
+		},
+		writes: map[string]map[string]string{
+			"codereview/work-reviewer": {
+				credentials.GitHubAppIDKey:         "12345",
+				credentials.GitHubAppPrivateKeyKey: "private-key",
+			},
+		},
+		credentialWriteStores: map[string]credentials.ResolvedSecretsProfile{
+			"codereview/work-reviewer": originalResolved,
+		},
+		credentialDecisions: map[initCredentialDecisionKey]initCredentialDecisionKind{},
+		satisfiedRefs:       map[string]bool{"codereview/work-reviewer": true},
+	}
+	deps := initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("legacy openStore called after profile moved to named secrets profile")
+			return nil, nil
+		},
+		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+			return newFakeInitStore(nil), nil
+		},
+	}
+
+	statuses := buildInteractiveInitReviewerCredentialStatuses(&root.Options{}, deps, session)
+	status := findReviewerCredentialStatusForTest(t, statuses, "codereview/work-reviewer", string(config.GitAuthModeGitHubApp))
+	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppIDKey, initReviewerCredentialKeyMissing)
+	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyMissing)
+}
+
 func TestInitReviewerCredentialStatusIncludesSelectableReviewerEntities(t *testing.T) {
 	work := basicProfile("work")
 	bot := basicProfile("bot")
@@ -19838,6 +19898,10 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 		DefaultProfile: "work",
 		Profiles:       map[string]config.Profile{"work": profile},
 	}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+	}
 	refs, err := config.CredentialRefs(profile)
 	if err != nil {
 		t.Fatalf("CredentialRefs: %v", err)
@@ -19858,6 +19922,7 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 				Ref:     "codereview/work-reviewer",
 				Mode:    string(config.GitAuthModePAT),
 			},
+			SecretsProfile: resolved,
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
@@ -19908,9 +19973,14 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 		CredentialRef: "codereview/work-reviewer",
 		DisplayName:   "work bot",
 	}
+	cfg := config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": profile}}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+	}
 	plan := initPlan{
 		path:        filepath.Join(t.TempDir(), "config.yml"),
-		cfg:         config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": profile}},
+		cfg:         cfg,
 		profileName: "work",
 		profile:     profile,
 		credentialPlan: []initCredentialPlanEntry{{
@@ -19924,6 +19994,7 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 				Ref:     "codereview/work-reviewer",
 				Mode:    string(config.GitAuthModePAT),
 			},
+			SecretsProfile: resolved,
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
@@ -19933,7 +20004,7 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 		}},
 	}
 
-	err := applyInitPlan(&root.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, initOptions{}, initDeps{
+	err = applyInitPlan(&root.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, initOptions{}, initDeps{
 		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
 		saveConfig: func(string, config.File) error {
 			return nil
@@ -19976,17 +20047,32 @@ func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t
 		},
 		State: initCredentialPlanStateKeepExisting,
 	}
-	patEntry := initCredentialPlanEntry{
-		Ref: config.CredentialRef{
-			Purpose: "reviewer_credentials",
-			Ref:     "codereview/shared-reviewer",
-			Mode:    string(config.GitAuthModePAT),
-		},
-		KeySpecs: []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
-		State:    initCredentialPlanStateKeepExisting,
+	appProfile := basicProfile("app")
+	appProfile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/shared-reviewer",
 	}
-
-	groups := groupStaleReviewerCredentialCleanupsByStore([]initCredentialPlanEntry{appEntry, patEntry})
+	patProfile := basicProfile("pat")
+	patProfile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/shared-reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "app",
+		Profiles: map[string]config.Profile{
+			"app": appProfile,
+			"pat": patProfile,
+		},
+	}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, appProfile)
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+	}
+	appEntry.SecretsProfile = resolved
+	groups, err := groupStaleReviewerCredentialCleanupsByStore(cfg, []initCredentialPlanEntry{appEntry})
+	if err != nil {
+		t.Fatalf("groupStaleReviewerCredentialCleanupsByStore: %v", err)
+	}
 	if len(groups) != 1 {
 		t.Fatalf("cleanup groups = %#v, want one group", groups)
 	}
@@ -19999,6 +20085,65 @@ func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t
 	}
 	if ok, err := store.Exists("shared-reviewer", credentials.GitTokenKey); err != nil || !ok {
 		t.Fatalf("git_token exists = %t, err = %v; want retained for active PAT entry", ok, err)
+	}
+}
+
+func TestBuildInteractiveInitSessionPlanDropsReviewerWritesWhenSecretsStoreChanges(t *testing.T) {
+	originalProfile := basicProfile("work")
+	originalProfile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	originalCfg := config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{
+		"work": originalProfile,
+	}}
+	originalResolved, err := credentials.ResolveSecretsProfileForProfile(originalCfg, originalProfile)
+	if err != nil {
+		t.Fatalf("Resolve original secrets profile: %v", err)
+	}
+	nextProfile := originalProfile
+	nextCfg := config.File{
+		DefaultProfile: "work",
+		Secrets: config.SecretsConfig{
+			DefaultProfile: "vault",
+			Profiles: map[string]config.SecretsProfile{
+				"vault": {
+					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{"work": nextProfile},
+	}
+	session := initSessionDraft{
+		path:            filepath.Join(t.TempDir(), "config.yml"),
+		originalCfg:     originalCfg,
+		cfg:             nextCfg,
+		touchedProfiles: map[string]string{"work": "work"},
+		writes: map[string]map[string]string{
+			"codereview/work-reviewer": {
+				credentials.GitHubAppIDKey:         "12345",
+				credentials.GitHubAppPrivateKeyKey: "private-key",
+			},
+		},
+		credentialWriteStores: map[string]credentials.ResolvedSecretsProfile{
+			"codereview/work-reviewer": originalResolved,
+		},
+		overwriteRefs: map[string]bool{"codereview/work-reviewer": true},
+		satisfiedRefs: map[string]bool{"codereview/work-reviewer": true},
+	}
+
+	plan, err := buildInteractiveInitSessionPlan(&root.Options{}, session)
+	if err != nil {
+		t.Fatalf("buildInteractiveInitSessionPlan: %v", err)
+	}
+	if _, ok := plan.writes["codereview/work-reviewer"]; ok {
+		t.Fatalf("reviewer writes = %#v, want dropped after secrets store changed", plan.writes)
+	}
+	if plan.overwriteRefs["codereview/work-reviewer"] {
+		t.Fatalf("overwrite ref retained after secrets store changed")
+	}
+	if plan.satisfiedRefs["codereview/work-reviewer"] {
+		t.Fatalf("satisfied ref retained after secrets store changed")
 	}
 }
 
