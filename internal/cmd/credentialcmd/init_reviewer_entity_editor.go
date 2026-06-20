@@ -70,18 +70,18 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityLinear(prompt initRevie
 	}
 }
 
-func (p huhInitReviewerEntityPrompter) editReviewerEntityFieldsLinear(entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
+func (p huhInitReviewerEntityPrompter) editReviewerEntityFieldsLinear(ctx initPromptContext, entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
 	editorState, err := newReviewerEntityEditorState(entity, seed, preserveCurrentLocation)
 	if err != nil {
 		return initDraft{}, false, err
 	}
-	model, err := p.runReviewerEntityEditor(editorState.editor())
+	model, err := p.runReviewerEntityEditor(editorState.editor(ctx))
 	if err != nil {
 		return initDraft{}, false, err
 	}
 	switch model.resultAction {
 	case initDetailActionEdit:
-		draft, err := editorState.draftFromDocument(model.document)
+		draft, err := editorState.draftFromDocument(ctx, model.document)
 		if err != nil {
 			return initDraft{}, false, err
 		}
@@ -139,7 +139,7 @@ func newReviewerEntityEditorState(entity initReviewerEntityDraft, seed initDraft
 	}, nil
 }
 
-func (s reviewerEntityEditorState) editor() initLinearEditor {
+func (s reviewerEntityEditorState) editor(ctx initPromptContext) initLinearEditor {
 	var document initLinearDocument
 	document.addSection("Reviewer entity", reviewerEntitySelectionDescription())
 	document.addSection("Reviewer entity type", reviewerEntityKindDetailDescription(s.kind))
@@ -209,7 +209,7 @@ func (s reviewerEntityEditorState) editor() initLinearEditor {
 				model.resultAction = initDetailActionBack
 				return true, tea.Quit
 			case initDetailActionEdit:
-				if _, err := s.draftFromDocument(model.document); err != nil {
+				if _, err := s.draftFromDocument(ctx, model.document); err != nil {
 					model.document[model.focused].Error = err.Error()
 					model.relayout()
 					model.ensureFocusedVisible()
@@ -241,7 +241,7 @@ func (s reviewerEntityEditorState) editor() initLinearEditor {
 	}
 }
 
-func (s reviewerEntityEditorState) draftFromDocument(document initLinearDocument) (initDraft, error) {
+func (s reviewerEntityEditorState) draftFromDocument(ctx initPromptContext, document initLinearDocument) (initDraft, error) {
 	editDraft := s.seed
 	applyReviewerEntitySelection(&editDraft, string(s.kind))
 	if s.kind == initReviewerEntityKindUseGitIdentity {
@@ -255,11 +255,11 @@ func (s reviewerEntityEditorState) draftFromDocument(document initLinearDocument
 	if err := validateOptionalCredentialRef(reviewerSecretLocation); err != nil {
 		return initDraft{}, err
 	}
-	if err := validateReviewerEntityInlineCredentials(initPromptContext{}, s.seed, s, document); err != nil {
+	if err := validateReviewerEntityInlineCredentials(ctx, s.seed, s, document); err != nil {
 		return initDraft{}, err
 	}
 	finalizeReviewerEntityEditorDraft(&editDraft, s.explicitDisplayName, s.fallbackLabelSeed, labelInput, reviewerSecretLocation, s.standardReviewerRef, s.preserveCurrentLocation)
-	applyReviewerEntityCredentialDraftFromDocument(&editDraft, initPromptContext{}, s.seed, s, document)
+	applyReviewerEntityCredentialDraftFromDocument(&editDraft, ctx, s.seed, s, document)
 	return editDraft, nil
 }
 

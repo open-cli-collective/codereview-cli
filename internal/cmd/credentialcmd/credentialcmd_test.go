@@ -6286,7 +6286,7 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCustomSecretLocationPersis
 		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 	}
 
-	nextDraft, back, err := prompter.editExistingReviewerEntity(initReviewerEntityDraftFromConfig(existing), draft)
+	nextDraft, back, err := prompter.editExistingReviewerEntity(initPromptContext{}, initReviewerEntityDraftFromConfig(existing), draft)
 	if err != nil {
 		t.Fatalf("editExistingReviewerEntity: %v", err)
 	}
@@ -6321,7 +6321,7 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerFallbackSeedDoesNotPersist
 		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 	}
 
-	nextDraft, back, err := prompter.editExistingReviewerEntity(initReviewerEntityDraftFromConfig(existing), draft)
+	nextDraft, back, err := prompter.editExistingReviewerEntity(initPromptContext{}, initReviewerEntityDraftFromConfig(existing), draft)
 	if err != nil {
 		t.Fatalf("editExistingReviewerEntity: %v", err)
 	}
@@ -6352,7 +6352,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleShowsSeededDisplayNamePrompt(t *
 		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 	}
 
-	nextDraft, back, err := prompter.editExistingReviewerEntity(initReviewerEntityDraftFromConfig(existing), draft)
+	nextDraft, back, err := prompter.editExistingReviewerEntity(initPromptContext{}, initReviewerEntityDraftFromConfig(existing), draft)
 	if err != nil {
 		t.Fatalf("editExistingReviewerEntity: %v", err)
 	}
@@ -6383,7 +6383,7 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCanEditLabel(t *testing.T)
 		}, ""),
 	}
 
-	nextDraft, back, err := prompter.editExistingReviewerEntity(initReviewerEntityDraftFromConfig(existing), draft)
+	nextDraft, back, err := prompter.editExistingReviewerEntity(initPromptContext{}, initReviewerEntityDraftFromConfig(existing), draft)
 	if err != nil {
 		t.Fatalf("editExistingReviewerEntity: %v", err)
 	}
@@ -6657,7 +6657,7 @@ func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecrets(t *testin
 	if err != nil {
 		t.Fatalf("newReviewerEntityEditorState: %v", err)
 	}
-	model := newInitLinearEditorModel(state.editor(), 120, 40)
+	model := newInitLinearEditorModel(state.editor(initPromptContext{}), 120, 40)
 	model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
 	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
 
@@ -6670,7 +6670,7 @@ func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecrets(t *testin
 		t.Fatalf("unchanged existing ref resultAction = %q, want staged without re-entering secrets", unchanged.resultAction)
 	}
 
-	model = newInitLinearEditorModel(state.editor(), 120, 40)
+	model = newInitLinearEditorModel(state.editor(initPromptContext{}), 120, 40)
 	model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/new-reviewer")
 	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation))
 	model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
@@ -7020,7 +7020,7 @@ func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 		editorRunner: stageReviewerEntityEditorRunner(t, nil, initDetailActionBack),
 	}
 
-	nextDraft, back, err := prompter.editNewReviewerEntity(initReviewerEntityKindUseGitIdentity, draft)
+	nextDraft, back, err := prompter.editNewReviewerEntity(initPromptContext{}, initReviewerEntityKindUseGitIdentity, draft)
 	if err != nil {
 		t.Fatalf("editNewReviewerEntity: %v", err)
 	}
@@ -7048,7 +7048,7 @@ func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testi
 		}, ""),
 	}
 
-	nextDraft, back, err := prompter.editNewReviewerEntity(initReviewerEntityKindGitHubApp, draft)
+	nextDraft, back, err := prompter.editNewReviewerEntity(initPromptContext{}, initReviewerEntityKindGitHubApp, draft)
 	if err != nil {
 		t.Fatalf("editNewReviewerEntity: %v", err)
 	}
@@ -7084,6 +7084,51 @@ func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testi
 	}
 }
 
+func TestHuhInitReviewerEntityDetailsPreservesPromptContextCredentialStore(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	resolved := credentials.ResolvedSecretsProfile{
+		ID:      "work-file",
+		Label:   "Work file",
+		Source:  config.EffectiveSecretsProfileSourceConfigured,
+		Backend: string(credstore.BackendFile),
+	}
+	ctx := initPromptContext{
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			SecretsProfile: resolved,
+			Keys: []initReviewerCredentialKeyStatus{
+				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyMissing},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
+				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyOptional},
+			},
+		}},
+	}
+	privateKey := testReviewerGitHubAppPrivateKey()
+	prompter := huhInitReviewerEntityPrompter{
+		stderr: &bytes.Buffer{},
+		editorRunner: stageReviewerEntityEditorRunner(t, map[initLinearFieldID]string{
+			initReviewerEntityFieldGitHubAppID:         "12345",
+			initReviewerEntityFieldGitHubAppPrivateKey: privateKey,
+		}, ""),
+	}
+
+	nextDraft, back, err := prompter.editNewReviewerEntity(ctx, initReviewerEntityKindGitHubApp, draft)
+	if err != nil {
+		t.Fatalf("editNewReviewerEntity: %v", err)
+	}
+	if back {
+		t.Fatal("back = true, want staged GitHub App reviewer details")
+	}
+	if !nextDraft.ReviewerCredentialWriteStore.Equal(resolved) {
+		t.Fatalf("ReviewerCredentialWriteStore = %#v, want %#v", nextDraft.ReviewerCredentialWriteStore, resolved)
+	}
+}
+
 func TestHuhInitReviewerEntityDetailsAccessibleHidesSecretLocationForGitIdentity(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	draft := seedInteractiveInitDraft("work", "work", "work", nil)
@@ -7093,7 +7138,7 @@ func TestHuhInitReviewerEntityDetailsAccessibleHidesSecretLocationForGitIdentity
 		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 	}
 
-	nextDraft, back, err := prompter.editNewReviewerEntity(initReviewerEntityKindUseGitIdentity, draft)
+	nextDraft, back, err := prompter.editNewReviewerEntity(initPromptContext{}, initReviewerEntityKindUseGitIdentity, draft)
 	if err != nil {
 		t.Fatalf("editNewReviewerEntity: %v", err)
 	}
@@ -19788,7 +19833,7 @@ func TestWriteBundlesReportsPreviouslyWrittenRefsForCleanup(t *testing.T) {
 	}
 }
 
-func TestWriteBundlesDeletesStaleReviewerKeysAfterAuthModeSwitch(t *testing.T) {
+func TestWriteBundlesLeavesStaleReviewerKeysForPostSaveCleanup(t *testing.T) {
 	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
 		AllowedKeys: credentials.AllowedKeys(),
 		Backend:     credstore.BackendMemory,
@@ -19825,8 +19870,8 @@ func TestWriteBundlesDeletesStaleReviewerKeysAfterAuthModeSwitch(t *testing.T) {
 	if !reflect.DeepEqual(written, []string{"codereview/work-reviewer"}) {
 		t.Fatalf("written refs = %#v, want work reviewer", written)
 	}
-	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || ok {
-		t.Fatalf("stale git_token exists = %t, err = %v; want deleted", ok, err)
+	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || !ok {
+		t.Fatalf("stale git_token exists = %t, err = %v; want retained until config save succeeds", ok, err)
 	}
 	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
 		t.Fatalf("github_app_id exists = %t, err = %v; want written", ok, err)
@@ -19956,6 +20001,132 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 	}
 	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppInstallationIDKey); err != nil || !ok {
 		t.Fatalf("github_app_installation_id exists = %t, err = %v; want retained", ok, err)
+	}
+}
+
+func TestApplyInteractiveInitSessionPlanSaveFailureDoesNotDeleteStaleReviewerKey(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{
+		"work-reviewer": {
+			credentials.GitTokenKey:            "old-reviewer-pat",
+			credentials.GitHubAppIDKey:         "12345",
+			credentials.GitHubAppPrivateKeyKey: "private-key",
+		},
+	})
+	profile := basicProfile("work")
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	cfg := config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": profile}}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+	}
+	plan := initSessionPlan{
+		path:         filepath.Join(t.TempDir(), "config.yml"),
+		cfg:          cfg,
+		profileNames: []string{"work"},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			PreviousRef: &config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			SecretsProfile: resolved,
+			KeySpecs: []credentials.KeySpec{
+				{Key: credentials.GitHubAppIDKey, Required: true},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+			},
+			State: initCredentialPlanStateKeepExisting,
+		}},
+	}
+
+	err = applyInteractiveInitSessionPlan(&root.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, initDeps{
+		openStore:  func(string, bool, config.File) (initStore, error) { return store, nil },
+		saveConfig: func(string, config.File) error { return errors.New("disk full") },
+	}, plan)
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("applyInteractiveInitSessionPlan error = %v, want save failure", err)
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || !ok {
+		t.Fatalf("git_token exists = %t, err = %v; want retained because config save failed", ok, err)
+	}
+}
+
+func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitchWrites(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{
+		"shared-reviewer": {credentials.GitTokenKey: "existing-pat"},
+	})
+	appProfile := basicProfile("app")
+	appProfile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModeGitHubApp,
+		CredentialRef: "codereview/shared-reviewer",
+	}
+	patProfile := basicProfile("pat")
+	patProfile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/shared-reviewer",
+	}
+	cfg := config.File{
+		DefaultProfile: "app",
+		Profiles: map[string]config.Profile{
+			"app": appProfile,
+			"pat": patProfile,
+		},
+	}
+	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, appProfile)
+	if err != nil {
+		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+	}
+	plan := initSessionPlan{
+		path:         filepath.Join(t.TempDir(), "config.yml"),
+		cfg:          cfg,
+		profileNames: []string{"app"},
+		writes: map[string]map[string]string{
+			"codereview/shared-reviewer": {
+				credentials.GitHubAppIDKey:         "12345",
+				credentials.GitHubAppPrivateKeyKey: "private-key",
+			},
+		},
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/shared-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			PreviousRef: &config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/shared-reviewer",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			SecretsProfile: resolved,
+			KeySpecs: []credentials.KeySpec{
+				{Key: credentials.GitHubAppIDKey, Required: true},
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
+			},
+			State: initCredentialPlanStateWrite,
+		}},
+	}
+
+	err = applyInteractiveInitSessionPlan(&root.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, initDeps{
+		openStore:  func(string, bool, config.File) (initStore, error) { return store, nil },
+		saveConfig: func(string, config.File) error { return nil },
+	}, plan)
+	if err != nil {
+		t.Fatalf("applyInteractiveInitSessionPlan: %v", err)
+	}
+	if ok, err := store.Exists("shared-reviewer", credentials.GitTokenKey); err != nil || !ok {
+		t.Fatalf("git_token exists = %t, err = %v; want retained for untouched PAT profile", ok, err)
+	}
+	if ok, err := store.Exists("shared-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
+		t.Fatalf("github_app_id exists = %t, err = %v; want staged app key written", ok, err)
 	}
 }
 
