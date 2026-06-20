@@ -1018,10 +1018,11 @@ type huhInitRetentionPrompter struct {
 }
 
 type huhInitKeyringBackendPrompter struct {
-	stdin           io.Reader
-	stderr          io.Writer
-	inventoryRunner initInventoryRunner
-	editorRunner    initSecretsManagementEditorRunner
+	stdin                io.Reader
+	stderr               io.Writer
+	inventoryRunner      initInventoryRunner
+	editorRunner         initSecretsManagementEditorRunner
+	onePasswordCmdRunner initOnePasswordCommandRunner
 }
 
 const (

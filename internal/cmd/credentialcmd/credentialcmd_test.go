@@ -2,6 +2,7 @@ package credentialcmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11081,13 +11082,14 @@ func TestInitSecretsManagementLinearEditorHidesOnePasswordCreateTargetsWhenUnava
 func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	callCount := 0
+	var stderr bytes.Buffer
 	prompter := huhInitKeyringBackendPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // keep backend-derived label
 			"", // keep selected backend
 			"", // stage settings
 		}, "\n")),
-		stderr: &bytes.Buffer{},
+		stderr: &stderr,
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
 			callCount++
 			switch callCount {
@@ -11112,7 +11114,7 @@ func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing
 		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
 	})
 	if err != nil {
-		t.Fatalf("EditKeyringBackend: %v", err)
+		t.Fatalf("EditKeyringBackend: %v\n%s", err, stderr.String())
 	}
 	if !edit.Apply {
 		t.Fatalf("edit = %#v, want apply=true", edit)
@@ -11557,8 +11559,6 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 	}
 	for _, hidden := range []initLinearFieldID{
 		initSecretsManagementFieldBackend,
-		initSecretsManagementSectionDesktop,
-		initSecretsManagementFieldDesktopAccountID,
 	} {
 		index := model.document.fieldIndexByID(hidden)
 		if index < 0 {
@@ -11570,6 +11570,8 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 	}
 	out := model.layout.Content
 	for _, want := range []string{
+		"1Password account URL",
+		"1Password account id (advanced)",
 		"1Password vault name or id",
 		"1Password request timeout",
 	} {
@@ -11582,13 +11584,215 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 		"1Password item title prefix",
 		"1Password secret name",
 		"1Password item tag",
-		"1Password desktop account id",
 	} {
 		if strings.Contains(out, hiddenText) {
 			t.Fatalf("desktop content includes hidden advanced field %q:\n%s", hiddenText, out)
 		}
 	}
-	assertContentOrder(t, out, "1Password vault name or id", "1Password request timeout")
+	assertContentOrder(t, out, "1Password account URL", "1Password account id (advanced)", "1Password vault name or id", "1Password request timeout")
+}
+
+func TestInitOnePasswordDesktopDiscoveryListsAccountsAndVaults(t *testing.T) {
+	var calls []string
+	runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		switch strings.Join(args, " ") {
+		case "account list --format=json":
+			return []byte(`[
+				{"account_uuid":"acct-1","account_name":"SignalFT","url":"signalft.1password.com"},
+				{"account_uuid":"acct-2","account_name":"Personal","url":"my.1password.com"}
+			]`), nil
+		case "vault list --account acct-1 --format=json":
+			return []byte(`[{"id":"vault-emp","name":"Employee"}]`), nil
+		case "vault list --account acct-2 --format=json":
+			return []byte(`[{"id":"vault-personal","name":"Personal"}]`), nil
+		default:
+			return nil, fmt.Errorf("unexpected op command %q", strings.Join(args, " "))
+		}
+	}
+
+	discovery := newInitOnePasswordDiscovery(runner).DiscoverDesktop(context.Background())
+	if discovery.Err != nil {
+		t.Fatalf("DiscoverDesktop error = %v", discovery.Err)
+	}
+	if !discovery.HasVaultChoices() {
+		t.Fatalf("discovery = %#v, want vault choices", discovery)
+	}
+	selection, ok := discovery.Selection("0:0")
+	if !ok {
+		t.Fatalf("selection missing from discovery: %#v", discovery)
+	}
+	if selection.AccountID != "acct-1" || selection.AccountURL != "signalft.1password.com" || selection.VaultID != "vault-emp" || selection.VaultName != "Employee" {
+		t.Fatalf("selection = %#v, want account/vault metadata", selection)
+	}
+	if got, want := calls, []string{
+		"op account list --format=json",
+		"op vault list --account acct-1 --format=json",
+		"op vault list --account acct-2 --format=json",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("op calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestInitOnePasswordDesktopDiscoveryFailureFallsBackToManual(t *testing.T) {
+	runner := func(context.Context, string, ...string) ([]byte, error) {
+		return nil, os.ErrNotExist
+	}
+	discovery := newInitOnePasswordDiscovery(runner).DiscoverDesktop(context.Background())
+	if discovery.Err == nil {
+		t.Fatal("DiscoverDesktop error = nil, want missing-op error")
+	}
+	if discovery.HasVaultChoices() {
+		t.Fatalf("discovery = %#v, want no vault choices after op failure", discovery)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	discovery := initOnePasswordDesktopDiscovery{Accounts: []initOnePasswordDiscoveredAccount{{
+		ID:  "acct-1",
+		URL: "signalft.1password.com",
+		Vaults: []initOnePasswordDiscoveredVault{{
+			ID:   "vault-emp",
+			Name: "Employee",
+		}},
+	}}}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	out := model.layout.Content
+	for _, want := range []string{
+		"1Password account and vault",
+		"Employee (signalft.1password.com)",
+		"1Password request timeout",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("desktop discovery content missing %q:\n%s", want, out)
+		}
+	}
+	for _, hidden := range []string{
+		"1Password account URL",
+		"1Password account id (advanced)",
+		"1Password vault name or id",
+	} {
+		if strings.Contains(out, hidden) {
+			t.Fatalf("desktop discovery content includes manual field %q:\n%s", hidden, out)
+		}
+	}
+
+	edit, err := initSecretsManagementEditFromDocumentWithDiscovery(cfg, model.document, discovery)
+	if err != nil {
+		t.Fatalf("initSecretsManagementEditFromDocumentWithDiscovery: %v", err)
+	}
+	profile := edit.Config.Secrets.Stores["1password"]
+	if profile.Backend.OnePassword == nil {
+		t.Fatal("saved onepassword config = nil")
+	}
+	got := profile.Backend.OnePassword
+	if got.AccountID != "acct-1" || got.AccountURL != "signalft.1password.com" || got.VaultID != "vault-emp" || got.VaultName != "Employee" {
+		t.Fatalf("saved onepassword config = %#v, want discovered account/vault metadata", got)
+	}
+}
+
+func TestHuhInitKeyringBackendPrompterDesktopDiscoveryCreatesProfile(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	t.Setenv("TERM", "dumb")
+	callCount := 0
+	prompter := huhInitKeyringBackendPrompter{
+		stdin:  strings.NewReader(strings.Repeat("\n", 8)),
+		stderr: &bytes.Buffer{},
+		onePasswordCmdRunner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			switch strings.Join(args, " ") {
+			case "account list --format=json":
+				return []byte(`[{"account_uuid":"acct-1","account_name":"SignalFT","url":"signalft.1password.com"}]`), nil
+			case "vault list --account acct-1 --format=json":
+				return []byte(`[{"id":"vault-emp","name":"Employee"}]`), nil
+			default:
+				return nil, fmt.Errorf("unexpected op command %q", strings.Join(args, " "))
+			}
+		},
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return initInventoryResult{
+					Action: initInventoryActionCommand,
+					Row:    initInventoryRow{ID: initConfigureSecretsProfileSelectionPrefix + string(credstore.BackendOPDesktop)},
+				}, nil
+			case 2:
+				return initInventoryResult{
+					Action: initInventoryActionBack,
+					Row:    initInventoryRow{ID: initBackSelection},
+				}, nil
+			default:
+				t.Fatalf("unexpected inventory call %d", callCount)
+				return initInventoryResult{}, nil
+			}
+		},
+	}
+
+	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+	})
+	if err != nil {
+		t.Fatalf("EditKeyringBackend: %v", err)
+	}
+	profile := edit.Config.Secrets.Stores["1password"]
+	if profile.Backend.OnePassword == nil {
+		t.Fatal("saved onepassword config = nil")
+	}
+	got := profile.Backend.OnePassword
+	if got.AccountID != "acct-1" || got.AccountURL != "signalft.1password.com" || got.VaultID != "vault-emp" || got.VaultName != "Employee" {
+		t.Fatalf("saved onepassword config = %#v, want discovered account/vault metadata", got)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorDesktopDiscoveryFailureAllowsManualProfile(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	discovery := initOnePasswordDesktopDiscovery{Err: os.ErrNotExist}
+	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	model := newInitLinearEditorModel(editor, 180, 32)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	out := model.layout.Content
+	for _, want := range []string{
+		"1Password account URL",
+		"1Password account id (advanced)",
+		"1Password vault name or id",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("manual desktop content missing %q:\n%s", want, out)
+		}
+	}
+	model.setFieldValue(initSecretsManagementFieldDesktopAccountURL, "signalft.1password.com")
+	model.setFieldValue(initSecretsManagementFieldDesktopAccountID, "acct-manual")
+	model.setFieldValue(initSecretsManagementFieldVaultID, "Employee")
+
+	edit, err := initSecretsManagementEditFromDocumentWithDiscovery(cfg, model.document, discovery)
+	if err != nil {
+		t.Fatalf("initSecretsManagementEditFromDocumentWithDiscovery: %v", err)
+	}
+	profile := edit.Config.Secrets.Stores["1password"]
+	if profile.Backend.OnePassword == nil {
+		t.Fatal("saved onepassword config = nil")
+	}
+	got := profile.Backend.OnePassword
+	if got.AccountID != "acct-manual" || got.AccountURL != "signalft.1password.com" || got.VaultID != "Employee" || got.VaultName != "" {
+		t.Fatalf("saved onepassword config = %#v, want manual account/vault metadata", got)
+	}
 }
 
 func TestInitSecretsManagementLinearEditorShowsOnePasswordBackendRolloverDescriptions(t *testing.T) {
@@ -11682,18 +11886,17 @@ func TestInitSecretsManagementLinearEditorConfiguredProfileKeepsBackendEditable(
 }
 
 func TestInitSecretsProfileBackendFromInputsSwitchingAwayFromOnePasswordClearsBackendFields(t *testing.T) {
-	backend := initSecretsProfileBackendFromInputs(
-		string(credstore.BackendFile),
-		"5s",
-		"vault-123",
-		"title-prefix",
-		"item-tag",
-		"field-title",
-		"https://connect.example",
-		"OP_CONNECT_TOKEN",
-		"OP_SERVICE_ACCOUNT_TOKEN",
-		"desktop-account",
-	)
+	backend := initSecretsProfileBackendFromInputs(initSecretsProfileBackendInput{
+		KindValue:       string(credstore.BackendFile),
+		Timeout:         "5s",
+		AccountID:       "desktop-account",
+		AccountURL:      "signalft.1password.com",
+		VaultID:         "vault-123",
+		VaultName:       "Employee",
+		ConnectHost:     "https://connect.example",
+		ConnectTokenEnv: "OP_CONNECT_TOKEN",
+		ServiceTokenEnv: "OP_SERVICE_ACCOUNT_TOKEN",
+	})
 	if backend.Kind != config.SecretsBackendKind(credstore.BackendFile) {
 		t.Fatalf("backend kind = %q, want file", backend.Kind)
 	}

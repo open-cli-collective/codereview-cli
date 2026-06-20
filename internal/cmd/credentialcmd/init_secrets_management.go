@@ -33,6 +33,18 @@ type initSecretsProfileEditorResult struct {
 	Backend     config.SecretsProfileBackend
 }
 
+type initSecretsProfileBackendInput struct {
+	KindValue       string
+	Timeout         string
+	AccountID       string
+	AccountURL      string
+	VaultID         string
+	VaultName       string
+	ConnectHost     string
+	ConnectTokenEnv string
+	ServiceTokenEnv string
+}
+
 func initSecretsBackendCatalog() []initSecretsBackendPresentation {
 	order := []config.SecretsBackendKind{
 		config.SecretsBackendKind(credstore.BackendOPDesktop),
@@ -310,23 +322,22 @@ func initSecretsProfileBackendOptions(current config.SecretsBackendKind) []huh.O
 	return options
 }
 
-func initSecretsProfileBackendFromInputs(kindValue string, timeout string, vaultID string, itemTitlePrefix string, itemTag string, itemFieldTitle string, connectHost string, connectTokenEnv string, serviceTokenEnv string, desktopAccountID string) config.SecretsProfileBackend {
+func initSecretsProfileBackendFromInputs(input initSecretsProfileBackendInput) config.SecretsProfileBackend {
 	backend := config.SecretsProfileBackend{
-		Kind: config.SecretsBackendKind(strings.TrimSpace(kindValue)),
+		Kind: config.SecretsBackendKind(strings.TrimSpace(input.KindValue)),
 	}
 	if !config.IsOnePasswordSecretsBackend(backend.Kind) {
 		return normalizeInitSecretsProfileBackend(backend)
 	}
 	backend.OnePassword = &config.SecretsProfileOnePasswordConfig{
-		Timeout:          strings.TrimSpace(timeout),
-		VaultID:          strings.TrimSpace(vaultID),
-		ItemTitlePrefix:  strings.TrimSpace(itemTitlePrefix),
-		ItemTag:          strings.TrimSpace(itemTag),
-		ItemFieldTitle:   strings.TrimSpace(itemFieldTitle),
-		ConnectHost:      strings.TrimSpace(connectHost),
-		ConnectTokenEnv:  strings.TrimSpace(connectTokenEnv),
-		ServiceTokenEnv:  strings.TrimSpace(serviceTokenEnv),
-		DesktopAccountID: strings.TrimSpace(desktopAccountID),
+		Timeout:         strings.TrimSpace(input.Timeout),
+		AccountID:       strings.TrimSpace(input.AccountID),
+		AccountURL:      strings.TrimSpace(input.AccountURL),
+		VaultID:         strings.TrimSpace(input.VaultID),
+		VaultName:       strings.TrimSpace(input.VaultName),
+		ConnectHost:     strings.TrimSpace(input.ConnectHost),
+		ConnectTokenEnv: strings.TrimSpace(input.ConnectTokenEnv),
+		ServiceTokenEnv: strings.TrimSpace(input.ServiceTokenEnv),
 	}
 	return normalizeInitSecretsProfileBackend(backend)
 }
@@ -535,12 +546,28 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 	action := initDetailActionEdit
 	timeout := onePassword.Timeout
 	vaultID := onePassword.VaultID
+	vaultName := onePassword.VaultName
+	accountID := onePassword.AccountID
+	accountURL := onePassword.AccountURL
 	connectHost := onePassword.ConnectHost
 	connectTokenEnv := onePassword.ConnectTokenEnv
 	serviceTokenEnv := onePassword.ServiceTokenEnv
-	desktopAccountID := onePassword.DesktopAccountID
+	if accountID == "" {
+		accountID = onePassword.DesktopAccountID
+	}
+	desktopDiscovery := initOnePasswordDesktopDiscovery{}
+	desktopSelection := initOnePasswordManualSelection
+	if seedProfile.Backend.Kind == config.SecretsBackendKind(credstore.BackendOPDesktop) {
+		desktopDiscovery = p.discoverOnePasswordDesktop()
+		desktopSelection = desktopDiscovery.SelectionFor(accountID, accountURL, vaultID, vaultName)
+		if desktopSelection == initOnePasswordManualSelection && creating && accountID == "" && accountURL == "" && vaultID == "" && vaultName == "" {
+			if options := desktopDiscovery.Options(); len(options) > 0 {
+				desktopSelection = options[0].Value
+			}
+		}
+	}
 
-	form := huh.NewForm(
+	groups := []*huh.Group{
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Credential store name").
@@ -552,16 +579,50 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 				Options(initSecretsProfileBackendOptions(seedProfile.Backend.Kind)...).
 				Value(&kindValue),
 		).Title("Credential Store Details"),
+	}
+	if desktopDiscovery.HasVaultChoices() {
+		groups = append(groups, huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("1Password account and vault").
+				Description("Discovered from the local 1Password desktop app. Choose manual entry if this list is incomplete.").
+				Options(desktopDiscovery.Options()...).
+				Value(&desktopSelection),
+		).WithHideFunc(func() bool {
+			return config.SecretsBackendKind(kindValue) != config.SecretsBackendKind(credstore.BackendOPDesktop)
+		}).Title("1Password Desktop Discovery"))
+	}
+	groups = append(groups,
 		huh.NewGroup(
 			huh.NewInput().
-				Title("1Password vault id").
+				Title("1Password account URL").
+				Description("Account sign-in address such as signalft.1password.com. Required only when desktop discovery is unavailable or manual entry is selected.").
+				Value(&accountURL).
+				Validate(validateOptionalDisplayName),
+			huh.NewInput().
+				Title("1Password account id").
+				Description("Advanced. Optional account id when you need to pin this profile to one signed-in 1Password desktop account.").
+				Value(&accountID).
+				Validate(validateOptionalDisplayName),
+		).WithHideFunc(func() bool {
+			return config.SecretsBackendKind(kindValue) != config.SecretsBackendKind(credstore.BackendOPDesktop) || (desktopDiscovery.HasVaultChoices() && desktopSelection != initOnePasswordManualSelection)
+		}).Title("1Password Desktop Manual Account"),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("1Password vault name or id").
 				Description("Required for every 1Password-backed credential store.").
 				Value(&vaultID).
 				Validate(func(value string) error {
-					return validateInitSecretsRequiredSingleLine(value, config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue)), "1Password vault id")
+					requiresVault := config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue))
+					if config.SecretsBackendKind(kindValue) == config.SecretsBackendKind(credstore.BackendOPDesktop) && desktopDiscovery.HasVaultChoices() && desktopSelection != initOnePasswordManualSelection {
+						requiresVault = false
+					}
+					return validateInitSecretsRequiredSingleLine(value, requiresVault, "1Password vault name or id")
 				}),
 		).WithHideFunc(func() bool {
-			return !config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue))
+			if !config.IsOnePasswordSecretsBackend(config.SecretsBackendKind(kindValue)) {
+				return true
+			}
+			return config.SecretsBackendKind(kindValue) == config.SecretsBackendKind(credstore.BackendOPDesktop) && desktopDiscovery.HasVaultChoices() && desktopSelection != initOnePasswordManualSelection
 		}).Title("1Password Details"),
 		huh.NewGroup(
 			huh.NewInput().
@@ -603,15 +664,6 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 			return config.SecretsBackendKind(kindValue) != config.SecretsBackendKind(credstore.BackendOP)
 		}),
 		huh.NewGroup(
-			huh.NewInput().
-				Title("1Password desktop account id").
-				Description("Optional desktop-account id when you want to pin this profile to one 1Password desktop account.").
-				Value(&desktopAccountID).
-				Validate(validateOptionalDisplayName),
-		).WithHideFunc(func() bool {
-			return config.SecretsBackendKind(kindValue) != config.SecretsBackendKind(credstore.BackendOPDesktop)
-		}),
-		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Credential store action").
 				Options(
@@ -621,6 +673,7 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 				Value(&action),
 		).Title("Credential Store Details"),
 	)
+	form := huh.NewForm(groups...)
 	back, err := runBackableInitForm(form, p.stdin, p.stderr)
 	if err != nil {
 		return initSecretsProfileEditorResult{}, err
@@ -628,7 +681,25 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 	if back || action == initDetailActionBack {
 		return initSecretsProfileEditorResult{}, nil
 	}
-	backend := initSecretsProfileBackendFromInputs(kindValue, timeout, vaultID, "", "", "", connectHost, connectTokenEnv, serviceTokenEnv, desktopAccountID)
+	if config.SecretsBackendKind(kindValue) == config.SecretsBackendKind(credstore.BackendOPDesktop) && desktopDiscovery.HasVaultChoices() && desktopSelection != initOnePasswordManualSelection {
+		if selection, ok := desktopDiscovery.Selection(desktopSelection); ok {
+			accountID = selection.AccountID
+			accountURL = selection.AccountURL
+			vaultID = selection.VaultID
+			vaultName = selection.VaultName
+		}
+	}
+	backend := initSecretsProfileBackendFromInputs(initSecretsProfileBackendInput{
+		KindValue:       kindValue,
+		Timeout:         timeout,
+		AccountID:       accountID,
+		AccountURL:      accountURL,
+		VaultID:         vaultID,
+		VaultName:       vaultName,
+		ConnectHost:     connectHost,
+		ConnectTokenEnv: connectTokenEnv,
+		ServiceTokenEnv: serviceTokenEnv,
+	})
 	storedLabel := normalizeInitSecretsProfileStoredLabel(labelInput, labelSeed.FallbackValue, labelSeed.StoredLabel, creating)
 	return initSecretsProfileEditorResult{
 		Apply:       true,
