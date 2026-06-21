@@ -94,12 +94,13 @@ func TestStoreOptionsInvalidBackendFlag(t *testing.T) {
 }
 
 func TestAllowedKeysExactCredentialMatrix(t *testing.T) {
-	want := []string{GitTokenKey, GitHubAppIDKey, GitHubAppPrivateKeyKey, GitHubAppInstallationIDKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
+	want := []string{GitTokenKey, GitHubAppIDKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
 	if got := AllowedKeys(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("AllowedKeys = %#v, want %#v", got, want)
 	}
 
 	for _, key := range []string{
+		GitHubAppInstallationIDKey,
 		LegacyLLMAPIKeyKey,
 		"git_oauth_access_token",
 		"git_oauth_refresh_token",
@@ -132,7 +133,6 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 			want: []KeySpec{
 				{Key: GitHubAppIDKey, Required: true},
 				{Key: GitHubAppPrivateKeyKey, Required: true},
-				{Key: GitHubAppInstallationIDKey, Required: false},
 			},
 		},
 		{
@@ -141,7 +141,6 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 			want: []KeySpec{
 				{Key: GitHubAppIDKey, Required: true},
 				{Key: GitHubAppPrivateKeyKey, Required: true},
-				{Key: GitHubAppInstallationIDKey, Required: false},
 			},
 		},
 		{
@@ -209,7 +208,7 @@ func TestValidateAllowedKeyForConfigNarrowsDeclaredRefs(t *testing.T) {
 	if err := ValidateAllowedKeyForConfig(cfg, "codereview/git-a", AnthropicAPIKeyKey); !errors.Is(err, credstore.ErrKeyNotAllowed) {
 		t.Fatalf("ValidateAllowedKeyForConfig git llm key error = %v, want ErrKeyNotAllowed", err)
 	}
-	wantAppKeys := []string{GitHubAppIDKey, GitHubAppInstallationIDKey, GitHubAppPrivateKeyKey}
+	wantAppKeys := []string{GitHubAppIDKey, GitHubAppPrivateKeyKey}
 	gotAppKeys, err := ExpectedKeysForConfigRef(cfg, "codereview/app")
 	if err != nil {
 		t.Fatalf("ExpectedKeysForConfigRef github_app: %v", err)
@@ -569,7 +568,6 @@ func TestCredentialStatuses(t *testing.T) {
 			Keys: []KeyStatus{
 				presentKeyStatus(GitHubAppIDKey, true),
 				presentKeyStatus(GitHubAppPrivateKeyKey, true),
-				missingKeyStatus(GitHubAppInstallationIDKey, false),
 			},
 		},
 		{
@@ -678,7 +676,6 @@ func TestCredentialStatusesPartialRequiredBundle(t *testing.T) {
 		Keys: []KeyStatus{
 			presentKeyStatus(GitHubAppIDKey, true),
 			missingKeyStatus(GitHubAppPrivateKeyKey, true),
-			missingKeyStatus(GitHubAppInstallationIDKey, false),
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -701,7 +698,7 @@ func TestMissingRequiredKeys(t *testing.T) {
 		Keys: []KeyStatus{
 			missingKeyStatus(GitHubAppIDKey, true),
 			unknownKeyStatus(GitHubAppPrivateKeyKey, true, "boom"),
-			missingKeyStatus(GitHubAppInstallationIDKey, false),
+			missingKeyStatus("optional_test_key", false),
 		},
 	}
 	want := []string{GitHubAppIDKey}

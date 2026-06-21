@@ -35,7 +35,8 @@ const (
 	// GitHubAppPrivateKeyKey stores the GitHub App PEM private key.
 	// #nosec G101 -- this is a keyring item name, not a secret value.
 	GitHubAppPrivateKeyKey = "github_app_private_key"
-	// GitHubAppInstallationIDKey stores an optional explicit GitHub App installation ID.
+	// GitHubAppInstallationIDKey is a removed legacy key name. Installation
+	// routing now belongs to review profile config, not credential bundles.
 	// #nosec G101 -- this is a keyring item name, not a secret value.
 	GitHubAppInstallationIDKey = "github_app_installation_id"
 	// AnthropicAPIKeyKey stores the key name for Anthropic direct API adapters.
@@ -59,7 +60,7 @@ var (
 
 // AllowedKeys is cr's keyring write allowlist.
 func AllowedKeys() []string {
-	return []string{GitTokenKey, GitHubAppIDKey, GitHubAppPrivateKeyKey, GitHubAppInstallationIDKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
+	return []string{GitTokenKey, GitHubAppIDKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
 }
 
 // Ref is a parsed cr credential name.
@@ -497,7 +498,6 @@ func KeySpecsForPurpose(ref config.CredentialRef) ([]KeySpec, error) {
 			return []KeySpec{
 				{Key: GitHubAppIDKey, Required: true},
 				{Key: GitHubAppPrivateKeyKey, Required: true},
-				{Key: GitHubAppInstallationIDKey, Required: false},
 			}, nil
 		case config.GitAuthModeOAuthDevice:
 			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrUnsupported, ref.Purpose, mode)

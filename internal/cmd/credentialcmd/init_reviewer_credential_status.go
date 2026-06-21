@@ -361,7 +361,7 @@ func initReviewerCredentialStatusDescription(status initReviewerCredentialStatus
 		}
 		lines = append(lines, trimmed)
 	}
-	lines = append(lines, "This is a credential name, not a PAT, GitHub App ID, private key, or installation ID.")
+	lines = append(lines, "This is a credential name, not a PAT, GitHub App ID, or private key.")
 	if strings.TrimSpace(status.Unavailable) != "" {
 		lines = append(lines, strings.TrimSpace(status.Unavailable)+".")
 	}

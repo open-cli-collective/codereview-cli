@@ -5703,7 +5703,7 @@ func materializeProfileReviewerEntity(cfg config.File, profileName string, profi
 			existing.DisplayName = displayName
 			cfg.ReviewerEntities[name] = existing
 		}
-		profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: name}
+		profile.Reviewer = initProfileReviewerForEntity(name, existing.AuthMode)
 		if cfg.Profiles == nil {
 			cfg.Profiles = map[string]config.Profile{}
 		}
@@ -5713,12 +5713,25 @@ func materializeProfileReviewerEntity(cfg config.File, profileName string, profi
 
 	entityName := uniqueInitReviewerEntityName(buildInitStandaloneReviewerEntityNameSet(cfg.ReviewerEntities), profileName+"-reviewer")
 	cfg.ReviewerEntities[entityName] = entity
-	profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: entityName}
+	profile.Reviewer = initProfileReviewerForEntity(entityName, entity.AuthMode)
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
 	}
 	cfg.Profiles[profileName] = profile
 	return cfg, profile
+}
+
+func initProfileReviewerForEntity(entityName string, authMode config.GitAuthMode) config.ProfileReviewer {
+	reviewer := config.ProfileReviewer{
+		Kind:   config.ProfileReviewerKindEntity,
+		Entity: strings.TrimSpace(entityName),
+	}
+	if authMode == config.GitAuthModeGitHubApp {
+		reviewer.GitHubAppInstallation = &config.ProfileReviewerGitHubAppInstallation{
+			Mode: config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+		}
+	}
+	return reviewer
 }
 
 func reviewerEntityConfigFromProfile(profile config.Profile) config.ReviewerEntity {

@@ -242,7 +242,6 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 	}{
 		{key: credentials.GitHubAppIDKey, value: "12345"},
 		{key: credentials.GitHubAppPrivateKeyKey, value: "private-key-value"},
-		{key: credentials.GitHubAppInstallationIDKey, value: "67890"},
 	} {
 		cmd, _, _ = newTestCommand(path, strings.NewReader(write.value))
 		err = root.Execute(cmd, []string{
@@ -259,7 +258,6 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 	}
 	assertFileBundleKeys(t, "work-reviewer", []string{
 		credentials.GitHubAppIDKey,
-		credentials.GitHubAppInstallationIDKey,
 		credentials.GitHubAppPrivateKeyKey,
 	})
 }
@@ -797,7 +795,6 @@ func TestPlanInitCredentials(t *testing.T) {
 		want := []credentials.KeySpec{
 			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		}
 		if !reflect.DeepEqual(entry.KeySpecs, want) {
 			t.Fatalf("key specs = %#v, want %#v", entry.KeySpecs, want)
@@ -2451,8 +2448,15 @@ func TestBuildInitReviewerEntityInventorySharedDisplayNameWinsWhenOnlyOneProfile
 func TestEditInteractiveInitReviewerEntityStepUpdatesConfiguredEntity(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
-	home.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: "oc-collective-bot"}
-	work.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: "oc-collective-bot"}
+	reviewer := config.ProfileReviewer{
+		Kind:   config.ProfileReviewerKindEntity,
+		Entity: "oc-collective-bot",
+		GitHubAppInstallation: &config.ProfileReviewerGitHubAppInstallation{
+			Mode: config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+		},
+	}
+	home.Reviewer = reviewer
+	work.Reviewer = reviewer
 	cfg := config.File{
 		ReviewerEntities: map[string]config.ReviewerEntity{
 			"oc-collective-bot": {
@@ -2512,7 +2516,7 @@ func TestEditInteractiveInitReviewerEntityStepUpdatesConfiguredEntity(t *testing
 	}
 	for _, profileName := range []string{"home", "work"} {
 		profile := next.cfg.Profiles[profileName]
-		if got, want := profile.Reviewer, (config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: "oc-collective-bot"}); got != want {
+		if got, want := profile.Reviewer, reviewer; !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s reviewer selector = %#v, want %#v", profileName, got, want)
 		}
 		if profile.ReviewerCredentials == nil {
@@ -3958,7 +3962,6 @@ func TestWriteInitCredentialPlanHintsUsesMissingRequiredKeysOnly(t *testing.T) {
 		KeySpecs: []credentials.KeySpec{
 			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 		PlannedWriteKeys:    []string{credentials.GitHubAppIDKey},
 		MissingRequiredKeys: []string{credentials.GitHubAppPrivateKeyKey},
@@ -3991,7 +3994,6 @@ func TestWriteInitCredentialPlanHintsForDeferredGitHubAppUsesRequiredKeysOnly(t 
 		KeySpecs: []credentials.KeySpec{
 			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 		State: initCredentialPlanStateDefer,
 	}
@@ -6464,15 +6466,12 @@ func TestHuhInitReviewerEntityPrompterGitHubAppLinearFlowShowsCredentialBundleCo
 		"Reviewer credential status",
 		credentials.GitHubAppIDKey,
 		credentials.GitHubAppPrivateKeyKey,
-		credentials.GitHubAppInstallationIDKey,
 		"staged",
 		credentials.GitHubAppIDKey,
 		credentials.GitHubAppPrivateKeyKey,
 		"Reviewer credential values",
 		"GitHub App ID",
 		"GitHub App private key",
-		"Optional credential key: " + credentials.GitHubAppInstallationIDKey,
-		"optional",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr missing %q:\n%s", want, out)
@@ -6758,9 +6757,6 @@ func TestReviewerEntityLinearEditorGitHubAppRequiresInlineSecretsBeforeStaging(t
 	if got := draft.ReviewerCredentialWrites[credentials.GitHubAppPrivateKeyKey]; got != privateKey {
 		t.Fatalf("staged private key = %q, want multiline key", got)
 	}
-	if _, ok := draft.ReviewerCredentialWrites[credentials.GitHubAppInstallationIDKey]; ok {
-		t.Fatalf("optional installation id staged unexpectedly: %#v", draft.ReviewerCredentialWrites)
-	}
 }
 
 func TestReviewerEntityLinearEditorLabelDerivedRefDoesNotMarkMissingStatusAsOverwrite(t *testing.T) {
@@ -6779,7 +6775,6 @@ func TestReviewerEntityLinearEditorLabelDerivedRefDoesNotMarkMissingStatusAsOver
 			Keys: []initReviewerCredentialKeyStatus{
 				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyMissing},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyOptional},
 			},
 		}},
 	}
@@ -6821,7 +6816,6 @@ func TestReviewerEntityLinearEditorManualRefDoesNotMarkUnavailableStatusAsOverwr
 			Keys: []initReviewerCredentialKeyStatus{
 				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyMissing},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyOptional},
 			},
 		}},
 	}
@@ -6864,7 +6858,6 @@ func TestReviewerEntityLinearEditorLabelDerivedRefPreservesBackendUnavailableSta
 			Keys: []initReviewerCredentialKeyStatus{
 				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyUnavailable},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyUnavailable},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyUnavailable},
 			},
 		}},
 	}
@@ -7010,8 +7003,6 @@ func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testi
 		"GitHub App private key",
 		credentials.GitHubAppIDKey,
 		credentials.GitHubAppPrivateKeyKey,
-		"Optional credential key: " + credentials.GitHubAppInstallationIDKey,
-		"optional",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr missing %q:\n%s", want, out)
@@ -7056,7 +7047,6 @@ func TestHuhInitReviewerEntityDetailsPreservesPromptContextCredentialStore(t *te
 			Keys: []initReviewerCredentialKeyStatus{
 				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyMissing},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyOptional},
 			},
 		}},
 	}
@@ -7458,7 +7448,7 @@ func TestInitCredentialReadinessNoteNamesSelectedSecretsProfile(t *testing.T) {
 	}
 }
 
-func TestInitCredentialReadinessNoteLabelsGitHubAppRequiredAndOptionalKeys(t *testing.T) {
+func TestInitCredentialReadinessNoteLabelsGitHubAppRequiredKeys(t *testing.T) {
 	note := initCredentialReadinessNote(initCredentialPlanEntry{
 		Ref: config.CredentialRef{
 			Purpose: "reviewer_credentials",
@@ -7468,25 +7458,23 @@ func TestInitCredentialReadinessNoteLabelsGitHubAppRequiredAndOptionalKeys(t *te
 		KeySpecs: []credentials.KeySpec{
 			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 		State: initCredentialPlanStateDefer,
 	})
 	for _, want := range []string{
 		"reviewer deferred",
 		"required: " + credentials.GitHubAppIDKey + ", " + credentials.GitHubAppPrivateKeyKey,
-		"optional: " + credentials.GitHubAppInstallationIDKey,
 	} {
 		if !strings.Contains(note, want) {
 			t.Fatalf("note = %q, want %q", note, want)
 		}
 	}
-	if strings.Contains(note, "missing "+credentials.GitHubAppInstallationIDKey) || strings.Contains(note, "required: "+credentials.GitHubAppInstallationIDKey) {
-		t.Fatalf("note = %q, want installation id labeled optional only", note)
+	if strings.Contains(note, "optional:") || strings.Contains(note, credentials.GitHubAppInstallationIDKey) {
+		t.Fatalf("note = %q, want no optional installation id copy", note)
 	}
 }
 
-func TestInitCredentialReadinessNoteLabelsPartialGitHubAppOptionalKey(t *testing.T) {
+func TestInitCredentialReadinessNoteLabelsPartialGitHubAppRequiredKeys(t *testing.T) {
 	note := initCredentialReadinessNote(initCredentialPlanEntry{
 		Ref: config.CredentialRef{
 			Purpose: "reviewer_credentials",
@@ -7496,21 +7484,19 @@ func TestInitCredentialReadinessNoteLabelsPartialGitHubAppOptionalKey(t *testing
 		KeySpecs: []credentials.KeySpec{
 			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 		MissingRequiredKeys: []string{credentials.GitHubAppPrivateKeyKey},
 		State:               initCredentialPlanStateMissingRequired,
 	})
 	for _, want := range []string{
 		"reviewer missing required " + credentials.GitHubAppPrivateKeyKey,
-		"optional: " + credentials.GitHubAppInstallationIDKey,
 	} {
 		if !strings.Contains(note, want) {
 			t.Fatalf("note = %q, want %q", note, want)
 		}
 	}
-	if strings.Contains(note, "missing "+credentials.GitHubAppInstallationIDKey) || strings.Contains(note, "required "+credentials.GitHubAppInstallationIDKey) {
-		t.Fatalf("note = %q, want optional installation id not treated as required", note)
+	if strings.Contains(note, "optional:") || strings.Contains(note, credentials.GitHubAppInstallationIDKey) {
+		t.Fatalf("note = %q, want no optional installation id copy", note)
 	}
 }
 
@@ -7518,12 +7504,11 @@ func TestInitProfileReadinessLineIncludesNotes(t *testing.T) {
 	line := initProfileReadinessLine(initProfileReadiness{
 		ProfileName: "work",
 		Ready:       false,
-		Notes:       []string{"reviewer deferred (required: github_app_id, github_app_private_key; optional: github_app_installation_id)"},
+		Notes:       []string{"reviewer deferred (required: github_app_id, github_app_private_key)"},
 	})
 	for _, want := range []string{
 		"- work: needs follow-up",
 		"required: github_app_id, github_app_private_key",
-		"optional: github_app_installation_id",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("line = %q, want %q", line, want)
@@ -15363,7 +15348,6 @@ func TestInitCredentialSecretPromptTitleReviewerKeys(t *testing.T) {
 		KeySpecs: []credentials.KeySpec{
 			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 	}
 	patEntry := initCredentialPlanEntry{
@@ -15385,7 +15369,7 @@ func TestInitCredentialSecretPromptTitleReviewerKeys(t *testing.T) {
 			got: initCredentialSecretPromptTitle(initCredentialSecretPrompt{
 				Entry: githubAppEntry,
 			}),
-			want: "How should init handle GitHub App reviewer secrets? (codereview/rianjs-bot) (required: github_app_id, github_app_private_key; optional: github_app_installation_id)",
+			want: "How should init handle GitHub App reviewer secrets? (codereview/rianjs-bot) (required: github_app_id, github_app_private_key)",
 		},
 		{
 			name: "pat action title",
@@ -15708,23 +15692,19 @@ func TestInitReviewerCredentialStatusStates(t *testing.T) {
 		KeySpecs: []credentials.KeySpec{
 			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 	}
-	decisions := map[initCredentialDecisionKey]initCredentialDecisionKind{}
-	decisions[initCredentialDecisionMapKey(entry, credentials.GitHubAppInstallationIDKey)] = initCredentialDecisionSkipOptional
 
 	status := initReviewerCredentialStatusFromEntry(
 		entry,
 		map[string]string{credentials.GitHubAppPrivateKeyKey: "sentinel-private-key"},
-		decisions,
+		map[initCredentialDecisionKey]initCredentialDecisionKind{},
 		map[string]bool{credentials.GitHubAppIDKey: true},
 		"",
 	)
 
 	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppIDKey, initReviewerCredentialKeyExisting)
 	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyStaged)
-	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppInstallationIDKey, initReviewerCredentialKeySkippedOptional)
 	if strings.Contains(initReviewerCredentialStatusDescription(status), "sentinel-private-key") {
 		t.Fatalf("status description leaked secret value: %s", initReviewerCredentialStatusDescription(status))
 	}
@@ -15740,7 +15720,6 @@ func TestInitReviewerCredentialStatusDeferPreservesPartialExistingKeys(t *testin
 		KeySpecs: []credentials.KeySpec{
 			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 	}
 	decisions := map[initCredentialDecisionKey]initCredentialDecisionKind{}
@@ -15756,7 +15735,6 @@ func TestInitReviewerCredentialStatusDeferPreservesPartialExistingKeys(t *testin
 
 	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppIDKey, initReviewerCredentialKeyExisting)
 	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyDeferred)
-	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppInstallationIDKey, initReviewerCredentialKeyOptional)
 }
 
 func TestInitReviewerCredentialStatusSelectionFiltersByAuthMode(t *testing.T) {
@@ -17000,7 +16978,6 @@ func TestInitInteractiveMenuReviewerCredentialStatusShowsStagedOnReentry(t *test
 				status := findReviewerCredentialStatusForTest(t, prompt.Context.ReviewerCredentialStatuses, "codereview/rianjs-bot", string(config.GitAuthModeGitHubApp))
 				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppIDKey, initReviewerCredentialKeyStaged)
 				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyStaged)
-				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppInstallationIDKey, initReviewerCredentialKeyOptional)
 				description := initReviewerCredentialStatusDescription(status)
 				if strings.Contains(description, "sentinel") {
 					t.Fatalf("status leaked secret value: %s", description)
@@ -19308,7 +19285,6 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateWrite,
 		}},
@@ -20804,7 +20780,6 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateKeepExisting,
 		}},
@@ -20832,8 +20807,8 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppPrivateKeyKey); err != nil || !ok {
 		t.Fatalf("github_app_private_key exists = %t, err = %v; want retained", ok, err)
 	}
-	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppInstallationIDKey); err != nil || !ok {
-		t.Fatalf("github_app_installation_id exists = %t, err = %v; want retained", ok, err)
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppInstallationIDKey); err != nil || ok {
+		t.Fatalf("github_app_installation_id exists = %t, err = %v; want deleted as stale legacy key", ok, err)
 	}
 }
 
@@ -20874,7 +20849,6 @@ func TestApplyInteractiveInitSessionPlanSaveFailureDoesNotDeleteStaleReviewerKey
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateKeepExisting,
 		}},
@@ -20941,7 +20915,6 @@ func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitc
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateWrite,
 		}},
@@ -21001,7 +20974,6 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateKeepExisting,
 		}},
@@ -21046,7 +21018,6 @@ func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t
 		KeySpecs: []credentials.KeySpec{
 			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 		State: initCredentialPlanStateKeepExisting,
 	}

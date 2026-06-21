@@ -17,17 +17,16 @@ import (
 type initReviewerEntityEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
 
 const (
-	initReviewerEntityFieldSelection               initLinearFieldID = "reviewer_entity_selection"
-	initReviewerEntityFieldLabel                   initLinearFieldID = "reviewer_entity_label"
-	initReviewerEntityFieldCredentialStore         initLinearFieldID = "reviewer_entity_credential_store"
-	initReviewerEntityFieldSecretLocation          initLinearFieldID = "reviewer_entity_secret_location"
-	initReviewerEntityFieldCredentialStatus        initLinearFieldID = "reviewer_entity_credential_status"
-	initReviewerEntityFieldCredentialValues        initLinearFieldID = "reviewer_entity_credential_values"
-	initReviewerEntityFieldGitToken                initLinearFieldID = "reviewer_entity_git_token"
-	initReviewerEntityFieldGitHubAppID             initLinearFieldID = "reviewer_entity_github_app_id"
-	initReviewerEntityFieldGitHubAppPrivateKey     initLinearFieldID = "reviewer_entity_github_app_private_key"
-	initReviewerEntityFieldGitHubAppInstallationID initLinearFieldID = "reviewer_entity_github_app_installation_id"
-	initReviewerEntityFieldAction                  initLinearFieldID = "reviewer_entity_action"
+	initReviewerEntityFieldSelection           initLinearFieldID = "reviewer_entity_selection"
+	initReviewerEntityFieldLabel               initLinearFieldID = "reviewer_entity_label"
+	initReviewerEntityFieldCredentialStore     initLinearFieldID = "reviewer_entity_credential_store"
+	initReviewerEntityFieldSecretLocation      initLinearFieldID = "reviewer_entity_secret_location"
+	initReviewerEntityFieldCredentialStatus    initLinearFieldID = "reviewer_entity_credential_status"
+	initReviewerEntityFieldCredentialValues    initLinearFieldID = "reviewer_entity_credential_values"
+	initReviewerEntityFieldGitToken            initLinearFieldID = "reviewer_entity_git_token"
+	initReviewerEntityFieldGitHubAppID         initLinearFieldID = "reviewer_entity_github_app_id"
+	initReviewerEntityFieldGitHubAppPrivateKey initLinearFieldID = "reviewer_entity_github_app_private_key"
+	initReviewerEntityFieldAction              initLinearFieldID = "reviewer_entity_action"
 )
 
 const (
@@ -468,14 +467,6 @@ func addReviewerEntityCredentialValueFields(document *initLinearDocument, kind i
 	if index := document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey); index >= 0 {
 		(*document)[index].Hidden = hidden || kind != initReviewerEntityKindGitHubApp
 	}
-	document.addEditableSecretInput(
-		initReviewerEntityFieldGitHubAppInstallationID,
-		"GitHub App installation ID",
-		"Optional. Leave blank unless this reviewer must pin a specific installation.",
-		"",
-		nil,
-		initLinearFieldOptions{Hidden: hidden || kind != initReviewerEntityKindGitHubApp},
-	)
 }
 
 func initReviewerEntitySetCredentialFieldsHidden(model *initLinearEditorModel, kind initReviewerEntityKind, hideDetails bool) {
@@ -485,7 +476,6 @@ func initReviewerEntitySetCredentialFieldsHidden(model *initLinearEditorModel, k
 	model.setFieldHidden(initReviewerEntityFieldGitToken, hidePAT)
 	model.setFieldHidden(initReviewerEntityFieldGitHubAppID, hideGitHubApp)
 	model.setFieldHidden(initReviewerEntityFieldGitHubAppPrivateKey, hideGitHubApp)
-	model.setFieldHidden(initReviewerEntityFieldGitHubAppInstallationID, hideGitHubApp)
 }
 
 func initReviewerEntityClearCredentialFieldValues(model *initLinearEditorModel) {
@@ -493,7 +483,6 @@ func initReviewerEntityClearCredentialFieldValues(model *initLinearEditorModel) 
 		initReviewerEntityFieldGitToken,
 		initReviewerEntityFieldGitHubAppID,
 		initReviewerEntityFieldGitHubAppPrivateKey,
-		initReviewerEntityFieldGitHubAppInstallationID,
 	} {
 		model.setFieldValue(id, "")
 	}
@@ -546,8 +535,6 @@ func initReviewerEntityCredentialFieldKey(id initLinearFieldID) string {
 		return credentials.GitHubAppIDKey
 	case initReviewerEntityFieldGitHubAppPrivateKey:
 		return credentials.GitHubAppPrivateKeyKey
-	case initReviewerEntityFieldGitHubAppInstallationID:
-		return credentials.GitHubAppInstallationIDKey
 	default:
 		return ""
 	}
@@ -561,8 +548,6 @@ func initReviewerEntityCredentialFieldID(key string) initLinearFieldID {
 		return initReviewerEntityFieldGitHubAppID
 	case credentials.GitHubAppPrivateKeyKey:
 		return initReviewerEntityFieldGitHubAppPrivateKey
-	case credentials.GitHubAppInstallationIDKey:
-		return initReviewerEntityFieldGitHubAppInstallationID
 	default:
 		return ""
 	}
@@ -876,16 +861,16 @@ func reviewerEntityKindDetailDescription(kind initReviewerEntityKind) string {
 	if kind != initReviewerEntityKindGitHubApp {
 		return label
 	}
-	return label + ". Required credential keys: " + credentials.GitHubAppIDKey + ", " + credentials.GitHubAppPrivateKeyKey + ". Optional credential key: " + credentials.GitHubAppInstallationIDKey + "."
+	return label + ". Required credential keys: " + credentials.GitHubAppIDKey + ", " + credentials.GitHubAppPrivateKeyKey + "."
 }
 
 func reviewerEntitySecretLocationDescription(kind initReviewerEntityKind) string {
-	base := "Credential name for this reviewer. This is where cr stores secret values in the selected credential store; it is not a PAT, GitHub App ID, private key, or installation ID. Change it only if you need a custom credential-store location."
+	base := "Credential name for this reviewer. This is where cr stores secret values in the selected credential store; it is not a PAT, GitHub App ID, or private key. Change it only if you need a custom credential-store location."
 	if kind == initReviewerEntityKindPAT {
 		return base + " Store required secret " + credentials.GitTokenKey + " at this name."
 	}
 	if kind == initReviewerEntityKindGitHubApp {
-		return base + " Store required secrets " + credentials.GitHubAppIDKey + " and " + credentials.GitHubAppPrivateKeyKey + " at this name; " + credentials.GitHubAppInstallationIDKey + " is optional."
+		return base + " Store required secrets " + credentials.GitHubAppIDKey + " and " + credentials.GitHubAppPrivateKeyKey + " at this name."
 	}
 	return base
 }
