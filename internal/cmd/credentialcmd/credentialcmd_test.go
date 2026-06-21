@@ -11322,40 +11322,19 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t 
 		discoveryMode: initSecretsBackendDiscoveryModeOff,
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			editorCalls++
-			model := newInitLinearEditorModel(editor, 180, 32)
-			switch editorCalls {
-			case 1:
-				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "onepasswordfoo")
-				model = focusInitLinearField(t, model, initSecretsManagementFieldTarget)
-				updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-				next, ok := updated.(initLinearEditorModel)
-				if !ok {
-					t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
-				}
-				return next, nil
-			case 2:
-				_, _ = io.WriteString(out, model.View())
-				if !strings.Contains(model.layout.Content, "1PasswordFoo (1Password desktop app) (Staged for deletion)") {
-					t.Fatalf("second editor content missing pending row:\n%s", model.layout.Content)
-				}
-				targetIndex := model.document.fieldIndexByID(initSecretsManagementFieldTarget)
-				targetOptions := model.document[targetIndex].Options
-				if got := targetOptions[len(targetOptions)-1].Value; got != initSecretsManagementRestoreSelectionPrefix+"onepasswordfoo" {
-					t.Fatalf("last target option = %q, want staged deletion restore option last; options = %#v", got, targetOptions)
-				}
-				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initSecretsManagementRestoreSelectionPrefix+"onepasswordfoo")
-				model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
-				model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
-				updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-				next, ok := updated.(initLinearEditorModel)
-				if !ok {
-					t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
-				}
-				return next, nil
-			default:
-				t.Fatalf("unexpected editor call %d", editorCalls)
-				return initLinearEditorModel{}, nil
+			if editorCalls != 1 {
+				t.Fatalf("unexpected editor call %d; delete should return an applied config edit immediately", editorCalls)
 			}
+			model := newInitLinearEditorModel(editor, 180, 32)
+			_, _ = io.WriteString(out, model.View())
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, "onepasswordfoo")
+			model = focusInitLinearField(t, model, initSecretsManagementFieldTarget)
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
 		},
 	}
 
@@ -11372,8 +11351,11 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t 
 	if _, ok := edit.Config.Secrets.Profiles["personal"]; !ok {
 		t.Fatalf("secrets profiles = %#v, want personal retained", edit.Config.Secrets.Profiles)
 	}
-	if !strings.Contains(stderr.String(), "1PasswordFoo (1Password desktop app) (Staged for deletion)") {
-		t.Fatalf("stderr = %q, want staged deletion suffix", stderr.String())
+	if editorCalls != 1 {
+		t.Fatalf("editorCalls = %d, want one delete editor call", editorCalls)
+	}
+	if !strings.Contains(stderr.String(), "1PasswordFoo (1Password desktop app)") {
+		t.Fatalf("stderr = %q, want deleted store visible before delete", stderr.String())
 	}
 }
 

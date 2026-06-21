@@ -62,18 +62,11 @@ func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyri
 		case initDetailActionEdit:
 			return initSecretsManagementEditFromDocumentWithDiscovery(working, model.document, desktopDiscovery)
 		case initLinearResultActionDelete:
-			selection := model.document.selectedValue(initSecretsManagementFieldTarget)
-			profile, ok := working.Secrets.Profiles[selection]
-			if !ok {
-				return initKeyringBackendEdit{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, selection)
-			}
-			nextCfg, _, err := configedit.RemoveSecretsProfile(working, selection)
+			edit, err := initSecretsManagementDeleteEditFromDocument(working, model.document)
 			if err != nil {
 				return initKeyringBackendEdit{}, err
 			}
-			pendingDeletes[selection] = initPendingSecretsManagementDelete{ID: selection, Profile: profile}
-			pendingDeleteOrder = appendInitSecretsManagementPendingDeleteOrder(pendingDeleteOrder, selection)
-			working = nextCfg
+			return edit, nil
 		case initLinearResultActionRestore:
 			selection := model.document.selectedValue(initSecretsManagementFieldTarget)
 			id, ok := initSecretsManagementRestoreSelectionName(selection)
@@ -616,6 +609,22 @@ func initSecretsManagementSetOnePasswordHidden(model *initLinearEditorModel, hid
 
 func initSecretsManagementEditFromDocument(cfg config.File, document initLinearDocument) (initKeyringBackendEdit, error) {
 	return initSecretsManagementEditFromDocumentWithDiscovery(cfg, document, initOnePasswordDesktopDiscovery{})
+}
+
+func initSecretsManagementDeleteEditFromDocument(cfg config.File, document initLinearDocument) (initKeyringBackendEdit, error) {
+	state, err := initSecretsManagementSelectionStateForDocument(cfg, document)
+	if err != nil {
+		return initKeyringBackendEdit{}, err
+	}
+	if state.Creating || state.BuiltIn || state.Pending || state.ID == "" {
+		return initKeyringBackendEdit{}, fmt.Errorf("only configured credential stores can be deleted")
+	}
+	working := config.Normalize(cloneInitConfigFile(cfg))
+	nextCfg, _, err := configedit.RemoveSecretsProfile(working, state.ID)
+	if err != nil {
+		return initKeyringBackendEdit{}, err
+	}
+	return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: nextCfg}, nil
 }
 
 func initSecretsManagementEditFromDocumentWithDiscovery(cfg config.File, document initLinearDocument, desktopDiscovery initOnePasswordDesktopDiscovery) (initKeyringBackendEdit, error) {
