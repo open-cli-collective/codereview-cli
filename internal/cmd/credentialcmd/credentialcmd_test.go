@@ -11580,6 +11580,7 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 	for _, hiddenText := range []string{
 		"Credential store backend",
 		"1Password details",
+		"Desktop app account and vault routing",
 		"Tokens are referenced by environment variable name",
 		"1Password item title prefix",
 		"1Password secret name",
@@ -11588,6 +11589,9 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 		if strings.Contains(out, hiddenText) {
 			t.Fatalf("desktop content includes hidden advanced field %q:\n%s", hiddenText, out)
 		}
+	}
+	if strings.Contains(out, "\n1Password desktop\n") {
+		t.Fatalf("desktop content includes redundant section heading:\n%s", out)
 	}
 	assertContentOrder(t, out, "1Password account URL", "1Password account id (advanced)", "1Password vault name or id", "1Password request timeout")
 }
@@ -11678,6 +11682,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 		}
 	}
 	for _, hidden := range []string{
+		"Desktop app account and vault routing",
 		"1Password account URL",
 		"1Password account id (advanced)",
 		"1Password vault name or id",
@@ -11685,6 +11690,9 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 		if strings.Contains(out, hidden) {
 			t.Fatalf("desktop discovery content includes manual field %q:\n%s", hidden, out)
 		}
+	}
+	if strings.Contains(out, "\n1Password desktop\n") {
+		t.Fatalf("desktop discovery content includes redundant section heading:\n%s", out)
 	}
 
 	edit, err := initSecretsManagementEditFromDocumentWithDiscovery(cfg, model.document, discovery)

@@ -34,7 +34,6 @@ const (
 	initSecretsManagementSectionProfile         initLinearFieldID = "secrets_management_section_profile"
 	initSecretsManagementSectionConnect         initLinearFieldID = "secrets_management_section_connect"
 	initSecretsManagementSectionServiceAccount  initLinearFieldID = "secrets_management_section_service_account"
-	initSecretsManagementSectionDesktop         initLinearFieldID = "secrets_management_section_desktop"
 	initSecretsManagementActionDelete           string            = "delete"
 )
 
@@ -154,7 +153,6 @@ func initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg config.Fi
 		validateOptionalDisplayName,
 	)
 	document.addEditableSelect(initSecretsManagementFieldBackend, "Credential store backend", "", initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile)), string(credstore.BackendFile))
-	document.addSectionField(initSecretsManagementSectionDesktop, "1Password desktop", "Desktop app account and vault routing.")
 	document.addEditableSelect(initSecretsManagementFieldDesktopAccount, "1Password account", "Discovered from the local 1Password desktop app.", desktopDiscovery.AccountOptions(), initOnePasswordManualSelection)
 	document.addEditableSelect(initSecretsManagementFieldDesktopVault, "1Password vault", "Vaults available in the selected 1Password account. Choose manual entry if this list is incomplete.", desktopDiscovery.VaultOptions(initOnePasswordManualSelection), initOnePasswordManualSelection)
 	document.addEditableInput(initSecretsManagementFieldDesktopAccountURL, "1Password account URL", "Account sign-in address such as signalft.1password.com. Required only when desktop discovery is unavailable or manual entry is selected.", "", validateOptionalDisplayName)
@@ -413,9 +411,8 @@ func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg con
 	model.setFieldHidden(initSecretsManagementFieldDesktopAccountURL, !manualAccount)
 	model.setFieldHidden(initSecretsManagementFieldDesktopAccountID, !manualAccount)
 	model.setFieldHidden(initSecretsManagementFieldVaultID, !onePassword || (discoveredDesktop && !manualVault))
-	model.setFieldHidden(initSecretsManagementSectionDesktop, !opDesktop)
 	if opDesktop {
-		model.setFieldDescription(initSecretsManagementSectionDesktop, initSecretsManagementDesktopSectionDescription(desktopDiscovery, accountSelection))
+		model.setFieldDescription(initSecretsManagementFieldDesktopVault, initSecretsManagementDesktopVaultDescription(desktopDiscovery, accountSelection))
 	}
 }
 
@@ -470,13 +467,13 @@ func initSecretsManagementSetDesktopDiscoveryOptions(model *initLinearEditorMode
 	}
 }
 
-func initSecretsManagementDesktopSectionDescription(discovery initOnePasswordDesktopDiscovery, accountSelection string) string {
+func initSecretsManagementDesktopVaultDescription(discovery initOnePasswordDesktopDiscovery, accountSelection string) string {
 	if discovery.HasVaultChoices() && discovery.AccountChoiceCount() == 1 {
 		if account, ok := discovery.Account(accountSelection); ok {
 			return fmt.Sprintf("Account: %s (only discovered account). Choose a vault below.", account.Label())
 		}
 	}
-	return "Desktop app account and vault routing."
+	return "Vaults available in the selected 1Password account. Choose manual entry if this list is incomplete."
 }
 
 func initSecretsManagementSetActionOptions(model *initLinearEditorModel, allowEdit bool) {
@@ -575,7 +572,6 @@ func initSecretsManagementSetOnePasswordHidden(model *initLinearEditorModel, hid
 	model.setFieldHidden(initSecretsManagementFieldConnectTokenEnv, hideOnePassword || hideConnect)
 	model.setFieldHidden(initSecretsManagementSectionServiceAccount, hideOnePassword || hideService)
 	model.setFieldHidden(initSecretsManagementFieldServiceTokenEnv, hideOnePassword || hideService)
-	model.setFieldHidden(initSecretsManagementSectionDesktop, hideOnePassword || hideDesktop)
 	model.setFieldHidden(initSecretsManagementFieldDesktopAccount, hideOnePassword || hideDesktop)
 	model.setFieldHidden(initSecretsManagementFieldDesktopVault, hideOnePassword || hideDesktop)
 	model.setFieldHidden(initSecretsManagementFieldDesktopAccountURL, hideOnePassword || hideDesktop)
