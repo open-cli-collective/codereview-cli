@@ -85,17 +85,17 @@ func initMenuItems(prompt initMenuPrompt) []initMenuItem {
 		{
 			Action:      initMenuActionLLMRuntimes,
 			Title:       "Configure LLM runtimes",
-			Description: initMenuCountDescription(prompt.LLMRuntimeCount, "runtime", "runtimes"),
+			Description: initMenuConfiguredDescription(prompt.LLMRuntimeCount, "runtime", "runtimes", "Model providers and runtime credentials"),
 		},
 		{
 			Action:      initMenuActionReviewerEntities,
 			Title:       "Configure reviewer entities",
-			Description: initMenuCountDescription(prompt.ReviewerEntityCount, "reviewer entity", "reviewer entities"),
+			Description: initMenuConfiguredDescription(prompt.ReviewerEntityCount, "reviewer entity", "reviewer entities", "Reviewer identities and posting credentials"),
 		},
 		{
 			Action:      initMenuActionReviewProfiles,
 			Title:       "Configure review profiles",
-			Description: initMenuCountDescription(prompt.ReviewProfileCount, "profile", "profiles"),
+			Description: initMenuConfiguredDescription(prompt.ReviewProfileCount, "profile", "profiles", "Repository routing and review composition"),
 		},
 		{
 			Action:      initMenuActionGlobalSettings,
@@ -116,10 +116,17 @@ func initMenuItems(prompt initMenuPrompt) []initMenuItem {
 	for index := range items {
 		items[index].Disabled = initMenuDisabledReason(prompt, items[index].Action)
 		if items[index].Disabled != "" {
-			items[index].Description = "Unavailable: " + items[index].Disabled
+			items[index].Description = "Prerequisite: " + items[index].Disabled
 		}
 	}
 	return items
+}
+
+func initMenuConfiguredDescription(count int, singular, plural, zero string) string {
+	if count == 0 {
+		return zero
+	}
+	return initMenuCountDescription(count, singular, plural)
 }
 
 func initMenuCountDescription(count int, singular, plural string) string {

@@ -12431,6 +12431,28 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 	}
 }
 
+func TestInitMenuItemsUseInfrastructureDescriptionsBeforeConfiguredCounts(t *testing.T) {
+	items := initMenuItems(initMenuPrompt{
+		CanConfigureLLM:      true,
+		CanConfigureReviewer: true,
+		CanSave:              true,
+	})
+	descriptions := map[initMenuAction]string{}
+	for _, item := range items {
+		descriptions[item.Action] = item.Description
+	}
+	tests := map[initMenuAction]string{
+		initMenuActionLLMRuntimes:      "Model providers and runtime credentials",
+		initMenuActionReviewerEntities: "Reviewer identities and posting credentials",
+		initMenuActionReviewProfiles:   "Repository routing and review composition",
+	}
+	for action, want := range tests {
+		if descriptions[action] != want {
+			t.Fatalf("%s description = %q, want %q", action, descriptions[action], want)
+		}
+	}
+}
+
 func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 	model := newInitMenuModel(initMenuPrompt{
 		HasWorkspace:         true,
@@ -12531,6 +12553,12 @@ func TestInitMenuDisabledRowsShowErrorWithoutQuitting(t *testing.T) {
 		}
 		if !strings.Contains(result.View(), "! "+tt.reason) {
 			t.Fatalf("%s: view missing rendered error:\n%s", tt.action, result.View())
+		}
+		if !strings.Contains(result.View(), "Prerequisite: "+tt.reason) {
+			t.Fatalf("%s: view missing prerequisite description:\n%s", tt.action, result.View())
+		}
+		if strings.Contains(result.View(), "Unavailable:") {
+			t.Fatalf("%s: view contains old unavailable wording:\n%s", tt.action, result.View())
 		}
 	}
 }
