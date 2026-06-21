@@ -66,6 +66,61 @@ func TestInitInventoryReordersRowsIntoActiveCommandAndPendingGroups(t *testing.T
 	}
 }
 
+func TestInitInventoryViewUsesLinearActionListDesign(t *testing.T) {
+	model := newInitInventoryModel(initInventoryPrompt{
+		Title:       "LLM runtime",
+		Description: "Choose how reviewer agents run.",
+		Width:       80,
+		Height:      20,
+		Rows: []initInventoryRow{
+			{ID: "claude-cli", Title: "Template: Claude CLI subscription", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
+			{ID: "codex-cli", Title: "Template: Codex CLI subscription", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
+			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
+		},
+	})
+
+	out := model.View()
+	plainOut := stripANSITest(out)
+	assertContentOrder(t, plainOut,
+		"LLM runtime",
+		"Choose how reviewer agents run.",
+		"Actions",
+		"> [x] Template: Claude CLI subscription",
+		"  [ ] Template: Codex CLI subscription",
+		"  [ ] Back to main menu",
+	)
+	for _, oldChrome := range []string{"│ Template:", "↑/k up", "/ filter", "? more"} {
+		if strings.Contains(plainOut, oldChrome) {
+			t.Fatalf("view contains old list chrome %q:\n%s", oldChrome, out)
+		}
+	}
+}
+
+func TestInitInventoryViewGroupsConfiguredActionsAndPendingChanges(t *testing.T) {
+	model := newInitInventoryModel(initInventoryPrompt{
+		Title:       "Reviewer entity",
+		Description: "Choose who posts reviews.",
+		Rows: []initInventoryRow{
+			{ID: "pat", Title: "PAT reviewer", Description: "local-os / codereview/reviewer-pat", Kind: initInventoryRowKindActive, Selectable: true, Deletable: true},
+			{ID: "restore-app", Title: "GitHub App reviewer (Staged for deletion)", Kind: initInventoryRowKindPending, Restorable: true},
+			{ID: "create-pat", Title: "Configure new personal access token (PAT) reviewer", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionCommand, Selectable: true},
+			{ID: "back", Title: "Back to main menu", Kind: initInventoryRowKindCommand, PrimaryAction: initInventoryActionBack, Selectable: true},
+		},
+	})
+
+	plainOut := stripANSITest(model.View())
+	assertContentOrder(t, plainOut,
+		"Configured",
+		"> [x] PAT reviewer",
+		"local-os / codereview/reviewer-pat",
+		"Actions",
+		"Configure new personal access token (PAT) reviewer",
+		"Back to main menu",
+		"Staged changes",
+		"GitHub App reviewer (Staged for deletion)",
+	)
+}
+
 func TestInitInventoryDeleteKeyStagesDeletionForDeletableRow(t *testing.T) {
 	model := newInitInventoryModel(initInventoryPrompt{
 		Title:  "LLM runtime",
@@ -586,7 +641,7 @@ func TestInitInventoryViewShowsContextualHelpBindings(t *testing.T) {
 			t.Fatalf("view = %q, want %q", out, want)
 		}
 	}
-	for _, unwanted := range []string{"restore", "Actions", "Pending deletion"} {
+	for _, unwanted := range []string{"restore", "Pending deletion"} {
 		if strings.Contains(out, unwanted) {
 			t.Fatalf("view = %q, did not want %q for selected deletable row", out, unwanted)
 		}

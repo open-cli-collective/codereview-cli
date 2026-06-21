@@ -1960,7 +1960,7 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeInventory(prompt initLLMRuntime
 	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
-			Title:       "LLM Runtime",
+			Title:       "LLM runtime",
 			Description: "Choose how reviewer agents run.",
 			Rows:        initLLMRuntimeInventoryRows(prompt.Context),
 			Width:       80,
@@ -2165,7 +2165,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityInventory(prompt initRe
 	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
-			Title:       "Reviewer Entity",
+			Title:       "Reviewer entity",
 			Description: reviewerEntitySelectionDescription(),
 			Rows:        initReviewerEntityInventoryRows(prompt.Context),
 			Width:       80,
