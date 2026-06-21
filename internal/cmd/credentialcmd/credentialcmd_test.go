@@ -13829,6 +13829,41 @@ func TestBubbleTeaInitProfileV2PrompterReturnsStagedDraft(t *testing.T) {
 	}
 }
 
+func TestBubbleTeaInitProfileV2PrompterSkipsChooserWhenNoProfilesExist(t *testing.T) {
+	inventoryCalled := false
+	editorCalls := 0
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			inventoryCalled = true
+			return initInventoryResult{}, nil
+		},
+		profileEditorRunner: func(editor initProfileV2Editor) (initProfileV2EditorResult, error) {
+			editorCalls++
+			if editor.Draft.ProfileName != "default" {
+				t.Fatalf("editor profile name = %q, want requested create seed", editor.Draft.ProfileName)
+			}
+			if editor.Draft.OriginalProfileName != "" {
+				t.Fatalf("editor original profile name = %q, want create draft", editor.Draft.OriginalProfileName)
+			}
+			return initProfileV2EditorResult{}, nil
+		},
+	}
+
+	_, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "default",
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("Run error = %v, want direct create back to main menu", err)
+	}
+	if inventoryCalled {
+		t.Fatal("inventory runner was called for zero-profile create flow")
+	}
+	if editorCalls != 1 {
+		t.Fatalf("editorCalls = %d, want direct editor entry", editorCalls)
+	}
+}
+
 func TestBubbleTeaInitProfileV2PrompterBootstrapsRuntimeBeforeStaging(t *testing.T) {
 	profile := basicProfile("monit")
 	editorCalls := 0

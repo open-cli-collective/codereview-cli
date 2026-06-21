@@ -33,6 +33,17 @@ func newBubbleTeaInitProfileV2Prompter(opts *root.Options) initPrompter {
 }
 
 func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, error) {
+	if initProfileV2ShouldCreateDirectly(ctx) {
+		draft, staged, err := p.runProfileEditor(ctx, initCreateProfileSentinel)
+		if err != nil {
+			return initDraft{}, err
+		}
+		if staged {
+			return draft, nil
+		}
+		return initDraft{}, errInitNavigateBack
+	}
+
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
 			Title:       "Review Profile",
@@ -63,6 +74,10 @@ func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, e
 			return initDraft{}, fmt.Errorf("unsupported profile v2 inventory action %q", result.Action)
 		}
 	}
+}
+
+func initProfileV2ShouldCreateDirectly(ctx initPromptContext) bool {
+	return len(ctx.ExistingProfileNames) == 0 && len(ctx.PendingProfileDeletes) == 0
 }
 
 func (p bubbleTeaInitProfileV2Prompter) runInventory(prompt initInventoryPrompt) (initInventoryResult, error) {
