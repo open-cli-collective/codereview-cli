@@ -1035,6 +1035,7 @@ type huhInitKeyringBackendPrompter struct {
 	inventoryRunner      initInventoryRunner
 	editorRunner         initSecretsManagementEditorRunner
 	onePasswordCmdRunner initOnePasswordCommandRunner
+	executableLookPath   initExecutableLookPath
 }
 
 const (

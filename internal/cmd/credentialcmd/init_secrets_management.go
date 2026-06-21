@@ -560,6 +560,7 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 	if seedProfile.Backend.Kind == config.SecretsBackendKind(credstore.BackendOPDesktop) {
 		p.writeSecretsStorageDiscoveryNotice()
 		desktopDiscovery = p.discoverOnePasswordDesktop()
+		p.writeSecretsStorageDiscoveryResults(desktopDiscovery)
 		desktopSelection = desktopDiscovery.SelectionFor(accountID, accountURL, vaultID, vaultName)
 		if desktopSelection == initOnePasswordManualSelection && creating && accountID == "" && accountURL == "" && vaultID == "" && vaultName == "" {
 			if options := desktopDiscovery.Options(); len(options) > 0 {

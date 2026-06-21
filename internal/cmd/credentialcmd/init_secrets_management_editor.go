@@ -48,6 +48,7 @@ func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyri
 	working := config.Normalize(cloneInitConfigFile(prompt.Config))
 	p.writeSecretsStorageDiscoveryNotice()
 	desktopDiscovery := p.discoverOnePasswordDesktop()
+	p.writeSecretsStorageDiscoveryResults(desktopDiscovery)
 	pendingDeletes := map[string]initPendingSecretsManagementDelete{}
 	pendingDeleteOrder := []string{}
 	for {

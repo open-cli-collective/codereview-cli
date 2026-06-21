@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -11144,6 +11145,12 @@ func TestHuhInitKeyringBackendPrompterWritesDiscoveryNoticeBeforeOnePasswordProb
 	probeSawNotice := false
 	prompter := huhInitKeyringBackendPrompter{
 		stderr: &stderr,
+		executableLookPath: func(name string) (string, error) {
+			if name == "pass" {
+				return "", exec.ErrNotFound
+			}
+			return "", fmt.Errorf("unexpected executable lookup %q", name)
+		},
 		onePasswordCmdRunner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if strings.Join(args, " ") == "account list --format=json" {
 				out := stderr.String()
@@ -11174,6 +11181,71 @@ func TestHuhInitKeyringBackendPrompterWritesDiscoveryNoticeBeforeOnePasswordProb
 	if !probeSawNotice {
 		t.Fatalf("1Password probe ran before discovery notice; stderr = %q", stderr.String())
 	}
+	out := stderr.String()
+	for _, want := range []string{
+		initBuiltInOSCredentialStoreTitle() + ": available",
+		"1Password desktop app: not found",
+		"pass password store: not found",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr missing probe result %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestHuhInitKeyringBackendPrompterWritesDiscoveryProbeResults(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password probe result uses 1Password-enabled backend labels")
+	}
+	var stderr bytes.Buffer
+	prompter := huhInitKeyringBackendPrompter{
+		stderr: &stderr,
+		executableLookPath: func(name string) (string, error) {
+			if name == "pass" {
+				return "/usr/bin/pass", nil
+			}
+			return "", fmt.Errorf("unexpected executable lookup %q", name)
+		},
+		onePasswordCmdRunner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			switch strings.Join(args, " ") {
+			case "account list --format=json":
+				return []byte(`[{"account_uuid":"acct-1","account_name":"SignalFT","url":"signalft.1password.com"}]`), nil
+			case "vault list --account acct-1 --format=json":
+				return []byte(`[{"id":"vault-emp","name":"Employee"}]`), nil
+			default:
+				return nil, fmt.Errorf("unexpected op command %q", strings.Join(args, " "))
+			}
+		},
+		editorRunner: func(editor initLinearEditor, _ io.Reader, _ io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 180, 32)
+			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionBack)
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	_, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditKeyringBackend error = %v, want navigate back", err)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		initBuiltInOSCredentialStoreTitle() + ": available",
+		"1Password desktop app: available (1 account, 1 vault)",
+		"pass password store: available",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr missing probe result %q:\n%s", want, out)
+		}
+	}
+	assertContentOrder(t, out, "Checking available secrets storage backends.", "1Password desktop app: available (1 account, 1 vault)", "pass password store: available")
 }
 
 func TestInitSecretsManagementLinearEditorShowsBuiltInOSStoreReadOnly(t *testing.T) {

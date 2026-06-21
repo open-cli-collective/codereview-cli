@@ -207,6 +207,14 @@ func (d initOnePasswordDesktopDiscovery) HasVaultChoices() bool {
 	return false
 }
 
+func (d initOnePasswordDesktopDiscovery) Counts() (int, int) {
+	vaults := 0
+	for _, account := range d.Accounts {
+		vaults += len(account.Vaults)
+	}
+	return len(d.Accounts), vaults
+}
+
 func (d initOnePasswordDesktopDiscovery) AccountChoiceCount() int {
 	count := 0
 	for _, account := range d.Accounts {
