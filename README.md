@@ -157,7 +157,6 @@ sequence looks like:
 
 ```bash
 cr --profile work init --non-interactive \
-  --set-default \
   --git-host github.com \
   --git-auth-mode pat \
   --llm-provider anthropic \
@@ -186,11 +185,9 @@ trusted source paths, `cr config llm models` for `llm.model_map`, and
 `cr config retention` for durable run-data policy. Use interactive `cr init` to
 configure additional credential stores. Use `--disable-reviewer` to remove
 separate reviewer credentials, `--llm-reviewer-model-tier` or
-`--clear-llm-reviewer-model-tier` for the durable reviewer baseline, and
-`--set-default` to make the target profile the default during init.
+`--clear-llm-reviewer-model-tier` for the durable reviewer baseline.
 
 ```yaml
-default_profile: personal
 repository_profiles:
   - profile: personal-reviewer-a
     match:
@@ -219,11 +216,11 @@ profiles:
 
 Route matching is deterministic: `host + namespace + repo` routes beat
 `host + namespace` routes, omitted `repos` means all repos in that namespace,
-and no match falls back to `default_profile`. Host matching is case-insensitive
-after normalization, while namespace and repo matching are case-sensitive after
-trimming whitespace. An explicit `--profile` bypasses repository routing. Route
-targets still use the profile's configured auth mode. Passing `--profile ""`
-also counts as explicit and resolves `default_profile` without route lookup.
+and no match fails with an actionable error asking for `--profile` or a route.
+Host matching is case-insensitive after normalization, while namespace and repo
+matching are case-sensitive after trimming whitespace. An explicit `--profile`
+bypasses repository routing. Route targets still use the profile's configured
+auth mode. Passing `--profile ""` is invalid.
 For GitHub App auth, `cr review` can use the PR owner/repo to look up the app
 installation when `github_app_installation_id` is not staged.
 
@@ -276,7 +273,6 @@ Pull requests write access when `review_policy.resolve_threads` is enabled.
 Example non-secret config template:
 
 ```yaml
-default_profile: work
 secrets:
   stores:
     work-1password:
@@ -484,7 +480,6 @@ credential backend.
 Run `cr config show` to inspect the active profile and credential status.
 
 ```yaml
-default_profile: default
 profiles:
   default:
     git:
@@ -696,7 +691,7 @@ All commands accept the global flags:
 
 | Flag | Semantics |
 |------|-----------|
-| `--profile <name>` | Select a configured profile and bypass repo-aware routing. When omitted, PR-aware commands may use `repository_profiles`, then fall back to `default_profile`; during `init`, empty means `default`. |
+| `--profile <name>` | Select a configured profile and bypass repo-aware routing. When omitted, PR-aware commands use `repository_profiles`; commands that cannot resolve a route require `--profile`. During `init`, an omitted profile starts with the suggested name `default`. |
 | `--backend <name>` | Compatibility/runtime backend selector. It cannot override an explicit credential store destination. |
 
 ### `cr`
@@ -888,10 +883,8 @@ Flags:
 
 Without `--all`, this removes secret keyring entries only and leaves
 `config.yml` intact. With `--all`, `--profile <name>` selects the profile to
-reset; otherwise the default profile is reset. If other profiles remain after a
-profile reset, the default profile is updated deterministically to the first
-remaining profile name when needed. If the last profile is reset, `config.yml`
-is removed.
+reset; without a selected profile, the command fails. If the last profile is
+reset, `config.yml` is removed.
 
 `config clear` never touches durable review data. Use `cr data purge` for the
 data pillar.

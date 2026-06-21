@@ -31,7 +31,7 @@ const (
 const initLLMRuntimeRestoreSelectionPrefix = "__restore_llm_runtime__:"
 
 func (p huhInitLLMRuntimePrompter) editLLMRuntimeLinear(prompt initLLMRuntimePrompt) (initDraft, error) {
-	seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+	seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 	editor := initLLMRuntimeLinearEditor(prompt.Context, seed, p.runtimeAvailabilityNote)
 	model, err := p.runLLMRuntimeEditor(editor)
 	if err != nil {

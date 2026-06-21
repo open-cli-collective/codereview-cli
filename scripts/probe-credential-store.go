@@ -23,7 +23,7 @@ func main() {
 	var ref string
 	var keep bool
 	flag.StringVar(&configPath, "config", "", "cr config path; defaults to the standard cr config path")
-	flag.StringVar(&reviewProfile, "profile", "", "review profile whose resolved secrets-management profile should be probed; defaults to cr's default profile")
+	flag.StringVar(&reviewProfile, "profile", "", "review profile whose resolved secrets-management profile should be probed")
 	flag.StringVar(&secretsProfile, "secrets-profile", "", "configured secrets-management profile id to probe directly")
 	flag.StringVar(&ref, "ref", "", "temporary credential ref to write; defaults to codereview/probe-<timestamp>")
 	flag.BoolVar(&keep, "keep", false, "leave the probe credential behind instead of deleting it")

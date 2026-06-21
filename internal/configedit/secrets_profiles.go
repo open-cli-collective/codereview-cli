@@ -129,7 +129,7 @@ func RemoveSecretsProfile(cfg config.File, rawID string) (config.File, bool, err
 
 func validateConfigAfterSecretsProfileEdit(cfg config.File) error {
 	cfg = config.Normalize(cfg)
-	if len(cfg.Profiles) > 0 || strings.TrimSpace(cfg.DefaultProfile) != "" || len(cfg.RepositoryProfiles) > 0 {
+	if len(cfg.Profiles) > 0 || len(cfg.RepositoryProfiles) > 0 {
 		return config.Validate(cfg)
 	}
 	if err := config.ValidateSecrets(cfg.Secrets); err != nil {

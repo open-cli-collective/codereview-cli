@@ -797,8 +797,7 @@ func (s *runtimeCredentialStores) Close() {
 
 func normalizeRuntimeProfile(profile config.Profile) config.Profile {
 	return config.Normalize(config.File{
-		DefaultProfile: "runtime",
-		Profiles:       map[string]config.Profile{"runtime": profile},
+		Profiles: map[string]config.Profile{"runtime": profile},
 	}).Profiles["runtime"]
 }
 

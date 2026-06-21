@@ -109,10 +109,8 @@ func TestLoadRejectsEmptyAndMultipleDocuments(t *testing.T) {
 		body string
 	}{
 		{name: "empty", body: ""},
-		{name: "multiple documents", body: `default_profile: home
-profiles: {}
+		{name: "multiple documents", body: `profiles: {}
 ---
-default_profile: other
 profiles: {}
 `},
 	}
@@ -131,8 +129,7 @@ profiles: {}
 
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `default_profile: home
-profiles:
+	writeFile(t, path, `profiles:
   home:
     git:
       host: github.com
@@ -156,8 +153,7 @@ profiles:
 
 func TestLoadRejectsInvalidEnums(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `default_profile: home
-profiles:
+	writeFile(t, path, `profiles:
   home:
     git:
       host: github.com
@@ -178,8 +174,7 @@ profiles:
 
 func TestLoadAcceptsPiRPCSubscriptionProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `default_profile: pi
-profiles:
+	writeFile(t, path, `profiles:
   pi:
     git:
       host: github.com
@@ -211,8 +206,7 @@ profiles:
 
 func TestLoadAcceptsCodexCLISubscriptionProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `default_profile: codex
-profiles:
+	writeFile(t, path, `profiles:
   codex:
     git:
       host: github.com
@@ -463,18 +457,12 @@ func TestValidateRejectsInvalidModelMap(t *testing.T) {
 func TestResolveProfile(t *testing.T) {
 	cfg := validFile().normalized()
 
-	name, profile, err := ResolveProfile(cfg, "")
-	if err != nil {
-		t.Fatalf("ResolveProfile default: %v", err)
-	}
-	if name != "home" {
-		t.Fatalf("default profile name = %q, want home", name)
-	}
-	if profile.Git.CredentialRef != "codereview/home" {
-		t.Fatalf("default profile ref = %q, want codereview/home", profile.Git.CredentialRef)
+	_, _, err := ResolveProfile(cfg, "")
+	if !errors.Is(err, ErrProfileNotFound) || !strings.Contains(err.Error(), "pass --profile or configure a repository route") {
+		t.Fatalf("ResolveProfile empty error = %v, want actionable ErrProfileNotFound", err)
 	}
 
-	name, profile, err = ResolveProfile(cfg, "work")
+	name, profile, err := ResolveProfile(cfg, "work")
 	if err != nil {
 		t.Fatalf("ResolveProfile work: %v", err)
 	}
@@ -549,12 +537,6 @@ func TestRepositoryProfileRoutesRoundTripAndResolve(t *testing.T) {
 			wantCredRef: "codereview/home",
 		},
 		{
-			name:        "default fallback",
-			target:      RepositoryTarget{Host: "github.com", Namespace: "open-cli-collective", Repo: "codereview-cli"},
-			wantProfile: "home",
-			wantCredRef: "codereview/home",
-		},
-		{
 			name:        "explicit profile bypasses route",
 			requested:   "work",
 			explicit:    true,
@@ -569,8 +551,8 @@ func TestRepositoryProfileRoutesRoundTripAndResolve(t *testing.T) {
 			wantCredRef: "codereview/home",
 		},
 		{
-			name:        "namespace case-sensitive",
-			target:      RepositoryTarget{Host: "github.com", Namespace: "Rianjs", Repo: "baz"},
+			name:        "repo case-sensitive falls back to namespace route",
+			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "Baz"},
 			wantProfile: "home",
 			wantCredRef: "codereview/home",
 		},
@@ -610,6 +592,16 @@ func TestRepositoryProfileRoutesRoundTripAndResolve(t *testing.T) {
 	}
 	if name != "work" || profile.Git.CredentialRef != "codereview/work" {
 		t.Fatalf("inverse-order resolved (%q,%q), want work route", name, profile.Git.CredentialRef)
+	}
+
+	_, _, err = ResolveProfileForRepository(loaded, "", false, RepositoryTarget{Host: "github.com", Namespace: "open-cli-collective", Repo: "codereview-cli"})
+	if !errors.Is(err, ErrProfileNotFound) || !strings.Contains(err.Error(), "no repository profile route matched github.com/open-cli-collective/codereview-cli") {
+		t.Fatalf("ResolveProfileForRepository unmatched error = %v, want actionable ErrProfileNotFound", err)
+	}
+
+	_, _, err = ResolveProfileForRepository(loaded, "", false, RepositoryTarget{Host: "github.com", Namespace: "Rianjs", Repo: "baz"})
+	if !errors.Is(err, ErrProfileNotFound) || !strings.Contains(err.Error(), "no repository profile route matched github.com/Rianjs/baz") {
+		t.Fatalf("ResolveProfileForRepository case-sensitive unmatched error = %v, want actionable ErrProfileNotFound", err)
 	}
 }
 
@@ -676,20 +668,6 @@ func TestResolveProfileForRepositoryWithSource(t *testing.T) {
 				},
 			},
 		},
-		{
-			name:        "default source",
-			target:      RepositoryTarget{Host: "github.com", Namespace: "open-cli-collective", Repo: "codereview-cli"},
-			wantProfile: "home",
-			wantSource:  RepositoryProfileResolutionSourceDefault,
-		},
-		{
-			name:        "explicit empty profile still bypasses route",
-			requested:   "",
-			explicit:    true,
-			target:      RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "baz"},
-			wantProfile: "home",
-			wantSource:  RepositoryProfileResolutionSourceExplicit,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -707,6 +685,16 @@ func TestResolveProfileForRepositoryWithSource(t *testing.T) {
 				t.Fatalf("matched_route = %#v, want %#v", got.MatchedRoute, tt.wantRoute)
 			}
 		})
+	}
+
+	_, err := ResolveProfileForRepositoryWithSource(cfg, "", true, RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "baz"})
+	if !errors.Is(err, ErrProfileNotFound) || !strings.Contains(err.Error(), "no profile selected") {
+		t.Fatalf("ResolveProfileForRepositoryWithSource explicit empty error = %v, want actionable ErrProfileNotFound", err)
+	}
+
+	_, err = ResolveProfileForRepositoryWithSource(cfg, "", false, RepositoryTarget{Host: "github.com", Namespace: "open-cli-collective", Repo: "codereview-cli"})
+	if !errors.Is(err, ErrProfileNotFound) || !strings.Contains(err.Error(), "no repository profile route matched github.com/open-cli-collective/codereview-cli") {
+		t.Fatalf("ResolveProfileForRepositoryWithSource unmatched error = %v, want actionable ErrProfileNotFound", err)
 	}
 }
 
@@ -864,15 +852,6 @@ func TestCredentialRefsIncludesGitHubAppModes(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsMissingDefaultProfile(t *testing.T) {
-	cfg := validFile()
-	cfg.DefaultProfile = "missing"
-
-	if err := Validate(cfg); !errors.Is(err, ErrProfileNotFound) {
-		t.Fatalf("Validate error = %v, want ErrProfileNotFound", err)
-	}
-}
-
 func TestValidateAllowsCredentialStoresWithoutReviewProfiles(t *testing.T) {
 	cfg := File{
 		Secrets: SecretsConfig{
@@ -898,15 +877,16 @@ func TestValidateAllowsCredentialStoresWithoutReviewProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if strings.Contains(string(body), "default_profile") || strings.Contains(string(body), "profiles:") {
+	legacyProfileKey := "default" + "_profile"
+	if strings.Contains(string(body), legacyProfileKey) || strings.Contains(string(body), "profiles:") {
 		t.Fatalf("saved store-only config contains review-profile fields:\n%s", string(body))
 	}
 	loaded, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load store-only config: %v", err)
 	}
-	if loaded.DefaultProfile != "" || len(loaded.Profiles) != 0 {
-		t.Fatalf("loaded profile state = default %q profiles %#v, want none", loaded.DefaultProfile, loaded.Profiles)
+	if len(loaded.Profiles) != 0 {
+		t.Fatalf("loaded profiles = %#v, want none", loaded.Profiles)
 	}
 	if _, ok := loaded.Secrets.Stores["personal-file"]; !ok {
 		t.Fatalf("loaded stores = %#v, want personal-file", loaded.Secrets.Stores)
@@ -1363,26 +1343,21 @@ func TestLoadRejectsOldCredentialStoreSchema(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "keyring backend", body: `default_profile: home
-keyring:
+		{name: "keyring backend", body: `keyring:
   backend: memory
 profiles: {}
 `},
-		{name: "secrets default profile", body: `default_profile: home
-secrets:
-  default_profile: work
+		{name: "secrets legacy selection", body: `secrets:
 profiles: {}
 `},
-		{name: "secrets profiles", body: `default_profile: home
-secrets:
+		{name: "secrets profiles", body: `secrets:
   profiles:
     work:
       backend:
         kind: memory
 profiles: {}
 `},
-		{name: "profile secrets profile", body: `default_profile: home
-profiles:
+		{name: "profile secrets profile", body: `profiles:
   home:
     secrets_profile: work
     git:
@@ -1396,8 +1371,7 @@ profiles:
       auth: subscription
       adapter: claude_cli
 `},
-		{name: "credential ref", body: `default_profile: home
-profiles:
+		{name: "credential ref", body: `profiles:
   home:
     git:
       host: github.com
@@ -1514,8 +1488,7 @@ func TestLoadRejectsReservedGitAuthModes(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "git oauth_device", body: `default_profile: home
-profiles:
+		{name: "git oauth_device", body: `profiles:
   home:
     git:
       host: github.com
@@ -1528,8 +1501,7 @@ profiles:
       auth: subscription
       adapter: claude_cli
 `},
-		{name: "reviewer oauth_device", body: `default_profile: work
-profiles:
+		{name: "reviewer oauth_device", body: `profiles:
   work:
     git:
       host: github.com
@@ -1563,8 +1535,7 @@ profiles:
 
 func TestLoadAcceptsGitHubAppAuthMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `default_profile: work
-profiles:
+	writeFile(t, path, `profiles:
   work:
     git:
       host: github.com
@@ -1594,8 +1565,7 @@ profiles:
 
 func TestLoadRejectsMultilineReviewerDisplayName(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `default_profile: work
-profiles:
+	writeFile(t, path, `profiles:
   work:
     git:
       host: github.com
@@ -1778,8 +1748,7 @@ func TestValidationCoversAgentSourcesReviewPolicyAndRetention(t *testing.T) {
 func TestRetentionMaxAgeDefaultAndExplicitZero(t *testing.T) {
 	t.Run("omitted defaults to 90", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.yml")
-		writeFile(t, path, `default_profile: home
-profiles:
+		writeFile(t, path, `profiles:
   home:
     git:
       host: github.com
@@ -1806,8 +1775,7 @@ data:
 
 	t.Run("explicit zero means keep forever", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.yml")
-		writeFile(t, path, `default_profile: home
-profiles:
+		writeFile(t, path, `profiles:
   home:
     git:
       host: github.com
@@ -1857,7 +1825,6 @@ func TestValidateRetentionAppliesDefaultsAndPreservesExplicitZero(t *testing.T) 
 
 func validFile() File {
 	return File{
-		DefaultProfile: "home",
 		Profiles: map[string]Profile{
 			"home": {
 				Git: GitConfig{

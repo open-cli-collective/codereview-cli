@@ -38,7 +38,7 @@ const (
 const initReviewerEntityRestoreSelectionPrefix = "__restore_reviewer_entity__:"
 
 func (p huhInitReviewerEntityPrompter) editReviewerEntityLinear(prompt initReviewerEntityPrompt) (initDraft, error) {
-	seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+	seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 	editor := initReviewerEntityLinearEditor(prompt.Context, seed)
 	model, err := p.runReviewerEntityEditor(editor)
 	if err != nil {

@@ -180,7 +180,6 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 
 func TestValidateAllowedKeyForConfigNarrowsDeclaredRefs(t *testing.T) {
 	cfg := config.File{
-		DefaultProfile: "anthropic",
 		Profiles: map[string]config.Profile{
 			"anthropic": matrixProfile("codereview/git-a", "codereview/shared-llm", config.LLMProviderAnthropic),
 			"openai":    matrixProfile("codereview/git-b", "codereview/shared-llm", config.LLMProviderOpenAI),
@@ -246,7 +245,6 @@ func githubAppMatrixProfile(ref string) config.Profile {
 
 func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.T) {
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work":       matrixProfile("codereview/work", "codereview/work-llm", config.LLMProviderAnthropic),
 			"shared-pat": matrixProfile("codereview/shared-git", "codereview/shared-llm", config.LLMProviderOpenAI),
@@ -293,7 +291,6 @@ func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.
 
 func TestResolveCredentialStoreForProfileAndRef(t *testing.T) {
 	cfg := config.File{
-		DefaultProfile: "home",
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"personal-keychain": {
@@ -495,7 +492,6 @@ func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.File{
-				DefaultProfile: "home",
 				Secrets: config.SecretsConfig{
 					Profiles: map[string]config.SecretsProfile{
 						"work-op": tt.profile,

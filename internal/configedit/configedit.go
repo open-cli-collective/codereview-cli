@@ -257,23 +257,7 @@ func FirstProfileName(profiles map[string]config.Profile) string {
 	return names[0]
 }
 
-// SetDefaultProfile updates cfg.default_profile after verifying the profile exists.
-func SetDefaultProfile(cfg config.File, profileName string) (config.File, bool, error) {
-	name := strings.TrimSpace(profileName)
-	if name == "" {
-		return cfg, false, ErrProfileNameRequired
-	}
-	if _, ok := cfg.Profiles[name]; !ok {
-		return cfg, false, fmt.Errorf("%w: %s", config.ErrProfileNotFound, name)
-	}
-	if cfg.DefaultProfile == name {
-		return cfg, false, nil
-	}
-	cfg.DefaultProfile = name
-	return cfg, true, nil
-}
-
-// RenameProfile renames a profile and updates default-profile and route references.
+// RenameProfile renames a profile and updates route references.
 func RenameProfile(cfg config.File, oldName string, newName string) (config.File, bool, error) {
 	oldName = strings.TrimSpace(oldName)
 	newName = strings.TrimSpace(newName)
@@ -300,9 +284,6 @@ func RenameProfile(cfg config.File, oldName string, newName string) (config.File
 	}
 	profiles[newName] = profile
 	cfg.Profiles = profiles
-	if cfg.DefaultProfile == oldName {
-		cfg.DefaultProfile = newName
-	}
 	cfg.RepositoryProfiles, _ = UpdateRepositoryProfileReferences(cfg.RepositoryProfiles, oldName, newName)
 	return cfg, true, nil
 }

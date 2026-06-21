@@ -197,8 +197,7 @@ func ResolveSecretsProfileForProfile(cfg config.File, profile config.Profile) (R
 		return ResolveCredentialStore(cfg, selection)
 	}
 	profile = config.Normalize(config.File{
-		DefaultProfile: "profile",
-		Profiles:       map[string]config.Profile{"profile": profile},
+		Profiles: map[string]config.Profile{"profile": profile},
 	}).Profiles["profile"]
 	return ResolveCredentialStoreForLocation(cfg, profile.Git.Credential)
 }

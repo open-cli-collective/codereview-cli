@@ -177,7 +177,6 @@ type initOptions struct {
 	llmKeyEnv          string
 	overwrite          bool
 	replaceProfile     bool
-	setDefault         bool
 	secretsDiscovery   string
 }
 
@@ -230,7 +229,6 @@ type initPromptContext struct {
 	ExistingProfileName          string
 	ExistingProfile              *config.Profile
 	ExistingProfileNames         []string
-	DefaultProfileName           string
 	ExistingConfig               config.File
 	BackendArg                   string
 	BackendFlagSet               bool
@@ -267,7 +265,6 @@ type initDraft struct {
 	ActionTarget                 string
 	OriginalProfileName          string
 	ProfileName                  string
-	MakeDefault                  bool
 	GitHost                      string
 	GitAuth                      string
 	GitCredentialStore           string
@@ -819,7 +816,6 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 	cmd.Flags().StringVar(&flags.llmKeyEnv, "llm-api-key-from-env", "", "Read the LLM API key from this environment variable")
 	cmd.Flags().BoolVar(&flags.overwrite, "overwrite", false, "Replace existing keyring entries")
 	cmd.Flags().BoolVar(&flags.replaceProfile, "replace-profile", false, "Replace an existing config profile")
-	cmd.Flags().BoolVar(&flags.setDefault, "set-default", false, "Set the target profile as the default profile")
 	cmd.Flags().StringVar(&flags.secretsDiscovery, "secret-backend-discovery", flags.secretsDiscovery, "Secrets backend discovery mode: full, safe, or off")
 	return cmd
 }
@@ -1077,6 +1073,7 @@ type huhInitKeyringBackendPrompter struct {
 }
 
 const (
+	initialInitProfileName                = "default"
 	initCustomGitScopeSelection           = "__custom_git_scope__"
 	initCustomLLMRuntimeSelection         = "__custom_llm_runtime__"
 	initConfigureNewLLMRuntimeSelection   = "__configure_new_llm_runtime__"
@@ -1134,7 +1131,7 @@ func buildInteractiveInitInventoryPromptContext(ctx initPromptContext) initPromp
 func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) (initSessionDraft, error) {
 	profileName := opts.Profile
 	if profileName == "" {
-		profileName = credstore.DefaultProfile
+		profileName = initialInitProfileName
 	}
 	path, err := deps.configPath(opts)
 	if err != nil {
@@ -1146,6 +1143,11 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 	}
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
+	}
+	if opts.Profile == "" {
+		if _, ok := cfg.Profiles[profileName]; !ok && len(cfg.Profiles) == 1 {
+			profileName = sortedProfileNames(cfg.Profiles)[0]
+		}
 	}
 	session := initSessionDraft{
 		path:                         path,
@@ -1168,18 +1170,11 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 		existingProfileName = profileName
 		profileCopy := profile
 		existingProfile = &profileCopy
-	} else if opts.Profile == "" && session.cfg.DefaultProfile != "" {
-		if profile, ok := session.cfg.Profiles[session.cfg.DefaultProfile]; ok {
-			existingProfileName = session.cfg.DefaultProfile
-			profileCopy := profile
-			existingProfile = &profileCopy
-			session.requestedProfileName = session.cfg.DefaultProfile
-		}
 	}
 	if existingProfile == nil {
 		return session, nil
 	}
-	draft := seedInteractiveInitDraft(session.requestedProfileName, existingProfileName, session.cfg.DefaultProfile, existingProfile)
+	draft := seedInteractiveInitDraft(session.requestedProfileName, existingProfileName, existingProfile)
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, path, session.cfg, draft)
 	if err != nil {
 		return initSessionDraft{}, err
@@ -1244,7 +1239,6 @@ func currentInteractiveInitPromptContextBase(session initSessionDraft) initPromp
 		ExistingProfileName:          existingProfileName,
 		ExistingProfile:              existingProfile,
 		ExistingProfileNames:         sortedProfileNames(session.cfg.Profiles),
-		DefaultProfileName:           session.cfg.DefaultProfile,
 		ExistingConfig:               session.cfg,
 		PendingProfileDeletes:        session.pendingProfileDeletes,
 		PendingReviewerEntityDeletes: session.pendingReviewerEntityDeletes,
@@ -1873,7 +1867,7 @@ func (p huhInitLLMRuntimePrompter) EditLLMRuntime(prompt initLLMRuntimePrompt) (
 }
 
 func (p huhInitLLMRuntimePrompter) editLLMRuntimeInventory(prompt initLLMRuntimePrompt) (initDraft, error) {
-	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
 			Title:       "LLM Runtime",
@@ -2078,7 +2072,7 @@ func (p huhInitReviewerEntityPrompter) EditReviewerEntity(prompt initReviewerEnt
 }
 
 func (p huhInitReviewerEntityPrompter) editReviewerEntityInventory(prompt initReviewerEntityPrompt) (initDraft, error) {
-	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+	draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
 			Title:       "Reviewer Entity",
@@ -2296,7 +2290,7 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 		if selectedCreateNewProfile {
 			requestedProfileName = initCreateProfileSeedName(ctx)
 		}
-		draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
+		draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, selectedExistingProfile)
 		if warnings := ctx.ProfileWarnings[selectedProfileName]; len(warnings) > 0 {
 			_, _ = fmt.Fprintln(p.stderr, "Existing profile secret health:")
 			for _, warning := range warnings {
@@ -2679,9 +2673,6 @@ func sortProfileInventoryNames(names []string, ctx initPromptContext) {
 }
 
 func profileInventorySortKey(name string, ctx initPromptContext) int {
-	if name == strings.TrimSpace(ctx.DefaultProfileName) {
-		return 3
-	}
 	routes := currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, name)
 	if len(routes) == 0 {
 		return 2
@@ -2695,9 +2686,6 @@ func profileInventorySortKey(name string, ctx initPromptContext) int {
 }
 
 func profileInventoryRowDescription(name string, ctx initPromptContext) string {
-	if name == strings.TrimSpace(ctx.DefaultProfileName) {
-		return "Everything else"
-	}
 	return formatInitRouteSpecsInline(currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, name))
 }
 
@@ -3738,7 +3726,7 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 
 func initRouteEditorFields(routeText *string, includeIntroTitle bool) []huh.Field {
 	intro := huh.NewNote().
-		Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile.")
+		Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise a matching route is required.")
 	if includeIntroTitle {
 		intro = intro.Title("Automatic profile selection")
 	}
@@ -3934,7 +3922,6 @@ func validateInteractiveInitFlags(cmd *cobra.Command, flags initOptions) error {
 	}
 	anyNonInteractiveParityFlagSet := flags.disableReviewer ||
 		flags.clearLLMReviewer ||
-		flags.setDefault ||
 		cmd.Flags().Changed("git-auth-mode") ||
 		cmd.Flags().Changed("llm-reviewer-model-tier")
 	if anyNonInteractiveParityFlagSet {
@@ -3943,18 +3930,17 @@ func validateInteractiveInitFlags(cmd *cobra.Command, flags initOptions) error {
 	return nil
 }
 
-func seedInteractiveInitDraft(requestedProfileName string, existingProfileName string, defaultProfileName string, existingProfile *config.Profile) initDraft {
+func seedInteractiveInitDraft(requestedProfileName string, existingProfileName string, existingProfile *config.Profile) initDraft {
 	profileName := requestedProfileName
 	if existingProfileName != "" {
 		profileName = existingProfileName
 	}
 	if strings.TrimSpace(profileName) == "" {
-		profileName = credstore.DefaultProfile
+		profileName = initialInitProfileName
 	}
 	draft := initDraft{
 		OriginalProfileName:     existingProfileName,
 		ProfileName:             profileName,
-		MakeDefault:             existingProfileName == "" && defaultProfileName == "",
 		GitHost:                 "github.com",
 		GitAuth:                 string(config.GitAuthModePAT),
 		GitCredentialStore:      initCredentialStoreDefaultID(),
@@ -3966,7 +3952,6 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		LLMCredentialStore:      initCredentialStoreDefaultID(),
 	}
 	if existingProfile != nil {
-		draft.MakeDefault = defaultProfileName == existingProfileName
 		draft.GitHost = existingProfile.Git.Host
 		draft.GitAuth = string(existingProfile.Git.AuthMode)
 		draft.GitCredentialStore = initCredentialStoreDraftValue(existingProfile.Git.Credential.Store)
@@ -4068,7 +4053,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 	profileName := opts.Profile
 	if profileName == "" {
-		profileName = credstore.DefaultProfile
+		profileName = initialInitProfileName
 	}
 	path, err := deps.configPath(opts)
 	if err != nil {
@@ -4270,12 +4255,6 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		}
 	}
 	cfg.Profiles[profileName] = profile
-	if !exists {
-		cfg.DefaultProfile = profileName
-	}
-	if flags.setDefault {
-		cfg.DefaultProfile = profileName
-	}
 
 	writes := map[string]map[string]string{}
 	if hasGitSecret {
@@ -4364,17 +4343,6 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 		return initWorkspaceDraft{}, err
 	}
 	working.Profiles[profileName] = profile
-	if draft.MakeDefault || working.DefaultProfile == "" {
-		var changed bool
-		working, changed, err = configedit.SetDefaultProfile(working, profileName)
-		_ = changed
-		if err != nil {
-			if errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, configedit.ErrProfileNameRequired) {
-				return initWorkspaceDraft{}, exitcode.Usage(err)
-			}
-			return initWorkspaceDraft{}, cmderr.Config(err)
-		}
-	}
 	if err := validateInteractiveInitConfig(initValidationConfigForProfileHost(working, profileName, previousProfile, profile.Git.Host)); err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
@@ -4702,13 +4670,10 @@ func deleteInteractiveInitProfile(session initSessionDraft, profileName string) 
 			prunedRoutes = append(prunedRoutes, route)
 		}
 	}
-	fallbackDefault := configedit.FirstProfileName(withoutProfile(session.cfg.Profiles, profileName))
 	touchedOriginal, hadTouchedProfile := session.touchedProfiles[profileName]
 	pending := initPendingProfileDelete{
 		ProfileName:       profileName,
 		Profile:           cloneInitProfile(profile),
-		OriginalDefault:   session.cfg.DefaultProfile,
-		FallbackDefault:   fallbackDefault,
 		PrunedRoutes:      append([]config.RepositoryProfile(nil), prunedRoutes...),
 		WasActive:         session.workspace != nil && session.workspace.profileName == profileName,
 		HadTouchedProfile: hadTouchedProfile,
@@ -4716,9 +4681,6 @@ func deleteInteractiveInitProfile(session initSessionDraft, profileName string) 
 	}
 	delete(session.cfg.Profiles, profileName)
 	session.cfg.RepositoryProfiles = configedit.PruneRepositoryProfileRoutes(session.cfg.RepositoryProfiles, profileName)
-	if session.cfg.DefaultProfile == profileName {
-		session.cfg.DefaultProfile = fallbackDefault
-	}
 	delete(session.touchedProfiles, profileName)
 	session.pendingProfileDeletes[profileName] = pending
 	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
@@ -4736,9 +4698,6 @@ func undoInteractiveInitProfileDelete(session initSessionDraft, profileName stri
 	}
 	session.cfg.Profiles[profileName] = cloneInitProfile(pending.Profile)
 	session.cfg.RepositoryProfiles = configedit.CanonicalRepositoryRoutes(append(append([]config.RepositoryProfile(nil), session.cfg.RepositoryProfiles...), pending.PrunedRoutes...))
-	if pending.OriginalDefault == profileName && session.cfg.DefaultProfile == pending.FallbackDefault {
-		session.cfg.DefaultProfile = profileName
-	}
 	if pending.HadTouchedProfile {
 		if session.touchedProfiles == nil {
 			session.touchedProfiles = map[string]string{}
@@ -5767,7 +5726,7 @@ func validateInteractiveInitConfig(cfg config.File) error {
 }
 
 func validateInteractiveInitGlobalConfig(cfg config.File) error {
-	if len(cfg.Profiles) == 0 || strings.TrimSpace(cfg.DefaultProfile) == "" {
+	if len(cfg.Profiles) == 0 {
 		if err := config.ValidateSecrets(cfg.Secrets); err != nil {
 			return err
 		}

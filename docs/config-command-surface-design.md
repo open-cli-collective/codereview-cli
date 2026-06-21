@@ -11,7 +11,7 @@ bootstrap, secret ingress, or the full long-term profile management API.
 
 This document is the semantic parent for:
 
-- `#167`: `cr config path` and default-profile commands
+- `#167`: `cr config path`
 - `#166`: `cr config route` management commands
 - `#169`: `cr config resolve-profile` route preview
 - `#168`: `cr config agent-source` management commands
@@ -49,7 +49,7 @@ The codebase already supports:
 - GitHub App reviewer auth
 
 The missing piece is command coverage. Today `cr config` exposes `show`,
-`clear`, and `llm models`, but path/default/route/route-preview/agent-source
+`clear`, and `llm models`, but path/route/route-preview/agent-source
 operations still require manual YAML edits. Credential-store inspection is
 available through `cr config credential-store`; creating, editing, and deleting
 configured stores belongs to the interactive `cr init` secrets-storage flow.
@@ -63,7 +63,7 @@ These rules apply across the batch unless a ticket explicitly narrows them.
 - Commands that operate on a profile should use the existing global
   `--profile <name>` flag.
 - When a command is not repository-aware, `--profile` selects the target
-  profile and otherwise falls back to `default_profile`.
+  profile; commands that need a profile must fail if none is selected.
 - Commands introduced in this batch must not invent a second profile-selection
   mechanism.
 
@@ -103,13 +103,11 @@ These rules apply across the batch unless a ticket explicitly narrows them.
 
 ## Ticket Ownership Matrix
 
-### `#167`: path and default profile
+### `#167`: path
 
 Owns:
 
 - `cr config path [--json]`
-- `cr config default get [--json]`
-- `cr config default set <profile>`
 
 Must not own:
 
@@ -120,8 +118,6 @@ Must not own:
 
 Required semantics:
 
-- `default set` changes only `default_profile`
-- `default set` validates that the target profile exists
 - path inspection reports resolved config location only; broader state-path
   expansion is optional follow-up work, not required by this ticket
 
@@ -137,7 +133,6 @@ Must not own:
 
 - route preview output beyond what is needed for route list/mutation
 - runtime route-resolution redesign
-- default-profile mutation
 
 Required semantics:
 
@@ -189,8 +184,7 @@ Must not own:
 Required semantics:
 
 - reuse the same repository-resolution path already used by runtime commands
-- report whether resolution came from explicit `--profile`, matched route, or
-  fallback to `default_profile`
+- report whether resolution came from explicit `--profile` or a matched route
 - remain a local preview command, not an execution path
 - if the existing runtime resolution path does not expose enough metadata for
   preview output, `#169` may add a shared resolution-result wrapper/helper that

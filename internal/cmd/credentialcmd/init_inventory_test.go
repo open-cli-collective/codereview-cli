@@ -451,9 +451,7 @@ func TestInitProfileInventoryRowsSetExpectedCapabilities(t *testing.T) {
 func TestInitProfileInventoryRowsShowRoutesAndSortBySpecificity(t *testing.T) {
 	rows := initProfileInventoryRows(initPromptContext{
 		ExistingProfileNames: []string{"default", "unrouted", "namespace", "repo"},
-		DefaultProfileName:   "default",
 		ExistingConfig: config.File{
-			DefaultProfile: "default",
 			Profiles: map[string]config.Profile{
 				"default":   {Git: config.GitConfig{Host: "github.com"}},
 				"unrouted":  {Git: config.GitConfig{Host: "github.com"}},
@@ -491,7 +489,7 @@ func TestInitProfileInventoryRowsShowRoutesAndSortBySpecificity(t *testing.T) {
 	for _, row := range rows[:4] {
 		got = append(got, row.ID)
 	}
-	want := []string{"repo", "namespace", "unrouted", "default"}
+	want := []string{"repo", "namespace", "default", "unrouted"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("profile row order = %#v, want %#v", got, want)
 	}
@@ -502,10 +500,10 @@ func TestInitProfileInventoryRowsShowRoutesAndSortBySpecificity(t *testing.T) {
 		t.Fatalf("namespace description = %q, want %q", got, want)
 	}
 	if got := rows[2].Description; got != "" {
-		t.Fatalf("unrouted description = %q, want empty", got)
+		t.Fatalf("default description = %q, want empty", got)
 	}
-	if got, want := rows[3].Description, "Everything else"; got != want {
-		t.Fatalf("default description = %q, want %q", got, want)
+	if got := rows[3].Description; got != "" {
+		t.Fatalf("unrouted description = %q, want empty", got)
 	}
 	if !strings.Contains(rows[0].FilterValue, "github.com/OtherMonitOrg") {
 		t.Fatalf("route summary missing from filter value: %q", rows[0].FilterValue)

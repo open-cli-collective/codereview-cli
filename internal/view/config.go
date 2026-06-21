@@ -278,23 +278,6 @@ func RenderConfigPathJSON(w io.Writer, result ConfigPath) error {
 	return encoder.Encode(result)
 }
 
-// ConfigDefault is the presentation model for `cr config default get/set`.
-type ConfigDefault struct {
-	DefaultProfile string `json:"default_profile"`
-}
-
-// RenderConfigDefaultText writes a stable human-readable default-profile summary.
-func RenderConfigDefaultText(w io.Writer, result ConfigDefault) error {
-	return writeKV(w, "Default profile", result.DefaultProfile)
-}
-
-// RenderConfigDefaultJSON writes the default-profile summary as indented JSON.
-func RenderConfigDefaultJSON(w io.Writer, result ConfigDefault) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
-}
-
 // ConfigRetention is the presentation model for `cr config retention`.
 type ConfigRetention struct {
 	MaxAgeDays  int    `json:"max_age_days"`
@@ -569,7 +552,6 @@ type ConfigClear struct {
 	DryRun               bool                   `json:"dry_run"`
 	Cleared              []ClearedCredentialRef `json:"cleared"`
 	ConfigProfileRemoved string                 `json:"config_profile_removed,omitempty"`
-	DefaultProfile       string                 `json:"default_profile,omitempty"`
 	ConfigPathRemoved    string                 `json:"config_path_removed,omitempty"`
 	Cache                *CacheClear            `json:"cache,omitempty"`
 }
@@ -622,11 +604,6 @@ func RenderConfigClearText(w io.Writer, result ConfigClear) error {
 	}
 	if result.ConfigProfileRemoved != "" {
 		if err := writeKV(w, "Config profile removed", result.ConfigProfileRemoved); err != nil {
-			return err
-		}
-	}
-	if result.DefaultProfile != "" {
-		if err := writeKV(w, "Default profile", result.DefaultProfile); err != nil {
 			return err
 		}
 	}

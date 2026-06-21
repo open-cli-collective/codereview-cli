@@ -308,7 +308,7 @@ func initProfileV2ReadOnlyDocument(ctx initPromptContext, selection string) (ini
 
 func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initProfileV2Editor, error) {
 	selectedProfileName, selectedExistingProfile, requestedProfileName := initProfileV2Selection(ctx, selection)
-	draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, ctx.DefaultProfileName, selectedExistingProfile)
+	draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, selectedExistingProfile)
 	routeText := formatInitRouteSpecs(currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName))
 
 	selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
@@ -449,7 +449,7 @@ type initProfileV2Layout = initLinearLayout
 type initProfileV2FieldBounds = initLinearFieldBounds
 
 func initProfileV2AppendRouteSection(document *initProfileV2Document, routeText string) {
-	document.addSection("Automatic profile selection", "Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise matching routes beat the default profile.")
+	document.addSection("Automatic profile selection", "Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise a matching route is required.")
 	document.addSection("Accepted route formats", "host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;.")
 	document.addEditableInput(initProfileV2FieldRoutes, "Route entries", "", routeText, validateInitProfileV2RouteText)
 }

@@ -517,7 +517,6 @@ func withRawSynthesisStage(body, stage string) string {
 
 func testConfig() config.File {
 	return config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{

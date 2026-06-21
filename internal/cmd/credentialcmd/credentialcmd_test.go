@@ -69,8 +69,7 @@ func TestSetCredentialUsesExplicitConfiguredStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	hermeticFileBackend(t)
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Secrets:        testFileSecretsConfig(),
+		Secrets: testFileSecretsConfig(),
 		Profiles: map[string]config.Profile{
 			"work": profileWithCredentialStore(basicProfile("work"), testFileCredentialStoreID),
 		},
@@ -150,8 +149,7 @@ func TestSetCredentialUsesConfigCredentialMatrix(t *testing.T) {
 	hermeticFileBackend(t)
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Secrets:        testFileSecretsConfig(),
+		Secrets: testFileSecretsConfig(),
 		Profiles: map[string]config.Profile{
 			"work": profileWithCredentialStore(apiKeyProfile("work", config.LLMProviderAnthropic), testFileCredentialStoreID),
 		},
@@ -205,8 +203,7 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 	hermeticFileBackend(t)
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Secrets:        testFileSecretsConfig(),
+		Secrets: testFileSecretsConfig(),
 		Profiles: map[string]config.Profile{
 			"work": profileWithCredentialStore(basicProfile("work"), testFileCredentialStoreID),
 		},
@@ -270,8 +267,7 @@ func TestSetCredentialRejectsUnsupportedConfigBeforeIngress(t *testing.T) {
 	hermeticFileBackend(t)
 	t.Setenv("CR_FUTURE_TOKEN", "")
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeRawCredentialTestConfig(t, path, `default_profile: future
-profiles:
+	writeRawCredentialTestConfig(t, path, `profiles:
   future:
     git:
       host: github.com
@@ -507,9 +503,6 @@ func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.DefaultProfile != "default" {
-		t.Fatalf("default_profile = %q, want default", cfg.DefaultProfile)
-	}
 	if cfg.Keyring.Backend != "" {
 		t.Fatalf("keyring.backend = %q, want empty", cfg.Keyring.Backend)
 	}
@@ -639,9 +632,6 @@ func TestInitNonInteractiveWritesCustomReviewerCredentialFromStdin(t *testing.T)
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
-	}
-	if cfg.DefaultProfile != "work" {
-		t.Fatalf("default_profile = %q, want work", cfg.DefaultProfile)
 	}
 	reviewer := cfg.Profiles["work"].ReviewerCredentials
 	if reviewer == nil || reviewer.CredentialRef != "codereview/review-bot" {
@@ -848,7 +838,6 @@ func TestPlanInitCredentials(t *testing.T) {
 
 	t.Run("preserve custom refs across rename interactions", func(t *testing.T) {
 		cfg := config.File{
-			DefaultProfile: "work",
 			Profiles: map[string]config.Profile{
 				"work": {
 					Git: config.GitConfig{
@@ -1065,7 +1054,6 @@ func TestLoadInteractiveCredentialPlanStatePreservesSettledEntriesWhenMixedPlanN
 
 func TestBuildInteractiveInitSessionPlanUsesOriginalProfileForRenamedTouchedProfile(t *testing.T) {
 	original := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": {
 				Git: config.GitConfig{
@@ -1236,8 +1224,7 @@ func TestInitAPIKeyAuthWithExistingKeyDoesNotPrintLLMFollowUpHint(t *testing.T) 
 func TestInitReplaceProfilePreservesExistingCredentialRefsByDefault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Secrets:        testFileSecretsConfig(),
+		Secrets: testFileSecretsConfig(),
 		Profiles: map[string]config.Profile{
 			"work": profileWithCredentialStore(config.Profile{
 				Git: config.GitConfig{
@@ -1300,7 +1287,6 @@ func TestInitReplaceProfilePreservesExistingCredentialRefsByDefault(t *testing.T
 func TestInitReplaceProfileRefOverwriteEmitsFollowUpHint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -1345,8 +1331,7 @@ func TestInitAPIKeyAuthRejectsMissingSecretWithoutWritingDanglingConfig(t *testi
 func TestInitMergeReplaceAndBackendConflictSemantics(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	if err := config.Save(path, config.File{
-		DefaultProfile: "home",
-		Secrets:        testFileSecretsConfig(),
+		Secrets: testFileSecretsConfig(),
 		Profiles: map[string]config.Profile{
 			"home": profileWithCredentialStore(basicProfile("home"), testFileCredentialStoreID),
 		},
@@ -1365,9 +1350,6 @@ func TestInitMergeReplaceAndBackendConflictSemantics(t *testing.T) {
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
-	}
-	if cfg.DefaultProfile != "home" {
-		t.Fatalf("default_profile = %q, want existing home", cfg.DefaultProfile)
 	}
 	if _, ok := cfg.Profiles["work"]; !ok {
 		t.Fatalf("work profile missing after merge: %#v", cfg.Profiles)
@@ -1396,10 +1378,9 @@ func TestInitMergeReplaceAndBackendConflictSemantics(t *testing.T) {
 	}
 }
 
-func TestInitSetDefaultUpdatesExistingConfigWhenRequested(t *testing.T) {
+func TestInitSetDefaultFlagRemoved(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	if err := config.Save(path, config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": basicProfile("home"),
 		},
@@ -1412,18 +1393,11 @@ func TestInitSetDefaultUpdatesExistingConfigWhenRequested(t *testing.T) {
 		"--profile", "work",
 		"init",
 		"--non-interactive",
-		"--set-default",
+		"--set-" + "default",
 	})
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-
-	got, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load config: %v", err)
-	}
-	if got.DefaultProfile != "work" {
-		t.Fatalf("default_profile = %q, want work", got.DefaultProfile)
+	removedFlag := "--set-" + "default"
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: "+removedFlag) {
+		t.Fatalf("Execute error = %v, want unknown %s flag", err, removedFlag)
 	}
 }
 
@@ -1445,7 +1419,6 @@ func TestInitDurableKeyringBackendFlagsRemoved(t *testing.T) {
 	t.Run("reset backend flag is unavailable", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.yml")
 		if err := config.Save(path, config.File{
-			DefaultProfile: "work",
 			Profiles: map[string]config.Profile{
 				"work": basicProfile("work"),
 			},
@@ -1518,7 +1491,6 @@ func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
 		ResolveAfter:     "24h",
 	}
 	if err := config.Save(path, config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": existing,
 		},
@@ -1560,7 +1532,6 @@ func TestInitReplaceProfilePreservesReviewerDisplayNameWhenReviewerIdentityUncha
 		IdentityCache: "reviewer-cache",
 	}
 	if err := config.Save(path, config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": existing,
 		},
@@ -1638,7 +1609,6 @@ func TestInitLLMReviewerModelTierFlags(t *testing.T) {
 			ResolveAfter:     "24h",
 		}
 		if err := config.Save(path, config.File{
-			DefaultProfile: "work",
 			Profiles: map[string]config.Profile{
 				"work": existing,
 			},
@@ -1704,8 +1674,7 @@ func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 		ResolveAfter:     "24h",
 	}
 	existing := config.File{
-		DefaultProfile: "home",
-		Keyring:        config.KeyringConfig{Backend: "file"},
+		Keyring: config.KeyringConfig{Backend: "file"},
 		RepositoryProfiles: []config.RepositoryProfile{
 			{
 				Profile: "home",
@@ -1821,7 +1790,7 @@ func TestBuildNonInteractiveInitPlanDoesNotApplySideEffects(t *testing.T) {
 		t.Fatalf("plan path = %q, want %q", plan.path, path)
 	}
 	if _, ok := plan.cfg.Profiles["default"]; !ok {
-		t.Fatalf("plan config profiles = %#v, want default profile", plan.cfg.Profiles)
+		t.Fatalf("plan config profiles = %#v, want suggested profile", plan.cfg.Profiles)
 	}
 }
 
@@ -1907,7 +1876,6 @@ func TestBuildInteractiveInitWorkspaceDoesNotMutateInputConfig(t *testing.T) {
 	cfg := config.File{Profiles: map[string]config.Profile{}}
 	draft := initDraft{
 		ProfileName: "default",
-		MakeDefault: true,
 		GitHost:     "github.com",
 		GitAuth:     string(config.GitAuthModePAT),
 		LLMProvider: string(config.LLMProviderAnthropic),
@@ -1923,11 +1891,11 @@ func TestBuildInteractiveInitWorkspaceDoesNotMutateInputConfig(t *testing.T) {
 		t.Fatalf("input config mutated during workspace build: %#v", cfg.Profiles)
 	}
 	if _, ok := workspace.cfg.Profiles["default"]; !ok {
-		t.Fatalf("workspace config profiles = %#v, want draft default profile", workspace.cfg.Profiles)
+		t.Fatalf("workspace config profiles = %#v, want draft profile", workspace.cfg.Profiles)
 	}
 }
 
-func TestBuildInteractiveInitWorkspaceKeepsFirstProfileDefaultWhenDraftDoesNotOptIn(t *testing.T) {
+func TestBuildInteractiveInitWorkspaceOnlyCreatesNamedProfile(t *testing.T) {
 	opts := &root.Options{
 		Stdin:  strings.NewReader(""),
 		Stdout: &bytes.Buffer{},
@@ -1936,7 +1904,6 @@ func TestBuildInteractiveInitWorkspaceKeepsFirstProfileDefaultWhenDraftDoesNotOp
 	cfg := config.File{Profiles: map[string]config.Profile{}}
 	draft := initDraft{
 		ProfileName: "default",
-		MakeDefault: false,
 		GitHost:     "github.com",
 		GitAuth:     string(config.GitAuthModePAT),
 		LLMProvider: string(config.LLMProviderAnthropic),
@@ -1948,8 +1915,8 @@ func TestBuildInteractiveInitWorkspaceKeepsFirstProfileDefaultWhenDraftDoesNotOp
 	if err != nil {
 		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
 	}
-	if got, want := workspace.cfg.DefaultProfile, "default"; got != want {
-		t.Fatalf("default profile = %q, want %q", got, want)
+	if _, ok := workspace.cfg.Profiles["default"]; !ok {
+		t.Fatalf("workspace config profiles = %#v, want draft profile", workspace.cfg.Profiles)
 	}
 }
 
@@ -2111,12 +2078,11 @@ func TestBuildInteractiveInitWorkspaceClearsReviewerDisplayNameWhenDraftLeavesIt
 		DisplayName:   "Old label",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": existing,
 		},
 	}
-	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft := seedInteractiveInitDraft("work", "work", &existing)
 	draft.ReviewerEnabled = true
 	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 	draft.ReviewerCredentialStore = config.LocalOSCredentialStoreID
@@ -2487,7 +2453,6 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *tes
 		DisplayName:   "Old work label",
 	}
 	cfg := config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
@@ -2504,7 +2469,7 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *tes
 	}
 	session = rebuildInteractiveInitWorkspace(session, "home")
 
-	draft := seedInteractiveInitDraft("home", "home", "home", &home)
+	draft := seedInteractiveInitDraft("home", "home", &home)
 	draft.ReviewerEnabled = true
 	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 	draft.ReviewerCredentialRef = "codereview/open-cli-collective-rianjs-bot-renamed"
@@ -2556,7 +2521,6 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesConcreteSharedReviewerRe
 		DisplayName:   "Old work label",
 	}
 	cfg := config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
@@ -2573,7 +2537,7 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesConcreteSharedReviewerRe
 	}
 	session = rebuildInteractiveInitWorkspace(session, "home")
 
-	draft := seedInteractiveInitDraft("home", "home", "home", &home)
+	draft := seedInteractiveInitDraft("home", "home", &home)
 	draft.ReviewerEnabled = true
 	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 	draft.ReviewerCredentialRef = ""
@@ -2623,7 +2587,6 @@ func TestEditInteractiveInitReviewerEntityStepSelectingFallbackDoesNotPropagateS
 		DisplayName:   "Old work label",
 	}
 	cfg := config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
@@ -2640,7 +2603,7 @@ func TestEditInteractiveInitReviewerEntityStepSelectingFallbackDoesNotPropagateS
 	}
 	session = rebuildInteractiveInitWorkspace(session, "home")
 
-	draft := seedInteractiveInitDraft("home", "home", "home", &home)
+	draft := seedInteractiveInitDraft("home", "home", &home)
 	draft.ReviewerEnabled = false
 	draft.ReviewerAuth = ""
 	draft.ReviewerCredentialRef = ""
@@ -3043,13 +3006,12 @@ func TestBuildInitLLMRuntimeInventoryKeepsCrossProviderSameRefDistinct(t *testin
 	}
 }
 
-func TestDeleteInteractiveInitProfilePrunesRoutesReselectsDefaultAndUndoRestores(t *testing.T) {
+func TestDeleteInteractiveInitProfilePrunesRoutesAndUndoRestores(t *testing.T) {
 	work := basicProfile("work")
 	alpha := basicProfile("alpha")
 	home := basicProfile("home")
 	session := initSessionDraft{
 		cfg: config.File{
-			DefaultProfile: "work",
 			RepositoryProfiles: []config.RepositoryProfile{
 				{
 					Profile: "work",
@@ -3086,9 +3048,6 @@ func TestDeleteInteractiveInitProfilePrunesRoutesReselectsDefaultAndUndoRestores
 	if _, ok := next.cfg.Profiles["work"]; ok {
 		t.Fatalf("profiles after delete = %#v, want work removed", next.cfg.Profiles)
 	}
-	if next.cfg.DefaultProfile != "alpha" {
-		t.Fatalf("default profile after delete = %q, want alpha", next.cfg.DefaultProfile)
-	}
 	if len(next.cfg.RepositoryProfiles) != 1 || next.cfg.RepositoryProfiles[0].Profile != "home" {
 		t.Fatalf("repository_profiles after delete = %#v, want only home route", next.cfg.RepositoryProfiles)
 	}
@@ -3105,9 +3064,6 @@ func TestDeleteInteractiveInitProfilePrunesRoutesReselectsDefaultAndUndoRestores
 	restored, err := undoInteractiveInitProfileDelete(next, "work")
 	if err != nil {
 		t.Fatalf("undoInteractiveInitProfileDelete: %v", err)
-	}
-	if restored.cfg.DefaultProfile != "work" {
-		t.Fatalf("default profile after undo = %q, want work", restored.cfg.DefaultProfile)
 	}
 	if !reflect.DeepEqual(restored.cfg.Profiles["work"], work) {
 		t.Fatalf("restored work profile = %#v, want %#v", restored.cfg.Profiles["work"], work)
@@ -3137,7 +3093,6 @@ func TestDeleteInteractiveInitReviewerEntityClearsAffectedProfilesAndUndoSkipsRe
 	bot := basicProfile("bot")
 	session := initSessionDraft{
 		cfg: config.File{
-			DefaultProfile: "work",
 			Profiles: map[string]config.Profile{
 				"bot":  bot,
 				"home": home,
@@ -3193,7 +3148,6 @@ func TestDeleteInteractiveInitLLMRuntimeRebindsAffectedProfilesAndUndoSkipsReedi
 	}
 	session := initSessionDraft{
 		cfg: config.File{
-			DefaultProfile: "work",
 			Profiles: map[string]config.Profile{
 				"bot":  bot,
 				"home": home,
@@ -3259,13 +3213,12 @@ func TestBuildInteractiveInitWorkspaceImportsLLMRuntimeInventory(t *testing.T) {
 	home.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-llm"}
 	work.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-llm"}
 	cfg := config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
 		},
 	}
-	draft := seedInteractiveInitDraft("home", "home", "home", &home)
+	draft := seedInteractiveInitDraft("home", "home", &home)
 
 	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, opts, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
 	if err != nil {
@@ -3302,10 +3255,9 @@ func TestBuildInteractiveInitWorkspaceImportsGitScopeAndReviewerEntityInventory(
 		IdentityCache: "reviewer-cache",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
-	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft := seedInteractiveInitDraft("work", "work", &existing)
 
 	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, opts, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
 	if err != nil {
@@ -3336,7 +3288,6 @@ func TestInitInteractivePromptDrivenFlowStillExportsReviewerNilAfterDraftInvento
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName:        "office",
-				MakeDefault:        true,
 				GitHost:            "github.mycompany.com",
 				GitAuth:            string(config.GitAuthModePAT),
 				GitCredentialStore: config.LocalOSCredentialStoreID,
@@ -3391,7 +3342,6 @@ func TestInitInteractivePromptDrivenFlowStillExportsSeparateReviewerAfterDraftIn
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName:             "office",
-				MakeDefault:             true,
 				GitHost:                 "github.mycompany.com",
 				GitAuth:                 string(config.GitAuthModePAT),
 				GitCredentialStore:      config.LocalOSCredentialStoreID,
@@ -3458,7 +3408,6 @@ func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T
 	cfg := config.File{Profiles: map[string]config.Profile{}}
 	draft := initDraft{
 		ProfileName: "default",
-		MakeDefault: true,
 		GitHost:     "github.com",
 		GitAuth:     string(config.GitAuthModePAT),
 		LLMProvider: string(config.LLMProviderAnthropic),
@@ -4069,9 +4018,7 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
 		ExistingProfileNames: []string{"work"},
-		DefaultProfileName:   "work",
 		ExistingConfig: config.File{
-			DefaultProfile: "work",
 			RepositoryProfiles: []config.RepositoryProfile{{
 				Profile: "work",
 				Match: config.RepositoryProfileMatch{
@@ -4100,9 +4047,6 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	}
 	if draft.ProfileName != "work" || draft.OriginalProfileName != "work" {
 		t.Fatalf("draft profile = %#v, want existing work prefill", draft)
-	}
-	if !draft.MakeDefault {
-		t.Fatal("draft.MakeDefault = false, want existing default true")
 	}
 	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModeGitHubApp) || draft.GitCredentialRef != "codereview/custom-git" {
 		t.Fatalf("git draft = %#v, want existing values", draft)
@@ -4151,11 +4095,15 @@ func TestHuhInitPrompterAccessiblePrefillsExistingProfile(t *testing.T) {
 	if strings.Contains(strings.ToLower(out), "paste a secret") {
 		t.Fatalf("wizard output unexpectedly requested secret ingress: %q", out)
 	}
-	if strings.Contains(out, "Default profile") || strings.Contains(out, "This profile is already the default profile.") {
-		t.Fatalf("wizard output still shows default-profile prompt in profile editor: %q", out)
+	staleProfileHeading := "Default " + "profile"
+	staleAlreadySelected := "This profile is already the " + "default " + "profile."
+	if strings.Contains(out, staleProfileHeading) || strings.Contains(out, staleAlreadySelected) {
+		t.Fatalf("wizard output still shows removed profile-selection prompt in profile editor: %q", out)
 	}
-	if strings.Contains(out, "Make this the default profile") || strings.Contains(out, "No, keep the current default profile") {
-		t.Fatalf("wizard output contains stale default-profile select copy: %q", out)
+	staleMakeSelected := "Make this the " + "default " + "profile"
+	staleKeepSelected := "No, keep the current " + "default " + "profile"
+	if strings.Contains(out, staleMakeSelected) || strings.Contains(out, staleKeepSelected) {
+		t.Fatalf("wizard output contains removed profile-selection copy: %q", out)
 	}
 }
 
@@ -4163,7 +4111,6 @@ func TestHuhInitPrompterAccessibleOmitsSecretsManagementFromProfileEditor(t *tes
 	t.Setenv("TERM", "dumb")
 	work := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"team-vault": {
@@ -4221,7 +4168,6 @@ func TestHuhInitPrompterAccessibleOmitsSecretsManagementFromProfileEditor(t *tes
 		ExistingProfileName:          "work",
 		ExistingProfile:              &work,
 		ExistingProfileNames:         []string{"work"},
-		DefaultProfileName:           "work",
 		ExistingConfig:               cfg,
 		GitScopes:                    gitScopes,
 		ProfileGitScopes:             profileGitScopes,
@@ -4255,7 +4201,6 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
@@ -4295,7 +4240,6 @@ func TestHuhInitPrompterAccessibleKeepsFallbackReviewerSelectedInMixedInventory(
 		ExistingProfileName:     "home",
 		ExistingProfile:         &home,
 		ExistingProfileNames:    []string{"home"},
-		DefaultProfileName:      "home",
 		ExistingConfig:          cfg,
 		GitScopes:               gitScopes,
 		ProfileGitScopes:        profileGitScopes,
@@ -4324,7 +4268,6 @@ func TestHuhInitPrompterAccessibleConfiguredReviewerHidesInlineReviewerEntityEdi
 		DisplayName:   "Work reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": work,
 		},
@@ -4365,7 +4308,6 @@ func TestHuhInitPrompterAccessibleConfiguredReviewerHidesInlineReviewerEntityEdi
 		ExistingProfileName:     "work",
 		ExistingProfile:         &work,
 		ExistingProfileNames:    []string{"work"},
-		DefaultProfileName:      "work",
 		ExistingConfig:          cfg,
 		GitScopes:               gitScopes,
 		ProfileGitScopes:        profileGitScopes,
@@ -4396,7 +4338,6 @@ func TestHuhInitPrompterAccessibleConfiguredLLMRuntimeHidesInlineRuntimeEditing(
 	t.Setenv("TERM", "dumb")
 	work := apiKeyProfile("work", config.LLMProviderOpenAI)
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": work,
 		},
@@ -4435,7 +4376,6 @@ func TestHuhInitPrompterAccessibleConfiguredLLMRuntimeHidesInlineRuntimeEditing(
 		ExistingProfileName:     "work",
 		ExistingProfile:         &work,
 		ExistingProfileNames:    []string{"work"},
-		DefaultProfileName:      "work",
 		ExistingConfig:          cfg,
 		GitScopes:               gitScopes,
 		ProfileGitScopes:        profileGitScopes,
@@ -4510,7 +4450,7 @@ func TestHuhInitPrompterAccessibleProfileEditorBootstrapsNewLLMRuntimeWhenNoneCo
 			if len(prompt.Context.LLMRuntimes) != 0 {
 				t.Fatalf("prompt.Context.LLMRuntimes = %#v, want empty first-run bootstrap inventory", prompt.Context.LLMRuntimes)
 			}
-			draft := seedInteractiveInitDraft("default", "", "", nil)
+			draft := seedInteractiveInitDraft("default", "", nil)
 			draft.LLMProvider = string(config.LLMProviderOpenAI)
 			draft.LLMAuth = string(config.LLMAuthSubscription)
 			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
@@ -4520,7 +4460,6 @@ func TestHuhInitPrompterAccessibleProfileEditorBootstrapsNewLLMRuntimeWhenNoneCo
 
 	draft, err := prompter.Run(initPromptContext{
 		RequestedProfileName: "default",
-		DefaultProfileName:   "",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
 	})
 	if err != nil {
@@ -4571,7 +4510,6 @@ func TestHuhInitPrompterAccessibleCreateNewProfileFallsBackToFirstConfiguredRunt
 
 	draft, err := prompter.Run(initPromptContext{
 		RequestedProfileName: "default",
-		DefaultProfileName:   "",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
 		LLMRuntimes: map[string]initLLMRuntimeDraft{
 			"alpha-runtime": {
@@ -4646,10 +4584,8 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
 		ExistingProfileNames: []string{"work"},
-		DefaultProfileName:   "work",
 		ExistingConfig: config.File{
-			DefaultProfile: "work",
-			Profiles:       map[string]config.Profile{"work": existing},
+			Profiles: map[string]config.Profile{"work": existing},
 		},
 		GitScopes: map[string]initGitScopeDraft{
 			"gitlab-work": initGitScopeDraftFromConfig(existing.Git),
@@ -4672,9 +4608,6 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 	if draft.ProfileName != "new-profile" {
 		t.Fatalf("draft.ProfileName = %q, want non-conflicting create-new profile seed", draft.ProfileName)
-	}
-	if draft.MakeDefault {
-		t.Fatalf("draft.MakeDefault = true, want create-new seed to preserve false selection when an existing default profile is present")
 	}
 	if draft.GitHost != "github.com" || draft.GitAuth != string(config.GitAuthModePAT) {
 		t.Fatalf("git draft = %#v, want fresh defaults for create-new seed", draft)
@@ -4700,13 +4633,12 @@ func TestHuhInitPrompterAccessibleCreateNewProfileStartsFreshSeed(t *testing.T) 
 	}
 }
 
-func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDefaultExists(t *testing.T) {
+func TestHuhInitPrompterAccessibleCreateNewProfileOmitsSelectionPrompt(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // Profile name
-			"", // Make default: keep seeded yes selection
 			"", // Git scope host
 			"", // Git scope auth mode
 			"", // Reviewer entity
@@ -4740,28 +4672,28 @@ func TestHuhInitPrompterAccessibleCreateNewProfileDefaultsToMakeDefaultWhenNoDef
 
 	draft, err := prompter.Run(initPromptContext{
 		RequestedProfileName: "default",
-		DefaultProfileName:   "",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !draft.MakeDefault {
-		t.Fatalf("draft.MakeDefault = false, want no-default interactive flow to preserve seeded true selection")
+	if draft.ProfileName != "default" {
+		t.Fatalf("draft.ProfileName = %q, want requested profile name", draft.ProfileName)
 	}
-	if strings.Contains(stderr.String(), "Yes, make this profile the default") || strings.Contains(stderr.String(), "Default profile") {
-		t.Fatalf("stderr = %q, want profile editor to omit default-profile select copy", stderr.String())
+	staleMakeSelected := "Yes, make this profile the " + "default"
+	staleProfileHeading := "Default " + "profile"
+	if strings.Contains(stderr.String(), staleMakeSelected) || strings.Contains(stderr.String(), staleProfileHeading) {
+		t.Fatalf("stderr = %q, want profile editor to omit removed selection copy", stderr.String())
 	}
 }
 
-func TestHuhInitPrompterAccessibleCreateNewProfileAvoidsExistingDefaultProfileName(t *testing.T) {
+func TestHuhInitPrompterAccessibleCreateNewProfileAvoidsExistingProfileName(t *testing.T) {
 	t.Setenv("TERM", "dumb")
-	existing := basicProfile(credstore.DefaultProfile)
+	existing := basicProfile("default")
 	var stderr bytes.Buffer
 	prompter := huhInitPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
 			"", // Profile name
-			"", // Make default
 			"", // Git host
 			"", // Git auth
 			"", // Reviewer entity
@@ -4787,19 +4719,17 @@ func TestHuhInitPrompterAccessibleCreateNewProfileAvoidsExistingDefaultProfileNa
 	}
 
 	draft, err := prompter.Run(initPromptContext{
-		RequestedProfileName: credstore.DefaultProfile,
-		ExistingProfileName:  credstore.DefaultProfile,
+		RequestedProfileName: "default",
+		ExistingProfileName:  "default",
 		ExistingProfile:      &existing,
-		ExistingProfileNames: []string{credstore.DefaultProfile},
-		DefaultProfileName:   credstore.DefaultProfile,
+		ExistingProfileNames: []string{"default"},
 		ExistingConfig: config.File{
-			DefaultProfile: credstore.DefaultProfile,
-			Profiles:       map[string]config.Profile{credstore.DefaultProfile: existing},
+			Profiles: map[string]config.Profile{"default": existing},
 		},
 		LLMRuntimes: map[string]initLLMRuntimeDraft{
 			"default-runtime": initLLMRuntimeDraftFromConfig(existing.LLM),
 		},
-		ProfileLLMRuntimes: map[string]string{credstore.DefaultProfile: "default-runtime"},
+		ProfileLLMRuntimes: map[string]string{"default": "default-runtime"},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -4808,21 +4738,18 @@ func TestHuhInitPrompterAccessibleCreateNewProfileAvoidsExistingDefaultProfileNa
 		t.Fatalf("draft.OriginalProfileName = %q, want blank for create-new seed", draft.OriginalProfileName)
 	}
 	if draft.ProfileName != "new-profile" {
-		t.Fatalf("draft.ProfileName = %q, want create-new seed to avoid existing default profile", draft.ProfileName)
-	}
-	if draft.MakeDefault {
-		t.Fatalf("draft.MakeDefault = true, want existing default profile to remain default")
+		t.Fatalf("draft.ProfileName = %q, want create-new seed to avoid existing suggested-name profile", draft.ProfileName)
 	}
 }
 
 func TestInitCreateProfileSeedNameUsesNextAvailableGeneratedName(t *testing.T) {
 	got := initCreateProfileSeedName(initPromptContext{
-		RequestedProfileName: credstore.DefaultProfile,
-		ExistingProfileNames: []string{credstore.DefaultProfile, "new-profile"},
+		RequestedProfileName: "default",
+		ExistingProfileNames: []string{"default", "new-profile"},
 		ExistingConfig: config.File{
 			Profiles: map[string]config.Profile{
-				credstore.DefaultProfile: {},
-				"new-profile":            {},
+				"default":     {},
+				"new-profile": {},
 			},
 		},
 		PendingProfileDeletes: map[string]initPendingProfileDelete{
@@ -4841,7 +4768,7 @@ func TestProfileEditorSelectionPreservesSelectedReviewerEntityLabel(t *testing.T
 		CredentialRef: "codereview/work-reviewer",
 		DisplayName:   "Old label",
 	}
-	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft := seedInteractiveInitDraft("work", "work", &existing)
 
 	reviewerEntities := map[string]initReviewerEntityDraft{
 		"work-reviewer": initReviewerEntityDraftFromConfig(existing),
@@ -4878,10 +4805,8 @@ func TestHuhInitPrompterAccessibleCanMarkExistingProfileForDeletion(t *testing.T
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig: config.File{
-			DefaultProfile: "work",
-			Profiles:       map[string]config.Profile{"work": existing},
+			Profiles: map[string]config.Profile{"work": existing},
 		},
 	})
 	if err != nil {
@@ -4954,10 +4879,8 @@ func TestHuhInitPrompterAccessibleCanRestorePendingDeletedProfile(t *testing.T) 
 		ExistingProfileName:  "home",
 		ExistingProfile:      &home,
 		ExistingProfileNames: []string{"home"},
-		DefaultProfileName:   "home",
 		ExistingConfig: config.File{
-			DefaultProfile: "home",
-			Profiles:       map[string]config.Profile{"home": home},
+			Profiles: map[string]config.Profile{"home": home},
 		},
 		PendingProfileDeletes: map[string]initPendingProfileDelete{
 			"work": {ProfileName: "work"},
@@ -5069,7 +4992,6 @@ func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInve
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
@@ -5098,7 +5020,6 @@ func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInve
 			RequestedProfileName:    "home",
 			ExistingProfileName:     "home",
 			ExistingProfile:         &home,
-			DefaultProfileName:      "home",
 			ExistingConfig:          cfg,
 			ReviewerEntities:        reviewerEntities,
 			ProfileReviewerEntities: profileReviewerEntities,
@@ -5124,7 +5045,6 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 		CredentialRef: "codereview/custom-work-reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
@@ -5155,7 +5075,6 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 			RequestedProfileName:    "home",
 			ExistingProfileName:     "home",
 			ExistingProfile:         &home,
-			DefaultProfileName:      "home",
 			ExistingConfig:          cfg,
 			ReviewerEntities:        reviewerEntities,
 			ProfileReviewerEntities: profileReviewerEntities,
@@ -5337,8 +5256,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeShowsDetails(t *tes
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
@@ -5361,7 +5279,6 @@ func TestHuhInitLLMRuntimePrompterAccessibleConfiguredRuntimeShowsDetails(t *tes
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
@@ -5385,8 +5302,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
@@ -5410,7 +5326,6 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsDetails(t *testing.T) {
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
@@ -5463,7 +5378,6 @@ func TestHuhInitLLMRuntimePrompterAccessibleTemplateShowsAvailabilityNote(t *tes
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}})
 	if err != nil {
@@ -5506,8 +5420,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleCustomRuntimeShowsCustomFields(t *te
 		Adapter:  config.LLMAdapterAnthropicAPI,
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	var stderr bytes.Buffer
 	prompter := huhInitLLMRuntimePrompter{
@@ -5534,7 +5447,6 @@ func TestHuhInitLLMRuntimePrompterAccessibleCustomRuntimeShowsCustomFields(t *te
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes: map[string]initLLMRuntimeDraft{
 			"claude-cli": {
@@ -5582,7 +5494,6 @@ func TestHuhInitLLMRuntimePrompterAccessibleBackReturnsNavigateBack(t *testing.T
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}})
 	if !errors.Is(err, errInitNavigateBack) {
@@ -5595,7 +5506,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleBackReturnsNavigateBack(t *testing.T
 
 func TestHuhInitLLMRuntimeDetailsBackDoesNotMutateDraft(t *testing.T) {
 	t.Setenv("TERM", "dumb")
-	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft := seedInteractiveInitDraft("work", "work", nil)
 	draft.LLMProvider = string(config.LLMProviderOpenAI)
 	draft.LLMAuth = string(config.LLMAuthSubscription)
 	draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
@@ -5622,8 +5533,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanMarkConfiguredRuntimeForDeletion(
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
@@ -5649,7 +5559,6 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanMarkConfiguredRuntimeForDeletion(
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
@@ -5672,8 +5581,7 @@ func TestHuhInitLLMRuntimePrompterReplacementChoosesConfiguredTemplate(t *testin
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
@@ -5701,11 +5609,10 @@ func TestHuhInitLLMRuntimePrompterReplacementChoosesConfiguredTemplate(t *testin
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
-	}}, "claude-cli", seedInteractiveInitDraft("work", "work", "work", &existing))
+	}}, "claude-cli", seedInteractiveInitDraft("work", "work", &existing))
 	if err != nil {
 		t.Fatalf("chooseLLMRuntimeDeleteReplacement: %v", err)
 	}
@@ -5721,8 +5628,7 @@ func TestHuhInitLLMRuntimePrompterReplacementBackExcludesDeletedRuntime(t *testi
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
@@ -5738,11 +5644,10 @@ func TestHuhInitLLMRuntimePrompterReplacementBackExcludesDeletedRuntime(t *testi
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
-	}}, "claude-cli", seedInteractiveInitDraft("work", "work", "work", &existing))
+	}}, "claude-cli", seedInteractiveInitDraft("work", "work", &existing))
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("chooseLLMRuntimeDeleteReplacement error = %v, want errInitNavigateBack", err)
 	}
@@ -5780,7 +5685,6 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *t
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 		LLMRuntimes:          map[string]initLLMRuntimeDraft{},
 		PendingLLMRuntimeDeletes: map[string]initPendingLLMRuntimeDelete{
@@ -5801,8 +5705,7 @@ func TestHuhInitLLMRuntimePrompterAccessibleCanRestorePendingDeletedRuntime(t *t
 func TestHuhInitLLMRuntimePrompterDefaultUsesLinearRuntimeFlow(t *testing.T) {
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
@@ -5826,7 +5729,6 @@ func TestHuhInitLLMRuntimePrompterDefaultUsesLinearRuntimeFlow(t *testing.T) {
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
@@ -5865,8 +5767,7 @@ func TestHuhInitLLMRuntimePrompterDefaultUsesLinearRuntimeFlow(t *testing.T) {
 func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testing.T) {
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	var stderr bytes.Buffer
@@ -5919,7 +5820,6 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
@@ -5945,20 +5845,18 @@ func TestHuhInitLLMRuntimePrompterDefaultCanDeleteWithInlineReplacement(t *testi
 func TestInitLLMRuntimeLinearEditorRejectsCustomDeleteReplacementMatchingDeleted(t *testing.T) {
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	ctx := initPromptContext{
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
 	}
-	seed := seedInteractiveInitDraft(ctx.RequestedProfileName, ctx.ExistingProfileName, ctx.DefaultProfileName, ctx.ExistingProfile)
+	seed := seedInteractiveInitDraft(ctx.RequestedProfileName, ctx.ExistingProfileName, ctx.ExistingProfile)
 	model := newInitLinearEditorModel(initLLMRuntimeLinearEditor(ctx, seed, func(initLLMRuntimePreset) string { return "" }), 160, 60)
 	model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
 
@@ -6004,20 +5902,18 @@ func TestInitLLMRuntimeLinearEditorRejectsCustomDeleteReplacementMatchingDeleted
 func TestInitLLMRuntimeLinearEditorChangingSelectionResetsDeleteMode(t *testing.T) {
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	ctx := initPromptContext{
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
 	}
-	seed := seedInteractiveInitDraft(ctx.RequestedProfileName, ctx.ExistingProfileName, ctx.DefaultProfileName, ctx.ExistingProfile)
+	seed := seedInteractiveInitDraft(ctx.RequestedProfileName, ctx.ExistingProfileName, ctx.ExistingProfile)
 	model := newInitLinearEditorModel(initLLMRuntimeLinearEditor(ctx, seed, func(initLLMRuntimePreset) string { return "" }), 160, 60)
 	model = focusInitLinearField(t, model, initLLMRuntimeFieldSelection)
 
@@ -6064,8 +5960,7 @@ func TestHuhInitLLMRuntimePrompterDefaultPreservesConfiguredAPIKeyRuntimeRef(t *
 		CredentialRef: "codereview/custom-openai",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	}
 	llmRuntimes, profileLLMRuntimes := buildInitLLMRuntimeInventory(cfg)
 	prompter := huhInitLLMRuntimePrompter{
@@ -6077,7 +5972,6 @@ func TestHuhInitLLMRuntimePrompterDefaultPreservesConfiguredAPIKeyRuntimeRef(t *
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		LLMRuntimes:          llmRuntimes,
 		ProfileLLMRuntimes:   profileLLMRuntimes,
@@ -6113,7 +6007,6 @@ func TestHuhInitReviewerEntityPrompterAccessibleBackReturnsNavigateBack(t *testi
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}})
 	if !errors.Is(err, errInitNavigateBack) {
@@ -6150,7 +6043,6 @@ func TestHuhInitReviewerEntityPrompterAccessibleChoiceShowsDetails(t *testing.T)
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}})
 	if err != nil {
@@ -6200,7 +6092,6 @@ func TestHuhInitReviewerEntityPrompterNewTemplateDoesNotInheritCustomSecretLocat
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}})
 	if err != nil {
@@ -6221,7 +6112,7 @@ func TestHuhInitReviewerEntityPrompterNewTemplateDoesNotInheritCustomSecretLocat
 }
 
 func TestFinalizeReviewerEntityEditorDraftPersistsCustomSecretLocation(t *testing.T) {
-	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft := seedInteractiveInitDraft("work", "work", nil)
 	finalizeReviewerEntityEditorDraft(
 		&draft,
 		"",
@@ -6283,7 +6174,7 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCustomSecretLocationPersis
 		CredentialRef: "codereview/custom-work-reviewer",
 		DisplayName:   "Old reviewer",
 	}
-	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft := seedInteractiveInitDraft("work", "work", &existing)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
 		stderr:       &stderr,
@@ -6318,7 +6209,7 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerFallbackSeedDoesNotPersist
 		AuthMode:      config.GitAuthModeGitHubApp,
 		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
 	}
-	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft := seedInteractiveInitDraft("work", "work", &existing)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
 		stderr:       &stderr,
@@ -6345,7 +6236,7 @@ func TestHuhInitReviewerEntityPrompterAccessibleShowsSeededDisplayNamePrompt(t *
 		CredentialRef: "codereview/work-reviewer",
 		DisplayName:   "Old label",
 	}
-	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft := seedInteractiveInitDraft("work", "work", &existing)
 	draft.ReviewerEnabled = true
 	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 	draft.ReviewerCredentialRef = "codereview/work-reviewer"
@@ -6378,7 +6269,7 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCanEditLabel(t *testing.T)
 		AuthMode:      config.GitAuthModeGitHubApp,
 		CredentialRef: "codereview/work-reviewer",
 	}
-	draft := seedInteractiveInitDraft("work", "work", "work", &existing)
+	draft := seedInteractiveInitDraft("work", "work", &existing)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
 		stderr: &stderr,
@@ -6434,7 +6325,6 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}})
 	if err != nil {
@@ -6505,7 +6395,6 @@ func TestHuhInitReviewerEntityPrompterGitHubAppLinearFlowShowsCredentialBundleCo
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}})
 	if err != nil {
@@ -6557,10 +6446,9 @@ func TestReviewerEntityLinearEditorNewLabelDerivesDefaultSecretLocation(t *testi
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	seed := seedInteractiveInitDraft("work", "work", &existing)
 	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
 	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
 
@@ -6589,10 +6477,9 @@ func TestReviewerEntityLinearEditorManualSecretLocationStopsLabelDerivedUpdates(
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	seed := seedInteractiveInitDraft("work", "work", &existing)
 	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
 	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindPAT))
 
@@ -6623,21 +6510,19 @@ func TestReviewerEntityLinearEditorExistingReviewerLabelDoesNotMigrateRef(t *tes
 		DisplayName:   "Old label",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": profile},
+		Profiles: map[string]config.Profile{"work": profile},
 	}
 	entities, profileEntities := buildInitReviewerEntityInventory(cfg)
 	profileCopy := profile
 	ctx := initPromptContext{
 		RequestedProfileName:    "work",
 		ExistingProfileName:     "work",
-		DefaultProfileName:      "work",
 		ExistingProfile:         &profileCopy,
 		ExistingConfig:          cfg,
 		ReviewerEntities:        entities,
 		ProfileReviewerEntities: profileEntities,
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &profile)
+	seed := seedInteractiveInitDraft("work", "work", &profile)
 	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
 
 	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
@@ -6659,7 +6544,7 @@ func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecrets(t *testin
 		CredentialRef: "codereview/existing-reviewer",
 		DisplayName:   "Existing reviewer",
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &profile)
+	seed := seedInteractiveInitDraft("work", "work", &profile)
 	state, err := newReviewerEntityEditorState(initReviewerEntityDraft{
 		Kind:          initReviewerEntityKindPAT,
 		AuthMode:      config.GitAuthModePAT,
@@ -6713,15 +6598,13 @@ func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecretsWhenStatus
 		DisplayName:   "Existing reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": profile},
+		Profiles: map[string]config.Profile{"work": profile},
 	}
 	entities, profileEntities := buildInitReviewerEntityInventory(cfg)
 	profileCopy := profile
 	ctx := initPromptContext{
 		RequestedProfileName:    "work",
 		ExistingProfileName:     "work",
-		DefaultProfileName:      "work",
 		ExistingProfile:         &profileCopy,
 		ExistingConfig:          cfg,
 		ReviewerEntities:        entities,
@@ -6740,7 +6623,7 @@ func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecretsWhenStatus
 			}},
 		}},
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &profile)
+	seed := seedInteractiveInitDraft("work", "work", &profile)
 	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
 	model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/new-reviewer")
 	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation))
@@ -6770,10 +6653,9 @@ func TestReviewerEntityLinearEditorGitHubAppRequiresInlineSecretsBeforeStaging(t
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	seed := seedInteractiveInitDraft("work", "work", &existing)
 	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
 	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
 	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
@@ -6841,7 +6723,6 @@ func TestReviewerEntityLinearEditorLabelDerivedRefDoesNotMarkMissingStatusAsOver
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
 			Ref: config.CredentialRef{
@@ -6856,7 +6737,7 @@ func TestReviewerEntityLinearEditorLabelDerivedRefDoesNotMarkMissingStatusAsOver
 			},
 		}},
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	seed := seedInteractiveInitDraft("work", "work", &existing)
 	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
 	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
 	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
@@ -6884,7 +6765,6 @@ func TestReviewerEntityLinearEditorManualRefDoesNotMarkUnavailableStatusAsOverwr
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
 			Ref: config.CredentialRef{
@@ -6899,7 +6779,7 @@ func TestReviewerEntityLinearEditorManualRefDoesNotMarkUnavailableStatusAsOverwr
 			},
 		}},
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	seed := seedInteractiveInitDraft("work", "work", &existing)
 	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
 	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
 	model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/manual-reviewer")
@@ -6927,7 +6807,6 @@ func TestReviewerEntityLinearEditorLabelDerivedRefPreservesBackendUnavailableSta
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
 			Ref: config.CredentialRef{
@@ -6943,7 +6822,7 @@ func TestReviewerEntityLinearEditorLabelDerivedRefPreservesBackendUnavailableSta
 			},
 		}},
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &existing)
+	seed := seedInteractiveInitDraft("work", "work", &existing)
 	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
 	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
 	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
@@ -6967,15 +6846,13 @@ func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.
 		CredentialRef: "codereview/old-reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": profile},
+		Profiles: map[string]config.Profile{"work": profile},
 	}
 	entities, profileEntities := buildInitReviewerEntityInventory(cfg)
 	profileCopy := profile
 	ctx := initPromptContext{
 		RequestedProfileName:    "work",
 		ExistingProfileName:     "work",
-		DefaultProfileName:      "work",
 		ExistingProfile:         &profileCopy,
 		ExistingConfig:          cfg,
 		ReviewerEntities:        entities,
@@ -6993,7 +6870,7 @@ func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.
 			}},
 		}},
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", &profile)
+	seed := seedInteractiveInitDraft("work", "work", &profile)
 	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 180, 60)
 	statusIndex := model.document.fieldIndexByID(initReviewerEntityFieldCredentialStatus)
 	if statusIndex < 0 {
@@ -7024,7 +6901,7 @@ func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.
 
 func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 	t.Setenv("TERM", "dumb")
-	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft := seedInteractiveInitDraft("work", "work", nil)
 	want := draft
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
@@ -7049,7 +6926,7 @@ func TestHuhInitReviewerEntityDetailsBackDoesNotMutateDraft(t *testing.T) {
 
 func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testing.T) {
 	t.Setenv("TERM", "dumb")
-	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft := seedInteractiveInitDraft("work", "work", nil)
 	var stderr bytes.Buffer
 	privateKey := testReviewerGitHubAppPrivateKey()
 	prompter := huhInitReviewerEntityPrompter{
@@ -7103,7 +6980,7 @@ func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testi
 
 func TestHuhInitReviewerEntityDetailsPreservesPromptContextCredentialStore(t *testing.T) {
 	t.Setenv("TERM", "dumb")
-	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft := seedInteractiveInitDraft("work", "work", nil)
 	draft.ReviewerCredentialStore = "work-file"
 	resolved := credentials.ResolvedSecretsProfile{
 		ID:      "work-file",
@@ -7160,7 +7037,7 @@ func TestHuhInitReviewerEntityDetailsPreservesPromptContextCredentialStore(t *te
 
 func TestHuhInitReviewerEntityDetailsAccessibleHidesSecretLocationForGitIdentity(t *testing.T) {
 	t.Setenv("TERM", "dumb")
-	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft := seedInteractiveInitDraft("work", "work", nil)
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
 		stderr:       &stderr,
@@ -7184,7 +7061,7 @@ func TestHuhInitReviewerEntityDetailsAccessibleHidesSecretLocationForGitIdentity
 }
 
 func TestInitInventorySelectionsApplyToDraft(t *testing.T) {
-	draft := seedInteractiveInitDraft("default", "", "", nil)
+	draft := seedInteractiveInitDraft("default", "", nil)
 	gitScopes := map[string]initGitScopeDraft{
 		"gitlab-work": {
 			Name:          "gitlab-work",
@@ -7228,7 +7105,7 @@ func TestInitInventorySelectionsApplyToDraft(t *testing.T) {
 }
 
 func TestCustomLLMRuntimeSelectionUsesEditedProviderAuthAndAdapter(t *testing.T) {
-	draft := seedInteractiveInitDraft("work", "work", "work", nil)
+	draft := seedInteractiveInitDraft("work", "work", nil)
 	draft.LLMProvider = string(config.LLMProviderOpenAI)
 	draft.LLMAuth = string(config.LLMAuthAPIKey)
 	draft.LLMAdapter = string(config.LLMAdapterOpenAIAPI)
@@ -7317,7 +7194,7 @@ func TestInitProfileEditorLLMRuntimeSelectionPrefersMatchingDraftRuntime(t *test
 			Adapter:  config.LLMAdapterCodexCLI,
 		},
 	}
-	draft := seedInteractiveInitDraft("default", "", "", nil)
+	draft := seedInteractiveInitDraft("default", "", nil)
 	draft.LLMProvider = string(config.LLMProviderOpenAI)
 	draft.LLMAuth = string(config.LLMAuthSubscription)
 	draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
@@ -7350,7 +7227,7 @@ func TestInitProfileEditorLLMRuntimeSelectionFallsBackToFirstConfiguredRuntimeWi
 			CredentialRef: "codereview/zeta-llm",
 		},
 	}
-	draft := seedInteractiveInitDraft("default", "", "", nil)
+	draft := seedInteractiveInitDraft("default", "", nil)
 
 	options, selected := initProfileEditorLLMRuntimeSelection(runtimes, "", draft)
 	if got, want := selected, "alpha-runtime"; got != want {
@@ -7401,7 +7278,7 @@ func TestInitProfileEditorSecretsProfileSelectionKeepsBrokenReferenceSelectable(
 		},
 	}
 	existing := basicProfile("work")
-	options, selected := initProfileEditorSecretsProfileSelection(profiles, "missing-vault", "missing-vault", "Use built-in default (Legacy default)", seedInteractiveInitDraft("work", "work", "work", &existing))
+	options, selected := initProfileEditorSecretsProfileSelection(profiles, "missing-vault", "missing-vault", "Use built-in default (Legacy default)", seedInteractiveInitDraft("work", "work", &existing))
 	if got, want := selected, initMissingSecretsProfileSelection("missing-vault"); got != want {
 		t.Fatalf("selected = %q, want missing-selection sentinel %q", got, want)
 	}
@@ -7447,7 +7324,6 @@ func TestApplySecretsProfileSelection(t *testing.T) {
 
 func TestValidateInteractiveInitConfigDoesNotMaskUnrelatedInvalidState(t *testing.T) {
 	cfg := config.Normalize(config.File{
-		DefaultProfile: "work",
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"broken": {
@@ -7611,7 +7487,6 @@ func TestInitProfileReadinessLineIncludesNotes(t *testing.T) {
 
 func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileSelection(t *testing.T) {
 	cfg := config.Normalize(config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": func() config.Profile {
 				profile := basicProfile("work")
@@ -7621,7 +7496,7 @@ func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileSelection(t *te
 		},
 	})
 	profile := cfg.Profiles["work"]
-	draft := seedInteractiveInitDraft("work", "work", "work", &profile)
+	draft := seedInteractiveInitDraft("work", "work", &profile)
 	applySecretsProfileSelection(&draft, initSecretsProfileDefaultSelection)
 
 	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
@@ -7635,7 +7510,6 @@ func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileSelection(t *te
 
 func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileToConfiguredProfile(t *testing.T) {
 	cfg := config.Normalize(config.File{
-		DefaultProfile: "work",
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"team-vault": {
@@ -7653,7 +7527,7 @@ func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileToConfiguredPro
 		},
 	})
 	profile := cfg.Profiles["work"]
-	draft := seedInteractiveInitDraft("work", "work", "work", &profile)
+	draft := seedInteractiveInitDraft("work", "work", &profile)
 	applySecretsProfileSelection(&draft, "team-vault")
 
 	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
@@ -7682,7 +7556,6 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName:        "work",
-				MakeDefault:        true,
 				GitHost:            "github.com",
 				GitAuth:            string(config.GitAuthModePAT),
 				GitCredentialStore: "team-vault",
@@ -7722,7 +7595,6 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
 
 func TestBuildInteractiveInitWorkspaceAllowsRepairWhileAnotherProfileStillHasBrokenSecretsProfile(t *testing.T) {
 	cfg := config.Normalize(config.File{
-		DefaultProfile: "home",
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"team-vault": {
@@ -7741,7 +7613,7 @@ func TestBuildInteractiveInitWorkspaceAllowsRepairWhileAnotherProfileStillHasBro
 		},
 	})
 	home := cfg.Profiles["home"]
-	draft := seedInteractiveInitDraft("home", "home", "home", &home)
+	draft := seedInteractiveInitDraft("home", "home", &home)
 	applySecretsProfileSelection(&draft, "team-vault")
 
 	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
@@ -7818,8 +7690,7 @@ func TestHuhInitPrompterAccessibleAdvancedStorageLabelsExposeRefInputs(t *testin
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
-		DefaultProfileName:   "work",
-		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 		ReviewerEntities:     reviewerEntities,
 		ProfileReviewerEntities: map[string]string{
 			"work": "pat-reviewer",
@@ -7857,7 +7728,6 @@ func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	work := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": work,
 		},
@@ -7896,7 +7766,6 @@ func TestHuhInitPrompterAccessibleStorageLabelsDefaultSkipPath(t *testing.T) {
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &work,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		GitScopes:            gitScopes,
 		ProfileGitScopes:     profileGitScopes,
@@ -7928,7 +7797,6 @@ func TestHuhInitPrompterAccessibleStorageLabelsOnlyExposeGitLabel(t *testing.T) 
 	t.Setenv("TERM", "dumb")
 	work := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": work,
 		},
@@ -7993,7 +7861,6 @@ func TestHuhInitPrompterAccessibleStorageLabelsOnlyExposeGitLabel(t *testing.T) 
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
 		ExistingProfile:      &work,
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 		GitScopes:            gitScopes,
 		ProfileGitScopes:     profileGitScopes,
@@ -8145,7 +8012,6 @@ func TestHuhInitPrompterAccessibleStorageLabelsKeepCustomOverridesAcrossSelectio
 	existing.LLM.Adapter = config.LLMAdapterAnthropicAPI
 	existing.LLM.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-llm"}
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": existing,
 		},
@@ -8230,7 +8096,6 @@ func TestHuhInitPrompterAccessibleStorageLabelsKeepCustomOverridesAcrossSelectio
 		ExistingProfileName:     "work",
 		ExistingProfile:         &existing,
 		ExistingProfileNames:    []string{"work"},
-		DefaultProfileName:      "work",
 		ExistingConfig:          cfg,
 		GitScopes:               gitScopes,
 		ProfileGitScopes:        map[string]string{"work": "a-old-git"},
@@ -8425,8 +8290,7 @@ func TestHuhInitPrompterAccessibleShowsExistingProfileHealthWarnings(t *testing.
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
 		ExistingProfileNames: []string{"work"},
-		DefaultProfileName:   "work",
-		ExistingConfig:       config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": existing}},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
 		ProfileWarnings: map[string][]string{
 			"work": {"Git secret health: codereview/work is missing required keys (git_token)"},
 		},
@@ -8480,7 +8344,6 @@ func TestHuhInitPrompterAccessibleHidesReviewerEntityLabelForProfileGitAccount(t
 
 	_, err := prompter.Run(initPromptContext{
 		RequestedProfileName: "default",
-		DefaultProfileName:   "",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
 	})
 	if err != nil {
@@ -8994,7 +8857,6 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 		IdentityCache: "reviewer-cache",
 	}
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		RepositoryProfiles: []config.RepositoryProfile{{
 			Profile: "work",
 			Match: config.RepositoryProfileMatch{
@@ -9019,7 +8881,6 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 			return initDraft{
 				OriginalProfileName:   "work",
 				ProfileName:           "office",
-				MakeDefault:           true,
 				GitHost:               "github.com",
 				GitAuth:               string(config.GitAuthModeGitHubApp),
 				GitCredentialRef:      "codereview/office-git",
@@ -9063,8 +8924,8 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	if err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if gotCtx.ExistingProfileName != "work" || gotCtx.DefaultProfileName != "work" {
-		t.Fatalf("prompt context = %#v, want existing/default work", gotCtx)
+	if gotCtx.ExistingProfileName != "work" {
+		t.Fatalf("prompt context = %#v, want existing work", gotCtx)
 	}
 	if gotCtx.ExistingProfile == nil || gotCtx.ExistingProfile.Git.CredentialRef != "codereview/work" {
 		t.Fatalf("prompt existing profile = %#v, want work profile", gotCtx.ExistingProfile)
@@ -9072,9 +8933,6 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
-	}
-	if cfg.DefaultProfile != "office" {
-		t.Fatalf("default_profile = %q, want office", cfg.DefaultProfile)
 	}
 	if _, ok := cfg.Profiles["work"]; ok {
 		t.Fatalf("old profile still present after rename: %#v", cfg.Profiles)
@@ -9123,8 +8981,7 @@ func TestInitInteractiveModelMapPreserveUsesEditedLLMContext(t *testing.T) {
 	existing := basicProfile("work")
 	existing.LLM.ModelMap = config.ModelMap{"medium": "claude-custom"}
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": existing},
+		Profiles: map[string]config.Profile{"work": existing},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -9138,7 +8995,6 @@ func TestInitInteractiveModelMapPreserveUsesEditedLLMContext(t *testing.T) {
 			return initDraft{
 				OriginalProfileName:  "work",
 				ProfileName:          "work",
-				MakeDefault:          true,
 				GitHost:              "github.com",
 				GitAuth:              string(config.GitAuthModePAT),
 				GitCredentialRef:     "codereview/work",
@@ -9179,7 +9035,6 @@ func TestInitInteractiveModelMapPreserveUsesEditedLLMContext(t *testing.T) {
 func TestEditInteractiveInitProfileSkipsInlineProfileDetailCollectors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -9191,7 +9046,7 @@ func TestEditInteractiveInitProfileSkipsInlineProfileDetailCollectors(t *testing
 		ConfigPath: path,
 	}
 	work := cfg.Profiles["work"]
-	draft := seedInteractiveInitDraft("work", "work", "work", &work)
+	draft := seedInteractiveInitDraft("work", "work", &work)
 	draft.RoutesSet = true
 	draft.ModelMapSet = true
 	draft.ModelMap = config.ModelMap{"large": "claude-custom"}
@@ -9255,7 +9110,6 @@ func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *test
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := basicProfile("open-cli-collective")
 	cfg := config.File{
-		DefaultProfile: "open-cli-collective",
 		Profiles: map[string]config.Profile{
 			"open-cli-collective": existing,
 		},
@@ -9282,7 +9136,7 @@ func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *test
 				return initDraft{}, errInitNavigateBack
 			}
 			work := ctx.ExistingConfig.Profiles["open-cli-collective"]
-			draft := seedInteractiveInitDraft("open-cli-collective", "open-cli-collective", "open-cli-collective", &work)
+			draft := seedInteractiveInitDraft("open-cli-collective", "open-cli-collective", &work)
 			draft.ProfileName = "open-cli-collective-lkjlkj"
 			draft.GitCredentialRef = "codereview/open-cli-collective12365"
 			draft.RoutesSet = true
@@ -9323,7 +9177,6 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": existing,
 		},
@@ -9356,7 +9209,7 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 				return initDraft{}, errInitNavigateBack
 			}
 			work := ctx.ExistingConfig.Profiles["work"]
-			draft := seedInteractiveInitDraft("work", "work", "work", &work)
+			draft := seedInteractiveInitDraft("work", "work", &work)
 			draft.GitCredentialRef = "codereview/custom-work-git"
 			draft.LLMProvider = string(config.LLMProviderOpenAI)
 			draft.LLMAuth = string(config.LLMAuthSubscription)
@@ -9638,8 +9491,7 @@ func TestInitInteractiveModelMapAddEditRemoveAndReset(t *testing.T) {
 			existing.LLM.ModelMap = copyModelMap(tt.existing)
 			existing.AgentSources = []string{"/tmp/agents"}
 			saveCredentialTestConfig(t, path, config.File{
-				DefaultProfile: "work",
-				Profiles:       map[string]config.Profile{"work": existing},
+				Profiles: map[string]config.Profile{"work": existing},
 			})
 			opts := &root.Options{
 				Stdin:      strings.NewReader(""),
@@ -9652,7 +9504,6 @@ func TestInitInteractiveModelMapAddEditRemoveAndReset(t *testing.T) {
 					return initDraft{
 						OriginalProfileName:  "work",
 						ProfileName:          "work",
-						MakeDefault:          true,
 						GitHost:              "github.com",
 						GitAuth:              string(config.GitAuthModePAT),
 						GitCredentialRef:     "codereview/work",
@@ -9707,8 +9558,7 @@ func TestInitInteractiveModelMapRejectsInvalidEntries(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yml")
 			existing := basicProfile("work")
 			saveCredentialTestConfig(t, path, config.File{
-				DefaultProfile: "work",
-				Profiles:       map[string]config.Profile{"work": existing},
+				Profiles: map[string]config.Profile{"work": existing},
 			})
 			opts := &root.Options{
 				Stdin:      strings.NewReader(""),
@@ -9721,7 +9571,6 @@ func TestInitInteractiveModelMapRejectsInvalidEntries(t *testing.T) {
 					return initDraft{
 						OriginalProfileName: "work",
 						ProfileName:         "work",
-						MakeDefault:         true,
 						GitHost:             "github.com",
 						GitAuth:             string(config.GitAuthModePAT),
 						GitCredentialRef:    "codereview/work",
@@ -9817,8 +9666,7 @@ func TestInitInteractiveAgentSourcesPreserveAddRemoveAndReset(t *testing.T) {
 				ResolveAfter:     "24h",
 			}
 			saveCredentialTestConfig(t, path, config.File{
-				DefaultProfile: "work",
-				Profiles:       map[string]config.Profile{"work": existing},
+				Profiles: map[string]config.Profile{"work": existing},
 			})
 			opts := &root.Options{
 				Stdin:      strings.NewReader(""),
@@ -9831,7 +9679,6 @@ func TestInitInteractiveAgentSourcesPreserveAddRemoveAndReset(t *testing.T) {
 					return initDraft{
 						OriginalProfileName: "work",
 						ProfileName:         "work",
-						MakeDefault:         true,
 						GitHost:             "github.com",
 						GitAuth:             string(config.GitAuthModePAT),
 						GitCredentialRef:    "codereview/work",
@@ -9869,8 +9716,7 @@ func TestInitInteractiveAgentSourcesPreserveAddRemoveAndReset(t *testing.T) {
 func TestInitInteractiveAgentSourcesCanClearToEmpty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -9883,7 +9729,6 @@ func TestInitInteractiveAgentSourcesCanClearToEmpty(t *testing.T) {
 			return initDraft{
 				OriginalProfileName: "work",
 				ProfileName:         "work",
-				MakeDefault:         true,
 				GitHost:             "github.com",
 				GitAuth:             string(config.GitAuthModePAT),
 				GitCredentialRef:    "codereview/work",
@@ -9960,8 +9805,7 @@ func TestInitInteractiveReviewPolicyPreserveEditAndDefaults(t *testing.T) {
 			existing.AgentSources = []string{"/tmp/agents"}
 			existing.ReviewPolicy = tt.existing
 			saveCredentialTestConfig(t, path, config.File{
-				DefaultProfile: "work",
-				Profiles:       map[string]config.Profile{"work": existing},
+				Profiles: map[string]config.Profile{"work": existing},
 			})
 			opts := &root.Options{
 				Stdin:      strings.NewReader(""),
@@ -9974,7 +9818,6 @@ func TestInitInteractiveReviewPolicyPreserveEditAndDefaults(t *testing.T) {
 					return initDraft{
 						OriginalProfileName: "work",
 						ProfileName:         "work",
-						MakeDefault:         true,
 						GitHost:             "github.com",
 						GitAuth:             string(config.GitAuthModePAT),
 						GitCredentialRef:    "codereview/work",
@@ -10044,8 +9887,7 @@ func TestInitInteractiveReviewPolicyRejectsInvalidEntries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yml")
 			saveCredentialTestConfig(t, path, config.File{
-				DefaultProfile: "work",
-				Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+				Profiles: map[string]config.Profile{"work": basicProfile("work")},
 			})
 			opts := &root.Options{
 				Stdin:      strings.NewReader(""),
@@ -10058,7 +9900,6 @@ func TestInitInteractiveReviewPolicyRejectsInvalidEntries(t *testing.T) {
 					return initDraft{
 						OriginalProfileName: "work",
 						ProfileName:         "work",
-						MakeDefault:         true,
 						GitHost:             "github.com",
 						GitAuth:             string(config.GitAuthModePAT),
 						GitCredentialRef:    "codereview/work",
@@ -10613,7 +10454,6 @@ func TestInitSecretsManagementInventoryRowsUsePreferredBackendOrder(t *testing.T
 func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		RepositoryProfiles: []config.RepositoryProfile{{
 			Profile: "work",
 			Match: config.RepositoryProfileMatch{
@@ -10645,7 +10485,6 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 				return initDraft{
 					OriginalProfileName: "work",
 					ProfileName:         "work",
-					MakeDefault:         true,
 					GitHost:             "gitlab.com",
 					GitAuth:             string(config.GitAuthModePAT),
 					GitCredentialRef:    "codereview/work",
@@ -10701,8 +10540,7 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 func TestInitInteractiveSecretsManagementBackPreservesEarlierRetentionDraft(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -10862,10 +10700,9 @@ func TestInitInteractiveRetentionPreserveEditResetAndExplicitZero(t *testing.T) 
 			path := filepath.Join(t.TempDir(), "config.yml")
 			existing := basicProfile("work")
 			saveCredentialTestConfig(t, path, config.File{
-				DefaultProfile: "work",
-				Keyring:        config.KeyringConfig{Backend: "file"},
-				Profiles:       map[string]config.Profile{"work": existing},
-				Data:           config.DataConfig{Retention: tt.existing},
+				Keyring:  config.KeyringConfig{Backend: "file"},
+				Profiles: map[string]config.Profile{"work": existing},
+				Data:     config.DataConfig{Retention: tt.existing},
 			})
 			opts := &root.Options{
 				Stdin:      strings.NewReader(""),
@@ -10878,7 +10715,6 @@ func TestInitInteractiveRetentionPreserveEditResetAndExplicitZero(t *testing.T) 
 					return initDraft{
 						OriginalProfileName: "work",
 						ProfileName:         "work",
-						MakeDefault:         true,
 						GitHost:             "github.com",
 						GitAuth:             string(config.GitAuthModePAT),
 						GitCredentialRef:    "codereview/work",
@@ -11010,8 +10846,7 @@ func TestInitSecretsManagementLinearEditorHidesOnePasswordCreateTargetsWhenUnava
 		t.Skip("1Password create targets are hidden only in keyring_no1password builds")
 	}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
@@ -11065,7 +10900,7 @@ func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing
 	}
 
 	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}},
 	})
 	if err != nil {
 		t.Fatalf("EditKeyringBackend: %v\n%s", err, stderr.String())
@@ -11088,24 +10923,21 @@ func TestHuhInitKeyringBackendPrompterStagesNewSecretsProfileEndToEnd(t *testing
 func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitKeyringBackendPrompter{
-		stderr: &stderr,
+		stderr:        &stderr,
+		discoveryMode: initSecretsBackendDiscoveryModeOff,
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 180, 32)
 			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendFile))
 			_, _ = io.WriteString(out, model.layout.Content)
 			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
 			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
-			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			next, ok := updated.(initLinearEditorModel)
-			if !ok {
-				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
-			}
-			return next, nil
+			model.resultAction = initDetailActionEdit
+			return model, nil
 		},
 	}
 
 	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}},
 	})
 	if err != nil {
 		t.Fatalf("EditKeyringBackend: %v", err)
@@ -11175,7 +11007,7 @@ func TestHuhInitKeyringBackendPrompterWritesDiscoveryNoticeBeforeOnePasswordProb
 	}
 
 	_, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}},
 	})
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("EditKeyringBackend error = %v, want navigate back", err)
@@ -11233,7 +11065,7 @@ func TestHuhInitKeyringBackendPrompterWritesDiscoveryProbeResults(t *testing.T) 
 	}
 
 	_, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}},
 	})
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("EditKeyringBackend error = %v, want navigate back", err)
@@ -11285,7 +11117,7 @@ func TestHuhInitKeyringBackendPrompterSafeDiscoverySkipsActiveInventory(t *testi
 	}
 
 	_, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}},
 	})
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("EditKeyringBackend error = %v, want navigate back", err)
@@ -11338,7 +11170,7 @@ func TestHuhInitKeyringBackendPrompterOffDiscoverySkipsAllBackendProbes(t *testi
 	}
 
 	_, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}},
 	})
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("EditKeyringBackend error = %v, want navigate back", err)
@@ -11392,7 +11224,7 @@ func TestResolveInitSecretsBackendDiscoveryModeRejectsInvalidValue(t *testing.T)
 }
 
 func TestInitSecretsManagementLinearEditorShowsBuiltInOSStoreReadOnly(t *testing.T) {
-	cfg := config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"}
+	cfg := config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
 	out := model.layout.Content
@@ -11427,8 +11259,7 @@ func TestInitSecretsManagementLinearEditorShowsBuiltInOSStoreReadOnly(t *testing
 
 func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t *testing.T) {
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"personal": {
@@ -11451,7 +11282,8 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t 
 	var stderr bytes.Buffer
 	editorCalls := 0
 	prompter := huhInitKeyringBackendPrompter{
-		stderr: &stderr,
+		stderr:        &stderr,
+		discoveryMode: initSecretsBackendDiscoveryModeOff,
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			editorCalls++
 			model := newInitLinearEditorModel(editor, 180, 32)
@@ -11511,8 +11343,7 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t 
 
 func TestInitSecretsManagementTargetOptionsMovesPendingDeletesToBottomInDeletionOrder(t *testing.T) {
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"personal": {
@@ -11558,8 +11389,7 @@ func TestInitSecretsManagementTargetOptionsExcludeBuiltInOSStore(t *testing.T) {
 
 func TestInitSecretsManagementLinearEditorDeleteActionOnlyAppliesToConfiguredProfiles(t *testing.T) {
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"personal": {
@@ -11663,8 +11493,7 @@ func TestInitLinearEditorPreservesExplicitDescriptionNewlines(t *testing.T) {
 
 func TestInitSecretsManagementLinearEditorOnlyFocusedSelectChangesAndShowsCaret(t *testing.T) {
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"work-secrets": {
@@ -11725,8 +11554,7 @@ func TestInitSecretsManagementLinearEditorCreateBackendTargetLocksBackend(t *tes
 		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
 	}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
@@ -11757,8 +11585,7 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
 	}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
@@ -11949,8 +11776,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 		}},
 	}}}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 32)
@@ -12033,7 +11859,7 @@ func TestInitSecretsManagementLinearEditorCanCreateStoreBeforeReviewProfile(t *t
 	if err != nil {
 		t.Fatalf("initSecretsManagementEditFromDocumentWithDiscovery: %v", err)
 	}
-	if edit.Config.DefaultProfile != "" || len(edit.Config.Profiles) != 0 {
+	if len(edit.Config.Profiles) != 0 {
 		t.Fatalf("edit config unexpectedly added review profile data: %#v", edit.Config)
 	}
 	profile := edit.Config.Secrets.Stores["1password-personal"]
@@ -12067,8 +11893,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountThenVaul
 		},
 	}}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
@@ -12126,8 +11951,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryIncludesAccountWithout
 		},
 	}}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
@@ -12173,8 +11997,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualVaultInSel
 		}},
 	}}}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
@@ -12221,8 +12044,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualAccount(t 
 		},
 	}}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
@@ -12297,7 +12119,7 @@ func TestHuhInitKeyringBackendPrompterDesktopDiscoveryCreatesProfile(t *testing.
 	}
 
 	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
-		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}},
 	})
 	if err != nil {
 		t.Fatalf("EditKeyringBackend: %v", err)
@@ -12317,8 +12139,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryFailureAllowsManualPro
 		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
 	}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	discovery := initOnePasswordDesktopDiscovery{Err: os.ErrNotExist}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
@@ -12357,8 +12178,7 @@ func TestInitSecretsManagementLinearEditorShowsOnePasswordBackendRolloverDescrip
 		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
 	}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	tests := []struct {
 		name string
@@ -12391,8 +12211,7 @@ func TestInitSecretsManagementEditStoresOnePasswordVaultNameOrIDAsEntered(t *tes
 		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
 	}
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
@@ -12413,8 +12232,7 @@ func TestInitSecretsManagementEditStoresOnePasswordVaultNameOrIDAsEntered(t *tes
 
 func TestInitSecretsManagementLinearEditorConfiguredProfileKeepsBackendEditable(t *testing.T) {
 	cfg := config.File{
-		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
-		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"work-secrets": {
@@ -12541,13 +12359,15 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCou
 		Adapter:       config.LLMAdapterOpenAIAPI,
 		CredentialRef: "codereview/home-llm",
 	}
-	prompt := buildInteractiveInitMenuPrompt(initSessionDraft{
-		cfg: config.File{
-			Profiles: map[string]config.Profile{
-				"home": home,
-				"work": work,
-			},
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"home": home,
+			"work": work,
 		},
+	}
+	prompt := buildInteractiveInitMenuPrompt(initSessionDraft{
+		originalCfg: cloneInitConfigFile(cfg),
+		cfg:         cfg,
 	})
 	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
 		t.Fatalf("prompt = %#v, want actions disabled without active workspace", prompt)
@@ -14405,8 +14225,7 @@ func newTestInitProfileV2EditorWithGitScope(profileName string, routeText string
 func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	original := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	}
 	saveCredentialTestConfig(t, path, original)
 	wantCfg, err := config.Load(path)
@@ -14484,7 +14303,6 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 			}
 			return initDraft{
 				ProfileName:          "default",
-				MakeDefault:          true,
 				GitHost:              "github.com",
 				GitAuth:              string(config.GitAuthModePAT),
 				LLMProvider:          string(config.LLMProviderAnthropic),
@@ -14523,8 +14341,8 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.DefaultProfile != "default" {
-		t.Fatalf("default profile = %q, want default", cfg.DefaultProfile)
+	if _, ok := cfg.Profiles["default"]; !ok {
+		t.Fatalf("profiles = %#v, want suggested profile", cfg.Profiles)
 	}
 	if cfg.Keyring.Backend != "" {
 		t.Fatalf("keyring.backend = %q, want empty", cfg.Keyring.Backend)
@@ -14564,7 +14382,6 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 				}
 				return initDraft{
 					ProfileName: "home",
-					MakeDefault: true,
 					GitHost:     "github.com",
 					GitAuth:     string(config.GitAuthModePAT),
 					LLMProvider: string(config.LLMProviderAnthropic),
@@ -14588,7 +14405,6 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 				}
 				return initDraft{
 					ProfileName: "work",
-					MakeDefault: false,
 					GitHost:     "github.company.com",
 					GitAuth:     string(config.GitAuthModePAT),
 					LLMProvider: string(config.LLMProviderAnthropic),
@@ -14630,9 +14446,6 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 	if got := sortedProfileNames(cfg.Profiles); !reflect.DeepEqual(got, []string{"home", "work"}) {
 		t.Fatalf("profiles = %#v, want [home work]", got)
 	}
-	if cfg.DefaultProfile != "home" {
-		t.Fatalf("default profile = %q, want home", cfg.DefaultProfile)
-	}
 	if cfg.Profiles["work"].Git.Host != "github.company.com" {
 		t.Fatalf("work git.host = %q, want github.company.com", cfg.Profiles["work"].Git.Host)
 	}
@@ -14666,7 +14479,6 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 			case 1:
 				return initDraft{
 					ProfileName: "work",
-					MakeDefault: true,
 					GitHost:     "github.com",
 					GitAuth:     string(config.GitAuthModePAT),
 					LLMProvider: string(config.LLMProviderAnthropic),
@@ -14682,15 +14494,11 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 				if ctx.RequestedProfileName != "work" || ctx.ExistingProfileName != "work" {
 					t.Fatalf("third prompt active profile = (%q, %q), want work/work", ctx.RequestedProfileName, ctx.ExistingProfileName)
 				}
-				if ctx.DefaultProfileName != "work" {
-					t.Fatalf("third prompt DefaultProfileName = %q, want work", ctx.DefaultProfileName)
-				}
 				if ctx.ExistingConfig.Profiles["work"].Git.Host != "github.com" {
 					t.Fatalf("third prompt work profile = %#v, want first unsaved work draft in session cfg", ctx.ExistingConfig.Profiles["work"])
 				}
 				return initDraft{
 					ProfileName: "home",
-					MakeDefault: false,
 					GitHost:     "gitlab.com",
 					GitAuth:     string(config.GitAuthModePAT),
 					LLMProvider: string(config.LLMProviderAnthropic),
@@ -14714,7 +14522,6 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 				return initDraft{
 					OriginalProfileName: "work",
 					ProfileName:         "work",
-					MakeDefault:         true,
 					GitHost:             "github.enterprise.local",
 					GitAuth:             string(config.GitAuthModePAT),
 					LLMProvider:         string(config.LLMProviderAnthropic),
@@ -14754,9 +14561,6 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.DefaultProfile != "work" {
-		t.Fatalf("default profile = %q, want work", cfg.DefaultProfile)
-	}
 	if cfg.Profiles["work"].Git.Host != "github.enterprise.local" {
 		t.Fatalf("work git.host = %q, want resumed update", cfg.Profiles["work"].Git.Host)
 	}
@@ -14768,7 +14572,6 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -14802,7 +14605,6 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 				}
 				return initDraft{
 					ProfileName: "home",
-					MakeDefault: false,
 					GitHost:     "github.com",
 					GitAuth:     string(config.GitAuthModePAT),
 					LLMProvider: string(config.LLMProviderAnthropic),
@@ -14840,18 +14642,14 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.DefaultProfile != "work" {
-		t.Fatalf("default profile = %q, want existing fallback default preserved", cfg.DefaultProfile)
-	}
 	if got := sortedProfileNames(cfg.Profiles); !reflect.DeepEqual(got, []string{"home", "work"}) {
 		t.Fatalf("profiles = %#v, want [home work]", got)
 	}
 }
 
-func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
+func TestInitInteractiveMenuRenameProfileReconcilesRoutes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		RepositoryProfiles: []config.RepositoryProfile{
 			{
 				Profile: "work",
@@ -14879,6 +14677,7 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 		Stdout:     &bytes.Buffer{},
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
+		Profile:    "work",
 	}
 	prompterCalls := 0
 	deps := initDeps{
@@ -14896,12 +14695,11 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 			switch prompterCalls {
 			case 1:
 				if ctx.ExistingProfileName != "work" {
-					t.Fatalf("prompt context = %#v, want default work profile selected for rename", ctx)
+					t.Fatalf("prompt context = %#v, want selected work profile for rename", ctx)
 				}
 				return initDraft{
 					OriginalProfileName: "work",
 					ProfileName:         "office",
-					MakeDefault:         true,
 					GitHost:             "gitlab.com",
 					GitAuth:             string(config.GitAuthModePAT),
 					GitCredentialRef:    "codereview/custom-office-git",
@@ -14952,9 +14750,6 @@ func TestInitInteractiveMenuRenameDefaultProfileReconcilesRoutes(t *testing.T) {
 	if _, ok := cfg.Profiles["work"]; ok {
 		t.Fatalf("old profile still exists after rename: %#v", cfg.Profiles)
 	}
-	if cfg.DefaultProfile != "office" {
-		t.Fatalf("default profile = %q, want renamed office default", cfg.DefaultProfile)
-	}
 	if len(cfg.RepositoryProfiles) != 2 {
 		t.Fatalf("RepositoryProfiles = %#v, want renamed route plus unrelated preserved route", cfg.RepositoryProfiles)
 	}
@@ -15001,7 +14796,6 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 			}
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -15014,7 +14808,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 			if llmPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.LLMProvider = string(config.LLMProviderOpenAI)
 			draft.LLMAuth = string(config.LLMAuthAPIKey)
 			draft.LLMAdapter = string(config.LLMAdapterOpenAIAPI)
@@ -15096,7 +14890,6 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 		},
 	}}
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile:     "work",
 		RepositoryProfiles: wantRoutes,
 		Profiles:           map[string]config.Profile{"work": profile},
 	})
@@ -15123,7 +14916,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 			if llmPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.LLMProvider = string(config.LLMProviderOpenAI)
 			draft.LLMAuth = string(config.LLMAuthSubscription)
 			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
@@ -15187,8 +14980,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 	path := filepath.Join(t.TempDir(), "config.yml")
 	wantProfile := basicProfile("work")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": wantProfile},
+		Profiles: map[string]config.Profile{"work": wantProfile},
 	})
 	wantProfile = normalizeTestProfile(wantProfile)
 	opts := &root.Options{
@@ -15216,7 +15008,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 			if llmPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
+			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile), nil
 		}),
 		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
 			return initRetentionEdit{Apply: true, Retention: config.RetentionConfig{
@@ -15261,8 +15053,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 func TestInitInteractiveMenuFocusedLLMRuntimeDoesNotOpenStoreForPromptContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -15283,7 +15074,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDoesNotOpenStoreForPromptContext(t 
 			if llmPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
+			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile), nil
 		}),
 		openStore: func(string, bool, config.File) (initStore, error) {
 			t.Fatal("openStore should not run for focused llm prompt context")
@@ -15302,8 +15093,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDoesNotOpenStoreForPromptContext(t 
 func TestInitInteractiveMenuFocusedBackKeepsSessionUntouched(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	original := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	}
 	saveCredentialTestConfig(t, path, original)
 	wantCfg, err := config.Load(path)
@@ -15388,7 +15178,6 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 			}
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -15401,7 +15190,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			return draft, nil
@@ -15871,7 +15660,6 @@ func TestInitReviewerCredentialStatusSelectionFiltersByAuthMode(t *testing.T) {
 	ctx := initPromptContext{
 		RequestedProfileName: "work",
 		ExistingProfileName:  "work",
-		DefaultProfileName:   "work",
 		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": basicProfile("work")}},
 		ReviewerCredentialStatuses: []initReviewerCredentialStatus{
 			{
@@ -15897,7 +15685,7 @@ func TestInitReviewerCredentialStatusSelectionFiltersByAuthMode(t *testing.T) {
 			},
 		},
 	}
-	seed := seedInteractiveInitDraft("work", "work", "work", nil)
+	seed := seedInteractiveInitDraft("work", "work", nil)
 
 	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seed, string(initReviewerEntityKindPAT), config.LocalOSCredentialStoreID, "codereview/work-reviewer")
 	if !ok {
@@ -15919,8 +15707,7 @@ func TestInitReviewerCredentialStatusBackendUnavailableDoesNotLeakOrBlock(t *tes
 	}
 	session := initSessionDraft{
 		cfg: config.File{
-			DefaultProfile: "work",
-			Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+			Profiles: map[string]config.Profile{"work": basicProfile("work")},
 		},
 		workspace: &initWorkspaceDraft{
 			profileName:    "work",
@@ -15958,7 +15745,6 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 		Credential: config.CredentialLocation{Store: "work-1password", Name: "codereview/work-reviewer"},
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"work-1password": {
@@ -16043,7 +15829,7 @@ func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t 
 		AuthMode:   config.GitAuthModeGitHubApp,
 		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 	}
-	originalCfg := config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": originalProfile}}
+	originalCfg := config.File{Profiles: map[string]config.Profile{"work": originalProfile}}
 	originalResolved, err := credentials.ResolveSecretsProfileForProfile(originalCfg, originalProfile)
 	if err != nil {
 		t.Fatalf("Resolve original secrets profile: %v", err)
@@ -16051,7 +15837,6 @@ func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t 
 	profile := originalProfile
 	profile.ReviewerCredentials.Credential.Store = "work-file"
 	cfg := config.File{
-		DefaultProfile: "work",
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"work-file": {
@@ -16104,7 +15889,6 @@ func TestInitReviewerCredentialStatusIncludesSelectableReviewerEntities(t *testi
 		CredentialRef: "codereview/shared-reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": work,
 			"bot":  bot,
@@ -16139,8 +15923,7 @@ func TestInitReviewerCredentialStatusIncludesSelectableReviewerEntities(t *testi
 func TestInitReviewerCredentialStatusIncludesStandardTemplateRefs(t *testing.T) {
 	work := basicProfile("work")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": work},
+		Profiles: map[string]config.Profile{"work": work},
 	}
 	store := newFakeInitStore(map[string]map[string]string{
 		"work-reviewer": {credentials.GitTokenKey: "existing-token"},
@@ -16161,7 +15944,7 @@ func TestInitReviewerCredentialStatusIncludesStandardTemplateRefs(t *testing.T) 
 	}
 
 	ctx := currentInteractiveInitReviewerEntityPromptContext(&root.Options{}, deps, session)
-	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seedInteractiveInitDraft("work", "work", "work", &work), string(initReviewerEntityKindPAT), config.LocalOSCredentialStoreID, "")
+	status, ok := initReviewerCredentialStatusForSelectionRef(ctx, seedInteractiveInitDraft("work", "work", &work), string(initReviewerEntityKindPAT), config.LocalOSCredentialStoreID, "")
 	if !ok {
 		t.Fatal("PAT template status missing")
 	}
@@ -16329,7 +16112,6 @@ func TestMergeReviewerCredentialDraftWritesPreservesOverwriteFlagOnNoSecretReent
 func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHints(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": {
 				Git: config.GitConfig{
@@ -16377,7 +16159,7 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHint
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
@@ -16433,7 +16215,6 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHint
 func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndDoesNotRepeat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -16469,7 +16250,7 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndD
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
@@ -16515,7 +16296,6 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndD
 func TestInitInteractiveMenuLabelDerivedReviewerRefDoesNotOverwriteUnconfiguredExistingBundle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -16548,7 +16328,7 @@ func TestInitInteractiveMenuLabelDerivedReviewerRefDoesNotOverwriteUnconfiguredE
 			return initFinalizeActionSave, nil
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
-			seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			model := newInitLinearEditorModel(initReviewerEntityLinearEditor(prompt.Context, seed), 160, 60)
 			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
 			model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
@@ -16600,7 +16380,6 @@ func TestInitInteractiveMenuLabelDerivedReviewerRefDoesNotOverwriteUnconfiguredE
 func TestInitInteractiveMenuManualReviewerRefDoesNotOverwriteUnconfiguredExistingBundle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -16633,7 +16412,7 @@ func TestInitInteractiveMenuManualReviewerRefDoesNotOverwriteUnconfiguredExistin
 			return initFinalizeActionSave, nil
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
-			seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			model := newInitLinearEditorModel(initReviewerEntityLinearEditor(prompt.Context, seed), 160, 60)
 			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
 			model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/manual-reviewer")
@@ -16685,8 +16464,7 @@ func TestInitInteractiveMenuManualReviewerRefDoesNotOverwriteUnconfiguredExistin
 func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -16711,7 +16489,7 @@ func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.
 			return initFinalizeActionSave, nil
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModePAT)
 			draft.ReviewerCredentialRef = "codereview/work-reviewer"
@@ -16744,8 +16522,7 @@ func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.
 func TestInitInteractiveMenuFocusedUseGitReviewerSkipsReviewerCredentialPrompt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -16764,7 +16541,7 @@ func TestInitInteractiveMenuFocusedUseGitReviewerSkipsReviewerCredentialPrompt(t
 			return initFinalizeActionSave, nil
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = false
 			return draft, nil
 		}),
@@ -16787,8 +16564,7 @@ func TestInitInteractiveMenuFocusedUseGitReviewerSkipsReviewerCredentialPrompt(t
 func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -16822,7 +16598,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			switch reviewerPrompterCalls {
 			case 1:
 				draft.ReviewerEnabled = true
@@ -16866,8 +16642,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChanges(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -16895,7 +16670,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 		}),
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			switch reviewerPrompterCalls {
@@ -16950,8 +16725,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	}
 	cfg = config.Normalize(cfg)
 	saveCredentialTestConfig(t, path, cfg)
@@ -16976,7 +16750,7 @@ func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials
 			},
 		},
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
@@ -17021,8 +16795,7 @@ func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials
 func TestInitInteractiveMenuReviewerBackWithoutStagingDiscardsInlineSecretWrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	}
 	cfg = config.Normalize(cfg)
 	saveCredentialTestConfig(t, path, cfg)
@@ -17084,8 +16857,7 @@ func TestInitInteractiveMenuReviewerBackWithoutStagingDiscardsInlineSecretWrites
 func TestInitInteractiveMenuReviewerCredentialStatusShowsStagedOnReentry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -17113,7 +16885,7 @@ func TestInitInteractiveMenuReviewerCredentialStatusShowsStagedOnReentry(t *test
 			reviewerPrompterCalls++
 			switch reviewerPrompterCalls {
 			case 1:
-				draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+				draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 				draft.ReviewerEnabled = true
 				draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 				draft.ReviewerCredentialRef = "codereview/rianjs-bot"
@@ -17177,7 +16949,6 @@ func findReviewerCredentialStatusForTest(t *testing.T, statuses []initReviewerCr
 func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRef(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -17221,7 +16992,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile), nil
+			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile), nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
@@ -17264,7 +17035,6 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": {
 				Git: config.GitConfig{
@@ -17321,7 +17091,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerDisplayName = "OC Collective bot"
@@ -17357,7 +17127,6 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRefWhenDraftClearsCustomRef(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": {
 				Git: config.GitConfig{
@@ -17401,7 +17170,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
-			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = ""
@@ -17456,8 +17225,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 func TestInitInteractiveMenuFocusedReviewerEntityPromptContextIncludesCredentialStatus(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -17500,8 +17268,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityPromptContextIncludesCredential
 func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	}
 	cfg = config.Normalize(cfg)
 	saveCredentialTestConfig(t, path, cfg)
@@ -17511,7 +17278,6 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 		ExistingProfileName:  "work",
 		ExistingProfile:      &existing,
 		ExistingProfileNames: []string{"work"},
-		DefaultProfileName:   "work",
 		ExistingConfig:       cfg,
 	})
 	opts := &root.Options{
@@ -17529,8 +17295,7 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 		},
 		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			if prompt.RequestedProfileName != expectedPrompt.RequestedProfileName ||
-				prompt.ExistingProfileName != expectedPrompt.ExistingProfileName ||
-				prompt.DefaultProfileName != expectedPrompt.DefaultProfileName {
+				prompt.ExistingProfileName != expectedPrompt.ExistingProfileName {
 				t.Fatalf("prompt identity = %#v, want %#v", prompt, expectedPrompt)
 			}
 			if prompt.ExistingProfile == nil {
@@ -17573,7 +17338,6 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": func() config.Profile {
 				profile := basicProfile("work")
@@ -17646,8 +17410,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *test
 func TestInitInteractiveMenuFocusedReviewerEntityStageReturnsToMenu(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -17668,7 +17431,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityStageReturnsToMenu(t *testing.T
 			reviewerCalls++
 			switch reviewerCalls {
 			case 1:
-				draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+				draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 				draft.ReviewerEnabled = true
 				draft.ReviewerAuth = string(config.GitAuthModePAT)
 				return draft, nil
@@ -17705,8 +17468,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityStageReturnsToMenu(t *testing.T
 func TestInitInteractiveMenuFocusedLLMRuntimeStageReturnsToMenu(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -17727,7 +17489,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeStageReturnsToMenu(t *testing.T) {
 			llmCalls++
 			switch llmCalls {
 			case 1:
-				draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+				draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 				draft.LLMProvider = string(config.LLMProviderOpenAI)
 				draft.LLMAuth = string(config.LLMAuthSubscription)
 				draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
@@ -17759,8 +17521,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeStageReturnsToMenu(t *testing.T) {
 func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -17825,8 +17586,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.
 func TestInitInteractiveLLMRuntimeDeletePersistsReplacementAndReloadsCleanly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -17932,8 +17692,7 @@ func TestInitInteractiveLLMRuntimeDeletePersistsReplacementAndReloadsCleanly(t *
 func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -17954,7 +17713,7 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 			profileCalls++
 			switch profileCalls {
 			case 1:
-				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile)
+				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.ExistingProfile)
 				draft.GitHost = "gitlab.com"
 				draft.RoutesSet = true
 				draft.Routes = []configedit.RepositoryRouteSpec{{
@@ -18013,8 +17772,7 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 func TestInitInteractiveMenuFocusedReviewProfileDoesNotRunRouteSubprompt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -18035,7 +17793,7 @@ func TestInitInteractiveMenuFocusedReviewProfileDoesNotRunRouteSubprompt(t *test
 			profileCalls++
 			switch profileCalls {
 			case 1:
-				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.DefaultProfileName, prompt.ExistingProfile)
+				draft := seedInteractiveInitDraft(prompt.RequestedProfileName, prompt.ExistingProfileName, prompt.ExistingProfile)
 				draft.GitHost = "gitlab.com"
 				draft.RoutesSet = true
 				draft.Routes = []configedit.RepositoryRouteSpec{{
@@ -18091,7 +17849,6 @@ func TestInitInteractiveLegacyInjectedPathProfileEditRemainsOneShot(t *testing.T
 			prompterCalls++
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -18122,8 +17879,8 @@ func TestInitInteractiveLegacyInjectedPathProfileEditRemainsOneShot(t *testing.T
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.DefaultProfile != "default" {
-		t.Fatalf("default profile = %q, want default", cfg.DefaultProfile)
+	if _, ok := cfg.Profiles["default"]; !ok {
+		t.Fatalf("profiles = %#v, want suggested profile", cfg.Profiles)
 	}
 }
 
@@ -18140,7 +17897,6 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 		CredentialRef: "codereview/shared-reviewer",
 	}
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
@@ -18152,6 +17908,7 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 		Stdout:     &stdout,
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
+		Profile:    "work",
 	}
 	menu := &fakeInitMenuPrompter{
 		actions: []initMenuAction{
@@ -18318,7 +18075,6 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 			case 1:
 				return initDraft{
 					ProfileName: "home",
-					MakeDefault: true,
 					GitHost:     "github.com",
 					GitAuth:     string(config.GitAuthModePAT),
 					LLMProvider: string(config.LLMProviderAnthropic),
@@ -18330,7 +18086,6 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 			case 3:
 				return initDraft{
 					ProfileName: "work",
-					MakeDefault: false,
 					GitHost:     "gitlab.com",
 					GitAuth:     string(config.GitAuthModePAT),
 					LLMProvider: string(config.LLMProviderAnthropic),
@@ -18421,7 +18176,6 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 			}
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -18452,7 +18206,7 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 	}
 	profileReadiness := finalizePrompt.Profiles[0]
 	if profileReadiness.ProfileName != "default" || !profileReadiness.Ready || len(profileReadiness.Notes) != 0 {
-		t.Fatalf("profile readiness = %#v, want ready default profile with no notes", profileReadiness)
+		t.Fatalf("profile readiness = %#v, want ready suggested profile with no notes", profileReadiness)
 	}
 	if got := store.bundles["default"][credentials.GitTokenKey]; got != "git-token" {
 		t.Fatalf("stored git token = %q, want git-token from interactive SetNow flow", got)
@@ -18461,14 +18215,11 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.DefaultProfile != "default" {
-		t.Fatalf("default profile = %q, want default", cfg.DefaultProfile)
-	}
 	if cfg.Profiles["default"].Git.CredentialRef != "codereview/default" {
-		t.Fatalf("default profile git ref = %q, want codereview/default", cfg.Profiles["default"].Git.CredentialRef)
+		t.Fatalf("suggested profile git ref = %q, want codereview/default", cfg.Profiles["default"].Git.CredentialRef)
 	}
 	if !strings.Contains(stdout.String(), "Saved staged init changes") || !strings.Contains(stdout.String(), "- review profiles: 1") || !strings.Contains(stdout.String(), "- credential secrets: 1 name") || !strings.Contains(stdout.String(), "- default: ready") {
-		t.Fatalf("stdout = %q, want ready summary for default profile", stdout.String())
+		t.Fatalf("stdout = %q, want ready summary for suggested profile", stdout.String())
 	}
 	if strings.Contains(stderr.String(), "set-credential --store") {
 		t.Fatalf("stderr = %q, want no follow-up credential hints after SetNow flow", stderr.String())
@@ -18507,7 +18258,6 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 			case 1:
 				return initDraft{
 					ProfileName: "home",
-					MakeDefault: true,
 					GitHost:     "github.com",
 					GitAuth:     string(config.GitAuthModePAT),
 					LLMProvider: string(config.LLMProviderAnthropic),
@@ -18519,7 +18269,6 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 			case 3:
 				return initDraft{
 					ProfileName: "work",
-					MakeDefault: false,
 					GitHost:     "gitlab.com",
 					GitAuth:     string(config.GitAuthModePAT),
 					LLMProvider: string(config.LLMProviderAnthropic),
@@ -18593,8 +18342,7 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Keyring: config.KeyringConfig{Backend: "memory"},
 		Data: config.DataConfig{
 			Retention: config.RetentionConfig{
 				MaxAgeDays:  intPtr(14),
@@ -18688,8 +18436,7 @@ func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedPro
 func TestInitInteractiveMenuSecretsManagementOnlySaveDoesNotFinalizeBootstrappedProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Keyring: config.KeyringConfig{Backend: "memory"},
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -18762,8 +18509,7 @@ func TestInitInteractiveMenuSecretsManagementOnlySaveDoesNotFinalizeBootstrapped
 func TestInitInteractiveMenuFinalizeBackReturnsToMenu(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": basicProfile("work")},
+		Profiles: map[string]config.Profile{"work": basicProfile("work")},
 	})
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
@@ -18830,7 +18576,6 @@ func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t
 			}
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -18883,7 +18628,6 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -18977,8 +18721,8 @@ func TestInitInteractiveMenuCanCommitSecretsStorageBeforeReviewProfile(t *testin
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.DefaultProfile != "" || len(cfg.Profiles) != 0 {
-		t.Fatalf("loaded profile state = default %q profiles %#v, want none", cfg.DefaultProfile, cfg.Profiles)
+	if len(cfg.Profiles) != 0 {
+		t.Fatalf("loaded profiles = %#v, want none", cfg.Profiles)
 	}
 	store, ok := cfg.Secrets.Stores["personal-file"]
 	if !ok {
@@ -18991,7 +18735,8 @@ func TestInitInteractiveMenuCanCommitSecretsStorageBeforeReviewProfile(t *testin
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if strings.Contains(string(body), "default_profile") || strings.Contains(string(body), "profiles:") {
+	legacyProfileKey := "default" + "_profile"
+	if strings.Contains(string(body), legacyProfileKey) || strings.Contains(string(body), "profiles:") {
 		t.Fatalf("saved profileless secrets-storage config contains profile fields:\n%s", string(body))
 	}
 }
@@ -19005,12 +18750,12 @@ func TestApplyInteractiveInitSessionPlanRejectsInvalidConfigBeforeKeyringWrite(t
 	plan := initSessionPlan{
 		cfg: config.File{
 			Profiles: map[string]config.Profile{
-				"default": basicProfile("default"),
+				"broken": {},
 			},
 		},
-		profileNames: []string{"default"},
+		profileNames: []string{"broken"},
 		writes: map[string]map[string]string{
-			"codereview/default": {credentials.GitTokenKey: "git-token"},
+			"codereview/broken": {credentials.GitTokenKey: "git-token"},
 		},
 	}
 	err := applyInteractiveInitSessionPlan(opts, initDeps{
@@ -19023,7 +18768,7 @@ func TestApplyInteractiveInitSessionPlanRejectsInvalidConfigBeforeKeyringWrite(t
 			return nil
 		},
 	}, plan)
-	if err == nil || !strings.Contains(err.Error(), "default_profile") {
+	if err == nil || !strings.Contains(err.Error(), "profiles.broken.git.host is required") {
 		t.Fatalf("error = %v, want config validation failure", err)
 	}
 	if storeOpened {
@@ -19044,7 +18789,7 @@ func TestApplyInteractiveInitSessionPlanConfigSaveFailureAfterKeyringWritesRepor
 	}
 	plan := initSessionPlan{
 		path:         filepath.Join(t.TempDir(), "config.yml"),
-		cfg:          config.File{DefaultProfile: "default", Profiles: map[string]config.Profile{"default": profile}},
+		cfg:          config.File{Profiles: map[string]config.Profile{"default": profile}},
 		profileNames: []string{"default"},
 		profileRefs:  map[string][]config.CredentialRef{"default": refs},
 		writes: map[string]map[string]string{
@@ -19073,8 +18818,7 @@ func TestApplyInteractiveInitSessionPlanSummarizesSecretsStorageOnlyChanges(t *t
 	}
 	profile := basicProfile("default")
 	original := config.File{
-		DefaultProfile: "default",
-		Profiles:       map[string]config.Profile{"default": profile},
+		Profiles: map[string]config.Profile{"default": profile},
 	}
 	next := original
 	next.Secrets = config.SecretsConfig{
@@ -19130,7 +18874,6 @@ func TestApplyInteractiveInitSessionPlanPartialKeyringWriteFailureReportsCleanup
 	}
 	plan := initSessionPlan{
 		cfg: config.File{
-			DefaultProfile: "a",
 			Profiles: map[string]config.Profile{
 				"a": basicProfile("a"),
 				"b": basicProfile("b"),
@@ -19164,7 +18907,6 @@ func TestApplyInteractiveInitSessionPlanOverwriteConflictFailsBeforeWrite(t *tes
 	}
 	plan := initSessionPlan{
 		cfg: config.File{
-			DefaultProfile: "default",
 			Profiles: map[string]config.Profile{
 				"default": basicProfile("default"),
 			},
@@ -19198,7 +18940,6 @@ func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsProfilesIndependent
 		Stderr: &bytes.Buffer{},
 	}
 	cfg := config.File{
-		DefaultProfile: "home",
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"personal-memory": {
@@ -19286,7 +19027,6 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"work-file": {
@@ -19360,7 +19100,6 @@ func TestApplyInteractiveInitSessionPlanNamedSecretsProfileWriteFailureStopsConf
 		Stderr: &bytes.Buffer{},
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
 		Secrets: config.SecretsConfig{
 			Profiles: map[string]config.SecretsProfile{
 				"work-1password": {
@@ -19457,8 +19196,11 @@ func TestInitNonInteractiveBypassesInteractiveMenuPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.DefaultProfile == "" || len(cfg.Profiles) != 1 {
+	if len(cfg.Profiles) != 1 {
 		t.Fatalf("config = %#v, want non-interactive profile saved", cfg)
+	}
+	if _, ok := cfg.Profiles["default"]; !ok {
+		t.Fatalf("profiles = %#v, want suggested profile saved", cfg.Profiles)
 	}
 }
 
@@ -19544,7 +19286,6 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yml")
 			saveCredentialTestConfig(t, path, config.File{
-				DefaultProfile:     "work",
 				RepositoryProfiles: tt.existingRoutes,
 				Profiles: map[string]config.Profile{
 					"work": basicProfile("work"),
@@ -19562,7 +19303,6 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 					return initDraft{
 						OriginalProfileName: "work",
 						ProfileName:         "work",
-						MakeDefault:         true,
 						GitHost:             "github.com",
 						GitAuth:             string(config.GitAuthModePAT),
 						GitCredentialRef:    "codereview/work",
@@ -19597,7 +19337,6 @@ func TestInitInteractiveRoutesCreateEditRemoveAndDeriveFromPRURL(t *testing.T) {
 func TestInitInteractiveProfileDraftRoutesSkipRouteSubprompt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -19610,7 +19349,7 @@ func TestInitInteractiveProfileDraftRoutesSkipRouteSubprompt(t *testing.T) {
 	}
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			draft := seedInteractiveInitDraft("work", "work", "work", nil)
+			draft := seedInteractiveInitDraft("work", "work", nil)
 			draft.GitHost = "github.com"
 			draft.GitAuth = string(config.GitAuthModePAT)
 			draft.GitCredentialRef = "codereview/work"
@@ -19667,7 +19406,6 @@ func TestInitInteractiveRouteEditorPreservesExistingRoutesWhenLeftUnchanged(t *t
 		},
 	}}
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile:     "work",
 		RepositoryProfiles: wantRoutes,
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
@@ -19684,7 +19422,6 @@ func TestInitInteractiveRouteEditorPreservesExistingRoutesWhenLeftUnchanged(t *t
 			return initDraft{
 				OriginalProfileName: "work",
 				ProfileName:         "work",
-				MakeDefault:         true,
 				GitHost:             "github.com",
 				GitAuth:             string(config.GitAuthModePAT),
 				GitCredentialRef:    "codereview/work",
@@ -19803,7 +19540,6 @@ func TestInitInteractiveRouteParsersAcceptSemicolonsNewlinesAndDeduplicate(t *te
 func TestInitInteractiveReconcilesRouteHostChangeBeforeSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		RepositoryProfiles: []config.RepositoryProfile{{
 			Profile: "work",
 			Match: config.RepositoryProfileMatch{
@@ -19883,7 +19619,6 @@ func TestInitInteractiveReconcilesRouteHostChangeFromSelectedGitScope(t *testing
 	office.Git.Host = "gitlab.com"
 	office.Git.CredentialRef = "codereview/office"
 	cfg := config.File{
-		DefaultProfile: "work",
 		RepositoryProfiles: []config.RepositoryProfile{{
 			Profile: "work",
 			Match: config.RepositoryProfileMatch{
@@ -19898,7 +19633,6 @@ func TestInitInteractiveReconcilesRouteHostChangeFromSelectedGitScope(t *testing
 		},
 	}
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile:     cfg.DefaultProfile,
 		RepositoryProfiles: cfg.RepositoryProfiles,
 		Profiles:           cfg.Profiles,
 	})
@@ -19911,7 +19645,7 @@ func TestInitInteractiveReconcilesRouteHostChangeFromSelectedGitScope(t *testing
 	}
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			draft := seedInteractiveInitDraft("work", "work", "work", &work)
+			draft := seedInteractiveInitDraft("work", "work", &work)
 			applyGitScopeSelection(&draft, profileScopeNames["office"], scopes)
 			return draft, nil
 		}),
@@ -19963,7 +19697,6 @@ func TestInitInteractiveReconcilesRouteHostChangeFromSelectedGitScope(t *testing
 func TestInitInteractiveReconcilesRouteHostChangeDuringRename(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		RepositoryProfiles: []config.RepositoryProfile{{
 			Profile: "work",
 			Match: config.RepositoryProfileMatch{
@@ -20030,7 +19763,6 @@ func TestInitInteractiveReconcilesRouteHostChangeDuringRename(t *testing.T) {
 func TestInitInteractiveRejectsUnchangedStaleRoutesAfterHostChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		DefaultProfile: "work",
 		RepositoryProfiles: []config.RepositoryProfile{{
 			Profile: "work",
 			Match: config.RepositoryProfileMatch{
@@ -20188,7 +19920,6 @@ func TestInitInteractiveDeferredLLMHintUsesExplicitLocalOSStore(t *testing.T) {
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName:          "default",
-				MakeDefault:          true,
 				GitHost:              "github.com",
 				GitAuth:              string(config.GitAuthModePAT),
 				GitCredentialRef:     "codereview/default",
@@ -20259,7 +19990,6 @@ func TestInitInteractiveCollectsClipboardGitSecretWithoutHint(t *testing.T) {
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -20297,9 +20027,6 @@ func TestInitInteractiveCollectsClipboardGitSecretWithoutHint(t *testing.T) {
 	if strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/default --key "+credentials.GitTokenKey) {
 		t.Fatalf("stderr = %q, want no stale follow-up hint after collected secret", stderr.String())
 	}
-	if savedCfg.DefaultProfile != "default" {
-		t.Fatalf("default_profile = %q, want default", savedCfg.DefaultProfile)
-	}
 	if savedCfg.Profiles["default"].Git.CredentialRef != "codereview/default" {
 		t.Fatalf("git ref = %q, want codereview/default", savedCfg.Profiles["default"].Git.CredentialRef)
 	}
@@ -20317,7 +20044,6 @@ func TestInitInteractiveDeferDoesNotRequireKeyringAccess(t *testing.T) {
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -20367,7 +20093,6 @@ func TestInitInteractiveSetNowOverwritesExistingTargetRef(t *testing.T) {
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -20420,7 +20145,6 @@ func TestInitInteractiveCanKeepExistingSecretsAfterInspectingTargetRef(t *testin
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -20471,7 +20195,6 @@ func TestInitInteractiveCollectsGitHubAppBundle(t *testing.T) {
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModeGitHubApp),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -20527,7 +20250,6 @@ func TestInitInteractiveCollectsProviderSpecificLLMKey(t *testing.T) {
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName:      "default",
-				MakeDefault:      true,
 				GitHost:          "github.com",
 				GitAuth:          string(config.GitAuthModePAT),
 				LLMProvider:      string(config.LLMProviderOpenAI),
@@ -20576,7 +20298,6 @@ func TestInitInteractiveEmptyClipboardSecretDoesNotLeak(t *testing.T) {
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			return initDraft{
 				ProfileName: "default",
-				MakeDefault: true,
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModePAT),
 				LLMProvider: string(config.LLMProviderAnthropic),
@@ -20627,7 +20348,6 @@ func TestInitInteractiveRejectsKeepForChangedRefWithoutTargetBundle(t *testing.T
 			return initDraft{
 				OriginalProfileName: "work",
 				ProfileName:         "work",
-				MakeDefault:         true,
 				GitHost:             "github.com",
 				GitAuth:             string(config.GitAuthModePAT),
 				GitCredentialRef:    "codereview/work-new",
@@ -20644,7 +20364,6 @@ func TestInitInteractiveRejectsKeepForChangedRefWithoutTargetBundle(t *testing.T
 		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{
-				DefaultProfile: "work",
 				Profiles: map[string]config.Profile{
 					"work": basicProfile("work"),
 				},
@@ -20807,8 +20526,7 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 		DisplayName:   "work bot",
 	}
 	cfg := config.File{
-		DefaultProfile: "work",
-		Profiles:       map[string]config.Profile{"work": profile},
+		Profiles: map[string]config.Profile{"work": profile},
 	}
 	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
 	if err != nil {
@@ -20884,7 +20602,7 @@ func TestApplyInteractiveInitSessionPlanSaveFailureDoesNotDeleteStaleReviewerKey
 		AuthMode:      config.GitAuthModeGitHubApp,
 		CredentialRef: "codereview/work-reviewer",
 	}
-	cfg := config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": profile}}
+	cfg := config.File{Profiles: map[string]config.Profile{"work": profile}}
 	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
 	if err != nil {
 		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
@@ -20941,7 +20659,6 @@ func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitc
 		CredentialRef: "codereview/shared-reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "app",
 		Profiles: map[string]config.Profile{
 			"app": appProfile,
 			"pat": patProfile,
@@ -21011,7 +20728,7 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 		CredentialRef: "codereview/work-reviewer",
 		DisplayName:   "work bot",
 	}
-	cfg := config.File{DefaultProfile: "work", Profiles: map[string]config.Profile{"work": profile}}
+	cfg := config.File{Profiles: map[string]config.Profile{"work": profile}}
 	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
 	if err != nil {
 		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
@@ -21096,7 +20813,6 @@ func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t
 		CredentialRef: "codereview/shared-reviewer",
 	}
 	cfg := config.File{
-		DefaultProfile: "app",
 		Profiles: map[string]config.Profile{
 			"app": appProfile,
 			"pat": patProfile,
@@ -21506,9 +21222,8 @@ func testFileSecretsConfig() config.SecretsConfig {
 func testFileCredentialStoreConfig(profileName string) config.File {
 	profile := profileWithCredentialStore(basicProfile(profileName), testFileCredentialStoreID)
 	return config.File{
-		DefaultProfile: profileName,
-		Secrets:        testFileSecretsConfig(),
-		Profiles:       map[string]config.Profile{profileName: profile},
+		Secrets:  testFileSecretsConfig(),
+		Profiles: map[string]config.Profile{profileName: profile},
 	}
 }
 
@@ -21545,7 +21260,6 @@ func basicProfile(profile string) config.Profile {
 
 func normalizeTestProfile(profile config.Profile) config.Profile {
 	cfg := config.Normalize(config.File{
-		DefaultProfile: "test",
 		Profiles: map[string]config.Profile{
 			"test": profile,
 		},

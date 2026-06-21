@@ -32,14 +32,14 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
-func TestMeDefaultProfileUpdatesGitCacheAndRendersText(t *testing.T) {
+func TestMeSelectedProfileUpdatesGitCacheAndRendersText(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
 		"codereview/home": {Login: "live-home", ID: "1", DisplayName: "Live Home"},
 	}}
 	cmd, out := newTestCommand(path, resolver)
 
-	if err := root.Execute(cmd, []string{"me"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "me"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if got := out.String(); !strings.Contains(got, "Profile: home") || !strings.Contains(got, "Login: live-home") || !strings.Contains(got, "Identity cache updated: true") {
@@ -75,7 +75,7 @@ func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 		}, nil, nil
 	})
 
-	if err := root.Execute(cmd, []string{"me", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "me", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if len(auths) != 1 || auths[0] != "Bearer "+token {
@@ -123,7 +123,7 @@ func TestMeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing.T) {
 		}, nil, nil
 	})
 
-	if err := root.Execute(cmd, []string{"me", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "me", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if len(auths) != 1 || auths[0] != "Bearer "+token {
@@ -311,7 +311,7 @@ func TestMeEmptyLoginDoesNotClearCache(t *testing.T) {
 	}}
 	cmd, _ := newTestCommand(path, resolver)
 
-	err := root.Execute(cmd, []string{"me"})
+	err := root.Execute(cmd, []string{"--profile", "home", "me"})
 	if err == nil {
 		t.Fatal("Execute error = nil, want empty login failure")
 	}
@@ -333,7 +333,7 @@ func TestMeUnchangedCacheDoesNotRewriteConfig(t *testing.T) {
 	}}
 	saveCalled := false
 
-	result, err := runMeWithSaver(context.Background(), &cobra.Command{}, &root.Options{ConfigPath: path}, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+	result, err := runMeWithSaver(context.Background(), &cobra.Command{}, &root.Options{ConfigPath: path, Profile: "home"}, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
 		return resolver, nil, nil
 	}, false, func(string, config.File) error {
 		saveCalled = true
@@ -391,7 +391,7 @@ func TestMeMissingProfileDoesNotOpenResolverFactory(t *testing.T) {
 func TestMeMissingConfigExitCode(t *testing.T) {
 	cmd, _ := newTestCommand(filepath.Join(t.TempDir(), "missing.yml"), &fakeResolver{})
 
-	err := root.Execute(cmd, []string{"me"})
+	err := root.Execute(cmd, []string{"--profile", "home", "me"})
 	if !errors.Is(err, config.ErrNotConfigured) {
 		t.Fatalf("Execute error = %v, want ErrNotConfigured", err)
 	}
@@ -405,13 +405,14 @@ func TestMeProductionMissingGitCredentialExitCode(t *testing.T) {
 	var out bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		ConfigPath: path,
+		Profile:    "home",
 		Stdin:      strings.NewReader(""),
 		Stdout:     &out,
 		Stderr:     &out,
 	})
 	Register(cmd, opts)
 
-	err := root.Execute(cmd, []string{"me"})
+	err := root.Execute(cmd, []string{"--profile", "home", "me"})
 	if !errors.Is(err, gitprovider.ErrAuth) {
 		t.Fatalf("Execute error = %v, want ErrAuth", err)
 	}
@@ -540,7 +541,7 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 		}, nil, nil
 	})
 
-	if err := root.Execute(cmd, []string{"me", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "me", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if len(appJWTs) != 2 || !strings.HasPrefix(appJWTs[0], "Bearer ") || !strings.HasPrefix(appJWTs[1], "Bearer ") {
@@ -561,8 +562,7 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 }
 
 func TestMeReservedAuthModeExitCode(t *testing.T) {
-	path := writeRawTestConfig(t, `default_profile: home
-secrets:
+	path := writeRawTestConfig(t, `secrets:
   stores:
     test-memory:
       backend:
@@ -586,7 +586,7 @@ profiles:
 		return &fakeResolver{}, nil, nil
 	})
 
-	err := root.Execute(cmd, []string{"me"})
+	err := root.Execute(cmd, []string{"--profile", "home", "me"})
 	if !errors.Is(err, config.ErrUnsupported) {
 		t.Fatalf("Execute error = %v, want ErrUnsupported", err)
 	}
@@ -599,8 +599,7 @@ profiles:
 }
 
 func TestMeReviewerGitHubAppAuthModeUsesResolver(t *testing.T) {
-	path := writeRawTestConfig(t, `default_profile: work
-secrets:
+	path := writeRawTestConfig(t, `secrets:
   stores:
     test-memory:
       backend:
@@ -643,8 +642,7 @@ profiles:
 }
 
 func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
-	path := writeRawTestConfig(t, `default_profile: home
-secrets:
+	path := writeRawTestConfig(t, `secrets:
   stores:
     test-memory:
       backend:
@@ -694,8 +692,7 @@ profiles:
 }
 
 func TestMeAllReservedGitAuthModeWithReviewerDoesNotOpenResolverFactory(t *testing.T) {
-	path := writeRawTestConfig(t, `default_profile: home
-secrets:
+	path := writeRawTestConfig(t, `secrets:
   stores:
     test-memory:
       backend:
@@ -765,7 +762,7 @@ func TestMeProviderErrorExitCode(t *testing.T) {
 	}}
 	cmd, _ := newTestCommand(path, resolver)
 
-	err := root.Execute(cmd, []string{"me"})
+	err := root.Execute(cmd, []string{"--profile", "home", "me"})
 	if !errors.Is(err, gitprovider.ErrRetryable) {
 		t.Fatalf("Execute error = %v, want ErrRetryable", err)
 	}
@@ -803,7 +800,6 @@ func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 	defer server.Close()
 
 	resolverCfg := fileBackendConfig(t)
-	resolverCfg.DefaultProfile = "work"
 	resolverCfg.Profiles = map[string]config.Profile{"work": resolverCfg.Profiles["work"]}
 	resolver := &githubResolver{
 		cfg: resolverCfg,
@@ -840,7 +836,6 @@ func TestOrgDeploymentPrestagedMultiRefCredentialsHealthChecks(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
 	cfg := fileBackendConfig(t)
-	cfg.DefaultProfile = "work"
 	work := cfg.Profiles["work"]
 	work.LLM = config.LLMConfig{
 		Provider:      config.LLMProviderAnthropic,
@@ -879,7 +874,7 @@ func TestOrgDeploymentPrestagedMultiRefCredentialsHealthChecks(t *testing.T) {
 		"--overwrite",
 	})
 
-	configOut := runOrgDeploymentCommand(t, path, strings.NewReader(""), nil, []string{"config", "show", "--json"})
+	configOut := runOrgDeploymentCommand(t, path, strings.NewReader(""), nil, []string{"--profile", "work", "config", "show", "--json"})
 	for _, secret := range []string{"user-token", "reviewer-token", "llm-token"} {
 		if strings.Contains(configOut.String(), secret) {
 			t.Fatalf("config show leaked %s: %q", secret, configOut.String())
@@ -998,6 +993,7 @@ func runOrgDeploymentCommand(t *testing.T, path string, stdin *strings.Reader, f
 	var out bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		ConfigPath: path,
+		Profile:    "work",
 		Stdin:      stdin,
 		Stdout:     &out,
 		Stderr:     &out,
@@ -1106,7 +1102,6 @@ func testPrivateKeyPEM(t *testing.T) string {
 
 func testConfig() config.File {
 	return config.File{
-		DefaultProfile: "home",
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"test-memory": {

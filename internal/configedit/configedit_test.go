@@ -237,7 +237,7 @@ func TestAgentSourceHelpersRejectBlankPath(t *testing.T) {
 	}
 }
 
-func TestRenameProfileUpdatesReferencesAndPreservesProfileValues(t *testing.T) {
+func TestRenameProfileUpdatesRoutesAndPreservesProfileValues(t *testing.T) {
 	cfg := testConfig()
 
 	got, changed, err := configedit.RenameProfile(cfg, "work", "office")
@@ -251,9 +251,6 @@ func TestRenameProfileUpdatesReferencesAndPreservesProfileValues(t *testing.T) {
 		t.Fatal("old profile still exists after rename")
 	}
 	office := got.Profiles["office"]
-	if got.DefaultProfile != "office" {
-		t.Fatalf("DefaultProfile = %q, want office", got.DefaultProfile)
-	}
 	if office.Git.CredentialRef != "codereview/custom-work" || office.Git.IdentityCache != "work-user" {
 		t.Fatalf("git fields = %#v, want preserved credential ref and identity cache", office.Git)
 	}
@@ -284,23 +281,14 @@ func TestRenameProfileUpdatesReferencesAndPreservesProfileValues(t *testing.T) {
 	if !reflect.DeepEqual(got.RepositoryProfiles, wantRoutes) {
 		t.Fatalf("RepositoryProfiles = %#v, want %#v", got.RepositoryProfiles, wantRoutes)
 	}
-	if cfg.DefaultProfile != "work" {
-		t.Fatalf("original config default mutated to %q", cfg.DefaultProfile)
-	}
 	if _, ok := cfg.Profiles["work"]; !ok {
 		t.Fatal("original config profile map was mutated")
 	}
 }
 
-func TestProfileHelpersRejectInvalidDefaultAndRename(t *testing.T) {
+func TestProfileHelpersRejectInvalidRename(t *testing.T) {
 	cfg := testConfig()
 
-	if _, _, err := configedit.SetDefaultProfile(cfg, "missing"); !errors.Is(err, config.ErrProfileNotFound) {
-		t.Fatalf("SetDefaultProfile missing error = %v, want ErrProfileNotFound", err)
-	}
-	if _, _, err := configedit.SetDefaultProfile(cfg, " "); !errors.Is(err, configedit.ErrProfileNameRequired) {
-		t.Fatalf("SetDefaultProfile blank error = %v, want ErrProfileNameRequired", err)
-	}
 	if _, _, err := configedit.RenameProfile(cfg, "missing", "office"); !errors.Is(err, config.ErrProfileNotFound) {
 		t.Fatalf("RenameProfile missing error = %v, want ErrProfileNotFound", err)
 	}
@@ -537,7 +525,7 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		if !changed || !created {
 			t.Fatalf("SetSecretsProfile store-only create = changed:%t created:%t, want true,true", changed, created)
 		}
-		if updated.DefaultProfile != "" || len(updated.Profiles) != 0 {
+		if len(updated.Profiles) != 0 {
 			t.Fatalf("updated config unexpectedly added review profile data: %#v", updated)
 		}
 		got := updated.Secrets.Profiles["1password-personal"]
@@ -627,7 +615,6 @@ func TestSecretsProfileHelpers(t *testing.T) {
 
 func testConfig() config.File {
 	return config.File{
-		DefaultProfile: "work",
 		RepositoryProfiles: []config.RepositoryProfile{
 			{
 				Profile: "work",

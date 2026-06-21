@@ -407,7 +407,6 @@ func normalizeInitSecretsProfileBackend(backend config.SecretsProfileBackend) co
 				"seed": {Backend: backend},
 			},
 		},
-		DefaultProfile: "default",
 	}
 	return config.Normalize(working).Secrets.Profiles["seed"].Backend
 }

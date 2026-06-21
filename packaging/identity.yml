@@ -27,7 +27,6 @@ keychain_probe:
     base: native_user_config
     path: "codereview/config.yml"
     content: |
-      default_profile: default
       profiles:
         default:
           git:

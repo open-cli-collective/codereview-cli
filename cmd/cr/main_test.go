@@ -77,7 +77,7 @@ func TestRunConfigShowJSON(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"config", "show", "--json"}, strings.NewReader(""), &stdout, &stderr)
+	code := run([]string{"--profile", "home", "config", "show", "--json"}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("run exit code = %d, want 0; stderr = %q", code, stderr.String())
 	}
@@ -176,7 +176,7 @@ func TestRunCredentialCommandsDoNotLeakSecrets(t *testing.T) {
 		},
 		{
 			name:     "config show",
-			args:     []string{"config", "show", "--json"},
+			args:     []string{"--profile", "default", "config", "show", "--json"},
 			wantCode: 0,
 		},
 		{
@@ -204,7 +204,7 @@ func TestRunCredentialCommandsDoNotLeakSecrets(t *testing.T) {
 		},
 		{
 			name:     "config clear",
-			args:     []string{"config", "clear", "--json"},
+			args:     []string{"--profile", "default", "config", "clear", "--json"},
 			wantCode: 0,
 		},
 	}
@@ -224,7 +224,6 @@ func TestRunCredentialCommandsDoNotLeakSecrets(t *testing.T) {
 
 func mainTestConfig() config.File {
 	return config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{
@@ -248,7 +247,6 @@ func mainTestConfig() config.File {
 
 func mainCredentialCommandTestConfig() config.File {
 	cfg := mainTestConfig()
-	cfg.DefaultProfile = "default"
 	cfg.Secrets = config.SecretsConfig{
 		Stores: map[string]config.SecretsStore{
 			"test-file": {

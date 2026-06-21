@@ -378,6 +378,7 @@ func newAuditHarness(t *testing.T) *auditHarness {
 
 func (h *auditHarness) run(args []string) (string, string, error) {
 	var stdout, stderr bytes.Buffer
+	args = auditArgsWithExplicitProfile(args)
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		ConfigPath: h.configPath,
 		Stdin:      strings.NewReader(""),
@@ -396,12 +397,51 @@ func (h *auditHarness) run(args []string) (string, string, error) {
 	return stdout.String(), stderr.String(), err
 }
 
+func auditArgsWithExplicitProfile(args []string) []string {
+	if len(args) == 0 || auditArgsIncludeProfile(args) {
+		return args
+	}
+	command := auditRootCommand(args)
+	switch command {
+	case "config", "me", "agents", "review":
+		out := []string{"--profile", "default"}
+		out = append(out, args...)
+		return out
+	default:
+		return args
+	}
+}
+
+func auditArgsIncludeProfile(args []string) bool {
+	for _, arg := range args {
+		if arg == "--profile" || strings.HasPrefix(arg, "--profile=") {
+			return true
+		}
+	}
+	return false
+}
+
+func auditRootCommand(args []string) string {
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "" {
+			continue
+		}
+		if arg[0] != '-' {
+			return arg
+		}
+		if arg == "--backend" || arg == "--config" || arg == "--profile" {
+			index++
+		}
+	}
+	return ""
+}
+
 const auditCredentialStoreID = "test-file"
 
 func (h *auditHarness) config() config.File {
 	maxAgeDays := 30
 	return config.File{
-		DefaultProfile: "default",
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				auditCredentialStoreID: {

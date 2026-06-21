@@ -286,35 +286,6 @@ func TestRenderConfigPathJSON(t *testing.T) {
 	}
 }
 
-func TestRenderConfigDefaultText(t *testing.T) {
-	var out bytes.Buffer
-	result := ConfigDefault{DefaultProfile: "work"}
-
-	if err := RenderConfigDefaultText(&out, result); err != nil {
-		t.Fatalf("RenderConfigDefaultText: %v", err)
-	}
-	want := "Default profile: work\n"
-	if out.String() != want {
-		t.Fatalf("text output = %q, want %q", out.String(), want)
-	}
-}
-
-func TestRenderConfigDefaultJSON(t *testing.T) {
-	var out bytes.Buffer
-	result := ConfigDefault{DefaultProfile: "work"}
-
-	if err := RenderConfigDefaultJSON(&out, result); err != nil {
-		t.Fatalf("RenderConfigDefaultJSON: %v", err)
-	}
-	var decoded ConfigDefault
-	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
-		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
-	}
-	if decoded != result {
-		t.Fatalf("decoded = %#v, want %#v", decoded, result)
-	}
-}
-
 func TestRenderConfigRetentionText(t *testing.T) {
 	var out bytes.Buffer
 	result := NewConfigRetention(config.RetentionConfig{
@@ -564,7 +535,7 @@ func TestRenderConfigResolveProfileJSON(t *testing.T) {
 	result := ConfigResolveProfile{
 		PRURL:           "https://github.com/open-cli-collective/codereview-cli/pull/1",
 		ResolvedProfile: "home",
-		Source:          "default_profile",
+		Source:          "repository_route",
 		GitHost:         "github.com",
 	}
 
@@ -662,7 +633,6 @@ func TestRenderConfigClearTextIncludesResetFields(t *testing.T) {
 		BackendSource:        "credential_store",
 		Cleared:              []ClearedCredentialRef{{Ref: "codereview/work", Keys: []string{"git_token"}}},
 		ConfigProfileRemoved: "work",
-		DefaultProfile:       "home",
 		ConfigPathRemoved:    "/tmp/codereview/config.yml",
 		Cache:                &CacheClear{Path: "/tmp/codereview-cache", Status: "removed"},
 	}
@@ -673,7 +643,6 @@ func TestRenderConfigClearTextIncludesResetFields(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"Config profile removed: work",
-		"Default profile: home",
 		"Config path removed: /tmp/codereview/config.yml",
 		"Cache path: /tmp/codereview-cache",
 		"Cache status: removed",

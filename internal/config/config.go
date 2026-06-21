@@ -42,7 +42,6 @@ var (
 
 // File is the root config.yml schema.
 type File struct {
-	DefaultProfile     string              `yaml:"default_profile,omitempty" json:"default_profile,omitempty"`
 	Secrets            SecretsConfig       `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	RepositoryProfiles []RepositoryProfile `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
 	Profiles           map[string]Profile  `yaml:"profiles,omitempty" json:"profiles,omitempty"`
@@ -519,9 +518,6 @@ const (
 	// RepositoryProfileResolutionSourceRoute means a repository_profiles route
 	// selected the profile.
 	RepositoryProfileResolutionSourceRoute RepositoryProfileResolutionSource = "repository_route"
-	// RepositoryProfileResolutionSourceDefault means routing did not match and
-	// the default profile was used.
-	RepositoryProfileResolutionSourceDefault RepositoryProfileResolutionSource = "default_profile"
 )
 
 // RepositoryProfileResolution describes the resolved profile plus the source of
@@ -643,10 +639,6 @@ func Validate(cfg File) error {
 		return err
 	}
 	if len(cfg.Profiles) == 0 {
-		defaultProfile := strings.TrimSpace(cfg.DefaultProfile)
-		if defaultProfile != "" {
-			return fmt.Errorf("%w: %s", ErrProfileNotFound, defaultProfile)
-		}
 		if len(cfg.RepositoryProfiles) > 0 {
 			return invalid("profiles is required")
 		}
@@ -654,9 +646,6 @@ func Validate(cfg File) error {
 			return invalid("profiles is required")
 		}
 		return nil
-	}
-	if strings.TrimSpace(cfg.DefaultProfile) == "" {
-		return invalid("default_profile is required")
 	}
 	for name, profile := range cfg.Profiles {
 		if strings.TrimSpace(name) == "" {
@@ -668,9 +657,6 @@ func Validate(cfg File) error {
 		if err := validateProfileCredentialStoreSelections(cfg.Secrets, name, profile); err != nil {
 			return err
 		}
-	}
-	if _, ok := cfg.Profiles[cfg.DefaultProfile]; !ok {
-		return fmt.Errorf("%w: %s", ErrProfileNotFound, cfg.DefaultProfile)
 	}
 	if err := validateRepositoryProfiles(cfg); err != nil {
 		return err
@@ -734,13 +720,12 @@ func EffectiveSecretsProfiles(cfg File) []EffectiveSecretsProfile {
 	return EffectiveSecretsStores(cfg)
 }
 
-// ResolveProfile returns the requested profile, or the default profile when
-// requestedName is empty.
+// ResolveProfile returns the requested profile.
 func ResolveProfile(cfg File, requestedName string) (string, Profile, error) {
 	cfg = cfg.normalized()
 	name := strings.TrimSpace(requestedName)
 	if name == "" {
-		name = cfg.DefaultProfile
+		return "", Profile{}, fmt.Errorf("%w: no profile selected; pass --profile or configure a repository route", ErrProfileNotFound)
 	}
 	profile, ok := cfg.Profiles[name]
 	if !ok {
@@ -825,15 +810,7 @@ func ResolveProfileForRepositoryWithSource(cfg File, requestedName string, expli
 			MatchedRoute: namespaceRoute,
 		}, nil
 	}
-	name, profile, err := ResolveProfile(cfg, "")
-	if err != nil {
-		return RepositoryProfileResolution{}, err
-	}
-	return RepositoryProfileResolution{
-		ProfileName: name,
-		Profile:     profile,
-		Source:      RepositoryProfileResolutionSourceDefault,
-	}, nil
+	return RepositoryProfileResolution{}, fmt.Errorf("%w: no repository profile route matched %s/%s/%s; pass --profile or configure a repository route", ErrProfileNotFound, targetHost, targetNamespace, targetRepo)
 }
 
 // CredentialRefs returns all credential-store refs declared by profile.
