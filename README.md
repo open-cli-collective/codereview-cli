@@ -79,6 +79,13 @@ additional stores from interactive `cr init` under **Configure secrets
 storage**. The built-in `local-os` store is read-only configuration and cannot
 be removed.
 
+Interactive `cr init` discovers available secrets backends by default so it can
+offer local 1Password account/vault choices and passive backend availability
+checks. Use `cr init --secret-backend-discovery=safe` to skip active inventory
+probes, or `--secret-backend-discovery=off` to skip backend discovery entirely.
+The `CR_SECRET_BACKEND_DISCOVERY` environment variable accepts the same
+`full`, `safe`, and `off` values when the flag is not supplied.
+
 Secrets are never written to `config.yml`. Non-secret config lives in the
 `codereview` config directory resolved by the operating system, and durable
 review data lives under the OS data directory for the `cr` binary.
@@ -739,6 +746,7 @@ Flags:
 | `--llm-credential-ref <name>` | Credential name for LLM API-key auth. Defaults to `codereview/<profile>-llm` when `--llm-auth api_key`. |
 | `--llm-api-key-stdin` | Read the LLM API key from stdin and write `anthropic_api_key` or `openai_api_key` according to `--llm-provider`. |
 | `--llm-api-key-from-env <env>` | Read the LLM API key from an environment variable and write `anthropic_api_key` or `openai_api_key` according to `--llm-provider`. |
+| `--secret-backend-discovery <mode>` | Interactive secrets-backend discovery mode: `full` runs active inventory probes such as 1Password account/vault lookup, `safe` uses only passive availability checks, and `off` skips backend discovery. Defaults to `full`; `CR_SECRET_BACKEND_DISCOVERY` can set the same value when the flag is omitted. |
 | `--agent-source <path>` | Add a trusted agent source directory. Repeatable. |
 | `--major-event <policy>` | `comment` or `request_changes`. Controls review event for major findings. |
 | `--allow-self-approve` | Store profile policy allowing self approval. Live review can still require `--allow-self-approve` depending on invocation. |

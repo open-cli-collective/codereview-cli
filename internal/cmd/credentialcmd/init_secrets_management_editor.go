@@ -46,9 +46,10 @@ type initPendingSecretsManagementDelete struct {
 
 func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 	working := config.Normalize(cloneInitConfigFile(prompt.Config))
-	p.writeSecretsStorageDiscoveryNotice()
-	desktopDiscovery := p.discoverOnePasswordDesktop()
-	p.writeSecretsStorageDiscoveryResults(desktopDiscovery)
+	discoveryMode := p.resolvedDiscoveryMode()
+	p.writeSecretsStorageDiscoveryNotice(discoveryMode)
+	desktopDiscovery := p.discoverOnePasswordDesktopForMode(discoveryMode)
+	p.writeSecretsStorageDiscoveryResults(discoveryMode, desktopDiscovery)
 	pendingDeletes := map[string]initPendingSecretsManagementDelete{}
 	pendingDeleteOrder := []string{}
 	for {
@@ -101,12 +102,23 @@ func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyri
 	}
 }
 
-func (p huhInitKeyringBackendPrompter) writeSecretsStorageDiscoveryNotice() {
+func (p huhInitKeyringBackendPrompter) writeSecretsStorageDiscoveryNotice(mode initSecretsBackendDiscoveryMode) {
 	if p.stderr == nil {
 		return
 	}
-	_, _ = fmt.Fprintln(p.stderr, "Checking available secrets storage backends.")
-	_, _ = fmt.Fprintln(p.stderr, "You may see permission prompts from 1Password, macOS, or your terminal app.")
+	switch mode {
+	case initSecretsBackendDiscoveryModeSafe:
+		_, _ = fmt.Fprintln(p.stderr, "Checking available secrets storage backends.")
+		_, _ = fmt.Fprintln(p.stderr, "Only passive discovery is enabled; inventory probes are skipped.")
+	case initSecretsBackendDiscoveryModeOff:
+		_, _ = fmt.Fprintln(p.stderr, "Secrets backend discovery is disabled.")
+	case initSecretsBackendDiscoveryModeFull:
+		_, _ = fmt.Fprintln(p.stderr, "Checking available secrets storage backends.")
+		_, _ = fmt.Fprintln(p.stderr, "You may see permission prompts from 1Password, macOS, or your terminal app.")
+	default:
+		_, _ = fmt.Fprintln(p.stderr, "Checking available secrets storage backends.")
+		_, _ = fmt.Fprintln(p.stderr, "You may see permission prompts from 1Password, macOS, or your terminal app.")
+	}
 	_, _ = fmt.Fprintln(p.stderr)
 }
 

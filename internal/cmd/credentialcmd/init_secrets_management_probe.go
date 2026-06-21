@@ -7,19 +7,31 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 )
 
+const initSecretsBackendDiscoveryEnv = "CR_SECRET_BACKEND_DISCOVERY" // #nosec G101 -- environment variable name, not a credential.
+
 type initExecutableLookPath func(string) (string, error)
+
+type initSecretsBackendDiscoveryMode string
+
+const (
+	initSecretsBackendDiscoveryModeFull initSecretsBackendDiscoveryMode = "full"
+	initSecretsBackendDiscoveryModeSafe initSecretsBackendDiscoveryMode = "safe"
+	initSecretsBackendDiscoveryModeOff  initSecretsBackendDiscoveryMode = "off"
+)
 
 type initSecretsProbeStatus string
 
 const (
 	initSecretsProbeAvailable   initSecretsProbeStatus = "available"
 	initSecretsProbeNotFound    initSecretsProbeStatus = "not found"
+	initSecretsProbeSkipped     initSecretsProbeStatus = "skipped"
 	initSecretsProbeUnavailable initSecretsProbeStatus = "unavailable"
 )
 
@@ -36,7 +48,35 @@ func (r initSecretsProbeResult) Line() string {
 	return fmt.Sprintf("%s: %s (%s)", r.Label, r.Status, r.Detail)
 }
 
-func (p huhInitKeyringBackendPrompter) writeSecretsStorageDiscoveryResults(discovery initOnePasswordDesktopDiscovery) {
+func (p huhInitKeyringBackendPrompter) resolvedDiscoveryMode() initSecretsBackendDiscoveryMode {
+	mode := p.discoveryMode
+	if mode == "" {
+		return initSecretsBackendDiscoveryModeFull
+	}
+	return mode
+}
+
+func parseInitSecretsBackendDiscoveryMode(value string) (initSecretsBackendDiscoveryMode, error) {
+	switch initSecretsBackendDiscoveryMode(strings.TrimSpace(strings.ToLower(value))) {
+	case "", initSecretsBackendDiscoveryModeFull:
+		return initSecretsBackendDiscoveryModeFull, nil
+	case initSecretsBackendDiscoveryModeSafe:
+		return initSecretsBackendDiscoveryModeSafe, nil
+	case initSecretsBackendDiscoveryModeOff:
+		return initSecretsBackendDiscoveryModeOff, nil
+	default:
+		return "", fmt.Errorf("secret backend discovery %q is invalid; valid values are full, safe, off", value)
+	}
+}
+
+func (p huhInitKeyringBackendPrompter) discoverOnePasswordDesktopForMode(mode initSecretsBackendDiscoveryMode) initOnePasswordDesktopDiscovery {
+	if mode != initSecretsBackendDiscoveryModeFull {
+		return initOnePasswordDesktopDiscovery{}
+	}
+	return p.discoverOnePasswordDesktop()
+}
+
+func (p huhInitKeyringBackendPrompter) writeSecretsStorageDiscoveryResults(mode initSecretsBackendDiscoveryMode, discovery initOnePasswordDesktopDiscovery) {
 	if p.stderr == nil {
 		return
 	}
@@ -45,17 +85,21 @@ func (p huhInitKeyringBackendPrompter) writeSecretsStorageDiscoveryResults(disco
 			Label:  initBuiltInOSCredentialStoreTitle(),
 			Status: initSecretsProbeAvailable,
 		},
-		initOnePasswordDesktopProbeResult(discovery),
-		p.passPasswordStoreProbeResult(),
+		p.onePasswordDesktopProbeResult(mode, discovery),
+		p.passPasswordStoreProbeResult(mode),
 	} {
 		_, _ = fmt.Fprintln(p.stderr, result.Line())
 	}
 	_, _ = fmt.Fprintln(p.stderr)
 }
 
-func initOnePasswordDesktopProbeResult(discovery initOnePasswordDesktopDiscovery) initSecretsProbeResult {
+func (p huhInitKeyringBackendPrompter) onePasswordDesktopProbeResult(mode initSecretsBackendDiscoveryMode, discovery initOnePasswordDesktopDiscovery) initSecretsProbeResult {
 	result := initSecretsProbeResult{
 		Label: initSecretsBackendDisplayLabel(config.SecretsBackendKind(credstore.BackendOPDesktop)),
+	}
+	if mode != initSecretsBackendDiscoveryModeFull {
+		result.Status = initSecretsProbeSkipped
+		return result
 	}
 	if discovery.Err != nil {
 		result.Status = initSecretsProbeStatusForError(discovery.Err)
@@ -68,9 +112,13 @@ func initOnePasswordDesktopProbeResult(discovery initOnePasswordDesktopDiscovery
 	return result
 }
 
-func (p huhInitKeyringBackendPrompter) passPasswordStoreProbeResult() initSecretsProbeResult {
+func (p huhInitKeyringBackendPrompter) passPasswordStoreProbeResult(mode initSecretsBackendDiscoveryMode) initSecretsProbeResult {
 	result := initSecretsProbeResult{
 		Label: initSecretsBackendDisplayLabel(config.SecretsBackendKind(credstore.BackendPass)),
+	}
+	if mode == initSecretsBackendDiscoveryModeOff {
+		result.Status = initSecretsProbeSkipped
+		return result
 	}
 	_, err := p.lookPath("pass")
 	if err != nil {

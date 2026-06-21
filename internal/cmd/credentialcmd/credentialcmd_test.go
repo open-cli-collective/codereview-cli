@@ -11159,8 +11159,9 @@ func TestHuhInitKeyringBackendPrompterWritesDiscoveryNoticeBeforeOnePasswordProb
 			}
 			return nil, os.ErrNotExist
 		},
-		editorRunner: func(editor initLinearEditor, _ io.Reader, _ io.Writer) (initLinearEditorModel, error) {
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 180, 32)
+			_, _ = io.WriteString(out, model.layout.Content)
 			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
 			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionBack)
 			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -11216,8 +11217,9 @@ func TestHuhInitKeyringBackendPrompterWritesDiscoveryProbeResults(t *testing.T) 
 				return nil, fmt.Errorf("unexpected op command %q", strings.Join(args, " "))
 			}
 		},
-		editorRunner: func(editor initLinearEditor, _ io.Reader, _ io.Writer) (initLinearEditorModel, error) {
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 180, 32)
+			_, _ = io.WriteString(out, model.layout.Content)
 			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
 			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionBack)
 			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -11246,6 +11248,146 @@ func TestHuhInitKeyringBackendPrompterWritesDiscoveryProbeResults(t *testing.T) 
 		}
 	}
 	assertContentOrder(t, out, "Checking available secrets storage backends.", "1Password desktop app: available (1 account, 1 vault)", "pass password store: available")
+}
+
+func TestHuhInitKeyringBackendPrompterSafeDiscoverySkipsActiveInventory(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	var stderr bytes.Buffer
+	prompter := huhInitKeyringBackendPrompter{
+		stderr:        &stderr,
+		discoveryMode: initSecretsBackendDiscoveryModeSafe,
+		executableLookPath: func(name string) (string, error) {
+			if name == "pass" {
+				return "", exec.ErrNotFound
+			}
+			return "", fmt.Errorf("unexpected executable lookup %q", name)
+		},
+		onePasswordCmdRunner: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("1Password command runner called despite safe discovery mode")
+			return nil, nil
+		},
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 180, 32)
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+			_, _ = io.WriteString(out, model.layout.Content)
+			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionBack)
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	_, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditKeyringBackend error = %v, want navigate back", err)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Only passive discovery is enabled; inventory probes are skipped.",
+		"1Password desktop app: skipped",
+		"pass password store: not found",
+		"1Password account URL",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr missing safe discovery output %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "You may see permission prompts") {
+		t.Fatalf("safe discovery output still mentions permission prompts:\n%s", out)
+	}
+}
+
+func TestHuhInitKeyringBackendPrompterOffDiscoverySkipsAllBackendProbes(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	var stderr bytes.Buffer
+	prompter := huhInitKeyringBackendPrompter{
+		stderr:        &stderr,
+		discoveryMode: initSecretsBackendDiscoveryModeOff,
+		executableLookPath: func(name string) (string, error) {
+			t.Fatalf("executable lookup %q called despite off discovery mode", name)
+			return "", nil
+		},
+		onePasswordCmdRunner: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("1Password command runner called despite off discovery mode")
+			return nil, nil
+		},
+		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+			model := newInitLinearEditorModel(editor, 180, 32)
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+			_, _ = io.WriteString(out, model.layout.Content)
+			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionBack)
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			return next, nil
+		},
+	}
+
+	_, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+		Config: config.File{Profiles: map[string]config.Profile{"default": basicProfile("default")}, DefaultProfile: "default"},
+	})
+	if !errors.Is(err, errInitNavigateBack) {
+		t.Fatalf("EditKeyringBackend error = %v, want navigate back", err)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Secrets backend discovery is disabled.",
+		"1Password desktop app: skipped",
+		"pass password store: skipped",
+		"1Password account URL",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr missing off discovery output %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Checking available secrets storage backends.") {
+		t.Fatalf("off discovery output still says it is checking backends:\n%s", out)
+	}
+}
+
+func TestResolveInitSecretsBackendDiscoveryModeUsesEnvUnlessFlagSet(t *testing.T) {
+	t.Setenv(initSecretsBackendDiscoveryEnv, "safe")
+	cmd := newInitCommand(&root.Options{Stdin: failReader{}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	mode, err := resolveInitSecretsBackendDiscoveryMode(cmd, initOptions{secretsDiscovery: string(initSecretsBackendDiscoveryModeFull)})
+	if err != nil {
+		t.Fatalf("resolveInitSecretsBackendDiscoveryMode env: %v", err)
+	}
+	if mode != initSecretsBackendDiscoveryModeSafe {
+		t.Fatalf("mode = %q, want safe from env", mode)
+	}
+	if err := cmd.Flags().Set("secret-backend-discovery", "off"); err != nil {
+		t.Fatalf("set secret-backend-discovery: %v", err)
+	}
+	mode, err = resolveInitSecretsBackendDiscoveryMode(cmd, initOptions{secretsDiscovery: string(initSecretsBackendDiscoveryModeOff)})
+	if err != nil {
+		t.Fatalf("resolveInitSecretsBackendDiscoveryMode flag: %v", err)
+	}
+	if mode != initSecretsBackendDiscoveryModeOff {
+		t.Fatalf("mode = %q, want off from flag", mode)
+	}
+}
+
+func TestResolveInitSecretsBackendDiscoveryModeRejectsInvalidValue(t *testing.T) {
+	_, err := resolveInitSecretsBackendDiscoveryMode(&cobra.Command{}, initOptions{secretsDiscovery: "loud"})
+	if got := exitcode.FromError(err); got != exitcode.UsageError {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
+	}
+	if !strings.Contains(err.Error(), "valid values are full, safe, off") {
+		t.Fatalf("error = %v, want valid-values copy", err)
+	}
 }
 
 func TestInitSecretsManagementLinearEditorShowsBuiltInOSStoreReadOnly(t *testing.T) {

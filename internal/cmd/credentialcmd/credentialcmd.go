@@ -178,6 +178,7 @@ type initOptions struct {
 	overwrite          bool
 	replaceProfile     bool
 	setDefault         bool
+	secretsDiscovery   string
 }
 
 type initPrompter interface {
@@ -769,13 +770,14 @@ func (deps initDeps) withDefaults() initDeps {
 
 func newInitCommand(opts *root.Options) *cobra.Command {
 	flags := initOptions{
-		gitHost:      "github.com",
-		gitAuth:      string(config.GitAuthModePAT),
-		reviewerAuth: string(config.GitAuthModePAT),
-		llmProvider:  string(config.LLMProviderAnthropic),
-		llmAuth:      string(config.LLMAuthSubscription),
-		llmAdapter:   string(config.LLMAdapterClaudeCLI),
-		majorEvent:   string(config.ReviewMajorEventComment),
+		gitHost:          "github.com",
+		gitAuth:          string(config.GitAuthModePAT),
+		reviewerAuth:     string(config.GitAuthModePAT),
+		llmProvider:      string(config.LLMProviderAnthropic),
+		llmAuth:          string(config.LLMAuthSubscription),
+		llmAdapter:       string(config.LLMAdapterClaudeCLI),
+		majorEvent:       string(config.ReviewMajorEventComment),
+		secretsDiscovery: string(initSecretsBackendDiscoveryModeFull),
 	}
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -817,6 +819,7 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 	cmd.Flags().BoolVar(&flags.overwrite, "overwrite", false, "Replace existing keyring entries")
 	cmd.Flags().BoolVar(&flags.replaceProfile, "replace-profile", false, "Replace an existing config profile")
 	cmd.Flags().BoolVar(&flags.setDefault, "set-default", false, "Set the target profile as the default profile")
+	cmd.Flags().StringVar(&flags.secretsDiscovery, "secret-backend-discovery", flags.secretsDiscovery, "Secrets backend discovery mode: full, safe, or off")
 	return cmd
 }
 
@@ -826,6 +829,11 @@ func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
 
 func runInitWithDeps(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) error {
 	deps = deps.withDefaults()
+	discoveryMode, err := resolveInitSecretsBackendDiscoveryMode(cmd, flags)
+	if err != nil {
+		return err
+	}
+	flags.secretsDiscovery = string(discoveryMode)
 	if !flags.nonInteractive {
 		return runInteractiveInit(cmd, opts, flags, deps)
 	}
@@ -834,6 +842,27 @@ func runInitWithDeps(cmd *cobra.Command, opts *root.Options, flags initOptions, 
 		return err
 	}
 	return applyInitPlan(opts, flags, deps, plan)
+}
+
+func resolveInitSecretsBackendDiscoveryMode(cmd *cobra.Command, flags initOptions) (initSecretsBackendDiscoveryMode, error) {
+	value := flags.secretsDiscovery
+	if !initCommandFlagChanged(cmd, "secret-backend-discovery") {
+		if envValue := strings.TrimSpace(os.Getenv(initSecretsBackendDiscoveryEnv)); envValue != "" {
+			value = envValue
+		}
+	}
+	mode, err := parseInitSecretsBackendDiscoveryMode(value)
+	if err != nil {
+		return "", exitcode.Usage(err)
+	}
+	return mode, nil
+}
+
+func initCommandFlagChanged(cmd *cobra.Command, name string) bool {
+	if cmd == nil || cmd.Flags() == nil || cmd.Flags().Lookup(name) == nil {
+		return false
+	}
+	return cmd.Flags().Changed(name)
 }
 
 func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) error {
@@ -925,7 +954,7 @@ func runInjectedInteractiveInit(cmd *cobra.Command, opts *root.Options, flags in
 		}
 	}
 	if deps.keyringPrompter != nil {
-		session.cfg, err = collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cloneInitConfigFile(session.cfg))
+		session.cfg, err = collectInteractiveInitKeyringBackendConfig(opts, deps, initSecretsBackendDiscoveryMode(flags.secretsDiscovery), session.backendFlagSet, cloneInitConfigFile(session.cfg))
 		if err != nil {
 			return initSessionDraft{}, err
 		}
@@ -1036,6 +1065,7 @@ type huhInitKeyringBackendPrompter struct {
 	editorRunner         initSecretsManagementEditorRunner
 	onePasswordCmdRunner initOnePasswordCommandRunner
 	executableLookPath   initExecutableLookPath
+	discoveryMode        initSecretsBackendDiscoveryMode
 }
 
 const (
@@ -1081,8 +1111,8 @@ func newHuhInitRoutesPrompter(opts *root.Options) initRoutesPrompter {
 	return huhInitRoutesPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
-func newHuhInitKeyringBackendPrompter(opts *root.Options) initKeyringBackendPrompter {
-	return huhInitKeyringBackendPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+func newHuhInitKeyringBackendPrompter(opts *root.Options, mode initSecretsBackendDiscoveryMode) initKeyringBackendPrompter {
+	return huhInitKeyringBackendPrompter{stdin: opts.Stdin, stderr: opts.Stderr, discoveryMode: mode}
 }
 
 func buildInteractiveInitInventoryPromptContext(ctx initPromptContext) initPromptContext {
@@ -1219,7 +1249,7 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 		case initMenuActionGlobalSettings:
 			session, err = editInteractiveInitGlobalSettings(cmd, opts, deps, session)
 		case initMenuActionSecretsManagement:
-			session, err = editInteractiveInitSecretsManagement(cmd, opts, deps, session)
+			session, err = editInteractiveInitSecretsManagement(cmd, opts, flags, deps, session)
 		case initMenuActionSave:
 			if session.workspace == nil {
 				return initSessionDraft{}, exitcode.Usage(errors.New("commit requires at least one configured profile"))
@@ -1676,8 +1706,8 @@ func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, dep
 	return session, nil
 }
 
-func editInteractiveInitSecretsManagement(_ *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
-	nextCfg, err := collectInteractiveInitKeyringBackendConfig(opts, deps, session.backendFlagSet, cloneInitConfigFile(session.cfg))
+func editInteractiveInitSecretsManagement(_ *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	nextCfg, err := collectInteractiveInitKeyringBackendConfig(opts, deps, initSecretsBackendDiscoveryMode(flags.secretsDiscovery), session.backendFlagSet, cloneInitConfigFile(session.cfg))
 	if errors.Is(err, errInitNavigateBack) {
 		return session, nil
 	}
@@ -5622,10 +5652,10 @@ func collectInteractiveInitRetentionConfig(opts *root.Options, deps initDeps, cf
 	return nextCfg, nil
 }
 
-func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDeps, backendFlagSet bool, cfg config.File) (config.File, error) {
+func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDeps, discoveryMode initSecretsBackendDiscoveryMode, backendFlagSet bool, cfg config.File) (config.File, error) {
 	prompter := deps.keyringPrompter
 	if prompter == nil {
-		prompter = newHuhInitKeyringBackendPrompter(opts)
+		prompter = newHuhInitKeyringBackendPrompter(opts, discoveryMode)
 	}
 	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
 		Config:         cfg,
