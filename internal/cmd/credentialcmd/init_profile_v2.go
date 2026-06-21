@@ -374,8 +374,8 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	storeOptions := initCredentialStoreOptions(ctx.ExistingConfig)
 
 	var document initProfileV2Document
-	document.addSection("Profile", "")
-	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "", draft.ProfileName, validateProfileName)
+	document.addSection("Review profile", "Repository routing and review composition.")
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "Human-friendly name for this review profile.", draft.ProfileName, validateProfileName)
 	initProfileV2AppendRouteSection(&document, routeText)
 	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(ctx.GitScopes), draft, selectedGitScope == initCustomGitScopeSelection || len(ctx.GitScopes) > 1)
 	document.addEditableSelect(initProfileV2FieldReviewerEntity, "Reviewer entity", reviewerEntitySelectionDescription(), reviewerEntityOptions, selectedReviewerEntity)
@@ -464,9 +464,8 @@ type initProfileV2Layout = initLinearLayout
 type initProfileV2FieldBounds = initLinearFieldBounds
 
 func initProfileV2AppendRouteSection(document *initProfileV2Document, routeText string) {
-	document.addSection("Automatic profile selection", "Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise a matching route is required.")
-	document.addSection("Accepted route formats", "host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL. Leave blank to remove all routes for this profile. Examples:\ngithub.com/YourOrg\ngithub.com/YourUsername [RepoA, RepoB] (will not match on RepoC)\ngithub.com/YourOrg/org-repo/pull/123\nSeparate multiple entries with ;.")
-	document.addEditableInput(initProfileV2FieldRoutes, "Route entries", "", routeText, validateInitProfileV2RouteText)
+	document.addSection("Automatic profile selection", "Routes tell cr when to use this profile automatically. Explicit --profile still wins.")
+	document.addEditableInput(initProfileV2FieldRoutes, "Route entries", "Examples: github.com/YourOrg; github.com/YourOrg/repo; github.com/YourOrg [RepoA, RepoB]. Leave blank for explicit --profile selection only.", routeText, validateInitProfileV2RouteText)
 }
 
 func initProfileV2AppendGitScopeSection(document *initProfileV2Document, selectedScope string, scopeOptions []huh.Option[string], draft initDraft, visible bool) {
@@ -474,9 +473,9 @@ func initProfileV2AppendGitScopeSection(document *initProfileV2Document, selecte
 		return
 	}
 	customHidden := selectedScope != initCustomGitScopeSelection
-	document.addSection("Git scope", "Choose an existing Git scope for this profile or configure custom Git host/auth settings.")
+	document.addSection("Git scope", "Choose an existing Git scope or configure host/auth settings for this profile.")
 	document.addEditableSelect(initProfileV2FieldGitScope, "Git scope", "", scopeOptions, selectedScope)
-	document.addEditableInput(initProfileV2FieldGitHost, "Git scope host", "The Git host this review profile applies to, such as github.com or github.mycompany.com.", draft.GitHost, validateRequiredText("git host is required"), initProfileV2FieldOptions{Hidden: customHidden})
+	document.addEditableInput(initProfileV2FieldGitHost, "Git scope host", "Git host this review profile applies to, such as github.com or github.mycompany.com.", draft.GitHost, validateRequiredText("git host is required"), initProfileV2FieldOptions{Hidden: customHidden})
 	document.addEditableSelect(initProfileV2FieldGitAuth, "Git scope auth mode", "", []huh.Option[string]{
 		huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
 		huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
@@ -496,7 +495,7 @@ func initProfileV2AppendModelMapSection(document *initProfileV2Document, llm con
 }
 
 func initProfileV2AppendAgentSourcesSection(document *initProfileV2Document, sources []string) {
-	document.addSection("Additional reviewer-agent directories (optional)", "Add local directories that contain custom reviewer agent definitions for this profile. These profile-specific directories are loaded alongside repo-local agents under <repo>/.codereview/agents and any per-run --agents-dir sources.")
+	document.addSection("Additional reviewer-agent directories (optional)", "Profile-specific reviewer agent directories loaded alongside repo-local and per-run agent sources.")
 	document.addEditableTextarea(initProfileV2FieldAgentSources, "Additional trusted reviewer-agent directories", "Paths are deduplicated and normalized before save.", strings.Join(sources, "\n"))
 }
 
@@ -504,7 +503,7 @@ func initProfileV2AppendReviewPolicySection(document *initProfileV2Document, pol
 	if policy.MajorEvent == "" {
 		policy.MajorEvent = config.ReviewMajorEventComment
 	}
-	document.addSection("Review Policy", "")
+	document.addSection("Review policy", "Choose how cr posts major findings and handles review threads.")
 	document.addEditableSelect(initProfileV2FieldReviewMajorEvent, "Major findings event", "", []huh.Option[string]{
 		huh.NewOption("Comment", string(config.ReviewMajorEventComment)),
 		huh.NewOption("Request changes", string(config.ReviewMajorEventRequestChanges)),
@@ -1044,9 +1043,6 @@ func initProfileV2LayoutDocument(document initProfileV2Document, width int, focu
 
 func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, focused bool, width int) {
 	titlePrefix := ""
-	if field.Focusable {
-		titlePrefix = "  "
-	}
 	initProfileV2AppendWrappedWithPrefix(lines, titlePrefix, field.Title, width)
 	initProfileV2AppendWrappedWithPrefix(lines, titlePrefix, field.Description, width)
 	if strings.TrimSpace(field.Error) != "" {
@@ -1079,26 +1075,7 @@ func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, fo
 }
 
 func initProfileV2AppendWrappedWithPrefix(lines *[]string, prefix string, text string, width int) {
-	available := max(width-len([]rune(prefix)), 1)
-	remaining := []rune(strings.TrimSpace(text))
-	if len(remaining) == 0 {
-		*lines = append(*lines, prefix)
-		return
-	}
-	for len(remaining) > available {
-		cut := available
-		for cut > 0 && remaining[cut] != ' ' {
-			cut--
-		}
-		if cut <= 0 {
-			cut = available
-		}
-		*lines = append(*lines, prefix+strings.TrimSpace(string(remaining[:cut])))
-		remaining = []rune(strings.TrimSpace(string(remaining[cut:])))
-		prefix = strings.Repeat(" ", len([]rune(prefix)))
-		available = max(width-len([]rune(prefix)), 1)
-	}
-	*lines = append(*lines, prefix+string(remaining))
+	initLinearAppendWrappedWithPrefix(lines, prefix, text, width)
 }
 
 func (m initProfileV2ReadOnlyModel) styleVisibleViewport() string {
@@ -1137,10 +1114,9 @@ func initProfileV2StyleViewportLine(line string, active bool) string {
 
 var initProfileV2HeadingSet = func() map[string]bool {
 	headings := map[string]bool{
-		"Profile":                     true,
+		"Review profile":              true,
 		"Profile name":                true,
 		"Automatic profile selection": true,
-		"Accepted route formats":      true,
 		"Route entries":               true,
 		"Git scope":                   true,
 		"Git scope host":              true,
@@ -1151,7 +1127,7 @@ var initProfileV2HeadingSet = func() map[string]bool {
 		"Model tier mapping":          true,
 		"Additional reviewer-agent directories (optional)": true,
 		"Additional trusted reviewer-agent directories":    true,
-		"Review Policy":           true,
+		"Review policy":           true,
 		"Major findings event":    true,
 		"Allow self-approve":      true,
 		"Resolve threads":         true,

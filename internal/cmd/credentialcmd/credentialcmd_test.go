@@ -12913,6 +12913,7 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 	}
 
 	for _, want := range []string{
+		"Review profile",
 		"Profile name",
 		"> open-cli-collective",
 		"Automatic profile selection",
@@ -12930,7 +12931,7 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"claude-opus-4-7",
 		"Additional reviewer-agent directories (optional)",
 		"/opt/codereview/agents",
-		"Review Policy",
+		"Review policy",
 		"Request changes",
 		"Enable self-approve",
 		"Auto-resolve",
@@ -12973,7 +12974,7 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"Minimum reviewer model tier",
 		"Model tier mapping",
 		"Additional reviewer-agent directories (optional)",
-		"Review Policy",
+		"Review policy",
 		"Git credentials",
 		"Profile action",
 	)
@@ -13012,8 +13013,8 @@ func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *test
 			}
 			for _, want := range []string{
 				"Automatic profile selection",
-				"Accepted route formats",
 				"Route entries",
+				"Examples: github.com/YourOrg; github.com/YourOrg/repo",
 				"github.com/open-cli-collective",
 			} {
 				if !strings.Contains(model.View(), want) {
@@ -18873,8 +18874,8 @@ func TestInitInteractiveMenuCanCommitSecretsStorageBeforeReviewProfile(t *testin
 	if menu.prompts[0].CanSave {
 		t.Fatalf("initial prompt = %#v, want commit disabled before staged changes", menu.prompts[0])
 	}
-	if !menu.prompts[1].CanSave || menu.prompts[1].CanConfigureLLM || menu.prompts[1].CanConfigureReviewer {
-		t.Fatalf("post-edit prompt = %#v, want only commit enabled without workspace", menu.prompts[1])
+	if !menu.prompts[1].CanSave || !menu.prompts[1].CanConfigureLLM || menu.prompts[1].CanConfigureReviewer {
+		t.Fatalf("post-edit prompt = %#v, want commit and LLM runtime configuration enabled without workspace", menu.prompts[1])
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
