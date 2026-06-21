@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -202,8 +203,9 @@ type ReviewerCredentials struct {
 
 // ProfileReviewer selects the identity used to post review comments.
 type ProfileReviewer struct {
-	Kind   ProfileReviewerKind `yaml:"kind" json:"kind"`
-	Entity string              `yaml:"entity,omitempty" json:"entity,omitempty"`
+	Kind                  ProfileReviewerKind                   `yaml:"kind" json:"kind"`
+	Entity                string                                `yaml:"entity,omitempty" json:"entity,omitempty"`
+	GitHubAppInstallation *ProfileReviewerGitHubAppInstallation `yaml:"github_app_installation,omitempty" json:"github_app_installation,omitempty"`
 }
 
 // ProfileReviewerKind identifies how a profile chooses its posting identity.
@@ -219,6 +221,33 @@ const (
 func (k ProfileReviewerKind) Valid() bool {
 	switch k {
 	case ProfileReviewerKindGitIdentity, ProfileReviewerKindEntity:
+		return true
+	default:
+		return false
+	}
+}
+
+// ProfileReviewerGitHubAppInstallation selects the GitHub App installation a
+// profile uses when its reviewer entity is a GitHub App.
+type ProfileReviewerGitHubAppInstallation struct {
+	Mode           ProfileReviewerGitHubAppInstallationMode `yaml:"mode" json:"mode"`
+	InstallationID string                                   `yaml:"installation_id,omitempty" json:"installation_id,omitempty"`
+}
+
+// ProfileReviewerGitHubAppInstallationMode identifies how a profile resolves a
+// GitHub App installation.
+type ProfileReviewerGitHubAppInstallationMode string
+
+// GitHub App installation resolution modes.
+const (
+	ProfileReviewerGitHubAppInstallationDiscoverFromRepository ProfileReviewerGitHubAppInstallationMode = "discover_from_repository"
+	ProfileReviewerGitHubAppInstallationPinned                 ProfileReviewerGitHubAppInstallationMode = "pinned"
+)
+
+// Valid reports whether m is a known GitHub App installation resolution mode.
+func (m ProfileReviewerGitHubAppInstallationMode) Valid() bool {
+	switch m {
+	case ProfileReviewerGitHubAppInstallationDiscoverFromRepository, ProfileReviewerGitHubAppInstallationPinned:
 		return true
 	default:
 		return false
@@ -972,6 +1001,9 @@ func validateProfile(cfg File, name string, profile Profile) error {
 		if strings.TrimSpace(profile.Reviewer.Entity) != "" {
 			return invalid("profiles.%s.reviewer.entity must be empty for git_identity reviewer", name)
 		}
+		if profile.Reviewer.GitHubAppInstallation != nil {
+			return invalid("profiles.%s.reviewer.github_app_installation must be empty for git_identity reviewer", name)
+		}
 	case ProfileReviewerKindEntity:
 		if strings.TrimSpace(profile.Reviewer.Entity) == "" {
 			return invalid("profiles.%s.reviewer.entity is required", name)
@@ -986,6 +1018,9 @@ func validateProfile(cfg File, name string, profile Profile) error {
 		}
 		if sameCredentialLocation(entity.Credential, profile.Git.Credential) {
 			return invalid("profiles.%s.reviewer.entity %q credential must differ from git.credential when store and name match", name, profile.Reviewer.Entity)
+		}
+		if err := validateProfileReviewerInstallation(name, profile.Reviewer, entity); err != nil {
+			return err
 		}
 	}
 	if strings.TrimSpace(profile.LLMRuntime) == "" {
@@ -1017,6 +1052,37 @@ func validateProfile(cfg File, name string, profile Profile) error {
 	if profile.ReviewPolicy.ResolveAfter != "" {
 		if _, err := time.ParseDuration(profile.ReviewPolicy.ResolveAfter); err != nil {
 			return invalid("profiles.%s.review_policy.resolve_after %q is invalid: %v", name, profile.ReviewPolicy.ResolveAfter, err)
+		}
+	}
+	return nil
+}
+
+func validateProfileReviewerInstallation(profileName string, reviewer ProfileReviewer, entity ReviewerEntity) error {
+	path := fmt.Sprintf("profiles.%s.reviewer.github_app_installation", profileName)
+	if entity.AuthMode != GitAuthModeGitHubApp {
+		if reviewer.GitHubAppInstallation != nil {
+			return invalid("%s must be empty unless reviewer.entity uses github_app auth", path)
+		}
+		return nil
+	}
+	if reviewer.GitHubAppInstallation == nil {
+		return invalid("%s.mode is required for github_app reviewer entities", path)
+	}
+	installation := reviewer.GitHubAppInstallation.normalized()
+	if !installation.Mode.Valid() {
+		return invalid("%s.mode %q is invalid", path, installation.Mode)
+	}
+	switch installation.Mode {
+	case ProfileReviewerGitHubAppInstallationDiscoverFromRepository:
+		if strings.TrimSpace(installation.InstallationID) != "" {
+			return invalid("%s.installation_id must be empty when mode is discover_from_repository", path)
+		}
+	case ProfileReviewerGitHubAppInstallationPinned:
+		if strings.TrimSpace(installation.InstallationID) == "" {
+			return invalid("%s.installation_id is required when mode is pinned", path)
+		}
+		if _, err := strconv.ParseInt(installation.InstallationID, 10, 64); err != nil {
+			return invalid("%s.installation_id %q must be a decimal GitHub App installation ID", path, installation.InstallationID)
 		}
 	}
 	return nil
@@ -1483,13 +1549,23 @@ func (cfg File) projectProfileComponentReferences() File {
 					existing.DisplayName = displayName
 					cfg.ReviewerEntities[entityName] = existing
 				}
-				profile.Reviewer = ProfileReviewer{Kind: ProfileReviewerKindEntity, Entity: entityName}
+				profile.Reviewer = projectedProfileReviewerForEntity(entityName, entity.AuthMode)
 			}
 		}
 		profiles[name] = profile
 	}
 	cfg.Profiles = profiles
 	return cfg
+}
+
+func projectedProfileReviewerForEntity(entityName string, authMode GitAuthMode) ProfileReviewer {
+	reviewer := ProfileReviewer{Kind: ProfileReviewerKindEntity, Entity: strings.TrimSpace(entityName)}
+	if authMode == GitAuthModeGitHubApp {
+		reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+			Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+		}
+	}
+	return reviewer
 }
 
 func mergeProjectedReviewerEntityDisplayName(existing, next string) string {
@@ -1729,7 +1805,17 @@ func (p Profile) normalized() Profile {
 func (r ProfileReviewer) normalized() ProfileReviewer {
 	r.Kind = ProfileReviewerKind(strings.TrimSpace(string(r.Kind)))
 	r.Entity = strings.TrimSpace(r.Entity)
+	if r.GitHubAppInstallation != nil {
+		installation := r.GitHubAppInstallation.normalized()
+		r.GitHubAppInstallation = &installation
+	}
 	return r
+}
+
+func (i ProfileReviewerGitHubAppInstallation) normalized() ProfileReviewerGitHubAppInstallation {
+	i.Mode = ProfileReviewerGitHubAppInstallationMode(strings.TrimSpace(string(i.Mode)))
+	i.InstallationID = strings.TrimSpace(i.InstallationID)
+	return i
 }
 
 func (g GitConfig) normalized() GitConfig {

@@ -1520,6 +1520,11 @@ func TestValidateAcceptsGitHubAppAuthModes(t *testing.T) {
 			entity := cfg.ReviewerEntities["work-reviewer"]
 			entity.AuthMode = GitAuthModeGitHubApp
 			cfg.ReviewerEntities["work-reviewer"] = entity
+			profile := cfg.Profiles["work"]
+			profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+				Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+			}
+			cfg.Profiles["work"] = profile
 		}},
 	}
 
@@ -1529,6 +1534,123 @@ func TestValidateAcceptsGitHubAppAuthModes(t *testing.T) {
 			tt.mutate(&cfg)
 			if err := Validate(cfg); err != nil {
 				t.Fatalf("Validate error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestValidateProfileReviewerGitHubAppInstallation(t *testing.T) {
+	githubAppReviewer := func(cfg *File) {
+		entity := cfg.ReviewerEntities["work-reviewer"]
+		entity.AuthMode = GitAuthModeGitHubApp
+		cfg.ReviewerEntities["work-reviewer"] = entity
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*File)
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name: "discover from repository",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+				}
+				cfg.Profiles["work"] = profile
+			},
+		},
+		{
+			name: "pinned installation",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode:           ProfileReviewerGitHubAppInstallationPinned,
+					InstallationID: "123456",
+				}
+				cfg.Profiles["work"] = profile
+			},
+		},
+		{
+			name: "missing for github app reviewer",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "profiles.work.reviewer.github_app_installation.mode is required",
+		},
+		{
+			name: "pinned without id",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode: ProfileReviewerGitHubAppInstallationPinned,
+				}
+				cfg.Profiles["work"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "installation_id is required",
+		},
+		{
+			name: "discover with id",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode:           ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+					InstallationID: "123456",
+				}
+				cfg.Profiles["work"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "installation_id must be empty",
+		},
+		{
+			name: "pat reviewer with installation config",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+				}
+				cfg.Profiles["work"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "must be empty unless reviewer.entity uses github_app auth",
+		},
+		{
+			name: "git identity with installation config",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["home"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+				}
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "must be empty for git_identity reviewer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			tt.mutate(&cfg)
+			err := Validate(cfg)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("Validate: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Fatalf("Validate error = %v, want message containing %q", err, tt.wantMsg)
 			}
 		})
 	}
@@ -1652,6 +1774,8 @@ profiles:
     reviewer:
       kind: entity
       entity: work-reviewer
+      github_app_installation:
+        mode: discover_from_repository
     llm_runtime: claude-local
 `)
 	cfg, err := Load(path)
