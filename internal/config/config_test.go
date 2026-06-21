@@ -893,6 +893,28 @@ func TestValidateAllowsCredentialStoresWithoutReviewProfiles(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsEmptyConfig(t *testing.T) {
+	cfg := File{}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate empty config: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save empty config: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load empty config: %v", err)
+	}
+	if len(loaded.Profiles) != 0 {
+		t.Fatalf("loaded profiles = %#v, want none", loaded.Profiles)
+	}
+	if len(loaded.Secrets.Stores) != 0 {
+		t.Fatalf("loaded stores = %#v, want none", loaded.Secrets.Stores)
+	}
+}
+
 func TestValidateSecretsStores(t *testing.T) {
 	tests := []struct {
 		name    string

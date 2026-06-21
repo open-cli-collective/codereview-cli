@@ -630,7 +630,6 @@ func Normalize(cfg File) File {
 
 // Validate checks a config file after defaults have been applied.
 func Validate(cfg File) error {
-	raw := cfg
 	cfg = cfg.normalized()
 	if err := ValidateSecrets(cfg.Secrets); err != nil {
 		return err
@@ -640,9 +639,6 @@ func Validate(cfg File) error {
 	}
 	if len(cfg.Profiles) == 0 {
 		if len(cfg.RepositoryProfiles) > 0 {
-			return invalid("profiles is required")
-		}
-		if !hasProfilelessConfigContent(raw) {
 			return invalid("profiles is required")
 		}
 		return nil
@@ -662,24 +658,6 @@ func Validate(cfg File) error {
 		return err
 	}
 	return nil
-}
-
-func hasProfilelessConfigContent(cfg File) bool {
-	if len(cfg.Secrets.Stores) > 0 || len(cfg.Secrets.Profiles) > 0 {
-		return true
-	}
-	return hasExplicitNonDefaultRetentionConfig(cfg.Data.Retention)
-}
-
-func hasExplicitNonDefaultRetentionConfig(retention RetentionConfig) bool {
-	defaults := DefaultRetentionConfig()
-	if retention.MaxAgeDays != nil && *retention.MaxAgeDays != defaults.MaxAgeDaysValue() {
-		return true
-	}
-	if retention.Enforcement != "" && retention.Enforcement != defaults.Enforcement {
-		return true
-	}
-	return false
 }
 
 // EffectiveSecretsStores returns the read-only built-in OS credential store

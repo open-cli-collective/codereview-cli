@@ -18769,6 +18769,82 @@ func TestInitInteractiveMenuCanCommitSecretsStorageBeforeReviewProfile(t *testin
 	}
 }
 
+func TestInitInteractiveMenuCanCommitDeletingLastSecretsStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, config.File{
+		Secrets: config.SecretsConfig{
+			Stores: map[string]config.SecretsStore{
+				"personal-file": {
+					DisplayName: "Personal file",
+					Backend: config.SecretsStoreBackend{
+						Kind: config.SecretsBackendKind(credstore.BackendFile),
+					},
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionSecretsManagement,
+			initMenuActionSave,
+		},
+	}
+	keyringCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		keyringPrompter: initKeyringBackendPrompterFunc(func(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			keyringCalls++
+			next := cloneInitConfigFile(prompt.Config)
+			next.Secrets = config.SecretsConfig{}
+			return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: next}, nil
+		}),
+		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+			t.Fatalf("finalize prompter should not run for profileless secrets-storage deletion: %#v", prompt)
+			return initFinalizeActionCancel, nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore should not run when only credential-store config changed")
+			return nil, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if keyringCalls != 1 {
+		t.Fatalf("keyringCalls = %d, want 1", keyringCalls)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want before and after secrets-storage delete", menu.prompts)
+	}
+	if menu.prompts[0].CanSave {
+		t.Fatalf("initial prompt = %#v, want commit disabled before staged changes", menu.prompts[0])
+	}
+	if !menu.prompts[1].CanSave {
+		t.Fatalf("post-delete prompt = %#v, want commit enabled after deleting credential store", menu.prompts[1])
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if len(cfg.Profiles) != 0 {
+		t.Fatalf("loaded profiles = %#v, want none", cfg.Profiles)
+	}
+	if len(cfg.Secrets.Stores) != 0 {
+		t.Fatalf("loaded stores = %#v, want deleted store removed", cfg.Secrets.Stores)
+	}
+}
+
 func TestApplyInteractiveInitSessionPlanRejectsInvalidConfigBeforeKeyringWrite(t *testing.T) {
 	opts := &root.Options{
 		Stdout: &bytes.Buffer{},
