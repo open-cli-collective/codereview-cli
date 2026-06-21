@@ -154,7 +154,7 @@ func TestReviewExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 	}
 }
 
-func TestReviewExplicitEmptyProfileBypassesRepositoryRoute(t *testing.T) {
+func TestReviewExplicitEmptyProfileFailsBeforeRepositoryRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]
 	work.Git.CredentialRef = "codereview/work"
@@ -168,22 +168,18 @@ func TestReviewExplicitEmptyProfileBypassesRepositoryRoute(t *testing.T) {
 		},
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile, _ RuntimeOptions) (Runtime, error) {
-		if profile.Git.CredentialRef != "codereview/home" {
-			t.Fatalf("runtime profile credential ref = %q, want default home", profile.Git.CredentialRef)
-		}
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ RuntimeOptions) (Runtime, error) {
+		t.Fatal("runtime factory should not be called for an empty explicit profile")
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
 
-	if err := root.Execute(cmd, []string{"--profile", "", "review", "https://github.com/rianjs/bar/pull/29", "--dry-run"}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if len(runner.requests) != 1 || runner.requests[0].ProfileName != "home" {
-		t.Fatalf("request profile = %#v, want default home", runner.requests)
+	err := root.Execute(cmd, []string{"--profile", "", "review", "https://github.com/rianjs/bar/pull/29", "--dry-run"})
+	if err == nil || !strings.Contains(err.Error(), "no profile selected") {
+		t.Fatalf("Execute error = %v, want empty profile failure", err)
 	}
 }
 
-func TestReviewUnmatchedRepositoryFallsBackToDefaultProfile(t *testing.T) {
+func TestReviewUnmatchedRepositoryRequiresProfileOrRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]
 	work.Git.CredentialRef = "codereview/work"
@@ -197,44 +193,33 @@ func TestReviewUnmatchedRepositoryFallsBackToDefaultProfile(t *testing.T) {
 		},
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile, _ RuntimeOptions) (Runtime, error) {
-		if profile.Git.CredentialRef != "codereview/home" {
-			t.Fatalf("runtime profile credential ref = %q, want default home", profile.Git.CredentialRef)
-		}
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ RuntimeOptions) (Runtime, error) {
+		t.Fatal("runtime factory should not be called for an unmatched repository")
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
 
-	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if len(runner.requests) != 1 || runner.requests[0].ProfileName != "home" {
-		t.Fatalf("request profile = %#v, want home", runner.requests)
+	err := root.Execute(cmd, []string{"review", "https://github.com/example/missing/pull/29", "--dry-run"})
+	if err == nil || !strings.Contains(err.Error(), "no repository profile route matched") {
+		t.Fatalf("Execute error = %v, want unmatched route failure", err)
 	}
 }
 
-func TestReviewImplicitDefaultProfileHostMismatch(t *testing.T) {
+func TestReviewExplicitProfileHostMismatch(t *testing.T) {
 	cfg := testConfig()
 	home := cfg.Profiles["home"]
 	home.Git.Host = "gitlab.com"
 	cfg.Profiles["home"] = home
+	cfg.RepositoryProfiles = nil
 	work := home
 	work.Git.Host = "github.com"
 	work.Git.CredentialRef = "codereview/work"
 	cfg.Profiles["work"] = work
-	cfg.RepositoryProfiles = []config.RepositoryProfile{{
-		Profile: "work",
-		Match: config.RepositoryProfileMatch{
-			Host:      "github.com",
-			Namespace: "rianjs",
-			Repos:     []string{"bar"},
-		},
-	}}
 	cmd, _ := newTestCommand(t, cfg, func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
-		t.Fatal("runtime factory should not be called when fallback profile host mismatches")
+		t.Fatal("runtime factory should not be called when route profile host mismatches")
 		return Runtime{}, nil
 	})
 
-	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"})
+	err := root.Execute(cmd, []string{"--profile", "home", "review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"})
 	if err == nil {
 		t.Fatal("Execute error = nil, want host mismatch")
 	}
@@ -427,6 +412,7 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	profile := cfg.Profiles["work"]
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
+		Credential:    config.CredentialLocation{Store: "test-memory"},
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg.Profiles["work"] = profile
@@ -508,16 +494,17 @@ func TestNewRuntimePassesPRRefForGitHubAppInstallationLookup(t *testing.T) {
 
 func TestNewRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
 	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
+		Stores: map[string]config.SecretsStore{
 			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+				DisplayName: "Work File Store",
+				Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
 			},
 		},
 	}
+	home := cfg.Profiles["home"]
+	home.Git.Credential.Store = "work-file"
+	cfg.Profiles["home"] = home
 	profile := cfg.Profiles["home"]
 	cmd := &cobra.Command{}
 	cmd.Flags().String(credstore.BackendFlagName, "", "")
@@ -551,16 +538,17 @@ func TestNewRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing
 	}
 
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
 	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
+		Stores: map[string]config.SecretsStore{
 			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+				DisplayName: "Work File Store",
+				Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
 			},
 		},
 	}
+	home := cfg.Profiles["home"]
+	home.Git.Credential.Store = "work-file"
+	cfg.Profiles["home"] = home
 	profile := cfg.Profiles["home"]
 	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
 	withReviewRuntimeSeams(t,
@@ -595,16 +583,17 @@ func TestNewRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing
 
 func TestOpenSelectionRuntimeRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
 	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
+		Stores: map[string]config.SecretsStore{
 			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+				DisplayName: "Work File Store",
+				Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
 			},
 		},
 	}
+	home := cfg.Profiles["home"]
+	home.Git.Credential.Store = "work-file"
+	cfg.Profiles["home"] = home
 
 	_, err := OpenSelectionRuntime(context.Background(), "memory", true, cfg, cfg.Profiles["home"])
 	if !errors.Is(err, config.ErrInvalid) {
@@ -631,16 +620,17 @@ func TestOpenSelectionRuntimeUsesNamedSecretsProfileStoreWithoutBackendOverride(
 	}
 
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
 	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
+		Stores: map[string]config.SecretsStore{
 			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
+				DisplayName: "Work File Store",
+				Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
 			},
 		},
 	}
+	home := cfg.Profiles["home"]
+	home.Git.Credential.Store = "work-file"
+	cfg.Profiles["home"] = home
 	withReviewRuntimeSeams(t,
 		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			token, err := tokenStore.Get("home", credentials.GitTokenKey)
@@ -1694,7 +1684,7 @@ func TestReviewRejectsInvalidInputs(t *testing.T) {
 	}{
 		{name: "missing pr", args: []string{"review", "--dry-run"}},
 		{name: "bad url", args: []string{"review", "not-a-url", "--dry-run"}},
-		{name: "wrong host", args: []string{"review", "https://gitlab.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}},
+		{name: "wrong host", args: []string{"--profile", "home", "review", "https://gitlab.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}},
 		{name: "bad fail on", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--fail-on", "urgent"}},
 		{name: "negative agents", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--max-agents", "-1"}},
 		{name: "negative concurrency", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--max-concurrency", "-1"}},
@@ -1989,13 +1979,29 @@ func newTestCommand(t *testing.T, cfg config.File, factory RuntimeFactory) (*cob
 
 func testConfig() config.File {
 	return config.File{
-		DefaultProfile: "home",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Keyring: config.KeyringConfig{Backend: "memory"},
+		Secrets: config.SecretsConfig{
+			Stores: map[string]config.SecretsStore{
+				"test-memory": {
+					DisplayName: "Test Memory Store",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
+				},
+			},
+		},
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		}},
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: "test-memory"},
 					CredentialRef: "codereview/home",
 				},
 				LLM: config.LLMConfig{

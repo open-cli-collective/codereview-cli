@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
 )
 
@@ -79,23 +78,23 @@ func initMenuItems(prompt initMenuPrompt) []initMenuItem {
 	items := []initMenuItem{
 		{
 			Action:      initMenuActionSecretsManagement,
-			Title:       "Configure secrets management",
-			Description: "Credential-store profiles and default destination",
+			Title:       "Configure secrets storage",
+			Description: "Credential stores for tokens and keys",
 		},
 		{
 			Action:      initMenuActionLLMRuntimes,
 			Title:       "Configure LLM runtimes",
-			Description: initMenuCountDescription(prompt.LLMRuntimeCount, "runtime", "runtimes"),
+			Description: initMenuConfiguredDescription(prompt.LLMRuntimeCount, "runtime", "runtimes", "Model providers and runtime credentials"),
 		},
 		{
 			Action:      initMenuActionReviewerEntities,
 			Title:       "Configure reviewer entities",
-			Description: initMenuCountDescription(prompt.ReviewerEntityCount, "reviewer entity", "reviewer entities"),
+			Description: initMenuConfiguredDescription(prompt.ReviewerEntityCount, "reviewer entity", "reviewer entities", "Reviewer identities and posting credentials"),
 		},
 		{
 			Action:      initMenuActionReviewProfiles,
 			Title:       "Configure review profiles",
-			Description: initMenuCountDescription(prompt.ReviewProfileCount, "profile", "profiles"),
+			Description: initMenuConfiguredDescription(prompt.ReviewProfileCount, "profile", "profiles", "Repository routing and review composition"),
 		},
 		{
 			Action:      initMenuActionGlobalSettings,
@@ -116,10 +115,17 @@ func initMenuItems(prompt initMenuPrompt) []initMenuItem {
 	for index := range items {
 		items[index].Disabled = initMenuDisabledReason(prompt, items[index].Action)
 		if items[index].Disabled != "" {
-			items[index].Description = "Unavailable: " + items[index].Disabled
+			items[index].Description = "Prerequisite: " + items[index].Disabled
 		}
 	}
 	return items
+}
+
+func initMenuConfiguredDescription(count int, singular, plural, zero string) string {
+	if count == 0 {
+		return zero
+	}
+	return initMenuCountDescription(count, singular, plural)
 }
 
 func initMenuCountDescription(count int, singular, plural string) string {
@@ -131,19 +137,15 @@ func initMenuCountDescription(count int, singular, plural string) string {
 
 func initMenuDisabledReason(prompt initMenuPrompt, action initMenuAction) string {
 	switch action {
-	case initMenuActionLLMRuntimes:
-		if !prompt.CanConfigureLLM {
-			return "configure a review profile before editing LLM runtimes"
-		}
 	case initMenuActionReviewerEntities:
 		if !prompt.CanConfigureReviewer {
 			return "configure a review profile before editing reviewer entities"
 		}
 	case initMenuActionSave:
 		if !prompt.CanSave {
-			return "configure a review profile before committing changes"
+			return "stage changes before committing"
 		}
-	case initMenuActionSecretsManagement, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+	case initMenuActionSecretsManagement, initMenuActionLLMRuntimes, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
 	}
 	return ""
 }
@@ -187,7 +189,13 @@ func (m *initMenuModel) move(delta int) {
 		return
 	}
 	m.err = ""
-	m.selected = (m.selected + delta + len(m.items)) % len(m.items)
+	for step := 0; step < len(m.items); step++ {
+		next := (m.selected + delta + len(m.items)) % len(m.items)
+		m.selected = next
+		if m.items[next].Disabled == "" {
+			return
+		}
+	}
 }
 
 func (m initMenuModel) View() string {
@@ -199,7 +207,7 @@ func (m initMenuModel) View() string {
 	if strings.TrimSpace(m.desc) != "" {
 		lines = append(lines, initLinearTheme.help.Render(m.desc))
 	}
-	lines = append(lines, "")
+	lines = append(lines, "", initLinearTheme.title.Render("Actions"))
 	for index, item := range m.items {
 		lines = append(lines, m.renderItem(index, item)...)
 	}
@@ -212,19 +220,18 @@ func (m initMenuModel) View() string {
 
 func (m initMenuModel) renderItem(index int, item initMenuItem) []string {
 	selected := index == m.selected
-	titleStyle := lipgloss.NewStyle()
+	prefix := "  [ ] "
+	if selected {
+		prefix = "> [x] "
+	}
+	title := prefix + item.Title
 	if item.Disabled != "" {
-		titleStyle = initLinearTheme.help
-	}
-	if selected {
-		titleStyle = initLinearTheme.selected
-	}
-	caret := " "
-	if selected {
-		caret = initLinearTheme.caret.Render(">")
+		title = initLinearTheme.help.Render(title)
+	} else if selected {
+		title = initLinearStyleSelectedLine(title)
 	}
 	return []string{
-		fmt.Sprintf("%s %s", caret, titleStyle.Render(item.Title)),
-		"  " + initLinearTheme.help.Render(item.Description),
+		title,
+		"      " + initLinearTheme.help.Render(item.Description),
 	}
 }

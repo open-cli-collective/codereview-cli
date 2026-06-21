@@ -1022,8 +1022,7 @@ func withBenchmarkSynthesisStage(body, promptPath string) string {
 
 func testConfig() config.File {
 	return config.File{
-		DefaultProfile: "home",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Keyring: config.KeyringConfig{Backend: "memory"},
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{

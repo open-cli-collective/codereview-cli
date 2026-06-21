@@ -10,17 +10,20 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
 
 type initLLMRuntimeEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
 
 const (
-	initLLMRuntimeFieldSelection   initLinearFieldID = "llm_runtime_selection"
-	initLLMRuntimeFieldProvider    initLinearFieldID = "llm_runtime_provider"
-	initLLMRuntimeFieldAuth        initLinearFieldID = "llm_runtime_auth"
-	initLLMRuntimeFieldAdapter     initLinearFieldID = "llm_runtime_adapter"
-	initLLMRuntimeFieldReplacement initLinearFieldID = "llm_runtime_replacement"
-	initLLMRuntimeFieldAction      initLinearFieldID = "llm_runtime_action"
+	initLLMRuntimeFieldSelection       initLinearFieldID = "llm_runtime_selection"
+	initLLMRuntimeFieldProvider        initLinearFieldID = "llm_runtime_provider"
+	initLLMRuntimeFieldAuth            initLinearFieldID = "llm_runtime_auth"
+	initLLMRuntimeFieldAdapter         initLinearFieldID = "llm_runtime_adapter"
+	initLLMRuntimeFieldCredentialStore initLinearFieldID = "llm_runtime_credential_store" // #nosec G101 -- field ID, not a secret.
+	initLLMRuntimeFieldCredentialName  initLinearFieldID = "llm_runtime_credential_name"  // #nosec G101 -- field ID, not a secret.
+	initLLMRuntimeFieldReplacement     initLinearFieldID = "llm_runtime_replacement"
+	initLLMRuntimeFieldAction          initLinearFieldID = "llm_runtime_action"
 )
 
 const (
@@ -31,7 +34,7 @@ const (
 const initLLMRuntimeRestoreSelectionPrefix = "__restore_llm_runtime__:"
 
 func (p huhInitLLMRuntimePrompter) editLLMRuntimeLinear(prompt initLLMRuntimePrompt) (initDraft, error) {
-	seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.DefaultProfileName, prompt.Context.ExistingProfile)
+	seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 	editor := initLLMRuntimeLinearEditor(prompt.Context, seed, p.runtimeAvailabilityNote)
 	model, err := p.runLLMRuntimeEditor(editor)
 	if err != nil {
@@ -140,7 +143,7 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 	replacementOptions := initLLMRuntimeReplacementOptions(ctx, selection)
 
 	var document initLinearDocument
-	document.addSection("LLM runtime", "Choose how reviewer agents run for this profile. Configured runtimes can be reused by multiple profiles; templates seed common runtime shapes.")
+	document.addSection("LLM runtime", "Choose how reviewer agents run. Configured runtimes can be reused by review profiles; templates seed common runtime shapes.")
 	document.addEditableSelect(initLLMRuntimeFieldSelection, "Runtime", "", selectionOptions, selection)
 	document.addSection("Runtime details", "")
 	document.addEditableSelect(initLLMRuntimeFieldProvider, "LLM provider", "", []huh.Option[string]{
@@ -159,6 +162,22 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 		huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
 		huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
 	}, seed.LLMAdapter)
+	document.addEditableSelect(
+		initLLMRuntimeFieldCredentialStore,
+		"LLM credential store",
+		"Where this runtime's API key is stored.",
+		initCredentialStoreOptions(ctx.ExistingConfig),
+		initCredentialStoreDraftValue(seed.LLMCredentialStore),
+		initLinearFieldOptions{Hidden: true},
+	)
+	document.addEditableInput(
+		initLLMRuntimeFieldCredentialName,
+		"LLM credential name",
+		"Full credential name under the selected store.",
+		"",
+		validateRequiredCredentialRef,
+		initLinearFieldOptions{Hidden: true},
+	)
 	document.addEditableSelect(initLLMRuntimeFieldReplacement, "Replacement LLM runtime", "Choose the runtime that should replace this deleted runtime for every affected profile.", replacementOptions, normalizeInitStringSelectionValue("", replacementOptions), initLinearFieldOptions{Hidden: true})
 	document.addEditableSelect(initLLMRuntimeFieldAction, "Runtime action", "", initLLMRuntimeActionOptions(ctx, selection, false), initDetailActionEdit)
 	editor := initLinearEditor{
@@ -175,6 +194,12 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 				id == initLLMRuntimeFieldAction ||
 				id == initLLMRuntimeFieldReplacement {
 				initLLMRuntimeSyncLinearFields(model, ctx, seed, availabilityNote, true)
+				return
+			}
+			if id == initLLMRuntimeFieldProvider ||
+				id == initLLMRuntimeFieldAuth ||
+				id == initLLMRuntimeFieldAdapter {
+				initLLMRuntimeSyncLinearFields(model, ctx, seed, availabilityNote, false)
 			}
 		},
 		OnDelete: func(model *initLinearEditorModel, index int) (bool, tea.Cmd) {
@@ -212,6 +237,12 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 				model.resultAction = initDetailActionBack
 				return true, tea.Quit
 			case initDetailActionEdit:
+				if err := validateLLMRuntimeLinearDocument(model.document); err != nil {
+					model.document[model.focused].Error = err.Error()
+					model.relayout()
+					model.ensureFocusedVisible()
+					return true, nil
+				}
 				model.resultAction = initDetailActionEdit
 				return true, tea.Quit
 			case initLLMRuntimeActionDelete:
@@ -276,6 +307,13 @@ func initLLMRuntimeDraftFromLinearDocument(seed initDraft, ctx initPromptContext
 	draft.LLMAdapter = document.selectedValue(initLLMRuntimeFieldAdapter)
 	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
 	applyLLMRuntimeSelection(&draft, resolvedRuntimePreset)
+	if config.LLMAuth(draft.LLMAuth) == config.LLMAuthAPIKey {
+		draft.LLMCredentialStore = initCredentialStoreDraftValue(document.selectedValue(initLLMRuntimeFieldCredentialStore))
+		draft.LLMCredentialRef = strings.TrimSpace(document.fieldValue(initLLMRuntimeFieldCredentialName))
+	} else {
+		draft.LLMCredentialStore = initCredentialStoreDefaultID()
+		draft.LLMCredentialRef = ""
+	}
 	return draft
 }
 
@@ -414,7 +452,57 @@ func initLLMRuntimeSyncLinearFields(model *initLinearEditorModel, ctx initPrompt
 		model.selectFieldValue(initLLMRuntimeFieldAuth, draft.LLMAuth)
 		model.selectFieldValue(initLLMRuntimeFieldAdapter, draft.LLMAdapter)
 	}
+	initLLMRuntimeSyncCredentialFields(model, ctx, draft, detailSelection, resetDetails)
 	initLLMRuntimeSetDetailsDescription(model, draft, availabilityNote)
+}
+
+func initLLMRuntimeSyncCredentialFields(model *initLinearEditorModel, ctx initPromptContext, draft initDraft, selection string, reset bool) {
+	auth := config.LLMAuth(model.document.selectedValue(initLLMRuntimeFieldAuth))
+	if auth == "" {
+		auth = config.LLMAuth(draft.LLMAuth)
+	}
+	needsCredential := auth == config.LLMAuthAPIKey
+	model.setFieldHidden(initLLMRuntimeFieldCredentialStore, !needsCredential)
+	model.setFieldHidden(initLLMRuntimeFieldCredentialName, !needsCredential)
+	if !needsCredential {
+		return
+	}
+	if reset || strings.TrimSpace(model.document.fieldValue(initLLMRuntimeFieldCredentialName)) == "" {
+		store := initCredentialStoreDraftValue(draft.LLMCredentialStore)
+		if store == "" {
+			store = initCredentialStoreDefaultID()
+		}
+		model.selectFieldValue(initLLMRuntimeFieldCredentialStore, store)
+		name := strings.TrimSpace(draft.LLMCredentialRef)
+		if name == "" {
+			name = initLLMRuntimeDefaultCredentialName(ctx, draft, selection)
+		}
+		model.setFieldValue(initLLMRuntimeFieldCredentialName, name)
+	}
+	model.validateField(model.document.fieldIndexByID(initLLMRuntimeFieldCredentialName))
+}
+
+func initLLMRuntimeDefaultCredentialName(ctx initPromptContext, draft initDraft, selection string) string {
+	runtime := initLLMRuntimeDraftFromSeedDraft(draft)
+	nameSeed := runtime.suggestedName()
+	if _, configured := ctx.LLMRuntimes[selection]; configured {
+		nameSeed = strings.TrimSpace(selection)
+	}
+	ref, err := credentials.FormatRef(nameSeed)
+	if err != nil {
+		return ""
+	}
+	return ref
+}
+
+func validateLLMRuntimeLinearDocument(document initLinearDocument) error {
+	if config.LLMAuth(document.selectedValue(initLLMRuntimeFieldAuth)) != config.LLMAuthAPIKey {
+		return nil
+	}
+	if strings.TrimSpace(document.selectedValue(initLLMRuntimeFieldCredentialStore)) == "" {
+		return fmt.Errorf("LLM credential store is required")
+	}
+	return validateRequiredCredentialRef(document.fieldValue(initLLMRuntimeFieldCredentialName))
 }
 
 func initLLMRuntimeDraftForDeleteFromLinearDocument(seed initDraft, ctx initPromptContext, document initLinearDocument) initDraft {
@@ -431,6 +519,10 @@ func initLLMRuntimeDraftForDeleteFromLinearDocument(seed initDraft, ctx initProm
 	draft.LLMAdapter = document.selectedValue(initLLMRuntimeFieldAdapter)
 	resolvedRuntimePreset := string(initLLMRuntimeDraftFromSeedDraft(draft).Preset)
 	applyLLMRuntimeSelection(&draft, resolvedRuntimePreset)
+	if config.LLMAuth(draft.LLMAuth) == config.LLMAuthAPIKey {
+		draft.LLMCredentialStore = initCredentialStoreDraftValue(document.selectedValue(initLLMRuntimeFieldCredentialStore))
+		draft.LLMCredentialRef = strings.TrimSpace(document.fieldValue(initLLMRuntimeFieldCredentialName))
+	}
 	return draft
 }
 

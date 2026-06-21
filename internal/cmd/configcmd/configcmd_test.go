@@ -19,7 +19,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
-	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
@@ -29,7 +28,7 @@ func TestConfigShowText(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "show"}); err != nil {
+	if err := root.Execute(cmd, []string{"config", "show", "--profile", "home"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if !strings.Contains(out.String(), "Profile: home") {
@@ -53,7 +52,7 @@ func TestConfigShowProfileFlag(t *testing.T) {
 	if !strings.Contains(out.String(), "Profile: work") {
 		t.Fatalf("stdout = %q, want work profile", out.String())
 	}
-	if !strings.Contains(out.String(), "Credential ref: codereview/work-llm") {
+	if !strings.Contains(out.String(), "Credential name: codereview/work-llm") {
 		t.Fatalf("stdout = %q, want work LLM ref", out.String())
 	}
 }
@@ -87,8 +86,8 @@ func TestConfigShowJSON(t *testing.T) {
 	if got.LLMCredential.Ref != "codereview/work-llm" {
 		t.Fatalf("llm credential = %#v, want work LLM ref", got.LLMCredential)
 	}
-	if got.Backend != "memory" || got.BackendSource != "config" {
-		t.Fatalf("backend = (%q,%q), want (memory,config)", got.Backend, got.BackendSource)
+	if got.Backend != "memory" || got.BackendSource != "credential_store" {
+		t.Fatalf("backend = (%q,%q), want (memory,credential_store)", got.Backend, got.BackendSource)
 	}
 	if got.CredentialRef != "codereview/work" {
 		t.Fatalf("credential_ref = %q, want codereview/work", got.CredentialRef)
@@ -188,567 +187,76 @@ func TestConfigPathTextUsesDefaultResolvedPathOffline(t *testing.T) {
 	}
 }
 
-func TestConfigDefaultGetText(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
-	cmd, out := newTestCommand(path)
-
-	if err := root.Execute(cmd, []string{"config", "default", "get"}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if got := out.String(); got != "Default profile: home\n" {
-		t.Fatalf("stdout = %q, want default profile text", got)
-	}
-}
-
-func TestConfigDefaultGetJSON(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
-	cmd, out := newTestCommand(path)
-
-	if err := root.Execute(cmd, []string{"config", "default", "get", "--json"}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	var got view.ConfigDefault
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
-	}
-	if got.DefaultProfile != "home" {
-		t.Fatalf("default_profile = %q, want home", got.DefaultProfile)
-	}
-}
-
-func TestConfigDefaultSetUpdatesOnlyDefaultProfile(t *testing.T) {
-	cfg := testConfig()
-	cfg.RepositoryProfiles = []config.RepositoryProfile{{
-		Profile: "work",
-		Match: config.RepositoryProfileMatch{
-			Host:      "github.com",
-			Namespace: "open-cli-collective",
-		},
-	}}
-	path := saveTestConfig(t, cfg)
-	cmd, out := newTestCommand(path)
-
-	if err := root.Execute(cmd, []string{"config", "default", "set", "work"}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if got := out.String(); got != "Default profile: work\n" {
-		t.Fatalf("stdout = %q, want updated default profile text", got)
-	}
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if saved.DefaultProfile != "work" {
-		t.Fatalf("default_profile = %q, want work", saved.DefaultProfile)
-	}
-	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) {
-		t.Fatalf("profiles = %#v, want %#v", saved.Profiles, cfg.Profiles)
-	}
-	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
-		t.Fatalf("repository_profiles = %#v, want %#v", saved.RepositoryProfiles, cfg.RepositoryProfiles)
-	}
-	if !reflect.DeepEqual(saved.Keyring, cfg.Keyring) {
-		t.Fatalf("keyring = %#v, want %#v", saved.Keyring, cfg.Keyring)
-	}
-	if !reflect.DeepEqual(saved.Data, cfg.Data) {
-		t.Fatalf("data = %#v, want %#v", saved.Data, cfg.Data)
-	}
-}
-
-func TestConfigDefaultSetTrimsProfileArgument(t *testing.T) {
+func TestConfigDefaultCommandIsRemoved(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "default", "set", " work "}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if saved.DefaultProfile != "work" {
-		t.Fatalf("default_profile = %q, want work", saved.DefaultProfile)
-	}
-}
-
-func TestConfigDefaultSetRejectsMissingProfile(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
-	cmd, _ := newTestCommand(path)
-	oldSave := saveConfigFile
-	calledSave := false
-	saveConfigFile = func(string, config.File) error {
-		calledSave = true
-		return nil
-	}
-	t.Cleanup(func() { saveConfigFile = oldSave })
-
-	err := root.Execute(cmd, []string{"config", "default", "set", "missing"})
-	if !errors.Is(err, config.ErrProfileNotFound) {
-		t.Fatalf("Execute error = %v, want ErrProfileNotFound", err)
-	}
-	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
-		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
-	}
-	if calledSave {
-		t.Fatal("saveConfigFile called for missing profile, want pre-save validation")
-	}
-}
-
-func TestConfigDefaultSetRejectsBlankProfile(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
-	cmd, _ := newTestCommand(path)
-
-	err := root.Execute(cmd, []string{"config", "default", "set", "   "})
-	if err == nil {
-		t.Fatal("Execute error = nil, want usage error")
+	err := root.Execute(cmd, []string{"config", "default", "get"})
+	if err == nil || !strings.Contains(err.Error(), `unknown config command "default"`) {
+		t.Fatalf("Execute error = %v, want unknown command", err)
 	}
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d", got, exitcode.UsageError)
 	}
 }
 
-func TestConfigSecretsProfileListTextProjectedLegacy(t *testing.T) {
+func TestConfigCredentialStoreListTextIncludesBuiltIn(t *testing.T) {
 	cfg := testConfig()
-	cfg.Secrets = config.SecretsConfig{}
 	path := saveTestConfig(t, cfg)
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "list"}); err != nil {
+	if err := root.Execute(cmd, []string{"config", "credential-store", "list"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	want := "Secrets management profiles:\n  - legacy-default: Legacy default (memory, projected_legacy) [default]\n"
+	want := "Credential stores:\n  - local-os: OS credential store (auto, built_in)\n  - test-memory: Test Memory Store (memory, configured)\n"
 	if out.String() != want {
 		t.Fatalf("stdout = %q, want %q", out.String(), want)
 	}
 }
 
-func TestConfigSecretsProfileGetAndDefaultGetJSON(t *testing.T) {
+func TestConfigCredentialStoreGetJSON(t *testing.T) {
 	cfg := testConfig()
-	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
-			"personal-keychain": {
-				Label:   "Personal Keychain",
-				Backend: config.SecretsProfileBackend{Kind: "keychain"},
-			},
-			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: "file"},
-			},
-		},
+	cfg.Secrets.Stores["personal-keychain"] = config.SecretsStore{
+		DisplayName: "Personal Keychain",
+		Backend:     config.SecretsStoreBackend{Kind: "keychain"},
+	}
+	cfg.Secrets.Stores["work-file"] = config.SecretsStore{
+		DisplayName: "Work File Store",
+		Backend:     config.SecretsStoreBackend{Kind: "file"},
 	}
 	path := saveTestConfig(t, cfg)
 
 	cmd, out := newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "get", "work-file", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"config", "credential-store", "get", "work-file", "--json"}); err != nil {
 		t.Fatalf("Execute get: %v", err)
 	}
 	var got view.ConfigSecretsProfile
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal get JSON: %v\n%s", err, out.String())
 	}
-	want := view.ConfigSecretsProfile{ID: "work-file", Label: "Work File Store", Backend: "file", Source: "configured", IsDefault: true}
+	want := view.ConfigSecretsProfile{ID: "work-file", Label: "Work File Store", Backend: "file", Source: "configured"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("get JSON = %#v, want %#v", got, want)
 	}
-
-	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get", "--json"}); err != nil {
-		t.Fatalf("Execute default get: %v", err)
-	}
-	var defaultGot view.ConfigSecretsProfileDefault
-	wantDefault := view.ConfigSecretsProfileDefault{DefaultProfile: &want}
-	if err := json.Unmarshal(out.Bytes(), &defaultGot); err != nil {
-		t.Fatalf("Unmarshal default JSON: %v\n%s", err, out.String())
-	}
-	if !reflect.DeepEqual(defaultGot, wantDefault) {
-		t.Fatalf("default get JSON = %#v, want %#v", defaultGot, wantDefault)
-	}
 }
 
-func TestConfigSecretsProfileDefaultGetProjectedLegacy(t *testing.T) {
-	cfg := testConfig()
-	cfg.Secrets = config.SecretsConfig{}
-	path := saveTestConfig(t, cfg)
-
-	cmd, out := newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get"}); err != nil {
-		t.Fatalf("Execute text: %v", err)
-	}
-	wantText := "Default secrets profile: legacy-default\nLabel: Legacy default\nBackend: memory\nSource: projected_legacy\n"
-	if out.String() != wantText {
-		t.Fatalf("default get text = %q, want %q", out.String(), wantText)
-	}
-
-	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get", "--json"}); err != nil {
-		t.Fatalf("Execute JSON: %v", err)
-	}
-	wantJSON := view.ConfigSecretsProfileDefault{
-		DefaultProfile: &view.ConfigSecretsProfile{
-			ID:        "legacy-default",
-			Label:     "Legacy default",
-			Backend:   "memory",
-			Source:    "projected_legacy",
-			IsDefault: true,
-		},
-	}
-	var got view.ConfigSecretsProfileDefault
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("Unmarshal projected legacy JSON: %v\n%s", err, out.String())
-	}
-	if !reflect.DeepEqual(got, wantJSON) {
-		t.Fatalf("default get JSON = %#v, want %#v", got, wantJSON)
-	}
-}
-
-func TestConfigSecretsProfileDefaultGetReportsNoneForValidUnsetState(t *testing.T) {
-	cfg := testConfig()
-	cfg.Secrets = config.SecretsConfig{
-		Profiles: map[string]config.SecretsProfile{
-			"work-file": {Label: "Work File Store", Backend: config.SecretsProfileBackend{Kind: "file"}},
-		},
-	}
-	path := saveTestConfig(t, cfg)
-
-	cmd, out := newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get"}); err != nil {
-		t.Fatalf("Execute text: %v", err)
-	}
-	if out.String() != "Default secrets profile: none\n" {
-		t.Fatalf("default get text = %q, want none text", out.String())
-	}
-
-	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "get", "--json"}); err != nil {
-		t.Fatalf("Execute JSON: %v", err)
-	}
-	defaultGot := view.ConfigSecretsProfileDefault{}
-	if err := json.Unmarshal(out.Bytes(), &defaultGot); err != nil {
-		t.Fatalf("Unmarshal default-none JSON: %v\n%s", err, out.String())
-	}
-	if !reflect.DeepEqual(defaultGot, view.ConfigSecretsProfileDefault{}) {
-		t.Fatalf("default get JSON = %#v, want empty default wrapper", defaultGot)
-	}
-}
-
-func TestConfigSecretsProfileSetCreateUpdateAndPreserveUnrelatedConfig(t *testing.T) {
-	cfg := testConfig()
-	path := saveTestConfig(t, cfg)
-	cmd, out := newTestCommand(path)
-
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal-keychain", "--backend", "keychain", "--label", " Personal Keychain "}); err != nil {
-		t.Fatalf("Execute create: %v", err)
-	}
-	wantText := "Secrets profile: personal-keychain\nLabel: Personal Keychain\nBackend: keychain\nSource: configured\nDefault: false\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout after create = %q, want %q", out.String(), wantText)
-	}
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load after create: %v", err)
-	}
-	if got := saved.Secrets.Profiles["personal-keychain"]; got.Label != "Personal Keychain" || got.Backend.Kind != "keychain" {
-		t.Fatalf("saved secrets profile = %#v, want trimmed label + backend", got)
-	}
-	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) || !reflect.DeepEqual(saved.Data, cfg.Data) || !reflect.DeepEqual(saved.Keyring, cfg.Keyring) {
-		t.Fatalf("unrelated config changed: profiles=%#v data=%#v keyring=%#v", saved.Profiles, saved.Data, saved.Keyring)
-	}
-
-	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal-keychain", "--backend", "file", "--clear-label"}); err != nil {
-		t.Fatalf("Execute update: %v", err)
-	}
-	wantText = "Secrets profile: personal-keychain\nBackend: file\nSource: configured\nDefault: false\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout after update = %q, want %q", out.String(), wantText)
-	}
-	saved, err = config.Load(path)
-	if err != nil {
-		t.Fatalf("Load after update: %v", err)
-	}
-	if got := saved.Secrets.Profiles["personal-keychain"]; got.Label != "" || got.Backend.Kind != "file" {
-		t.Fatalf("updated secrets profile = %#v, want cleared label + file backend", got)
-	}
-
-	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal-keychain", "--label", " Renamed profile "}); err != nil {
-		t.Fatalf("Execute label-only update: %v", err)
-	}
-	wantText = "Secrets profile: personal-keychain\nLabel: Renamed profile\nBackend: file\nSource: configured\nDefault: false\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout after label-only update = %q, want %q", out.String(), wantText)
-	}
-	saved, err = config.Load(path)
-	if err != nil {
-		t.Fatalf("Load after label-only update: %v", err)
-	}
-	if got := saved.Secrets.Profiles["personal-keychain"]; got.Label != "Renamed profile" || got.Backend.Kind != "file" {
-		t.Fatalf("label-only update profile = %#v, want renamed label + preserved backend", got)
-	}
-}
-
-func TestConfigSecretsProfileSetCreateWithoutLabel(t *testing.T) {
+func TestConfigCredentialStoreMutatingCommandsAreUnavailable(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
-	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal-keychain", "--backend", "keychain"}); err != nil {
-		t.Fatalf("Execute create without label: %v", err)
-	}
-	wantText := "Secrets profile: personal-keychain\nBackend: keychain\nSource: configured\nDefault: false\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout = %q, want %q", out.String(), wantText)
-	}
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got := saved.Secrets.Profiles["personal-keychain"]; got.Label != "" || got.Backend.Kind != "keychain" {
-		t.Fatalf("saved profile = %#v, want empty label + keychain backend", got)
-	}
-}
-
-func TestConfigSecretsProfileSetRejectsLabelEdgeCases(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
-	cmd, _ := newTestCommand(path)
-
-	err := root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal", "--backend", "keychain", "--label", "name", "--clear-label"})
-	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
-		t.Fatalf("conflicting label flags error = %v, want usage error", err)
-	}
-
-	cmd, _ = newTestCommand(path)
-	err = root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal", "--backend", "keychain", "--label", "   "})
-	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
-		t.Fatalf("blank label error = %v, want usage error", err)
-	}
-}
-
-func TestConfigSecretsProfileSetAndGetOnePasswordBackend(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
-	cmd, out := newTestCommand(path)
-
-	args := []string{
-		"config", "secrets-profile", "set", "work-op",
-		"--backend", "op-connect",
-		"--label", "Work Connect",
-		"--op-vault-id", "vault-123",
-		"--op-timeout", "7s",
-		"--op-connect-host", "https://connect.example",
-		"--op-connect-token-env", "CUSTOM_CONNECT_TOKEN",
-		"--op-item-title-prefix", "cr",
-	}
-	if err := root.Execute(cmd, args); err != nil {
-		t.Fatalf("Execute create op-connect: %v", err)
-	}
-	wantText := "" +
-		"Secrets profile: work-op\n" +
-		"Label: Work Connect\n" +
-		"Backend: op-connect\n" +
-		"1Password timeout: 7s\n" +
-		"1Password vault id: vault-123\n" +
-		"1Password item title prefix: cr\n" +
-		"1Password Connect host: https://connect.example\n" +
-		"1Password Connect token env: CUSTOM_CONNECT_TOKEN\n" +
-		"Source: configured\n" +
-		"Default: false\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout after op-connect create = %q, want %q", out.String(), wantText)
-	}
-
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load after op-connect create: %v", err)
-	}
-	got := saved.Secrets.Profiles["work-op"]
-	if got.Backend.Kind != "op-connect" || got.Backend.OnePassword == nil {
-		t.Fatalf("saved backend = %#v, want op-connect payload", got.Backend)
-	}
-	if got.Backend.OnePassword.ConnectTokenEnv != "CUSTOM_CONNECT_TOKEN" || got.Backend.OnePassword.ConnectHost != "https://connect.example" {
-		t.Fatalf("saved onepassword payload = %#v, want connect settings", got.Backend.OnePassword)
-	}
-
-	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "get", "work-op", "--json"}); err != nil {
-		t.Fatalf("Execute get op-connect: %v", err)
-	}
-	var viewGot view.ConfigSecretsProfile
-	if err := json.Unmarshal(out.Bytes(), &viewGot); err != nil {
-		t.Fatalf("Unmarshal get JSON: %v\n%s", err, out.String())
-	}
-	if viewGot.Backend != "op-connect" || viewGot.BackendInfo == nil || viewGot.BackendInfo.OnePassword == nil {
-		t.Fatalf("get JSON = %#v, want backend details", viewGot)
-	}
-	if viewGot.BackendInfo.OnePassword.ConnectTokenEnv != "CUSTOM_CONNECT_TOKEN" || viewGot.BackendInfo.OnePassword.DesktopAccountEnv != "" {
-		t.Fatalf("get JSON backend info = %#v, want safe 1password details", viewGot.BackendInfo.OnePassword)
-	}
-}
-
-func TestConfigSecretsProfileSetShowsNormalizedOnePasswordDefaults(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
-	cmd, out := newTestCommand(path)
-
-	if err := root.Execute(cmd, []string{
-		"config", "secrets-profile", "set", "work-op",
-		"--backend", "op",
-		"--op-vault-id", "vault-123",
-	}); err != nil {
-		t.Fatalf("Execute create op: %v", err)
-	}
-	wantText := "" +
-		"Secrets profile: work-op\n" +
-		"Backend: op\n" +
-		"1Password timeout: 5s\n" +
-		"1Password vault id: vault-123\n" +
-		"1Password service token env: OP_SERVICE_ACCOUNT_TOKEN\n" +
-		"Source: configured\n" +
-		"Default: false\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout after op create = %q, want %q", out.String(), wantText)
-	}
-}
-
-func TestConfigSecretsProfileBackendSwitchClearsOnePasswordPayload(t *testing.T) {
-	cfg := testConfig()
-	cfg.Secrets = config.SecretsConfig{
-		Profiles: map[string]config.SecretsProfile{
-			"work-op": {
-				Backend: config.SecretsProfileBackend{
-					Kind: config.SecretsBackendKind(credstore.BackendOPConnect),
-					OnePassword: &config.SecretsProfileOnePasswordConfig{
-						VaultID:         "vault-123",
-						ConnectHost:     "https://connect.example",
-						ConnectTokenEnv: "CUSTOM_CONNECT_TOKEN",
-					},
-				},
-			},
-		},
-	}
-	path := saveTestConfig(t, cfg)
-	cmd, out := newTestCommand(path)
-
-	if err := root.Execute(cmd, []string{
-		"config", "secrets-profile", "set", "work-op",
-		"--backend", "file",
-	}); err != nil {
-		t.Fatalf("Execute backend downgrade: %v", err)
-	}
-	wantText := "" +
-		"Secrets profile: work-op\n" +
-		"Backend: file\n" +
-		"Source: configured\n" +
-		"Default: false\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout after backend downgrade = %q, want %q", out.String(), wantText)
-	}
-
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load after backend downgrade: %v", err)
-	}
-	if got := saved.Secrets.Profiles["work-op"]; got.Backend.OnePassword != nil {
-		t.Fatalf("saved backend still has 1password payload: %#v", got.Backend)
-	}
-}
-
-func TestConfigSecretsProfileSetRejectsIncompatibleOnePasswordFlags(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
-	cmd, _ := newTestCommand(path)
-
-	err := root.Execute(cmd, []string{
-		"config", "secrets-profile", "set", "work-op",
-		"--backend", "op",
-		"--op-vault-id", "vault-123",
-		"--op-connect-host", "https://connect.example",
-	})
-	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
-		t.Fatalf("incompatible 1password flags error = %v, want usage error", err)
-	}
-
-	cfg := testConfig()
-	cfg.Secrets = config.SecretsConfig{
-		Profiles: map[string]config.SecretsProfile{
-			"personal-keychain": {
-				Label:   "Personal Keychain",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)},
-			},
-		},
-	}
-	path = saveTestConfig(t, cfg)
-	cmd, _ = newTestCommand(path)
-	err = root.Execute(cmd, []string{
-		"config", "secrets-profile", "set", "personal-keychain",
-		"--op-vault-id", "vault-123",
-	})
-	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
-		t.Fatalf("non-1password profile accepted op flags: %v", err)
-	}
-}
-
-func TestConfigSecretsProfileDefaultSetUnsetAndRemove(t *testing.T) {
-	cfg := testConfig()
-	cfg.Secrets = config.SecretsConfig{
-		Profiles: map[string]config.SecretsProfile{
-			"work-file": {Label: "Work File Store", Backend: config.SecretsProfileBackend{Kind: "file"}},
-		},
-	}
-	path := saveTestConfig(t, cfg)
-	cmd, out := newTestCommand(path)
-
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "set", " work-file "}); err != nil {
-		t.Fatalf("Execute default set: %v", err)
-	}
-	wantText := "Secrets profile: work-file\nLabel: Work File Store\nBackend: file\nSource: configured\nDefault: true\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout after default set = %q, want %q", out.String(), wantText)
-	}
-
-	cmd, _ = newTestCommand(path)
-	err := root.Execute(cmd, []string{"config", "secrets-profile", "remove", "work-file"})
-	if !errors.Is(err, configedit.ErrSecretsProfileDefaultConfigured) {
-		t.Fatalf("remove default error = %v, want ErrSecretsProfileDefaultConfigured", err)
-	}
-
-	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "unset"}); err != nil {
-		t.Fatalf("Execute default unset: %v", err)
-	}
-	wantText = "Secrets management profiles:\n  - work-file: Work File Store (file, configured)\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout after default unset = %q, want %q", out.String(), wantText)
-	}
-
-	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "remove", "work-file"}); err != nil {
-		t.Fatalf("Execute remove existing: %v", err)
-	}
-	wantText = "Secrets management profiles:\n  - legacy-default: Legacy default (memory, projected_legacy) [default]\n"
-	if out.String() != wantText {
-		t.Fatalf("stdout after remove existing = %q, want %q", out.String(), wantText)
-	}
-
-	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "secrets-profile", "remove", "work-file"}); err != nil {
-		t.Fatalf("Execute remove absent: %v", err)
-	}
-	if out.String() != wantText {
-		t.Fatalf("stdout after remove absent = %q, want %q", out.String(), wantText)
-	}
-}
-
-func TestConfigSecretsProfileReservedAndInvalidBackendErrors(t *testing.T) {
-	path := saveTestConfig(t, testConfig())
-	cmd, _ := newTestCommand(path)
-
-	err := root.Execute(cmd, []string{"config", "secrets-profile", "default", "set", "legacy-default"})
-	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
-		t.Fatalf("default set reserved error = %v, want usage error", err)
-	}
-
-	cmd, _ = newTestCommand(path)
-	err = root.Execute(cmd, []string{"config", "secrets-profile", "set", "personal", "--backend", "bogus"})
-	if err == nil || exitcode.FromError(err) != exitcode.UsageError {
-		t.Fatalf("invalid backend error = %v, want usage error", err)
+	for _, args := range [][]string{
+		{"config", "credential-store", "set", "work-file", "--backend", "file"},
+		{"config", "credential-store", "remove", "work-file"},
+		{"config", "credential-store", "default", "get"},
+		{"config", "secrets-profile", "list"},
+	} {
+		cmd, _ := newTestCommand(path)
+		err := root.Execute(cmd, args)
+		if err == nil {
+			t.Fatalf("Execute(%v) error = nil, want unavailable command", args)
+		}
+		if got := exitcode.FromError(err); got != exitcode.UsageError {
+			t.Fatalf("Execute(%v) exit code = %d, want %d; err=%v", args, got, exitcode.UsageError, err)
+		}
 	}
 }
 
@@ -823,11 +331,11 @@ func TestConfigRouteListJSON(t *testing.T) {
 	}
 }
 
-func TestConfigRouteSetNamespaceRouteUsesDefaultProfile(t *testing.T) {
+func TestConfigRouteSetNamespaceRouteUsesSelectedProfile(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "route", "set", "--host", "https://github.com/", "--namespace", "open-cli-collective"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "route", "set", "--host", "https://github.com/", "--namespace", "open-cli-collective"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if got := out.String(); got != "Set route for profile home: github.com/open-cli-collective\n" {
@@ -980,7 +488,7 @@ func TestConfigRouteSetRejectsHostMismatch(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)
 
-	err := root.Execute(cmd, []string{"config", "route", "set", "--host", "gitlab.com", "--namespace", "open-cli-collective"})
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "route", "set", "--host", "gitlab.com", "--namespace", "open-cli-collective"})
 	if err == nil {
 		t.Fatal("Execute error = nil, want usage error")
 	}
@@ -993,7 +501,7 @@ func TestConfigRouteSetRejectsBlankRepo(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)
 
-	err := root.Execute(cmd, []string{"config", "route", "set", "--host", "github.com", "--namespace", "rianjs", "--repo", " "})
+	err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "set", "--host", "github.com", "--namespace", "rianjs", "--repo", " "})
 	if err == nil {
 		t.Fatal("Execute error = nil, want usage error")
 	}
@@ -1226,19 +734,19 @@ func TestConfigResolveProfileText(t *testing.T) {
 	}
 }
 
-func TestConfigResolveProfileJSON(t *testing.T) {
+func TestConfigResolveProfileRejectsUnmatchedRoute(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
-	cmd, out := newTestCommand(path)
+	cmd, _ := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1", "--json"}); err != nil {
-		t.Fatalf("Execute: %v", err)
+	err := root.Execute(cmd, []string{"config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1", "--json"})
+	if !errors.Is(err, config.ErrProfileNotFound) {
+		t.Fatalf("Execute error = %v, want ErrProfileNotFound", err)
 	}
-	var got view.ConfigResolveProfile
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
 	}
-	if got.ResolvedProfile != "home" || got.Source != "default_profile" || got.GitHost != "github.com" || got.MatchedRoute != nil {
-		t.Fatalf("resolve-profile JSON = %#v, want default-profile preview", got)
+	if !strings.Contains(err.Error(), "no repository profile route matched github.com/open-cli-collective/codereview-cli") {
+		t.Fatalf("error = %v, want unmatched route guidance", err)
 	}
 }
 
@@ -1310,7 +818,7 @@ func TestConfigResolveProfileRejectsHostMismatchAfterResolution(t *testing.T) {
 	path := saveTestConfig(t, cfg)
 	cmd, _ := newTestCommand(path)
 
-	err := root.Execute(cmd, []string{"config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1"})
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1"})
 	if err == nil {
 		t.Fatal("Execute error = nil, want usage error")
 	}
@@ -1336,19 +844,19 @@ func TestConfigResolveProfileRejectsHostMismatchForExplicitProfile(t *testing.T)
 	}
 }
 
-func TestConfigResolveProfileExplicitEmptyProfileUsesExplicitSource(t *testing.T) {
+func TestConfigResolveProfileExplicitEmptyProfileRejectsMissingSelection(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
-	cmd, out := newTestCommand(path)
+	cmd, _ := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"--profile", "", "config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1", "--json"}); err != nil {
-		t.Fatalf("Execute: %v", err)
+	err := root.Execute(cmd, []string{"--profile", "", "config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1", "--json"})
+	if !errors.Is(err, config.ErrProfileNotFound) {
+		t.Fatalf("Execute error = %v, want ErrProfileNotFound", err)
 	}
-	var got view.ConfigResolveProfile
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
 	}
-	if got.ResolvedProfile != "home" || got.Source != "explicit_profile" {
-		t.Fatalf("resolve-profile JSON = %#v, want explicit empty-profile source", got)
+	if !strings.Contains(err.Error(), "no profile selected") {
+		t.Fatalf("error = %v, want no-profile-selected guidance", err)
 	}
 }
 
@@ -1416,7 +924,7 @@ func TestConfigShowJSONReportsAgentSourceDeploymentStatus(t *testing.T) {
 	path := saveTestConfig(t, cfg)
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "show", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "show", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if strings.Contains(out.String(), "Do not inline this prompt") {
@@ -1455,23 +963,27 @@ func hasConfigSourceWarning(warnings []string, want string) bool {
 	return false
 }
 
-func TestConfigShowReportsUnknownPresenceWhenKeyringCannotBeQueried(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+func TestConfigShowReportsUnknownPresenceWhenCredentialStoreCannotBeQueried(t *testing.T) {
+	statedirtest.Hermetic(t)
 	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "")
 	cfg := testConfig()
-	cfg.Keyring.Backend = "file"
+	cfg.Secrets.Stores[testFileCredentialStoreID] = config.SecretsStore{
+		DisplayName: "Test File Store",
+		Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+	}
+	cfg = withCredentialStore(cfg, testFileCredentialStoreID)
 	path := saveTestConfig(t, cfg)
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "show", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "show", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigShow
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.Backend != "file" || got.BackendSource != "config" {
-		t.Fatalf("backend = (%q,%q), want (file,config)", got.Backend, got.BackendSource)
+	if got.Backend != "file" || got.BackendSource != "credential_store" {
+		t.Fatalf("backend = (%q,%q), want (file,credential_store)", got.Backend, got.BackendSource)
 	}
 	if len(got.CredentialRefs) != 1 || len(got.CredentialRefs[0].Keys) != 1 {
 		t.Fatalf("credential refs = %#v, want one key status", got.CredentialRefs)
@@ -1482,102 +994,114 @@ func TestConfigShowReportsUnknownPresenceWhenKeyringCannotBeQueried(t *testing.T
 	}
 }
 
-func TestConfigShowReportsProjectedLegacySecretsProfile(t *testing.T) {
+func TestConfigShowReportsEffectiveCredentialStores(t *testing.T) {
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
 	path := saveTestConfig(t, cfg)
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "show", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "show", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigShow
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.Backend != "memory" || got.BackendSource != "config" {
-		t.Fatalf("backend = (%q,%q), want (memory,config)", got.Backend, got.BackendSource)
+	if got.Backend != "memory" || got.BackendSource != "credential_store" {
+		t.Fatalf("backend = (%q,%q), want (memory,credential_store)", got.Backend, got.BackendSource)
 	}
 	want := []config.EffectiveSecretsProfile{{
-		ID:        config.LegacyProjectedSecretsProfileID,
-		Label:     "Legacy default",
-		Backend:   "memory",
-		IsDefault: true,
-		Source:    config.EffectiveSecretsProfileSourceProjectedLegacy,
+		ID:          config.LocalOSCredentialStoreID,
+		DisplayName: "OS credential store",
+		Label:       "OS credential store",
+		Backend:     config.ProjectedOSCredentialStoreBackendKind,
+		ReadOnly:    true,
+		Source:      config.EffectiveSecretsStoreSourceBuiltIn,
+	}, {
+		ID:          "test-memory",
+		DisplayName: "Test Memory Store",
+		Label:       "Test Memory Store",
+		Backend:     "memory",
+		Source:      config.EffectiveSecretsStoreSourceConfigured,
 	}}
 	if !reflect.DeepEqual(got.SecretsProfiles, want) {
-		t.Fatalf("secrets_profiles = %#v, want %#v", got.SecretsProfiles, want)
+		t.Fatalf("credential stores = %#v, want %#v", got.SecretsProfiles, want)
 	}
 }
 
-func TestConfigShowSeparatesRuntimeBackendFromConfiguredSecretsProfiles(t *testing.T) {
+func TestConfigShowSelectsProfileCredentialStore(t *testing.T) {
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
-	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
-			"personal-keychain": {
-				Label:   "Personal Keychain",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("keychain")},
-			},
-			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
-			},
-		},
+	cfg.Secrets.Stores["personal-keychain"] = config.SecretsStore{
+		DisplayName: "Personal Keychain",
+		Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("keychain")},
 	}
+	cfg.Secrets.Stores["work-file"] = config.SecretsStore{
+		DisplayName: "Work File Store",
+		Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
+	}
+	cfg = withCredentialStore(cfg, "work-file")
 	path := saveTestConfig(t, cfg)
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "show", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "show", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigShow
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.Backend != "file" || got.BackendSource != "secrets_profile" {
-		t.Fatalf("backend = (%q,%q), want selected secrets-profile backend (file,secrets_profile)", got.Backend, got.BackendSource)
+	if got.Backend != "file" || got.BackendSource != "credential_store" {
+		t.Fatalf("backend = (%q,%q), want selected credential-store backend (file,credential_store)", got.Backend, got.BackendSource)
 	}
 	if got.ActiveSecretsProfile == nil || got.ActiveSecretsProfile.ID != "work-file" || got.ActiveSecretsProfile.Label != "Work File Store" {
-		t.Fatalf("active_secrets_profile = %#v, want work-file", got.ActiveSecretsProfile)
+		t.Fatalf("active credential store = %#v, want work-file", got.ActiveSecretsProfile)
 	}
 	want := []config.EffectiveSecretsProfile{
 		{
-			ID:      "personal-keychain",
-			Label:   "Personal Keychain",
-			Backend: "keychain",
-			Source:  config.EffectiveSecretsProfileSourceConfigured,
+			ID:          config.LocalOSCredentialStoreID,
+			DisplayName: "OS credential store",
+			Label:       "OS credential store",
+			Backend:     config.ProjectedOSCredentialStoreBackendKind,
+			ReadOnly:    true,
+			Source:      config.EffectiveSecretsStoreSourceBuiltIn,
 		},
 		{
-			ID:        "work-file",
-			Label:     "Work File Store",
-			Backend:   "file",
-			IsDefault: true,
-			Source:    config.EffectiveSecretsProfileSourceConfigured,
+			ID:          "personal-keychain",
+			DisplayName: "Personal Keychain",
+			Label:       "Personal Keychain",
+			Backend:     "keychain",
+			Source:      config.EffectiveSecretsProfileSourceConfigured,
+		},
+		{
+			ID:          "test-memory",
+			DisplayName: "Test Memory Store",
+			Label:       "Test Memory Store",
+			Backend:     "memory",
+			Source:      config.EffectiveSecretsProfileSourceConfigured,
+		},
+		{
+			ID:          "work-file",
+			DisplayName: "Work File Store",
+			Label:       "Work File Store",
+			Backend:     "file",
+			Source:      config.EffectiveSecretsProfileSourceConfigured,
 		},
 	}
 	if !reflect.DeepEqual(got.SecretsProfiles, want) {
-		t.Fatalf("secrets_profiles = %#v, want %#v", got.SecretsProfiles, want)
+		t.Fatalf("credential stores = %#v, want %#v", got.SecretsProfiles, want)
 	}
 }
 
-func TestConfigShowRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
+func TestConfigShowRejectsBackendOverrideForCredentialStore(t *testing.T) {
 	cfg := testConfig()
-	cfg.Keyring.Backend = "memory"
-	cfg.Secrets = config.SecretsConfig{
-		DefaultProfile: "work-file",
-		Profiles: map[string]config.SecretsProfile{
-			"work-file": {
-				Label:   "Work File Store",
-				Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")},
-			},
-		},
+	cfg.Secrets.Stores["work-file"] = config.SecretsStore{
+		DisplayName: "Work File Store",
+		Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
 	}
+	cfg = withCredentialStore(cfg, "work-file")
 	path := saveTestConfig(t, cfg)
 	cmd, _ := newTestCommand(path)
 
-	err := root.Execute(cmd, []string{"--backend", "memory", "config", "show", "--json"})
+	err := root.Execute(cmd, []string{"--backend", "memory", "--profile", "home", "config", "show", "--json"})
 	if !errors.Is(err, config.ErrInvalid) {
 		t.Fatalf("Execute error = %v, want ErrInvalid", err)
 	}
@@ -1626,7 +1150,7 @@ func TestConfigAgentSourceListText(t *testing.T) {
 	path := saveTestConfig(t, cfg)
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "agent-source", "list"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "agent-source", "list"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	want := "Profile: home\nAgent sources:\n  - ~/agents\n  - ../shared/agents\n"
@@ -1660,7 +1184,7 @@ func TestConfigAgentSourceListJSONEmptyArray(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "agent-source", "list", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "agent-source", "list", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigAgentSources
@@ -1680,7 +1204,7 @@ func TestConfigAgentSourceAddNormalizesAndIsIdempotent(t *testing.T) {
 	path := saveTestConfig(t, cfg)
 
 	cmd, out := newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "agent-source", "add", " ./agents/../agents/team/ "}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "agent-source", "add", " ./agents/../agents/team/ "}); err != nil {
 		t.Fatalf("Execute add: %v", err)
 	}
 	want := "Profile: home\nAgent sources:\n  -  ./agents/../agents/team/ \n"
@@ -1689,7 +1213,7 @@ func TestConfigAgentSourceAddNormalizesAndIsIdempotent(t *testing.T) {
 	}
 
 	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "agent-source", "add", "./agents/../agents/team"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "agent-source", "add", "./agents/../agents/team"}); err != nil {
 		t.Fatalf("Execute second add: %v", err)
 	}
 	if out.String() != want {
@@ -1714,7 +1238,7 @@ func TestConfigAgentSourceRemoveIsIdempotent(t *testing.T) {
 	path := saveTestConfig(t, cfg)
 
 	cmd, out := newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "agent-source", "remove", " ./agents/../agents/team "}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "agent-source", "remove", " ./agents/../agents/team "}); err != nil {
 		t.Fatalf("Execute remove: %v", err)
 	}
 	want := "Profile: home\nAgent sources:\n  - ../shared/agents\n"
@@ -1723,7 +1247,7 @@ func TestConfigAgentSourceRemoveIsIdempotent(t *testing.T) {
 	}
 
 	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "agent-source", "remove", "./missing"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "agent-source", "remove", "./missing"}); err != nil {
 		t.Fatalf("Execute second remove: %v", err)
 	}
 	if out.String() != want {
@@ -1806,7 +1330,7 @@ func TestConfigAgentSourcePreservesUnrelatedProfileFields(t *testing.T) {
 		t.Fatalf("Load baseline: %v", err)
 	}
 
-	if err := root.Execute(cmd, []string{"config", "agent-source", "add", "./team/agents"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "agent-source", "add", "./team/agents"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -1826,7 +1350,7 @@ func TestConfigAgentSourceAddRejectsBlankPath(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)
 
-	err := root.Execute(cmd, []string{"config", "agent-source", "add", "   "})
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "agent-source", "add", "   "})
 	if err == nil {
 		t.Fatal("Execute error = nil, want usage error")
 	}
@@ -1842,7 +1366,7 @@ func TestConfigAgentSourceRemoveRejectsBlankPath(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 	cmd, _ := newTestCommand(path)
 
-	err := root.Execute(cmd, []string{"config", "agent-source", "remove", "   "})
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "agent-source", "remove", "   "})
 	if err == nil {
 		t.Fatal("Execute error = nil, want usage error")
 	}
@@ -2086,7 +1610,7 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 
 	cmd, out := newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "llm", "models", "list"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "list"}); err != nil {
 		t.Fatalf("Execute list: %v", err)
 	}
 	if !strings.Contains(out.String(), "small: <unset> (unset)") ||
@@ -2096,7 +1620,7 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	}
 
 	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "llm", "models", "list", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "list", "--json"}); err != nil {
 		t.Fatalf("Execute list json: %v", err)
 	}
 	var listed modelMapResultView
@@ -2108,7 +1632,7 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	}
 
 	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "llm", "models", "resolve", "medium", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "resolve", "medium", "--json"}); err != nil {
 		t.Fatalf("Execute resolve json: %v", err)
 	}
 	var resolved modelResolveResult
@@ -2124,7 +1648,7 @@ func TestConfigLLMModelsSetUnsetAndReset(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
 
 	cmd, out := newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "llm", "models", "set", "medium", "claude-custom"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "set", "medium", "claude-custom"}); err != nil {
 		t.Fatalf("Execute set: %v", err)
 	}
 	if !strings.Contains(out.String(), "Set medium: claude-custom") {
@@ -2139,7 +1663,7 @@ func TestConfigLLMModelsSetUnsetAndReset(t *testing.T) {
 	}
 
 	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "llm", "models", "unset", "medium"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "unset", "medium"}); err != nil {
 		t.Fatalf("Execute unset: %v", err)
 	}
 	if !strings.Contains(out.String(), "Unset medium") {
@@ -2154,11 +1678,11 @@ func TestConfigLLMModelsSetUnsetAndReset(t *testing.T) {
 	}
 
 	cmd, _ = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "llm", "models", "set", "large", "claude-large"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "set", "large", "claude-large"}); err != nil {
 		t.Fatalf("Execute second set: %v", err)
 	}
 	cmd, out = newTestCommand(path)
-	if err := root.Execute(cmd, []string{"config", "llm", "models", "reset", "--provider", "anthropic"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "reset", "--provider", "anthropic"}); err != nil {
 		t.Fatalf("Execute reset: %v", err)
 	}
 	if !strings.Contains(out.String(), "Reset model map for profile home") {
@@ -2238,9 +1762,9 @@ func TestConfigLLMModelsRejectsInvalidInputs(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "bad tier", args: []string{"config", "llm", "models", "set", "flagship", "gpt"}},
-		{name: "blank model", args: []string{"config", "llm", "models", "set", "medium", " \t "}},
-		{name: "provider guard mismatch", args: []string{"config", "llm", "models", "reset", "--provider", "openai"}},
+		{name: "bad tier", args: []string{"--profile", "home", "config", "llm", "models", "set", "flagship", "gpt"}},
+		{name: "blank model", args: []string{"--profile", "home", "config", "llm", "models", "set", "medium", " \t "}},
+		{name: "provider guard mismatch", args: []string{"--profile", "home", "config", "llm", "models", "reset", "--provider", "openai"}},
 	}
 
 	for _, tt := range tests {
@@ -2311,13 +1835,19 @@ func TestConfigShowMissingProfileExitCode(t *testing.T) {
 
 func TestConfigShowInvalidEnumExitCode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeRawConfig(t, path, `default_profile: home
+	writeRawConfig(t, path, `secrets:
+  stores:
+    test-memory:
+      backend:
+        kind: memory
 profiles:
   home:
     git:
       host: github.com
       auth_mode: pat
-      credential_ref: codereview/home
+      credential:
+        store: test-memory
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription
@@ -2336,13 +1866,19 @@ profiles:
 
 func TestConfigShowReservedAuthModeExitCode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeRawConfig(t, path, `default_profile: home
+	writeRawConfig(t, path, `secrets:
+  stores:
+    test-memory:
+      backend:
+        kind: memory
 profiles:
   home:
     git:
       host: github.com
       auth_mode: oauth_device
-      credential_ref: codereview/home
+      credential:
+        store: test-memory
+        name: codereview/home
     llm:
       provider: anthropic
       auth: subscription
@@ -2367,7 +1903,7 @@ func TestConfigClearDefaultClearsActiveProfileOnlyAndPreservesData(t *testing.T)
 	seedFileBackend(t, "work-llm", map[string]string{credentials.AnthropicAPIKeyKey: "llm-token"})
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "clear", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigClear
@@ -2398,7 +1934,7 @@ func TestConfigClearDryRunReportsActiveProfileAndPreservesState(t *testing.T) {
 	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "clear", "--dry-run", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--dry-run", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigClear
@@ -2435,6 +1971,7 @@ func TestConfigClearGitHubAppCredentialMatrix(t *testing.T) {
 	home := cfg.Profiles["home"]
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
 	home.Git.CredentialRef = "codereview/home-app"
+	home.Git.Credential.Name = "codereview/home-app"
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
 	appKeys := []string{
@@ -2449,7 +1986,7 @@ func TestConfigClearGitHubAppCredentialMatrix(t *testing.T) {
 	})
 
 	dryRunCmd, dryRunOut := newTestCommand(path)
-	if err := root.Execute(dryRunCmd, []string{"config", "clear", "--dry-run", "--json"}); err != nil {
+	if err := root.Execute(dryRunCmd, []string{"--profile", "home", "config", "clear", "--dry-run", "--json"}); err != nil {
 		t.Fatalf("Execute dry-run: %v", err)
 	}
 	var dryRun view.ConfigClear
@@ -2462,7 +1999,7 @@ func TestConfigClearGitHubAppCredentialMatrix(t *testing.T) {
 	assertFileBackendKeys(t, "home-app", appKeys)
 
 	clearCmd, clearOut := newTestCommand(path)
-	if err := root.Execute(clearCmd, []string{"config", "clear", "--json"}); err != nil {
+	if err := root.Execute(clearCmd, []string{"--profile", "home", "config", "clear", "--json"}); err != nil {
 		t.Fatalf("Execute clear: %v", err)
 	}
 	var cleared view.ConfigClear
@@ -2482,7 +2019,7 @@ func TestConfigClearDryRunTextReportsDryRun(t *testing.T) {
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "clear", "--dry-run"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--dry-run"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	got := out.String()
@@ -2503,14 +2040,13 @@ func TestConfigClearDryRunTextReportsDryRun(t *testing.T) {
 
 func TestConfigClearAllDryRunTextReportsPredictedReset(t *testing.T) {
 	cfg := fileBackendConfig(t)
-	cfg.DefaultProfile = "work"
 	path := saveTestConfig(t, cfg)
 	cacheFile := writeCacheSentinel(t)
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	seedFileBackend(t, "work", map[string]string{credentials.GitTokenKey: "work-token"})
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "clear", "--all", "--dry-run"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "clear", "--all", "--dry-run"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	got := out.String()
@@ -2518,7 +2054,6 @@ func TestConfigClearAllDryRunTextReportsPredictedReset(t *testing.T) {
 		"Dry run: true",
 		"Credential targets:",
 		"Config profile removed: work",
-		"Default profile: home",
 		"Cache status: would_remove",
 	} {
 		if !strings.Contains(got, want) {
@@ -2531,13 +2066,15 @@ func TestConfigClearAllDryRunTextReportsPredictedReset(t *testing.T) {
 	}
 }
 
-func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
+func TestConfigClearAllClearsOnlySelectedProfileAndRemovesCache(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	alpha := cfg.Profiles["home"]
 	alpha.Git.CredentialRef = "codereview/alpha"
+	alpha.Git.Credential.Name = "codereview/alpha"
 	cfg.Profiles["alpha"] = alpha
 	beta := cfg.Profiles["home"]
 	beta.Git.CredentialRef = "codereview/beta"
+	beta.Git.Credential.Name = "codereview/beta"
 	cfg.Profiles["beta"] = beta
 	path := saveTestConfig(t, cfg)
 	cacheFile := writeCacheSentinel(t)
@@ -2551,21 +2088,21 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 	seedFileBackend(t, "work-llm", map[string]string{credentials.AnthropicAPIKeyKey: "llm-token"})
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "clear", "--all", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigClear
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.Backend != "file" || got.BackendSource != "config" {
-		t.Fatalf("backend = (%q,%q), want (file,config)", got.Backend, got.BackendSource)
+	if got.Backend != "file" || got.BackendSource != "credential_store" {
+		t.Fatalf("backend = (%q,%q), want (file,credential_store)", got.Backend, got.BackendSource)
 	}
 	if len(got.Cleared) != 1 || got.Cleared[0].Ref != "codereview/home" {
 		t.Fatalf("cleared = %#v, want default home ref only", got.Cleared)
 	}
-	if got.ConfigProfileRemoved != "home" || got.DefaultProfile != "alpha" {
-		t.Fatalf("config clear fields = profile:%q default:%q, want home/alpha", got.ConfigProfileRemoved, got.DefaultProfile)
+	if got.ConfigProfileRemoved != "home" {
+		t.Fatalf("config clear profile = %q, want removed home", got.ConfigProfileRemoved)
 	}
 	if got.ConfigPathRemoved != "" {
 		t.Fatalf("config_path_removed = %q, want empty because work remains", got.ConfigPathRemoved)
@@ -2594,9 +2131,6 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load remaining config: %v", err)
 	}
-	if cfg.DefaultProfile != "alpha" {
-		t.Fatalf("default_profile = %q, want alpha", cfg.DefaultProfile)
-	}
 	if len(cfg.Profiles) != 3 {
 		t.Fatalf("profiles len = %d, want alpha/beta/work", len(cfg.Profiles))
 	}
@@ -2616,7 +2150,6 @@ func TestConfigClearAllClearsOnlyDefaultProfileAndRemovesCache(t *testing.T) {
 
 func TestConfigClearAllDryRunReportsProfileCacheAndPreservesState(t *testing.T) {
 	cfg := fileBackendConfig(t)
-	cfg.DefaultProfile = "work"
 	cfg.RepositoryProfiles = []config.RepositoryProfile{
 		{
 			Profile: "work",
@@ -2659,8 +2192,8 @@ func TestConfigClearAllDryRunReportsProfileCacheAndPreservesState(t *testing.T) 
 	if !got.DryRun {
 		t.Fatalf("dry_run = false, want true")
 	}
-	if got.ConfigProfileRemoved != "work" || got.DefaultProfile != "home" || got.ConfigPathRemoved != "" {
-		t.Fatalf("config dry-run fields = profile:%q default:%q path:%q, want work/home with retained path", got.ConfigProfileRemoved, got.DefaultProfile, got.ConfigPathRemoved)
+	if got.ConfigProfileRemoved != "work" || got.ConfigPathRemoved != "" {
+		t.Fatalf("config dry-run fields = profile:%q path:%q, want work removal preview with retained path", got.ConfigProfileRemoved, got.ConfigPathRemoved)
 	}
 	if got.Cache == nil || got.Cache.Status != "would_remove" {
 		t.Fatalf("cache = %#v, want would_remove", got.Cache)
@@ -2714,20 +2247,19 @@ func TestConfigClearAllDryRunReportsProfileCacheAndPreservesState(t *testing.T) 
 func TestConfigClearAllDryRunSingleProfileReportsConfigPathRemoval(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	cfg.Profiles = map[string]config.Profile{"home": cfg.Profiles["home"]}
-	cfg.DefaultProfile = "home"
 	path := saveTestConfig(t, cfg)
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "clear", "--all", "--dry-run", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all", "--dry-run", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigClear
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if !got.DryRun || got.ConfigProfileRemoved != "home" || got.DefaultProfile != "" || got.ConfigPathRemoved != path {
-		t.Fatalf("config dry-run fields = dry:%t profile:%q default:%q path:%q, want single-profile removal preview", got.DryRun, got.ConfigProfileRemoved, got.DefaultProfile, got.ConfigPathRemoved)
+	if !got.DryRun || got.ConfigProfileRemoved != "home" || got.ConfigPathRemoved != path {
+		t.Fatalf("config dry-run fields = dry:%t profile:%q path:%q, want single-profile removal preview", got.DryRun, got.ConfigProfileRemoved, got.ConfigPathRemoved)
 	}
 	assertFileBackendPresent(t, "home", credentials.GitTokenKey)
 	if _, err := os.Stat(path); err != nil {
@@ -2746,7 +2278,7 @@ func TestConfigClearAllDryRunReportsMissingCache(t *testing.T) {
 	t.Cleanup(func() { resolveCacheRoot = oldResolve })
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "clear", "--all", "--dry-run", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all", "--dry-run", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigClear
@@ -2798,8 +2330,8 @@ func TestConfigClearProfileAllClearsOnlySelectedProfile(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.ConfigProfileRemoved != "work" || got.DefaultProfile != "" {
-		t.Fatalf("config clear fields = profile:%q default:%q, want removed work with unchanged default omitted", got.ConfigProfileRemoved, got.DefaultProfile)
+	if got.ConfigProfileRemoved != "work" {
+		t.Fatalf("config clear profile = %q, want removed work", got.ConfigProfileRemoved)
 	}
 	if got.Cache == nil || got.Cache.Status != "removed" {
 		t.Fatalf("cache = %#v, want removed", got.Cache)
@@ -2815,7 +2347,7 @@ func TestConfigClearProfileAllClearsOnlySelectedProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load remaining config: %v", err)
 	}
-	if cfg.DefaultProfile != "home" || len(cfg.Profiles) != 1 {
+	if len(cfg.Profiles) != 1 {
 		t.Fatalf("remaining config = %#v, want home only", cfg)
 	}
 	if len(cfg.RepositoryProfiles) != 1 || cfg.RepositoryProfiles[0].Profile != "home" {
@@ -2834,12 +2366,12 @@ func TestConfigClearProfileAllClearsOnlySelectedProfile(t *testing.T) {
 	}
 }
 
-func TestConfigClearProfileAllReselectsDefaultWhenSelectedProfileIsDefault(t *testing.T) {
+func TestConfigClearProfileAllPrunesSelectedProfileRoutes(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	alpha := cfg.Profiles["home"]
 	alpha.Git.CredentialRef = "codereview/alpha"
+	alpha.Git.Credential.Name = "codereview/alpha"
 	cfg.Profiles["alpha"] = alpha
-	cfg.DefaultProfile = "work"
 	cfg.RepositoryProfiles = []config.RepositoryProfile{
 		{
 			Profile: "work",
@@ -2877,8 +2409,8 @@ func TestConfigClearProfileAllReselectsDefaultWhenSelectedProfileIsDefault(t *te
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.ConfigProfileRemoved != "work" || got.DefaultProfile != "alpha" {
-		t.Fatalf("config clear fields = profile:%q default:%q, want work/alpha", got.ConfigProfileRemoved, got.DefaultProfile)
+	if got.ConfigProfileRemoved != "work" {
+		t.Fatalf("config clear profile = %q, want removed work", got.ConfigProfileRemoved)
 	}
 	assertFileBackendMissing(t, "work", credentials.GitTokenKey)
 	assertFileBackendPresent(t, "alpha", credentials.GitTokenKey)
@@ -2887,8 +2419,8 @@ func TestConfigClearProfileAllReselectsDefaultWhenSelectedProfileIsDefault(t *te
 	if err != nil {
 		t.Fatalf("Load remaining config: %v", err)
 	}
-	if cfg.DefaultProfile != "alpha" || len(cfg.Profiles) != 2 {
-		t.Fatalf("remaining config = %#v, want alpha default with alpha/home only", cfg)
+	if len(cfg.Profiles) != 2 {
+		t.Fatalf("remaining config = %#v, want alpha/home only", cfg)
 	}
 	if len(cfg.RepositoryProfiles) != 2 {
 		t.Fatalf("repository_profiles = %#v, want two routes after pruning work", cfg.RepositoryProfiles)
@@ -2906,7 +2438,6 @@ func TestConfigClearProfileAllReselectsDefaultWhenSelectedProfileIsDefault(t *te
 func TestConfigClearAllSingleProfileRemovesConfigFileAndEmptyParent(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	cfg.Profiles = map[string]config.Profile{"home": cfg.Profiles["home"]}
-	cfg.DefaultProfile = "home"
 	configHome := t.TempDir()
 	path := saveTestConfigAt(t, filepath.Join(configHome, statepaths.AppDir, "config.yml"), cfg)
 	configDir := filepath.Dir(path)
@@ -2915,15 +2446,15 @@ func TestConfigClearAllSingleProfileRemovesConfigFileAndEmptyParent(t *testing.T
 	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
 	cmd, out := newTestCommand(path)
 
-	if err := root.Execute(cmd, []string{"config", "clear", "--all", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	var got view.ConfigClear
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
-	if got.ConfigProfileRemoved != "home" || got.DefaultProfile != "" || got.ConfigPathRemoved != path {
-		t.Fatalf("config clear fields = profile:%q default:%q path:%q, want removed home config", got.ConfigProfileRemoved, got.DefaultProfile, got.ConfigPathRemoved)
+	if got.ConfigProfileRemoved != "home" || got.ConfigPathRemoved != path {
+		t.Fatalf("config clear fields = profile:%q path:%q, want removed home config", got.ConfigProfileRemoved, got.ConfigPathRemoved)
 	}
 	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -2955,7 +2486,7 @@ func TestConfigClearAllJSONIncludesCacheCleanupFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { removeCacheRoot = oldRemove })
 
-	err := root.Execute(cmd, []string{"config", "clear", "--all", "--json"})
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all", "--json"})
 	if err == nil {
 		t.Fatal("Execute error = nil, want cache cleanup failure")
 	}
@@ -2989,7 +2520,7 @@ func TestConfigClearAllTextIncludesPartialResultOnCacheFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { removeCacheRoot = oldRemove })
 
-	err := root.Execute(cmd, []string{"config", "clear", "--all"})
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all"})
 	if err == nil {
 		t.Fatal("Execute error = nil, want cache cleanup failure")
 	}
@@ -2997,7 +2528,6 @@ func TestConfigClearAllTextIncludesPartialResultOnCacheFailure(t *testing.T) {
 	for _, want := range []string{
 		"Cleared credentials:",
 		"Config profile removed: home",
-		"Default profile: work",
 		"Cache status: error",
 		"Cache error: permission denied",
 	} {
@@ -3021,7 +2551,7 @@ func TestConfigClearAllJSONIncludesCacheResolutionFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { resolveCacheRoot = oldResolve })
 
-	err := root.Execute(cmd, []string{"config", "clear", "--all", "--json"})
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all", "--json"})
 	if err == nil {
 		t.Fatal("Execute error = nil, want cache resolution failure")
 	}
@@ -3048,7 +2578,7 @@ func TestConfigClearAllReportsConfigMutationFailureAfterCredentialDelete(t *test
 	}
 	t.Cleanup(func() { saveConfigFile = oldSave })
 
-	err := root.Execute(cmd, []string{"config", "clear", "--all"})
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all"})
 	if err == nil {
 		t.Fatal("Execute error = nil, want config mutation failure")
 	}
@@ -3059,9 +2589,6 @@ func TestConfigClearAllReportsConfigMutationFailureAfterCredentialDelete(t *test
 	cfg, loadErr := config.Load(path)
 	if loadErr != nil {
 		t.Fatalf("Load config after failed save: %v", loadErr)
-	}
-	if cfg.DefaultProfile != "home" {
-		t.Fatalf("default_profile after failed save = %q, want home", cfg.DefaultProfile)
 	}
 	if _, ok := cfg.Profiles["home"]; !ok {
 		t.Fatalf("home profile missing from on-disk config after failed save: %#v", cfg.Profiles)
@@ -3088,12 +2615,33 @@ func newTestCommandWithOptions(opts *root.Options) (*cobra.Command, *bytes.Buffe
 	return cmd, &out
 }
 
+const testFileCredentialStoreID = "test-file"
+
 func fileBackendConfig(t *testing.T) config.File {
 	t.Helper()
 	statedirtest.Hermetic(t)
 	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
 	cfg := testConfig()
-	cfg.Keyring.Backend = "file"
+	cfg.Secrets.Stores[testFileCredentialStoreID] = config.SecretsStore{
+		DisplayName: "Test File Store",
+		Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+	}
+	return withCredentialStore(cfg, testFileCredentialStoreID)
+}
+
+func withCredentialStore(cfg config.File, storeID string) config.File {
+	for name, profile := range cfg.Profiles {
+		if profile.Git.Credential.Name != "" {
+			profile.Git.Credential.Store = storeID
+		}
+		if profile.ReviewerCredentials != nil && profile.ReviewerCredentials.Credential.Name != "" {
+			profile.ReviewerCredentials.Credential.Store = storeID
+		}
+		if profile.LLM.Credential.Name != "" {
+			profile.LLM.Credential.Store = storeID
+		}
+		cfg.Profiles[name] = profile
+	}
 	return cfg
 }
 
@@ -3262,13 +2810,20 @@ func writeConfigTestAgentSource(t *testing.T, root, prompt string) {
 
 func testConfig() config.File {
 	return config.File{
-		DefaultProfile: "home",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
+		Secrets: config.SecretsConfig{
+			Stores: map[string]config.SecretsStore{
+				"test-memory": {
+					DisplayName: "Test Memory Store",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
+				},
+			},
+		},
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
 					CredentialRef: "codereview/home",
 				},
 				LLM: config.LLMConfig{
@@ -3282,16 +2837,19 @@ func testConfig() config.File {
 				Git: config.GitConfig{
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
 					CredentialRef: "codereview/work",
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
 					CredentialRef: "codereview/work-reviewer",
 				},
 				LLM: config.LLMConfig{
 					Provider:      config.LLMProviderAnthropic,
 					Auth:          config.LLMAuthAPIKey,
 					Adapter:       config.LLMAdapterAnthropicAPI,
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-llm"},
 					CredentialRef: "codereview/work-llm",
 				},
 				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventRequestChanges},

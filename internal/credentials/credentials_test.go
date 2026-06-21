@@ -3,6 +3,7 @@ package credentials
 import (
 	"errors"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -29,22 +30,19 @@ func TestParseRefEnforcesCodereviewService(t *testing.T) {
 func TestStoreOptionsBackendPrecedenceMetadata(t *testing.T) {
 	t.Setenv(BackendEnvVar(), "")
 
-	cfg := config.File{Keyring: config.KeyringConfig{Backend: "memory"}}
-	store, err := OpenStore("", false, cfg)
+	opts, err := StoreOptions("", false, config.File{Keyring: config.KeyringConfig{Backend: "memory"}})
 	if err != nil {
-		t.Fatalf("OpenStore config backend: %v", err)
+		t.Fatalf("StoreOptions: %v", err)
 	}
-	backend, source := store.Backend()
-	_ = store.Close()
-	if backend != credstore.BackendMemory || source != credstore.SourceConfig {
-		t.Fatalf("Backend = (%s,%s), want (memory,config)", backend, source)
+	if opts.Backend != "" || opts.ConfigBackend != "" {
+		t.Fatalf("StoreOptions legacy config backend = (%s,%s), want ignored", opts.Backend, opts.ConfigBackend)
 	}
 
-	store, err = OpenStore("memory", true, config.File{})
+	store, err := OpenStore("memory", true, config.File{})
 	if err != nil {
 		t.Fatalf("OpenStore explicit backend: %v", err)
 	}
-	backend, source = store.Backend()
+	backend, source := store.Backend()
 	_ = store.Close()
 	if backend != credstore.BackendMemory || source != credstore.SourceExplicit {
 		t.Fatalf("Backend = (%s,%s), want (memory,explicit)", backend, source)
@@ -70,7 +68,6 @@ func TestStoreOptionsRejectsLegacyOnePasswordBackends(t *testing.T) {
 		cfg     config.File
 	}{
 		{name: "flag", flag: "op", flagSet: true, cfg: config.File{}},
-		{name: "config", cfg: config.File{Keyring: config.KeyringConfig{Backend: "op-connect"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := StoreOptions(tc.flag, tc.flagSet, tc.cfg)
@@ -183,7 +180,6 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 
 func TestValidateAllowedKeyForConfigNarrowsDeclaredRefs(t *testing.T) {
 	cfg := config.File{
-		DefaultProfile: "anthropic",
 		Profiles: map[string]config.Profile{
 			"anthropic": matrixProfile("codereview/git-a", "codereview/shared-llm", config.LLMProviderAnthropic),
 			"openai":    matrixProfile("codereview/git-b", "codereview/shared-llm", config.LLMProviderOpenAI),
@@ -249,7 +245,6 @@ func githubAppMatrixProfile(ref string) config.Profile {
 
 func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.T) {
 	cfg := config.File{
-		DefaultProfile: "work",
 		Profiles: map[string]config.Profile{
 			"work":       matrixProfile("codereview/work", "codereview/work-llm", config.LLMProviderAnthropic),
 			"shared-pat": matrixProfile("codereview/shared-git", "codereview/shared-llm", config.LLMProviderOpenAI),
@@ -294,31 +289,31 @@ func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.
 	}
 }
 
-func TestResolveSecretsProfileForProfileAndRef(t *testing.T) {
+func TestResolveCredentialStoreForProfileAndRef(t *testing.T) {
 	cfg := config.File{
-		DefaultProfile: "home",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
 		Secrets: config.SecretsConfig{
-			DefaultProfile: "work-file",
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"personal-keychain": {
-					Label:   "Personal Keychain",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)},
+					DisplayName: "Personal Keychain",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)},
 				},
 				"work-file": {
-					Label:   "Work File Store",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					DisplayName: "Work File Store",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
 		Profiles: map[string]config.Profile{
 			"home": func() config.Profile {
 				p := matrixProfile("codereview/shared-git", "codereview/home-llm", config.LLMProviderAnthropic)
-				p.SecretsProfile = "personal-keychain"
+				p.Git.Credential.Store = "personal-keychain"
+				p.LLM.Credential.Store = "personal-keychain"
 				return p
 			}(),
 			"work": func() config.Profile {
 				p := matrixProfile("codereview/shared-git", "codereview/work-llm", config.LLMProviderOpenAI)
+				p.Git.Credential.Store = "work-file"
+				p.LLM.Credential.Store = "work-file"
 				return p
 			}(),
 		},
@@ -351,7 +346,7 @@ func TestResolveSecretsProfileForProfileAndRef(t *testing.T) {
 		Label:           "Work File Store",
 		Backend:         "file",
 		Source:          config.EffectiveSecretsProfileSourceConfigured,
-		SelectionSource: SecretsProfileSelectionDefault,
+		SelectionSource: SecretsProfileSelectionExplicit,
 	}
 	if !reflect.DeepEqual(workResolved, wantWork) {
 		t.Fatalf("work resolved secrets profile = %#v, want %#v", workResolved, wantWork)
@@ -367,25 +362,24 @@ func TestResolveSecretsProfileForProfileAndRef(t *testing.T) {
 	if !reflect.DeepEqual(selectedResolved, wantHome) {
 		t.Fatalf("selected resolved secrets profile = %#v, want %#v", selectedResolved, wantHome)
 	}
-	undeclaredResolved, err := ResolveSecretsProfileForRef(cfg, "codereview/custom-ref", "work")
-	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForRef(custom-ref, work): %v", err)
+	if _, err := ResolveSecretsProfileForRef(cfg, "codereview/custom-ref", "work"); !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("ResolveSecretsProfileForRef(custom-ref, work) error = %v, want ErrInvalid", err)
 	}
-	if !reflect.DeepEqual(undeclaredResolved, wantWork) {
-		t.Fatalf("undeclared resolved secrets profile = %#v, want %#v", undeclaredResolved, wantWork)
-	}
-
-	cfg.Secrets.DefaultProfile = ""
-	legacyResolved, err := ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	localProfile := matrixProfile("codereview/local-git", "codereview/local-llm", config.LLMProviderAnthropic)
+	legacyResolved, err := ResolveSecretsProfileForProfile(cfg, localProfile)
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile(work legacy): %v", err)
+		t.Fatalf("ResolveSecretsProfileForProfile(local-os): %v", err)
+	}
+	platformBackend, err := PlatformOSBackend(runtime.GOOS)
+	if err != nil {
+		t.Fatalf("PlatformOSBackend(%s): %v", runtime.GOOS, err)
 	}
 	wantLegacy := ResolvedSecretsProfile{
-		ID:              config.LegacyProjectedSecretsProfileID,
-		Label:           "Legacy default",
-		Backend:         "memory",
+		ID:              config.LocalOSCredentialStoreID,
+		Label:           "OS credential store",
+		Backend:         string(platformBackend),
 		Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
-		SelectionSource: SecretsProfileSelectionLegacyDefault,
+		SelectionSource: SecretsProfileSelectionBuiltInOS,
 	}
 	if !reflect.DeepEqual(legacyResolved, wantLegacy) {
 		t.Fatalf("legacy resolved secrets profile = %#v, want %#v", legacyResolved, wantLegacy)
@@ -498,7 +492,6 @@ func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.File{
-				DefaultProfile: "home",
 				Secrets: config.SecretsConfig{
 					Profiles: map[string]config.SecretsProfile{
 						"work-op": tt.profile,

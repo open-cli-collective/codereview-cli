@@ -237,7 +237,7 @@ func TestAgentSourceHelpersRejectBlankPath(t *testing.T) {
 	}
 }
 
-func TestRenameProfileUpdatesReferencesAndPreservesProfileValues(t *testing.T) {
+func TestRenameProfileUpdatesRoutesAndPreservesProfileValues(t *testing.T) {
 	cfg := testConfig()
 
 	got, changed, err := configedit.RenameProfile(cfg, "work", "office")
@@ -251,9 +251,6 @@ func TestRenameProfileUpdatesReferencesAndPreservesProfileValues(t *testing.T) {
 		t.Fatal("old profile still exists after rename")
 	}
 	office := got.Profiles["office"]
-	if got.DefaultProfile != "office" {
-		t.Fatalf("DefaultProfile = %q, want office", got.DefaultProfile)
-	}
 	if office.Git.CredentialRef != "codereview/custom-work" || office.Git.IdentityCache != "work-user" {
 		t.Fatalf("git fields = %#v, want preserved credential ref and identity cache", office.Git)
 	}
@@ -284,23 +281,14 @@ func TestRenameProfileUpdatesReferencesAndPreservesProfileValues(t *testing.T) {
 	if !reflect.DeepEqual(got.RepositoryProfiles, wantRoutes) {
 		t.Fatalf("RepositoryProfiles = %#v, want %#v", got.RepositoryProfiles, wantRoutes)
 	}
-	if cfg.DefaultProfile != "work" {
-		t.Fatalf("original config default mutated to %q", cfg.DefaultProfile)
-	}
 	if _, ok := cfg.Profiles["work"]; !ok {
 		t.Fatal("original config profile map was mutated")
 	}
 }
 
-func TestProfileHelpersRejectInvalidDefaultAndRename(t *testing.T) {
+func TestProfileHelpersRejectInvalidRename(t *testing.T) {
 	cfg := testConfig()
 
-	if _, _, err := configedit.SetDefaultProfile(cfg, "missing"); !errors.Is(err, config.ErrProfileNotFound) {
-		t.Fatalf("SetDefaultProfile missing error = %v, want ErrProfileNotFound", err)
-	}
-	if _, _, err := configedit.SetDefaultProfile(cfg, " "); !errors.Is(err, configedit.ErrProfileNameRequired) {
-		t.Fatalf("SetDefaultProfile blank error = %v, want ErrProfileNameRequired", err)
-	}
 	if _, _, err := configedit.RenameProfile(cfg, "missing", "office"); !errors.Is(err, config.ErrProfileNotFound) {
 		t.Fatalf("RenameProfile missing error = %v, want ErrProfileNotFound", err)
 	}
@@ -517,6 +505,35 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		}
 	})
 
+	t.Run("set allows stores before review profiles exist", func(t *testing.T) {
+		backend := config.SecretsProfileBackend{
+			Kind: config.SecretsBackendKind("op-desktop"),
+			OnePassword: &config.SecretsProfileOnePasswordConfig{
+				AccountURL: "my.1password.com",
+				VaultID:    "vault-private",
+				VaultName:  "Private",
+			},
+		}
+		label := "1Password-Personal"
+		updated, changed, created, err := configedit.SetSecretsProfile(config.File{}, "1password-personal", configedit.SecretsProfilePatch{
+			Backend: &backend,
+			Label:   &label,
+		})
+		if err != nil {
+			t.Fatalf("SetSecretsProfile store-only create: %v", err)
+		}
+		if !changed || !created {
+			t.Fatalf("SetSecretsProfile store-only create = changed:%t created:%t, want true,true", changed, created)
+		}
+		if len(updated.Profiles) != 0 {
+			t.Fatalf("updated config unexpectedly added review profile data: %#v", updated)
+		}
+		got := updated.Secrets.Profiles["1password-personal"]
+		if got.Label != "1Password-Personal" || got.Backend.OnePassword == nil || got.Backend.OnePassword.VaultName != "Private" {
+			t.Fatalf("created store = %#v, want named 1Password store", got)
+		}
+	})
+
 	t.Run("set validates edge cases", func(t *testing.T) {
 		cfg := testConfig()
 		backend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("keychain")}
@@ -529,7 +546,7 @@ func TestSecretsProfileHelpers(t *testing.T) {
 			want  error
 		}{
 			{name: "missing id", id: " ", patch: configedit.SecretsProfilePatch{Backend: &backend}, want: configedit.ErrSecretsProfileIDRequired},
-			{name: "reserved id", id: config.LegacyProjectedSecretsProfileID, patch: configedit.SecretsProfilePatch{Backend: &backend}, want: configedit.ErrSecretsProfileReserved},
+			{name: "reserved id", id: config.LocalOSCredentialStoreID, patch: configedit.SecretsProfilePatch{Backend: &backend}, want: configedit.ErrSecretsProfileReserved},
 			{name: "create missing backend", id: "personal", patch: configedit.SecretsProfilePatch{}, want: configedit.ErrSecretsProfileBackendRequired},
 			{name: "conflicting label flags", id: "personal", patch: configedit.SecretsProfilePatch{Backend: &backend, Label: &label, ClearLabel: true}, want: configedit.ErrSecretsProfileLabelConflict},
 			{name: "blank label", id: "personal", patch: configedit.SecretsProfilePatch{Backend: &backend, Label: &spaceLabel}, want: configedit.ErrSecretsProfileLabelRequired},
@@ -566,51 +583,16 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		}
 	})
 
-	t.Run("default set and unset validate configured profiles only", func(t *testing.T) {
+	t.Run("remove is idempotent but blocks reserved id", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.Secrets.Profiles = map[string]config.SecretsProfile{
 			"work": {Backend: config.SecretsProfileBackend{Kind: "file"}},
 		}
-		updated, changed, err := configedit.SetDefaultSecretsProfile(cfg, " work ")
-		if err != nil {
-			t.Fatalf("SetDefaultSecretsProfile: %v", err)
-		}
-		if !changed || updated.Secrets.DefaultProfile != "work" {
-			t.Fatalf("SetDefaultSecretsProfile = changed:%t default:%q, want true/work", changed, updated.Secrets.DefaultProfile)
-		}
-		updated, changed, err = configedit.UnsetDefaultSecretsProfile(updated)
-		if err != nil {
-			t.Fatalf("UnsetDefaultSecretsProfile: %v", err)
-		}
-		if !changed || updated.Secrets.DefaultProfile != "" {
-			t.Fatalf("UnsetDefaultSecretsProfile = changed:%t default:%q, want true/empty", changed, updated.Secrets.DefaultProfile)
-		}
-		_, _, err = configedit.SetDefaultSecretsProfile(cfg, "missing")
-		if !errors.Is(err, config.ErrSecretsProfileNotFound) {
-			t.Fatalf("SetDefaultSecretsProfile missing error = %v, want ErrSecretsProfileNotFound", err)
-		}
-		_, _, err = configedit.SetDefaultSecretsProfile(cfg, config.LegacyProjectedSecretsProfileID)
-		if !errors.Is(err, configedit.ErrSecretsProfileReserved) {
-			t.Fatalf("SetDefaultSecretsProfile reserved error = %v, want ErrSecretsProfileReserved", err)
-		}
-	})
-
-	t.Run("remove is idempotent but blocks configured default and reserved id", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.Secrets.DefaultProfile = "work"
-		cfg.Secrets.Profiles = map[string]config.SecretsProfile{
-			"work": {Backend: config.SecretsProfileBackend{Kind: "file"}},
-		}
-		_, _, err := configedit.RemoveSecretsProfile(cfg, "work")
-		if !errors.Is(err, configedit.ErrSecretsProfileDefaultConfigured) {
-			t.Fatalf("RemoveSecretsProfile default error = %v, want ErrSecretsProfileDefaultConfigured", err)
-		}
-		_, _, err = configedit.RemoveSecretsProfile(cfg, config.LegacyProjectedSecretsProfileID)
+		_, _, err := configedit.RemoveSecretsProfile(cfg, config.LocalOSCredentialStoreID)
 		if !errors.Is(err, configedit.ErrSecretsProfileReserved) {
 			t.Fatalf("RemoveSecretsProfile reserved error = %v, want ErrSecretsProfileReserved", err)
 		}
 
-		cfg.Secrets.DefaultProfile = ""
 		updated, changed, err := configedit.RemoveSecretsProfile(cfg, "work")
 		if err != nil {
 			t.Fatalf("RemoveSecretsProfile existing: %v", err)
@@ -633,7 +615,6 @@ func TestSecretsProfileHelpers(t *testing.T) {
 
 func testConfig() config.File {
 	return config.File{
-		DefaultProfile: "work",
 		RepositoryProfiles: []config.RepositoryProfile{
 			{
 				Profile: "work",

@@ -41,6 +41,12 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	configCmd := &cobra.Command{
 		Use:   "config",
 		Short: "Inspect cr configuration",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return exitcode.Usage(fmt.Errorf("unknown config command %q", args[0]))
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -137,76 +143,6 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 		},
 	}
 	pathCmd.Flags().BoolVar(&pathJSON, "json", false, "Emit JSON")
-
-	defaultCmd := &cobra.Command{
-		Use:   "default",
-		Short: "Inspect and update the default profile",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return cmd.Help()
-		},
-	}
-
-	var defaultGetJSON bool
-	defaultGetCmd := &cobra.Command{
-		Use:   "get",
-		Short: "Show the configured default profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config default get takes no arguments"))
-			}
-			return nil
-		},
-		RunE: func(_ *cobra.Command, _ []string) error {
-			path, err := configPath(opts)
-			if err != nil {
-				return exitcode.AuthConfig(err)
-			}
-			cfg, err := config.Load(path)
-			if err != nil {
-				return cmderr.Config(err)
-			}
-			result := view.ConfigDefault{DefaultProfile: cfg.DefaultProfile}
-			if defaultGetJSON {
-				return view.RenderConfigDefaultJSON(opts.Stdout, result)
-			}
-			return view.RenderConfigDefaultText(opts.Stdout, result)
-		},
-	}
-	defaultGetCmd.Flags().BoolVar(&defaultGetJSON, "json", false, "Emit JSON")
-
-	defaultSetCmd := &cobra.Command{
-		Use:   "set <profile>",
-		Short: "Set the configured default profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("config default set requires <profile>"))
-			}
-			return nil
-		},
-		RunE: func(_ *cobra.Command, args []string) error {
-			profileName := strings.TrimSpace(args[0])
-			if profileName == "" {
-				return exitcode.Usage(fmt.Errorf("profile must be non-empty"))
-			}
-			path, err := configPath(opts)
-			if err != nil {
-				return exitcode.AuthConfig(err)
-			}
-			cfg, err := config.Load(path)
-			if err != nil {
-				return cmderr.Config(err)
-			}
-			cfg, _, err = configedit.SetDefaultProfile(cfg, profileName)
-			if err != nil {
-				return cmderr.Config(err)
-			}
-			if err := saveConfigFile(path, cfg); err != nil {
-				return cmderr.Config(err)
-			}
-			return view.RenderConfigDefaultText(opts.Stdout, view.ConfigDefault{DefaultProfile: profileName})
-		},
-	}
-	defaultCmd.AddCommand(defaultGetCmd, defaultSetCmd)
 
 	routeCmd := &cobra.Command{
 		Use:   "route",
@@ -540,7 +476,6 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 					return fmt.Errorf("config clear --all credentials already cleared for profile %q (%s), but config reset failed: %w", profileName, credentialRefList(profiles), err)
 				}
 				result.ConfigProfileRemoved = change.profileRemoved
-				result.DefaultProfile = change.defaultProfile
 				result.ConfigPathRemoved = change.configPathRemoved
 
 				cache, err := clearCacheRoot(clearDryRun)
@@ -574,7 +509,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, pathCmd, defaultCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newSecretsProfileCommand(opts), newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
+	configCmd.AddCommand(showCmd, pathCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newSecretsProfileCommand(opts), newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
 }
 
@@ -1112,7 +1047,6 @@ func renderModelResolveText(w io.Writer, result modelResolveResult) error {
 
 type configClearChange struct {
 	profileRemoved    string
-	defaultProfile    string
 	configPathRemoved string
 }
 
@@ -1125,18 +1059,15 @@ func configPath(opts *root.Options) (string, error) {
 
 func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg config.File, resolvedSecretsProfile credentials.ResolvedSecretsProfile) (credstore.Backend, credstore.Source, error) {
 	if store != nil {
-		backend, source := store.Backend()
-		if resolvedSecretsProfile.IsNamed() {
-			return backend, credentials.BackendSourceSecretsProfile, nil
-		}
-		return backend, source, nil
+		backend, _ := store.Backend()
+		return backend, credentials.BackendSourceCredentialStore, nil
 	}
 	if resolvedSecretsProfile.IsNamed() {
 		backend, err := credstore.ParseBackend(resolvedSecretsProfile.Backend)
 		if err != nil {
 			return "", "", fmt.Errorf("%w: %w", credentials.ErrInvalidBackendSelection, err)
 		}
-		return backend, credentials.BackendSourceSecretsProfile, nil
+		return backend, credentials.BackendSourceCredentialStore, nil
 	}
 	return credentials.BackendMetadata(flagValue, flagSet, cfg)
 }
@@ -1183,10 +1114,6 @@ func removeProfileFromConfig(path string, cfg config.File, profileName string) (
 		return change, nil
 	}
 	cfg.RepositoryProfiles = configedit.PruneRepositoryProfileRoutes(cfg.RepositoryProfiles, profileName)
-	if cfg.DefaultProfile == profileName {
-		cfg.DefaultProfile = configedit.FirstProfileName(cfg.Profiles)
-		change.defaultProfile = cfg.DefaultProfile
-	}
 	if err := saveConfigFile(path, cfg); err != nil {
 		return configClearChange{}, err
 	}
@@ -1211,10 +1138,11 @@ func clearCredentialBundle(store *credstore.Store, profile string, dryRun bool) 
 
 func resolvedSecretsProfileViewPtr(resolved credentials.ResolvedSecretsProfile) *view.ConfigSecretsProfile {
 	return &view.ConfigSecretsProfile{
-		ID:      resolved.ID,
-		Label:   resolved.Label,
-		Backend: resolved.Backend,
-		Source:  string(resolved.Source),
+		ID:       resolved.ID,
+		Label:    resolved.Label,
+		Backend:  resolved.Backend,
+		ReadOnly: resolved.Source == config.EffectiveSecretsStoreSourceBuiltIn,
+		Source:   string(resolved.Source),
 	}
 }
 
@@ -1235,15 +1163,6 @@ func previewProfileFromConfig(path string, cfg config.File, profileName string) 
 	if len(cfg.Profiles) == 1 {
 		change.configPathRemoved = path
 		return change, nil
-	}
-	if cfg.DefaultProfile == profileName {
-		remaining := make(map[string]config.Profile, len(cfg.Profiles)-1)
-		for name, profile := range cfg.Profiles {
-			if name != profileName {
-				remaining[name] = profile
-			}
-		}
-		change.defaultProfile = configedit.FirstProfileName(remaining)
 	}
 	return change, nil
 }

@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -30,8 +31,10 @@ var (
 	ErrNotConfigured = errors.New("config: not configured")
 	// ErrProfileNotFound means the requested profile is absent.
 	ErrProfileNotFound = errors.New("config: profile not found")
-	// ErrSecretsProfileNotFound means the requested secrets-management profile is absent.
-	ErrSecretsProfileNotFound = errors.New("config: secrets-management profile not found")
+	// ErrSecretsStoreNotFound means the requested credential store is absent.
+	ErrSecretsStoreNotFound = errors.New("config: credential store not found")
+	// ErrSecretsProfileNotFound is the old name for ErrSecretsStoreNotFound.
+	ErrSecretsProfileNotFound = ErrSecretsStoreNotFound
 	// ErrInvalid means the config file is malformed or violates the schema.
 	ErrInvalid = errors.New("config: invalid")
 	// ErrUnsupported means the config uses a known v2-only option.
@@ -40,12 +43,15 @@ var (
 
 // File is the root config.yml schema.
 type File struct {
-	DefaultProfile     string              `yaml:"default_profile" json:"default_profile"`
-	Keyring            KeyringConfig       `yaml:"keyring,omitempty" json:"keyring"`
-	Secrets            SecretsConfig       `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	RepositoryProfiles []RepositoryProfile `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
-	Profiles           map[string]Profile  `yaml:"profiles" json:"profiles"`
-	Data               DataConfig          `yaml:"data,omitempty" json:"data"`
+	Secrets            SecretsConfig        `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	LLMRuntimes        map[string]LLMConfig `yaml:"llm_runtimes,omitempty" json:"llm_runtimes,omitempty"`
+	RepositoryProfiles []RepositoryProfile  `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
+	Profiles           map[string]Profile   `yaml:"profiles,omitempty" json:"profiles,omitempty"`
+	Data               DataConfig           `yaml:"data,omitempty" json:"data"`
+
+	// Keyring is retained as an ignored in-memory compatibility field while
+	// credential-store runtime selection is rewritten. It is not config schema.
+	Keyring KeyringConfig `yaml:"-" json:"-"`
 }
 
 // KeyringConfig carries non-secret keyring backend preferences.
@@ -53,95 +59,138 @@ type KeyringConfig struct {
 	Backend string `yaml:"backend,omitempty" json:"backend,omitempty"`
 }
 
-// SecretsConfig carries named secrets-management profile configuration.
+// SecretsConfig carries named credential store configuration.
 type SecretsConfig struct {
-	DefaultProfile string                    `yaml:"default_profile,omitempty" json:"default_profile,omitempty"`
-	Profiles       map[string]SecretsProfile `yaml:"profiles,omitempty" json:"profiles,omitempty"`
+	Stores map[string]SecretsStore `yaml:"stores,omitempty" json:"stores,omitempty"`
+
+	// Deprecated compatibility alias. It is intentionally not part of the
+	// YAML/JSON schema.
+	Profiles map[string]SecretsProfile `yaml:"-" json:"-"`
 }
 
-// SecretsProfile is one named secrets-management profile.
-type SecretsProfile struct {
-	Label   string                `yaml:"label,omitempty" json:"label,omitempty"`
-	Backend SecretsProfileBackend `yaml:"backend" json:"backend"`
+// SecretsStore is one named configured credential store.
+type SecretsStore struct {
+	DisplayName string              `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	Backend     SecretsStoreBackend `yaml:"backend" json:"backend"`
+
+	// Label is an ignored compatibility alias for DisplayName.
+	Label string `yaml:"-" json:"-"`
 }
 
-// SecretsProfileBackend carries one typed backend choice.
-type SecretsProfileBackend struct {
-	Kind        SecretsBackendKind               `yaml:"kind" json:"kind"`
-	OnePassword *SecretsProfileOnePasswordConfig `yaml:"onepassword,omitempty" json:"onepassword,omitempty"`
+// SecretsProfile is the old in-memory name for SecretsStore.
+type SecretsProfile = SecretsStore
+
+// SecretsStoreBackend carries one typed backend choice.
+type SecretsStoreBackend struct {
+	Kind        SecretsBackendKind             `yaml:"kind" json:"kind"`
+	OnePassword *SecretsStoreOnePasswordConfig `yaml:"onepassword,omitempty" json:"onepassword,omitempty"`
 }
 
-// SecretsProfileOnePasswordConfig carries non-secret 1Password backend settings.
-type SecretsProfileOnePasswordConfig struct {
-	Timeout          string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-	VaultID          string `yaml:"vault_id,omitempty" json:"vault_id,omitempty"`
-	ItemTitlePrefix  string `yaml:"item_title_prefix,omitempty" json:"item_title_prefix,omitempty"`
-	ItemTag          string `yaml:"item_tag,omitempty" json:"item_tag,omitempty"`
-	ItemFieldTitle   string `yaml:"item_field_title,omitempty" json:"item_field_title,omitempty"`
-	ConnectHost      string `yaml:"connect_host,omitempty" json:"connect_host,omitempty"`
-	ConnectTokenEnv  string `yaml:"connect_token_env,omitempty" json:"connect_token_env,omitempty"`
-	ServiceTokenEnv  string `yaml:"service_token_env,omitempty" json:"service_token_env,omitempty"`
-	DesktopAccountID string `yaml:"desktop_account_id,omitempty" json:"desktop_account_id,omitempty"`
+// SecretsProfileBackend is the old in-memory name for SecretsStoreBackend.
+type SecretsProfileBackend = SecretsStoreBackend
+
+// SecretsStoreOnePasswordConfig carries non-secret 1Password backend settings.
+type SecretsStoreOnePasswordConfig struct {
+	Timeout         string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	AccountID       string `yaml:"account_id,omitempty" json:"account_id,omitempty"`
+	AccountURL      string `yaml:"account_url,omitempty" json:"account_url,omitempty"`
+	VaultID         string `yaml:"vault_id,omitempty" json:"vault_id,omitempty"`
+	VaultName       string `yaml:"vault_name,omitempty" json:"vault_name,omitempty"`
+	ConnectHost     string `yaml:"connect_host,omitempty" json:"connect_host,omitempty"`
+	ConnectTokenEnv string `yaml:"connect_token_env,omitempty" json:"connect_token_env,omitempty"`
+	ServiceTokenEnv string `yaml:"service_token_env,omitempty" json:"service_token_env,omitempty"`
+
+	// Ignored compatibility aliases while callers are rewritten.
+	ItemTitlePrefix  string `yaml:"-" json:"-"`
+	ItemTag          string `yaml:"-" json:"-"`
+	ItemFieldTitle   string `yaml:"-" json:"-"`
+	DesktopAccountID string `yaml:"-" json:"-"`
 }
 
-// SecretsBackendKind is the durable non-secret backend selector for a
-// named secrets-management profile.
+// SecretsProfileOnePasswordConfig is the old in-memory name for
+// SecretsStoreOnePasswordConfig.
+type SecretsProfileOnePasswordConfig = SecretsStoreOnePasswordConfig
+
+// SecretsBackendKind is the durable non-secret backend selector for a named
+// credential store.
 type SecretsBackendKind string
 
-// EffectiveSecretsProfileSource distinguishes configured profiles from the
-// read-only projected legacy compatibility entry.
-type EffectiveSecretsProfileSource string
-
+// Credential store constants.
 const (
-	// LegacyProjectedSecretsProfileID is the reserved effective id used when an
-	// old config still relies on legacy keyring.backend behavior.
-	LegacyProjectedSecretsProfileID = "legacy-default"
-	// ProjectedLegacySecretsBackendKind is the effective backend summary when the
-	// old config omits keyring.backend and still relies on auto/env resolution.
-	ProjectedLegacySecretsBackendKind = "auto"
-	defaultOnePasswordTimeout         = "5s"
+	LocalOSCredentialStoreID  = "local-os"
+	defaultOnePasswordTimeout = "5s"
 )
 
-// Effective secrets-profile inventory sources.
+// EffectiveSecretsStoreSource distinguishes configured stores from the read-only
+// projected built-in OS store.
+type EffectiveSecretsStoreSource string
+
+// Effective credential-store inventory sources.
 const (
-	EffectiveSecretsProfileSourceConfigured      EffectiveSecretsProfileSource = "configured"
-	EffectiveSecretsProfileSourceProjectedLegacy EffectiveSecretsProfileSource = "projected_legacy"
+	EffectiveSecretsStoreSourceBuiltIn    EffectiveSecretsStoreSource = "built_in"
+	EffectiveSecretsStoreSourceConfigured EffectiveSecretsStoreSource = "configured"
 )
 
-// EffectiveSecretsProfile is the presentation-safe effective secrets-management
-// inventory shape used by callers that need to summarize the config.
-type EffectiveSecretsProfile struct {
-	ID        string                        `json:"id"`
-	Label     string                        `json:"label,omitempty"`
-	Backend   string                        `json:"backend"`
-	IsDefault bool                          `json:"is_default,omitempty"`
-	Source    EffectiveSecretsProfileSource `json:"source"`
+// EffectiveSecretsProfileSource is a compatibility alias retained during the staged rewrite.
+type EffectiveSecretsProfileSource = EffectiveSecretsStoreSource
+
+const (
+	// EffectiveSecretsProfileSourceConfigured is the compatibility name for a configured credential store.
+	EffectiveSecretsProfileSourceConfigured EffectiveSecretsProfileSource = EffectiveSecretsStoreSourceConfigured
+	// EffectiveSecretsProfileSourceProjectedLegacy is the compatibility name for the built-in OS store.
+	EffectiveSecretsProfileSourceProjectedLegacy EffectiveSecretsProfileSource = EffectiveSecretsStoreSourceBuiltIn
+	// ProjectedOSCredentialStoreBackendKind is the presentation backend for the built-in OS store.
+	ProjectedOSCredentialStoreBackendKind = "auto"
+)
+
+// EffectiveSecretsStore is the presentation-safe credential-store inventory
+// shape used by callers that need to summarize the config.
+type EffectiveSecretsStore struct {
+	ID          string                      `json:"id"`
+	DisplayName string                      `json:"display_name,omitempty"`
+	Backend     string                      `json:"backend"`
+	ReadOnly    bool                        `json:"read_only,omitempty"`
+	Source      EffectiveSecretsStoreSource `json:"source"`
+
+	// Compatibility fields for old callers while UI/runtime are rewritten.
+	Label string `json:"label,omitempty"`
 }
+
+// EffectiveSecretsProfile is the old in-memory name for EffectiveSecretsStore.
+type EffectiveSecretsProfile = EffectiveSecretsStore
 
 // Profile is one named review profile.
 type Profile struct {
 	Git                 GitConfig            `yaml:"git" json:"git"`
-	SecretsProfile      string               `yaml:"secrets_profile,omitempty" json:"secrets_profile,omitempty"`
 	ReviewerCredentials *ReviewerCredentials `yaml:"reviewer_credentials,omitempty" json:"reviewer_credentials,omitempty"`
 	LLM                 LLMConfig            `yaml:"llm" json:"llm"`
 	AgentSources        []string             `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
 	ReviewPolicy        ReviewPolicy         `yaml:"review_policy,omitempty" json:"review_policy"`
+
+	// SecretsProfile is retained as an ignored in-memory compatibility field.
+	SecretsProfile string `yaml:"-" json:"-"`
 }
 
 // GitConfig identifies the user's git-host credentials.
 type GitConfig struct {
-	Host          string      `yaml:"host" json:"host"`
-	AuthMode      GitAuthMode `yaml:"auth_mode" json:"auth_mode"`
-	CredentialRef string      `yaml:"credential_ref" json:"credential_ref"`
-	IdentityCache string      `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
+	Host          string             `yaml:"host" json:"host"`
+	AuthMode      GitAuthMode        `yaml:"auth_mode" json:"auth_mode"`
+	Credential    CredentialLocation `yaml:"credential" json:"credential"`
+	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
+
+	// CredentialRef is retained as an ignored in-memory compatibility field.
+	CredentialRef string `yaml:"-" json:"-"`
 }
 
 // ReviewerCredentials optionally identifies separate posting credentials.
 type ReviewerCredentials struct {
-	AuthMode      GitAuthMode `yaml:"auth_mode" json:"auth_mode"`
-	CredentialRef string      `yaml:"credential_ref" json:"credential_ref"`
-	DisplayName   string      `yaml:"display_name,omitempty" json:"display_name,omitempty"`
-	IdentityCache string      `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
+	AuthMode      GitAuthMode        `yaml:"auth_mode" json:"auth_mode"`
+	Credential    CredentialLocation `yaml:"credential" json:"credential"`
+	DisplayName   string             `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
+
+	// CredentialRef is retained as an ignored in-memory compatibility field.
+	CredentialRef string `yaml:"-" json:"-"`
 }
 
 // RepositoryProfile routes repositories to profiles when --profile is omitted.
@@ -159,12 +208,15 @@ type RepositoryProfileMatch struct {
 
 // LLMConfig identifies the LLM provider and adapter.
 type LLMConfig struct {
-	Provider          LLMProvider `yaml:"provider" json:"provider"`
-	Auth              LLMAuth     `yaml:"auth" json:"auth"`
-	Adapter           LLMAdapter  `yaml:"adapter" json:"adapter"`
-	CredentialRef     string      `yaml:"credential_ref,omitempty" json:"credential_ref,omitempty"`
-	ModelMap          ModelMap    `yaml:"model_map,omitempty" json:"model_map,omitempty"`
-	ReviewerModelTier ModelTier   `yaml:"reviewer_model_tier,omitempty" json:"reviewer_model_tier,omitempty"`
+	Provider          LLMProvider        `yaml:"provider" json:"provider"`
+	Auth              LLMAuth            `yaml:"auth" json:"auth"`
+	Adapter           LLMAdapter         `yaml:"adapter" json:"adapter"`
+	Credential        CredentialLocation `yaml:"credential,omitempty" json:"credential,omitempty"`
+	ModelMap          ModelMap           `yaml:"model_map,omitempty" json:"model_map,omitempty"`
+	ReviewerModelTier ModelTier          `yaml:"reviewer_model_tier,omitempty" json:"reviewer_model_tier,omitempty"`
+
+	// CredentialRef is retained as an ignored in-memory compatibility field.
+	CredentialRef string `yaml:"-" json:"-"`
 }
 
 // ModelMap maps portable model tiers to provider-specific model identifiers.
@@ -424,9 +476,27 @@ func (e RetentionEnforcement) Valid() bool {
 	}
 }
 
-// CredentialRef is one declared non-secret pointer into the credential store.
+// CredentialLocation names where one credential bundle is stored.
+type CredentialLocation struct {
+	Store string `yaml:"store" json:"store"`
+	Name  string `yaml:"name" json:"name"`
+}
+
+func (c CredentialLocation) normalized() CredentialLocation {
+	c.Store = strings.TrimSpace(c.Store)
+	c.Name = strings.TrimSpace(c.Name)
+	return c
+}
+
+func (c CredentialLocation) empty() bool {
+	return strings.TrimSpace(c.Store) == "" && strings.TrimSpace(c.Name) == ""
+}
+
+// CredentialRef is one declared non-secret pointer into a credential store.
+// It is derived from CredentialLocation for readiness/status helpers.
 type CredentialRef struct {
 	Purpose  string `json:"purpose"`
+	Store    string `json:"store,omitempty"`
 	Ref      string `json:"ref"`
 	Mode     string `json:"mode"`
 	Provider string `json:"provider,omitempty"`
@@ -450,9 +520,6 @@ const (
 	// RepositoryProfileResolutionSourceRoute means a repository_profiles route
 	// selected the profile.
 	RepositoryProfileResolutionSourceRoute RepositoryProfileResolutionSource = "repository_route"
-	// RepositoryProfileResolutionSourceDefault means routing did not match and
-	// the default profile was used.
-	RepositoryProfileResolutionSourceDefault RepositoryProfileResolutionSource = "default_profile"
 )
 
 // RepositoryProfileResolution describes the resolved profile plus the source of
@@ -476,16 +543,21 @@ func Path() (string, error) {
 // Load reads and validates config.yml.
 func Load(path string) (File, error) {
 	// #nosec G304 -- path is the resolved cr config path or an injected test path.
-	file, err := os.Open(path)
+	body, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return File{}, fmt.Errorf("%w: %s", ErrNotConfigured, path)
 	}
 	if err != nil {
 		return File{}, fmt.Errorf("config: open %s: %w", path, err)
 	}
-	defer file.Close()
+	if len(bytes.TrimSpace(body)) == 0 {
+		return File{}, invalid("empty config")
+	}
+	if yamlDocumentHasMappingPath(body, "secrets", "profiles") {
+		return File{}, invalid("secrets.profiles is no longer supported; use secrets.stores")
+	}
 
-	decoder := yaml.NewDecoder(file)
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
 	decoder.KnownFields(true)
 	var cfg File
 	if err := decoder.Decode(&cfg); err != nil {
@@ -501,10 +573,10 @@ func Load(path string) (File, error) {
 		return File{}, invalid("parse %s: multiple YAML documents are not supported", path)
 	}
 
-	cfg = cfg.normalized()
 	if err := Validate(cfg); err != nil {
 		return File{}, err
 	}
+	cfg = cfg.normalized()
 	return cfg, nil
 }
 
@@ -513,10 +585,13 @@ func Save(path string, cfg File) error {
 	if strings.TrimSpace(path) == "" {
 		return invalid("path is required")
 	}
-	cfg = cfg.normalized()
+	if fileHasNoExplicitContent(cfg) {
+		return invalid("config is empty")
+	}
 	if err := Validate(cfg); err != nil {
 		return err
 	}
+	cfg = cfg.normalized()
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -558,6 +633,48 @@ func Save(path string, cfg File) error {
 	return nil
 }
 
+func fileHasNoExplicitContent(cfg File) bool {
+	return cfg.Secrets.Stores == nil &&
+		cfg.Secrets.Profiles == nil &&
+		cfg.LLMRuntimes == nil &&
+		cfg.RepositoryProfiles == nil &&
+		cfg.Profiles == nil &&
+		cfg.Data.Retention.MaxAgeDays == nil &&
+		cfg.Data.Retention.Enforcement == "" &&
+		cfg.Keyring.Backend == ""
+}
+
+func yamlDocumentHasMappingPath(body []byte, path ...string) bool {
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
+	var node yaml.Node
+	if err := decoder.Decode(&node); err != nil {
+		return false
+	}
+	current := &node
+	if current.Kind == yaml.DocumentNode && len(current.Content) > 0 {
+		current = current.Content[0]
+	}
+	for _, key := range path {
+		current = yamlMappingValue(current, key)
+		if current == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func yamlMappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if node.Content[index].Value == key {
+			return node.Content[index+1]
+		}
+	}
+	return nil
+}
+
 // Normalize returns cfg with the same normalization pass Validate and Save apply.
 func Normalize(cfg File) File {
 	return cfg.normalized()
@@ -566,99 +683,92 @@ func Normalize(cfg File) File {
 // Validate checks a config file after defaults have been applied.
 func Validate(cfg File) error {
 	cfg = cfg.normalized()
-	if strings.TrimSpace(cfg.DefaultProfile) == "" {
-		return invalid("default_profile is required")
-	}
-	if len(cfg.Profiles) == 0 {
-		return invalid("profiles is required")
-	}
-	for name, profile := range cfg.Profiles {
-		if strings.TrimSpace(name) == "" {
-			return invalid("profile name is required")
-		}
-		profile = profile.normalized()
-		if err := validateProfile(name, profile); err != nil {
-			return err
-		}
-		if err := validateProfileSecretsProfileSelection(cfg.Secrets, name, profile); err != nil {
-			return err
-		}
-	}
-	if _, ok := cfg.Profiles[cfg.DefaultProfile]; !ok {
-		return fmt.Errorf("%w: %s", ErrProfileNotFound, cfg.DefaultProfile)
-	}
-	if err := validateRepositoryProfiles(cfg); err != nil {
-		return err
-	}
-	if err := ValidateKeyring(cfg.Keyring); err != nil {
-		return err
-	}
 	if err := ValidateSecrets(cfg.Secrets); err != nil {
 		return err
 	}
 	if err := ValidateRetention(cfg.Data.Retention); err != nil {
 		return err
 	}
+	for name, runtime := range cfg.LLMRuntimes {
+		if strings.TrimSpace(name) == "" {
+			return invalid("llm_runtimes name is required")
+		}
+		if err := validateLLMConfig(fmt.Sprintf("llm_runtimes.%s", name), runtime); err != nil {
+			return err
+		}
+		if runtime.Auth == LLMAuthAPIKey {
+			if err := validateCredentialStoreSelection(cfg.Secrets, fmt.Sprintf("llm_runtimes.%s.credential.store", name), runtime.Credential.Store); err != nil {
+				return err
+			}
+		}
+	}
+	if len(cfg.Profiles) == 0 {
+		if len(cfg.RepositoryProfiles) > 0 {
+			return invalid("profiles is required")
+		}
+		return nil
+	}
+	for name, profile := range cfg.Profiles {
+		if strings.TrimSpace(name) == "" {
+			return invalid("profile name is required")
+		}
+		if err := validateProfile(name, profile); err != nil {
+			return err
+		}
+		if err := validateProfileCredentialStoreSelections(cfg.Secrets, name, profile); err != nil {
+			return err
+		}
+	}
+	if err := validateRepositoryProfiles(cfg); err != nil {
+		return err
+	}
 	return nil
 }
 
-// EffectiveSecretsProfiles returns the configured secrets-management profiles or
-// a projected read-only legacy profile when config still relies on the old
-// keyring.backend model.
-func EffectiveSecretsProfiles(cfg File) []EffectiveSecretsProfile {
+// EffectiveSecretsStores returns the read-only built-in OS credential store
+// followed by configured credential stores in stable order.
+func EffectiveSecretsStores(cfg File) []EffectiveSecretsStore {
 	cfg = cfg.normalized()
-	if len(cfg.Secrets.Profiles) == 0 {
-		backend := strings.TrimSpace(cfg.Keyring.Backend)
-		if backend == "" {
-			backend = ProjectedLegacySecretsBackendKind
-		}
-		return []EffectiveSecretsProfile{{
-			ID:        LegacyProjectedSecretsProfileID,
-			Label:     "Legacy default",
-			Backend:   backend,
-			IsDefault: true,
-			Source:    EffectiveSecretsProfileSourceProjectedLegacy,
-		}}
-	}
+	out := []EffectiveSecretsStore{{
+		ID:          LocalOSCredentialStoreID,
+		DisplayName: "OS credential store",
+		Label:       "OS credential store",
+		Backend:     ProjectedOSCredentialStoreBackendKind,
+		ReadOnly:    true,
+		Source:      EffectiveSecretsStoreSourceBuiltIn,
+	}}
 
-	ids := make([]string, 0, len(cfg.Secrets.Profiles))
-	for id := range cfg.Secrets.Profiles {
+	ids := make([]string, 0, len(cfg.Secrets.Stores))
+	for id := range cfg.Secrets.Stores {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 
-	profiles := make([]EffectiveSecretsProfile, 0, len(ids))
 	for _, id := range ids {
-		profile := cfg.Secrets.Profiles[id]
-		label := strings.TrimSpace(profile.Label)
-		profiles = append(profiles, EffectiveSecretsProfile{
-			ID:        id,
-			Label:     label,
-			Backend:   string(profile.Backend.Kind),
-			IsDefault: strings.TrimSpace(cfg.Secrets.DefaultProfile) == id,
-			Source:    EffectiveSecretsProfileSourceConfigured,
+		store := cfg.Secrets.Stores[id]
+		displayName := strings.TrimSpace(store.DisplayName)
+		out = append(out, EffectiveSecretsStore{
+			ID:          id,
+			DisplayName: displayName,
+			Label:       displayName,
+			Backend:     string(store.Backend.Kind),
+			Source:      EffectiveSecretsStoreSourceConfigured,
 		})
 	}
-	return profiles
+	return out
 }
 
-// EffectiveDefaultSecretsProfile returns the effective default secrets profile, if any.
-func EffectiveDefaultSecretsProfile(cfg File) (EffectiveSecretsProfile, bool) {
-	for _, profile := range EffectiveSecretsProfiles(cfg) {
-		if profile.IsDefault {
-			return profile, true
-		}
-	}
-	return EffectiveSecretsProfile{}, false
+// EffectiveSecretsProfiles is the old in-memory name for EffectiveSecretsStores.
+func EffectiveSecretsProfiles(cfg File) []EffectiveSecretsProfile {
+	return EffectiveSecretsStores(cfg)
 }
 
-// ResolveProfile returns the requested profile, or the default profile when
-// requestedName is empty.
+// ResolveProfile returns the requested profile.
 func ResolveProfile(cfg File, requestedName string) (string, Profile, error) {
 	cfg = cfg.normalized()
 	name := strings.TrimSpace(requestedName)
 	if name == "" {
-		name = cfg.DefaultProfile
+		return "", Profile{}, fmt.Errorf("%w: no profile selected; pass --profile or configure a repository route", ErrProfileNotFound)
 	}
 	profile, ok := cfg.Profiles[name]
 	if !ok {
@@ -743,15 +853,7 @@ func ResolveProfileForRepositoryWithSource(cfg File, requestedName string, expli
 			MatchedRoute: namespaceRoute,
 		}, nil
 	}
-	name, profile, err := ResolveProfile(cfg, "")
-	if err != nil {
-		return RepositoryProfileResolution{}, err
-	}
-	return RepositoryProfileResolution{
-		ProfileName: name,
-		Profile:     profile,
-		Source:      RepositoryProfileResolutionSourceDefault,
-	}, nil
+	return RepositoryProfileResolution{}, fmt.Errorf("%w: no repository profile route matched %s/%s/%s; pass --profile or configure a repository route", ErrProfileNotFound, targetHost, targetNamespace, targetRepo)
 }
 
 // CredentialRefs returns all credential-store refs declared by profile.
@@ -762,14 +864,14 @@ func CredentialRefs(profile Profile) ([]CredentialRef, error) {
 	}
 
 	refs := []CredentialRef{}
-	gitRef, err := gitCredentialRef("git", profile.Git.AuthMode, profile.Git.CredentialRef)
+	gitRef, err := gitCredentialRef("git", profile.Git.AuthMode, profile.Git.Credential)
 	if err != nil {
 		return nil, err
 	}
 	refs = append(refs, gitRef)
 
 	if profile.ReviewerCredentials != nil {
-		reviewerRef, err := gitCredentialRef("reviewer_credentials", profile.ReviewerCredentials.AuthMode, profile.ReviewerCredentials.CredentialRef)
+		reviewerRef, err := gitCredentialRef("reviewer_credentials", profile.ReviewerCredentials.AuthMode, profile.ReviewerCredentials.Credential)
 		if err != nil {
 			return nil, err
 		}
@@ -779,7 +881,8 @@ func CredentialRefs(profile Profile) ([]CredentialRef, error) {
 	if profile.LLM.Auth == LLMAuthAPIKey {
 		refs = append(refs, CredentialRef{
 			Purpose:  "llm",
-			Ref:      profile.LLM.CredentialRef,
+			Store:    profile.LLM.Credential.Store,
+			Ref:      profile.LLM.Credential.Name,
 			Mode:     string(LLMAuthAPIKey),
 			Provider: string(profile.LLM.Provider),
 		})
@@ -787,11 +890,11 @@ func CredentialRefs(profile Profile) ([]CredentialRef, error) {
 	return refs, nil
 }
 
-func gitCredentialRef(purpose string, mode GitAuthMode, ref string) (CredentialRef, error) {
+func gitCredentialRef(purpose string, mode GitAuthMode, credential CredentialLocation) (CredentialRef, error) {
 	if !mode.Supported() {
 		return CredentialRef{}, fmt.Errorf("%w: %s auth_mode %q", ErrUnsupported, purpose, mode)
 	}
-	return CredentialRef{Purpose: purpose, Ref: ref, Mode: string(mode)}, nil
+	return CredentialRef{Purpose: purpose, Store: credential.Store, Ref: credential.Name, Mode: string(mode)}, nil
 }
 
 func validateProfile(name string, profile Profile) error {
@@ -804,10 +907,7 @@ func validateProfile(name string, profile Profile) error {
 	if !profile.Git.AuthMode.Supported() {
 		return fmt.Errorf("%w: profiles.%s.git.auth_mode %q", ErrUnsupported, name, profile.Git.AuthMode)
 	}
-	if strings.TrimSpace(profile.Git.CredentialRef) == "" {
-		return invalid("profiles.%s.git.credential_ref is required", name)
-	}
-	if err := validateCredentialRef(fmt.Sprintf("profiles.%s.git.credential_ref", name), profile.Git.CredentialRef); err != nil {
+	if err := validateCredentialLocation(fmt.Sprintf("profiles.%s.git.credential", name), profile.Git.Credential); err != nil {
 		return err
 	}
 	if profile.ReviewerCredentials != nil {
@@ -817,71 +917,29 @@ func validateProfile(name string, profile Profile) error {
 		if !profile.ReviewerCredentials.AuthMode.Supported() {
 			return fmt.Errorf("%w: profiles.%s.reviewer_credentials.auth_mode %q", ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
 		}
-		if strings.TrimSpace(profile.ReviewerCredentials.CredentialRef) == "" {
-			return invalid("profiles.%s.reviewer_credentials.credential_ref is required", name)
-		}
-		if err := validateCredentialRef(fmt.Sprintf("profiles.%s.reviewer_credentials.credential_ref", name), profile.ReviewerCredentials.CredentialRef); err != nil {
+		if err := validateCredentialLocation(fmt.Sprintf("profiles.%s.reviewer_credentials.credential", name), profile.ReviewerCredentials.Credential); err != nil {
 			return err
 		}
-		if profile.ReviewerCredentials.CredentialRef == profile.Git.CredentialRef {
-			return invalid("profiles.%s.reviewer_credentials.credential_ref must differ from git.credential_ref", name)
+		if sameCredentialLocation(profile.ReviewerCredentials.Credential, profile.Git.Credential) {
+			return invalid("profiles.%s.reviewer_credentials.credential must differ from git.credential when store and name match", name)
 		}
 		if err := validateOptionalSingleLine(fmt.Sprintf("profiles.%s.reviewer_credentials.display_name", name), profile.ReviewerCredentials.DisplayName); err != nil {
 			return err
 		}
 	}
-	if !profile.LLM.Provider.Valid() {
-		return invalid("profiles.%s.llm.provider %q is invalid", name, profile.LLM.Provider)
-	}
-	if !profile.LLM.Auth.Valid() {
-		return invalid("profiles.%s.llm.auth %q is invalid", name, profile.LLM.Auth)
-	}
-	if !profile.LLM.Adapter.Valid() {
-		return invalid("profiles.%s.llm.adapter %q is invalid", name, profile.LLM.Adapter)
-	}
-	if profile.LLM.Provider == LLMProviderPi {
-		if profile.LLM.Auth != LLMAuthSubscription || profile.LLM.Adapter != LLMAdapterPiRPC {
-			return invalid("profiles.%s.llm provider pi requires auth subscription and adapter pi_rpc", name)
-		}
-	}
-	if profile.LLM.Adapter == LLMAdapterPiRPC {
-		if profile.LLM.Provider != LLMProviderPi || profile.LLM.Auth != LLMAuthSubscription {
-			return invalid("profiles.%s.llm adapter pi_rpc requires provider pi and auth subscription", name)
-		}
-	}
-	if profile.LLM.Adapter == LLMAdapterCodexCLI {
-		if profile.LLM.Provider != LLMProviderOpenAI || profile.LLM.Auth != LLMAuthSubscription {
-			return invalid("profiles.%s.llm adapter codex_cli requires provider openai and auth subscription", name)
-		}
-	}
-	if profile.LLM.Auth == LLMAuthAPIKey && strings.TrimSpace(profile.LLM.CredentialRef) == "" {
-		return invalid("profiles.%s.llm.credential_ref is required for api_key auth", name)
-	}
-	if profile.LLM.Auth == LLMAuthSubscription && strings.TrimSpace(profile.LLM.CredentialRef) != "" {
-		return invalid("profiles.%s.llm.credential_ref must be empty for subscription auth", name)
+	if err := validateLLMConfig(fmt.Sprintf("profiles.%s.llm", name), profile.LLM); err != nil {
+		return err
 	}
 	if profile.LLM.Auth == LLMAuthAPIKey {
-		if err := validateCredentialRef(fmt.Sprintf("profiles.%s.llm.credential_ref", name), profile.LLM.CredentialRef); err != nil {
+		if err := validateCredentialLocation(fmt.Sprintf("profiles.%s.llm.credential", name), profile.LLM.Credential); err != nil {
 			return err
 		}
-		if profile.LLM.CredentialRef == profile.Git.CredentialRef {
-			return invalid("profiles.%s.llm.credential_ref must differ from git.credential_ref", name)
+		if sameCredentialLocation(profile.LLM.Credential, profile.Git.Credential) {
+			return invalid("profiles.%s.llm.credential must differ from git.credential when store and name match", name)
 		}
-		if profile.ReviewerCredentials != nil && profile.LLM.CredentialRef == profile.ReviewerCredentials.CredentialRef {
-			return invalid("profiles.%s.llm.credential_ref must differ from reviewer_credentials.credential_ref", name)
+		if profile.ReviewerCredentials != nil && sameCredentialLocation(profile.LLM.Credential, profile.ReviewerCredentials.Credential) {
+			return invalid("profiles.%s.llm.credential must differ from reviewer_credentials.credential when store and name match", name)
 		}
-	}
-	for tier, model := range profile.LLM.ModelMap {
-		modelTier := ModelTier(tier)
-		if !modelTier.Valid() {
-			return invalid("profiles.%s.llm.model_map tier %q is invalid", name, tier)
-		}
-		if strings.TrimSpace(model) == "" {
-			return invalid("profiles.%s.llm.model_map.%s is required", name, tier)
-		}
-	}
-	if profile.LLM.ReviewerModelTier != "" && !profile.LLM.ReviewerModelTier.Valid() {
-		return invalid("profiles.%s.llm.reviewer_model_tier %q is invalid; must be one of small, medium, large", name, profile.LLM.ReviewerModelTier)
 	}
 	for index, source := range profile.AgentSources {
 		if strings.TrimSpace(source) == "" {
@@ -902,16 +960,101 @@ func validateProfile(name string, profile Profile) error {
 	return nil
 }
 
-func validateProfileSecretsProfileSelection(secrets SecretsConfig, name string, profile Profile) error {
-	selection := strings.TrimSpace(profile.SecretsProfile)
-	if selection == "" {
+func validateLLMConfig(field string, llm LLMConfig) error {
+	if !llm.Provider.Valid() {
+		return invalid("%s.provider %q is invalid", field, llm.Provider)
+	}
+	if !llm.Auth.Valid() {
+		return invalid("%s.auth %q is invalid", field, llm.Auth)
+	}
+	if !llm.Adapter.Valid() {
+		return invalid("%s.adapter %q is invalid", field, llm.Adapter)
+	}
+	if llm.Provider == LLMProviderPi {
+		if llm.Auth != LLMAuthSubscription || llm.Adapter != LLMAdapterPiRPC {
+			return invalid("%s provider pi requires auth subscription and adapter pi_rpc", field)
+		}
+	}
+	if llm.Adapter == LLMAdapterPiRPC {
+		if llm.Provider != LLMProviderPi || llm.Auth != LLMAuthSubscription {
+			return invalid("%s adapter pi_rpc requires provider pi and auth subscription", field)
+		}
+	}
+	if llm.Adapter == LLMAdapterCodexCLI {
+		if llm.Provider != LLMProviderOpenAI || llm.Auth != LLMAuthSubscription {
+			return invalid("%s adapter codex_cli requires provider openai and auth subscription", field)
+		}
+	}
+	if llm.Auth == LLMAuthAPIKey && llm.Credential.empty() {
+		return invalid("%s.credential is required for api_key auth", field)
+	}
+	if llm.Auth == LLMAuthSubscription && !llm.Credential.empty() {
+		return invalid("%s.credential must be empty for subscription auth", field)
+	}
+	if llm.Auth == LLMAuthAPIKey {
+		if err := validateCredentialLocation(field+".credential", llm.Credential); err != nil {
+			return err
+		}
+	}
+	for tier, model := range llm.ModelMap {
+		modelTier := ModelTier(tier)
+		if !modelTier.Valid() {
+			return invalid("%s.model_map tier %q is invalid", field, tier)
+		}
+		if strings.TrimSpace(model) == "" {
+			return invalid("%s.model_map.%s is required", field, tier)
+		}
+	}
+	if llm.ReviewerModelTier != "" && !llm.ReviewerModelTier.Valid() {
+		return invalid("%s.reviewer_model_tier %q is invalid; must be one of small, medium, large", field, llm.ReviewerModelTier)
+	}
+	return nil
+}
+
+func validateProfileCredentialStoreSelections(secrets SecretsConfig, name string, profile Profile) error {
+	for _, credential := range profileCredentialLocations(profile) {
+		if err := validateCredentialStoreSelection(secrets, fmt.Sprintf("profiles.%s.%s.credential.store", name, credential.path), credential.location.Store); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type profileCredentialLocation struct {
+	path     string
+	location CredentialLocation
+}
+
+func profileCredentialLocations(profile Profile) []profileCredentialLocation {
+	locations := []profileCredentialLocation{{
+		path:     "git",
+		location: profile.Git.Credential,
+	}}
+	if profile.ReviewerCredentials != nil {
+		locations = append(locations, profileCredentialLocation{
+			path:     "reviewer_credentials",
+			location: profile.ReviewerCredentials.Credential,
+		})
+	}
+	if profile.LLM.Auth == LLMAuthAPIKey {
+		locations = append(locations, profileCredentialLocation{
+			path:     "llm",
+			location: profile.LLM.Credential,
+		})
+	}
+	return locations
+}
+
+func validateCredentialStoreSelection(secrets SecretsConfig, field, store string) error {
+	store = strings.TrimSpace(store)
+	if store == "" {
+		return invalid("%s is required", field)
+	}
+	if store == LocalOSCredentialStoreID {
 		return nil
 	}
-	if selection == LegacyProjectedSecretsProfileID {
-		return invalid("profiles.%s.secrets_profile %q is reserved", name, LegacyProjectedSecretsProfileID)
-	}
-	if _, ok := secrets.Profiles[selection]; !ok {
-		return fmt.Errorf("%w: profiles.%s.secrets_profile %q", ErrSecretsProfileNotFound, name, selection)
+	if _, ok := secrets.Stores[store]; !ok {
+		return fmt.Errorf("%w: %s %q", ErrSecretsStoreNotFound, field, store)
 	}
 	return nil
 }
@@ -973,87 +1116,68 @@ func validateRepositoryProfiles(cfg File) error {
 	return nil
 }
 
-// ValidateKeyring checks non-secret keyring backend preferences.
-func ValidateKeyring(keyring KeyringConfig) error {
-	backend := strings.TrimSpace(keyring.Backend)
-	if backend == "" {
-		return nil
-	}
-	parsed, err := credstore.ParseBackend(backend)
-	if err != nil {
-		return fmt.Errorf("%w: keyring.backend %q is invalid: %w", ErrInvalid, backend, err)
-	}
-	if IsOnePasswordSecretsBackend(SecretsBackendKind(parsed)) {
-		return invalid("keyring.backend %q is not supported; configure 1Password through a named secrets-management profile instead", backend)
-	}
+// ValidateKeyring is retained for in-memory compatibility during the staged
+// rewrite. keyring.backend is no longer part of the config schema.
+func ValidateKeyring(_ KeyringConfig) error {
 	return nil
 }
 
-// ValidateSecrets checks non-secret named secrets-management profile config.
+// ValidateSecrets checks non-secret named credential store config.
 func ValidateSecrets(secrets SecretsConfig) error {
 	secrets = secrets.normalized()
-	if strings.TrimSpace(secrets.DefaultProfile) != "" {
-		if secrets.DefaultProfile == LegacyProjectedSecretsProfileID {
-			return invalid("secrets.default_profile %q is reserved", LegacyProjectedSecretsProfileID)
-		}
-		if _, ok := secrets.Profiles[secrets.DefaultProfile]; !ok {
-			return fmt.Errorf("%w: secrets.default_profile %q", ErrProfileNotFound, secrets.DefaultProfile)
-		}
-	}
-	for id, profile := range secrets.Profiles {
+	for id, store := range secrets.Stores {
 		trimmedID := strings.TrimSpace(id)
 		if trimmedID == "" {
-			return invalid("secrets.profiles key is required")
+			return invalid("secrets.stores key is required")
 		}
 		if trimmedID != id {
-			return invalid("secrets.profiles.%s id must not contain surrounding whitespace", id)
+			return invalid("secrets.stores.%s id must not contain surrounding whitespace", id)
 		}
-		if id == LegacyProjectedSecretsProfileID {
-			return invalid("secrets.profiles.%s is reserved", LegacyProjectedSecretsProfileID)
+		if id == LocalOSCredentialStoreID {
+			return invalid("secrets.stores.%s is reserved", LocalOSCredentialStoreID)
 		}
-		if err := validateSecretsProfile(id, profile); err != nil {
+		if err := validateSecretsStore(id, store); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateSecretsProfile(id string, profile SecretsProfile) error {
-	if err := validateOptionalSingleLine(fmt.Sprintf("secrets.profiles.%s.label", id), profile.Label); err != nil {
+func validateSecretsStore(id string, store SecretsStore) error {
+	if err := validateOptionalSingleLine(fmt.Sprintf("secrets.stores.%s.display_name", id), store.DisplayName); err != nil {
 		return err
 	}
-	if strings.TrimSpace(string(profile.Backend.Kind)) == "" {
-		return invalid("secrets.profiles.%s.backend.kind is required", id)
+	if strings.TrimSpace(string(store.Backend.Kind)) == "" {
+		return invalid("secrets.stores.%s.backend.kind is required", id)
 	}
-	if _, err := credstore.ParseBackend(string(profile.Backend.Kind)); err != nil {
-		return fmt.Errorf("%w: secrets.profiles.%s.backend.kind %q is invalid: %w", ErrInvalid, id, profile.Backend.Kind, err)
+	if _, err := credstore.ParseBackend(string(store.Backend.Kind)); err != nil {
+		return fmt.Errorf("%w: secrets.stores.%s.backend.kind %q is invalid: %w", ErrInvalid, id, store.Backend.Kind, err)
 	}
-	if err := validateSecretsProfileBackend(id, profile.Backend); err != nil {
+	if err := validateSecretsStoreBackend(id, store.Backend); err != nil {
 		return err
 	}
 	return nil
 }
 
-func validateSecretsProfileBackend(id string, backend SecretsProfileBackend) error {
+func validateSecretsStoreBackend(id string, backend SecretsStoreBackend) error {
 	if !IsOnePasswordSecretsBackend(backend.Kind) {
 		return nil
 	}
 	onePassword := backend.OnePassword
 	if onePassword == nil {
-		onePassword = &SecretsProfileOnePasswordConfig{}
+		onePassword = &SecretsStoreOnePasswordConfig{}
 	}
 	field := func(suffix string) string {
-		return fmt.Sprintf("secrets.profiles.%s.backend.onepassword.%s", id, suffix)
+		return fmt.Sprintf("secrets.stores.%s.backend.onepassword.%s", id, suffix)
 	}
 	for suffix, value := range map[string]string{
-		"vault_id":           onePassword.VaultID,
-		"item_title_prefix":  onePassword.ItemTitlePrefix,
-		"item_tag":           onePassword.ItemTag,
-		"item_field_title":   onePassword.ItemFieldTitle,
-		"connect_host":       onePassword.ConnectHost,
-		"connect_token_env":  onePassword.ConnectTokenEnv,
-		"service_token_env":  onePassword.ServiceTokenEnv,
-		"desktop_account_id": onePassword.DesktopAccountID,
+		"account_id":        onePassword.AccountID,
+		"account_url":       onePassword.AccountURL,
+		"vault_id":          onePassword.VaultID,
+		"vault_name":        onePassword.VaultName,
+		"connect_host":      onePassword.ConnectHost,
+		"connect_token_env": onePassword.ConnectTokenEnv,
+		"service_token_env": onePassword.ServiceTokenEnv,
 	} {
 		if err := validateOptionalSingleLine(field(suffix), value); err != nil {
 			return err
@@ -1097,6 +1221,23 @@ func validateCredentialRef(field, ref string) error {
 	return nil
 }
 
+func validateCredentialLocation(field string, credential CredentialLocation) error {
+	credential = credential.normalized()
+	if credential.Store == "" {
+		return invalid("%s.store is required", field)
+	}
+	if credential.Name == "" {
+		return invalid("%s.name is required", field)
+	}
+	return validateCredentialRef(field+".name", credential.Name)
+}
+
+func sameCredentialLocation(left, right CredentialLocation) bool {
+	left = left.normalized()
+	right = right.normalized()
+	return left.Store == right.Store && left.Name == right.Name
+}
+
 func validateOptionalSingleLine(field, value string) error {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -1134,6 +1275,13 @@ func (cfg File) normalized() File {
 		profiles[name] = profile.normalized()
 	}
 	cfg.Profiles = profiles
+	if cfg.LLMRuntimes != nil {
+		runtimes := make(map[string]LLMConfig, len(cfg.LLMRuntimes))
+		for name, runtime := range cfg.LLMRuntimes {
+			runtimes[strings.TrimSpace(name)] = runtime.normalized()
+		}
+		cfg.LLMRuntimes = runtimes
+	}
 	if len(cfg.RepositoryProfiles) > 0 {
 		routes := make([]RepositoryProfile, len(cfg.RepositoryProfiles))
 		for index, route := range cfg.RepositoryProfiles {
@@ -1157,31 +1305,41 @@ func (cfg File) normalized() File {
 }
 
 func (s SecretsConfig) normalized() SecretsConfig {
-	s.DefaultProfile = strings.TrimSpace(s.DefaultProfile)
-	if s.Profiles == nil {
-		s.Profiles = map[string]SecretsProfile{}
+	if s.Stores == nil {
+		s.Stores = map[string]SecretsStore{}
 	}
-	profiles := make(map[string]SecretsProfile, len(s.Profiles))
 	for id, profile := range s.Profiles {
-		profiles[id] = profile.normalized()
+		if _, ok := s.Stores[id]; !ok {
+			s.Stores[id] = profile
+		}
 	}
-	s.Profiles = profiles
+	stores := make(map[string]SecretsStore, len(s.Stores))
+	for id, store := range s.Stores {
+		stores[id] = store.normalized()
+	}
+	s.Stores = stores
+	s.Profiles = stores
 	return s
 }
 
-func (p SecretsProfile) normalized() SecretsProfile {
-	p.Label = strings.TrimSpace(p.Label)
-	p.Backend = p.Backend.normalized()
-	return p
+func (s SecretsStore) normalized() SecretsStore {
+	s.DisplayName = strings.TrimSpace(s.DisplayName)
+	s.Label = strings.TrimSpace(s.Label)
+	if s.DisplayName == "" {
+		s.DisplayName = s.Label
+	}
+	s.Label = s.DisplayName
+	s.Backend = s.Backend.normalized()
+	return s
 }
 
-func (b SecretsProfileBackend) normalized() SecretsProfileBackend {
+func (b SecretsStoreBackend) normalized() SecretsStoreBackend {
 	b.Kind = SecretsBackendKind(strings.TrimSpace(string(b.Kind)))
 	if !IsOnePasswordSecretsBackend(b.Kind) {
 		b.OnePassword = nil
 		return b
 	}
-	onePassword := SecretsProfileOnePasswordConfig{}
+	onePassword := SecretsStoreOnePasswordConfig{}
 	if b.OnePassword != nil {
 		onePassword = b.OnePassword.normalized()
 	}
@@ -1211,16 +1369,23 @@ func (b SecretsProfileBackend) normalized() SecretsProfileBackend {
 	return b
 }
 
-func (c SecretsProfileOnePasswordConfig) normalized() SecretsProfileOnePasswordConfig {
+func (c SecretsStoreOnePasswordConfig) normalized() SecretsStoreOnePasswordConfig {
 	c.Timeout = strings.TrimSpace(c.Timeout)
+	c.AccountID = strings.TrimSpace(c.AccountID)
+	c.AccountURL = strings.TrimSpace(c.AccountURL)
 	c.VaultID = strings.TrimSpace(c.VaultID)
-	c.ItemTitlePrefix = strings.TrimSpace(c.ItemTitlePrefix)
-	c.ItemTag = strings.TrimSpace(c.ItemTag)
-	c.ItemFieldTitle = strings.TrimSpace(c.ItemFieldTitle)
+	c.VaultName = strings.TrimSpace(c.VaultName)
 	c.ConnectHost = strings.TrimSpace(c.ConnectHost)
 	c.ConnectTokenEnv = strings.TrimSpace(c.ConnectTokenEnv)
 	c.ServiceTokenEnv = strings.TrimSpace(c.ServiceTokenEnv)
+	c.ItemTitlePrefix = strings.TrimSpace(c.ItemTitlePrefix)
+	c.ItemTag = strings.TrimSpace(c.ItemTag)
+	c.ItemFieldTitle = strings.TrimSpace(c.ItemFieldTitle)
 	c.DesktopAccountID = strings.TrimSpace(c.DesktopAccountID)
+	if c.AccountID == "" {
+		c.AccountID = c.DesktopAccountID
+	}
+	c.DesktopAccountID = c.AccountID
 	return c
 }
 
@@ -1237,13 +1402,52 @@ func IsOnePasswordSecretsBackend(kind SecretsBackendKind) bool {
 
 func (p Profile) normalized() Profile {
 	p.SecretsProfile = strings.TrimSpace(p.SecretsProfile)
+	p.Git = p.Git.normalized()
+	if p.ReviewerCredentials != nil {
+		reviewer := p.ReviewerCredentials.normalized()
+		p.ReviewerCredentials = &reviewer
+	}
 	p.LLM = p.LLM.normalized()
 	p.ReviewPolicy = p.ReviewPolicy.normalized()
 	return p
 }
 
+func (g GitConfig) normalized() GitConfig {
+	g.CredentialRef = strings.TrimSpace(g.CredentialRef)
+	g.Credential = g.Credential.normalized()
+	if g.Credential.Name == "" && g.CredentialRef != "" {
+		if g.Credential.Store == "" {
+			g.Credential.Store = LocalOSCredentialStoreID
+		}
+		g.Credential.Name = g.CredentialRef
+	}
+	g.CredentialRef = g.Credential.Name
+	return g
+}
+
+func (r ReviewerCredentials) normalized() ReviewerCredentials {
+	r.CredentialRef = strings.TrimSpace(r.CredentialRef)
+	r.Credential = r.Credential.normalized()
+	if r.Credential.Name == "" && r.CredentialRef != "" {
+		if r.Credential.Store == "" {
+			r.Credential.Store = LocalOSCredentialStoreID
+		}
+		r.Credential.Name = r.CredentialRef
+	}
+	r.CredentialRef = r.Credential.Name
+	return r
+}
+
 func (l LLMConfig) normalized() LLMConfig {
 	l.CredentialRef = strings.TrimSpace(l.CredentialRef)
+	l.Credential = l.Credential.normalized()
+	if l.Credential.Name == "" && l.CredentialRef != "" {
+		if l.Credential.Store == "" {
+			l.Credential.Store = LocalOSCredentialStoreID
+		}
+		l.Credential.Name = l.CredentialRef
+	}
+	l.CredentialRef = l.Credential.Name
 	l.ReviewerModelTier = ModelTier(strings.TrimSpace(string(l.ReviewerModelTier)))
 	if len(l.ModelMap) > 0 {
 		modelMap := make(ModelMap, len(l.ModelMap))

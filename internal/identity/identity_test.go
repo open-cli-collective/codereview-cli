@@ -93,7 +93,6 @@ func TestRefreshAllSortedAndAtomicOnFailure(t *testing.T) {
 
 func TestRefreshAllReviewerCredentialsRollbackOnFailure(t *testing.T) {
 	cfg := config.File{
-		DefaultProfile: "reviewer",
 		Profiles: map[string]config.Profile{
 			"reviewer": {
 				Git: config.GitConfig{
@@ -238,7 +237,6 @@ func (f *fakeResolver) ResolveIdentity(_ context.Context, _ string, git config.G
 
 func testConfig() config.File {
 	return config.File{
-		DefaultProfile: "home",
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{

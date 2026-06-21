@@ -55,9 +55,10 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 
 	cases := []commandCase{
 		{
-			name: "init with env credential ingress",
+			name: "init rejects ambient backend env credential ingress",
 			args: func(h *auditHarness) []string {
 				return []string{
+					"--backend", string(credstore.BackendFile),
 					"init",
 					"--non-interactive",
 					"--git-token-from-env", "CR_NOLEAK_GIT",
@@ -68,13 +69,14 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 					"--agent-source", h.agentDir,
 				}
 			},
-			env: secretEnv,
+			env:     secretEnv,
+			wantErr: true,
 		},
 		{
 			name:    "set credential text",
 			prepare: saveConfigOnly,
 			args: func(*auditHarness) []string {
-				return []string{"set-credential", "--ref", "codereview/default", "--key", credentials.GitTokenKey, "--from-env", "CR_NOLEAK_GIT", "--overwrite"}
+				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default", "--key", credentials.GitTokenKey, "--from-env", "CR_NOLEAK_GIT", "--overwrite"}
 			},
 			env: secretEnv,
 		},
@@ -82,7 +84,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			name:    "set credential json",
 			prepare: saveConfigOnly,
 			args: func(*auditHarness) []string {
-				return []string{"set-credential", "--ref", "codereview/default-reviewer", "--key", credentials.GitTokenKey, "--from-env", "CR_NOLEAK_REVIEWER", "--overwrite", "--json"}
+				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default-reviewer", "--key", credentials.GitTokenKey, "--from-env", "CR_NOLEAK_REVIEWER", "--overwrite", "--json"}
 			},
 			env: secretEnv,
 		},
@@ -90,7 +92,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			name:    "set github app private key json",
 			prepare: saveGitHubAppReviewerConfigOnly,
 			args: func(*auditHarness) []string {
-				return []string{"set-credential", "--ref", "codereview/default-reviewer-app", "--key", credentials.GitHubAppPrivateKeyKey, "--from-env", "CR_NOLEAK_APP_PRIVATE_KEY", "--overwrite", "--json"}
+				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default-reviewer-app", "--key", credentials.GitHubAppPrivateKeyKey, "--from-env", "CR_NOLEAK_APP_PRIVATE_KEY", "--overwrite", "--json"}
 			},
 			env: secretEnv,
 		},
@@ -98,7 +100,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			name:    "set github app installation id text",
 			prepare: saveGitHubAppReviewerConfigOnly,
 			args: func(*auditHarness) []string {
-				return []string{"set-credential", "--ref", "codereview/default-reviewer-app", "--key", credentials.GitHubAppInstallationIDKey, "--from-env", "CR_NOLEAK_APP_INSTALLATION_ID", "--overwrite"}
+				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default-reviewer-app", "--key", credentials.GitHubAppInstallationIDKey, "--from-env", "CR_NOLEAK_APP_INSTALLATION_ID", "--overwrite"}
 			},
 			env: secretEnv,
 		},
@@ -106,7 +108,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			name:    "set credential duplicate failure",
 			prepare: seedConfiguredCredentials,
 			args: func(*auditHarness) []string {
-				return []string{"set-credential", "--ref", "codereview/default", "--key", credentials.GitTokenKey, "--from-env", "CR_NOLEAK_GIT"}
+				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default", "--key", credentials.GitTokenKey, "--from-env", "CR_NOLEAK_GIT"}
 			},
 			env:     secretEnv,
 			wantErr: true,
@@ -376,6 +378,7 @@ func newAuditHarness(t *testing.T) *auditHarness {
 
 func (h *auditHarness) run(args []string) (string, string, error) {
 	var stdout, stderr bytes.Buffer
+	args = auditArgsWithExplicitProfile(args)
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		ConfigPath: h.configPath,
 		Stdin:      strings.NewReader(""),
@@ -390,31 +393,81 @@ func (h *auditHarness) run(args []string) (string, string, error) {
 	agentscmd.RegisterWithFactory(cmd, opts, h.providerFactory)
 	reviewcmd.RegisterWithFactory(cmd, opts, h.reviewRuntimeFactory)
 
-	args = append([]string{"--backend", string(credstore.BackendFile)}, args...)
 	err := root.Execute(cmd, args)
 	return stdout.String(), stderr.String(), err
 }
 
+func auditArgsWithExplicitProfile(args []string) []string {
+	if len(args) == 0 || auditArgsIncludeProfile(args) {
+		return args
+	}
+	command := auditRootCommand(args)
+	switch command {
+	case "config", "me", "agents", "review":
+		out := []string{"--profile", "default"}
+		out = append(out, args...)
+		return out
+	default:
+		return args
+	}
+}
+
+func auditArgsIncludeProfile(args []string) bool {
+	for _, arg := range args {
+		if arg == "--profile" || strings.HasPrefix(arg, "--profile=") {
+			return true
+		}
+	}
+	return false
+}
+
+func auditRootCommand(args []string) string {
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "" {
+			continue
+		}
+		if arg[0] != '-' {
+			return arg
+		}
+		if arg == "--backend" || arg == "--config" || arg == "--profile" {
+			index++
+		}
+	}
+	return ""
+}
+
+const auditCredentialStoreID = "test-file"
+
 func (h *auditHarness) config() config.File {
 	maxAgeDays := 30
 	return config.File{
-		DefaultProfile: "default",
-		Keyring:        config.KeyringConfig{Backend: string(credstore.BackendFile)},
+		Secrets: config.SecretsConfig{
+			Stores: map[string]config.SecretsStore{
+				auditCredentialStoreID: {
+					DisplayName: "No-leak file store",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+				},
+			},
+		},
 		Profiles: map[string]config.Profile{
 			"default": {
 				Git: config.GitConfig{
 					Host:          h.prRef.Host,
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default"},
 					CredentialRef: "codereview/default",
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-reviewer"},
 					CredentialRef: "codereview/default-reviewer",
 				},
 				LLM: config.LLMConfig{
 					Provider:      config.LLMProviderAnthropic,
 					Auth:          config.LLMAuthAPIKey,
 					Adapter:       config.LLMAdapterAnthropicAPI,
+					Credential:    config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-llm"},
 					CredentialRef: "codereview/default-llm",
 					ModelMap:      config.ModelMap{"medium": "claude-sonnet-4-6"},
 				},
@@ -437,6 +490,7 @@ func (h *auditHarness) githubAppReviewerConfig() config.File {
 	profile := cfg.Profiles["default"]
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		Credential:    config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-reviewer-app"},
 		CredentialRef: "codereview/default-reviewer-app",
 	}
 	cfg.Profiles["default"] = profile
@@ -447,6 +501,7 @@ func (h *auditHarness) githubAppGitConfig() config.File {
 	cfg := h.config()
 	profile := cfg.Profiles["default"]
 	profile.Git.AuthMode = config.GitAuthModeGitHubApp
+	profile.Git.Credential = config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-app"}
 	profile.Git.CredentialRef = "codereview/default-app"
 	profile.ReviewerCredentials = nil
 	cfg.Profiles["default"] = profile
@@ -528,9 +583,9 @@ func (h *auditHarness) seedGitHubAppReviewerCredentials(t *testing.T) {
 func (h *auditHarness) seedCredentialWrites(t *testing.T, cfg config.File, writes []credentialSeed) {
 	t.Helper()
 	h.saveConfigFile(t, cfg)
-	store, err := credentials.OpenStore(string(credstore.BackendFile), true, cfg)
+	store, err := h.openCredentialStore()
 	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
+		t.Fatalf("open credential store: %v", err)
 	}
 	defer store.Close()
 	for _, write := range writes {
@@ -544,16 +599,16 @@ func (h *auditHarness) seedCredentialWrites(t *testing.T, cfg config.File, write
 	}
 }
 
-func (h *auditHarness) identityFactory(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
-	store, err := credentials.OpenStore(string(credstore.BackendFile), true, cfg)
+func (h *auditHarness) identityFactory(_ *cobra.Command, _ *root.Options, _ config.File) (identity.Resolver, func(), error) {
+	store, err := h.openCredentialStore()
 	if err != nil {
 		return nil, nil, err
 	}
 	return realIdentityResolver{h: h, store: store}, func() { _ = store.Close() }, nil
 }
 
-func (h *auditHarness) providerFactory(_ *cobra.Command, _ *root.Options, cfg config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
-	store, err := credentials.OpenStore(string(credstore.BackendFile), true, cfg)
+func (h *auditHarness) providerFactory(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
+	store, err := h.openCredentialStore()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -565,8 +620,8 @@ func (h *auditHarness) providerFactory(_ *cobra.Command, _ *root.Options, cfg co
 	return provider, func() { _ = store.Close() }, nil
 }
 
-func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts reviewcmd.RuntimeOptions) (reviewcmd.Runtime, error) {
-	store, err := credentials.OpenStore(string(credstore.BackendFile), true, cfg)
+func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts reviewcmd.RuntimeOptions) (reviewcmd.Runtime, error) {
+	store, err := h.openCredentialStore()
 	if err != nil {
 		return reviewcmd.Runtime{}, err
 	}
@@ -631,6 +686,13 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 	}, nil
 }
 
+func (h *auditHarness) openCredentialStore() (*credstore.Store, error) {
+	return credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendFile,
+	})
+}
+
 func (h *auditHarness) newGitHubProvider(git config.GitConfig, store githubprovider.TokenStore, lookup *githubprovider.InstallationLookup) (*githubprovider.Client, gitprovider.Credential, error) {
 	return githubprovider.NewFromGitConfig(git, store, githubprovider.Options{
 		BaseURL:            h.githubURL,
@@ -646,6 +708,7 @@ func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 	return config.GitConfig{
 		Host:          profile.Git.Host,
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
+		Credential:    profile.ReviewerCredentials.Credential,
 		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}

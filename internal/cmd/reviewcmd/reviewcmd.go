@@ -682,22 +682,21 @@ func mapRunError(err error) error {
 }
 
 func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
-	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
-	if err != nil {
-		return Runtime{}, mapRunError(err)
-	}
-	store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
-	if err != nil {
-		return Runtime{}, mapRunError(err)
-	}
-	cleanup := func() { _ = store.Close() }
+	profile = normalizeRuntimeProfile(profile)
+	stores := newRuntimeCredentialStores(cfg, opts.Backend, cmderr.BackendFlagChanged(cmd))
+	cleanup := stores.Close
 	providerGit := gitConfigForReviewerAuth(profile)
-	provider, credential, err := newGitProvider(providerGit, store, gitProviderOptions(runtimeOpts.PRRef))
+	providerStore, err := stores.Open(providerGit.Credential)
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), provider, credential, store, profile)
+	provider, credential, err := newGitProvider(providerGit, providerStore, gitProviderOptions(runtimeOpts.PRRef))
+	if err != nil {
+		cleanup()
+		return Runtime{}, mapRunError(err)
+	}
+	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), provider, credential, providerStore, profile)
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
@@ -714,7 +713,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 	}
 	cleanup = func() {
 		_ = ledgerStore.Close()
-		_ = store.Close()
+		stores.Close()
 	}
 	limiter, err := outbox.NewTokenBucket(livePostLimiterInterval, livePostLimiterBurst)
 	if err != nil {
@@ -722,7 +721,15 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		return Runtime{}, err
 	}
 	adapter := newLazyAdapter(func() (llm.Adapter, error) {
-		adapter, err := newAdapterForRuntime(profile.LLM, store)
+		adapterStore := providerStore
+		if profile.LLM.Auth == config.LLMAuthAPIKey {
+			var err error
+			adapterStore, err = stores.Open(profile.LLM.Credential)
+			if err != nil {
+				return nil, mapRunError(err)
+			}
+		}
+		adapter, err := newAdapterForRuntime(profile.LLM, adapterStore)
 		if err != nil {
 			return nil, err
 		}
@@ -743,9 +750,55 @@ func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 	return config.GitConfig{
 		Host:          profile.Git.Host,
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
+		Credential:    profile.ReviewerCredentials.Credential,
 		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}
+}
+
+type runtimeCredentialStores struct {
+	cfg                config.File
+	backend            string
+	backendFlagChanged bool
+	stores             map[string]*credstore.Store
+}
+
+func newRuntimeCredentialStores(cfg config.File, backend string, backendFlagChanged bool) *runtimeCredentialStores {
+	return &runtimeCredentialStores{
+		cfg:                cfg,
+		backend:            backend,
+		backendFlagChanged: backendFlagChanged,
+		stores:             map[string]*credstore.Store{},
+	}
+}
+
+func (s *runtimeCredentialStores) Open(location config.CredentialLocation) (*credstore.Store, error) {
+	resolved, err := credentials.ResolveCredentialStoreForLocation(s.cfg, location)
+	if err != nil {
+		return nil, err
+	}
+	if store := s.stores[resolved.ID]; store != nil {
+		return store, nil
+	}
+	store, err := credentials.OpenResolvedStore(s.backend, s.backendFlagChanged, s.cfg, resolved)
+	if err != nil {
+		return nil, err
+	}
+	s.stores[resolved.ID] = store
+	return store, nil
+}
+
+func (s *runtimeCredentialStores) Close() {
+	for id, store := range s.stores {
+		_ = store.Close()
+		delete(s.stores, id)
+	}
+}
+
+func normalizeRuntimeProfile(profile config.Profile) config.Profile {
+	return config.Normalize(config.File{
+		Profiles: map[string]config.Profile{"runtime": profile},
+	}).Profiles["runtime"]
 }
 
 func gitProviderOptions(ref gitprovider.PRRef) githubprovider.Options {

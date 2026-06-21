@@ -33,7 +33,7 @@ func TestAgentsListWithoutPRLoadsProfileAndFlagSources(t *testing.T) {
 		return nil, nil, nil
 	})
 
-	if err := root.Execute(cmd, []string{"agents", "list", "--agents-dir", flagDir, "--agents-dir", overrideFlagDir}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "agents", "list", "--agents-dir", flagDir, "--agents-dir", overrideFlagDir}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	text := out.String()
@@ -59,7 +59,7 @@ func TestAgentsListFailsFastForUnreadableProfileSource(t *testing.T) {
 		return nil, nil, nil
 	})
 
-	err := root.Execute(cmd, []string{"agents", "list"})
+	err := root.Execute(cmd, []string{"--profile", "home", "agents", "list"})
 	if err == nil || !strings.Contains(err.Error(), "agents: read source") {
 		t.Fatalf("Execute error = %v, want read source failure", err)
 	}
@@ -189,7 +189,7 @@ func TestAgentsShowWithPRUsesRepositoryProfileRoute(t *testing.T) {
 	}
 }
 
-func TestAgentsListExplicitEmptyProfileBypassesRepositoryRoute(t *testing.T) {
+func TestAgentsListExplicitEmptyProfileFailsBeforeRepositoryRoute(t *testing.T) {
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig("")
 	work := cfg.Profiles["home"]
@@ -203,24 +203,24 @@ func TestAgentsListExplicitEmptyProfileBypassesRepositoryRoute(t *testing.T) {
 			Repos:     []string{ref.Repo},
 		},
 	}}
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
-		if profile.Git.CredentialRef != "codereview/home" {
-			t.Fatalf("provider profile credential ref = %q, want default home", profile.Git.CredentialRef)
-		}
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile) (gitprovider.GitProvider, func(), error) {
+		t.Fatal("provider factory should not be called for an empty explicit profile")
 		return fake, nil, nil
 	})
 
-	if err := root.Execute(cmd, []string{"--profile", "", "agents", "list", prURL(ref), "--json"}); err != nil {
-		t.Fatalf("Execute: %v", err)
+	err := root.Execute(cmd, []string{"--profile", "", "agents", "list", prURL(ref), "--json"})
+	if err == nil || !strings.Contains(err.Error(), "no profile selected") {
+		t.Fatalf("Execute error = %v, want empty profile failure", err)
 	}
 }
 
-func TestAgentsListImplicitDefaultProfileHostMismatch(t *testing.T) {
+func TestAgentsListExplicitProfileHostMismatch(t *testing.T) {
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig("")
 	home := cfg.Profiles["home"]
 	home.Git.Host = "gitlab.com"
 	cfg.Profiles["home"] = home
+	cfg.RepositoryProfiles = nil
 	work := home
 	work.Git.Host = "github.com"
 	work.Git.CredentialRef = "codereview/work"
@@ -234,11 +234,11 @@ func TestAgentsListImplicitDefaultProfileHostMismatch(t *testing.T) {
 		},
 	}}
 	cmd, _ := newTestCommand(t, cfg, func(*cobra.Command, *root.Options, config.File, config.Profile) (gitprovider.GitProvider, func(), error) {
-		t.Fatal("provider factory should not be called when fallback profile host mismatches")
+		t.Fatal("provider factory should not be called when explicit profile host mismatches")
 		return fake, nil, nil
 	})
 
-	err := root.Execute(cmd, []string{"agents", "list", prURL(ref)})
+	err := root.Execute(cmd, []string{"--profile", "home", "agents", "list", prURL(ref)})
 	if err == nil {
 		t.Fatal("Execute error = nil, want host mismatch")
 	}
@@ -297,7 +297,7 @@ func TestAgentsShowRendersAgentAndMissingFailure(t *testing.T) {
 	cfg := testConfig(profileDir)
 	cmd, out := newTestCommand(t, cfg, providerFactory(&gitprovider.Fake{}))
 
-	if err := root.Execute(cmd, []string{"agents", "show", "harness:architecture"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "agents", "show", "harness:architecture"}); err != nil {
 		t.Fatalf("Execute show: %v", err)
 	}
 	if text := out.String(); !strings.Contains(text, "Agent: harness:architecture") || !strings.Contains(text, "Read carefully.") || !strings.Contains(text, "Source canonical path:") {
@@ -305,7 +305,7 @@ func TestAgentsShowRendersAgentAndMissingFailure(t *testing.T) {
 	}
 
 	cmd, _ = newTestCommand(t, cfg, providerFactory(&gitprovider.Fake{}))
-	err := root.Execute(cmd, []string{"agents", "show", "missing:agent"})
+	err := root.Execute(cmd, []string{"--profile", "home", "agents", "show", "missing:agent"})
 	if err == nil {
 		t.Fatal("Execute missing error = nil, want failure")
 	}
@@ -359,7 +359,7 @@ func TestAgentsListRejectsInvalidPRArg(t *testing.T) {
 	}
 
 	cmd, _ = newTestCommand(t, cfg, providerFactory(&gitprovider.Fake{}))
-	err = root.Execute(cmd, []string{"agents", "list", "https://gitlab.com/open-cli-collective/codereview-cli/pull/28"})
+	err = root.Execute(cmd, []string{"--profile", "home", "agents", "list", "https://gitlab.com/open-cli-collective/codereview-cli/pull/28"})
 	if err == nil {
 		t.Fatal("Execute wrong host error = nil, want usage error")
 	}
@@ -409,9 +409,16 @@ func testConfig(agentSource string) config.File {
 		profile.AgentSources = []string{agentSource}
 	}
 	return config.File{
-		DefaultProfile: "home",
-		Keyring:        config.KeyringConfig{Backend: "memory"},
-		Profiles:       map[string]config.Profile{"home": profile},
+		Keyring: config.KeyringConfig{Backend: "memory"},
+		RepositoryProfiles: []config.RepositoryProfile{{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		}},
+		Profiles: map[string]config.Profile{"home": profile},
 	}
 }
 

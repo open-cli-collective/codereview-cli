@@ -40,9 +40,9 @@ Supporting language is allowed when it helps teach the model:
 
 - A profile is the saved result.
 - A Git scope is the thing the user chooses while assembling that profile.
-- `credential_ref` remains an implementation term. User-facing prompts should
-  prefer **storage labels** and explain them in terms of the selected Git
-  scope, reviewer entity, or LLM runtime.
+- Credential storage is user-facing as **credential store** plus **credential
+  name**. The name is the full visible `codereview/...` path written to the
+  selected store.
 
 ## Core Mental Model
 
@@ -95,9 +95,8 @@ This ordering is intentional:
   configurations.
 - Global settings stay visible but conceptually separate from the core
   identity/runtime/profile model.
-- Secrets management stays top-level because it affects where credentials live,
-  but it should not be confused with the credential refs inside a review
-  profile.
+- Secrets storage stays top-level because it affects where credentials live.
+  Credential-writing flows choose one configured destination explicitly.
 
 ## First-Run Behavior
 
@@ -105,7 +104,7 @@ For a first-time user, interactive `init` should:
 
 - explain what `cr init` writes and what it does not write
 - teach the three building blocks before asking for schema-shaped details
-- avoid asking for raw credential refs on the primary path
+- avoid asking for raw schema terms on the primary path
 - treat secrets as requirements of a building block, not as unrelated chores
 
 The first-run user should be able to understand:
@@ -155,7 +154,7 @@ enough local context to understand why each secret is needed. Reviewer-entity
 setup collects the required PAT or GitHub App reviewer secrets inline on the
 reviewer details page before a new reviewer can be staged. Those values remain
 draft-local until commit; final commit still handles untouched or deferred Git
-and LLM credential refs.
+and LLM credential locations.
 
 If the user cancels during credential collection, whether from a subflow or after
 choosing **Commit staged changes and exit**, any pending secret values remain
@@ -164,7 +163,7 @@ begins, cancellation must still leave both config and keyring untouched.
 
 Credential status shown inside a subflow must also be draft-driven. Reviewer
 entity setup should show non-secret, per-key credential readiness for the
-selected reviewer credential ref:
+selected reviewer credential location:
 
 - PAT reviewers show `git_token`.
 - GitHub App reviewers show required `github_app_id` and
@@ -183,15 +182,15 @@ selected reviewer credential ref:
 - `optional` means an optional key has no staged, skipped, or existing value.
 - `status unavailable` means the backend or key contract could not be inspected,
   so the UI must not claim a key is missing.
-- The destination should include the storage label and the resolved
-  secrets-management profile/backend when known.
+- The destination should include the credential store, credential name, and
+  resolved backend when known.
 
 This status must never show raw secret values. Draft-local writes, defers, and
 optional-key skips should be preserved when the user re-enters reviewer entity
-setup, but they must be filtered out if the reviewer credential ref no longer
-uses those keys. Final commit remains the only write boundary for staged secret
-values, and the final readiness summary should continue to report follow-up
-credential work without leaking values.
+setup, but they must be filtered out if the reviewer credential location no
+longer uses those keys. Final commit remains the only write boundary for staged
+secret values, and the final readiness summary should continue to report
+follow-up credential work without leaking values.
 
 All credential-bearing init flows should show equivalent non-secret destination
 context before collecting secret values. This includes Git credentials, reviewer
@@ -201,11 +200,12 @@ collector.
 Destination summaries should include:
 
 - credential storage ref
-- resolved secrets-management profile label/id when a named profile applies
-- resolved backend display label, including platform-specific automatic OS
-  default copy such as `Automatic OS default (macOS Keychain)`
-- configured 1Password vault, item title prefix, item tag, item field title, and
-  other non-secret routing labels when present
+- selected credential store id and display name
+- credential name, including the visible `codereview/...` path
+- resolved backend display label, including platform-specific OS store copy
+  such as `macOS Login Keychain`
+- configured 1Password account, vault name/id, and other non-secret routing
+  metadata when present
 
 Destination summaries must be non-fatal. If a profile/backend destination cannot
 be resolved, the flow should show non-secret unavailable copy and continue to the
@@ -228,7 +228,7 @@ That means:
   objects on reload
 
 API-key-backed LLM runtimes may be reused across multiple profiles by selecting
-the same draft runtime and the same advanced storage label. If a user wants two
+the same draft runtime and the same credential store/name. If a user wants two
 distinct runtime entries that happen to use the same secret value, the system
 should allow that and should not deduplicate them automatically.
 
@@ -248,7 +248,7 @@ contextual variants of the same fallback choice, such as:
 This means:
 
 - the review is posted with the profile's main Git credentials
-- no separate reviewer credential ref is created for that choice
+- no separate reviewer credential location is created for that choice
 - in the current schema, that exports as `ReviewerCredentials=nil`
 
 Interactive `init` may also offer separate reviewer entities such as:
@@ -268,7 +268,7 @@ text, for example:
 - **Release reviewer (PAT reviewer)**
 
 When no explicit display name exists, the chooser should fall back to stable,
-deterministic identity text derived from the credential ref or equivalent
+deterministic identity text derived from the credential name or equivalent
 profile context, for example:
 
 - **open-cli-collective-rianjs-bot (GitHub App reviewer)**
@@ -296,7 +296,7 @@ and saved config must stay stable:
 - **Git scope** maps to `profile.git`, plus repository-route implications when
   the profile participates in `repository_profiles`.
 - **LLM runtime** maps to `profile.llm`, including the provider, auth mode,
-  adapter, and any optional LLM credential ref implied by API-key auth.
+  adapter, and any optional LLM credential location implied by API-key auth.
 - **Reviewer entity** maps to `profile.reviewer_credentials` when separate
   credentials are configured, or to `nil` when the user selected `Use a
   profile's Git account (no separate reviewer entity)`.
@@ -305,29 +305,28 @@ and saved config must stay stable:
 This section is intentionally high level. The detailed field inventory and
 mutation rules still live in `docs/init-config-surface.md`.
 
-## Storage Labels
+## Credential Storage
 
-Interactive `init` should treat credential refs as an advanced concept without
-forcing the user through a separate mode selector before they can see the
-relevant values.
+Interactive `init` should show credential storage as an explicit destination
+choice, not as a hidden default.
 
-Primary-path users should not be asked for `credential_ref` values directly.
-Instead:
+Primary-path users should choose a credential store and see or edit the full
+credential name. There is no namespace, label, or prefix prompt. Instead:
 
 - defaults should be generated automatically
 - new reviewer defaults may follow the typed entity label, for example
   `rianjs-bot` becomes `codereview/rianjs-bot-reviewer`
-- changing an existing reviewer label must not migrate or rename the existing
-  credential-store ref
-- users who need an override may edit the relevant inline **storage label**
+- changing an existing reviewer display name must not migrate or rename the
+  existing credential name
+- users who need an override may edit the relevant inline **credential name**
   fields for Git, reviewer, or LLM secrets
-- irrelevant reviewer/LLM storage-label fields should stay hidden when the
+- irrelevant reviewer/LLM credential-name fields should stay hidden when the
   profile is using its Git account or a subscription runtime
-- any advanced path should still explain that these labels are non-secret
-  pointers to keyring entries, not the secrets themselves
+- any advanced path should still explain that these names are non-secret
+  pointers to credential-store entries, not the secrets themselves
 - users who need to change where secrets are stored should configure/select a
-  secrets-management profile rather than entering GitHub App IDs, private keys,
-  or API keys in the top-level secrets-management workflow
+  credential store rather than entering GitHub App IDs, private keys, or API
+  keys in the top-level secrets-storage workflow
 
 ## Global Settings Area
 
@@ -337,7 +336,7 @@ assembly path.
 The top-level auxiliary areas should cover:
 
 - global settings for run-data retention behavior
-- secrets-management settings for credential-store/backend behavior
+- secrets-storage settings for credential-store/backend behavior
 
 These settings matter, but they are not part of the primary
 `Git scope + reviewer entity + LLM runtime = review profile` model.
@@ -354,7 +353,7 @@ behavior readable and explicitly tested where relevant, especially for:
   through the interactive workspace draft model
 - durable config ownership
 - credential-planning behavior
-- keyring backend persistence
+- explicit credential-store destination behavior
 - reviewer enable/disable behavior
 - LLM auth and credential-ref behavior
 

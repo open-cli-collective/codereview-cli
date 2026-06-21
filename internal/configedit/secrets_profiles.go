@@ -2,7 +2,6 @@ package configedit
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 
@@ -22,8 +21,6 @@ var (
 	ErrSecretsProfileLabelConflict = errors.New("secrets-profile label flags conflict")
 	// ErrSecretsProfileLabelRequired means a provided label was blank after trim.
 	ErrSecretsProfileLabelRequired = errors.New("secrets-profile label is required")
-	// ErrSecretsProfileDefaultConfigured means the target profile is still the configured default.
-	ErrSecretsProfileDefaultConfigured = errors.New("secrets-profile is the configured default")
 )
 
 // SecretsProfilePatch describes a config-only update to one named secrets-management profile.
@@ -39,7 +36,7 @@ func NormalizeSecretsProfileID(raw string) (string, error) {
 	if id == "" {
 		return "", ErrSecretsProfileIDRequired
 	}
-	if id == config.LegacyProjectedSecretsProfileID {
+	if id == config.LocalOSCredentialStoreID {
 		return "", ErrSecretsProfileReserved
 	}
 	return id, nil
@@ -62,12 +59,16 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 		}
 		normalizedLabel = &trimmed
 	}
-	working := cfg
-	working.Secrets.Profiles = cloneSecretsProfiles(cfg.Secrets.Profiles)
+	working := config.Normalize(cfg)
+	working.Secrets.Profiles = cloneSecretsProfiles(working.Secrets.Profiles)
+	working.Secrets.Stores = cloneSecretsProfiles(working.Secrets.Stores)
 	if working.Secrets.Profiles == nil {
 		working.Secrets.Profiles = map[string]config.SecretsProfile{}
 	}
-	existing, existed := working.Secrets.Profiles[id]
+	if working.Secrets.Stores == nil {
+		working.Secrets.Stores = map[string]config.SecretsStore{}
+	}
+	existing, existed := working.Secrets.Stores[id]
 	if !existed && patch.Backend == nil {
 		return config.File{}, false, false, ErrSecretsProfileBackendRequired
 	}
@@ -79,9 +80,11 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 		updated.Backend = *patch.Backend
 	}
 	if normalizedLabel != nil {
+		updated.DisplayName = *normalizedLabel
 		updated.Label = *normalizedLabel
 	}
 	if patch.ClearLabel {
+		updated.DisplayName = ""
 		updated.Label = ""
 	}
 	if !existed && strings.TrimSpace(string(updated.Backend.Kind)) == "" {
@@ -91,67 +94,48 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 		return cfg, false, false, nil
 	}
 	working.Secrets.Profiles[id] = updated
-	if err := config.Validate(working); err != nil {
+	working.Secrets.Stores[id] = updated
+	if err := validateConfigAfterSecretsProfileEdit(working); err != nil {
 		return config.File{}, false, false, err
 	}
 	return config.Normalize(working), true, !existed, nil
 }
 
-// SetDefaultSecretsProfile updates cfg.secrets.default_profile after verifying the profile exists.
-func SetDefaultSecretsProfile(cfg config.File, rawID string) (config.File, bool, error) {
-	id, err := NormalizeSecretsProfileID(rawID)
-	if err != nil {
-		return config.File{}, false, err
-	}
-	if _, ok := cfg.Secrets.Profiles[id]; !ok {
-		return config.File{}, false, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, id)
-	}
-	if cfg.Secrets.DefaultProfile == id {
-		return cfg, false, nil
-	}
-	working := cfg
-	working.Secrets.DefaultProfile = id
-	if err := config.Validate(working); err != nil {
-		return config.File{}, false, err
-	}
-	return config.Normalize(working), true, nil
-}
-
-// UnsetDefaultSecretsProfile clears cfg.secrets.default_profile.
-func UnsetDefaultSecretsProfile(cfg config.File) (config.File, bool, error) {
-	if strings.TrimSpace(cfg.Secrets.DefaultProfile) == "" {
-		return cfg, false, nil
-	}
-	working := cfg
-	working.Secrets.DefaultProfile = ""
-	if err := config.Validate(working); err != nil {
-		return config.File{}, false, err
-	}
-	return config.Normalize(working), true, nil
-}
-
-// RemoveSecretsProfile removes one explicit named secrets-management profile.
+// RemoveSecretsProfile removes one explicit named credential store.
 func RemoveSecretsProfile(cfg config.File, rawID string) (config.File, bool, error) {
 	id, err := NormalizeSecretsProfileID(rawID)
 	if err != nil {
 		return config.File{}, false, err
 	}
-	if cfg.Secrets.DefaultProfile == id {
-		return config.File{}, false, fmt.Errorf("%w: %s", ErrSecretsProfileDefaultConfigured, id)
-	}
-	if _, ok := cfg.Secrets.Profiles[id]; !ok {
+	working := config.Normalize(cfg)
+	if _, ok := working.Secrets.Stores[id]; !ok {
 		return cfg, false, nil
 	}
-	working := cfg
-	working.Secrets.Profiles = cloneSecretsProfiles(cfg.Secrets.Profiles)
+	working.Secrets.Profiles = cloneSecretsProfiles(working.Secrets.Profiles)
+	working.Secrets.Stores = cloneSecretsProfiles(working.Secrets.Stores)
 	delete(working.Secrets.Profiles, id)
+	delete(working.Secrets.Stores, id)
 	if len(working.Secrets.Profiles) == 0 {
 		working.Secrets.Profiles = nil
 	}
-	if err := config.Validate(working); err != nil {
+	if len(working.Secrets.Stores) == 0 {
+		working.Secrets.Stores = nil
+	}
+	if err := validateConfigAfterSecretsProfileEdit(working); err != nil {
 		return config.File{}, false, err
 	}
 	return config.Normalize(working), true, nil
+}
+
+func validateConfigAfterSecretsProfileEdit(cfg config.File) error {
+	cfg = config.Normalize(cfg)
+	if len(cfg.Profiles) > 0 || len(cfg.RepositoryProfiles) > 0 {
+		return config.Validate(cfg)
+	}
+	if err := config.ValidateSecrets(cfg.Secrets); err != nil {
+		return err
+	}
+	return config.ValidateRetention(cfg.Data.Retention)
 }
 
 func cloneSecretsProfiles(in map[string]config.SecretsProfile) map[string]config.SecretsProfile {
