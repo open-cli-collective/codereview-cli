@@ -11184,9 +11184,9 @@ func TestInitSecretsManagementLinearEditorShowsBuiltInOSStoreReadOnly(t *testing
 	for _, want := range []string{
 		"Secrets storage",
 		"Built in",
+		"These built-in credential stores are always available and cannot be deleted:",
 		initBuiltInOSCredentialStoreTitle(),
 		initBuiltInOSCredentialStoreDescription(),
-		"built-in credential store is always available and cannot be deleted",
 		"Actions",
 		"Configure new encrypted file profile",
 		"Back without staging",
@@ -11579,6 +11579,8 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 	}
 	for _, hiddenText := range []string{
 		"Credential store backend",
+		"1Password details",
+		"Tokens are referenced by environment variable name",
 		"1Password item title prefix",
 		"1Password secret name",
 		"1Password item tag",

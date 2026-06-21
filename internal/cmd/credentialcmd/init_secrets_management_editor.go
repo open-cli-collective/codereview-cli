@@ -32,7 +32,6 @@ const (
 	initSecretsManagementFieldAction            initLinearFieldID = "secrets_management_action"
 	initSecretsManagementSectionBuiltIn         initLinearFieldID = "secrets_management_section_builtin"
 	initSecretsManagementSectionProfile         initLinearFieldID = "secrets_management_section_profile"
-	initSecretsManagementSectionOnePassword     initLinearFieldID = "secrets_management_section_1password"
 	initSecretsManagementSectionConnect         initLinearFieldID = "secrets_management_section_connect"
 	initSecretsManagementSectionServiceAccount  initLinearFieldID = "secrets_management_section_service_account"
 	initSecretsManagementSectionDesktop         initLinearFieldID = "secrets_management_section_desktop"
@@ -155,7 +154,6 @@ func initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg config.Fi
 		validateOptionalDisplayName,
 	)
 	document.addEditableSelect(initSecretsManagementFieldBackend, "Credential store backend", "", initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile)), string(credstore.BackendFile))
-	document.addSectionField(initSecretsManagementSectionOnePassword, "1Password details", "These are non-secret 1Password settings. Tokens are referenced by environment variable name, not collected here.")
 	document.addSectionField(initSecretsManagementSectionDesktop, "1Password desktop", "Desktop app account and vault routing.")
 	document.addEditableSelect(initSecretsManagementFieldDesktopAccount, "1Password account", "Discovered from the local 1Password desktop app.", desktopDiscovery.AccountOptions(), initOnePasswordManualSelection)
 	document.addEditableSelect(initSecretsManagementFieldDesktopVault, "1Password vault", "Vaults available in the selected 1Password account. Choose manual entry if this list is incomplete.", desktopDiscovery.VaultOptions(initOnePasswordManualSelection), initOnePasswordManualSelection)
@@ -254,10 +252,11 @@ func initSecretsManagementTargetOptions(cfg config.File, pendingDeletes map[stri
 
 func initSecretsManagementBuiltInSectionDescription() string {
 	description := strings.TrimSpace(initBuiltInOSCredentialStoreDescription())
+	prefix := "These built-in credential stores are always available and cannot be deleted:\n\n"
 	if description == "" {
-		return fmt.Sprintf("%s\nThis built-in credential store is always available and cannot be deleted.", initBuiltInOSCredentialStoreTitle())
+		return prefix + initBuiltInOSCredentialStoreTitle()
 	}
-	return fmt.Sprintf("%s        %s\nThis built-in credential store is always available and cannot be deleted.", initBuiltInOSCredentialStoreTitle(), description)
+	return fmt.Sprintf("%s%s        %s", prefix, initBuiltInOSCredentialStoreTitle(), description)
 }
 
 func orderedInitSecretsManagementPendingDeleteIDs(pendingDeletes map[string]initPendingSecretsManagementDelete, pendingDeleteOrder []string) []string {
@@ -570,7 +569,6 @@ func initSecretsManagementSelectedOptionLabel(document initLinearDocument, id in
 }
 
 func initSecretsManagementSetOnePasswordHidden(model *initLinearEditorModel, hideOnePassword bool, hideConnect bool, hideService bool, hideDesktop bool) {
-	model.setFieldHidden(initSecretsManagementSectionOnePassword, hideOnePassword)
 	model.setFieldHidden(initSecretsManagementFieldVaultID, hideOnePassword)
 	model.setFieldHidden(initSecretsManagementSectionConnect, hideOnePassword || hideConnect)
 	model.setFieldHidden(initSecretsManagementFieldConnectHost, hideOnePassword || hideConnect)
