@@ -898,14 +898,18 @@ func TestValidateAllowsEmptyConfig(t *testing.T) {
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("Validate empty config: %v", err)
 	}
+	if err := Save(filepath.Join(t.TempDir(), "config.yml"), cfg); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Save literal empty config error = %v, want ErrInvalid", err)
+	}
 
+	cfg = File{Profiles: map[string]Profile{}}
 	path := filepath.Join(t.TempDir(), "config.yml")
 	if err := Save(path, cfg); err != nil {
-		t.Fatalf("Save empty config: %v", err)
+		t.Fatalf("Save explicit profileless config: %v", err)
 	}
 	loaded, err := Load(path)
 	if err != nil {
-		t.Fatalf("Load empty config: %v", err)
+		t.Fatalf("Load explicit profileless config: %v", err)
 	}
 	if len(loaded.Profiles) != 0 {
 		t.Fatalf("loaded profiles = %#v, want none", loaded.Profiles)
@@ -1411,7 +1415,7 @@ func TestLoadRejectsOldCredentialStoreSchema(t *testing.T) {
   backend: memory
 profiles: {}
 `},
-		{name: "secrets legacy selection", body: `secrets:
+		{name: "secrets legacy selection", body: `secrets: work
 profiles: {}
 `},
 		{name: "secrets profiles", body: `secrets:

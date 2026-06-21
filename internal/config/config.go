@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -542,16 +543,21 @@ func Path() (string, error) {
 // Load reads and validates config.yml.
 func Load(path string) (File, error) {
 	// #nosec G304 -- path is the resolved cr config path or an injected test path.
-	file, err := os.Open(path)
+	body, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return File{}, fmt.Errorf("%w: %s", ErrNotConfigured, path)
 	}
 	if err != nil {
 		return File{}, fmt.Errorf("config: open %s: %w", path, err)
 	}
-	defer file.Close()
+	if len(bytes.TrimSpace(body)) == 0 {
+		return File{}, invalid("empty config")
+	}
+	if yamlDocumentHasMappingPath(body, "secrets", "profiles") {
+		return File{}, invalid("secrets.profiles is no longer supported; use secrets.stores")
+	}
 
-	decoder := yaml.NewDecoder(file)
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
 	decoder.KnownFields(true)
 	var cfg File
 	if err := decoder.Decode(&cfg); err != nil {
@@ -578,6 +584,9 @@ func Load(path string) (File, error) {
 func Save(path string, cfg File) error {
 	if strings.TrimSpace(path) == "" {
 		return invalid("path is required")
+	}
+	if fileHasNoExplicitContent(cfg) {
+		return invalid("config is empty")
 	}
 	if err := Validate(cfg); err != nil {
 		return err
@@ -621,6 +630,48 @@ func Save(path string, cfg File) error {
 		return fmt.Errorf("config: replace config: %w", err)
 	}
 	renamed = true
+	return nil
+}
+
+func fileHasNoExplicitContent(cfg File) bool {
+	return cfg.Secrets.Stores == nil &&
+		cfg.Secrets.Profiles == nil &&
+		cfg.LLMRuntimes == nil &&
+		cfg.RepositoryProfiles == nil &&
+		cfg.Profiles == nil &&
+		cfg.Data.Retention.MaxAgeDays == nil &&
+		cfg.Data.Retention.Enforcement == "" &&
+		cfg.Keyring.Backend == ""
+}
+
+func yamlDocumentHasMappingPath(body []byte, path ...string) bool {
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
+	var node yaml.Node
+	if err := decoder.Decode(&node); err != nil {
+		return false
+	}
+	current := &node
+	if current.Kind == yaml.DocumentNode && len(current.Content) > 0 {
+		current = current.Content[0]
+	}
+	for _, key := range path {
+		current = yamlMappingValue(current, key)
+		if current == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func yamlMappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if node.Content[index].Value == key {
+			return node.Content[index+1]
+		}
+	}
 	return nil
 }
 
