@@ -873,6 +873,46 @@ func TestValidateRejectsMissingDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsCredentialStoresWithoutReviewProfiles(t *testing.T) {
+	cfg := File{
+		Secrets: SecretsConfig{
+			Stores: map[string]SecretsStore{
+				"personal-file": {
+					DisplayName: "Personal file",
+					Backend: SecretsStoreBackend{
+						Kind: SecretsBackendKind(credstore.BackendFile),
+					},
+				},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate store-only config: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save store-only config: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(body), "default_profile") || strings.Contains(string(body), "profiles:") {
+		t.Fatalf("saved store-only config contains review-profile fields:\n%s", string(body))
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load store-only config: %v", err)
+	}
+	if loaded.DefaultProfile != "" || len(loaded.Profiles) != 0 {
+		t.Fatalf("loaded profile state = default %q profiles %#v, want none", loaded.DefaultProfile, loaded.Profiles)
+	}
+	if _, ok := loaded.Secrets.Stores["personal-file"]; !ok {
+		t.Fatalf("loaded stores = %#v, want personal-file", loaded.Secrets.Stores)
+	}
+}
+
 func TestValidateSecretsStores(t *testing.T) {
 	tests := []struct {
 		name    string

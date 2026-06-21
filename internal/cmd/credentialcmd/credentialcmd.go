@@ -501,6 +501,7 @@ type initSessionDraft struct {
 	cfg                          config.File
 	requestedProfileName         string
 	backendFlagSet               bool
+	saveRequested                bool
 	workspace                    *initWorkspaceDraft
 	touchedProfiles              map[string]string
 	writes                       map[string]map[string]string
@@ -896,7 +897,14 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 			return err
 		}
 		if session.workspace == nil {
-			return nil
+			if !session.saveRequested {
+				return nil
+			}
+			plan, err := buildInteractiveInitSessionPlan(opts, session)
+			if err != nil {
+				return err
+			}
+			return applyInteractiveInitSessionPlan(opts, deps, plan)
 		}
 		plan, err := buildInteractiveInitSessionPlan(opts, session)
 		if err != nil {
@@ -1189,6 +1197,7 @@ func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
 		LLMRuntimeCount:     len(llmRuntimes),
 		ReviewerEntityCount: countConfiguredInitReviewerEntities(reviewerEntities),
 		ReviewProfileCount:  len(session.cfg.Profiles),
+		CanSave:             initSessionCanCommitWithoutWorkspace(session),
 	}
 	if session.workspace == nil {
 		return prompt
@@ -1198,6 +1207,20 @@ func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
 	prompt.CanConfigureReviewer = true
 	prompt.CanSave = true
 	return prompt
+}
+
+func initSessionCanCommitWithoutWorkspace(session initSessionDraft) bool {
+	if !initSessionHasStagedChanges(session) {
+		return false
+	}
+	return config.Validate(session.cfg) == nil
+}
+
+func initSessionHasStagedChanges(session initSessionDraft) bool {
+	if !initConfigsEqual(session.originalCfg, session.cfg) {
+		return true
+	}
+	return len(session.writes) > 0 || len(session.overwriteRefs) > 0 || len(session.satisfiedRefs) > 0
 }
 
 func currentInteractiveInitInventoryPromptContext(session initSessionDraft) initPromptContext {
@@ -1235,7 +1258,8 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 		menuPrompter = newHuhInitMenuPrompter(opts)
 	}
 	for {
-		action, err := menuPrompter.ChooseAction(buildInteractiveInitMenuPrompt(session))
+		prompt := buildInteractiveInitMenuPrompt(session)
+		action, err := menuPrompter.ChooseAction(prompt)
 		if err != nil {
 			return initSessionDraft{}, err
 		}
@@ -1251,11 +1275,17 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 		case initMenuActionSecretsManagement:
 			session, err = editInteractiveInitSecretsManagement(cmd, opts, flags, deps, session)
 		case initMenuActionSave:
-			if session.workspace == nil {
-				return initSessionDraft{}, exitcode.Usage(errors.New("commit requires at least one configured profile"))
+			if !prompt.CanSave {
+				reason := initMenuDisabledReason(prompt, initMenuActionSave)
+				if reason == "" {
+					reason = "stage changes before committing"
+				}
+				return initSessionDraft{}, exitcode.Usage(errors.New(reason))
 			}
+			session.saveRequested = true
 			return session, nil
 		case initMenuActionExit:
+			session.saveRequested = false
 			session.workspace = nil
 			return session, nil
 		default:
@@ -5211,6 +5241,33 @@ func cloneInitConfigFile(cfg config.File) config.File {
 	if cfg.Data.Retention.MaxAgeDays != nil {
 		value := *cfg.Data.Retention.MaxAgeDays
 		cloned.Data.Retention.MaxAgeDays = &value
+	}
+	cloned.Secrets = cloneInitSecretsConfig(cfg.Secrets)
+	return cloned
+}
+
+func cloneInitSecretsConfig(secrets config.SecretsConfig) config.SecretsConfig {
+	cloned := secrets
+	if secrets.Stores != nil {
+		cloned.Stores = make(map[string]config.SecretsStore, len(secrets.Stores))
+		for id, store := range secrets.Stores {
+			cloned.Stores[id] = cloneInitSecretsStore(store)
+		}
+	}
+	if secrets.Profiles != nil {
+		cloned.Profiles = make(map[string]config.SecretsProfile, len(secrets.Profiles))
+		for id, store := range secrets.Profiles {
+			cloned.Profiles[id] = cloneInitSecretsStore(store)
+		}
+	}
+	return cloned
+}
+
+func cloneInitSecretsStore(store config.SecretsStore) config.SecretsStore {
+	cloned := store
+	if store.Backend.OnePassword != nil {
+		onePassword := *store.Backend.OnePassword
+		cloned.Backend.OnePassword = &onePassword
 	}
 	return cloned
 }

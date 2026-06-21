@@ -12474,6 +12474,31 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceDisablesProfileDependentAction
 	}
 }
 
+func TestBuildInteractiveInitMenuPromptNoWorkspaceCanSaveStagedCredentialStore(t *testing.T) {
+	original := config.File{Profiles: map[string]config.Profile{}}
+	next := cloneInitConfigFile(original)
+	next.Secrets = config.SecretsConfig{
+		Stores: map[string]config.SecretsStore{
+			"personal-file": {
+				DisplayName: "Personal file",
+				Backend: config.SecretsStoreBackend{
+					Kind: config.SecretsBackendKind(credstore.BackendFile),
+				},
+			},
+		},
+	}
+	prompt := buildInteractiveInitMenuPrompt(initSessionDraft{
+		originalCfg: original,
+		cfg:         next,
+	})
+	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer {
+		t.Fatalf("prompt = %#v, want focused editors disabled without a workspace", prompt)
+	}
+	if !prompt.CanSave {
+		t.Fatalf("prompt = %#v, want store-only staged changes to enable commit", prompt)
+	}
+}
+
 func TestBuildInteractiveInitMenuPromptAfterDeletingLastProfileDisablesSaveAndFocusedEditors(t *testing.T) {
 	session := initSessionDraft{
 		cfg:                          config.File{Profiles: map[string]config.Profile{}},
@@ -12665,7 +12690,7 @@ func TestInitMenuDisabledRowsShowErrorWithoutQuitting(t *testing.T) {
 		},
 		{
 			action: initMenuActionSave,
-			reason: "configure a review profile before committing changes",
+			reason: "stage changes before committing",
 		},
 	}
 	for _, tt := range tests {
@@ -12888,7 +12913,7 @@ func TestHuhInitMenuPrompterDefaultStartsAtProfileSetupBeforeWorkspace(t *testin
 	}
 }
 
-func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *testing.T) {
+func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilChangesStaged(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
@@ -12906,7 +12931,7 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilProfileExists(t *t
 	if action == initMenuActionSave {
 		t.Fatalf("action = %q, want disabled save selection to be rejected", action)
 	}
-	if !strings.Contains(stderr.String(), "configure a review profile before committing changes") {
+	if !strings.Contains(stderr.String(), "stage changes before committing") {
 		t.Fatalf("stderr = %q, want disabled-save validation message", stderr.String())
 	}
 }
@@ -18885,6 +18910,89 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
 	if err == nil || !strings.Contains(err.Error(), "open failed") {
 		t.Fatalf("error = %v, want keyring open failure", err)
+	}
+}
+
+func TestInitInteractiveMenuCanCommitSecretsStorageBeforeReviewProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionSecretsManagement,
+			initMenuActionSave,
+		},
+	}
+	keyringCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		keyringPrompter: initKeyringBackendPrompterFunc(func(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			keyringCalls++
+			next := cloneInitConfigFile(prompt.Config)
+			next.Secrets = config.SecretsConfig{
+				Stores: map[string]config.SecretsStore{
+					"personal-file": {
+						DisplayName: "Personal file",
+						Backend: config.SecretsStoreBackend{
+							Kind: config.SecretsBackendKind(credstore.BackendFile),
+						},
+					},
+				},
+			}
+			return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: next}, nil
+		}),
+		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+			t.Fatalf("finalize prompter should not run for profileless secrets-storage commit: %#v", prompt)
+			return initFinalizeActionCancel, nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore should not run when only credential-store config changed")
+			return nil, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if keyringCalls != 1 {
+		t.Fatalf("keyringCalls = %d, want 1", keyringCalls)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want before and after secrets-storage edit", menu.prompts)
+	}
+	if menu.prompts[0].CanSave {
+		t.Fatalf("initial prompt = %#v, want commit disabled before staged changes", menu.prompts[0])
+	}
+	if !menu.prompts[1].CanSave || menu.prompts[1].CanConfigureLLM || menu.prompts[1].CanConfigureReviewer {
+		t.Fatalf("post-edit prompt = %#v, want only commit enabled without workspace", menu.prompts[1])
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.DefaultProfile != "" || len(cfg.Profiles) != 0 {
+		t.Fatalf("loaded profile state = default %q profiles %#v, want none", cfg.DefaultProfile, cfg.Profiles)
+	}
+	store, ok := cfg.Secrets.Stores["personal-file"]
+	if !ok {
+		t.Fatalf("stores = %#v, want personal-file", cfg.Secrets.Stores)
+	}
+	if store.DisplayName != "Personal file" || store.Backend.Kind != config.SecretsBackendKind(credstore.BackendFile) {
+		t.Fatalf("store = %#v, want named file backend", store)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(body), "default_profile") || strings.Contains(string(body), "profiles:") {
+		t.Fatalf("saved profileless secrets-storage config contains profile fields:\n%s", string(body))
 	}
 }
 

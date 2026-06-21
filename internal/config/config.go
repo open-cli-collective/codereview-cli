@@ -42,10 +42,10 @@ var (
 
 // File is the root config.yml schema.
 type File struct {
-	DefaultProfile     string              `yaml:"default_profile" json:"default_profile"`
+	DefaultProfile     string              `yaml:"default_profile,omitempty" json:"default_profile,omitempty"`
 	Secrets            SecretsConfig       `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	RepositoryProfiles []RepositoryProfile `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
-	Profiles           map[string]Profile  `yaml:"profiles" json:"profiles"`
+	Profiles           map[string]Profile  `yaml:"profiles,omitempty" json:"profiles,omitempty"`
 	Data               DataConfig          `yaml:"data,omitempty" json:"data"`
 
 	// Keyring is retained as an ignored in-memory compatibility field while
@@ -570,10 +570,10 @@ func Load(path string) (File, error) {
 		return File{}, invalid("parse %s: multiple YAML documents are not supported", path)
 	}
 
-	cfg = cfg.normalized()
 	if err := Validate(cfg); err != nil {
 		return File{}, err
 	}
+	cfg = cfg.normalized()
 	return cfg, nil
 }
 
@@ -582,10 +582,10 @@ func Save(path string, cfg File) error {
 	if strings.TrimSpace(path) == "" {
 		return invalid("path is required")
 	}
-	cfg = cfg.normalized()
 	if err := Validate(cfg); err != nil {
 		return err
 	}
+	cfg = cfg.normalized()
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -634,15 +634,29 @@ func Normalize(cfg File) File {
 
 // Validate checks a config file after defaults have been applied.
 func Validate(cfg File) error {
+	raw := cfg
 	cfg = cfg.normalized()
-	if strings.TrimSpace(cfg.DefaultProfile) == "" {
-		return invalid("default_profile is required")
-	}
-	if len(cfg.Profiles) == 0 {
-		return invalid("profiles is required")
-	}
 	if err := ValidateSecrets(cfg.Secrets); err != nil {
 		return err
+	}
+	if err := ValidateRetention(cfg.Data.Retention); err != nil {
+		return err
+	}
+	if len(cfg.Profiles) == 0 {
+		defaultProfile := strings.TrimSpace(cfg.DefaultProfile)
+		if defaultProfile != "" {
+			return fmt.Errorf("%w: %s", ErrProfileNotFound, defaultProfile)
+		}
+		if len(cfg.RepositoryProfiles) > 0 {
+			return invalid("profiles is required")
+		}
+		if !hasProfilelessConfigContent(raw) {
+			return invalid("profiles is required")
+		}
+		return nil
+	}
+	if strings.TrimSpace(cfg.DefaultProfile) == "" {
+		return invalid("default_profile is required")
 	}
 	for name, profile := range cfg.Profiles {
 		if strings.TrimSpace(name) == "" {
@@ -661,10 +675,25 @@ func Validate(cfg File) error {
 	if err := validateRepositoryProfiles(cfg); err != nil {
 		return err
 	}
-	if err := ValidateRetention(cfg.Data.Retention); err != nil {
-		return err
-	}
 	return nil
+}
+
+func hasProfilelessConfigContent(cfg File) bool {
+	if len(cfg.Secrets.Stores) > 0 || len(cfg.Secrets.Profiles) > 0 {
+		return true
+	}
+	return hasExplicitNonDefaultRetentionConfig(cfg.Data.Retention)
+}
+
+func hasExplicitNonDefaultRetentionConfig(retention RetentionConfig) bool {
+	defaults := DefaultRetentionConfig()
+	if retention.MaxAgeDays != nil && *retention.MaxAgeDays != defaults.MaxAgeDaysValue() {
+		return true
+	}
+	if retention.Enforcement != "" && retention.Enforcement != defaults.Enforcement {
+		return true
+	}
+	return false
 }
 
 // EffectiveSecretsStores returns the read-only built-in OS credential store
