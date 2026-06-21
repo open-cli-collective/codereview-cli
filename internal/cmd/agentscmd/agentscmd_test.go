@@ -203,7 +203,7 @@ func TestAgentsListExplicitEmptyProfileFailsBeforeRepositoryRoute(t *testing.T) 
 			Repos:     []string{ref.Repo},
 		},
 	}}
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile) (gitprovider.GitProvider, func(), error) {
 		t.Fatal("provider factory should not be called for an empty explicit profile")
 		return fake, nil, nil
 	})

@@ -145,7 +145,7 @@ func initMenuDisabledReason(prompt initMenuPrompt, action initMenuAction) string
 		if !prompt.CanSave {
 			return "stage changes before committing"
 		}
-	case initMenuActionSecretsManagement, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+	case initMenuActionSecretsManagement, initMenuActionLLMRuntimes, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
 	}
 	return ""
 }

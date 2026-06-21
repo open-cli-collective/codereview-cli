@@ -285,11 +285,6 @@ func orderedInitSecretsManagementPendingDeleteIDs(pendingDeletes map[string]init
 	return append(ordered, remainder...)
 }
 
-func appendInitSecretsManagementPendingDeleteOrder(order []string, id string) []string {
-	order = removeInitSecretsManagementPendingDeleteOrder(order, id)
-	return append(order, id)
-}
-
 func removeInitSecretsManagementPendingDeleteOrder(order []string, id string) []string {
 	next := order[:0]
 	for _, existing := range order {

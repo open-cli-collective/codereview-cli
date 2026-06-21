@@ -4901,20 +4901,6 @@ func initLLMConfigForReplacement(profileName string, runtime initLLMRuntimeDraft
 	return llm, nil
 }
 
-func withoutProfile(profiles map[string]config.Profile, removed string) map[string]config.Profile {
-	if len(profiles) == 0 {
-		return nil
-	}
-	next := make(map[string]config.Profile, max(len(profiles)-1, 0))
-	for name, profile := range profiles {
-		if name == removed {
-			continue
-		}
-		next[name] = profile
-	}
-	return next
-}
-
 func initCredentialEntryKey(ref config.CredentialRef) string {
 	return strings.Join([]string{ref.Store, ref.Purpose, ref.Ref, ref.Mode, ref.Provider}, "\x00")
 }

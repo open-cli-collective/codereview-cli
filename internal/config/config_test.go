@@ -704,7 +704,7 @@ func TestSaveOmitsEmptyRepositoryProfiles(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	// #nosec G304 -- test path is controlled by t.TempDir.
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G304 -- test reads the temp config file it just saved.
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -873,6 +873,7 @@ func TestValidateAllowsCredentialStoresWithoutReviewProfiles(t *testing.T) {
 	if err := Save(path, cfg); err != nil {
 		t.Fatalf("Save store-only config: %v", err)
 	}
+	// #nosec G304 -- test path is controlled by t.TempDir.
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)

@@ -168,7 +168,7 @@ func TestReviewExplicitEmptyProfileFailsBeforeRepositoryRoute(t *testing.T) {
 		},
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile, _ RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ RuntimeOptions) (Runtime, error) {
 		t.Fatal("runtime factory should not be called for an empty explicit profile")
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -193,7 +193,7 @@ func TestReviewUnmatchedRepositoryRequiresProfileOrRoute(t *testing.T) {
 		},
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile, _ RuntimeOptions) (Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ RuntimeOptions) (Runtime, error) {
 		t.Fatal("runtime factory should not be called for an unmatched repository")
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})

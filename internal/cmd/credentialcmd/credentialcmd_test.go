@@ -18886,7 +18886,7 @@ func TestInitInteractiveMenuCanCommitSecretsStorageBeforeReviewProfile(t *testin
 	if store.DisplayName != "Personal file" || store.Backend.Kind != config.SecretsBackendKind(credstore.BackendFile) {
 		t.Fatalf("store = %#v, want named file backend", store)
 	}
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G304 -- test reads the temp config file it just saved.
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
