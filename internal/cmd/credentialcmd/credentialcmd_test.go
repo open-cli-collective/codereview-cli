@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -12486,6 +12487,7 @@ func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 	assertContentOrder(t, out,
 		"cr init",
 		"Active profile: default",
+		"Actions",
 		"Configure secrets storage",
 		"Credential stores for tokens and keys",
 		"Configure LLM runtimes",
@@ -12504,9 +12506,20 @@ func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 	if !strings.Contains(out, ">") {
 		t.Fatalf("view missing selected-row caret:\n%s", out)
 	}
+	plainOut := stripANSITest(out)
+	if !strings.Contains(plainOut, "> [x] Configure secrets storage") {
+		t.Fatalf("view missing selected option marker:\n%s", out)
+	}
+	if !strings.Contains(plainOut, "  [ ] Configure LLM runtimes") {
+		t.Fatalf("view missing unselected option marker:\n%s", out)
+	}
 	if strings.Contains(out, "Configure LLM runtimes (2)") || strings.Contains(out, "Configure review profiles (1)") {
 		t.Fatalf("view contains old inline count suffix:\n%s", out)
 	}
+}
+
+func stripANSITest(value string) string {
+	return regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(value, "")
 }
 
 func TestInitMenuQDiscardsAndExits(t *testing.T) {

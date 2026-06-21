@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
 )
 
@@ -208,7 +207,7 @@ func (m initMenuModel) View() string {
 	if strings.TrimSpace(m.desc) != "" {
 		lines = append(lines, initLinearTheme.help.Render(m.desc))
 	}
-	lines = append(lines, "")
+	lines = append(lines, "", initLinearTheme.title.Render("Actions"))
 	for index, item := range m.items {
 		lines = append(lines, m.renderItem(index, item)...)
 	}
@@ -221,19 +220,18 @@ func (m initMenuModel) View() string {
 
 func (m initMenuModel) renderItem(index int, item initMenuItem) []string {
 	selected := index == m.selected
-	titleStyle := lipgloss.NewStyle()
-	if item.Disabled != "" {
-		titleStyle = initLinearTheme.help
-	}
-	if selected && item.Disabled == "" {
-		titleStyle = initLinearTheme.selected
-	}
-	caret := " "
+	prefix := "  [ ] "
 	if selected {
-		caret = initLinearTheme.caret.Render(">")
+		prefix = "> [x] "
+	}
+	title := prefix + item.Title
+	if item.Disabled != "" {
+		title = initLinearTheme.help.Render(title)
+	} else if selected {
+		title = initLinearStyleSelectedLine(title)
 	}
 	return []string{
-		fmt.Sprintf("%s %s", caret, titleStyle.Render(item.Title)),
-		"  " + initLinearTheme.help.Render(item.Description),
+		title,
+		"      " + initLinearTheme.help.Render(item.Description),
 	}
 }
