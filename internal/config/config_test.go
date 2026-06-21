@@ -915,6 +915,48 @@ func TestValidateAllowsEmptyConfig(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsLLMRuntimesWithoutReviewProfiles(t *testing.T) {
+	cfg := File{
+		LLMRuntimes: map[string]LLMConfig{
+			"codex-cli": {
+				Provider: LLMProviderOpenAI,
+				Auth:     LLMAuthSubscription,
+				Adapter:  LLMAdapterCodexCLI,
+			},
+			"openai-api-key": {
+				Provider: LLMProviderOpenAI,
+				Auth:     LLMAuthAPIKey,
+				Adapter:  LLMAdapterOpenAIAPI,
+				Credential: CredentialLocation{
+					Store: LocalOSCredentialStoreID,
+					Name:  "codereview/openai-api-key",
+				},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate runtime-only config: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save runtime-only config: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load runtime-only config: %v", err)
+	}
+	if len(loaded.Profiles) != 0 {
+		t.Fatalf("loaded profiles = %#v, want none", loaded.Profiles)
+	}
+	if loaded.LLMRuntimes["codex-cli"].Adapter != LLMAdapterCodexCLI {
+		t.Fatalf("loaded runtimes = %#v, want codex-cli", loaded.LLMRuntimes)
+	}
+	if got := loaded.LLMRuntimes["openai-api-key"].Credential.Name; got != "codereview/openai-api-key" {
+		t.Fatalf("openai runtime credential name = %q, want codereview/openai-api-key", got)
+	}
+}
+
 func TestValidateSecretsStores(t *testing.T) {
 	tests := []struct {
 		name    string

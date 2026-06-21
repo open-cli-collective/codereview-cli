@@ -42,10 +42,11 @@ var (
 
 // File is the root config.yml schema.
 type File struct {
-	Secrets            SecretsConfig       `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	RepositoryProfiles []RepositoryProfile `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
-	Profiles           map[string]Profile  `yaml:"profiles,omitempty" json:"profiles,omitempty"`
-	Data               DataConfig          `yaml:"data,omitempty" json:"data"`
+	Secrets            SecretsConfig        `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	LLMRuntimes        map[string]LLMConfig `yaml:"llm_runtimes,omitempty" json:"llm_runtimes,omitempty"`
+	RepositoryProfiles []RepositoryProfile  `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
+	Profiles           map[string]Profile   `yaml:"profiles,omitempty" json:"profiles,omitempty"`
+	Data               DataConfig           `yaml:"data,omitempty" json:"data"`
 
 	// Keyring is retained as an ignored in-memory compatibility field while
 	// credential-store runtime selection is rewritten. It is not config schema.
@@ -637,6 +638,19 @@ func Validate(cfg File) error {
 	if err := ValidateRetention(cfg.Data.Retention); err != nil {
 		return err
 	}
+	for name, runtime := range cfg.LLMRuntimes {
+		if strings.TrimSpace(name) == "" {
+			return invalid("llm_runtimes name is required")
+		}
+		if err := validateLLMConfig(fmt.Sprintf("llm_runtimes.%s", name), runtime); err != nil {
+			return err
+		}
+		if runtime.Auth == LLMAuthAPIKey {
+			if err := validateCredentialStoreSelection(cfg.Secrets, fmt.Sprintf("llm_runtimes.%s.credential.store", name), runtime.Credential.Store); err != nil {
+				return err
+			}
+		}
+	}
 	if len(cfg.Profiles) == 0 {
 		if len(cfg.RepositoryProfiles) > 0 {
 			return invalid("profiles is required")
@@ -862,35 +876,8 @@ func validateProfile(name string, profile Profile) error {
 			return err
 		}
 	}
-	if !profile.LLM.Provider.Valid() {
-		return invalid("profiles.%s.llm.provider %q is invalid", name, profile.LLM.Provider)
-	}
-	if !profile.LLM.Auth.Valid() {
-		return invalid("profiles.%s.llm.auth %q is invalid", name, profile.LLM.Auth)
-	}
-	if !profile.LLM.Adapter.Valid() {
-		return invalid("profiles.%s.llm.adapter %q is invalid", name, profile.LLM.Adapter)
-	}
-	if profile.LLM.Provider == LLMProviderPi {
-		if profile.LLM.Auth != LLMAuthSubscription || profile.LLM.Adapter != LLMAdapterPiRPC {
-			return invalid("profiles.%s.llm provider pi requires auth subscription and adapter pi_rpc", name)
-		}
-	}
-	if profile.LLM.Adapter == LLMAdapterPiRPC {
-		if profile.LLM.Provider != LLMProviderPi || profile.LLM.Auth != LLMAuthSubscription {
-			return invalid("profiles.%s.llm adapter pi_rpc requires provider pi and auth subscription", name)
-		}
-	}
-	if profile.LLM.Adapter == LLMAdapterCodexCLI {
-		if profile.LLM.Provider != LLMProviderOpenAI || profile.LLM.Auth != LLMAuthSubscription {
-			return invalid("profiles.%s.llm adapter codex_cli requires provider openai and auth subscription", name)
-		}
-	}
-	if profile.LLM.Auth == LLMAuthAPIKey && profile.LLM.Credential.empty() {
-		return invalid("profiles.%s.llm.credential is required for api_key auth", name)
-	}
-	if profile.LLM.Auth == LLMAuthSubscription && !profile.LLM.Credential.empty() {
-		return invalid("profiles.%s.llm.credential must be empty for subscription auth", name)
+	if err := validateLLMConfig(fmt.Sprintf("profiles.%s.llm", name), profile.LLM); err != nil {
+		return err
 	}
 	if profile.LLM.Auth == LLMAuthAPIKey {
 		if err := validateCredentialLocation(fmt.Sprintf("profiles.%s.llm.credential", name), profile.LLM.Credential); err != nil {
@@ -902,18 +889,6 @@ func validateProfile(name string, profile Profile) error {
 		if profile.ReviewerCredentials != nil && sameCredentialLocation(profile.LLM.Credential, profile.ReviewerCredentials.Credential) {
 			return invalid("profiles.%s.llm.credential must differ from reviewer_credentials.credential when store and name match", name)
 		}
-	}
-	for tier, model := range profile.LLM.ModelMap {
-		modelTier := ModelTier(tier)
-		if !modelTier.Valid() {
-			return invalid("profiles.%s.llm.model_map tier %q is invalid", name, tier)
-		}
-		if strings.TrimSpace(model) == "" {
-			return invalid("profiles.%s.llm.model_map.%s is required", name, tier)
-		}
-	}
-	if profile.LLM.ReviewerModelTier != "" && !profile.LLM.ReviewerModelTier.Valid() {
-		return invalid("profiles.%s.llm.reviewer_model_tier %q is invalid; must be one of small, medium, large", name, profile.LLM.ReviewerModelTier)
 	}
 	for index, source := range profile.AgentSources {
 		if strings.TrimSpace(source) == "" {
@@ -930,6 +905,57 @@ func validateProfile(name string, profile Profile) error {
 		if _, err := time.ParseDuration(profile.ReviewPolicy.ResolveAfter); err != nil {
 			return invalid("profiles.%s.review_policy.resolve_after %q is invalid: %v", name, profile.ReviewPolicy.ResolveAfter, err)
 		}
+	}
+	return nil
+}
+
+func validateLLMConfig(field string, llm LLMConfig) error {
+	if !llm.Provider.Valid() {
+		return invalid("%s.provider %q is invalid", field, llm.Provider)
+	}
+	if !llm.Auth.Valid() {
+		return invalid("%s.auth %q is invalid", field, llm.Auth)
+	}
+	if !llm.Adapter.Valid() {
+		return invalid("%s.adapter %q is invalid", field, llm.Adapter)
+	}
+	if llm.Provider == LLMProviderPi {
+		if llm.Auth != LLMAuthSubscription || llm.Adapter != LLMAdapterPiRPC {
+			return invalid("%s provider pi requires auth subscription and adapter pi_rpc", field)
+		}
+	}
+	if llm.Adapter == LLMAdapterPiRPC {
+		if llm.Provider != LLMProviderPi || llm.Auth != LLMAuthSubscription {
+			return invalid("%s adapter pi_rpc requires provider pi and auth subscription", field)
+		}
+	}
+	if llm.Adapter == LLMAdapterCodexCLI {
+		if llm.Provider != LLMProviderOpenAI || llm.Auth != LLMAuthSubscription {
+			return invalid("%s adapter codex_cli requires provider openai and auth subscription", field)
+		}
+	}
+	if llm.Auth == LLMAuthAPIKey && llm.Credential.empty() {
+		return invalid("%s.credential is required for api_key auth", field)
+	}
+	if llm.Auth == LLMAuthSubscription && !llm.Credential.empty() {
+		return invalid("%s.credential must be empty for subscription auth", field)
+	}
+	if llm.Auth == LLMAuthAPIKey {
+		if err := validateCredentialLocation(field+".credential", llm.Credential); err != nil {
+			return err
+		}
+	}
+	for tier, model := range llm.ModelMap {
+		modelTier := ModelTier(tier)
+		if !modelTier.Valid() {
+			return invalid("%s.model_map tier %q is invalid", field, tier)
+		}
+		if strings.TrimSpace(model) == "" {
+			return invalid("%s.model_map.%s is required", field, tier)
+		}
+	}
+	if llm.ReviewerModelTier != "" && !llm.ReviewerModelTier.Valid() {
+		return invalid("%s.reviewer_model_tier %q is invalid; must be one of small, medium, large", field, llm.ReviewerModelTier)
 	}
 	return nil
 }
@@ -1198,6 +1224,13 @@ func (cfg File) normalized() File {
 		profiles[name] = profile.normalized()
 	}
 	cfg.Profiles = profiles
+	if cfg.LLMRuntimes != nil {
+		runtimes := make(map[string]LLMConfig, len(cfg.LLMRuntimes))
+		for name, runtime := range cfg.LLMRuntimes {
+			runtimes[strings.TrimSpace(name)] = runtime.normalized()
+		}
+		cfg.LLMRuntimes = runtimes
+	}
 	if len(cfg.RepositoryProfiles) > 0 {
 		routes := make([]RepositoryProfile, len(cfg.RepositoryProfiles))
 		for index, route := range cfg.RepositoryProfiles {

@@ -2963,6 +2963,42 @@ func TestBuildInitLLMRuntimeInventoryDeduplicatesSharedAPIKeyRuntime(t *testing.
 	}
 }
 
+func TestBuildInitLLMRuntimeInventoryIncludesStandaloneRuntimes(t *testing.T) {
+	home := basicProfile("home")
+	home.LLM = config.LLMConfig{
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterCodexCLI,
+	}
+	cfg := config.File{
+		LLMRuntimes: map[string]config.LLMConfig{
+			"codex-cli": home.LLM,
+			"openai-api-key": {
+				Provider: config.LLMProviderOpenAI,
+				Auth:     config.LLMAuthAPIKey,
+				Adapter:  config.LLMAdapterOpenAIAPI,
+				Credential: config.CredentialLocation{
+					Store: config.LocalOSCredentialStoreID,
+					Name:  "codereview/openai-api-key",
+				},
+			},
+		},
+		Profiles: map[string]config.Profile{"home": home},
+	}
+
+	runtimes, profileRuntimeNames := buildInitLLMRuntimeInventory(cfg)
+
+	if len(runtimes) != 2 {
+		t.Fatalf("len(runtimes) = %d, want 2; runtimes=%#v", len(runtimes), runtimes)
+	}
+	if profileRuntimeNames["home"] != "codex-cli" {
+		t.Fatalf("profileRuntimeNames = %#v, want home to reuse standalone codex-cli", profileRuntimeNames)
+	}
+	if runtimes["openai-api-key"].CredentialRef != "codereview/openai-api-key" {
+		t.Fatalf("openai runtime = %#v, want configured credential ref", runtimes["openai-api-key"])
+	}
+}
+
 func TestInitLLMRuntimeLabelsDifferentiateSamePresetEntries(t *testing.T) {
 	first := initLLMRuntimeDraft{
 		Name:          "anthropic-api-key",
@@ -12284,8 +12320,8 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceDisablesProfileDependentAction
 	prompt := buildInteractiveInitMenuPrompt(initSessionDraft{
 		cfg: config.File{Profiles: map[string]config.Profile{}},
 	})
-	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
-		t.Fatalf("prompt = %#v, want LLM/reviewer/save disabled without a workspace", prompt)
+	if !prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
+		t.Fatalf("prompt = %#v, want LLM enabled and reviewer/save disabled without a workspace", prompt)
 	}
 	if prompt.ReviewProfileCount != 0 || prompt.LLMRuntimeCount != 0 || prompt.ReviewerEntityCount != 0 {
 		t.Fatalf("prompt counts = %#v, want zero counts without a workspace", prompt)
@@ -12309,8 +12345,8 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceCanSaveStagedCredentialStore(t
 		originalCfg: original,
 		cfg:         next,
 	})
-	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer {
-		t.Fatalf("prompt = %#v, want focused editors disabled without a workspace", prompt)
+	if !prompt.CanConfigureLLM || prompt.CanConfigureReviewer {
+		t.Fatalf("prompt = %#v, want LLM enabled and reviewer disabled without a workspace", prompt)
 	}
 	if !prompt.CanSave {
 		t.Fatalf("prompt = %#v, want store-only staged changes to enable commit", prompt)
@@ -12326,8 +12362,8 @@ func TestBuildInteractiveInitMenuPromptAfterDeletingLastProfileDisablesSaveAndFo
 	}
 
 	prompt := buildInteractiveInitMenuPrompt(session)
-	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
-		t.Fatalf("prompt = %#v, want save/focused editors disabled with zero-profile draft", prompt)
+	if !prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
+		t.Fatalf("prompt = %#v, want LLM enabled and save/reviewer disabled with zero-profile draft", prompt)
 	}
 	if prompt.ReviewProfileCount != 0 || prompt.LLMRuntimeCount != 0 || prompt.ReviewerEntityCount != 0 {
 		t.Fatalf("prompt counts = %#v, want effective inventory counts at zero after deleting last profile", prompt)
@@ -12369,8 +12405,8 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCou
 		originalCfg: cloneInitConfigFile(cfg),
 		cfg:         cfg,
 	})
-	if prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
-		t.Fatalf("prompt = %#v, want actions disabled without active workspace", prompt)
+	if !prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
+		t.Fatalf("prompt = %#v, want LLM enabled and reviewer/save disabled without active workspace", prompt)
 	}
 	if prompt.LLMRuntimeCount != 2 || prompt.ReviewerEntityCount != 1 || prompt.ReviewProfileCount != 2 {
 		t.Fatalf("prompt counts = %#v, want existing inventory counts from session cfg", prompt)
@@ -12523,10 +12559,6 @@ func TestInitMenuDisabledRowsShowErrorWithoutQuitting(t *testing.T) {
 		reason string
 	}{
 		{
-			action: initMenuActionLLMRuntimes,
-			reason: "configure a review profile before editing LLM runtimes",
-		},
-		{
 			action: initMenuActionReviewerEntities,
 			reason: "configure a review profile before editing reviewer entities",
 		},
@@ -12572,8 +12604,8 @@ func TestInitMenuNavigationSkipsDisabledRows(t *testing.T) {
 	model.selected = initMenuSelectedIndex(model.items, initMenuActionSecretsManagement)
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	result := next.(initMenuModel)
-	if got := result.items[result.selected].Action; got != initMenuActionReviewProfiles {
-		t.Fatalf("after down selected action = %q, want review profiles", got)
+	if got := result.items[result.selected].Action; got != initMenuActionLLMRuntimes {
+		t.Fatalf("after down selected action = %q, want LLM runtimes", got)
 	}
 
 	result.selected = initMenuSelectedIndex(result.items, initMenuActionReviewerEntities)
@@ -12784,26 +12816,22 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilChangesStaged(t *t
 	}
 }
 
-func TestHuhInitMenuPrompterAccessibleRejectsDisabledLLMUntilProfileExists(t *testing.T) {
+func TestHuhInitMenuPrompterAccessibleAllowsLLMBeforeProfileExists(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"2", // Configure LLM runtimes (disabled)
-			"7", // Discard staged changes and exit
-			"",
-		}, "\n")),
+		stdin:  strings.NewReader("2\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{})
 	if err != nil {
 		t.Fatalf("ChooseAction: %v", err)
 	}
-	if action == initMenuActionLLMRuntimes {
-		t.Fatalf("action = %q, want disabled LLM selection to be rejected", action)
+	if action != initMenuActionLLMRuntimes {
+		t.Fatalf("action = %q, want LLM runtimes", action)
 	}
-	if !strings.Contains(stderr.String(), "configure a review profile before editing LLM runtimes") {
-		t.Fatalf("stderr = %q, want disabled-llm validation message", stderr.String())
+	if strings.Contains(stderr.String(), "configure a review profile before editing LLM runtimes") {
+		t.Fatalf("stderr = %q, want no disabled-LLM validation message", stderr.String())
 	}
 }
 
@@ -17543,6 +17571,74 @@ func TestInitInteractiveMenuFocusedLLMRuntimeStageReturnsToMenu(t *testing.T) {
 	}
 	if !menu.prompts[1].CanSave {
 		t.Fatalf("post-stage menu prompt = %#v, want staged runtime edit to be saveable", menu.prompts[1])
+	}
+}
+
+func TestInitInteractiveMenuCanCommitLLMRuntimeBeforeReviewProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionSave,
+		},
+	}
+	llmCalls := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+			llmCalls++
+			if len(prompt.Context.ExistingConfig.Profiles) != 0 {
+				t.Fatalf("prompt profiles = %#v, want no review profiles", prompt.Context.ExistingConfig.Profiles)
+			}
+			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
+			draft.LLMProvider = string(config.LLMProviderOpenAI)
+			draft.LLMAuth = string(config.LLMAuthSubscription)
+			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
+			return draft, nil
+		}),
+		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+			t.Fatalf("finalize prompter should not run for profileless LLM-runtime commit: %#v", prompt)
+			return initFinalizeActionCancel, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if llmCalls != 1 {
+		t.Fatalf("llmCalls = %d, want one staged runtime edit", llmCalls)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %#v, want main menu before category entry and after stage", menu.prompts)
+	}
+	if !menu.prompts[0].CanConfigureLLM || menu.prompts[0].CanConfigureReviewer || menu.prompts[0].CanSave {
+		t.Fatalf("initial prompt = %#v, want LLM enabled and reviewer/save disabled", menu.prompts[0])
+	}
+	if !menu.prompts[1].CanSave {
+		t.Fatalf("post-stage menu prompt = %#v, want staged runtime edit to be saveable", menu.prompts[1])
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if len(cfg.Profiles) != 0 {
+		t.Fatalf("profiles = %#v, want none", cfg.Profiles)
+	}
+	runtime, ok := cfg.LLMRuntimes["codex-cli"]
+	if !ok {
+		t.Fatalf("llm_runtimes = %#v, want codex-cli", cfg.LLMRuntimes)
+	}
+	if runtime.Provider != config.LLMProviderOpenAI || runtime.Auth != config.LLMAuthSubscription || runtime.Adapter != config.LLMAdapterCodexCLI {
+		t.Fatalf("codex-cli runtime = %#v, want OpenAI subscription Codex CLI", runtime)
 	}
 }
 

@@ -138,10 +138,6 @@ func initMenuCountDescription(count int, singular, plural string) string {
 
 func initMenuDisabledReason(prompt initMenuPrompt, action initMenuAction) string {
 	switch action {
-	case initMenuActionLLMRuntimes:
-		if !prompt.CanConfigureLLM {
-			return "configure a review profile before editing LLM runtimes"
-		}
 	case initMenuActionReviewerEntities:
 		if !prompt.CanConfigureReviewer {
 			return "configure a review profile before editing reviewer entities"

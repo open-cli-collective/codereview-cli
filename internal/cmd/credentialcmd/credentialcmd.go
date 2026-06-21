@@ -528,10 +528,11 @@ type initPendingReviewerEntityDelete struct {
 }
 
 type initPendingLLMRuntimeDelete struct {
-	RuntimeName string
-	Replacement initLLMRuntimeDraft
-	Applied     map[string]config.LLMConfig
-	Original    map[string]config.LLMConfig
+	RuntimeName        string
+	Replacement        initLLMRuntimeDraft
+	Applied            map[string]config.LLMConfig
+	Original           map[string]config.LLMConfig
+	StandaloneOriginal *config.LLMConfig
 }
 
 type initGitScopeDraft struct {
@@ -1192,6 +1193,7 @@ func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
 		LLMRuntimeCount:     len(llmRuntimes),
 		ReviewerEntityCount: countConfiguredInitReviewerEntities(reviewerEntities),
 		ReviewProfileCount:  len(session.cfg.Profiles),
+		CanConfigureLLM:     true,
 		CanSave:             initSessionCanCommitWithoutWorkspace(session),
 	}
 	if session.workspace == nil {
@@ -1485,9 +1487,6 @@ func loopInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 }
 
 func editInteractiveInitLLMRuntimeStep(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
-	if session.workspace == nil {
-		return initSessionDraft{}, false, exitcode.Usage(errors.New("configure a review profile before editing LLM runtimes"))
-	}
 	prompter := deps.llmRuntimePrompter
 	if prompter == nil {
 		prompter = newHuhInitLLMRuntimePrompter(opts)
@@ -1511,6 +1510,10 @@ func editInteractiveInitLLMRuntimeStep(cmd *cobra.Command, opts *root.Options, f
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported LLM-runtime draft action %q", draft.Action)
 	}
+	if session.workspace == nil {
+		session, err = stageStandaloneInteractiveInitLLMRuntime(session, draft)
+		return session, false, err
+	}
 	previousProfileName := session.workspace.profileName
 	previousProfile := session.workspace.profile
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
@@ -1533,6 +1536,42 @@ func editInteractiveInitLLMRuntimeStep(cmd *cobra.Command, opts *root.Options, f
 		}
 	}
 	return session, false, nil
+}
+
+func stageStandaloneInteractiveInitLLMRuntime(session initSessionDraft, draft initDraft) (initSessionDraft, error) {
+	runtime := initLLMRuntimeDraftFromSeedDraft(draft)
+	if runtime.Provider == "" || runtime.Auth == "" || runtime.Adapter == "" {
+		return initSessionDraft{}, exitcode.Usage(errors.New("LLM runtime provider, auth, and adapter are required"))
+	}
+	working := cloneInitConfigFile(session.cfg)
+	if working.LLMRuntimes == nil {
+		working.LLMRuntimes = map[string]config.LLMConfig{}
+	}
+	name := strings.TrimSpace(runtime.Name)
+	if name == "" {
+		name = uniqueInitLLMRuntimeName(buildInitStandaloneLLMRuntimeNameSet(working.LLMRuntimes), runtime.suggestedName())
+	}
+	if runtime.Auth == config.LLMAuthAPIKey && strings.TrimSpace(runtime.CredentialRef) == "" {
+		ref, err := credentials.FormatRef(name)
+		if err != nil {
+			return initSessionDraft{}, exitcode.Usage(err)
+		}
+		runtime.CredentialRef = ref
+	}
+	working.LLMRuntimes[name] = runtime.exportConfig()
+	if err := validateInteractiveInitGlobalConfig(working); err != nil {
+		return initSessionDraft{}, cmderr.Config(err)
+	}
+	session.cfg = config.Normalize(working)
+	return session, nil
+}
+
+func buildInitStandaloneLLMRuntimeNameSet(runtimes map[string]config.LLMConfig) map[string]initLLMRuntimeDraft {
+	existing := make(map[string]initLLMRuntimeDraft, len(runtimes))
+	for name := range runtimes {
+		existing[name] = initLLMRuntimeDraft{}
+	}
+	return existing
 }
 
 func loopInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
@@ -1790,7 +1829,7 @@ func initMenuDescription(prompt initMenuPrompt) string {
 	if prompt.HasWorkspace && strings.TrimSpace(prompt.ActiveProfileName) != "" {
 		return fmt.Sprintf("Active profile: %s", prompt.ActiveProfileName)
 	}
-	return "Configure the parts cr needs, stage changes as you go, then commit when the active profile is ready."
+	return "Configure the parts cr needs, stage changes as you go, then commit them."
 }
 
 func runBackableInitForm(form *huh.Form, stdin io.Reader, stderr io.Writer) (bool, error) {
@@ -1871,7 +1910,7 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeInventory(prompt initLLMRuntime
 	for {
 		result, err := p.runInventory(initInventoryPrompt{
 			Title:       "LLM Runtime",
-			Description: "Choose how reviewer agents run for this profile.",
+			Description: "Choose how reviewer agents run.",
 			Rows:        initLLMRuntimeInventoryRows(prompt.Context),
 			Width:       80,
 			Height:      20,
@@ -4782,6 +4821,14 @@ func deleteInteractiveInitLLMRuntime(session initSessionDraft, runtimeName strin
 	_, profileRuntimeNames := buildInitLLMRuntimeInventory(session.cfg)
 	original := map[string]config.LLMConfig{}
 	applied := map[string]config.LLMConfig{}
+	var standaloneOriginal *config.LLMConfig
+	if session.cfg.LLMRuntimes != nil {
+		if runtime, ok := session.cfg.LLMRuntimes[runtimeName]; ok {
+			runtimeCopy := cloneInitLLMConfig(runtime)
+			standaloneOriginal = &runtimeCopy
+			delete(session.cfg.LLMRuntimes, runtimeName)
+		}
+	}
 	for profileName, selected := range profileRuntimeNames {
 		if selected != runtimeName {
 			continue
@@ -4796,14 +4843,15 @@ func deleteInteractiveInitLLMRuntime(session initSessionDraft, runtimeName strin
 		profile.LLM = nextLLM
 		session.cfg.Profiles[profileName] = profile
 	}
-	if len(original) == 0 {
+	if len(original) == 0 && standaloneOriginal == nil {
 		return initSessionDraft{}, exitcode.Usage(fmt.Errorf("LLM runtime %q is not deletable", runtimeName))
 	}
 	session.pendingLLMRuntimeDeletes[runtimeName] = initPendingLLMRuntimeDelete{
-		RuntimeName: runtimeName,
-		Replacement: replacement,
-		Applied:     applied,
-		Original:    original,
+		RuntimeName:        runtimeName,
+		Replacement:        replacement,
+		Applied:            applied,
+		Original:           original,
+		StandaloneOriginal: standaloneOriginal,
 	}
 	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
 }
@@ -4826,6 +4874,12 @@ func undoInteractiveInitLLMRuntimeDelete(session initSessionDraft, runtimeName s
 		}
 		profile.LLM = cloneInitLLMConfig(previous)
 		session.cfg.Profiles[profileName] = profile
+	}
+	if pending.StandaloneOriginal != nil {
+		if session.cfg.LLMRuntimes == nil {
+			session.cfg.LLMRuntimes = map[string]config.LLMConfig{}
+		}
+		session.cfg.LLMRuntimes[runtimeName] = cloneInitLLMConfig(*pending.StandaloneOriginal)
 	}
 	delete(session.pendingLLMRuntimeDeletes, runtimeName)
 	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
@@ -5147,6 +5201,17 @@ func buildInitLLMRuntimeInventory(cfg config.File) (map[string]initLLMRuntimeDra
 	runtimes := map[string]initLLMRuntimeDraft{}
 	profileRuntimeNames := map[string]string{}
 	runtimeNamesByKey := map[string]string{}
+	rootRuntimeNames := make([]string, 0, len(cfg.LLMRuntimes))
+	for name := range cfg.LLMRuntimes {
+		rootRuntimeNames = append(rootRuntimeNames, name)
+	}
+	sort.Strings(rootRuntimeNames)
+	for _, name := range rootRuntimeNames {
+		runtime := initLLMRuntimeDraftFromConfig(cfg.LLMRuntimes[name])
+		runtime.Name = name
+		runtimes[name] = runtime
+		runtimeNamesByKey[runtime.identityKey()] = name
+	}
 	for _, profileName := range sortedProfileNames(cfg.Profiles) {
 		profile := cfg.Profiles[profileName]
 		runtime := initLLMRuntimeDraftFromConfig(profile.LLM)
@@ -5200,6 +5265,12 @@ func cloneInitConfigFile(cfg config.File) config.File {
 	if cfg.Data.Retention.MaxAgeDays != nil {
 		value := *cfg.Data.Retention.MaxAgeDays
 		cloned.Data.Retention.MaxAgeDays = &value
+	}
+	if cfg.LLMRuntimes != nil {
+		cloned.LLMRuntimes = make(map[string]config.LLMConfig, len(cfg.LLMRuntimes))
+		for name, runtime := range cfg.LLMRuntimes {
+			cloned.LLMRuntimes[name] = cloneInitLLMConfig(runtime)
+		}
 	}
 	cloned.Secrets = cloneInitSecretsConfig(cfg.Secrets)
 	return cloned
