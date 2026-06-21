@@ -12001,6 +12001,47 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 	}
 }
 
+func TestInitSecretsManagementLinearEditorCanCreateStoreBeforeReviewProfile(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	discovery := initOnePasswordDesktopDiscovery{Accounts: []initOnePasswordDiscoveredAccount{{
+		ID:  "acct-1",
+		URL: "my.1password.com",
+		Vaults: []initOnePasswordDiscoveredVault{{
+			ID:   "vault-private",
+			Name: "Private",
+		}},
+	}}}
+	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(config.File{}, nil, nil, discovery)
+	model := newInitLinearEditorModel(editor, 180, 40)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if next.document[next.focused].Error != "" {
+		t.Fatalf("stage action error = %q", next.document[next.focused].Error)
+	}
+	if next.resultAction != initDetailActionEdit {
+		t.Fatalf("result action = %q, want edit", next.resultAction)
+	}
+	edit, err := initSecretsManagementEditFromDocumentWithDiscovery(config.File{}, next.document, discovery)
+	if err != nil {
+		t.Fatalf("initSecretsManagementEditFromDocumentWithDiscovery: %v", err)
+	}
+	if edit.Config.DefaultProfile != "" || len(edit.Config.Profiles) != 0 {
+		t.Fatalf("edit config unexpectedly added review profile data: %#v", edit.Config)
+	}
+	profile := edit.Config.Secrets.Stores["1password-personal"]
+	if profile.Backend.OnePassword == nil || profile.Backend.OnePassword.VaultName != "Private" {
+		t.Fatalf("created credential store = %#v, want private 1Password store", profile)
+	}
+}
+
 func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountThenVault(t *testing.T) {
 	if !initOnePasswordBackendsAvailable() {
 		t.Skip("1Password create targets are not selectable in keyring_no1password builds")

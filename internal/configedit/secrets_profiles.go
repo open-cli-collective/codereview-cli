@@ -95,7 +95,7 @@ func SetSecretsProfile(cfg config.File, rawID string, patch SecretsProfilePatch)
 	}
 	working.Secrets.Profiles[id] = updated
 	working.Secrets.Stores[id] = updated
-	if err := config.Validate(working); err != nil {
+	if err := validateConfigAfterSecretsProfileEdit(working); err != nil {
 		return config.File{}, false, false, err
 	}
 	return config.Normalize(working), true, !existed, nil
@@ -121,10 +121,21 @@ func RemoveSecretsProfile(cfg config.File, rawID string) (config.File, bool, err
 	if len(working.Secrets.Stores) == 0 {
 		working.Secrets.Stores = nil
 	}
-	if err := config.Validate(working); err != nil {
+	if err := validateConfigAfterSecretsProfileEdit(working); err != nil {
 		return config.File{}, false, err
 	}
 	return config.Normalize(working), true, nil
+}
+
+func validateConfigAfterSecretsProfileEdit(cfg config.File) error {
+	cfg = config.Normalize(cfg)
+	if len(cfg.Profiles) > 0 || strings.TrimSpace(cfg.DefaultProfile) != "" || len(cfg.RepositoryProfiles) > 0 {
+		return config.Validate(cfg)
+	}
+	if err := config.ValidateSecrets(cfg.Secrets); err != nil {
+		return err
+	}
+	return config.ValidateRetention(cfg.Data.Retention)
 }
 
 func cloneSecretsProfiles(in map[string]config.SecretsProfile) map[string]config.SecretsProfile {

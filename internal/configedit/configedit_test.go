@@ -517,6 +517,35 @@ func TestSecretsProfileHelpers(t *testing.T) {
 		}
 	})
 
+	t.Run("set allows stores before review profiles exist", func(t *testing.T) {
+		backend := config.SecretsProfileBackend{
+			Kind: config.SecretsBackendKind("op-desktop"),
+			OnePassword: &config.SecretsProfileOnePasswordConfig{
+				AccountURL: "my.1password.com",
+				VaultID:    "vault-private",
+				VaultName:  "Private",
+			},
+		}
+		label := "1Password-Personal"
+		updated, changed, created, err := configedit.SetSecretsProfile(config.File{}, "1password-personal", configedit.SecretsProfilePatch{
+			Backend: &backend,
+			Label:   &label,
+		})
+		if err != nil {
+			t.Fatalf("SetSecretsProfile store-only create: %v", err)
+		}
+		if !changed || !created {
+			t.Fatalf("SetSecretsProfile store-only create = changed:%t created:%t, want true,true", changed, created)
+		}
+		if updated.DefaultProfile != "" || len(updated.Profiles) != 0 {
+			t.Fatalf("updated config unexpectedly added review profile data: %#v", updated)
+		}
+		got := updated.Secrets.Profiles["1password-personal"]
+		if got.Label != "1Password-Personal" || got.Backend.OnePassword == nil || got.Backend.OnePassword.VaultName != "Private" {
+			t.Fatalf("created store = %#v, want named 1Password store", got)
+		}
+	})
+
 	t.Run("set validates edge cases", func(t *testing.T) {
 		cfg := testConfig()
 		backend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("keychain")}
