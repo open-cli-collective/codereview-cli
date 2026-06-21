@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -11842,6 +11843,54 @@ func TestInitOnePasswordDesktopDiscoveryListsAccountsAndVaults(t *testing.T) {
 	}
 	if selection.AccountID != "acct-1" || selection.AccountURL != "signalft.1password.com" || selection.VaultID != "vault-emp" || selection.VaultName != "Employee" {
 		t.Fatalf("selection = %#v, want account/vault metadata", selection)
+	}
+	if got, want := calls, []string{
+		"op account list --format=json",
+		"op vault list --account acct-1 --format=json",
+		"op vault list --account acct-2 --format=json",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("op calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestInitOnePasswordDesktopDiscoveryUsesFreshTimeoutPerCommand(t *testing.T) {
+	var calls []string
+	runner := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		select {
+		case <-time.After(60 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		switch strings.Join(args, " ") {
+		case "account list --format=json":
+			return []byte(`[
+				{"account_uuid":"acct-1","url":"my.1password.com"},
+				{"account_uuid":"acct-2","url":"signalft.1password.com"}
+			]`), nil
+		case "vault list --account acct-1 --format=json":
+			return []byte(`[{"id":"vault-personal","name":"Personal"}]`), nil
+		case "vault list --account acct-2 --format=json":
+			return []byte(`[{"id":"vault-emp","name":"Employee"}]`), nil
+		default:
+			return nil, fmt.Errorf("unexpected op command %q", strings.Join(args, " "))
+		}
+	}
+
+	discovery := initOnePasswordDiscovery{run: runner, timeout: 100 * time.Millisecond}.DiscoverDesktop(context.Background())
+	if discovery.Err != nil {
+		t.Fatalf("DiscoverDesktop error = %v", discovery.Err)
+	}
+	accounts, vaults := discovery.Counts()
+	if accounts != 2 || vaults != 2 {
+		t.Fatalf("counts = %d accounts, %d vaults; want 2 accounts, 2 vaults; discovery=%#v", accounts, vaults, discovery)
+	}
+	selection, ok := discovery.AccountVaultSelection(initOnePasswordDesktopAccountSelectionValue(1), initOnePasswordDesktopVaultSelectionValue(0))
+	if !ok {
+		t.Fatalf("second account vault selection missing; discovery=%#v", discovery)
+	}
+	if selection.AccountURL != "signalft.1password.com" || selection.VaultName != "Employee" {
+		t.Fatalf("second account selection = %#v, want SignalFT Employee vault", selection)
 	}
 	if got, want := calls, []string{
 		"op account list --format=json",

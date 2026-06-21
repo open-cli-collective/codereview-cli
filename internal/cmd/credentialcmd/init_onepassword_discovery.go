@@ -13,6 +13,7 @@ import (
 )
 
 const initOnePasswordManualSelection = "__manual_1password__"
+const initOnePasswordDiscoveryCommandTimeout = 30 * time.Second
 
 type initOnePasswordCommandRunner func(context.Context, string, ...string) ([]byte, error)
 
@@ -51,7 +52,7 @@ func newInitOnePasswordDiscovery(run initOnePasswordCommandRunner) initOnePasswo
 	if run == nil {
 		run = runInitOnePasswordCommand
 	}
-	return initOnePasswordDiscovery{run: run, timeout: 5 * time.Second}
+	return initOnePasswordDiscovery{run: run, timeout: initOnePasswordDiscoveryCommandTimeout}
 }
 
 func (p huhInitKeyringBackendPrompter) discoverOnePasswordDesktop() initOnePasswordDesktopDiscovery {
@@ -65,12 +66,10 @@ func runInitOnePasswordCommand(ctx context.Context, name string, args ...string)
 
 func (d initOnePasswordDiscovery) DiscoverDesktop(ctx context.Context) initOnePasswordDesktopDiscovery {
 	if d.timeout <= 0 {
-		d.timeout = 5 * time.Second
+		d.timeout = initOnePasswordDiscoveryCommandTimeout
 	}
-	ctx, cancel := context.WithTimeout(ctx, d.timeout)
-	defer cancel()
 
-	accountOutput, err := d.run(ctx, "op", "account", "list", "--format=json")
+	accountOutput, err := d.runWithTimeout(ctx, "op", "account", "list", "--format=json")
 	if err != nil {
 		return initOnePasswordDesktopDiscovery{Err: err}
 	}
@@ -83,7 +82,7 @@ func (d initOnePasswordDiscovery) DiscoverDesktop(ctx context.Context) initOnePa
 		if accountArg == "" {
 			continue
 		}
-		vaultOutput, err := d.run(ctx, "op", "vault", "list", "--account", accountArg, "--format=json")
+		vaultOutput, err := d.runWithTimeout(ctx, "op", "vault", "list", "--account", accountArg, "--format=json")
 		if err != nil {
 			if accounts[index].Vaults == nil {
 				accounts[index].Vaults = []initOnePasswordDiscoveredVault{}
@@ -96,6 +95,12 @@ func (d initOnePasswordDiscovery) DiscoverDesktop(ctx context.Context) initOnePa
 		}
 	}
 	return initOnePasswordDesktopDiscovery{Accounts: accounts}
+}
+
+func (d initOnePasswordDiscovery) runWithTimeout(ctx context.Context, name string, args ...string) ([]byte, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, d.timeout)
+	defer cancel()
+	return d.run(commandCtx, name, args...)
 }
 
 func parseInitOnePasswordAccounts(data []byte) ([]initOnePasswordDiscoveredAccount, error) {
