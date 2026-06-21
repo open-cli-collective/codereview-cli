@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -141,7 +142,35 @@ func parseInitOnePasswordVaults(data []byte) ([]initOnePasswordDiscoveredVault, 
 		}
 		vaults = append(vaults, vault)
 	}
+	sort.SliceStable(vaults, func(i, j int) bool {
+		return initOnePasswordVaultLess(vaults[i], vaults[j])
+	})
 	return vaults, nil
+}
+
+func initOnePasswordVaultLess(left, right initOnePasswordDiscoveredVault) bool {
+	leftRank := initOnePasswordVaultPriorityRank(left)
+	rightRank := initOnePasswordVaultPriorityRank(right)
+	if leftRank != rightRank {
+		return leftRank < rightRank
+	}
+	leftName := strings.ToLower(left.DisplayName())
+	rightName := strings.ToLower(right.DisplayName())
+	if leftName != rightName {
+		return leftName < rightName
+	}
+	return left.DisplayName() < right.DisplayName()
+}
+
+func initOnePasswordVaultPriorityRank(vault initOnePasswordDiscoveredVault) int {
+	switch strings.ToLower(strings.TrimSpace(vault.DisplayName())) {
+	case "employee":
+		return 0
+	case "private":
+		return 1
+	default:
+		return 2
+	}
 }
 
 func initOnePasswordStringField(item map[string]any, names ...string) string {

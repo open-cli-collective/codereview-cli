@@ -11853,6 +11853,28 @@ func TestInitOnePasswordDesktopDiscoveryListsAccountsAndVaults(t *testing.T) {
 	}
 }
 
+func TestParseInitOnePasswordVaultsPrioritizesOwnedVaultsThenAlphabetizes(t *testing.T) {
+	vaults, err := parseInitOnePasswordVaults([]byte(`[
+		{"id":"vault-shared","name":"Shared"},
+		{"id":"vault-zeta","name":"Zeta"},
+		{"id":"vault-private","name":"Private"},
+		{"id":"vault-alpha","name":"Alpha"},
+		{"id":"vault-employee","name":"Employee"},
+		{"id":"vault-beta","name":"beta"}
+	]`))
+	if err != nil {
+		t.Fatalf("parseInitOnePasswordVaults: %v", err)
+	}
+	got := make([]string, 0, len(vaults))
+	for _, vault := range vaults {
+		got = append(got, vault.Name)
+	}
+	want := []string{"Employee", "Private", "Alpha", "beta", "Shared", "Zeta"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("vault names = %#v, want %#v", got, want)
+	}
+}
+
 func TestInitOnePasswordDesktopDiscoveryUsesFreshTimeoutPerCommand(t *testing.T) {
 	var calls []string
 	runner := func(ctx context.Context, name string, args ...string) ([]byte, error) {
