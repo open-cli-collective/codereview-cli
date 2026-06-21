@@ -333,8 +333,8 @@ func TestInitReviewerEntityInventoryRowsSetExpectedCapabilities(t *testing.T) {
 		},
 	})
 
-	if len(rows) != 6 {
-		t.Fatalf("len(rows) = %d, want 6", len(rows))
+	if len(rows) != 5 {
+		t.Fatalf("len(rows) = %d, want 5", len(rows))
 	}
 	if got := rows[0]; got.Kind != initInventoryRowKindActive || !got.Selectable || !got.Deletable || got.Restorable || got.PrimaryAction != initInventoryActionNone {
 		t.Fatalf("active row = %#v, want selectable+deletable active reviewer entity", got)
@@ -343,24 +343,18 @@ func TestInitReviewerEntityInventoryRowsSetExpectedCapabilities(t *testing.T) {
 		t.Fatalf("pending row = %#v, want restorable pending reviewer entity", got)
 	}
 	if got := rows[2]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
-		t.Fatalf("fallback row = %#v, want selectable command fallback", got)
-	}
-	if got, want := rows[2].Title, "Use a profile's Git account (no separate reviewer entity)"; got != want {
-		t.Fatalf("fallback row title = %q, want %q", got, want)
-	}
-	if got := rows[3]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
 		t.Fatalf("pat row = %#v, want selectable command PAT template", got)
 	}
-	if got, want := rows[3].Title, "Configure new personal access token (PAT) reviewer"; got != want {
+	if got, want := rows[2].Title, "Configure new personal access token (PAT) reviewer"; got != want {
 		t.Fatalf("pat row title = %q, want %q", got, want)
 	}
-	if got := rows[4]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
+	if got := rows[3]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionCommand {
 		t.Fatalf("github app row = %#v, want selectable command GitHub App template", got)
 	}
-	if got, want := rows[4].Title, "Configure new GitHub App reviewer"; got != want {
+	if got, want := rows[3].Title, "Configure new GitHub App reviewer"; got != want {
 		t.Fatalf("github app row title = %q, want %q", got, want)
 	}
-	if got := rows[5]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionBack {
+	if got := rows[4]; got.Kind != initInventoryRowKindCommand || !got.Selectable || got.PrimaryAction != initInventoryActionBack {
 		t.Fatalf("back row = %#v, want selectable Back command", got)
 	}
 }

@@ -137,15 +137,11 @@ func initMenuCountDescription(count int, singular, plural string) string {
 
 func initMenuDisabledReason(prompt initMenuPrompt, action initMenuAction) string {
 	switch action {
-	case initMenuActionReviewerEntities:
-		if !prompt.CanConfigureReviewer {
-			return "configure a review profile before editing reviewer entities"
-		}
 	case initMenuActionSave:
 		if !prompt.CanSave {
 			return "stage changes before committing"
 		}
-	case initMenuActionSecretsManagement, initMenuActionLLMRuntimes, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+	case initMenuActionSecretsManagement, initMenuActionLLMRuntimes, initMenuActionReviewerEntities, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
 	}
 	return ""
 }

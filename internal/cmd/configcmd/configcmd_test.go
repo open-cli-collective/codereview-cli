@@ -1453,7 +1453,7 @@ func TestConfigRetentionSetMutatesAndPreservesUnrelatedConfig(t *testing.T) {
 	if saved.Data.Retention.MaxAgeDaysValue() != 30 || saved.Data.Retention.Enforcement != config.RetentionManualOnly {
 		t.Fatalf("retention = %#v, want 30/manual_only", saved.Data.Retention)
 	}
-	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) {
+	if !reflect.DeepEqual(saved.Profiles, config.Normalize(cfg).Profiles) {
 		t.Fatalf("profiles = %#v, want preserved", saved.Profiles)
 	}
 	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
@@ -1595,7 +1595,7 @@ func TestConfigRetentionResetRestoresDefaultsAndPreservesConfig(t *testing.T) {
 	if saved.Data.Retention.MaxAgeDaysValue() != 90 || saved.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 90/at_write", saved.Data.Retention)
 	}
-	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) {
+	if !reflect.DeepEqual(saved.Profiles, config.Normalize(cfg).Profiles) {
 		t.Fatalf("profiles = %#v, want preserved", saved.Profiles)
 	}
 	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
@@ -1871,6 +1871,11 @@ func TestConfigShowReservedAuthModeExitCode(t *testing.T) {
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
 profiles:
   home:
     git:
@@ -1879,10 +1884,9 @@ profiles:
       credential:
         store: test-memory
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
 `)
 	cmd, _ := newTestCommand(path)
 

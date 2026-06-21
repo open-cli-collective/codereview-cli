@@ -237,6 +237,7 @@ type initPromptContext struct {
 	ReviewerEntities             map[string]initReviewerEntityDraft
 	ProfileReviewerEntities      map[string]string
 	ReviewerCredentialStatuses   []initReviewerCredentialStatus
+	StandaloneReviewerEntityMode bool
 	SecretsProfiles              []config.EffectiveSecretsProfile
 	ProfileSecretsProfiles       map[string]string
 	BrokenProfileSecretsProfiles map[string]string
@@ -523,15 +524,20 @@ type initPendingProfileDelete struct {
 }
 
 type initPendingReviewerEntityDelete struct {
-	EntityName string
-	Affected   map[string]config.ReviewerCredentials
+	EntityName       string
+	Entity           *config.ReviewerEntity
+	ProfileReviewers map[string]config.ProfileReviewer
+	Affected         map[string]config.ReviewerCredentials
 }
 
 type initPendingLLMRuntimeDelete struct {
 	RuntimeName        string
 	Replacement        initLLMRuntimeDraft
+	ReplacementName    string
+	AddedReplacement   bool
 	Applied            map[string]config.LLMConfig
 	Original           map[string]config.LLMConfig
+	OriginalRefs       map[string]string
 	StandaloneOriginal *config.LLMConfig
 }
 
@@ -574,13 +580,15 @@ const (
 )
 
 type initLLMRuntimeDraft struct {
-	Name            string
-	Preset          initLLMRuntimePreset
-	Provider        config.LLMProvider
-	Auth            config.LLMAuth
-	Adapter         config.LLMAdapter
-	CredentialStore string
-	CredentialRef   string
+	Name              string
+	Preset            initLLMRuntimePreset
+	Provider          config.LLMProvider
+	Auth              config.LLMAuth
+	Adapter           config.LLMAdapter
+	CredentialStore   string
+	CredentialRef     string
+	ModelMap          config.ModelMap
+	ReviewerModelTier config.ModelTier
 }
 
 type initStore interface {
@@ -1019,14 +1027,19 @@ func newHuhInitMenuPrompter(opts *root.Options) initMenuPrompter {
 
 func newHuhInitLLMRuntimePrompter(opts *root.Options) initLLMRuntimePrompter {
 	return huhInitLLMRuntimePrompter{
-		stdin:   opts.Stdin,
-		stderr:  opts.Stderr,
-		checker: defaultInitLLMRuntimeAvailabilityNote,
+		stdin:           opts.Stdin,
+		stderr:          opts.Stderr,
+		inventoryRunner: runInitInventory,
+		checker:         defaultInitLLMRuntimeAvailabilityNote,
 	}
 }
 
 func newHuhInitReviewerEntityPrompter(opts *root.Options) initReviewerEntityPrompter {
-	return huhInitReviewerEntityPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	return huhInitReviewerEntityPrompter{
+		stdin:           opts.Stdin,
+		stderr:          opts.Stderr,
+		inventoryRunner: runInitInventory,
+	}
 }
 
 func newHuhInitFinalizePrompter(opts *root.Options) initFinalizePrompter {
@@ -1189,19 +1202,19 @@ func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
 	llmRuntimes, _ := buildInitLLMRuntimeInventory(session.cfg)
 	reviewerEntities, _ := buildInitReviewerEntityInventory(session.cfg)
 	prompt := initMenuPrompt{
-		HasWorkspace:        session.workspace != nil,
-		LLMRuntimeCount:     len(llmRuntimes),
-		ReviewerEntityCount: countConfiguredInitReviewerEntities(reviewerEntities),
-		ReviewProfileCount:  len(session.cfg.Profiles),
-		CanConfigureLLM:     true,
-		CanSave:             initSessionCanCommitWithoutWorkspace(session),
+		HasWorkspace:         session.workspace != nil,
+		LLMRuntimeCount:      len(llmRuntimes),
+		ReviewerEntityCount:  countConfiguredInitReviewerEntities(reviewerEntities),
+		ReviewProfileCount:   len(session.cfg.Profiles),
+		CanConfigureLLM:      true,
+		CanConfigureReviewer: true,
+		CanSave:              initSessionCanCommitWithoutWorkspace(session),
 	}
 	if session.workspace == nil {
 		return prompt
 	}
 	prompt.ActiveProfileName = session.workspace.profileName
 	prompt.CanConfigureLLM = true
-	prompt.CanConfigureReviewer = true
 	prompt.CanSave = true
 	return prompt
 }
@@ -1574,6 +1587,10 @@ func buildInitStandaloneLLMRuntimeNameSet(runtimes map[string]config.LLMConfig) 
 	return existing
 }
 
+func buildInitLLMRuntimeDraftNameSet(runtimes map[string]config.LLMConfig) map[string]initLLMRuntimeDraft {
+	return buildInitStandaloneLLMRuntimeNameSet(runtimes)
+}
+
 func loopInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
 	for {
 		var stayInCategory bool
@@ -1589,14 +1606,12 @@ func loopInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 }
 
 func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
-	if session.workspace == nil {
-		return initSessionDraft{}, false, exitcode.Usage(errors.New("configure a review profile before editing reviewer entities"))
-	}
 	prompter := deps.reviewerPrompter
 	if prompter == nil {
 		prompter = newHuhInitReviewerEntityPrompter(opts)
 	}
 	promptCtx := currentInteractiveInitReviewerEntityPromptContext(opts, deps, session)
+	promptCtx.StandaloneReviewerEntityMode = true
 	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: promptCtx})
 	if errors.Is(err, errInitNavigateBack) {
 		return session, false, nil
@@ -1615,27 +1630,16 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
 	}
-	previousCfg := cloneInitConfigFile(session.cfg)
-	previousEntity := initReviewerEntityDraft{}
-	if draft.ActionTarget != "" {
-		if entity, ok := promptCtx.ReviewerEntities[draft.ActionTarget]; ok {
-			previousEntity = entity
-		}
+	if !draft.ReviewerEnabled {
+		return session, false, nil
 	}
-	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
+	session, err = stageStandaloneInteractiveInitReviewerEntity(session, flags, draft)
 	if err != nil {
 		return initSessionDraft{}, false, err
 	}
-	session.cfg = cloneInitConfigFile(workspace.cfg)
-	nextEntity := initReviewerEntityDraft{}
-	if profile, ok := session.cfg.Profiles[workspace.profileName]; ok {
-		nextEntity = initReviewerEntityDraftFromConfig(profile)
-	}
-	session.cfg = propagateSharedReviewerEntityChanges(previousCfg, session.cfg, workspace.profileName, previousEntity, nextEntity)
-	session = rebuildInteractiveInitWorkspace(session, workspace.profileName)
-	session.requestedProfileName = workspace.profileName
 	session = mergeReviewerCredentialDraftWrites(session, draft)
 	if session.workspace != nil {
+		workspace := *session.workspace
 		credentialPlan, err := planInitCredentialsWithConfig(session.cfg, workspace.previousProfile, session.workspace.profile, projectInitPlannedWriteKeys(session.writes))
 		if err != nil {
 			return initSessionDraft{}, false, cmderr.Config(err)
@@ -1643,8 +1647,58 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 		session.workspace.previousProfile = workspace.previousProfile
 		session.workspace.credentialPlan = credentialPlan
 	}
-	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
 	return session, false, nil
+}
+
+func stageStandaloneInteractiveInitReviewerEntity(session initSessionDraft, flags initOptions, draft initDraft) (initSessionDraft, error) {
+	entity := initReviewerEntityDraftFromSeedDraft(draft)
+	if entity.Kind == initReviewerEntityKindUseGitIdentity {
+		return initSessionDraft{}, exitcode.Usage(errors.New("reviewer entity auth mode is required"))
+	}
+	if strings.TrimSpace(entity.CredentialStore) == "" {
+		entity.CredentialStore = initCredentialStoreDefaultID()
+	}
+	working := cloneInitConfigFile(session.cfg)
+	if working.ReviewerEntities == nil {
+		working.ReviewerEntities = map[string]config.ReviewerEntity{}
+	}
+	name := strings.TrimSpace(firstNonEmpty(draft.ActionTarget, entity.Name))
+	if name == "" {
+		name = uniqueInitReviewerEntityName(buildInitStandaloneReviewerEntityNameSet(working.ReviewerEntities), entity.suggestedName())
+	}
+	var previous *config.ReviewerEntity
+	if existing, ok := working.ReviewerEntities[name]; ok {
+		existingCopy := existing
+		previous = &existingCopy
+	}
+	if strings.TrimSpace(entity.CredentialRef) == "" {
+		if previous != nil && strings.TrimSpace(previous.CredentialRef) != "" {
+			entity.CredentialRef = strings.TrimSpace(previous.CredentialRef)
+		} else {
+			ref, err := credentials.FormatRef(name)
+			if err != nil {
+				return initSessionDraft{}, exitcode.Usage(err)
+			}
+			entity.CredentialRef = ref
+		}
+	}
+	if entity.AuthMode == "" || strings.TrimSpace(entity.CredentialRef) == "" {
+		return initSessionDraft{}, exitcode.Usage(errors.New("reviewer entity auth mode and credential name are required"))
+	}
+	working.ReviewerEntities[name] = entity.exportReviewerEntityConfig(previous, flags.gitHost)
+	if err := validateInteractiveInitGlobalConfig(working); err != nil {
+		return initSessionDraft{}, cmderr.Config(err)
+	}
+	session.cfg = config.Normalize(working)
+	return session, nil
+}
+
+func buildInitStandaloneReviewerEntityNameSet(entities map[string]config.ReviewerEntity) map[string]initReviewerEntityDraft {
+	existing := make(map[string]initReviewerEntityDraft, len(entities))
+	for name := range entities {
+		existing[name] = initReviewerEntityDraft{}
+	}
+	return existing
 }
 
 func mergeReviewerCredentialDraftWrites(session initSessionDraft, draft initDraft) initSessionDraft {
@@ -1819,10 +1873,7 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 }
 
 func initMenuInitialAction(prompt initMenuPrompt) initMenuAction {
-	if prompt.HasWorkspace {
-		return initMenuActionSecretsManagement
-	}
-	return initMenuActionReviewProfiles
+	return initMenuActionSecretsManagement
 }
 
 func initMenuDescription(prompt initMenuPrompt) string {
@@ -2244,13 +2295,6 @@ func initReviewerEntityInventoryRows(ctx initPromptContext) []initInventoryRow {
 	}
 	rows = append(rows,
 		initInventoryRow{
-			ID:            string(initReviewerEntityKindUseGitIdentity),
-			Title:         focusedReviewerEntityFallbackLabel(ctx.ExistingProfile),
-			Kind:          initInventoryRowKindCommand,
-			PrimaryAction: initInventoryActionCommand,
-			Selectable:    true,
-		},
-		initInventoryRow{
 			ID:            string(initReviewerEntityKindPAT),
 			Title:         reviewerEntityTemplatePATLabel(),
 			Kind:          initInventoryRowKindCommand,
@@ -2277,6 +2321,14 @@ func initReviewerEntityInventoryRows(ctx initPromptContext) []initInventoryRow {
 
 func standardReviewerCredentialRef(profileName string) (string, error) {
 	return credentials.FormatRef(profileName + "-reviewer")
+}
+
+func standardReviewerCredentialRefForEntity(entity initReviewerEntityDraft) (string, error) {
+	name := strings.TrimSpace(entity.Name)
+	if name == "" {
+		name = entity.suggestedName()
+	}
+	return credentials.FormatRef(name)
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -2862,7 +2914,7 @@ func normalizeReviewerEntitySelectionValue(selection string, entities map[string
 }
 
 func reviewerEntitySelectionDescription() string {
-	return "Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES for this profile. Profiles with no separate reviewer entity post using their profile Git account."
+	return "Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES. Review profiles can use a reviewer entity or post using the profile Git account."
 }
 
 func buildInitSecretsProfileInventory(cfg config.File) ([]config.EffectiveSecretsProfile, map[string]string, map[string]string) {
@@ -3274,11 +3326,13 @@ func applyReviewerEntitySelection(draft *initDraft, selection string) {
 
 func initLLMRuntimeDraftFromSeedDraft(draft initDraft) initLLMRuntimeDraft {
 	return initLLMRuntimeDraftFromConfig(config.LLMConfig{
-		Provider:      config.LLMProvider(draft.LLMProvider),
-		Auth:          config.LLMAuth(draft.LLMAuth),
-		Adapter:       config.LLMAdapter(draft.LLMAdapter),
-		Credential:    initCredentialLocationIfName(draft.LLMCredentialStore, draft.LLMCredentialRef),
-		CredentialRef: strings.TrimSpace(draft.LLMCredentialRef),
+		Provider:          config.LLMProvider(draft.LLMProvider),
+		Auth:              config.LLMAuth(draft.LLMAuth),
+		Adapter:           config.LLMAdapter(draft.LLMAdapter),
+		Credential:        initCredentialLocationIfName(draft.LLMCredentialStore, draft.LLMCredentialRef),
+		CredentialRef:     strings.TrimSpace(draft.LLMCredentialRef),
+		ModelMap:          copyModelMap(draft.ModelMap),
+		ReviewerModelTier: config.ModelTier(strings.TrimSpace(draft.LLMReviewerModelTier)),
 	})
 }
 
@@ -3435,6 +3489,9 @@ func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runti
 		draft.LLMProvider = string(runtime.Provider)
 		draft.LLMAuth = string(runtime.Auth)
 		draft.LLMAdapter = string(runtime.Adapter)
+		draft.ModelMap = copyModelMap(runtime.ModelMap)
+		draft.ModelMapSet = true
+		draft.LLMReviewerModelTier = string(runtime.ReviewerModelTier)
 		if !draft.AdvancedStorageLabels {
 			draft.LLMCredentialStore = initCredentialStoreDraftValue(runtime.CredentialStore)
 			draft.LLMCredentialRef = runtime.CredentialRef
@@ -4261,6 +4318,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		}
 	}
 	if previousProfile != nil {
+		profile.LLMRuntime = previousProfile.LLMRuntime
 		profile.Git.IdentityCache = previousProfile.Git.IdentityCache
 		if previousProfile.LLM.ModelMap != nil {
 			modelMap := make(config.ModelMap, len(previousProfile.LLM.ModelMap))
@@ -4293,7 +4351,8 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			profile.ReviewerCredentials.IdentityCache = previousProfile.ReviewerCredentials.IdentityCache
 		}
 	}
-	cfg.Profiles[profileName] = profile
+	cfg, profile = materializeProfileReviewerEntity(cfg, profileName, profile)
+	cfg, profile = materializeProfileLLMRuntime(cfg, profileName, profile)
 
 	writes := map[string]map[string]string{}
 	if hasGitSecret {
@@ -4381,7 +4440,8 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 	if err != nil {
 		return initWorkspaceDraft{}, err
 	}
-	working.Profiles[profileName] = profile
+	working, profile = materializeProfileReviewerEntity(working, profileName, profile)
+	working, profile = materializeProfileLLMRuntime(working, profileName, profile)
 	if err := validateInteractiveInitConfig(initValidationConfigForProfileHost(working, profileName, previousProfile, profile.Git.Host)); err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
@@ -4512,6 +4572,12 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 			}
 		}
 	}
+	for _, entry := range standaloneReviewerEntityPlanEntries(session.cfg, plannedWriteKeys) {
+		activeRefs[entry.Ref.Ref] = true
+		if err := mergeInteractiveInitSessionPlanEntry(entriesByKey, entry); err != nil {
+			return initSessionPlan{}, cmderr.Config(err)
+		}
+	}
 	entryKeys := make([]string, 0, len(entriesByKey))
 	for key := range entriesByKey {
 		entryKeys = append(entryKeys, key)
@@ -4608,6 +4674,46 @@ func collectInteractiveInitSessionWorkspaceSecrets(opts *root.Options, deps init
 	session.overwriteRefs = cloneInitBoolMap(nextWorkspace.overwriteRefs)
 	session.satisfiedRefs = cloneInitBoolMap(nextWorkspace.satisfiedRefs)
 	return session, nil
+}
+
+func standaloneReviewerEntityPlanEntries(cfg config.File, plannedWriteKeys map[string][]string) []initCredentialPlanEntry {
+	cfg = config.Normalize(cfg)
+	names := make([]string, 0, len(cfg.ReviewerEntities))
+	for name := range cfg.ReviewerEntities {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	entries := make([]initCredentialPlanEntry, 0, len(names))
+	for _, name := range names {
+		entity := cfg.ReviewerEntities[name]
+		ref := config.CredentialRef{
+			Purpose: "reviewer_credentials",
+			Store:   strings.TrimSpace(entity.Credential.Store),
+			Ref:     strings.TrimSpace(entity.Credential.Name),
+			Mode:    string(entity.AuthMode),
+		}
+		if ref.Store == "" || ref.Ref == "" {
+			continue
+		}
+		resolved, err := credentials.ResolveCredentialStore(cfg, ref.Store)
+		if err != nil {
+			continue
+		}
+		specs, err := credentials.KeySpecsForPurpose(ref)
+		if err != nil {
+			continue
+		}
+		entry := initCredentialPlanEntry{
+			Ref:              ref,
+			SecretsProfile:   resolved,
+			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
+			PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
+		}
+		entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
+		entry.State = classifyInitCredentialPlanEntry(entry)
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 func sortedTouchedProfileNames(session initSessionDraft) []string {
@@ -4759,26 +4865,37 @@ func deleteInteractiveInitReviewerEntity(session initSessionDraft, entityName st
 	if _, exists := session.pendingReviewerEntityDeletes[entityName]; exists {
 		return session, nil
 	}
-	_, profileEntityNames := buildInitReviewerEntityInventory(session.cfg)
-	affected := map[string]config.ReviewerCredentials{}
-	for profileName, selected := range profileEntityNames {
-		if selected != entityName {
-			continue
+	session.cfg = config.Normalize(session.cfg)
+	var originalEntity *config.ReviewerEntity
+	if session.cfg.ReviewerEntities != nil {
+		if entity, ok := session.cfg.ReviewerEntities[entityName]; ok {
+			entityCopy := entity
+			originalEntity = &entityCopy
+			delete(session.cfg.ReviewerEntities, entityName)
 		}
-		profile := session.cfg.Profiles[profileName]
-		if profile.ReviewerCredentials == nil {
-			continue
-		}
-		affected[profileName] = *profile.ReviewerCredentials
-		cleared, _ := configedit.ClearReviewerCredentials(profile)
-		session.cfg.Profiles[profileName] = cleared
 	}
-	if len(affected) == 0 {
+	affected := map[string]config.ReviewerCredentials{}
+	profileReviewers := map[string]config.ProfileReviewer{}
+	for profileName, profile := range session.cfg.Profiles {
+		if profile.Reviewer.Kind != config.ProfileReviewerKindEntity || profile.Reviewer.Entity != entityName {
+			continue
+		}
+		profileReviewers[profileName] = profile.Reviewer
+		if profile.ReviewerCredentials != nil {
+			affected[profileName] = *profile.ReviewerCredentials
+		}
+		profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindGitIdentity}
+		profile.ReviewerCredentials = nil
+		session.cfg.Profiles[profileName] = profile
+	}
+	if len(profileReviewers) == 0 && originalEntity == nil {
 		return initSessionDraft{}, exitcode.Usage(fmt.Errorf("reviewer entity %q is not deletable", entityName))
 	}
 	session.pendingReviewerEntityDeletes[entityName] = initPendingReviewerEntityDelete{
-		EntityName: entityName,
-		Affected:   affected,
+		EntityName:       entityName,
+		Entity:           originalEntity,
+		ProfileReviewers: profileReviewers,
+		Affected:         affected,
 	}
 	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
 }
@@ -4789,6 +4906,23 @@ func undoInteractiveInitReviewerEntityDelete(session initSessionDraft, entityNam
 	pending, ok := session.pendingReviewerEntityDeletes[entityName]
 	if !ok {
 		return session, nil
+	}
+	if pending.Entity != nil {
+		if session.cfg.ReviewerEntities == nil {
+			session.cfg.ReviewerEntities = map[string]config.ReviewerEntity{}
+		}
+		session.cfg.ReviewerEntities[entityName] = *pending.Entity
+	}
+	for profileName, reviewer := range pending.ProfileReviewers {
+		profile, ok := session.cfg.Profiles[profileName]
+		if !ok {
+			continue
+		}
+		if profile.Reviewer.Kind != config.ProfileReviewerKindGitIdentity {
+			continue
+		}
+		profile.Reviewer = reviewer
+		session.cfg.Profiles[profileName] = profile
 	}
 	for profileName, previous := range pending.Affected {
 		profile, ok := session.cfg.Profiles[profileName]
@@ -4818,8 +4952,10 @@ func deleteInteractiveInitLLMRuntime(session initSessionDraft, runtimeName strin
 	if _, exists := session.pendingLLMRuntimeDeletes[runtimeName]; exists {
 		return session, nil
 	}
-	_, profileRuntimeNames := buildInitLLMRuntimeInventory(session.cfg)
+	session.cfg = config.Normalize(session.cfg)
+	runtimes, profileRuntimeNames := buildInitLLMRuntimeInventory(session.cfg)
 	original := map[string]config.LLMConfig{}
+	originalRefs := map[string]string{}
 	applied := map[string]config.LLMConfig{}
 	var standaloneOriginal *config.LLMConfig
 	if session.cfg.LLMRuntimes != nil {
@@ -4829,18 +4965,44 @@ func deleteInteractiveInitLLMRuntime(session initSessionDraft, runtimeName strin
 			delete(session.cfg.LLMRuntimes, runtimeName)
 		}
 	}
+	replacementName := ""
+	replacementKey := replacement.identityKey()
+	for name, candidate := range runtimes {
+		if name == runtimeName {
+			continue
+		}
+		if candidate.identityKey() == replacementKey {
+			replacementName = name
+			break
+		}
+	}
+	addedReplacement := false
+	replacementLLM := config.LLMConfig{}
+	if replacementName != "" {
+		replacementLLM = session.cfg.LLMRuntimes[replacementName]
+	} else {
+		var err error
+		replacementLLM, err = initLLMConfigForReplacement("replacement", replacement)
+		if err != nil {
+			return initSessionDraft{}, err
+		}
+		if session.cfg.LLMRuntimes == nil {
+			session.cfg.LLMRuntimes = map[string]config.LLMConfig{}
+		}
+		replacementName = uniqueInitLLMRuntimeName(buildInitLLMRuntimeDraftNameSet(session.cfg.LLMRuntimes), replacement.suggestedName())
+		session.cfg.LLMRuntimes[replacementName] = replacementLLM
+		addedReplacement = true
+	}
 	for profileName, selected := range profileRuntimeNames {
 		if selected != runtimeName {
 			continue
 		}
 		profile := session.cfg.Profiles[profileName]
 		original[profileName] = cloneInitLLMConfig(profile.LLM)
-		nextLLM, err := initLLMConfigForReplacement(profileName, replacement)
-		if err != nil {
-			return initSessionDraft{}, err
-		}
-		applied[profileName] = cloneInitLLMConfig(nextLLM)
-		profile.LLM = nextLLM
+		originalRefs[profileName] = profile.LLMRuntime
+		applied[profileName] = cloneInitLLMConfig(replacementLLM)
+		profile.LLMRuntime = replacementName
+		profile.LLM = replacementLLM
 		session.cfg.Profiles[profileName] = profile
 	}
 	if len(original) == 0 && standaloneOriginal == nil {
@@ -4849,8 +5011,11 @@ func deleteInteractiveInitLLMRuntime(session initSessionDraft, runtimeName strin
 	session.pendingLLMRuntimeDeletes[runtimeName] = initPendingLLMRuntimeDelete{
 		RuntimeName:        runtimeName,
 		Replacement:        replacement,
+		ReplacementName:    replacementName,
+		AddedReplacement:   addedReplacement,
 		Applied:            applied,
 		Original:           original,
+		OriginalRefs:       originalRefs,
 		StandaloneOriginal: standaloneOriginal,
 	}
 	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
@@ -4872,6 +5037,7 @@ func undoInteractiveInitLLMRuntimeDelete(session initSessionDraft, runtimeName s
 		if !reflect.DeepEqual(profile.LLM, applied) {
 			continue
 		}
+		profile.LLMRuntime = pending.OriginalRefs[profileName]
 		profile.LLM = cloneInitLLMConfig(previous)
 		session.cfg.Profiles[profileName] = profile
 	}
@@ -4880,6 +5046,9 @@ func undoInteractiveInitLLMRuntimeDelete(session initSessionDraft, runtimeName s
 			session.cfg.LLMRuntimes = map[string]config.LLMConfig{}
 		}
 		session.cfg.LLMRuntimes[runtimeName] = cloneInitLLMConfig(*pending.StandaloneOriginal)
+	}
+	if pending.AddedReplacement && pending.ReplacementName != "" && !initLLMRuntimeReferenced(session.cfg, pending.ReplacementName) {
+		delete(session.cfg.LLMRuntimes, pending.ReplacementName)
 	}
 	delete(session.pendingLLMRuntimeDeletes, runtimeName)
 	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
@@ -4899,6 +5068,19 @@ func initLLMConfigForReplacement(profileName string, runtime initLLMRuntimeDraft
 	}
 	llm.CredentialRef = ref
 	return llm, nil
+}
+
+func initLLMRuntimeReferenced(cfg config.File, runtimeName string) bool {
+	runtimeName = strings.TrimSpace(runtimeName)
+	if runtimeName == "" {
+		return false
+	}
+	for _, profile := range cfg.Profiles {
+		if strings.TrimSpace(profile.LLMRuntime) == runtimeName {
+			return true
+		}
+	}
+	return false
 }
 
 func initCredentialEntryKey(ref config.CredentialRef) string {
@@ -5011,6 +5193,22 @@ func initReviewerEntityDraftFromConfig(profile config.Profile) initReviewerEntit
 	return entity
 }
 
+func initReviewerEntityDraftFromReviewerEntity(entity config.ReviewerEntity) initReviewerEntityDraft {
+	draft := initReviewerEntityDraft{
+		AuthMode:        entity.AuthMode,
+		CredentialStore: initCredentialStoreDraftValue(entity.Credential.Store),
+		CredentialRef:   strings.TrimSpace(firstNonEmpty(entity.Credential.Name, entity.CredentialRef)),
+		DisplayName:     normalizeOptionalDisplayName(entity.DisplayName),
+	}
+	switch entity.AuthMode {
+	case config.GitAuthModeGitHubApp:
+		draft.Kind = initReviewerEntityKindGitHubApp
+	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
+		draft.Kind = initReviewerEntityKindPAT
+	}
+	return draft
+}
+
 func (entity initReviewerEntityDraft) exportConfig(previous *config.ReviewerCredentials) *config.ReviewerCredentials {
 	if entity.Kind == initReviewerEntityKindUseGitIdentity {
 		return nil
@@ -5023,6 +5221,28 @@ func (entity initReviewerEntityDraft) exportConfig(previous *config.ReviewerCred
 	}
 	if previous != nil && entity.matchesConfig(*previous) {
 		reviewer.IdentityCache = previous.IdentityCache
+	}
+	return reviewer
+}
+
+func (entity initReviewerEntityDraft) exportReviewerEntityConfig(previous *config.ReviewerEntity, host string) config.ReviewerEntity {
+	reviewer := config.ReviewerEntity{
+		Host:          strings.TrimSpace(host),
+		AuthMode:      entity.AuthMode,
+		Credential:    initCredentialLocation(entity.CredentialStore, entity.CredentialRef),
+		CredentialRef: strings.TrimSpace(entity.CredentialRef),
+		DisplayName:   normalizeOptionalDisplayName(entity.DisplayName),
+	}
+	if previous != nil {
+		if reviewer.Host == "" {
+			reviewer.Host = previous.Host
+		}
+		if entity.matchesReviewerEntityConfig(*previous) {
+			reviewer.IdentityCache = previous.IdentityCache
+		}
+	}
+	if reviewer.Host == "" {
+		reviewer.Host = "github.com"
 	}
 	return reviewer
 }
@@ -5058,43 +5278,49 @@ func (entity initReviewerEntityDraft) matchesConfig(previous config.ReviewerCred
 		strings.TrimSpace(firstNonEmpty(previous.Credential.Name, previous.CredentialRef)) == strings.TrimSpace(entity.CredentialRef)
 }
 
+func (entity initReviewerEntityDraft) matchesReviewerEntityConfig(previous config.ReviewerEntity) bool {
+	return entity.Kind == initReviewerEntityDraftFromReviewerEntity(previous).Kind &&
+		previous.AuthMode == entity.AuthMode &&
+		initCredentialStoreDraftValue(previous.Credential.Store) == initCredentialStoreDraftValue(entity.CredentialStore) &&
+		strings.TrimSpace(firstNonEmpty(previous.Credential.Name, previous.CredentialRef)) == strings.TrimSpace(entity.CredentialRef)
+}
+
 func buildInitReviewerEntityInventory(cfg config.File) (map[string]initReviewerEntityDraft, map[string]string) {
+	cfg = config.Normalize(cfg)
 	entities := map[string]initReviewerEntityDraft{}
 	profileEntityNames := map[string]string{}
-	entityNamesByKey := map[string]string{}
-	displayNamesByKey := map[string]map[string]struct{}{}
+
+	entityNames := make([]string, 0, len(cfg.ReviewerEntities))
+	for name := range cfg.ReviewerEntities {
+		entityNames = append(entityNames, name)
+	}
+	sort.Strings(entityNames)
+	for _, name := range entityNames {
+		entity := initReviewerEntityDraftFromReviewerEntity(cfg.ReviewerEntities[name])
+		entity.Name = name
+		entities[name] = entity
+	}
+
 	for _, profileName := range sortedProfileNames(cfg.Profiles) {
 		profile := cfg.Profiles[profileName]
-		entity := initReviewerEntityDraftFromConfig(profile)
-		key := entity.identityKey()
-		if entity.DisplayName != "" {
-			if _, ok := displayNamesByKey[key]; !ok {
-				displayNamesByKey[key] = map[string]struct{}{}
+		switch profile.Reviewer.Kind {
+		case config.ProfileReviewerKindGitIdentity:
+			profileEntityNames[profileName] = string(initReviewerEntityKindUseGitIdentity)
+			continue
+		case config.ProfileReviewerKindEntity:
+			if _, ok := entities[profile.Reviewer.Entity]; ok {
+				profileEntityNames[profileName] = profile.Reviewer.Entity
+				continue
 			}
-			displayNamesByKey[key][entity.DisplayName] = struct{}{}
 		}
-		if existingName, ok := entityNamesByKey[key]; ok {
-			profileEntityNames[profileName] = existingName
+		entity := initReviewerEntityDraftFromConfig(profile)
+		if entity.Kind == initReviewerEntityKindUseGitIdentity {
+			profileEntityNames[profileName] = string(initReviewerEntityKindUseGitIdentity)
 			continue
 		}
 		entity.Name = uniqueInitReviewerEntityName(entities, entity.suggestedName())
 		entities[entity.Name] = entity
-		entityNamesByKey[key] = entity.Name
 		profileEntityNames[profileName] = entity.Name
-	}
-	for name, entity := range entities {
-		displayNames := displayNamesByKey[entity.identityKey()]
-		noDisplayName := len(displayNames) == 0
-		conflictingDisplayNames := len(displayNames) > 1
-		if noDisplayName || conflictingDisplayNames {
-			entity.DisplayName = ""
-			entities[name] = entity
-			continue
-		}
-		for displayName := range displayNames {
-			entity.DisplayName = displayName
-		}
-		entities[name] = entity
 	}
 	return entities, profileEntityNames
 }
@@ -5117,12 +5343,14 @@ func uniqueInitReviewerEntityName(existing map[string]initReviewerEntityDraft, b
 
 func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
 	runtime := initLLMRuntimeDraft{
-		Preset:          initLLMRuntimePresetCustom,
-		Provider:        llm.Provider,
-		Auth:            llm.Auth,
-		Adapter:         llm.Adapter,
-		CredentialStore: initCredentialStoreDraftValue(llm.Credential.Store),
-		CredentialRef:   strings.TrimSpace(firstNonEmpty(llm.Credential.Name, llm.CredentialRef)),
+		Preset:            initLLMRuntimePresetCustom,
+		Provider:          llm.Provider,
+		Auth:              llm.Auth,
+		Adapter:           llm.Adapter,
+		CredentialStore:   initCredentialStoreDraftValue(llm.Credential.Store),
+		CredentialRef:     strings.TrimSpace(firstNonEmpty(llm.Credential.Name, llm.CredentialRef)),
+		ModelMap:          copyModelMap(llm.ModelMap),
+		ReviewerModelTier: llm.ReviewerModelTier,
 	}
 	switch {
 	case runtime.Provider == config.LLMProviderAnthropic && runtime.Auth == config.LLMAuthSubscription && runtime.Adapter == config.LLMAdapterClaudeCLI:
@@ -5144,9 +5372,11 @@ func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
 
 func (runtime initLLMRuntimeDraft) exportConfig() config.LLMConfig {
 	llm := config.LLMConfig{
-		Provider: runtime.Provider,
-		Auth:     runtime.Auth,
-		Adapter:  runtime.Adapter,
+		Provider:          runtime.Provider,
+		Auth:              runtime.Auth,
+		Adapter:           runtime.Adapter,
+		ModelMap:          copyModelMap(runtime.ModelMap),
+		ReviewerModelTier: runtime.ReviewerModelTier,
 	}
 	if runtime.Auth == config.LLMAuthAPIKey {
 		llm.Credential = initCredentialLocation(runtime.CredentialStore, runtime.CredentialRef)
@@ -5156,12 +5386,23 @@ func (runtime initLLMRuntimeDraft) exportConfig() config.LLMConfig {
 }
 
 func (runtime initLLMRuntimeDraft) identityKey() string {
+	modelKeys := make([]string, 0, len(runtime.ModelMap))
+	for tier := range runtime.ModelMap {
+		modelKeys = append(modelKeys, tier)
+	}
+	sort.Strings(modelKeys)
+	models := make([]string, 0, len(modelKeys))
+	for _, tier := range modelKeys {
+		models = append(models, tier+"="+strings.TrimSpace(runtime.ModelMap[tier]))
+	}
 	return strings.Join([]string{
 		string(runtime.Provider),
 		string(runtime.Auth),
 		string(runtime.Adapter),
 		initCredentialStoreDraftValue(runtime.CredentialStore),
 		strings.TrimSpace(runtime.CredentialRef),
+		strings.Join(models, "\x1f"),
+		string(runtime.ReviewerModelTier),
 	}, "\x00")
 }
 
@@ -5184,6 +5425,7 @@ func (runtime initLLMRuntimeDraft) suggestedName() string {
 }
 
 func buildInitLLMRuntimeInventory(cfg config.File) (map[string]initLLMRuntimeDraft, map[string]string) {
+	cfg = config.Normalize(cfg)
 	runtimes := map[string]initLLMRuntimeDraft{}
 	profileRuntimeNames := map[string]string{}
 	runtimeNamesByKey := map[string]string{}
@@ -5200,6 +5442,10 @@ func buildInitLLMRuntimeInventory(cfg config.File) (map[string]initLLMRuntimeDra
 	}
 	for _, profileName := range sortedProfileNames(cfg.Profiles) {
 		profile := cfg.Profiles[profileName]
+		if _, ok := runtimes[profile.LLMRuntime]; ok {
+			profileRuntimeNames[profileName] = profile.LLMRuntime
+			continue
+		}
 		runtime := initLLMRuntimeDraftFromConfig(profile.LLM)
 		key := runtime.identityKey()
 		if existingName, ok := runtimeNamesByKey[key]; ok {
@@ -5256,6 +5502,12 @@ func cloneInitConfigFile(cfg config.File) config.File {
 		cloned.LLMRuntimes = make(map[string]config.LLMConfig, len(cfg.LLMRuntimes))
 		for name, runtime := range cfg.LLMRuntimes {
 			cloned.LLMRuntimes[name] = cloneInitLLMConfig(runtime)
+		}
+	}
+	if cfg.ReviewerEntities != nil {
+		cloned.ReviewerEntities = make(map[string]config.ReviewerEntity, len(cfg.ReviewerEntities))
+		for name, entity := range cfg.ReviewerEntities {
+			cloned.ReviewerEntities[name] = entity
 		}
 	}
 	cloned.Secrets = cloneInitSecretsConfig(cfg.Secrets)
@@ -5423,6 +5675,125 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	return profile, nil
 }
 
+func materializeProfileReviewerEntity(cfg config.File, profileName string, profile config.Profile) (config.File, config.Profile) {
+	if profile.ReviewerCredentials == nil {
+		profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindGitIdentity}
+		if cfg.Profiles == nil {
+			cfg.Profiles = map[string]config.Profile{}
+		}
+		cfg.Profiles[profileName] = profile
+		return cfg, profile
+	}
+	if cfg.ReviewerEntities == nil {
+		cfg.ReviewerEntities = map[string]config.ReviewerEntity{}
+	}
+	entity := reviewerEntityConfigFromProfile(profile)
+
+	entityNames := make([]string, 0, len(cfg.ReviewerEntities))
+	for name := range cfg.ReviewerEntities {
+		entityNames = append(entityNames, name)
+	}
+	sort.Strings(entityNames)
+	for _, name := range entityNames {
+		existing := cfg.ReviewerEntities[name]
+		if !sameInitReviewerEntityConfigIdentity(existing, entity) {
+			continue
+		}
+		if displayName := normalizeOptionalDisplayName(entity.DisplayName); displayName != "" {
+			existing.DisplayName = displayName
+			cfg.ReviewerEntities[name] = existing
+		}
+		profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: name}
+		if cfg.Profiles == nil {
+			cfg.Profiles = map[string]config.Profile{}
+		}
+		cfg.Profiles[profileName] = profile
+		return cfg, profile
+	}
+
+	entityName := uniqueInitReviewerEntityName(buildInitStandaloneReviewerEntityNameSet(cfg.ReviewerEntities), profileName+"-reviewer")
+	cfg.ReviewerEntities[entityName] = entity
+	profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: entityName}
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]config.Profile{}
+	}
+	cfg.Profiles[profileName] = profile
+	return cfg, profile
+}
+
+func reviewerEntityConfigFromProfile(profile config.Profile) config.ReviewerEntity {
+	reviewer := profile.ReviewerCredentials
+	if reviewer == nil {
+		return config.ReviewerEntity{}
+	}
+	ref := strings.TrimSpace(firstNonEmpty(reviewer.Credential.Name, reviewer.CredentialRef))
+	return normalizeInitReviewerEntityConfig(config.ReviewerEntity{
+		Host:          profile.Git.Host,
+		AuthMode:      reviewer.AuthMode,
+		Credential:    initCredentialLocation(reviewer.Credential.Store, ref),
+		CredentialRef: ref,
+		DisplayName:   normalizeOptionalDisplayName(reviewer.DisplayName),
+		IdentityCache: reviewer.IdentityCache,
+	})
+}
+
+func sameInitReviewerEntityConfigIdentity(left, right config.ReviewerEntity) bool {
+	left = normalizeInitReviewerEntityConfig(left)
+	right = normalizeInitReviewerEntityConfig(right)
+	return config.NormalizeHost(left.Host) == config.NormalizeHost(right.Host) &&
+		left.AuthMode == right.AuthMode &&
+		initCredentialStoreDraftValue(left.Credential.Store) == initCredentialStoreDraftValue(right.Credential.Store) &&
+		strings.TrimSpace(left.Credential.Name) == strings.TrimSpace(right.Credential.Name)
+}
+
+func normalizeInitReviewerEntityConfig(entity config.ReviewerEntity) config.ReviewerEntity {
+	cfg := config.Normalize(config.File{
+		ReviewerEntities: map[string]config.ReviewerEntity{
+			"entity": entity,
+		},
+	})
+	return cfg.ReviewerEntities["entity"]
+}
+
+func materializeProfileLLMRuntime(cfg config.File, profileName string, profile config.Profile) (config.File, config.Profile) {
+	if cfg.LLMRuntimes == nil {
+		cfg.LLMRuntimes = map[string]config.LLMConfig{}
+	}
+	runtime := initLLMRuntimeDraftFromConfig(profile.LLM)
+	runtimeConfig := runtime.exportConfig()
+	runtimeKey := runtime.identityKey()
+
+	runtimeNames := make([]string, 0, len(cfg.LLMRuntimes))
+	for name := range cfg.LLMRuntimes {
+		runtimeNames = append(runtimeNames, name)
+	}
+	sort.Strings(runtimeNames)
+	for _, name := range runtimeNames {
+		if initLLMRuntimeDraftFromConfig(cfg.LLMRuntimes[name]).identityKey() == runtimeKey {
+			profile.LLMRuntime = name
+			profile.LLM = cloneInitLLMConfig(runtimeConfig)
+			if cfg.Profiles == nil {
+				cfg.Profiles = map[string]config.Profile{}
+			}
+			cfg.Profiles[profileName] = profile
+			return cfg, profile
+		}
+	}
+
+	runtimeName := strings.TrimSpace(profile.LLMRuntime)
+	if runtimeName == "" {
+		runtimeName = uniqueInitLLMRuntimeName(buildInitLLMRuntimeDraftNameSet(cfg.LLMRuntimes), runtime.suggestedName())
+	}
+	cfg.LLMRuntimes[runtimeName] = runtimeConfig
+	profile.LLMRuntime = runtimeName
+	profile.LLM = cloneInitLLMConfig(runtimeConfig)
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]config.Profile{}
+	}
+	cfg.Profiles[profileName] = profile
+	return cfg, profile
+}
+
 func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan initWorkspaceDraft) (initWorkspaceDraft, error) {
 	prompter := deps.modelMapPrompter
 	if prompter == nil {
@@ -5444,7 +5815,7 @@ func collectInteractiveInitModelMap(opts *root.Options, deps initDeps, plan init
 	nextProfile := plan.profile
 	nextProfile.LLM.ModelMap = normalizeInitModelMap(nextProfile.LLM, edit.ModelMap)
 	nextCfg := plan.cfg
-	nextCfg.Profiles[plan.profileName] = nextProfile
+	nextCfg, nextProfile = materializeProfileLLMRuntime(nextCfg, plan.profileName, nextProfile)
 	if err := config.Validate(nextCfg); err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}

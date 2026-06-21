@@ -47,7 +47,7 @@ func Refresh(ctx context.Context, cfg config.File, profileName string, resolver 
 	if err != nil {
 		return cfg, nil, false, err
 	}
-	cfg.Profiles[name] = updatedProfile
+	cfg = applyIdentityCacheUpdates(cfg, name, profile, updatedProfile, []ProfileResult{result})
 	return cfg, []ProfileResult{result}, changed, nil
 }
 
@@ -71,7 +71,7 @@ func RefreshAll(ctx context.Context, cfg config.File, resolver Resolver) (config
 		if err != nil {
 			return original, nil, false, err
 		}
-		updated.Profiles[name] = updatedProfile
+		updated = applyIdentityCacheUpdates(updated, name, profile, updatedProfile, profileResults)
 		results = append(results, profileResults...)
 		changed = changed || profileChanged
 	}
@@ -148,12 +148,38 @@ func reviewerIdentitySource(profile config.Profile) (config.GitConfig, string) {
 	return config.GitConfig{
 		Host:          profile.Git.Host,
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
+		Credential:    profile.ReviewerCredentials.Credential,
 		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}, profile.ReviewerCredentials.IdentityCache
 }
 
+func applyIdentityCacheUpdates(cfg config.File, profileName string, original config.Profile, updated config.Profile, results []ProfileResult) config.File {
+	for _, result := range results {
+		if !result.IdentityCacheUpdated {
+			continue
+		}
+		switch result.CredentialSource {
+		case SourceGit:
+			cfg.Profiles[profileName] = updated
+		case SourceReviewer:
+			if original.Reviewer.Kind == config.ProfileReviewerKindEntity {
+				entityName := strings.TrimSpace(original.Reviewer.Entity)
+				entity, ok := cfg.ReviewerEntities[entityName]
+				if ok {
+					entity.IdentityCache = result.Identity.Login
+					cfg.ReviewerEntities[entityName] = entity
+				}
+				continue
+			}
+			cfg.Profiles[profileName] = updated
+		}
+	}
+	return config.Normalize(cfg)
+}
+
 func normalizeForUpdate(cfg config.File) config.File {
+	cfg = config.Normalize(cfg)
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
 		return cfg
@@ -169,5 +195,12 @@ func normalizeForUpdate(cfg config.File) config.File {
 		profiles[name] = profile
 	}
 	cfg.Profiles = profiles
+	if cfg.ReviewerEntities != nil {
+		entities := make(map[string]config.ReviewerEntity, len(cfg.ReviewerEntities))
+		for name, entity := range cfg.ReviewerEntities {
+			entities[name] = entity
+		}
+		cfg.ReviewerEntities = entities
+	}
 	return cfg
 }

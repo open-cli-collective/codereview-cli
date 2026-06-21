@@ -567,6 +567,11 @@ func TestMeReservedAuthModeExitCode(t *testing.T) {
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
 profiles:
   home:
     git:
@@ -575,10 +580,9 @@ profiles:
       credential:
         store: test-memory
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
 `)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
@@ -604,6 +608,18 @@ func TestMeReviewerGitHubAppAuthModeUsesResolver(t *testing.T) {
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+reviewer_entities:
+  work-reviewer:
+    host: github.com
+    auth_mode: github_app
+    credential:
+      store: test-memory
+      name: codereview/work-reviewer
 profiles:
   work:
     git:
@@ -612,15 +628,10 @@ profiles:
       credential:
         store: test-memory
         name: codereview/work
-    reviewer_credentials:
-      auth_mode: github_app
-      credential:
-        store: test-memory
-        name: codereview/work-reviewer
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: entity
+      entity: work-reviewer
+    llm_runtime: claude-cli
 `)
 	resolver := &fakeResolver{
 		identities: map[string]gitprovider.Identity{"codereview/work-reviewer": {Login: "cr-reviewer[bot]", ID: "12345"}},
@@ -647,6 +658,18 @@ func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+reviewer_entities:
+  work-reviewer:
+    host: github.com
+    auth_mode: oauth_device
+    credential:
+      store: test-memory
+      name: codereview/work-reviewer
 profiles:
   home:
     git:
@@ -655,10 +678,9 @@ profiles:
       credential:
         store: test-memory
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
   work:
     git:
       host: github.com
@@ -666,15 +688,10 @@ profiles:
       credential:
         store: test-memory
         name: codereview/work
-    reviewer_credentials:
-      auth_mode: oauth_device
-      credential:
-        store: test-memory
-        name: codereview/work-reviewer
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: entity
+      entity: work-reviewer
+    llm_runtime: claude-cli
 `)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
@@ -697,6 +714,18 @@ func TestMeAllReservedGitAuthModeWithReviewerDoesNotOpenResolverFactory(t *testi
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+reviewer_entities:
+  work-reviewer:
+    host: github.com
+    auth_mode: pat
+    credential:
+      store: test-memory
+      name: codereview/work-reviewer
 profiles:
   home:
     git:
@@ -705,10 +734,9 @@ profiles:
       credential:
         store: test-memory
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
   work:
     git:
       host: github.com
@@ -716,15 +744,10 @@ profiles:
       credential:
         store: test-memory
         name: codereview/work
-    reviewer_credentials:
-      auth_mode: pat
-      credential:
-        store: test-memory
-        name: codereview/work-reviewer
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: entity
+      entity: work-reviewer
+    llm_runtime: claude-cli
 `)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {

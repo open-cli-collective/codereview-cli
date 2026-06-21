@@ -78,11 +78,11 @@ profiles before saving.
 
 The intended top-level shape is:
 
-1. Configure LLM runtimes
-2. Configure reviewer entities
-3. Configure review profiles
-4. Configure global settings
-5. Configure secrets management
+1. Configure secrets storage
+2. Configure LLM runtimes
+3. Configure reviewer entities
+4. Configure review profiles
+5. Configure global settings
 6. Commit staged changes and exit
 7. Discard staged changes and exit
 
@@ -214,8 +214,7 @@ environment variable names may be shown only as backend-auth env var names.
 
 ## Draft-Local Reuse Rules
 
-LLM runtimes and reviewer entities are reusable **within the current interactive
-`init` session only**.
+LLM runtimes and reviewer entities are reusable saved building blocks.
 
 That means:
 
@@ -223,9 +222,9 @@ That means:
   profiles
 - interactive draft state may name and reuse reviewer entities across multiple
   draft profiles
-- no new persisted top-level runtime/entity schema is introduced in `config.yml`
-- existing saved profiles are not auto-deduped into shared runtime/entity
-  objects on reload
+- committed LLM runtimes are persisted under `llm_runtimes`
+- committed reviewer entities are persisted under `reviewer_entities`
+- saved profiles reference those building blocks by name
 
 API-key-backed LLM runtimes may be reused across multiple profiles by selecting
 the same draft runtime and the same credential store/name. If a user wants two
@@ -295,11 +294,12 @@ and saved config must stay stable:
 
 - **Git scope** maps to `profile.git`, plus repository-route implications when
   the profile participates in `repository_profiles`.
-- **LLM runtime** maps to `profile.llm`, including the provider, auth mode,
-  adapter, and any optional LLM credential location implied by API-key auth.
-- **Reviewer entity** maps to `profile.reviewer_credentials` when separate
-  credentials are configured, or to `nil` when the user selected `Use a
-  profile's Git account (no separate reviewer entity)`.
+- **LLM runtime** maps to a saved `llm_runtimes.<name>` entry. A profile selects
+  it with `profiles.<profile>.llm_runtime`.
+- **Reviewer entity** maps to a saved `reviewer_entities.<name>` entry. A
+  profile selects it with `profiles.<profile>.reviewer.kind: entity` and
+  `profiles.<profile>.reviewer.entity`. The Git-account fallback maps to
+  `profiles.<profile>.reviewer.kind: git_identity`.
 - **Review profile** maps to one saved entry under `profiles.<name>`.
 
 This section is intentionally high level. The detailed field inventory and

@@ -72,7 +72,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityLinear(prompt initRevie
 }
 
 func (p huhInitReviewerEntityPrompter) editReviewerEntityFieldsLinear(ctx initPromptContext, entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (initDraft, bool, error) {
-	editorState, err := newReviewerEntityEditorState(entity, seed, preserveCurrentLocation)
+	editorState, err := newReviewerEntityEditorState(entity, seed, preserveCurrentLocation, ctx.StandaloneReviewerEntityMode)
 	if err != nil {
 		return initDraft{}, false, err
 	}
@@ -117,17 +117,27 @@ type reviewerEntityEditorState struct {
 	preserveCurrentLocation bool
 }
 
-func newReviewerEntityEditorState(entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool) (reviewerEntityEditorState, error) {
+func newReviewerEntityEditorState(entity initReviewerEntityDraft, seed initDraft, preserveCurrentLocation bool, standaloneReviewerEntityMode bool) (reviewerEntityEditorState, error) {
 	editDraft := seed
 	kind := entity.Kind
 	applyReviewerEntitySelection(&editDraft, string(kind))
 	standardReviewerRef := ""
 	if kind != initReviewerEntityKindUseGitIdentity {
-		ref, err := standardReviewerCredentialRef(editDraft.ProfileName)
-		if err != nil {
-			return reviewerEntityEditorState{}, err
+		if preserveCurrentLocation && standaloneReviewerEntityMode && strings.TrimSpace(editDraft.ReviewerCredentialRef) != "" {
+			standardReviewerRef = strings.TrimSpace(editDraft.ReviewerCredentialRef)
+		} else if !standaloneReviewerEntityMode {
+			ref, err := standardReviewerCredentialRef(editDraft.ProfileName)
+			if err != nil {
+				return reviewerEntityEditorState{}, err
+			}
+			standardReviewerRef = ref
+		} else {
+			ref, err := standardReviewerCredentialRefForEntity(entity)
+			if err != nil {
+				return reviewerEntityEditorState{}, err
+			}
+			standardReviewerRef = ref
 		}
-		standardReviewerRef = ref
 	}
 	_, explicitDisplayName, fallbackLabelSeed := reviewerEntityEditorLabelSeed(entity)
 	return reviewerEntityEditorState{
@@ -851,14 +861,14 @@ func reviewerEntityEditorStateForSelection(ctx initPromptContext, seed initDraft
 	if entity, ok := ctx.ReviewerEntities[selection]; ok {
 		candidate := seed
 		applyReviewerEntityInventorySelection(&candidate, selection, ctx.ReviewerEntities)
-		return newReviewerEntityEditorState(entity, candidate, true)
+		return newReviewerEntityEditorState(entity, candidate, true, ctx.StandaloneReviewerEntityMode)
 	}
 	if _, restore := initReviewerEntityRestoreSelectionName(selection); restore {
-		return newReviewerEntityEditorState(initReviewerEntityDraft{Kind: initReviewerEntityKindUseGitIdentity}, seed, false)
+		return newReviewerEntityEditorState(initReviewerEntityDraft{Kind: initReviewerEntityKindUseGitIdentity}, seed, false, ctx.StandaloneReviewerEntityMode)
 	}
 	candidate := seed
 	applyReviewerEntityInventorySelection(&candidate, selection, ctx.ReviewerEntities)
-	return newReviewerEntityEditorState(initReviewerEntityDraft{Kind: initReviewerEntityKind(selection)}, candidate, false)
+	return newReviewerEntityEditorState(initReviewerEntityDraft{Kind: initReviewerEntityKind(selection)}, candidate, false, ctx.StandaloneReviewerEntityMode)
 }
 
 func reviewerEntityKindDetailDescription(kind initReviewerEntityKind) string {

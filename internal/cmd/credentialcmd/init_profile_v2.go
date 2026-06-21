@@ -375,7 +375,12 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 
 	var document initProfileV2Document
 	document.addSection("Review profile", "Repository routing and review composition.")
-	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "Human-friendly name for this review profile.", draft.ProfileName, validateProfileName)
+	profileNameInput := initProfileV2ProfileNameInput(ctx, selectedExistingProfile, draft)
+	profileNameValidate := validateProfileName
+	if selectedExistingProfile == nil && strings.TrimSpace(profileNameInput) == "" {
+		profileNameValidate = validateOptionalProfileName
+	}
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "Human-friendly name for this review profile.", profileNameInput, profileNameValidate)
 	initProfileV2AppendRouteSection(&document, routeText)
 	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(ctx.GitScopes), draft, selectedGitScope == initCustomGitScopeSelection || len(ctx.GitScopes) > 1)
 	document.addEditableSelect(initProfileV2FieldReviewerEntity, "Reviewer entity", reviewerEntitySelectionDescription(), reviewerEntityOptions, selectedReviewerEntity)
@@ -398,6 +403,23 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 		GitStorageLabelUsesDefault: gitStorageLabelUsesDefault,
 		Document:                   document,
 	}, nil
+}
+
+func validateOptionalProfileName(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return validateProfileName(value)
+}
+
+func initProfileV2ProfileNameInput(ctx initPromptContext, existingProfile *config.Profile, draft initDraft) string {
+	if existingProfile != nil {
+		return draft.ProfileName
+	}
+	if strings.TrimSpace(ctx.RequestedProfileName) == initialInitProfileName && strings.TrimSpace(draft.ProfileName) == initialInitProfileName {
+		return ""
+	}
+	return draft.ProfileName
 }
 
 func initProfileV2Selection(ctx initPromptContext, selection string) (string, *config.Profile, string) {
