@@ -11886,14 +11886,21 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
 	out := model.layout.Content
 	for _, want := range []string{
-		"Account: signalft.1password.com (only discovered account). Choose a vault below.",
+		"1Password account",
+		"signalft.1password.com",
+		"Account: signalft.1password.com. Choose a vault below:",
 		"1Password vault",
 		"Employee",
+		"Credential store name",
+		"1Password-signalft",
 		"1Password request timeout",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("desktop discovery content missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "only discovered account") {
+		t.Fatalf("desktop discovery content still hides the account selector behind stale copy:\n%s", out)
 	}
 	for _, hidden := range []string{
 		"Desktop app account and vault routing",
@@ -11913,7 +11920,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 	if err != nil {
 		t.Fatalf("initSecretsManagementEditFromDocumentWithDiscovery: %v", err)
 	}
-	profile := edit.Config.Secrets.Stores["1password"]
+	profile := edit.Config.Secrets.Stores["1password-signalft"]
 	if profile.Backend.OnePassword == nil {
 		t.Fatal("saved onepassword config = nil")
 	}
@@ -11958,10 +11965,12 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountThenVaul
 	out := model.layout.Content
 	for _, want := range []string{
 		"1Password account",
-		"SignalFT (signalft.1password.com)",
-		"Personal (my.1password.com)",
+		"signalft.1password.com",
+		"my.1password.com",
 		"1Password vault",
 		"Employee",
+		"Credential store name",
+		"1Password-signalft",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("desktop discovery content missing %q:\n%s", want, out)
@@ -11975,6 +11984,66 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountThenVaul
 	}
 	if strings.Contains(out, "[x] Employee") {
 		t.Fatalf("vault list still selected first account vault after switching accounts:\n%s", out)
+	}
+	if !strings.Contains(out, "Account: my.1password.com. Choose a vault below:") {
+		t.Fatalf("vault description did not switch to selected account:\n%s", out)
+	}
+	if !strings.Contains(out, "1Password-Personal") {
+		t.Fatalf("credential store name did not update for selected account:\n%s", out)
+	}
+}
+
+func TestInitSecretsManagementLinearEditorDesktopDiscoveryIncludesAccountWithoutVaultChoices(t *testing.T) {
+	if !initOnePasswordBackendsAvailable() {
+		t.Skip("1Password create targets are not selectable in keyring_no1password builds")
+	}
+	discovery := initOnePasswordDesktopDiscovery{Accounts: []initOnePasswordDiscoveredAccount{
+		{
+			ID:   "acct-1",
+			Name: "Personal",
+			URL:  "my.1password.com",
+			Vaults: []initOnePasswordDiscoveredVault{{
+				ID:   "vault-personal",
+				Name: "Personal",
+			}},
+		},
+		{
+			ID:   "acct-2",
+			Name: "SignalFT",
+			URL:  "signalft.1password.com",
+		},
+	}}
+	cfg := config.File{
+		Profiles:       map[string]config.Profile{"default": basicProfile("default")},
+		DefaultProfile: "default",
+	}
+	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	model := newInitLinearEditorModel(editor, 180, 40)
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+
+	out := model.layout.Content
+	for _, want := range []string{
+		"my.1password.com",
+		"signalft.1password.com",
+		"Personal",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("desktop discovery content missing account or vault %q:\n%s", want, out)
+		}
+	}
+
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopAccount, initOnePasswordDesktopAccountSelectionValue(1))
+	out = model.layout.Content
+	for _, want := range []string{
+		"[x] signalft.1password.com",
+		"Account: signalft.1password.com. No vaults were discovered; enter a vault manually.",
+		"[x] Enter vault manually",
+		"1Password vault name or id",
+		"1Password-signalft",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("desktop discovery content missing no-vault account behavior %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -12005,7 +12074,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualVaultInSel
 	if err != nil {
 		t.Fatalf("initSecretsManagementEditFromDocumentWithDiscovery: %v", err)
 	}
-	profile := edit.Config.Secrets.Stores["1password"]
+	profile := edit.Config.Secrets.Stores["1password-signalft"]
 	if profile.Backend.OnePassword == nil {
 		t.Fatal("saved onepassword config = nil")
 	}
@@ -12066,7 +12135,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualAccount(t 
 	if err != nil {
 		t.Fatalf("initSecretsManagementEditFromDocumentWithDiscovery: %v", err)
 	}
-	profile := edit.Config.Secrets.Stores["1password"]
+	profile := edit.Config.Secrets.Stores["1password-signalft"]
 	if profile.Backend.OnePassword == nil {
 		t.Fatal("saved onepassword config = nil")
 	}

@@ -178,14 +178,6 @@ func (a initOnePasswordDiscoveredAccount) DisplayName() string {
 }
 
 func (a initOnePasswordDiscoveredAccount) Label() string {
-	name := strings.TrimSpace(a.Name)
-	url := strings.TrimSpace(a.URL)
-	if name != "" && url != "" && name != url {
-		return fmt.Sprintf("%s (%s)", name, url)
-	}
-	if name != "" {
-		return name
-	}
 	return a.DisplayName()
 }
 
@@ -207,6 +199,10 @@ func (d initOnePasswordDesktopDiscovery) HasVaultChoices() bool {
 	return false
 }
 
+func (d initOnePasswordDesktopDiscovery) HasAccountChoices() bool {
+	return d.AccountChoiceCount() > 0
+}
+
 func (d initOnePasswordDesktopDiscovery) Counts() (int, int) {
 	vaults := 0
 	for _, account := range d.Accounts {
@@ -218,7 +214,7 @@ func (d initOnePasswordDesktopDiscovery) Counts() (int, int) {
 func (d initOnePasswordDesktopDiscovery) AccountChoiceCount() int {
 	count := 0
 	for _, account := range d.Accounts {
-		if len(account.Vaults) > 0 {
+		if account.Label() != "" {
 			count++
 		}
 	}
@@ -226,14 +222,11 @@ func (d initOnePasswordDesktopDiscovery) AccountChoiceCount() int {
 }
 
 func (d initOnePasswordDesktopDiscovery) AccountOptions() []huh.Option[string] {
-	if !d.HasVaultChoices() {
+	if !d.HasAccountChoices() {
 		return []huh.Option[string]{huh.NewOption("Enter account and vault manually", initOnePasswordManualSelection)}
 	}
 	options := []huh.Option[string]{}
 	for accountIndex, account := range d.Accounts {
-		if len(account.Vaults) == 0 {
-			continue
-		}
 		label := account.Label()
 		if label == "" {
 			continue
@@ -323,9 +316,6 @@ func (d initOnePasswordDesktopDiscovery) Account(value string) (initOnePasswordD
 		return initOnePasswordDiscoveredAccount{}, false
 	}
 	account := d.Accounts[accountIndex]
-	if len(account.Vaults) == 0 {
-		return initOnePasswordDiscoveredAccount{}, false
-	}
 	return account, true
 }
 
@@ -382,9 +372,6 @@ func (d initOnePasswordDesktopDiscovery) AccountSelectionFor(accountID, accountU
 	accountID = strings.TrimSpace(accountID)
 	accountURL = strings.TrimSpace(accountURL)
 	for accountIndex, account := range d.Accounts {
-		if len(account.Vaults) == 0 {
-			continue
-		}
 		if accountID != "" && account.ID == accountID {
 			return initOnePasswordDesktopAccountSelectionValue(accountIndex)
 		}
@@ -394,7 +381,7 @@ func (d initOnePasswordDesktopDiscovery) AccountSelectionFor(accountID, accountU
 	}
 	if accountID == "" && accountURL == "" {
 		for accountIndex, account := range d.Accounts {
-			if len(account.Vaults) > 0 {
+			if account.Label() != "" {
 				return initOnePasswordDesktopAccountSelectionValue(accountIndex)
 			}
 		}
@@ -421,6 +408,52 @@ func (d initOnePasswordDesktopDiscovery) VaultSelectionFor(accountSelection, vau
 		return initOnePasswordDesktopVaultSelectionValue(0)
 	}
 	return initOnePasswordManualSelection
+}
+
+func (d initOnePasswordDesktopDiscovery) GeneratedDesktopCredentialStoreLabel(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "1Password" {
+		return true
+	}
+	for _, account := range d.Accounts {
+		if value == initOnePasswordDesktopCredentialStoreLabel(account) {
+			return true
+		}
+	}
+	return false
+}
+
+func initOnePasswordDesktopCredentialStoreLabel(account initOnePasswordDiscoveredAccount) string {
+	token := initOnePasswordAccountLabelToken(account.URL)
+	if token == "" {
+		token = initOnePasswordAccountLabelToken(account.DisplayName())
+	}
+	if token == "" {
+		return "1Password"
+	}
+	if strings.EqualFold(token, "my") {
+		token = "Personal"
+	}
+	return "1Password-" + token
+}
+
+func initOnePasswordAccountLabelToken(value string) string {
+	host := strings.TrimSpace(value)
+	host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+	if slash := strings.Index(host, "/"); slash >= 0 {
+		host = host[:slash]
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if colon := strings.Index(host, ":"); colon >= 0 {
+		host = host[:colon]
+	}
+	if dot := strings.Index(host, "."); dot >= 0 {
+		host = host[:dot]
+	}
+	return strings.TrimSpace(host)
 }
 
 func (d initOnePasswordDesktopDiscovery) SelectionFor(accountID, accountURL, vaultID, vaultName string) string {

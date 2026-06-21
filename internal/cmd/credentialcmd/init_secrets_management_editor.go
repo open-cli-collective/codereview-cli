@@ -158,6 +158,12 @@ func initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg config.Fi
 	document.addSectionField(initSecretsManagementSectionBuiltIn, "Built in", initSecretsManagementBuiltInSectionDescription())
 	document.addEditableSelect(initSecretsManagementFieldTarget, "Actions", "Configure a new credential store or edit a configured store.", targetOptions, selectedTarget)
 	document.addSectionField(initSecretsManagementSectionProfile, "Credential store details", "Configured credential stores are reusable destinations for secrets.")
+	document.addEditableSelect(initSecretsManagementFieldBackend, "Credential store backend", "", initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile)), string(credstore.BackendFile))
+	document.addEditableSelect(initSecretsManagementFieldDesktopAccount, "1Password account", "Discovered from the local 1Password desktop app.", desktopDiscovery.AccountOptions(), initOnePasswordManualSelection)
+	document.addEditableSelect(initSecretsManagementFieldDesktopVault, "1Password vault", "Vaults available in the selected 1Password account. Choose manual entry if this list is incomplete.", desktopDiscovery.VaultOptions(initOnePasswordManualSelection), initOnePasswordManualSelection)
+	document.addEditableInput(initSecretsManagementFieldDesktopAccountURL, "1Password account URL", "Account sign-in address such as myorg.1password.com for organizational 1Password accounts, or my.1password.com for personal or family accounts. Required only when desktop discovery is unavailable or manual entry is selected.", "", validateOptionalDisplayName)
+	document.addEditableInput(initSecretsManagementFieldDesktopAccountID, "1Password account id (advanced)", "Advanced. Optional account id when you need to pin this profile to one signed-in 1Password desktop account.", "", validateOptionalDisplayName)
+	document.addEditableInput(initSecretsManagementFieldVaultID, "1Password vault name or id", "Required for every 1Password-backed credential store. Enter a vault name such as Personal, Employee, or My Vault, or enter a stable vault ID.", "", nil)
 	document.addEditableInput(
 		initSecretsManagementFieldLabel,
 		"Credential store name",
@@ -165,12 +171,6 @@ func initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg config.Fi
 		"",
 		validateOptionalDisplayName,
 	)
-	document.addEditableSelect(initSecretsManagementFieldBackend, "Credential store backend", "", initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile)), string(credstore.BackendFile))
-	document.addEditableSelect(initSecretsManagementFieldDesktopAccount, "1Password account", "Discovered from the local 1Password desktop app.", desktopDiscovery.AccountOptions(), initOnePasswordManualSelection)
-	document.addEditableSelect(initSecretsManagementFieldDesktopVault, "1Password vault", "Vaults available in the selected 1Password account. Choose manual entry if this list is incomplete.", desktopDiscovery.VaultOptions(initOnePasswordManualSelection), initOnePasswordManualSelection)
-	document.addEditableInput(initSecretsManagementFieldDesktopAccountURL, "1Password account URL", "Account sign-in address such as myorg.1password.com for organizational 1Password accounts, or my.1password.com for personal or family accounts. Required only when desktop discovery is unavailable or manual entry is selected.", "", validateOptionalDisplayName)
-	document.addEditableInput(initSecretsManagementFieldDesktopAccountID, "1Password account id (advanced)", "Advanced. Optional account id when you need to pin this profile to one signed-in 1Password desktop account.", "", validateOptionalDisplayName)
-	document.addEditableInput(initSecretsManagementFieldVaultID, "1Password vault name or id", "Required for every 1Password-backed credential store. Enter a vault name such as Personal, Employee, or My Vault, or enter a stable vault ID.", "", nil)
 	document.addEditableInput(initSecretsManagementFieldTimeout, "1Password request timeout", "How long cr waits for one 1Password backend request before failing. Leave the default unless your 1Password integration is unusually slow.", "", validateOptionalDuration)
 	document.addSectionField(initSecretsManagementSectionConnect, "1Password Connect", "Required only for 1Password Connect profiles.")
 	document.addEditableInput(initSecretsManagementFieldConnectHost, "1Password Connect host", "Required only for 1Password Connect profiles.", "", nil)
@@ -414,12 +414,15 @@ func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg con
 		initSecretsManagementSetDesktopDiscoveryOptions(model, desktopDiscovery, model.document.selectedValue(initSecretsManagementFieldDesktopAccount), model.document.selectedValue(initSecretsManagementFieldDesktopVault))
 	}
 	model.setFieldHidden(initSecretsManagementFieldTimeout, !opService && !opDesktop)
-	discoveredDesktop := opDesktop && desktopDiscovery.HasVaultChoices()
+	discoveredDesktop := opDesktop && desktopDiscovery.HasAccountChoices()
 	accountSelection := model.document.selectedValue(initSecretsManagementFieldDesktopAccount)
 	vaultSelection := model.document.selectedValue(initSecretsManagementFieldDesktopVault)
 	manualAccount := opDesktop && (!discoveredDesktop || accountSelection == initOnePasswordManualSelection)
 	manualVault := manualAccount || vaultSelection == initOnePasswordManualSelection
-	model.setFieldHidden(initSecretsManagementFieldDesktopAccount, !discoveredDesktop || desktopDiscovery.AccountChoiceCount() <= 1)
+	if opDesktop && state.Creating {
+		initSecretsManagementSyncDesktopLabel(model, desktopDiscovery)
+	}
+	model.setFieldHidden(initSecretsManagementFieldDesktopAccount, !discoveredDesktop)
 	model.setFieldHidden(initSecretsManagementFieldDesktopVault, !discoveredDesktop || manualAccount)
 	model.setFieldHidden(initSecretsManagementFieldDesktopAccountURL, !manualAccount)
 	model.setFieldHidden(initSecretsManagementFieldDesktopAccountID, !manualAccount)
@@ -481,12 +484,31 @@ func initSecretsManagementSetDesktopDiscoveryOptions(model *initLinearEditorMode
 }
 
 func initSecretsManagementDesktopVaultDescription(discovery initOnePasswordDesktopDiscovery, accountSelection string) string {
-	if discovery.HasVaultChoices() && discovery.AccountChoiceCount() == 1 {
+	if discovery.HasAccountChoices() {
 		if account, ok := discovery.Account(accountSelection); ok {
-			return fmt.Sprintf("Account: %s (only discovered account). Choose a vault below.", account.Label())
+			if len(account.Vaults) == 0 {
+				return fmt.Sprintf("Account: %s. No vaults were discovered; enter a vault manually.", account.Label())
+			}
+			return fmt.Sprintf("Account: %s. Choose a vault below:", account.Label())
 		}
 	}
 	return "Vaults available in the selected 1Password account. Choose manual entry if this list is incomplete."
+}
+
+func initSecretsManagementSyncDesktopLabel(model *initLinearEditorModel, discovery initOnePasswordDesktopDiscovery) {
+	account, ok := discovery.Account(model.document.selectedValue(initSecretsManagementFieldDesktopAccount))
+	if !ok {
+		return
+	}
+	next := initOnePasswordDesktopCredentialStoreLabel(account)
+	if next == "" {
+		return
+	}
+	current := strings.TrimSpace(model.document.fieldValue(initSecretsManagementFieldLabel))
+	if current != "" && current != "1Password" && current != next && !discovery.GeneratedDesktopCredentialStoreLabel(current) {
+		return
+	}
+	model.setFieldValue(initSecretsManagementFieldLabel, next)
 }
 
 func initSecretsManagementSetActionOptions(model *initLinearEditorModel, allowEdit bool) {
