@@ -596,7 +596,7 @@ func (p huhInitKeyringBackendPrompter) editSecretsProfile(profile config.Secrets
 		huh.NewGroup(
 			huh.NewInput().
 				Title("1Password account URL").
-				Description("Account sign-in address such as signalft.1password.com. Required only when desktop discovery is unavailable or manual entry is selected.").
+				Description("Account sign-in address such as myorg.1password.com for organizational 1Password accounts, or my.1password.com for personal or family accounts. Required only when desktop discovery is unavailable or manual entry is selected.").
 				Value(&accountURL).
 				Validate(validateOptionalDisplayName),
 			huh.NewInput().
