@@ -899,7 +899,6 @@ func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
 	want := []view.KeyStatus{
 		{Key: credentials.GitHubAppIDKey, Required: true, Present: &missing, Status: "missing"},
 		{Key: credentials.GitHubAppPrivateKeyKey, Required: true, Present: &missing, Status: "missing"},
-		{Key: credentials.GitHubAppInstallationIDKey, Required: false, Present: &missing, Status: "missing"},
 	}
 	if reviewer.Ref != "codereview/work-reviewer" || reviewer.Mode != "github_app" || !reflect.DeepEqual(reviewer.Keys, want) {
 		t.Fatalf("reviewer credential status = %#v, want app keys %#v", reviewer, want)
@@ -1980,13 +1979,11 @@ func TestConfigClearGitHubAppCredentialMatrix(t *testing.T) {
 	path := saveTestConfig(t, cfg)
 	appKeys := []string{
 		credentials.GitHubAppIDKey,
-		credentials.GitHubAppInstallationIDKey,
 		credentials.GitHubAppPrivateKeyKey,
 	}
 	seedFileBackend(t, "home-app", map[string]string{
-		credentials.GitHubAppIDKey:             "12345",
-		credentials.GitHubAppPrivateKeyKey:     "private-key",
-		credentials.GitHubAppInstallationIDKey: "42",
+		credentials.GitHubAppIDKey:         "12345",
+		credentials.GitHubAppPrivateKeyKey: "private-key",
 	})
 
 	dryRunCmd, dryRunOut := newTestCommand(path)

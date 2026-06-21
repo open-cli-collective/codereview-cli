@@ -167,9 +167,8 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("work-reviewer", map[string]string{
-		credentials.GitHubAppIDKey:             "12345",
-		credentials.GitHubAppPrivateKeyKey:     privateKey,
-		credentials.GitHubAppInstallationIDKey: "42",
+		credentials.GitHubAppIDKey:         "12345",
+		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle reviewer: %v", err)
 	}
@@ -181,6 +180,13 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	cfg = withCredentialStore(cfg, testFileCredentialStoreID)
 	work := cfg.Profiles["work"]
 	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
+	cfg.Profiles["work"] = work
+	cfg = config.Normalize(cfg)
+	work = cfg.Profiles["work"]
+	work.Reviewer.GitHubAppInstallation = &config.ProfileReviewerGitHubAppInstallation{
+		Mode:           config.ProfileReviewerGitHubAppInstallationPinned,
+		InstallationID: "42",
+	}
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
 
@@ -484,8 +490,8 @@ func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T)
 	if !errors.Is(err, gitprovider.ErrAuth) {
 		t.Fatalf("Execute error = %v, want ErrAuth", err)
 	}
-	if !strings.Contains(err.Error(), credentials.GitHubAppInstallationIDKey) {
-		t.Fatalf("Execute error = %v, want missing installation id detail", err)
+	if !strings.Contains(err.Error(), "installation discovery requires repository context") {
+		t.Fatalf("Execute error = %v, want missing repository context detail", err)
 	}
 	if strings.Contains(err.Error()+out.String(), privateKey) {
 		t.Fatalf("output leaked private key: err=%v out=%q", err, out.String())
@@ -498,9 +504,8 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("home", map[string]string{
-		credentials.GitHubAppIDKey:             "12345",
-		credentials.GitHubAppPrivateKeyKey:     privateKey,
-		credentials.GitHubAppInstallationIDKey: "42",
+		credentials.GitHubAppIDKey:         "12345",
+		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle home: %v", err)
 	}
@@ -535,8 +540,9 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 		return &githubResolver{
 			cfg: cfg,
 			options: githubprovider.Options{
-				BaseURL:    server.URL,
-				GraphQLURL: server.URL + "/graphql",
+				BaseURL:        server.URL,
+				GraphQLURL:     server.URL + "/graphql",
+				InstallationID: "42",
 			},
 		}, nil, nil
 	})
@@ -631,6 +637,8 @@ profiles:
     reviewer:
       kind: entity
       entity: work-reviewer
+      github_app_installation:
+        mode: discover_from_repository
     llm_runtime: claude-cli
 `)
 	resolver := &fakeResolver{

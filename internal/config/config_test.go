@@ -862,6 +862,42 @@ func TestCredentialRefsIncludesGitHubAppModes(t *testing.T) {
 	}
 }
 
+func TestPinnedGitHubAppInstallationIDForGit(t *testing.T) {
+	profile := validFile().normalized().Profiles["work"]
+	profile.ReviewerCredentials = &ReviewerCredentials{
+		AuthMode:      GitAuthModeGitHubApp,
+		Credential:    CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		CredentialRef: "codereview/work-reviewer",
+	}
+	profile.Reviewer = ProfileReviewer{
+		Kind:   ProfileReviewerKindEntity,
+		Entity: "work-reviewer",
+		GitHubAppInstallation: &ProfileReviewerGitHubAppInstallation{
+			Mode:           ProfileReviewerGitHubAppInstallationPinned,
+			InstallationID: "123456",
+		},
+	}
+	git := GitConfig{
+		Host:          "github.com",
+		AuthMode:      GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	if got := PinnedGitHubAppInstallationIDForGit(profile, git); got != "123456" {
+		t.Fatalf("PinnedGitHubAppInstallationIDForGit = %q, want 123456", got)
+	}
+
+	profile.Reviewer.GitHubAppInstallation.Mode = ProfileReviewerGitHubAppInstallationDiscoverFromRepository
+	profile.Reviewer.GitHubAppInstallation.InstallationID = ""
+	if got := PinnedGitHubAppInstallationIDForGit(profile, git); got != "" {
+		t.Fatalf("discover installation id = %q, want empty", got)
+	}
+
+	git.CredentialRef = "codereview/work"
+	if got := PinnedGitHubAppInstallationIDForGit(profile, git); got != "" {
+		t.Fatalf("unmatched credential installation id = %q, want empty", got)
+	}
+}
+
 func TestValidateAllowsCredentialStoresWithoutReviewProfiles(t *testing.T) {
 	cfg := File{
 		Secrets: SecretsConfig{

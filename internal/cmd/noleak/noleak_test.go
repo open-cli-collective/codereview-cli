@@ -102,7 +102,8 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(*auditHarness) []string {
 				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default-reviewer-app", "--key", credentials.GitHubAppInstallationIDKey, "--from-env", "CR_NOLEAK_APP_INSTALLATION_ID", "--overwrite"}
 			},
-			env: secretEnv,
+			env:     secretEnv,
+			wantErr: true,
 		},
 		{
 			name:    "set credential duplicate failure",
@@ -543,7 +544,6 @@ func (h *auditHarness) seedGitHubAppConfigShowCredentials(t *testing.T) {
 		{ref: "codereview/default", key: credentials.GitTokenKey, secret: h.gitSecret},
 		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
 		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
-		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppInstallationIDKey, secret: h.githubAppInstallationIDSecret},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
 }
@@ -554,7 +554,6 @@ func (h *auditHarness) seedGitHubAppGitCredentials(t *testing.T) {
 	h.seedCredentialWrites(t, cfg, []credentialSeed{
 		{ref: "codereview/default-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
 		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
-		{ref: "codereview/default-app", key: credentials.GitHubAppInstallationIDKey, secret: h.githubAppInstallationIDSecret},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
 }
@@ -694,11 +693,15 @@ func (h *auditHarness) openCredentialStore() (*credstore.Store, error) {
 }
 
 func (h *auditHarness) newGitHubProvider(git config.GitConfig, store githubprovider.TokenStore, lookup *githubprovider.InstallationLookup) (*githubprovider.Client, gitprovider.Credential, error) {
-	return githubprovider.NewFromGitConfig(git, store, githubprovider.Options{
+	opts := githubprovider.Options{
 		BaseURL:            h.githubURL,
 		GraphQLURL:         h.graphQLURL,
 		InstallationLookup: lookup,
-	})
+	}
+	if lookup == nil {
+		opts.InstallationID = h.githubAppInstallationIDSecret
+	}
+	return githubprovider.NewFromGitConfig(git, store, opts)
 }
 
 func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {

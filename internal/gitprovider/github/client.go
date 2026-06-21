@@ -46,6 +46,7 @@ type Options struct {
 	BaseURL            string
 	GraphQLURL         string
 	Now                func() time.Time
+	InstallationID     string
 	InstallationLookup *InstallationLookup
 }
 

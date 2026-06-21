@@ -972,6 +972,29 @@ func CredentialRefs(profile Profile) ([]CredentialRef, error) {
 	return refs, nil
 }
 
+// PinnedGitHubAppInstallationIDForGit returns the profile-level pinned
+// installation id that applies to git when git is the selected GitHub App
+// reviewer entity for profile.
+func PinnedGitHubAppInstallationIDForGit(profile Profile, git GitConfig) string {
+	profile = profile.normalized()
+	git = git.normalized()
+	if git.AuthMode != GitAuthModeGitHubApp || profile.ReviewerCredentials == nil {
+		return ""
+	}
+	if profile.Reviewer.Kind != ProfileReviewerKindEntity || profile.Reviewer.GitHubAppInstallation == nil {
+		return ""
+	}
+	installation := profile.Reviewer.GitHubAppInstallation.normalized()
+	if installation.Mode != ProfileReviewerGitHubAppInstallationPinned {
+		return ""
+	}
+	reviewerCredentials := profile.ReviewerCredentials.normalized()
+	if reviewerCredentials.AuthMode != GitAuthModeGitHubApp || !sameCredentialLocation(reviewerCredentials.Credential, git.Credential) {
+		return ""
+	}
+	return installation.InstallationID
+}
+
 func gitCredentialRef(purpose string, mode GitAuthMode, credential CredentialLocation) (CredentialRef, error) {
 	if !mode.Supported() {
 		return CredentialRef{}, fmt.Errorf("%w: %s auth_mode %q", ErrUnsupported, purpose, mode)
