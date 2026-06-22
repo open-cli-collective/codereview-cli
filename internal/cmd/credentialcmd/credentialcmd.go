@@ -1088,9 +1088,8 @@ func newHuhInitRepositoryAccessPrompter(opts *root.Options) initRepositoryAccess
 
 func newHuhInitReviewerEntityPrompter(opts *root.Options) initReviewerEntityPrompter {
 	return huhInitReviewerEntityPrompter{
-		stdin:           opts.Stdin,
-		stderr:          opts.Stderr,
-		inventoryRunner: runInitInventory,
+		stdin:  opts.Stdin,
+		stderr: opts.Stderr,
 	}
 }
 

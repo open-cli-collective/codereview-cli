@@ -314,7 +314,7 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 	state, _ := reviewerEntityEditorStateForSelection(ctx, seed, selection)
 	var document initLinearDocument
 	document.addSection("Reviewer entity", reviewerEntitySelectionDescription())
-	document.addEditableSelect(initReviewerEntityFieldSelection, "Reviewer entity", "", options, selection)
+	document.addEditableSelect(initReviewerEntityFieldSelection, initReviewerEntitySelectionFieldTitle(ctx), initReviewerEntitySelectionFieldDescription(ctx), options, selection)
 	document.addSection("Reviewer details", "")
 	document.addEditableInput(
 		initReviewerEntityFieldLabel,
@@ -403,7 +403,7 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 }
 
 func initReviewerEntityLinearSelectionOptions(ctx initPromptContext) []huh.Option[string] {
-	options := initReviewerEntityOptions(ctx.ReviewerEntities, focusedReviewerEntityFallbackLabel(ctx.ExistingProfile))
+	options := initReviewerEntityOptionsForContext(ctx)
 	pendingNames := make([]string, 0, len(ctx.PendingReviewerEntityDeletes))
 	for name := range ctx.PendingReviewerEntityDeletes {
 		pendingNames = append(pendingNames, name)
@@ -413,6 +413,38 @@ func initReviewerEntityLinearSelectionOptions(ctx initPromptContext) []huh.Optio
 		options = append(options, huh.NewOption(reviewerEntityDeletePendingLabel(name), initReviewerEntityRestoreSelectionPrefix+name))
 	}
 	return dedupeInitStringOptions(options)
+}
+
+func initReviewerEntityOptionsForContext(ctx initPromptContext) []huh.Option[string] {
+	if !ctx.StandaloneReviewerEntityMode {
+		return initReviewerEntityOptions(ctx.ReviewerEntities, focusedReviewerEntityFallbackLabel(ctx.ExistingProfile))
+	}
+	names := configuredInitReviewerEntityNames(ctx.ReviewerEntities)
+	sort.Strings(names)
+	options := make([]huh.Option[string], 0, len(names)+2)
+	for _, name := range names {
+		entity := ctx.ReviewerEntities[name]
+		options = append(options, huh.NewOption(initReviewerEntityLabel(entity), name))
+	}
+	options = append(options,
+		huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)),
+		huh.NewOption(reviewerEntityTemplateGitHubAppLabel(), string(initReviewerEntityKindGitHubApp)),
+	)
+	return dedupeInitStringOptions(options)
+}
+
+func initReviewerEntitySelectionFieldTitle(ctx initPromptContext) string {
+	if ctx.StandaloneReviewerEntityMode {
+		return "Actions"
+	}
+	return "Reviewer entity"
+}
+
+func initReviewerEntitySelectionFieldDescription(ctx initPromptContext) string {
+	if ctx.StandaloneReviewerEntityMode {
+		return "Configure a new reviewer entity or edit a configured reviewer entity."
+	}
+	return ""
 }
 
 func initReviewerEntityDefaultSelection(ctx initPromptContext, seed initDraft, options []huh.Option[string]) string {

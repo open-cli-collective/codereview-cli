@@ -6381,23 +6381,30 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCanEditLabel(t *testing.T)
 func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T) {
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
-	prompter := huhInitReviewerEntityPrompter{
-		stderr: &stderr,
-		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
-			model := newInitLinearEditorModel(editor, 160, 60)
-			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindPAT))
-			model.setFieldValue(initReviewerEntityFieldGitToken, "inline-secret-token")
-			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitToken))
-			model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
-			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
-			_, _ = io.WriteString(out, model.View())
-			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			next, ok := updated.(initLinearEditorModel)
-			if !ok {
-				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
-			}
-			return next, nil
-		},
+	prompter, ok := newHuhInitReviewerEntityPrompter(&root.Options{
+		Stdin:  strings.NewReader(""),
+		Stderr: &stderr,
+	}).(huhInitReviewerEntityPrompter)
+	if !ok {
+		t.Fatalf("newHuhInitReviewerEntityPrompter returned %T, want huhInitReviewerEntityPrompter", newHuhInitReviewerEntityPrompter(&root.Options{}))
+	}
+	if prompter.inventoryRunner != nil {
+		t.Fatal("reviewer entity prompter inventoryRunner = non-nil, want direct linear editor path")
+	}
+	prompter.editorRunner = func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+		model := newInitLinearEditorModel(editor, 160, 60)
+		model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindPAT))
+		model.setFieldValue(initReviewerEntityFieldGitToken, "inline-secret-token")
+		model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitToken))
+		model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+		model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+		_, _ = io.WriteString(out, model.View())
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		next, ok := updated.(initLinearEditorModel)
+		if !ok {
+			t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+		}
+		return next, nil
 	}
 
 	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: initPromptContext{
@@ -6442,6 +6449,41 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 	}
 	if strings.Contains(out, "Back to main menu") {
 		t.Fatalf("stderr = %q, want action-local Back without staging instead of inventory Back", out)
+	}
+}
+
+func TestReviewerEntityStandaloneLinearEditorUsesActionsWithoutProfileFallback(t *testing.T) {
+	ctx := initPromptContext{
+		StandaloneReviewerEntityMode: true,
+		ExistingConfig:               config.File{Profiles: map[string]config.Profile{}},
+	}
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, initDraft{}), 160, 60)
+	selectionIndex := model.document.fieldIndexByID(initReviewerEntityFieldSelection)
+	if selectionIndex < 0 {
+		t.Fatal("reviewer entity selection field missing")
+	}
+	if got, want := model.document[selectionIndex].Title, "Actions"; got != want {
+		t.Fatalf("selection title = %q, want %q", got, want)
+	}
+	if got, want := model.document.selectedValue(initReviewerEntityFieldSelection), string(initReviewerEntityKindPAT); got != want {
+		t.Fatalf("default standalone reviewer selection = %q, want %q", got, want)
+	}
+	optionLabels := make([]string, 0, len(model.document[selectionIndex].Options))
+	for _, option := range model.document[selectionIndex].Options {
+		optionLabels = append(optionLabels, option.Label)
+	}
+	for _, forbidden := range []string{reviewerEntityTemplateFallbackLabel(), "Back to main menu"} {
+		if slices.Contains(optionLabels, forbidden) {
+			t.Fatalf("standalone reviewer options = %#v, want no %q", optionLabels, forbidden)
+		}
+	}
+	for _, want := range []string{reviewerEntityTemplatePATLabel(), reviewerEntityTemplateGitHubAppLabel()} {
+		if !slices.Contains(optionLabels, want) {
+			t.Fatalf("standalone reviewer options = %#v, want %q", optionLabels, want)
+		}
+	}
+	if model.document.fieldHidden(initReviewerEntityFieldLabel) || model.document.fieldHidden(initReviewerEntityFieldSecretLocation) {
+		t.Fatalf("PAT reviewer detail fields hidden = label:%v location:%v, want visible", model.document.fieldHidden(initReviewerEntityFieldLabel), model.document.fieldHidden(initReviewerEntityFieldSecretLocation))
 	}
 }
 
