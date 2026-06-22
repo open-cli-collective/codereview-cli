@@ -14312,6 +14312,75 @@ func TestBubbleTeaInitProfileV2PrompterReturnsStagedDraft(t *testing.T) {
 	}
 }
 
+func TestBubbleTeaInitProfileV2PrompterCanStageProfileDelete(t *testing.T) {
+	profile := basicProfile("work")
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			return initInventoryResult{
+				Action: initInventoryActionStageDelete,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
+		profileEditorRunner: func(initProfileV2Editor) (initProfileV2EditorResult, error) {
+			t.Fatal("profile editor should not open for delete action")
+			return initProfileV2EditorResult{}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"work"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": profile}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.Action != initDraftActionDeleteProfile || draft.ActionTarget != "work" {
+		t.Fatalf("draft delete action = %#v, want delete work", draft)
+	}
+}
+
+func TestBubbleTeaInitProfileV2PrompterCanRestoreProfileDelete(t *testing.T) {
+	profile := basicProfile("home")
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			return initInventoryResult{
+				Action: initInventoryActionRestore,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work (Staged for deletion)",
+				},
+			}, nil
+		},
+		profileEditorRunner: func(initProfileV2Editor) (initProfileV2EditorResult, error) {
+			t.Fatal("profile editor should not open for restore action")
+			return initProfileV2EditorResult{}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "home",
+		ExistingProfileName:  "home",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"home"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"home": profile}},
+		PendingProfileDeletes: map[string]initPendingProfileDelete{
+			"work": {ProfileName: "work"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.Action != initDraftActionUndoDeleteProfile || draft.ActionTarget != "work" {
+		t.Fatalf("draft restore action = %#v, want restore work", draft)
+	}
+}
+
 func TestBubbleTeaInitProfileV2PrompterSkipsChooserWhenNoProfilesExist(t *testing.T) {
 	inventoryCalled := false
 	editorCalls := 0

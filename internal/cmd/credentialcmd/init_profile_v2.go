@@ -57,6 +57,16 @@ func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, e
 		switch result.Action {
 		case initInventoryActionBack:
 			return initDraft{}, errInitNavigateBack
+		case initInventoryActionRestore:
+			return initDraft{
+				Action:       initDraftActionUndoDeleteProfile,
+				ActionTarget: result.Row.ID,
+			}, nil
+		case initInventoryActionStageDelete:
+			return initDraft{
+				Action:       initDraftActionDeleteProfile,
+				ActionTarget: result.Row.ID,
+			}, nil
 		case initInventoryActionEdit, initInventoryActionCommand:
 			draft, staged, err := p.runProfileEditor(ctx, result.Row.ID)
 			if err != nil {
@@ -66,8 +76,6 @@ func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, e
 				return draft, nil
 			}
 		case initInventoryActionNone:
-			continue
-		case initInventoryActionRestore, initInventoryActionStageDelete:
 			continue
 		default:
 			return initDraft{}, fmt.Errorf("unsupported profile v2 inventory action %q", result.Action)
@@ -164,12 +172,7 @@ func (p bubbleTeaInitProfileV2Prompter) runReadOnlyEditor(editor initProfileV2Ed
 }
 
 func initProfileV2InventoryRows(ctx initPromptContext) []initInventoryRow {
-	rows := initProfileInventoryRows(ctx)
-	for i := range rows {
-		rows[i].Deletable = false
-		rows[i].Restorable = false
-	}
-	return rows
+	return initProfileInventoryRows(ctx)
 }
 
 type initProfileV2ReadOnlyModel struct {

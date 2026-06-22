@@ -497,6 +497,30 @@ func TestInitProfileInventoryRowsSetExpectedCapabilities(t *testing.T) {
 	}
 }
 
+func TestInitProfileV2InventoryRowsKeepDeleteCapabilities(t *testing.T) {
+	rows := initProfileV2InventoryRows(initPromptContext{
+		ExistingProfileNames: []string{"home"},
+		ExistingConfig: config.File{
+			Profiles: map[string]config.Profile{
+				"home": {Git: config.GitConfig{Host: "github.com"}},
+			},
+		},
+		PendingProfileDeletes: map[string]initPendingProfileDelete{
+			"work": {ProfileName: "work"},
+		},
+	})
+
+	if len(rows) != 4 {
+		t.Fatalf("len(rows) = %d, want 4", len(rows))
+	}
+	if got := rows[0]; got.ID != "home" || !got.Deletable || got.Restorable {
+		t.Fatalf("active v2 row = %#v, want deletable home profile", got)
+	}
+	if got := rows[1]; got.ID != "work" || got.Deletable || !got.Restorable {
+		t.Fatalf("pending v2 row = %#v, want restorable work profile", got)
+	}
+}
+
 func TestInitProfileInventoryRowsShowRoutesAndSortBySpecificity(t *testing.T) {
 	rows := initProfileInventoryRows(initPromptContext{
 		ExistingProfileNames: []string{"default", "unrouted", "namespace", "repo"},
