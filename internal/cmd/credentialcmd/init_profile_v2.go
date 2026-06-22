@@ -389,7 +389,7 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	}
 	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "Human-friendly name for this review profile.", profileNameInput, profileNameValidate)
 	initProfileV2AppendAgentSourcesSection(&document, draft.AgentSources)
-	initProfileV2AppendReviewPolicySection(&document, draft.ReviewPolicy)
+	initProfileV2AppendReviewPolicySection(&document, draft.ReviewPolicy, initProfileV2ReviewerEntityKindForSelection(selectedReviewerEntity, ctx.ReviewerEntities) == initReviewerEntityKindGitHubApp)
 	initProfileV2AppendProfileActionSection(&document)
 	return initProfileV2Editor{
 		Draft:                  draft,
@@ -455,7 +455,6 @@ const (
 	initProfileV2FieldReviewMajorEvent                     initProfileV2FieldID = "review_major_event"
 	initProfileV2FieldSelfApprove                          initProfileV2FieldID = "self_approve"
 	initProfileV2FieldResolveThreads                       initProfileV2FieldID = "resolve_threads"
-	initProfileV2FieldResolveAfter                         initProfileV2FieldID = "resolve_after"
 	initProfileV2FieldGitCredentialStore                   initProfileV2FieldID = "git_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
 	initProfileV2FieldGitCredentialName                    initProfileV2FieldID = "git_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
 	initProfileV2FieldLLMCredentialSection                 initProfileV2FieldID = "llm_credentials_section"
@@ -565,22 +564,23 @@ func initProfileV2AppendAgentSourcesSection(document *initProfileV2Document, sou
 	document.addEditableTextarea(initProfileV2FieldAgentSources, "Additional trusted reviewer-agent directories", "Paths are deduplicated and normalized before save.", strings.Join(sources, "\n"))
 }
 
-func initProfileV2AppendReviewPolicySection(document *initProfileV2Document, policy config.ReviewPolicy) {
+func initProfileV2AppendReviewPolicySection(document *initProfileV2Document, policy config.ReviewPolicy, hideSelfApprove bool) {
 	if policy.MajorEvent == "" {
-		policy.MajorEvent = config.ReviewMajorEventComment
+		policy.MajorEvent = config.ReviewMajorEventRequestChanges
+	}
+	if policy.ResolveThreads == "" {
+		policy.ResolveThreads = config.ResolveThreadsAuto
 	}
 	document.addSection("Review policy", "Choose how cr posts major findings and handles review threads.")
-	document.addEditableSelect(initProfileV2FieldReviewMajorEvent, "Major findings event", "", []huh.Option[string]{
-		huh.NewOption("Comment", string(config.ReviewMajorEventComment)),
+	document.addEditableSelect(initProfileV2FieldReviewMajorEvent, "Major findings event", "Blocking findings always request changes. This controls what cr does when the highest severity is major: either request changes or leave a review comment.", []huh.Option[string]{
 		huh.NewOption("Request changes", string(config.ReviewMajorEventRequestChanges)),
+		huh.NewOption("Comment", string(config.ReviewMajorEventComment)),
 	}, string(policy.MajorEvent))
-	document.addEditableSelect(initProfileV2FieldSelfApprove, "Allow self-approve", "", initReviewPolicySelfApproveOptions(), initReviewPolicySelfApproveChoice(policy.AllowSelfApprove))
-	document.addEditableSelect(initProfileV2FieldResolveThreads, "Resolve threads", "", []huh.Option[string]{
-		huh.NewOption("Use built-in default", ""),
-		huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
-		huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
+	document.addEditableSelect(initProfileV2FieldSelfApprove, "Allow self-approve", "Relevant when this profile posts using a user account. If that account authored the PR, cr downgrades approval to a comment unless enabled.", initReviewPolicySelfApproveOptions(), initReviewPolicySelfApproveChoice(policy.AllowSelfApprove), initProfileV2FieldOptions{Hidden: hideSelfApprove})
+	document.addEditableSelect(initProfileV2FieldResolveThreads, "Resolve threads", "Controls whether cr may mark inline discussion threads as \"resolved\" when it evaluates the dialog, and determines a decision has been made. When enabled, cr treats the final comment as the cached outcome of the discussion. This removes the discussion thread from future calls to the LLM provider, saving both time and tokens.", []huh.Option[string]{
+		huh.NewOption("Auto-resolve (recommended)", string(config.ResolveThreadsAuto)),
+		huh.NewOption("Never resolve automatically", string(config.ResolveThreadsNever)),
 	}, string(policy.ResolveThreads))
-	document.addEditableInput(initProfileV2FieldResolveAfter, "Resolve-after duration", "Optional. Leave blank to clear. Example: 24h or 30m.", policy.ResolveAfter, validateOptionalDuration)
 }
 
 func initProfileV2AppendGitStorageSection(document *initProfileV2Document, storeOptions []huh.Option[string], storeID string, credentialName string) {
@@ -962,10 +962,14 @@ func (m *initProfileV2ReadOnlyModel) syncReviewerGitHubAppInstallationFields(res
 	m.setFieldHidden(initProfileV2FieldReviewerGitHubAppInstallationSection, !visible)
 	m.setFieldHidden(initProfileV2FieldReviewerGitHubAppInstallationMode, !visible)
 	m.setFieldHidden(initProfileV2FieldReviewerGitHubAppInstallationID, !pinned)
+	m.setFieldHidden(initProfileV2FieldSelfApprove, visible)
 	if !visible {
 		m.selectFieldValue(initProfileV2FieldReviewerGitHubAppInstallationMode, string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository))
 		m.setFieldValue(initProfileV2FieldReviewerGitHubAppInstallationID, "")
-	} else if reset && !pinned {
+	} else {
+		m.selectFieldValue(initProfileV2FieldSelfApprove, initSelfApproveDisallow)
+	}
+	if visible && reset && !pinned {
 		m.setFieldValue(initProfileV2FieldReviewerGitHubAppInstallationID, "")
 	}
 	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Hidden {
@@ -1060,17 +1064,20 @@ func initProfileV2AgentSourcesFromDocument(document initProfileV2Document) []str
 func initProfileV2ReviewPolicyFromDocument(document initProfileV2Document) (config.ReviewPolicy, error) {
 	majorEvent := config.ReviewMajorEvent(document.selectedValue(initProfileV2FieldReviewMajorEvent))
 	if majorEvent == "" {
-		majorEvent = config.ReviewMajorEventComment
+		majorEvent = config.ReviewMajorEventRequestChanges
 	}
-	resolveAfter := strings.TrimSpace(document.fieldValue(initProfileV2FieldResolveAfter))
-	if err := validateOptionalDuration(resolveAfter); err != nil {
-		return config.ReviewPolicy{}, err
+	resolveThreads := config.ResolveThreadsPolicy(strings.TrimSpace(document.selectedValue(initProfileV2FieldResolveThreads)))
+	if resolveThreads == "" {
+		resolveThreads = config.ResolveThreadsAuto
+	}
+	allowSelfApprove := initReviewPolicyAllowSelfApprove(document.selectedValue(initProfileV2FieldSelfApprove))
+	if index := document.fieldIndexByID(initProfileV2FieldSelfApprove); index >= 0 && document[index].Hidden {
+		allowSelfApprove = false
 	}
 	return config.ReviewPolicy{
 		MajorEvent:       majorEvent,
-		AllowSelfApprove: initReviewPolicyAllowSelfApprove(document.selectedValue(initProfileV2FieldSelfApprove)),
-		ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(document.selectedValue(initProfileV2FieldResolveThreads))),
-		ResolveAfter:     resolveAfter,
+		AllowSelfApprove: allowSelfApprove,
+		ResolveThreads:   resolveThreads,
 	}, nil
 }
 
@@ -1241,7 +1248,6 @@ var initProfileV2HeadingSet = func() map[string]bool {
 		"Major findings event":    true,
 		"Allow self-approve":      true,
 		"Resolve threads":         true,
-		"Resolve-after duration":  true,
 		"Git credentials":         true,
 		"Git credential store":    true,
 		"Git credential name":     true,

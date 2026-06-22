@@ -209,16 +209,21 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 	if _, err := fmt.Fprintln(w, "Review policy:"); err != nil {
 		return err
 	}
-	if err := writeKV(w, "  Major event", string(show.Profile.ReviewPolicy.MajorEvent)); err != nil {
+	majorEvent := show.Profile.ReviewPolicy.MajorEvent
+	if majorEvent == "" {
+		majorEvent = config.ReviewMajorEventRequestChanges
+	}
+	resolveThreads := show.Profile.ReviewPolicy.ResolveThreads
+	if resolveThreads == "" {
+		resolveThreads = config.ResolveThreadsAuto
+	}
+	if err := writeKV(w, "  Major event", string(majorEvent)); err != nil {
 		return err
 	}
 	if err := writeKV(w, "  Allow self approve", fmt.Sprint(show.Profile.ReviewPolicy.AllowSelfApprove)); err != nil {
 		return err
 	}
-	if err := writeOptionalKV(w, "  Resolve threads", string(show.Profile.ReviewPolicy.ResolveThreads)); err != nil {
-		return err
-	}
-	if err := writeOptionalKV(w, "  Resolve after", show.Profile.ReviewPolicy.ResolveAfter); err != nil {
+	if err := writeKV(w, "  Resolve threads", string(resolveThreads)); err != nil {
 		return err
 	}
 

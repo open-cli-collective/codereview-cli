@@ -1500,7 +1500,6 @@ func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	if err := config.Save(path, config.File{
 		Profiles: map[string]config.Profile{
@@ -1618,7 +1617,6 @@ func TestInitLLMReviewerModelTierFlags(t *testing.T) {
 			MajorEvent:       config.ReviewMajorEventRequestChanges,
 			AllowSelfApprove: true,
 			ResolveThreads:   config.ResolveThreadsNever,
-			ResolveAfter:     "24h",
 		}
 		if err := config.Save(path, config.File{
 			Profiles: map[string]config.Profile{
@@ -1683,7 +1681,6 @@ func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	existing := config.File{
 		Keyring: config.KeyringConfig{Backend: "file"},
@@ -8754,11 +8751,10 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitReviewPolicyPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",    // Stage review-policy settings
-			"",    // keep comment
-			"",    // keep recommended self-approve false
-			"2",   // auto resolve
-			"24h", // resolve after
+			"", // Stage review-policy settings
+			"", // keep request changes
+			"", // keep recommended self-approve false
+			"", // keep auto resolve
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -8773,15 +8769,21 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	if !edit.Apply {
 		t.Fatal("edit.Apply = false, want true")
 	}
-	if edit.ReviewPolicy.MajorEvent != config.ReviewMajorEventComment {
-		t.Fatalf("review policy = %#v, want default comment major_event", edit.ReviewPolicy)
+	if edit.ReviewPolicy.MajorEvent != config.ReviewMajorEventRequestChanges {
+		t.Fatalf("review policy = %#v, want default request_changes major_event", edit.ReviewPolicy)
 	}
 	if edit.ReviewPolicy.AllowSelfApprove {
 		t.Fatalf("review policy = %#v, want self-approve false on default path", edit.ReviewPolicy)
 	}
+	if edit.ReviewPolicy.ResolveThreads != config.ResolveThreadsAuto {
+		t.Fatalf("review policy = %#v, want auto resolve_threads", edit.ReviewPolicy)
+	}
 	out := stderr.String()
-	if !strings.Contains(out, "Major findings event") || !strings.Contains(out, "Resolve-after duration") {
+	if !strings.Contains(out, "Major findings event") || !strings.Contains(out, "Resolve threads") {
 		t.Fatalf("stderr = %q, want review-policy fields", out)
+	}
+	if !strings.Contains(out, "Auto-resolve (recommended)") || !strings.Contains(out, "Never resolve automatically") {
+		t.Fatalf("stderr = %q, want explicit resolve choices", out)
 	}
 	if !strings.Contains(out, "Do not allow self-approve (recommended)") || !strings.Contains(out, "Enable self-approve") {
 		t.Fatalf("stderr = %q, want explicit self-approve choices", out)
@@ -8961,7 +8963,6 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	existing.LLM.ModelMap = config.ModelMap{"medium": "gpt-custom"}
 	existing.LLM.ReviewerModelTier = config.ModelTierLarge
@@ -9179,7 +9180,6 @@ func TestEditInteractiveInitProfileSkipsInlineProfileDetailCollectors(t *testing
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
@@ -9321,7 +9321,6 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	deps := initDeps{
 		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
@@ -9565,8 +9564,8 @@ func TestCompleteInteractiveInitProfileV2DraftFillsUnsetFieldsAndDefaultsReviewP
 	if !draft.ReviewPolicySet {
 		t.Fatalf("ReviewPolicySet = false, want true")
 	}
-	if draft.ReviewPolicy.MajorEvent != config.ReviewMajorEventComment {
-		t.Fatalf("ReviewPolicy.MajorEvent = %q, want default comment", draft.ReviewPolicy.MajorEvent)
+	if draft.ReviewPolicy.MajorEvent != config.ReviewMajorEventRequestChanges {
+		t.Fatalf("ReviewPolicy.MajorEvent = %q, want default request_changes", draft.ReviewPolicy.MajorEvent)
 	}
 	if !draft.ReviewPolicy.AllowSelfApprove || draft.ReviewPolicy.ResolveThreads != config.ResolveThreadsNever {
 		t.Fatalf("ReviewPolicy = %#v, want existing fields preserved", draft.ReviewPolicy)
@@ -9653,7 +9652,6 @@ func TestInitInteractiveModelMapAddEditRemoveAndReset(t *testing.T) {
 			}
 			expected := existing
 			expected.LLM.ModelMap = copyModelMap(tt.want)
-			expected.ReviewPolicy.MajorEvent = config.ReviewMajorEventComment
 			expected = normalizeTestProfileNamed("work", expected)
 			if !reflect.DeepEqual(cfg.Profiles["work"], expected) {
 				t.Fatalf("saved profile = %#v, want %#v", cfg.Profiles["work"], expected)
@@ -9785,7 +9783,6 @@ func TestInitInteractiveAgentSourcesPreserveAddRemoveAndReset(t *testing.T) {
 				MajorEvent:       config.ReviewMajorEventRequestChanges,
 				AllowSelfApprove: true,
 				ResolveThreads:   config.ResolveThreadsNever,
-				ResolveAfter:     "24h",
 			}
 			saveCredentialTestConfig(t, path, config.File{
 				Profiles: map[string]config.Profile{"work": existing},
@@ -9893,13 +9890,11 @@ func TestInitInteractiveReviewPolicyPreserveEditAndDefaults(t *testing.T) {
 				MajorEvent:       config.ReviewMajorEventRequestChanges,
 				AllowSelfApprove: true,
 				ResolveThreads:   config.ResolveThreadsNever,
-				ResolveAfter:     "24h",
 			}},
 			want: config.ReviewPolicy{
 				MajorEvent:       config.ReviewMajorEventRequestChanges,
 				AllowSelfApprove: true,
 				ResolveThreads:   config.ResolveThreadsNever,
-				ResolveAfter:     "24h",
 			},
 		},
 		{
@@ -9908,14 +9903,14 @@ func TestInitInteractiveReviewPolicyPreserveEditAndDefaults(t *testing.T) {
 				MajorEvent:       config.ReviewMajorEventRequestChanges,
 				AllowSelfApprove: true,
 				ResolveThreads:   config.ResolveThreadsAuto,
-				ResolveAfter:     "1h",
 			},
 			edit: initReviewPolicyEdit{Apply: true, ReviewPolicy: config.ReviewPolicy{
 				MajorEvent:       config.ReviewMajorEventComment,
 				AllowSelfApprove: false,
 			}},
 			want: config.ReviewPolicy{
-				MajorEvent: config.ReviewMajorEventComment,
+				MajorEvent:     config.ReviewMajorEventComment,
+				ResolveThreads: config.ResolveThreadsAuto,
 			},
 		},
 	}
@@ -9994,14 +9989,6 @@ func TestInitInteractiveReviewPolicyRejectsInvalidEntries(t *testing.T) {
 				ResolveThreads: "always",
 			}},
 			want: `review_policy.resolve_threads "always" is invalid`,
-		},
-		{
-			name: "invalid resolve_after",
-			edit: initReviewPolicyEdit{Apply: true, ReviewPolicy: config.ReviewPolicy{
-				MajorEvent:   config.ReviewMajorEventComment,
-				ResolveAfter: "tomorrow",
-			}},
-			want: `review_policy.resolve_after "tomorrow" is invalid`,
 		},
 	}
 
@@ -12968,7 +12955,6 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsAuto,
-		ResolveAfter:     "24h",
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -13020,9 +13006,7 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"/opt/codereview/agents",
 		"Review policy",
 		"Request changes",
-		"Enable self-approve",
 		"Auto-resolve",
-		"24h",
 		"Profile action",
 		"Stage profile settings",
 		"Back without staging",
@@ -13030,6 +13014,9 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		if !strings.Contains(content, want) {
 			t.Fatalf("content missing %q:\n%s", want, content)
 		}
+	}
+	if strings.Contains(content, "Enable self-approve") || strings.Contains(content, "Allow self-approve") {
+		t.Fatalf("content shows self-approve for GitHub App reviewer:\n%s", content)
 	}
 
 	assertContentOrder := func(parts ...string) {
@@ -13790,8 +13777,6 @@ func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewMajorEvent, string(config.ReviewMajorEventRequestChanges))
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldSelfApprove, initSelfApproveEnable)
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldResolveThreads, string(config.ResolveThreadsAuto))
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldResolveAfter)
-	model = typeInitProfileV2Text(t, model, "24h")
 
 	draft, err := model.validatedDraft()
 	if err != nil {
@@ -13804,34 +13789,58 @@ func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsAuto,
-		ResolveAfter:     "24h",
 	}
 	if !reflect.DeepEqual(draft.ReviewPolicy, want) {
 		t.Fatalf("draft.ReviewPolicy = %#v, want %#v", draft.ReviewPolicy, want)
 	}
 }
 
-func TestInitProfileV2ReviewPolicyRejectsInvalidDuration(t *testing.T) {
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
-		"monit",
-		"github.com/SignalFT",
-		config.ReviewPolicy{},
-		"codereview/monit",
-		true,
-		testInitProfileV2GitScopes(),
-		testInitProfileV2GitScopeName,
-	), 160, 24)
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldResolveAfter)
-	model = typeInitProfileV2Text(t, model, "tomorrow")
-
-	if !strings.Contains(model.View(), "invalid duration") {
-		index := model.document.fieldIndexByID(initProfileV2FieldResolveAfter)
-		if index < 0 || !strings.Contains(model.document[index].Error, "invalid duration") {
-			t.Fatalf("duration field error = %q, want invalid duration", model.document[index].Error)
-		}
+func TestInitProfileV2ReviewPolicyHidesSelfApproveForGitHubAppReviewer(t *testing.T) {
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"app-reviewer": {
+			Name:            "app-reviewer",
+			Kind:            initReviewerEntityKindGitHubApp,
+			AuthMode:        config.GitAuthModeGitHubApp,
+			AppID:           "12345",
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/app-reviewer",
+			DisplayName:     "App reviewer",
+		},
 	}
-	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "invalid duration") {
-		t.Fatalf("validatedDraft error = %v, want duration validation", err)
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"claude-work": {
+			Name:     "claude-work",
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	}
+	editor := newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", reviewerEntities, llmRuntimes)
+	initProfileV2AppendReviewPolicySection(&editor.Document, config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsAuto,
+	}, false)
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 40)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "app-reviewer")
+
+	index := model.document.fieldIndexByID(initProfileV2FieldSelfApprove)
+	if index < 0 {
+		t.Fatalf("self-approve field missing")
+	}
+	if !model.document[index].Hidden {
+		t.Fatalf("self-approve hidden = false, want hidden for GitHub App reviewer")
+	}
+	if strings.Contains(model.View(), "Allow self-approve") {
+		t.Fatalf("view shows self-approve for GitHub App reviewer:\n%s", model.View())
+	}
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.ReviewPolicy.AllowSelfApprove {
+		t.Fatalf("AllowSelfApprove = true, want false for GitHub App reviewer")
 	}
 }
 
@@ -14473,7 +14482,7 @@ func newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(profileName string,
 	if selectedGitScope != "" && selectedGitScope != initCustomGitScopeSelection {
 		initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(gitScopes), draft, true)
 	}
-	initProfileV2AppendReviewPolicySection(&document, policy)
+	initProfileV2AppendReviewPolicySection(&document, policy, false)
 	initProfileV2AppendGitStorageSection(&document, storeOptions, config.LocalOSCredentialStoreID, gitStorageLabel)
 	return initProfileV2Editor{
 		Draft:                      draft,
@@ -15593,7 +15602,6 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	wantRoutes := []config.RepositoryProfile{{
 		Profile: "work",
@@ -15758,7 +15766,6 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 	if cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 14/at_write", cfg.Data.Retention)
 	}
-	wantProfile.ReviewPolicy.MajorEvent = config.ReviewMajorEventComment
 	if !reflect.DeepEqual(cfg.Profiles["work"], wantProfile) {
 		t.Fatalf("profile = %#v, want unchanged %#v", cfg.Profiles["work"], wantProfile)
 	}

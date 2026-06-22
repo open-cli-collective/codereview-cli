@@ -2137,14 +2137,6 @@ func TestValidationCoversAgentSourcesReviewPolicyAndRetention(t *testing.T) {
 	}
 
 	cfg = validFile()
-	profile = cfg.Profiles["work"]
-	profile.ReviewPolicy.ResolveAfter = "two days"
-	cfg.Profiles["work"] = profile
-	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("bad resolve_after Validate error = %v, want ErrInvalid", err)
-	}
-
-	cfg = validFile()
 	cfg.Data.Retention.MaxAgeDays = intPtr(-1)
 	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("bad retention Validate error = %v, want ErrInvalid", err)
@@ -2291,7 +2283,6 @@ func validFile() File {
 					MajorEvent:       ReviewMajorEventRequestChanges,
 					AllowSelfApprove: true,
 					ResolveThreads:   ResolveThreadsNever,
-					ResolveAfter:     "48h",
 				},
 			},
 		},

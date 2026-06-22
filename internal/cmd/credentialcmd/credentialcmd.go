@@ -170,7 +170,6 @@ type initOptions struct {
 	majorEvent          string
 	selfApprove         bool
 	resolveThreads      string
-	resolveAfter        string
 	gitTokenStdin       bool
 	gitTokenEnv         string
 	reviewerTokenStdin  bool
@@ -823,7 +822,7 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 		llmProvider:      string(config.LLMProviderAnthropic),
 		llmAuth:          string(config.LLMAuthSubscription),
 		llmAdapter:       string(config.LLMAdapterClaudeCLI),
-		majorEvent:       string(config.ReviewMajorEventComment),
+		majorEvent:       string(config.ReviewMajorEventRequestChanges),
 		secretsDiscovery: string(initSecretsBackendDiscoveryModeFull),
 	}
 	cmd := &cobra.Command{
@@ -857,8 +856,7 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 	cmd.Flags().StringArrayVar(&flags.agentSources, "agent-source", nil, "Agent source ref (repeatable)")
 	cmd.Flags().StringVar(&flags.majorEvent, "major-event", flags.majorEvent, "Major finding event policy")
 	cmd.Flags().BoolVar(&flags.selfApprove, "allow-self-approve", false, "Allow self approval")
-	cmd.Flags().StringVar(&flags.resolveThreads, "resolve-threads", "", "Thread resolution policy")
-	cmd.Flags().StringVar(&flags.resolveAfter, "resolve-after", "", "Duration before thread resolution")
+	cmd.Flags().StringVar(&flags.resolveThreads, "resolve-threads", string(config.ResolveThreadsAuto), "Thread resolution policy")
 	cmd.Flags().BoolVar(&flags.gitTokenStdin, "git-token-stdin", false, "Read the Git token from stdin")
 	cmd.Flags().StringVar(&flags.gitTokenEnv, "git-token-from-env", "", "Read the Git token from this environment variable")
 	cmd.Flags().BoolVar(&flags.reviewerTokenStdin, "reviewer-token-stdin", false, "Read the reviewer Git token from stdin")
@@ -1506,7 +1504,10 @@ func completeInteractiveInitProfileV2Draft(ctx initPromptContext, draft initDraf
 			draft.ReviewPolicy = ctx.ExistingProfile.ReviewPolicy
 		}
 		if draft.ReviewPolicy.MajorEvent == "" {
-			draft.ReviewPolicy.MajorEvent = config.ReviewMajorEventComment
+			draft.ReviewPolicy.MajorEvent = config.ReviewMajorEventRequestChanges
+		}
+		if draft.ReviewPolicy.ResolveThreads == "" {
+			draft.ReviewPolicy.ResolveThreads = config.ResolveThreadsAuto
 		}
 		draft.ReviewPolicySet = true
 	}
@@ -2666,39 +2667,38 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			agentSourceText := strings.Join(draft.AgentSources, "\n")
 			policy := draft.ReviewPolicy
 			if policy.MajorEvent == "" {
-				policy.MajorEvent = config.ReviewMajorEventComment
+				policy.MajorEvent = config.ReviewMajorEventRequestChanges
+			}
+			if policy.ResolveThreads == "" {
+				policy.ResolveThreads = config.ResolveThreadsAuto
 			}
 			majorEvent := policy.MajorEvent
 			selfApproveChoice := initReviewPolicySelfApproveChoice(policy.AllowSelfApprove)
 			resolveThreads := string(policy.ResolveThreads)
-			resolveAfter := policy.ResolveAfter
 			profileAction := initDetailActionEdit
 
 			reviewPolicyFields := []huh.Field{
 				huh.NewSelect[config.ReviewMajorEvent]().
 					Title("Major findings event").
+					Description("Blocking findings always request changes. This controls what cr does when the highest severity is major: either request changes or leave a review comment.").
 					Options(
-						huh.NewOption("Comment", config.ReviewMajorEventComment),
 						huh.NewOption("Request changes", config.ReviewMajorEventRequestChanges),
+						huh.NewOption("Comment", config.ReviewMajorEventComment),
 					).
 					Value(&majorEvent),
 				huh.NewSelect[string]().
 					Title("Allow self-approve").
+					Description("Relevant when this profile posts using a user account. If that account authored the PR, cr downgrades approval to a comment unless enabled.").
 					Options(initReviewPolicySelfApproveOptions()...).
 					Value(&selfApproveChoice),
 				huh.NewSelect[string]().
 					Title("Resolve threads").
+					Description("Controls whether cr may mark inline discussion threads as \"resolved\" when it evaluates the dialog, and determines a decision has been made. When enabled, cr treats the final comment as the cached outcome of the discussion. This removes the discussion thread from future calls to the LLM provider, saving both time and tokens.").
 					Options(
-						huh.NewOption("Use built-in default", ""),
-						huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
-						huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
+						huh.NewOption("Auto-resolve (recommended)", string(config.ResolveThreadsAuto)),
+						huh.NewOption("Never resolve automatically", string(config.ResolveThreadsNever)),
 					).
 					Value(&resolveThreads),
-				huh.NewInput().
-					Title("Resolve-after duration").
-					Description("Optional. Leave blank to clear. Example: 24h or 30m.").
-					Value(&resolveAfter).
-					Validate(validateOptionalDuration),
 			}
 			if len(modelMapFields) == 0 {
 				modelMapFields = append(modelMapFields, huh.NewNote().Description("No model tiers are available to configure."))
@@ -2897,12 +2897,15 @@ func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
 			draft.ModelMap = initModelMapFromEditorValues(modelMapLLM, modelMapValues)
 			draft.AgentSourcesSet = true
 			draft.AgentSources = strings.FieldsFunc(agentSourceText, func(r rune) bool { return r == '\n' || r == '\r' })
+			allowSelfApprove := initReviewPolicyAllowSelfApprove(selfApproveChoice)
+			if initProfileV2ReviewerEntityKindForSelection(selectedReviewerEntity, ctx.ReviewerEntities) == initReviewerEntityKindGitHubApp {
+				allowSelfApprove = false
+			}
 			draft.ReviewPolicySet = true
 			draft.ReviewPolicy = config.ReviewPolicy{
 				MajorEvent:       majorEvent,
-				AllowSelfApprove: initReviewPolicyAllowSelfApprove(selfApproveChoice),
+				AllowSelfApprove: allowSelfApprove,
 				ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(resolveThreads)),
-				ResolveAfter:     strings.TrimSpace(resolveAfter),
 			}
 			draft.RoutesSet = true
 			draft.Routes = routes
@@ -3982,13 +3985,15 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 	action := initDetailActionEdit
 	policy := prompt.ReviewPolicy
 	if policy.MajorEvent == "" {
-		policy.MajorEvent = config.ReviewMajorEventComment
+		policy.MajorEvent = config.ReviewMajorEventRequestChanges
+	}
+	if policy.ResolveThreads == "" {
+		policy.ResolveThreads = config.ResolveThreadsAuto
 	}
 	majorEvent := policy.MajorEvent
 	selfApprove := policy.AllowSelfApprove
 	selfApproveChoice := initReviewPolicySelfApproveChoice(selfApprove)
 	resolveThreads := string(policy.ResolveThreads)
-	resolveAfter := policy.ResolveAfter
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
@@ -4002,28 +4007,25 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 		huh.NewGroup(
 			huh.NewSelect[config.ReviewMajorEvent]().
 				Title("Major findings event").
+				Description("Blocking findings always request changes. This controls what cr does when the highest severity is major: either request changes or leave a review comment.").
 				Options(
-					huh.NewOption("Comment", config.ReviewMajorEventComment),
 					huh.NewOption("Request changes", config.ReviewMajorEventRequestChanges),
+					huh.NewOption("Comment", config.ReviewMajorEventComment),
 				).
 				Value(&majorEvent),
 			huh.NewSelect[string]().
 				Title("Allow self-approve").
+				Description("Relevant when this profile posts using a user account. If that account authored the PR, cr downgrades approval to a comment unless enabled.").
 				Options(initReviewPolicySelfApproveOptions()...).
 				Value(&selfApproveChoice),
 			huh.NewSelect[string]().
 				Title("Resolve threads").
+				Description("Controls whether cr may mark inline discussion threads as \"resolved\" when it evaluates the dialog, and determines a decision has been made. When enabled, cr treats the final comment as the cached outcome of the discussion. This removes the discussion thread from future calls to the LLM provider, saving both time and tokens.").
 				Options(
-					huh.NewOption("Use built-in default", ""),
-					huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
-					huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
+					huh.NewOption("Auto-resolve (recommended)", string(config.ResolveThreadsAuto)),
+					huh.NewOption("Never resolve automatically", string(config.ResolveThreadsNever)),
 				).
 				Value(&resolveThreads),
-			huh.NewInput().
-				Title("Resolve-after duration").
-				Description("Optional. Leave blank to clear. Example: 24h or 30m.").
-				Value(&resolveAfter).
-				Validate(validateOptionalDuration),
 		).WithHideFunc(func() bool {
 			return action == initDetailActionBack
 		}).Title("Review Policy"),
@@ -4042,7 +4044,6 @@ func (p huhInitReviewPolicyPrompter) EditReviewPolicy(prompt initReviewPolicyPro
 			MajorEvent:       majorEvent,
 			AllowSelfApprove: selfApprove,
 			ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(resolveThreads)),
-			ResolveAfter:     strings.TrimSpace(resolveAfter),
 		},
 	}, nil
 }
@@ -4609,7 +4610,6 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			MajorEvent:       config.ReviewMajorEvent(flags.majorEvent),
 			AllowSelfApprove: flags.selfApprove,
 			ResolveThreads:   config.ResolveThreadsPolicy(flags.resolveThreads),
-			ResolveAfter:     flags.resolveAfter,
 		},
 	}
 	if llmRef != "" {
@@ -4643,8 +4643,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		}
 		if !cmd.Flags().Changed("major-event") &&
 			!cmd.Flags().Changed("allow-self-approve") &&
-			!cmd.Flags().Changed("resolve-threads") &&
-			!cmd.Flags().Changed("resolve-after") {
+			!cmd.Flags().Changed("resolve-threads") {
 			profile.ReviewPolicy = previousProfile.ReviewPolicy
 		}
 		if !cmd.Flags().Changed("llm-reviewer-model-tier") && !flags.clearLLMReviewer {

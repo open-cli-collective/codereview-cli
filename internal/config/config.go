@@ -396,7 +396,6 @@ type ReviewPolicy struct {
 	MajorEvent       ReviewMajorEvent     `yaml:"major_event,omitempty" json:"major_event"`
 	AllowSelfApprove bool                 `yaml:"allow_self_approve,omitempty" json:"allow_self_approve"`
 	ResolveThreads   ResolveThreadsPolicy `yaml:"resolve_threads,omitempty" json:"resolve_threads,omitempty"`
-	ResolveAfter     string               `yaml:"resolve_after,omitempty" json:"resolve_after,omitempty"`
 }
 
 // DataConfig carries non-secret durable data policy.
@@ -1130,13 +1129,8 @@ func validateProfile(cfg File, name string, profile Profile) error {
 	if !profile.ReviewPolicy.MajorEvent.Valid() {
 		return invalid("profiles.%s.review_policy.major_event %q is invalid", name, profile.ReviewPolicy.MajorEvent)
 	}
-	if profile.ReviewPolicy.ResolveThreads != "" && !profile.ReviewPolicy.ResolveThreads.Valid() {
+	if !profile.ReviewPolicy.ResolveThreads.Valid() {
 		return invalid("profiles.%s.review_policy.resolve_threads %q is invalid", name, profile.ReviewPolicy.ResolveThreads)
-	}
-	if profile.ReviewPolicy.ResolveAfter != "" {
-		if _, err := time.ParseDuration(profile.ReviewPolicy.ResolveAfter); err != nil {
-			return invalid("profiles.%s.review_policy.resolve_after %q is invalid: %v", name, profile.ReviewPolicy.ResolveAfter, err)
-		}
 	}
 	return nil
 }
@@ -2144,7 +2138,10 @@ func (l LLMConfig) empty() bool {
 
 func (p ReviewPolicy) normalized() ReviewPolicy {
 	if p.MajorEvent == "" {
-		p.MajorEvent = ReviewMajorEventComment
+		p.MajorEvent = ReviewMajorEventRequestChanges
+	}
+	if p.ResolveThreads == "" {
+		p.ResolveThreads = ResolveThreadsAuto
 	}
 	return p
 }

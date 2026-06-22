@@ -314,7 +314,8 @@ profiles:
     agent_sources:
       - ~/.config/codereview/agents
     review_policy:
-      major_event: comment
+      major_event: request_changes
+      resolve_threads: auto
 ```
 
 For adapter-managed LLM credentials, use `auth: subscription` and omit
@@ -490,10 +491,9 @@ profiles:
     agent_sources:
       - ~/.config/codereview/agents
     review_policy:
-      major_event: comment
+      major_event: request_changes
       allow_self_approve: false
       resolve_threads: auto
-      resolve_after: 24h
 data:
   retention:
     max_age_days: 90
@@ -751,10 +751,9 @@ Flags:
 | `--llm-api-key-from-env <env>` | Read the LLM API key from an environment variable and write `anthropic_api_key` or `openai_api_key` according to `--llm-provider`. |
 | `--secret-backend-discovery <mode>` | Interactive secrets-backend discovery mode: `full` runs active inventory probes such as 1Password account/vault lookup, `safe` uses only passive availability checks, and `off` skips backend discovery. Defaults to `full`; `CR_SECRET_BACKEND_DISCOVERY` can set the same value when the flag is omitted. |
 | `--agent-source <path>` | Add a trusted agent source directory. Repeatable. |
-| `--major-event <policy>` | `comment` or `request_changes`. Controls review event for major findings. |
+| `--major-event <policy>` | `comment` or `request_changes`. Controls review event for major findings. Defaults to `request_changes`. |
 | `--allow-self-approve` | Store profile policy allowing self approval. Live review can still require `--allow-self-approve` depending on invocation. |
-| `--resolve-threads <policy>` | `auto` or `never`. Empty leaves thread resolution unset. |
-| `--resolve-after <duration>` | Store a validated duration such as `24h` for future thread-resolution policy. Current review planning uses `resolve_threads`/`--no-resolve-threads`, not this delay. |
+| `--resolve-threads <policy>` | `auto` or `never`. Defaults to `auto`. |
 | `--overwrite` | Replace existing keyring entries written by this command. |
 | `--replace-profile` | Replace an existing profile config. |
 
