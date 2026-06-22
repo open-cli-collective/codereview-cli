@@ -221,8 +221,9 @@ Host matching is case-insensitive after normalization, while namespace and repo
 matching are case-sensitive after trimming whitespace. An explicit `--profile`
 bypasses repository routing. Route targets still use the profile's configured
 auth mode. Passing `--profile ""` is invalid.
-For GitHub App auth, `cr review` can use the PR owner/repo to look up the app
-installation when `github_app_installation_id` is not staged.
+For GitHub App reviewer entities, the review profile chooses whether `cr review`
+discovers the installation from the PR owner/repo or uses a pinned installation
+ID stored in profile config.
 
 Add or replace one credential later:
 
@@ -396,9 +397,10 @@ When deploying a profile without the interactive wizard, run
 then use `set-credential` only for secrets that you are intentionally staging
 outside init. Example:
 
-`github_app_installation_id` is optional for `cr review`, which can discover
-the installation from the PR repository. Stage it when you want `cr me` and
-other commands without repository context to work.
+GitHub App reviewer credentials store the App ID and private key only. The
+review profile stores installation routing: `discover_from_repository` for PR
+context lookup, or `pinned` with a numeric installation ID when commands without
+repository context should use one known installation.
 
 ```bash
 cr --profile work init --non-interactive \
@@ -429,14 +431,6 @@ printf '%s' "$GITHUB_APP_PRIVATE_KEY" | cr set-credential \
   --store local-os \
   --name codereview/work-reviewer-app \
   --key github_app_private_key \
-  --stdin \
-  --overwrite
-
-# Optional: needed for cr me and other commands without repository context.
-printf '%s' "$GITHUB_APP_INSTALLATION_ID" | cr set-credential \
-  --store local-os \
-  --name codereview/work-reviewer-app \
-  --key github_app_installation_id \
   --stdin \
   --overwrite
 
@@ -593,7 +587,7 @@ Credential key matrix:
 |---------------|---------|---------------|---------------|---------------|-------------|
 | `git.credential` | User Git host auth | `pat` | `git_token` | None | Supported |
 | `reviewer_credentials.credential` | Reviewer Git host auth | `pat` | `git_token` | None | Supported; must use a distinct credential location from `git.credential` in the same profile |
-| `git.credential` / `reviewer_credentials.credential` | Git host auth | `github_app` | `github_app_id`, `github_app_private_key` | `github_app_installation_id` | Supported for GitHub. `cr review` can discover the installation from the PR repository when the optional installation ID is omitted; commands without repository context require it |
+| `git.credential` / reviewer entity credential | Git host auth | `github_app` | `github_app_id`, `github_app_private_key` | None | Supported for GitHub. Reviewer GitHub App installation routing lives on `profiles.<name>.reviewer.github_app_installation`, not in the credential bundle |
 | `git.credential` / `reviewer_credentials.credential` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
 | `llm.credential` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
 | `llm.credential` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
@@ -753,9 +747,9 @@ Flags:
 Only one stdin secret ingress flag may be used at a time. PAT reviewer
 credentials use key `git_token` under their own credential name, so
 `--reviewer-credential-ref` must differ from `--git-credential-ref`. GitHub App
-reviewer credentials use `github_app_id` and `github_app_private_key`, plus
-optional `github_app_installation_id`; `init` does not accept reviewer token
-ingress for `--reviewer-auth-mode github_app`. LLM API-key ingress requires
+reviewer credentials use `github_app_id` and `github_app_private_key`;
+installation routing is profile config, not a credential key. `init` does not
+accept reviewer token ingress for `--reviewer-auth-mode github_app`. LLM API-key ingress requires
 `--llm-auth api_key`. `--overwrite` with API-key auth requires an LLM key
 ingress flag. `--allow-self-review` is intentionally runtime-only on
 `cr review`; `init` only stores the profile-level self-approval policy.
@@ -768,11 +762,11 @@ cr set-credential --store <id> --name <credential-name> --key <key> (--stdin | -
 
 Writes one secret value to the selected credential store. Globally allowed keys are
 `git_token`, `github_app_id`, `github_app_private_key`,
-`github_app_installation_id`, `anthropic_api_key`, and `openai_api_key`. When
+`anthropic_api_key`, and `openai_api_key`. When
 `config.yml` declares the target credential location, `set-credential` narrows
 that global allowlist to the exact key set expected for that credential. PAT
-user Git credentials and PAT reviewer credentials use `git_token`; GitHub App credentials use `github_app_id`,
-`github_app_private_key`, and optional `github_app_installation_id`; Anthropic
+user Git credentials and PAT reviewer credentials use `git_token`; GitHub App
+credentials use `github_app_id` and `github_app_private_key`; Anthropic
 LLM API-key credentials use `anthropic_api_key`; OpenAI LLM API-key credentials use
 `openai_api_key`.
 

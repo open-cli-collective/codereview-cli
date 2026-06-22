@@ -262,40 +262,42 @@ const (
 )
 
 type initDraft struct {
-	Action                       initDraftAction
-	ActionTarget                 string
-	OriginalProfileName          string
-	ProfileName                  string
-	GitHost                      string
-	GitAuth                      string
-	GitCredentialStore           string
-	GitCredentialRef             string
-	ReviewerEnabled              bool
-	ReviewerAuth                 string
-	ReviewerCredentialStore      string
-	ReviewerCredentialRef        string
-	ReviewerDisplayName          string
-	ReviewerCredentialWriteRef   string
-	ReviewerCredentialWriteStore credentials.ResolvedSecretsProfile
-	ReviewerCredentialWrites     map[string]string
-	ReviewerCredentialOverwrite  bool
-	ReviewerCredentialSatisfied  bool
-	SecretsProfile               string
-	LLMProvider                  string
-	LLMAuth                      string
-	LLMAdapter                   string
-	LLMReviewerModelTier         string
-	LLMCredentialStore           string
-	LLMCredentialRef             string
-	AdvancedStorageLabels        bool
-	RoutesSet                    bool
-	Routes                       []configedit.RepositoryRouteSpec
-	ModelMapSet                  bool
-	ModelMap                     config.ModelMap
-	AgentSourcesSet              bool
-	AgentSources                 []string
-	ReviewPolicySet              bool
-	ReviewPolicy                 config.ReviewPolicy
+	Action                            initDraftAction
+	ActionTarget                      string
+	OriginalProfileName               string
+	ProfileName                       string
+	GitHost                           string
+	GitAuth                           string
+	GitCredentialStore                string
+	GitCredentialRef                  string
+	ReviewerEnabled                   bool
+	ReviewerAuth                      string
+	ReviewerCredentialStore           string
+	ReviewerCredentialRef             string
+	ReviewerDisplayName               string
+	ReviewerGitHubAppInstallationMode string
+	ReviewerGitHubAppInstallationID   string
+	ReviewerCredentialWriteRef        string
+	ReviewerCredentialWriteStore      credentials.ResolvedSecretsProfile
+	ReviewerCredentialWrites          map[string]string
+	ReviewerCredentialOverwrite       bool
+	ReviewerCredentialSatisfied       bool
+	SecretsProfile                    string
+	LLMProvider                       string
+	LLMAuth                           string
+	LLMAdapter                        string
+	LLMReviewerModelTier              string
+	LLMCredentialStore                string
+	LLMCredentialRef                  string
+	AdvancedStorageLabels             bool
+	RoutesSet                         bool
+	Routes                            []configedit.RepositoryRouteSpec
+	ModelMapSet                       bool
+	ModelMap                          config.ModelMap
+	AgentSourcesSet                   bool
+	AgentSources                      []string
+	ReviewPolicySet                   bool
+	ReviewPolicy                      config.ReviewPolicy
 }
 
 type initModelMapPrompt struct {
@@ -3982,6 +3984,17 @@ func validateOptionalDuration(value string) error {
 	return err
 }
 
+func validateOptionalGitHubAppInstallationID(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	if _, err := strconv.ParseInt(trimmed, 10, 64); err != nil {
+		return fmt.Errorf("GitHub App installation ID must be a decimal number")
+	}
+	return nil
+}
+
 func validateRetentionMaxAgeDays(value string) error {
 	_, err := parseInteractiveRetentionMaxAgeDays(value)
 	return err
@@ -4062,6 +4075,11 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		draft.AgentSources = append([]string(nil), existingProfile.AgentSources...)
 		draft.ReviewPolicy = existingProfile.ReviewPolicy
 		draft.SecretsProfile = strings.TrimSpace(existingProfile.SecretsProfile)
+		if existingProfile.Reviewer.GitHubAppInstallation != nil {
+			installation := existingProfile.Reviewer.GitHubAppInstallation
+			draft.ReviewerGitHubAppInstallationMode = strings.TrimSpace(string(installation.Mode))
+			draft.ReviewerGitHubAppInstallationID = strings.TrimSpace(installation.InstallationID)
+		}
 		if existingProfile.ReviewerCredentials != nil {
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(existingProfile.ReviewerCredentials.AuthMode)
@@ -5542,6 +5560,9 @@ func cloneInitSecretsStore(store config.SecretsStore) config.SecretsStore {
 
 func cloneInitProfile(profile config.Profile) config.Profile {
 	cloned := profile
+	if profile.Reviewer.GitHubAppInstallation != nil {
+		cloned.Reviewer.GitHubAppInstallation = cloneProfileReviewerGitHubAppInstallation(profile.Reviewer.GitHubAppInstallation)
+	}
 	if profile.ReviewerCredentials != nil {
 		reviewer := *profile.ReviewerCredentials
 		cloned.ReviewerCredentials = &reviewer
@@ -5637,8 +5658,10 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 			reviewer.IdentityCache = previousProfile.ReviewerCredentials.IdentityCache
 		}
 		profile.ReviewerCredentials = &reviewer
+		profile.Reviewer.GitHubAppInstallation = initProfileReviewerGitHubAppInstallationFromDraft(draft)
 	} else {
 		profile.ReviewerCredentials = nil
+		profile.Reviewer.GitHubAppInstallation = nil
 	}
 	profile.LLM.Provider = config.LLMProvider(draft.LLMProvider)
 	profile.LLM.Auth = config.LLMAuth(draft.LLMAuth)
@@ -5703,7 +5726,7 @@ func materializeProfileReviewerEntity(cfg config.File, profileName string, profi
 			existing.DisplayName = displayName
 			cfg.ReviewerEntities[name] = existing
 		}
-		profile.Reviewer = initProfileReviewerForEntity(name, existing.AuthMode)
+		profile.Reviewer = initProfileReviewerForEntity(name, existing.AuthMode, profile.Reviewer.GitHubAppInstallation)
 		if cfg.Profiles == nil {
 			cfg.Profiles = map[string]config.Profile{}
 		}
@@ -5713,7 +5736,7 @@ func materializeProfileReviewerEntity(cfg config.File, profileName string, profi
 
 	entityName := uniqueInitReviewerEntityName(buildInitStandaloneReviewerEntityNameSet(cfg.ReviewerEntities), profileName+"-reviewer")
 	cfg.ReviewerEntities[entityName] = entity
-	profile.Reviewer = initProfileReviewerForEntity(entityName, entity.AuthMode)
+	profile.Reviewer = initProfileReviewerForEntity(entityName, entity.AuthMode, profile.Reviewer.GitHubAppInstallation)
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
 	}
@@ -5721,17 +5744,43 @@ func materializeProfileReviewerEntity(cfg config.File, profileName string, profi
 	return cfg, profile
 }
 
-func initProfileReviewerForEntity(entityName string, authMode config.GitAuthMode) config.ProfileReviewer {
+func initProfileReviewerForEntity(entityName string, authMode config.GitAuthMode, installation *config.ProfileReviewerGitHubAppInstallation) config.ProfileReviewer {
 	reviewer := config.ProfileReviewer{
 		Kind:   config.ProfileReviewerKindEntity,
 		Entity: strings.TrimSpace(entityName),
 	}
 	if authMode == config.GitAuthModeGitHubApp {
-		reviewer.GitHubAppInstallation = &config.ProfileReviewerGitHubAppInstallation{
-			Mode: config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+		reviewer.GitHubAppInstallation = cloneProfileReviewerGitHubAppInstallation(installation)
+		if reviewer.GitHubAppInstallation == nil {
+			reviewer.GitHubAppInstallation = &config.ProfileReviewerGitHubAppInstallation{
+				Mode: config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+			}
 		}
 	}
 	return reviewer
+}
+
+func initProfileReviewerGitHubAppInstallationFromDraft(draft initDraft) *config.ProfileReviewerGitHubAppInstallation {
+	if !draft.ReviewerEnabled || config.GitAuthMode(draft.ReviewerAuth) != config.GitAuthModeGitHubApp {
+		return nil
+	}
+	mode := config.ProfileReviewerGitHubAppInstallationMode(strings.TrimSpace(draft.ReviewerGitHubAppInstallationMode))
+	if mode == "" {
+		mode = config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository
+	}
+	installation := &config.ProfileReviewerGitHubAppInstallation{Mode: mode}
+	if mode == config.ProfileReviewerGitHubAppInstallationPinned {
+		installation.InstallationID = strings.TrimSpace(draft.ReviewerGitHubAppInstallationID)
+	}
+	return installation
+}
+
+func cloneProfileReviewerGitHubAppInstallation(installation *config.ProfileReviewerGitHubAppInstallation) *config.ProfileReviewerGitHubAppInstallation {
+	if installation == nil {
+		return nil
+	}
+	cloned := *installation
+	return &cloned
 }
 
 func reviewerEntityConfigFromProfile(profile config.Profile) config.ReviewerEntity {

@@ -13411,6 +13411,142 @@ func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
 	if draft.LLMReviewerModelTier != string(config.ModelTierMedium) {
 		t.Fatalf("draft.LLMReviewerModelTier = %q, want medium", draft.LLMReviewerModelTier)
 	}
+	if draft.ReviewerGitHubAppInstallationMode != string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository) || draft.ReviewerGitHubAppInstallationID != "" {
+		t.Fatalf("draft reviewer installation = (%q,%q), want discover with empty id", draft.ReviewerGitHubAppInstallationMode, draft.ReviewerGitHubAppInstallationID)
+	}
+}
+
+func TestInitProfileV2GitHubAppInstallationFieldsFollowReviewerSelection(t *testing.T) {
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"app-reviewer": {
+			Kind:            initReviewerEntityKindGitHubApp,
+			AuthMode:        config.GitAuthModeGitHubApp,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/app-reviewer",
+			DisplayName:     "enterprise/reviewer-bot",
+		},
+		"pat-reviewer": {
+			Kind:            initReviewerEntityKindPAT,
+			AuthMode:        config.GitAuthModePAT,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/pat-reviewer",
+			DisplayName:     "enterprise/pat-bot",
+		},
+	}
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"claude-work": {
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", reviewerEntities, llmRuntimes), 160, 36)
+	sectionIndex := model.document.fieldIndexByID(initProfileV2FieldReviewerGitHubAppInstallationSection)
+	idIndex := model.document.fieldIndexByID(initProfileV2FieldReviewerGitHubAppInstallationID)
+	if sectionIndex < 0 || idIndex < 0 {
+		t.Fatal("GitHub App installation fields missing")
+	}
+	if !model.document[sectionIndex].Hidden {
+		t.Fatalf("GitHub App installation section visible for Git identity reviewer:\n%s", model.View())
+	}
+
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "app-reviewer")
+	if model.document[sectionIndex].Hidden {
+		t.Fatalf("GitHub App installation section hidden for GitHub App reviewer:\n%s", model.View())
+	}
+	if model.document[idIndex].Hidden != true {
+		t.Fatalf("installation ID visible for discover mode:\n%s", model.View())
+	}
+	if !strings.Contains(model.View(), "Discover from PR repository at review time") {
+		t.Fatalf("view missing discovery option:\n%s", model.View())
+	}
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft discover: %v", err)
+	}
+	if draft.ReviewerGitHubAppInstallationMode != string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository) || draft.ReviewerGitHubAppInstallationID != "" {
+		t.Fatalf("draft discover installation = (%q,%q)", draft.ReviewerGitHubAppInstallationMode, draft.ReviewerGitHubAppInstallationID)
+	}
+
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerGitHubAppInstallationMode, string(config.ProfileReviewerGitHubAppInstallationPinned))
+	if model.document[idIndex].Hidden {
+		t.Fatalf("installation ID hidden for pinned mode:\n%s", model.View())
+	}
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldReviewerGitHubAppInstallationID)
+	model = typeInitProfileV2Text(t, model, "123456")
+	draft, err = model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft pinned: %v", err)
+	}
+	if draft.ReviewerGitHubAppInstallationMode != string(config.ProfileReviewerGitHubAppInstallationPinned) || draft.ReviewerGitHubAppInstallationID != "123456" {
+		t.Fatalf("draft pinned installation = (%q,%q), want pinned 123456", draft.ReviewerGitHubAppInstallationMode, draft.ReviewerGitHubAppInstallationID)
+	}
+
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "pat-reviewer")
+	if !model.document[sectionIndex].Hidden {
+		t.Fatalf("GitHub App installation section visible for PAT reviewer:\n%s", model.View())
+	}
+	draft, err = model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft PAT: %v", err)
+	}
+	if draft.ReviewerGitHubAppInstallationMode != "" || draft.ReviewerGitHubAppInstallationID != "" {
+		t.Fatalf("draft PAT installation = (%q,%q), want empty", draft.ReviewerGitHubAppInstallationMode, draft.ReviewerGitHubAppInstallationID)
+	}
+}
+
+func TestInitProfileV2GitHubAppInstallationPinnedIDValidation(t *testing.T) {
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"app-reviewer": {
+			Kind:            initReviewerEntityKindGitHubApp,
+			AuthMode:        config.GitAuthModeGitHubApp,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/app-reviewer",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", reviewerEntities, nil), 160, 36)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "app-reviewer")
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerGitHubAppInstallationMode, string(config.ProfileReviewerGitHubAppInstallationPinned))
+	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "installation ID is required") {
+		t.Fatalf("validatedDraft empty pinned error = %v, want required installation ID", err)
+	}
+
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldReviewerGitHubAppInstallationID)
+	model = typeInitProfileV2Text(t, model, "not-decimal")
+	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "decimal") {
+		t.Fatalf("validatedDraft non-decimal error = %v, want decimal validation", err)
+	}
+}
+
+func TestSynthesizeInteractiveProfilePersistsPinnedGitHubAppInstallation(t *testing.T) {
+	draft := initDraft{
+		ProfileName:                       "monit",
+		GitHost:                           "github.com",
+		GitAuth:                           string(config.GitAuthModePAT),
+		GitCredentialRef:                  "codereview/monit",
+		ReviewerEnabled:                   true,
+		ReviewerAuth:                      string(config.GitAuthModeGitHubApp),
+		ReviewerCredentialStore:           config.LocalOSCredentialStoreID,
+		ReviewerCredentialRef:             "codereview/monit-reviewer",
+		ReviewerGitHubAppInstallationMode: string(config.ProfileReviewerGitHubAppInstallationPinned),
+		ReviewerGitHubAppInstallationID:   "987654",
+		LLMProvider:                       string(config.LLMProviderAnthropic),
+		LLMAuth:                           string(config.LLMAuthSubscription),
+		LLMAdapter:                        string(config.LLMAdapterClaudeCLI),
+	}
+	profile, err := synthesizeInteractiveProfile(initOptions{gitHost: "github.com"}, "monit", nil, draft)
+	if err != nil {
+		t.Fatalf("synthesizeInteractiveProfile: %v", err)
+	}
+	cfg, profile := materializeProfileReviewerEntity(config.File{}, "monit", profile)
+	got := profile.Reviewer.GitHubAppInstallation
+	if got == nil || got.Mode != config.ProfileReviewerGitHubAppInstallationPinned || got.InstallationID != "987654" {
+		t.Fatalf("profile reviewer installation = %#v, want pinned 987654", got)
+	}
+	if cfg.Profiles["monit"].Reviewer.GitHubAppInstallation == nil || cfg.Profiles["monit"].Reviewer.GitHubAppInstallation.InstallationID != "987654" {
+		t.Fatalf("config profile reviewer installation = %#v, want pinned 987654", cfg.Profiles["monit"].Reviewer.GitHubAppInstallation)
+	}
 }
 
 func TestInitProfileV2NoRuntimeBootstrapRequestsExistingFlow(t *testing.T) {
@@ -14157,6 +14293,7 @@ func newTestInitProfileV2EditorWithSelections(profileName string, routeText stri
 		initReviewerEntitySelectionOptions(reviewerEntities, reviewerEntityGitAccountFallbackLabel(config.GitAuthModePAT, "")),
 		string(initReviewerEntityKindUseGitIdentity),
 	)
+	initProfileV2AppendReviewerGitHubAppInstallationSection(&document, string(initReviewerEntityKindUseGitIdentity), reviewerEntities, draft)
 	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
 	initProfileV2AppendLLMStorageSection(&document, storeOptions, draft.LLMCredentialStore, draft.LLMCredentialRef, !initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes))
 	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)

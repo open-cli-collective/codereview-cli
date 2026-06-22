@@ -213,6 +213,7 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 		focused:                    editor.Document.firstFocusableField(),
 	}
 	model.syncGitScopeFields()
+	model.syncReviewerGitHubAppInstallationFields(false)
 	model.syncLLMCredentialFields(false)
 	model.syncModelMapFields()
 	model.validateAll()
@@ -384,6 +385,7 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	initProfileV2AppendRouteSection(&document, routeText)
 	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(ctx.GitScopes), draft, selectedGitScope == initCustomGitScopeSelection || len(ctx.GitScopes) > 1)
 	document.addEditableSelect(initProfileV2FieldReviewerEntity, "Reviewer entity", reviewerEntitySelectionDescription(), reviewerEntityOptions, selectedReviewerEntity)
+	initProfileV2AppendReviewerGitHubAppInstallationSection(&document, selectedReviewerEntity, ctx.ReviewerEntities, draft)
 	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
 	initProfileV2AppendLLMStorageSection(&document, storeOptions, draft.LLMCredentialStore, draft.LLMCredentialRef, !initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes))
 	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
@@ -442,25 +444,28 @@ const (
 )
 
 const (
-	initProfileV2FieldProfileName          initProfileV2FieldID = "profile_name"
-	initProfileV2FieldRoutes               initProfileV2FieldID = "routes"
-	initProfileV2FieldGitScope             initProfileV2FieldID = "git_scope"
-	initProfileV2FieldGitHost              initProfileV2FieldID = "git_host"
-	initProfileV2FieldGitAuth              initProfileV2FieldID = "git_auth"
-	initProfileV2FieldReviewerEntity       initProfileV2FieldID = "reviewer_entity"
-	initProfileV2FieldLLMRuntime           initProfileV2FieldID = "llm_runtime"
-	initProfileV2FieldReviewerModelTier    initProfileV2FieldID = "reviewer_model_tier"
-	initProfileV2FieldAgentSources         initProfileV2FieldID = "agent_sources"
-	initProfileV2FieldReviewMajorEvent     initProfileV2FieldID = "review_major_event"
-	initProfileV2FieldSelfApprove          initProfileV2FieldID = "self_approve"
-	initProfileV2FieldResolveThreads       initProfileV2FieldID = "resolve_threads"
-	initProfileV2FieldResolveAfter         initProfileV2FieldID = "resolve_after"
-	initProfileV2FieldGitCredentialStore   initProfileV2FieldID = "git_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
-	initProfileV2FieldGitCredentialName    initProfileV2FieldID = "git_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
-	initProfileV2FieldLLMCredentialSection initProfileV2FieldID = "llm_credentials_section"
-	initProfileV2FieldLLMCredentialStore   initProfileV2FieldID = "llm_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
-	initProfileV2FieldLLMCredentialName    initProfileV2FieldID = "llm_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
-	initProfileV2FieldProfileAction        initProfileV2FieldID = "profile_action"
+	initProfileV2FieldProfileName                          initProfileV2FieldID = "profile_name"
+	initProfileV2FieldRoutes                               initProfileV2FieldID = "routes"
+	initProfileV2FieldGitScope                             initProfileV2FieldID = "git_scope"
+	initProfileV2FieldGitHost                              initProfileV2FieldID = "git_host"
+	initProfileV2FieldGitAuth                              initProfileV2FieldID = "git_auth"
+	initProfileV2FieldReviewerEntity                       initProfileV2FieldID = "reviewer_entity"
+	initProfileV2FieldReviewerGitHubAppInstallationSection initProfileV2FieldID = "reviewer_github_app_installation_section"
+	initProfileV2FieldReviewerGitHubAppInstallationMode    initProfileV2FieldID = "reviewer_github_app_installation_mode"
+	initProfileV2FieldReviewerGitHubAppInstallationID      initProfileV2FieldID = "reviewer_github_app_installation_id" // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldLLMRuntime                           initProfileV2FieldID = "llm_runtime"
+	initProfileV2FieldReviewerModelTier                    initProfileV2FieldID = "reviewer_model_tier"
+	initProfileV2FieldAgentSources                         initProfileV2FieldID = "agent_sources"
+	initProfileV2FieldReviewMajorEvent                     initProfileV2FieldID = "review_major_event"
+	initProfileV2FieldSelfApprove                          initProfileV2FieldID = "self_approve"
+	initProfileV2FieldResolveThreads                       initProfileV2FieldID = "resolve_threads"
+	initProfileV2FieldResolveAfter                         initProfileV2FieldID = "resolve_after"
+	initProfileV2FieldGitCredentialStore                   initProfileV2FieldID = "git_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldGitCredentialName                    initProfileV2FieldID = "git_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldLLMCredentialSection                 initProfileV2FieldID = "llm_credentials_section"
+	initProfileV2FieldLLMCredentialStore                   initProfileV2FieldID = "llm_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldLLMCredentialName                    initProfileV2FieldID = "llm_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldProfileAction                        initProfileV2FieldID = "profile_action"
 )
 
 func initProfileV2FieldModelMap(tier config.ModelTier) initProfileV2FieldID {
@@ -502,6 +507,55 @@ func initProfileV2AppendGitScopeSection(document *initProfileV2Document, selecte
 		huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
 		huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
 	}, draft.GitAuth, initProfileV2FieldOptions{Hidden: customHidden})
+}
+
+func initProfileV2AppendReviewerGitHubAppInstallationSection(document *initProfileV2Document, selectedReviewerEntity string, entities map[string]initReviewerEntityDraft, draft initDraft) {
+	hidden := initProfileV2ReviewerEntityKindForSelection(selectedReviewerEntity, entities) != initReviewerEntityKindGitHubApp
+	mode := config.ProfileReviewerGitHubAppInstallationMode(strings.TrimSpace(draft.ReviewerGitHubAppInstallationMode))
+	if mode == "" {
+		mode = config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository
+	}
+	pinned := mode == config.ProfileReviewerGitHubAppInstallationPinned
+	document.addSectionField(
+		initProfileV2FieldReviewerGitHubAppInstallationSection,
+		"GitHub App installation",
+		"Choose how cr finds the GitHub App installation for this review profile.",
+		initProfileV2FieldOptions{Hidden: hidden},
+	)
+	document.addEditableSelect(
+		initProfileV2FieldReviewerGitHubAppInstallationMode,
+		"Installation lookup",
+		"",
+		initProfileV2ReviewerGitHubAppInstallationModeOptions(),
+		string(mode),
+		initProfileV2FieldOptions{Hidden: hidden},
+	)
+	document.addEditableInput(
+		initProfileV2FieldReviewerGitHubAppInstallationID,
+		"Installation ID",
+		"Required when you pin an installation. Use the numeric GitHub App installation ID.",
+		strings.TrimSpace(draft.ReviewerGitHubAppInstallationID),
+		validateOptionalGitHubAppInstallationID,
+		initProfileV2FieldOptions{Hidden: hidden || !pinned},
+	)
+}
+
+func initProfileV2ReviewerGitHubAppInstallationModeOptions() []huh.Option[string] {
+	return []huh.Option[string]{
+		huh.NewOption("Discover from PR repository at review time", string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository)),
+		huh.NewOption("Pin an installation ID", string(config.ProfileReviewerGitHubAppInstallationPinned)),
+	}
+}
+
+func initProfileV2ReviewerEntityKindForSelection(selection string, entities map[string]initReviewerEntityDraft) initReviewerEntityKind {
+	switch initReviewerEntityKind(selection) {
+	case initReviewerEntityKindUseGitIdentity, initReviewerEntityKindPAT, initReviewerEntityKindGitHubApp:
+		return initReviewerEntityKind(selection)
+	}
+	if entity, ok := entities[selection]; ok {
+		return entity.Kind
+	}
+	return initReviewerEntityKindUseGitIdentity
 }
 
 func initProfileV2AppendModelMapSection(document *initProfileV2Document, llm config.LLMConfig, modelMap config.ModelMap) {
@@ -725,6 +779,14 @@ func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
 		m.syncGitScopeFields()
 		return
 	}
+	if id == initProfileV2FieldReviewerEntity {
+		m.syncReviewerGitHubAppInstallationFields(true)
+		return
+	}
+	if id == initProfileV2FieldReviewerGitHubAppInstallationMode {
+		m.syncReviewerGitHubAppInstallationFields(true)
+		return
+	}
 	if id == initProfileV2FieldLLMRuntime {
 		m.syncLLMCredentialFields(true)
 		m.syncModelMapFields()
@@ -797,6 +859,31 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, m.reviewerEntities)
 		reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
 		applyReviewerEntitySelection(&draft, reviewerMode)
+	}
+	if initProfileV2ReviewerEntityKindForSelection(selectedReviewerEntity, m.reviewerEntities) == initReviewerEntityKindGitHubApp {
+		mode := config.ProfileReviewerGitHubAppInstallationMode(strings.TrimSpace(m.document.selectedValue(initProfileV2FieldReviewerGitHubAppInstallationMode)))
+		if mode == "" {
+			mode = config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository
+		}
+		draft.ReviewerGitHubAppInstallationMode = string(mode)
+		switch mode {
+		case config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository:
+			draft.ReviewerGitHubAppInstallationID = ""
+		case config.ProfileReviewerGitHubAppInstallationPinned:
+			installationID := strings.TrimSpace(m.document.fieldValue(initProfileV2FieldReviewerGitHubAppInstallationID))
+			if installationID == "" {
+				return draft, fmt.Errorf("GitHub App installation ID is required when lookup is pinned")
+			}
+			if err := validateOptionalGitHubAppInstallationID(installationID); err != nil {
+				return draft, err
+			}
+			draft.ReviewerGitHubAppInstallationID = installationID
+		default:
+			return draft, fmt.Errorf("GitHub App installation lookup %q is invalid", mode)
+		}
+	} else {
+		draft.ReviewerGitHubAppInstallationMode = ""
+		draft.ReviewerGitHubAppInstallationID = ""
 	}
 	selectedLLMRuntime := m.document.selectedValue(initProfileV2FieldLLMRuntime)
 	if selectedLLMRuntime == initConfigureNewLLMRuntimeSelection {
@@ -887,6 +974,33 @@ func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
 		}
 	}
 	m.validateAll()
+}
+
+func (m *initProfileV2ReadOnlyModel) syncReviewerGitHubAppInstallationFields(reset bool) {
+	kind := initProfileV2ReviewerEntityKindForSelection(m.document.selectedValue(initProfileV2FieldReviewerEntity), m.reviewerEntities)
+	visible := kind == initReviewerEntityKindGitHubApp
+	mode := config.ProfileReviewerGitHubAppInstallationMode(strings.TrimSpace(m.document.selectedValue(initProfileV2FieldReviewerGitHubAppInstallationMode)))
+	if mode == "" {
+		mode = config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository
+		m.selectFieldValue(initProfileV2FieldReviewerGitHubAppInstallationMode, string(mode))
+	}
+	pinned := visible && mode == config.ProfileReviewerGitHubAppInstallationPinned
+	m.setFieldHidden(initProfileV2FieldReviewerGitHubAppInstallationSection, !visible)
+	m.setFieldHidden(initProfileV2FieldReviewerGitHubAppInstallationMode, !visible)
+	m.setFieldHidden(initProfileV2FieldReviewerGitHubAppInstallationID, !pinned)
+	if !visible {
+		m.selectFieldValue(initProfileV2FieldReviewerGitHubAppInstallationMode, string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository))
+		m.setFieldValue(initProfileV2FieldReviewerGitHubAppInstallationID, "")
+	} else if reset && !pinned {
+		m.setFieldValue(initProfileV2FieldReviewerGitHubAppInstallationID, "")
+	}
+	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Hidden {
+		m.focused = m.document.nextFocusableField(m.focused)
+		if m.focused >= len(m.document) || m.document[m.focused].Hidden {
+			m.focused = m.document.previousFocusableField(len(m.document))
+		}
+	}
+	m.validateField(m.document.fieldIndexByID(initProfileV2FieldReviewerGitHubAppInstallationID))
 }
 
 func (m *initProfileV2ReadOnlyModel) syncLLMCredentialFields(reset bool) {

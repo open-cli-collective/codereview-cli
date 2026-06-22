@@ -167,7 +167,8 @@ selected reviewer credential location:
 
 - PAT reviewers show `git_token`.
 - GitHub App reviewers show required `github_app_id` and
-  `github_app_private_key`, plus optional `github_app_installation_id`.
+  `github_app_private_key`. Installation routing is review-profile config, not
+  a reviewer credential key.
 - Each key may be shown as `missing`, `existing`, `staged`, `skipped optional`,
   `deferred`, `optional`, or `status unavailable`.
 - `missing` means the backend was consulted and no staged or existing value was
