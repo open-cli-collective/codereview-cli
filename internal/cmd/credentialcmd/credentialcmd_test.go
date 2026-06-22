@@ -14638,6 +14638,120 @@ func TestInitRepositoryAccessEditorManualCredentialRefStopsAutoUpdate(t *testing
 	}
 }
 
+func TestInitRepositoryAccessEditorRequiresPATBeforeStaging(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(initPromptContext{}, initDraft{}), 160, 60)
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldAction)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	actionIndex := next.document.fieldIndexByID(initRepositoryAccessFieldAction)
+	if actionIndex < 0 || !strings.Contains(next.document[actionIndex].Error, "set repository access credentials before staging: git_token") {
+		t.Fatalf("action error = %q, want missing git_token", next.document[actionIndex].Error)
+	}
+}
+
+func TestInitRepositoryAccessEditorStagesPATCredentialWrite(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+
+	ctx := initPromptContext{}
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldGitToken)
+	model = typeInitLinearText(t, model, "work-token")
+
+	draft := initRepositoryAccessDraftFromDocument(ctx, initDraft{}, model.document)
+	if got, want := draft.GitCredentialWriteRef, "codereview/github-com-pat"; got != want {
+		t.Fatalf("GitCredentialWriteRef = %q, want %q", got, want)
+	}
+	if got := draft.GitCredentialWrites[credentials.GitTokenKey]; got != "work-token" {
+		t.Fatalf("git_token write = %q, want work-token", got)
+	}
+	if !draft.GitCredentialSatisfied {
+		t.Fatal("GitCredentialSatisfied = false, want true after staged PAT")
+	}
+}
+
+func TestInitRepositoryAccessEditorAcceptsExistingPATCredential(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+	resolved, err := credentials.ResolveCredentialStore(config.File{}, config.LocalOSCredentialStoreID)
+	if err != nil {
+		t.Fatalf("ResolveCredentialStore: %v", err)
+	}
+	ctx := initPromptContext{
+		RepositoryAccessCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref:            config.CredentialRef{Purpose: "git", Store: config.LocalOSCredentialStoreID, Ref: "codereview/github-com-pat", Mode: string(config.GitAuthModePAT)},
+			SecretsProfile: resolved,
+			Keys:           []initReviewerCredentialKeyStatus{{Key: credentials.GitTokenKey, Required: true, State: initReviewerCredentialKeyExisting}},
+		}},
+	}
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
+
+	if err := validateRepositoryAccessDocument(ctx, model.document); err != nil {
+		t.Fatalf("validateRepositoryAccessDocument: %v", err)
+	}
+}
+
+func TestInitInteractiveMenuWritesStandaloneRepositoryAccessPAT(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	store := newFakeInitStore(map[string]map[string]string{})
+	resolved, err := credentials.ResolveCredentialStore(config.File{}, config.LocalOSCredentialStoreID)
+	if err != nil {
+		t.Fatalf("ResolveCredentialStore: %v", err)
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionRepositoryAccess,
+				initMenuActionSave,
+			},
+		},
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+			return initDraft{
+				RepositoryAccessName:    "work-git",
+				GitHost:                 "github.company.com",
+				GitAuth:                 string(config.GitAuthModePAT),
+				GitCredentialStore:      config.LocalOSCredentialStoreID,
+				GitCredentialRef:        "codereview/work-git",
+				GitCredentialWriteRef:   "codereview/work-git",
+				GitCredentialWriteStore: resolved,
+				GitCredentialWrites:     map[string]string{credentials.GitTokenKey: "work-token"},
+				GitCredentialSatisfied:  true,
+			}, nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if got := store.bundles["work-git"][credentials.GitTokenKey]; got != "work-token" {
+		t.Fatalf("stored git_token = %q, want work-token; bundles=%#v", got, store.bundles)
+	}
+}
+
 func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	writeRawCredentialTestConfig(t, path, "profiles: {}\n")

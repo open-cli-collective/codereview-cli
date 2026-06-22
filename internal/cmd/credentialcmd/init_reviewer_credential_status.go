@@ -45,6 +45,30 @@ func currentInteractiveInitReviewerEntityPromptContext(opts *root.Options, deps 
 	return ctx
 }
 
+func currentInteractiveInitRepositoryAccessPromptContext(opts *root.Options, deps initDeps, session initSessionDraft) initPromptContext {
+	ctx := currentInteractiveInitInventoryPromptContext(session)
+	if opts != nil {
+		ctx.BackendArg = opts.Backend
+	}
+	ctx.BackendFlagSet = session.backendFlagSet
+	ctx.RepositoryAccessCredentialStatuses = buildInteractiveInitRepositoryAccessCredentialStatuses(opts, deps, session)
+	return ctx
+}
+
+func buildInteractiveInitRepositoryAccessCredentialStatuses(opts *root.Options, deps initDeps, session initSessionDraft) []initReviewerCredentialStatus {
+	plannedWriteKeys := projectInitPlannedWriteKeys(session.writes)
+	entries := standaloneRepositoryAccessPlanEntries(session.cfg, plannedWriteKeys)
+	writes, _, satisfiedRefs := filterInteractiveInitStagedCredentialStateByStore(
+		cloneInitWrites(session.writes),
+		map[string]bool{},
+		cloneInitBoolMap(session.satisfiedRefs),
+		session.credentialWriteStores,
+		entries,
+	)
+	entries = refreshInteractiveCredentialPlan(entries, projectInitPlannedWriteKeys(writes), satisfiedRefs)
+	return buildInteractiveInitCredentialStatuses(opts, deps, session, entries, writes, "git")
+}
+
 func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps initDeps, session initSessionDraft) []initReviewerCredentialStatus {
 	if session.workspace == nil {
 		return nil
@@ -60,6 +84,10 @@ func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps ini
 	)
 	plannedWriteKeys = projectInitPlannedWriteKeys(writes)
 	entries = refreshInteractiveCredentialPlan(entries, plannedWriteKeys, satisfiedRefs)
+	return buildInteractiveInitCredentialStatuses(opts, deps, session, entries, writes, "reviewer_credentials")
+}
+
+func buildInteractiveInitCredentialStatuses(opts *root.Options, deps initDeps, session initSessionDraft, entries []initCredentialPlanEntry, writes map[string]map[string]string, purpose string) []initReviewerCredentialStatus {
 	statuses := make([]initReviewerCredentialStatus, 0, len(entries))
 	stores := map[string]initStore{}
 	defer func() {
@@ -70,7 +98,7 @@ func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps ini
 		}
 	}()
 	for _, entry := range entries {
-		if entry.Ref.Purpose != "reviewer_credentials" || entry.State == initCredentialPlanStateClearRef {
+		if entry.Ref.Purpose != purpose || entry.State == initCredentialPlanStateClearRef {
 			continue
 		}
 		existing := map[string]bool{}

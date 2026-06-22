@@ -18,14 +18,18 @@ import (
 type initRepositoryAccessEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
 
 const (
-	initRepositoryAccessFieldSelection       initLinearFieldID = "repository_access_selection"
-	initRepositoryAccessFieldName            initLinearFieldID = "repository_access_name"
-	initRepositoryAccessFieldHost            initLinearFieldID = "repository_access_host"
-	initRepositoryAccessFieldAuth            initLinearFieldID = "repository_access_auth"
-	initRepositoryAccessFieldGitHubAppID     initLinearFieldID = "repository_access_github_app_id"
-	initRepositoryAccessFieldCredentialStore initLinearFieldID = "repository_access_credential_store"
-	initRepositoryAccessFieldCredentialName  initLinearFieldID = "repository_access_credential_name"
-	initRepositoryAccessFieldAction          initLinearFieldID = "repository_access_action"
+	initRepositoryAccessFieldSelection           initLinearFieldID = "repository_access_selection"
+	initRepositoryAccessFieldName                initLinearFieldID = "repository_access_name"
+	initRepositoryAccessFieldHost                initLinearFieldID = "repository_access_host"
+	initRepositoryAccessFieldAuth                initLinearFieldID = "repository_access_auth"
+	initRepositoryAccessFieldGitHubAppID         initLinearFieldID = "repository_access_github_app_id"
+	initRepositoryAccessFieldCredentialStore     initLinearFieldID = "repository_access_credential_store"
+	initRepositoryAccessFieldCredentialName      initLinearFieldID = "repository_access_credential_name"
+	initRepositoryAccessFieldCredentialStatus    initLinearFieldID = "repository_access_credential_status"
+	initRepositoryAccessFieldCredentialValues    initLinearFieldID = "repository_access_credential_values"
+	initRepositoryAccessFieldGitToken            initLinearFieldID = "repository_access_git_token"
+	initRepositoryAccessFieldGitHubAppPrivateKey initLinearFieldID = "repository_access_github_app_private_key"
+	initRepositoryAccessFieldAction              initLinearFieldID = "repository_access_action"
 )
 
 const initConfigureNewRepositoryAccessSelection = "__configure_new_repository_access__"
@@ -47,7 +51,7 @@ func (p huhInitRepositoryAccessPrompter) EditRepositoryAccess(prompt initReposit
 	}
 	switch model.resultAction {
 	case initDetailActionEdit:
-		return initRepositoryAccessDraftFromDocument(seed, model.document), nil
+		return initRepositoryAccessDraftFromDocument(prompt.Context, seed, model.document), nil
 	default:
 		return initDraft{}, errInitNavigateBack
 	}
@@ -86,6 +90,10 @@ func initRepositoryAccessLinearEditor(ctx initPromptContext, seed initDraft) ini
 	document.addEditableInput(initRepositoryAccessFieldGitHubAppID, "GitHub App ID", "Numeric GitHub App ID. This is not a secret and is saved in config.yml.", scope.GitHubAppID, validateOptionalDecimalID("GitHub App ID"), initLinearFieldOptions{Hidden: scope.AuthMode != config.GitAuthModeGitHubApp})
 	document.addEditableSelect(initRepositoryAccessFieldCredentialStore, "Git credential store", "Where this access entry's Git credential is stored.", initCredentialStoreOptions(ctx.ExistingConfig), initCredentialStoreDraftValue(scope.CredentialStore))
 	document.addEditableInput(initRepositoryAccessFieldCredentialName, "Git credential name", "Full credential name under the selected store.", scope.CredentialRef, validateRequiredCredentialRef)
+	document.addSectionField(initRepositoryAccessFieldCredentialStatus, "Git credential status", "")
+	document.addSectionField(initRepositoryAccessFieldCredentialValues, "Git credential value", "Enter the required Git credential here. Values are hidden, staged in memory, and written only when you Commit staged changes and exit.")
+	document.addEditableSecretInput(initRepositoryAccessFieldGitToken, "GitHub PAT", "Required for repository access with personal access token auth. Leave blank only when the status above already shows git_token as existing or staged.", "", nil)
+	document.addEditableSecretTextarea(initRepositoryAccessFieldGitHubAppPrivateKey, "GitHub App private key", "Required for repository access with GitHub App auth. Paste the PEM private key; ctrl+j or alt+enter inserts a newline.", "")
 	document.addEditableSelect(initRepositoryAccessFieldAction, "Repository access action", "", []huh.Option[string]{
 		huh.NewOption("Stage repository access settings", initDetailActionEdit),
 		huh.NewOption("Back without staging", initDetailActionBack),
@@ -102,10 +110,19 @@ func initRepositoryAccessLinearEditor(ctx initPromptContext, seed initDraft) ini
 				initRepositoryAccessSyncFields(model, ctx)
 			case initRepositoryAccessFieldName:
 				initRepositoryAccessMaybeUpdateAutoCredentialRef(model)
+				initRepositoryAccessRefreshCredentialStatus(model, ctx)
 			case initRepositoryAccessFieldCredentialName:
 				model.document[index].AutoManaged = false
+				initRepositoryAccessRefreshCredentialStatus(model, ctx)
+			case initRepositoryAccessFieldCredentialStore:
+				initRepositoryAccessRefreshCredentialStatus(model, ctx)
 			case initRepositoryAccessFieldAuth:
 				initRepositoryAccessSyncGitHubAppField(model)
+				initRepositoryAccessSetCredentialFieldsHidden(model)
+				initRepositoryAccessClearCredentialFieldValues(model)
+				initRepositoryAccessRefreshCredentialStatus(model, ctx)
+			case initRepositoryAccessFieldGitToken, initRepositoryAccessFieldGitHubAppPrivateKey:
+				initRepositoryAccessRefreshCredentialStatus(model, ctx)
 			}
 		},
 		OnEnter: func(model *initLinearEditorModel) (bool, tea.Cmd) {
@@ -120,7 +137,7 @@ func initRepositoryAccessLinearEditor(ctx initPromptContext, seed initDraft) ini
 				model.resultAction = initDetailActionBack
 				return true, tea.Quit
 			case initDetailActionEdit:
-				if err := validateRepositoryAccessDocument(model.document); err != nil {
+				if err := validateRepositoryAccessDocument(ctx, model.document); err != nil {
 					model.document[model.focused].Error = err.Error()
 					model.relayout()
 					model.ensureFocusedVisible()
@@ -195,6 +212,9 @@ func initRepositoryAccessSyncFields(model *initLinearEditorModel, ctx initPrompt
 		model.document[refIndex].AutoManaged = initRepositoryAccessCredentialRef(scope.Name) == strings.TrimSpace(scope.CredentialRef)
 	}
 	initRepositoryAccessSyncGitHubAppField(model)
+	initRepositoryAccessSetCredentialFieldsHidden(model)
+	initRepositoryAccessClearCredentialFieldValues(model)
+	initRepositoryAccessRefreshCredentialStatus(model, ctx)
 }
 
 func initRepositoryAccessMaybeUpdateAutoCredentialRef(model *initLinearEditorModel) {
@@ -241,6 +261,159 @@ func normalizeRepositoryAccessNameSegment(value string) string {
 	return strings.ToLower(segment)
 }
 
+func initRepositoryAccessSetCredentialFieldsHidden(model *initLinearEditorModel) {
+	authMode := config.GitAuthMode(model.document.selectedValue(initRepositoryAccessFieldAuth))
+	model.setFieldHidden(initRepositoryAccessFieldGitToken, authMode != config.GitAuthModePAT)
+	model.setFieldHidden(initRepositoryAccessFieldGitHubAppPrivateKey, authMode != config.GitAuthModeGitHubApp)
+}
+
+func initRepositoryAccessClearCredentialFieldValues(model *initLinearEditorModel) {
+	for _, id := range []initLinearFieldID{
+		initRepositoryAccessFieldGitToken,
+		initRepositoryAccessFieldGitHubAppPrivateKey,
+	} {
+		model.setFieldValue(id, "")
+	}
+}
+
+func initRepositoryAccessCredentialFieldKey(id initLinearFieldID) string {
+	switch id {
+	case initRepositoryAccessFieldGitToken:
+		return credentials.GitTokenKey
+	case initRepositoryAccessFieldGitHubAppPrivateKey:
+		return credentials.GitHubAppPrivateKeyKey
+	default:
+		return ""
+	}
+}
+
+func initRepositoryAccessCredentialFieldID(key string) initLinearFieldID {
+	switch key {
+	case credentials.GitTokenKey:
+		return initRepositoryAccessFieldGitToken
+	case credentials.GitHubAppPrivateKeyKey:
+		return initRepositoryAccessFieldGitHubAppPrivateKey
+	default:
+		return ""
+	}
+}
+
+func initRepositoryAccessRefreshCredentialStatus(model *initLinearEditorModel, ctx initPromptContext) {
+	if status, ok := repositoryAccessCredentialStatusForDocument(ctx, model.document); ok {
+		model.setFieldDescription(initRepositoryAccessFieldCredentialStatus, initRepositoryAccessCredentialStatusDescription(status))
+	}
+}
+
+func repositoryAccessCredentialStatusForDocument(ctx initPromptContext, document initLinearDocument) (initReviewerCredentialStatus, bool) {
+	status, ok := baseRepositoryAccessCredentialStatusForDocument(ctx, document)
+	if !ok {
+		return initReviewerCredentialStatus{}, false
+	}
+	return repositoryAccessCredentialStatusWithDocumentWrites(status, document), true
+}
+
+func baseRepositoryAccessCredentialStatusForDocument(ctx initPromptContext, document initLinearDocument) (initReviewerCredentialStatus, bool) {
+	ref := config.CredentialRef{
+		Purpose: "git",
+		Store:   initCredentialStoreDraftValue(document.selectedValue(initRepositoryAccessFieldCredentialStore)),
+		Ref:     strings.TrimSpace(document.fieldValue(initRepositoryAccessFieldCredentialName)),
+		Mode:    document.selectedValue(initRepositoryAccessFieldAuth),
+	}
+	if ref.Ref == "" {
+		return initReviewerCredentialStatus{}, false
+	}
+	for _, status := range ctx.RepositoryAccessCredentialStatuses {
+		if status.Ref.Purpose == ref.Purpose &&
+			initCredentialStoreDraftValue(status.Ref.Store) == initCredentialStoreDraftValue(ref.Store) &&
+			status.Ref.Ref == ref.Ref &&
+			status.Ref.Mode == ref.Mode {
+			return status, true
+		}
+	}
+	if initReviewerCredentialStatusListContainsUnavailable(ctx.RepositoryAccessCredentialStatuses) {
+		return synthesizeUnavailableReviewerCredentialStatus(ctx, ref), true
+	}
+	return synthesizeReviewerCredentialStatus(ctx, ref), true
+}
+
+func repositoryAccessCredentialStatusWithDocumentWrites(status initReviewerCredentialStatus, document initLinearDocument) initReviewerCredentialStatus {
+	status.Keys = append([]initReviewerCredentialKeyStatus(nil), status.Keys...)
+	for index, key := range status.Keys {
+		fieldID := initRepositoryAccessCredentialFieldID(key.Key)
+		if fieldID == "" || document.fieldHidden(fieldID) {
+			continue
+		}
+		if strings.TrimSpace(credentials.TrimSecretIngress(document.fieldValue(fieldID))) == "" {
+			continue
+		}
+		status.Keys[index].State = initReviewerCredentialKeyStaged
+	}
+	return status
+}
+
+func initRepositoryAccessCredentialStatusDescription(status initReviewerCredentialStatus) string {
+	return initReviewerCredentialStatusDescription(status)
+}
+
+func missingRepositoryAccessInlineCredentialKeys(ctx initPromptContext, status initReviewerCredentialStatus, document initLinearDocument) []string {
+	var missing []string
+	keepsCurrentRef := repositoryAccessKeepsCurrentCredentialRef(ctx, document)
+	for _, key := range status.Keys {
+		if !key.Required {
+			continue
+		}
+		switch key.State {
+		case initReviewerCredentialKeyExisting, initReviewerCredentialKeyStaged:
+			continue
+		case initReviewerCredentialKeyUnavailable:
+			if keepsCurrentRef {
+				continue
+			}
+		case initReviewerCredentialKeyMissing, initReviewerCredentialKeyDeferred, initReviewerCredentialKeySkippedOptional, initReviewerCredentialKeyOptional:
+		}
+		missing = append(missing, key.Key)
+	}
+	return missing
+}
+
+func repositoryAccessKeepsCurrentCredentialRef(ctx initPromptContext, document initLinearDocument) bool {
+	selection := document.selectedValue(initRepositoryAccessFieldSelection)
+	if selection == "" || selection == initConfigureNewRepositoryAccessSelection {
+		return false
+	}
+	scope, ok := ctx.GitScopes[selection]
+	if !ok {
+		return false
+	}
+	return initCredentialStoreDraftValue(document.selectedValue(initRepositoryAccessFieldCredentialStore)) == initCredentialStoreDraftValue(scope.CredentialStore) &&
+		strings.TrimSpace(document.fieldValue(initRepositoryAccessFieldCredentialName)) == strings.TrimSpace(scope.CredentialRef) &&
+		document.selectedValue(initRepositoryAccessFieldAuth) == string(scope.AuthMode)
+}
+
+func repositoryAccessCredentialWritesFromDocument(status initReviewerCredentialStatus, document initLinearDocument) (map[string]string, bool) {
+	writes := map[string]string{}
+	keyStates := make(map[string]initReviewerCredentialKeyState, len(status.Keys))
+	for _, key := range status.Keys {
+		keyStates[key.Key] = key.State
+	}
+	overwrite := false
+	for _, key := range status.Keys {
+		fieldID := initRepositoryAccessCredentialFieldID(key.Key)
+		if fieldID == "" || document.fieldHidden(fieldID) {
+			continue
+		}
+		value := credentials.TrimSecretIngress(document.fieldValue(fieldID))
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		writes[key.Key] = value
+		if keyStates[key.Key] == initReviewerCredentialKeyExisting {
+			overwrite = true
+		}
+	}
+	return writes, overwrite
+}
+
 func initRepositoryAccessSyncGitHubAppField(model *initLinearEditorModel) {
 	authMode := config.GitAuthMode(model.document.selectedValue(initRepositoryAccessFieldAuth))
 	hidden := authMode != config.GitAuthModeGitHubApp
@@ -250,7 +423,7 @@ func initRepositoryAccessSyncGitHubAppField(model *initLinearEditorModel) {
 	}
 }
 
-func validateRepositoryAccessDocument(document initLinearDocument) error {
+func validateRepositoryAccessDocument(ctx initPromptContext, document initLinearDocument) error {
 	if err := validateRequiredText("repository access name is required")(document.fieldValue(initRepositoryAccessFieldName)); err != nil {
 		return err
 	}
@@ -266,10 +439,20 @@ func validateRepositoryAccessDocument(document initLinearDocument) error {
 			return err
 		}
 	}
-	return validateRequiredCredentialRef(document.fieldValue(initRepositoryAccessFieldCredentialName))
+	if err := validateRequiredCredentialRef(document.fieldValue(initRepositoryAccessFieldCredentialName)); err != nil {
+		return err
+	}
+	status, ok := repositoryAccessCredentialStatusForDocument(ctx, document)
+	if !ok {
+		return fmt.Errorf("git credential status unavailable")
+	}
+	if missing := missingRepositoryAccessInlineCredentialKeys(ctx, status, document); len(missing) > 0 {
+		return fmt.Errorf("set repository access credentials before staging: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
-func initRepositoryAccessDraftFromDocument(seed initDraft, document initLinearDocument) initDraft {
+func initRepositoryAccessDraftFromDocument(ctx initPromptContext, seed initDraft, document initLinearDocument) initDraft {
 	draft := seed
 	draft.RepositoryAccessName = strings.TrimSpace(document.fieldValue(initRepositoryAccessFieldName))
 	draft.GitHost = strings.TrimSpace(document.fieldValue(initRepositoryAccessFieldHost))
@@ -277,9 +460,29 @@ func initRepositoryAccessDraftFromDocument(seed initDraft, document initLinearDo
 	draft.GitHubAppID = strings.TrimSpace(document.fieldValue(initRepositoryAccessFieldGitHubAppID))
 	draft.GitCredentialStore = initCredentialStoreDraftValue(document.selectedValue(initRepositoryAccessFieldCredentialStore))
 	draft.GitCredentialRef = strings.TrimSpace(document.fieldValue(initRepositoryAccessFieldCredentialName))
+	applyRepositoryAccessCredentialDraftFromDocument(&draft, ctx, document)
 	selection := document.selectedValue(initRepositoryAccessFieldSelection)
 	if selection != "" && selection != initConfigureNewRepositoryAccessSelection {
 		draft.ActionTarget = selection
 	}
 	return draft
+}
+
+func applyRepositoryAccessCredentialDraftFromDocument(draft *initDraft, ctx initPromptContext, document initLinearDocument) {
+	originalStatus, ok := baseRepositoryAccessCredentialStatusForDocument(ctx, document)
+	if !ok {
+		return
+	}
+	status := repositoryAccessCredentialStatusWithDocumentWrites(originalStatus, document)
+	ref := strings.TrimSpace(status.Ref.Ref)
+	if ref == "" {
+		return
+	}
+	writes, overwrite := repositoryAccessCredentialWritesFromDocument(originalStatus, document)
+	draft.GitCredentialWriteRef = ref
+	draft.GitCredentialStore = initCredentialStoreDraftValue(status.Ref.Store)
+	draft.GitCredentialWriteStore = status.SecretsProfile
+	draft.GitCredentialWrites = writes
+	draft.GitCredentialOverwrite = overwrite
+	draft.GitCredentialSatisfied = repositoryAccessKeepsCurrentCredentialRef(ctx, document) || len(missingRepositoryAccessInlineCredentialKeys(ctx, status, document)) == 0
 }

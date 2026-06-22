@@ -231,29 +231,30 @@ type initFinalizePrompter interface {
 }
 
 type initPromptContext struct {
-	RequestedProfileName           string
-	ExistingProfileName            string
-	ExistingProfile                *config.Profile
-	ExistingProfileNames           []string
-	ExistingConfig                 config.File
-	BackendArg                     string
-	BackendFlagSet                 bool
-	GitScopes                      map[string]initGitScopeDraft
-	ProfileGitScopes               map[string]string
-	StandaloneRepositoryAccessMode bool
-	ReviewerEntities               map[string]initReviewerEntityDraft
-	ProfileReviewerEntities        map[string]string
-	ReviewerCredentialStatuses     []initReviewerCredentialStatus
-	StandaloneReviewerEntityMode   bool
-	SecretsProfiles                []config.EffectiveSecretsProfile
-	ProfileSecretsProfiles         map[string]string
-	BrokenProfileSecretsProfiles   map[string]string
-	LLMRuntimes                    map[string]initLLMRuntimeDraft
-	ProfileLLMRuntimes             map[string]string
-	ProfileWarnings                map[string][]string
-	PendingProfileDeletes          map[string]initPendingProfileDelete
-	PendingReviewerEntityDeletes   map[string]initPendingReviewerEntityDelete
-	PendingLLMRuntimeDeletes       map[string]initPendingLLMRuntimeDelete
+	RequestedProfileName               string
+	ExistingProfileName                string
+	ExistingProfile                    *config.Profile
+	ExistingProfileNames               []string
+	ExistingConfig                     config.File
+	BackendArg                         string
+	BackendFlagSet                     bool
+	GitScopes                          map[string]initGitScopeDraft
+	ProfileGitScopes                   map[string]string
+	StandaloneRepositoryAccessMode     bool
+	RepositoryAccessCredentialStatuses []initReviewerCredentialStatus
+	ReviewerEntities                   map[string]initReviewerEntityDraft
+	ProfileReviewerEntities            map[string]string
+	ReviewerCredentialStatuses         []initReviewerCredentialStatus
+	StandaloneReviewerEntityMode       bool
+	SecretsProfiles                    []config.EffectiveSecretsProfile
+	ProfileSecretsProfiles             map[string]string
+	BrokenProfileSecretsProfiles       map[string]string
+	LLMRuntimes                        map[string]initLLMRuntimeDraft
+	ProfileLLMRuntimes                 map[string]string
+	ProfileWarnings                    map[string][]string
+	PendingProfileDeletes              map[string]initPendingProfileDelete
+	PendingReviewerEntityDeletes       map[string]initPendingReviewerEntityDelete
+	PendingLLMRuntimeDeletes           map[string]initPendingLLMRuntimeDelete
 }
 
 type initDraftAction string
@@ -287,6 +288,11 @@ type initDraft struct {
 	ReviewerDisplayName               string
 	ReviewerGitHubAppInstallationMode string
 	ReviewerGitHubAppInstallationID   string
+	GitCredentialWriteRef             string
+	GitCredentialWriteStore           credentials.ResolvedSecretsProfile
+	GitCredentialWrites               map[string]string
+	GitCredentialOverwrite            bool
+	GitCredentialSatisfied            bool
 	ReviewerCredentialWriteRef        string
 	ReviewerCredentialWriteStore      credentials.ResolvedSecretsProfile
 	ReviewerCredentialWrites          map[string]string
@@ -1352,7 +1358,7 @@ func editInteractiveInitRepositoryAccess(_ *cobra.Command, opts *root.Options, _
 	if prompter == nil {
 		prompter = newHuhInitRepositoryAccessPrompter(opts)
 	}
-	promptCtx := currentInteractiveInitInventoryPromptContext(session)
+	promptCtx := currentInteractiveInitRepositoryAccessPromptContext(opts, deps, session)
 	promptCtx.StandaloneRepositoryAccessMode = true
 	draft, err := prompter.EditRepositoryAccess(initRepositoryAccessPrompt{Context: promptCtx})
 	if errors.Is(err, errInitNavigateBack) {
@@ -1361,7 +1367,12 @@ func editInteractiveInitRepositoryAccess(_ *cobra.Command, opts *root.Options, _
 	if err != nil {
 		return initSessionDraft{}, err
 	}
-	return stageStandaloneInteractiveInitRepositoryAccess(session, draft)
+	session, err = stageStandaloneInteractiveInitRepositoryAccess(session, draft)
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	session = mergeGitCredentialDraftWrites(session, draft)
+	return session, nil
 }
 
 func stageStandaloneInteractiveInitRepositoryAccess(session initSessionDraft, draft initDraft) (initSessionDraft, error) {
@@ -1810,6 +1821,79 @@ func buildInitStandaloneReviewerEntityNameSet(entities map[string]config.Reviewe
 		existing[name] = initReviewerEntityDraft{}
 	}
 	return existing
+}
+
+func mergeGitCredentialDraftWrites(session initSessionDraft, draft initDraft) initSessionDraft {
+	ref := strings.TrimSpace(draft.GitCredentialWriteRef)
+	if ref == "" {
+		return session
+	}
+	if session.writes == nil {
+		session.writes = map[string]map[string]string{}
+	}
+	if session.overwriteRefs == nil {
+		session.overwriteRefs = map[string]bool{}
+	}
+	if session.satisfiedRefs == nil {
+		session.satisfiedRefs = map[string]bool{}
+	}
+	if session.credentialWriteStores == nil {
+		session.credentialWriteStores = map[string]credentials.ResolvedSecretsProfile{}
+	}
+	hadStagedWrites := len(session.writes[ref]) > 0
+	if session.writes[ref] != nil {
+		session.writes[ref] = filterInitCredentialWritesForDraftGitMode(session.writes[ref], draft)
+		if len(session.writes[ref]) == 0 {
+			delete(session.writes, ref)
+		}
+	}
+	hasNewWrites := len(draft.GitCredentialWrites) > 0
+	if hasNewWrites {
+		for key, value := range draft.GitCredentialWrites {
+			addWrite(session.writes, ref, key, value)
+		}
+	}
+	if draft.GitCredentialOverwrite {
+		session.overwriteRefs[ref] = true
+	} else if hasNewWrites || !hadStagedWrites {
+		delete(session.overwriteRefs, ref)
+	}
+	if draft.GitCredentialSatisfied {
+		session.satisfiedRefs[ref] = true
+	} else {
+		delete(session.satisfiedRefs, ref)
+	}
+	session.credentialWriteStores[ref] = draft.GitCredentialWriteStore
+	return session
+}
+
+func filterInitCredentialWritesForDraftGitMode(writes map[string]string, draft initDraft) map[string]string {
+	if len(writes) == 0 {
+		return writes
+	}
+	ref := config.CredentialRef{
+		Purpose: "git",
+		Ref:     strings.TrimSpace(draft.GitCredentialWriteRef),
+		Mode:    strings.TrimSpace(draft.GitAuth),
+	}
+	if ref.Mode == "" {
+		ref.Mode = string(config.GitAuthModePAT)
+	}
+	specs, err := credentials.KeySpecsForPurpose(ref)
+	if err != nil {
+		return map[string]string{}
+	}
+	allowed := make(map[string]bool, len(specs))
+	for _, spec := range specs {
+		allowed[spec.Key] = true
+	}
+	filtered := make(map[string]string, len(writes))
+	for key, value := range writes {
+		if allowed[key] {
+			filtered[key] = value
+		}
+	}
+	return filtered
 }
 
 func mergeReviewerCredentialDraftWrites(session initSessionDraft, draft initDraft) initSessionDraft {
@@ -4781,6 +4865,15 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 			}
 		}
 	}
+	for _, entry := range standaloneRepositoryAccessPlanEntries(session.cfg, plannedWriteKeys) {
+		if len(plannedWriteKeys[entry.Ref.Ref]) == 0 {
+			continue
+		}
+		activeRefs[entry.Ref.Ref] = true
+		if err := mergeInteractiveInitSessionPlanEntry(entriesByKey, entry); err != nil {
+			return initSessionPlan{}, cmderr.Config(err)
+		}
+	}
 	for _, entry := range standaloneReviewerEntityPlanEntries(session.cfg, plannedWriteKeys) {
 		activeRefs[entry.Ref.Ref] = true
 		if err := mergeInteractiveInitSessionPlanEntry(entriesByKey, entry); err != nil {
@@ -4846,6 +4939,45 @@ func mergeInteractiveInitSessionPlanEntry(entriesByKey map[string]initCredential
 		entriesByKey[key] = entry
 	}
 	return nil
+}
+
+func standaloneRepositoryAccessPlanEntries(cfg config.File, plannedWriteKeys map[string][]string) []initCredentialPlanEntry {
+	names := make([]string, 0, len(cfg.RepositoryAccess))
+	for name := range cfg.RepositoryAccess {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	entries := make([]initCredentialPlanEntry, 0, len(names))
+	for _, name := range names {
+		access := cfg.RepositoryAccess[name]
+		ref := config.CredentialRef{
+			Purpose: "git",
+			Store:   initCredentialStoreDraftValue(access.Git.Credential.Store),
+			Ref:     strings.TrimSpace(firstNonEmpty(access.Git.Credential.Name, access.Git.CredentialRef)),
+			Mode:    string(access.Git.AuthMode),
+		}
+		if ref.Store == "" || ref.Ref == "" {
+			continue
+		}
+		resolved, err := credentials.ResolveCredentialStore(cfg, ref.Store)
+		if err != nil {
+			continue
+		}
+		specs, err := credentials.KeySpecsForPurpose(ref)
+		if err != nil {
+			continue
+		}
+		entry := initCredentialPlanEntry{
+			Ref:              ref,
+			SecretsProfile:   resolved,
+			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
+			PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
+		}
+		entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
+		entry.State = classifyInitCredentialPlanEntry(entry)
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 func collectInteractiveInitSessionWorkspaceSecrets(opts *root.Options, deps initDeps, session initSessionDraft, purposes []string) (initSessionDraft, error) {
