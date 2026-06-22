@@ -14581,6 +14581,195 @@ func TestInitInteractiveMenuStagesStandaloneRepositoryAccess(t *testing.T) {
 	}
 }
 
+func TestInitRepositoryAccessEditorMarksConfiguredRepositoryAccessDeletable(t *testing.T) {
+	ctx := initPromptContext{
+		GitScopes: map[string]initGitScopeDraft{
+			"work-git": {
+				Name:            "work-git",
+				Host:            "github.com",
+				AuthMode:        config.GitAuthModePAT,
+				CredentialStore: config.LocalOSCredentialStoreID,
+				CredentialRef:   "codereview/work-git",
+			},
+		},
+		ExistingConfig: config.File{
+			RepositoryAccess: map[string]config.RepositoryAccessConfig{
+				"work-git": {
+					DisplayName: "work-git",
+					Git: config.GitConfig{
+						Host:     "github.com",
+						AuthMode: config.GitAuthModePAT,
+						Credential: config.CredentialLocation{
+							Store: config.LocalOSCredentialStoreID,
+							Name:  "codereview/work-git",
+						},
+					},
+				},
+			},
+		},
+	}
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
+	model = selectInitLinearFieldValue(t, model, initRepositoryAccessFieldSelection, "work-git")
+	selectionIndex := model.document.fieldIndexByID(initRepositoryAccessFieldSelection)
+	if selectionIndex < 0 {
+		t.Fatal("repository access selection field missing")
+	}
+	for _, option := range model.document[selectionIndex].Options {
+		if option.Value == "work-git" {
+			if !option.Deletable {
+				t.Fatalf("work-git option Deletable = false, want true")
+			}
+			return
+		}
+	}
+	t.Fatalf("work-git option missing: %#v", model.document[selectionIndex].Options)
+}
+
+func TestInitRepositoryAccessEditorMarksPendingRepositoryAccessRestorable(t *testing.T) {
+	ctx := initPromptContext{
+		PendingRepositoryAccessDeletes: map[string]initPendingRepositoryAccessDelete{
+			"work-git": {
+				Name: "work-git",
+			},
+		},
+	}
+	selection := initRepositoryAccessRestoreSelectionPrefix + "work-git"
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
+	model = selectInitLinearFieldValue(t, model, initRepositoryAccessFieldSelection, selection)
+	selectionIndex := model.document.fieldIndexByID(initRepositoryAccessFieldSelection)
+	if selectionIndex < 0 {
+		t.Fatal("repository access selection field missing")
+	}
+	for _, option := range model.document[selectionIndex].Options {
+		if option.Value != selection {
+			continue
+		}
+		if !option.Restorable {
+			t.Fatalf("pending work-git option Restorable = false, want true")
+		}
+		if !model.document.fieldHidden(initRepositoryAccessFieldName) || !model.document.fieldHidden(initRepositoryAccessFieldAction) {
+			t.Fatalf("repository access details hidden = name:%v action:%v, want both hidden", model.document.fieldHidden(initRepositoryAccessFieldName), model.document.fieldHidden(initRepositoryAccessFieldAction))
+		}
+		return
+	}
+	t.Fatalf("pending work-git option missing: %#v", model.document[selectionIndex].Options)
+}
+
+func TestDeleteInteractiveInitRepositoryAccessRemovesAndRestoresStandaloneEntry(t *testing.T) {
+	access := config.RepositoryAccessConfig{
+		DisplayName: "work-git",
+		Git: config.GitConfig{
+			Host:     "github.com",
+			AuthMode: config.GitAuthModePAT,
+			Credential: config.CredentialLocation{
+				Store: config.LocalOSCredentialStoreID,
+				Name:  "codereview/work-git",
+			},
+		},
+	}
+	session := initSessionDraft{
+		cfg: config.File{
+			RepositoryAccess: map[string]config.RepositoryAccessConfig{
+				"work-git": access,
+			},
+			Profiles: map[string]config.Profile{},
+		},
+	}
+
+	next, err := deleteInteractiveInitRepositoryAccess(session, "work-git")
+	if err != nil {
+		t.Fatalf("deleteInteractiveInitRepositoryAccess: %v", err)
+	}
+	if _, ok := next.cfg.RepositoryAccess["work-git"]; ok {
+		t.Fatalf("repository_access after delete = %#v, want work-git removed", next.cfg.RepositoryAccess)
+	}
+	if _, ok := next.pendingRepositoryAccessDeletes["work-git"]; !ok {
+		t.Fatalf("pendingRepositoryAccessDeletes = %#v, want work-git", next.pendingRepositoryAccessDeletes)
+	}
+
+	restored, err := undoInteractiveInitRepositoryAccessDelete(next, "work-git")
+	if err != nil {
+		t.Fatalf("undoInteractiveInitRepositoryAccessDelete: %v", err)
+	}
+	restoredAccess := restored.cfg.RepositoryAccess["work-git"]
+	if restoredAccess.DisplayName != access.DisplayName || restoredAccess.Git.Host != access.Git.Host || restoredAccess.Git.AuthMode != access.Git.AuthMode || restoredAccess.Git.Credential != access.Git.Credential {
+		t.Fatalf("restored repository access = %#v, want display/host/auth/credential from %#v", restoredAccess, access)
+	}
+	if _, ok := restored.pendingRepositoryAccessDeletes["work-git"]; ok {
+		t.Fatalf("pendingRepositoryAccessDeletes after undo = %#v, want cleared work-git", restored.pendingRepositoryAccessDeletes)
+	}
+}
+
+func TestInitInteractiveMenuDeletesStandaloneRepositoryAccessAndEnablesSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	access := config.RepositoryAccessConfig{
+		DisplayName: "work-git",
+		Git: config.GitConfig{
+			Host:     "github.com",
+			AuthMode: config.GitAuthModePAT,
+			Credential: config.CredentialLocation{
+				Store: config.LocalOSCredentialStoreID,
+				Name:  "codereview/work-git",
+			},
+		},
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionRepositoryAccess,
+			initMenuActionSave,
+		},
+	}
+	deps := initDeps{
+		menuPrompter: menu,
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+			if !prompt.Context.StandaloneRepositoryAccessMode {
+				t.Fatal("repository access prompt did not run in standalone mode")
+			}
+			if _, ok := prompt.Context.ExistingConfig.RepositoryAccess["work-git"]; !ok {
+				t.Fatalf("prompt repository_access = %#v, want work-git", prompt.Context.ExistingConfig.RepositoryAccess)
+			}
+			return initDraft{
+				Action:       initDraftActionDeleteRepositoryAccess,
+				ActionTarget: "work-git",
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{
+				Profiles: map[string]config.Profile{},
+				RepositoryAccess: map[string]config.RepositoryAccessConfig{
+					"work-git": access,
+				},
+			}, true, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %d, want repository access then save", len(menu.prompts))
+	}
+	if !menu.prompts[1].CanSave {
+		t.Fatalf("second menu prompt CanSave = false, want true after repository access deletion")
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if _, ok := cfg.RepositoryAccess["work-git"]; ok {
+		t.Fatalf("repository_access after save = %#v, want work-git removed", cfg.RepositoryAccess)
+	}
+}
+
 func TestInitRepositoryAccessEditorDefaultsToLocalGitHubUsername(t *testing.T) {
 	oldGitConfig := initRepositoryAccessGitConfigValue
 	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })

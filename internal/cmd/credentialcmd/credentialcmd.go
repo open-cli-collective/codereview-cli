@@ -253,6 +253,7 @@ type initPromptContext struct {
 	ProfileLLMRuntimes                 map[string]string
 	ProfileWarnings                    map[string][]string
 	PendingProfileDeletes              map[string]initPendingProfileDelete
+	PendingRepositoryAccessDeletes     map[string]initPendingRepositoryAccessDelete
 	PendingReviewerEntityDeletes       map[string]initPendingReviewerEntityDelete
 	PendingLLMRuntimeDeletes           map[string]initPendingLLMRuntimeDelete
 }
@@ -260,13 +261,15 @@ type initPromptContext struct {
 type initDraftAction string
 
 const (
-	initDraftActionNone                     initDraftAction = ""
-	initDraftActionDeleteProfile            initDraftAction = "delete_profile"
-	initDraftActionUndoDeleteProfile        initDraftAction = "undo_delete_profile"
-	initDraftActionDeleteReviewerEntity     initDraftAction = "delete_reviewer_entity"
-	initDraftActionUndoDeleteReviewerEntity initDraftAction = "undo_delete_reviewer_entity"
-	initDraftActionDeleteLLMRuntime         initDraftAction = "delete_llm_runtime"
-	initDraftActionUndoDeleteLLMRuntime     initDraftAction = "undo_delete_llm_runtime"
+	initDraftActionNone                       initDraftAction = ""
+	initDraftActionDeleteProfile              initDraftAction = "delete_profile"
+	initDraftActionUndoDeleteProfile          initDraftAction = "undo_delete_profile"
+	initDraftActionDeleteRepositoryAccess     initDraftAction = "delete_repository_access"
+	initDraftActionUndoDeleteRepositoryAccess initDraftAction = "undo_delete_repository_access"
+	initDraftActionDeleteReviewerEntity       initDraftAction = "delete_reviewer_entity"
+	initDraftActionUndoDeleteReviewerEntity   initDraftAction = "undo_delete_reviewer_entity"
+	initDraftActionDeleteLLMRuntime           initDraftAction = "delete_llm_runtime"
+	initDraftActionUndoDeleteLLMRuntime       initDraftAction = "undo_delete_llm_runtime"
 )
 
 type initDraft struct {
@@ -519,22 +522,23 @@ type initSessionPlan struct {
 }
 
 type initSessionDraft struct {
-	path                         string
-	originalCfg                  config.File
-	cfg                          config.File
-	requestedProfileName         string
-	backendFlagSet               bool
-	saveRequested                bool
-	workspace                    *initWorkspaceDraft
-	touchedProfiles              map[string]string
-	writes                       map[string]map[string]string
-	credentialWriteStores        map[string]credentials.ResolvedSecretsProfile
-	credentialDecisions          map[initCredentialDecisionKey]initCredentialDecisionKind
-	overwriteRefs                map[string]bool
-	satisfiedRefs                map[string]bool
-	pendingProfileDeletes        map[string]initPendingProfileDelete
-	pendingReviewerEntityDeletes map[string]initPendingReviewerEntityDelete
-	pendingLLMRuntimeDeletes     map[string]initPendingLLMRuntimeDelete
+	path                           string
+	originalCfg                    config.File
+	cfg                            config.File
+	requestedProfileName           string
+	backendFlagSet                 bool
+	saveRequested                  bool
+	workspace                      *initWorkspaceDraft
+	touchedProfiles                map[string]string
+	writes                         map[string]map[string]string
+	credentialWriteStores          map[string]credentials.ResolvedSecretsProfile
+	credentialDecisions            map[initCredentialDecisionKey]initCredentialDecisionKind
+	overwriteRefs                  map[string]bool
+	satisfiedRefs                  map[string]bool
+	pendingProfileDeletes          map[string]initPendingProfileDelete
+	pendingRepositoryAccessDeletes map[string]initPendingRepositoryAccessDelete
+	pendingReviewerEntityDeletes   map[string]initPendingReviewerEntityDelete
+	pendingLLMRuntimeDeletes       map[string]initPendingLLMRuntimeDelete
 }
 
 type initPendingProfileDelete struct {
@@ -546,6 +550,11 @@ type initPendingProfileDelete struct {
 	WasActive         bool
 	HadTouchedProfile bool
 	TouchedOriginal   string
+}
+
+type initPendingRepositoryAccessDelete struct {
+	Name   string
+	Access config.RepositoryAccessConfig
 }
 
 type initPendingReviewerEntityDelete struct {
@@ -1295,14 +1304,15 @@ func currentInteractiveInitPromptContextBase(session initSessionDraft) initPromp
 		existingProfile = &profileCopy
 	}
 	return initPromptContext{
-		RequestedProfileName:         session.requestedProfileName,
-		ExistingProfileName:          existingProfileName,
-		ExistingProfile:              existingProfile,
-		ExistingProfileNames:         sortedProfileNames(session.cfg.Profiles),
-		ExistingConfig:               session.cfg,
-		PendingProfileDeletes:        session.pendingProfileDeletes,
-		PendingReviewerEntityDeletes: session.pendingReviewerEntityDeletes,
-		PendingLLMRuntimeDeletes:     session.pendingLLMRuntimeDeletes,
+		RequestedProfileName:           session.requestedProfileName,
+		ExistingProfileName:            existingProfileName,
+		ExistingProfile:                existingProfile,
+		ExistingProfileNames:           sortedProfileNames(session.cfg.Profiles),
+		ExistingConfig:                 session.cfg,
+		PendingProfileDeletes:          session.pendingProfileDeletes,
+		PendingRepositoryAccessDeletes: session.pendingRepositoryAccessDeletes,
+		PendingReviewerEntityDeletes:   session.pendingReviewerEntityDeletes,
+		PendingLLMRuntimeDeletes:       session.pendingLLMRuntimeDeletes,
 	}
 }
 
@@ -1366,6 +1376,17 @@ func editInteractiveInitRepositoryAccess(_ *cobra.Command, opts *root.Options, _
 	}
 	if err != nil {
 		return initSessionDraft{}, err
+	}
+	switch draft.Action {
+	case initDraftActionNone:
+	case initDraftActionDeleteRepositoryAccess:
+		session, err := deleteInteractiveInitRepositoryAccess(session, draft.ActionTarget)
+		return session, err
+	case initDraftActionUndoDeleteRepositoryAccess:
+		session, err := undoInteractiveInitRepositoryAccessDelete(session, draft.ActionTarget)
+		return session, err
+	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
+		return initSessionDraft{}, fmt.Errorf("unsupported repository-access draft action %q", draft.Action)
 	}
 	session, err = stageStandaloneInteractiveInitRepositoryAccess(session, draft)
 	if err != nil {
@@ -1523,7 +1544,7 @@ func applyInteractiveInitProfileDraft(cmd *cobra.Command, opts *root.Options, fl
 	case initDraftActionUndoDeleteProfile:
 		session, err := undoInteractiveInitProfileDelete(session, draft.ActionTarget)
 		return session, err == nil, err
-	case initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
+	case initDraftActionDeleteRepositoryAccess, initDraftActionUndoDeleteRepositoryAccess, initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported review-profile draft action %q", draft.Action)
 	}
 	workspace, err := buildInteractiveInitWorkspace(cmd, opts, flags, deps, session.path, session.cfg, draft)
@@ -1642,7 +1663,7 @@ func editInteractiveInitLLMRuntimeStep(cmd *cobra.Command, opts *root.Options, f
 	case initDraftActionUndoDeleteLLMRuntime:
 		session, err := undoInteractiveInitLLMRuntimeDelete(session, draft.ActionTarget)
 		return session, err == nil, err
-	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity:
+	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteRepositoryAccess, initDraftActionUndoDeleteRepositoryAccess, initDraftActionDeleteReviewerEntity, initDraftActionUndoDeleteReviewerEntity:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported LLM-runtime draft action %q", draft.Action)
 	}
 	if session.workspace == nil {
@@ -1749,7 +1770,7 @@ func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Option
 	case initDraftActionUndoDeleteReviewerEntity:
 		session, err := undoInteractiveInitReviewerEntityDelete(session, draft.ActionTarget)
 		return session, err == nil, err
-	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
+	case initDraftActionDeleteProfile, initDraftActionUndoDeleteProfile, initDraftActionDeleteRepositoryAccess, initDraftActionUndoDeleteRepositoryAccess, initDraftActionDeleteLLMRuntime, initDraftActionUndoDeleteLLMRuntime:
 		return initSessionDraft{}, false, fmt.Errorf("unsupported reviewer-entity draft action %q", draft.Action)
 	}
 	if !draft.ReviewerEnabled {
@@ -5074,6 +5095,9 @@ func ensureInitDeleteState(session *initSessionDraft) {
 	if session.pendingProfileDeletes == nil {
 		session.pendingProfileDeletes = map[string]initPendingProfileDelete{}
 	}
+	if session.pendingRepositoryAccessDeletes == nil {
+		session.pendingRepositoryAccessDeletes = map[string]initPendingRepositoryAccessDelete{}
+	}
 	if session.pendingReviewerEntityDeletes == nil {
 		session.pendingReviewerEntityDeletes = map[string]initPendingReviewerEntityDelete{}
 	}
@@ -5195,6 +5219,52 @@ func undoInteractiveInitProfileDelete(session initSessionDraft, profileName stri
 		return rebuildInteractiveInitWorkspace(session, profileName), nil
 	}
 	return session, nil
+}
+
+func deleteInteractiveInitRepositoryAccess(session initSessionDraft, name string) (initSessionDraft, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return initSessionDraft{}, exitcode.Usage(errors.New("repository access name is required"))
+	}
+	ensureInitDeleteState(&session)
+	if _, exists := session.pendingRepositoryAccessDeletes[name]; exists {
+		return session, nil
+	}
+	working := cloneInitConfigFile(session.cfg)
+	access, ok := working.RepositoryAccess[name]
+	if !ok {
+		return initSessionDraft{}, exitcode.Usage(fmt.Errorf("repository access %q is not deletable", name))
+	}
+	delete(working.RepositoryAccess, name)
+	if err := validateInteractiveInitGlobalConfig(working); err != nil {
+		return initSessionDraft{}, cmderr.Config(err)
+	}
+	session.pendingRepositoryAccessDeletes[name] = initPendingRepositoryAccessDelete{
+		Name:   name,
+		Access: access,
+	}
+	session.cfg = config.Normalize(working)
+	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
+}
+
+func undoInteractiveInitRepositoryAccessDelete(session initSessionDraft, name string) (initSessionDraft, error) {
+	name = strings.TrimSpace(name)
+	ensureInitDeleteState(&session)
+	pending, ok := session.pendingRepositoryAccessDeletes[name]
+	if !ok {
+		return session, nil
+	}
+	working := cloneInitConfigFile(session.cfg)
+	if working.RepositoryAccess == nil {
+		working.RepositoryAccess = map[string]config.RepositoryAccessConfig{}
+	}
+	working.RepositoryAccess[name] = pending.Access
+	if err := validateInteractiveInitGlobalConfig(working); err != nil {
+		return initSessionDraft{}, cmderr.Config(err)
+	}
+	delete(session.pendingRepositoryAccessDeletes, name)
+	session.cfg = config.Normalize(working)
+	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
 }
 
 func deleteInteractiveInitReviewerEntity(session initSessionDraft, entityName string) (initSessionDraft, error) {

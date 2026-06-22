@@ -34,6 +34,8 @@ const (
 
 const initConfigureNewRepositoryAccessSelection = "__configure_new_repository_access__"
 
+const initRepositoryAccessRestoreSelectionPrefix = "__restore_repository_access__:"
+
 var initRepositoryAccessGitConfigValue = func(key string) string {
 	out, err := exec.Command("git", "config", "--get", key).Output()
 	if err != nil {
@@ -52,6 +54,19 @@ func (p huhInitRepositoryAccessPrompter) EditRepositoryAccess(prompt initReposit
 	switch model.resultAction {
 	case initDetailActionEdit:
 		return initRepositoryAccessDraftFromDocument(prompt.Context, seed, model.document), nil
+	case initLinearResultActionDelete:
+		selection := model.document.selectedValue(initRepositoryAccessFieldSelection)
+		return initDraft{
+			Action:       initDraftActionDeleteRepositoryAccess,
+			ActionTarget: selection,
+		}, nil
+	case initLinearResultActionRestore:
+		selection := model.document.selectedValue(initRepositoryAccessFieldSelection)
+		name, _ := initRepositoryAccessRestoreSelectionName(selection)
+		return initDraft{
+			Action:       initDraftActionUndoDeleteRepositoryAccess,
+			ActionTarget: name,
+		}, nil
 	default:
 		return initDraft{}, errInitNavigateBack
 	}
@@ -74,7 +89,7 @@ func (p huhInitRepositoryAccessPrompter) runRepositoryAccessEditor(editor initLi
 }
 
 func initRepositoryAccessLinearEditor(ctx initPromptContext, seed initDraft) initLinearEditor {
-	options := initRepositoryAccessSelectionOptions(ctx.GitScopes)
+	options := initRepositoryAccessSelectionOptionsForContext(ctx)
 	selection := initRepositoryAccessDefaultSelection(ctx, options)
 	scope := initRepositoryAccessScopeForSelection(ctx, selection)
 
@@ -170,6 +185,19 @@ func initRepositoryAccessSelectionOptions(scopes map[string]initGitScopeDraft) [
 	return options
 }
 
+func initRepositoryAccessSelectionOptionsForContext(ctx initPromptContext) []huh.Option[string] {
+	options := initRepositoryAccessSelectionOptions(ctx.GitScopes)
+	pendingNames := make([]string, 0, len(ctx.PendingRepositoryAccessDeletes))
+	for name := range ctx.PendingRepositoryAccessDeletes {
+		pendingNames = append(pendingNames, name)
+	}
+	sort.Strings(pendingNames)
+	for _, name := range pendingNames {
+		options = append(options, huh.NewOption(repositoryAccessDeletePendingLabel(name), initRepositoryAccessRestoreSelectionPrefix+name))
+	}
+	return dedupeInitStringOptions(options)
+}
+
 func initRepositoryAccessDefaultSelection(ctx initPromptContext, options []huh.Option[string]) string {
 	if ctx.ExistingProfileName != "" {
 		if selected := strings.TrimSpace(ctx.ProfileGitScopes[ctx.ExistingProfileName]); selected != "" {
@@ -199,9 +227,29 @@ func initRepositoryAccessScopeForSelection(ctx initPromptContext, selection stri
 	}
 }
 
+func initRepositoryAccessRestoreSelectionName(selection string) (string, bool) {
+	if !strings.HasPrefix(selection, initRepositoryAccessRestoreSelectionPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(selection, initRepositoryAccessRestoreSelectionPrefix), true
+}
+
+func repositoryAccessDeletePendingLabel(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Repository access (Staged for deletion)"
+	}
+	return fmt.Sprintf("%s (Staged for deletion)", name)
+}
+
 func initRepositoryAccessSyncFields(model *initLinearEditorModel, ctx initPromptContext) {
 	selection := model.document.selectedValue(initRepositoryAccessFieldSelection)
+	initRepositoryAccessSetSelectionOptions(model, ctx, selection)
 	scope := initRepositoryAccessScopeForSelection(ctx, selection)
+	hideDetails := false
+	if _, restore := initRepositoryAccessRestoreSelectionName(selection); restore {
+		hideDetails = true
+	}
 	model.setFieldValue(initRepositoryAccessFieldName, scope.Name)
 	model.setFieldValue(initRepositoryAccessFieldHost, scope.Host)
 	model.selectFieldValue(initRepositoryAccessFieldAuth, string(scope.AuthMode))
@@ -211,10 +259,56 @@ func initRepositoryAccessSyncFields(model *initLinearEditorModel, ctx initPrompt
 	if refIndex := model.document.fieldIndexByID(initRepositoryAccessFieldCredentialName); refIndex >= 0 {
 		model.document[refIndex].AutoManaged = initRepositoryAccessCredentialRef(scope.Name) == strings.TrimSpace(scope.CredentialRef)
 	}
+	initRepositoryAccessSetDetailsHidden(model, hideDetails)
+	if hideDetails {
+		return
+	}
 	initRepositoryAccessSyncGitHubAppField(model)
 	initRepositoryAccessSetCredentialFieldsHidden(model)
 	initRepositoryAccessClearCredentialFieldValues(model)
 	initRepositoryAccessRefreshCredentialStatus(model, ctx)
+}
+
+func initRepositoryAccessSetSelectionOptions(model *initLinearEditorModel, ctx initPromptContext, selected string) {
+	index := model.document.fieldIndexByID(initRepositoryAccessFieldSelection)
+	if index < 0 {
+		return
+	}
+	options := initLinearOptionsFromHuh(initRepositoryAccessSelectionOptionsForContext(ctx), selected)
+	for optionIndex := range options {
+		option := &options[optionIndex]
+		if _, configured := ctx.ExistingConfig.RepositoryAccess[option.Value]; configured {
+			option.Deletable = true
+		}
+		if _, restorable := initRepositoryAccessRestoreSelectionName(option.Value); restorable {
+			option.Restorable = true
+		}
+	}
+	model.document[index].Options = options
+}
+
+func initRepositoryAccessSetDetailsHidden(model *initLinearEditorModel, hidden bool) {
+	for _, id := range []initLinearFieldID{
+		initRepositoryAccessFieldName,
+		initRepositoryAccessFieldHost,
+		initRepositoryAccessFieldAuth,
+		initRepositoryAccessFieldCredentialStore,
+		initRepositoryAccessFieldCredentialName,
+		initRepositoryAccessFieldCredentialStatus,
+		initRepositoryAccessFieldCredentialValues,
+		initRepositoryAccessFieldAction,
+	} {
+		model.setFieldHidden(id, hidden)
+	}
+	if hidden {
+		for _, id := range []initLinearFieldID{
+			initRepositoryAccessFieldGitHubAppID,
+			initRepositoryAccessFieldGitToken,
+			initRepositoryAccessFieldGitHubAppPrivateKey,
+		} {
+			model.setFieldHidden(id, true)
+		}
+	}
 }
 
 func initRepositoryAccessMaybeUpdateAutoCredentialRef(model *initLinearEditorModel) {
