@@ -515,6 +515,29 @@ func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
 	assertFakeStored(t, store, "default", credentials.GitTokenKey, "init-token")
 }
 
+func TestInitNonInteractiveNormalizesProfileNameCredentialRefs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	t.Setenv("CR_REVIEWER_TOKEN", "reviewer-token")
+	store := newFakeInitStore(nil)
+	flags := defaultNonInteractiveInitOptionsForTest()
+	flags.reviewerTokenEnv = "CR_REVIEWER_TOKEN"
+	_, _, err := runNonInteractiveInitWithFakeStore(t, path, "bad.profile", strings.NewReader(""), flags, store)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := cfg.Profiles["bad.profile"]
+	if profile.Git.CredentialRef != "codereview/bad_x2eprofile" {
+		t.Fatalf("Git.CredentialRef = %q, want normalized profile ref", profile.Git.CredentialRef)
+	}
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/bad_x2eprofile-reviewer" {
+		t.Fatalf("ReviewerCredentials = %#v, want normalized reviewer ref", profile.ReviewerCredentials)
+	}
+}
+
 func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	t.Setenv("CR_GIT_TOKEN", "git-token")
@@ -13621,6 +13644,79 @@ func TestSynthesizeInteractiveProfilePersistsPinnedGitHubAppInstallation(t *test
 	}
 }
 
+func TestInitCredentialRefFromSeedEscapesUnsafeCharacters(t *testing.T) {
+	tests := []struct {
+		name    string
+		seed    string
+		wantRef string
+	}{
+		{"plain ascii", "work", "codereview/work"},
+		{"digits and hyphen", "staging-2", "codereview/staging-2"},
+		{"underscore doubles", "github_rianjs", "codereview/github__rianjs"},
+		{"trims outer spaces", "  spaced name  ", "codereview/spaced_x20name"},
+		{"slash", "open-cli-collective/rianjs-bot", "codereview/open-cli-collective_x2frianjs-bot"},
+		{"backslash", `open-cli-collective\rianjs-bot`, "codereview/open-cli-collective_x5crianjs-bot"},
+		{"ascii punctuation", "a.b:c@d#e$f%g^h&i*j+k=1", "codereview/a_x2eb_x3ac_x40d_x23e_x24f_x25g_x5eh_x26i_x2aj_x2bk_x3d1"},
+		{"control characters", "line\nbreak\ttab", "codereview/line_x0abreak_x09tab"},
+		{"colon run", "foo::::::::::::::-bar", "codereview/foo" + strings.Repeat("_x3a", 14) + "-bar"},
+		{"accent and cjk", "Rían/机器人", "codereview/R_xc3_xadan_x2f_xe6_x9c_xba_xe5_x99_xa8_xe4_xba_xba"},
+		{"emoji", "reviewer 🤖🔥", "codereview/reviewer_x20_xf0_x9f_xa4_x96_xf0_x9f_x94_xa5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := initCredentialRefFromSeed(tt.seed)
+			if err != nil {
+				t.Fatalf("initCredentialRefFromSeed(%q): %v", tt.seed, err)
+			}
+			if got != tt.wantRef {
+				t.Fatalf("initCredentialRefFromSeed(%q) = %q, want %q", tt.seed, got, tt.wantRef)
+			}
+			if _, err := credentials.ParseRef(got); err != nil {
+				t.Fatalf("normalized ref %q failed ParseRef: %v", got, err)
+			}
+		})
+	}
+}
+
+func TestInitCredentialRefFromSeedRejectsEmptySeed(t *testing.T) {
+	for _, seed := range []string{"", "   ", "\n\t"} {
+		t.Run(fmt.Sprintf("%q", seed), func(t *testing.T) {
+			if got, err := initCredentialRefFromSeed(seed); err == nil {
+				t.Fatalf("initCredentialRefFromSeed(%q) = %q, want error", seed, got)
+			}
+		})
+	}
+}
+
+func TestSynthesizeInteractiveProfileNormalizesProfileNameCredentialRefs(t *testing.T) {
+	draft := initDraft{
+		ProfileName:             "open-cli-collective/rianjs-bot",
+		GitHost:                 "github.com",
+		GitAuth:                 string(config.GitAuthModePAT),
+		GitCredentialStore:      config.LocalOSCredentialStoreID,
+		ReviewerEnabled:         true,
+		ReviewerAuth:            string(config.GitAuthModePAT),
+		ReviewerCredentialStore: config.LocalOSCredentialStoreID,
+		LLMProvider:             string(config.LLMProviderOpenAI),
+		LLMAuth:                 string(config.LLMAuthAPIKey),
+		LLMAdapter:              string(config.LLMAdapterOpenAIAPI),
+		LLMCredentialStore:      config.LocalOSCredentialStoreID,
+	}
+	profile, err := synthesizeInteractiveProfile(initOptions{gitHost: "github.com"}, "open-cli-collective/rianjs-bot", nil, draft)
+	if err != nil {
+		t.Fatalf("synthesizeInteractiveProfile: %v", err)
+	}
+	if profile.Git.CredentialRef != "codereview/open-cli-collective_x2frianjs-bot" {
+		t.Fatalf("Git.CredentialRef = %q, want normalized profile ref", profile.Git.CredentialRef)
+	}
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/open-cli-collective_x2frianjs-bot-reviewer" {
+		t.Fatalf("ReviewerCredentials = %#v, want normalized reviewer ref", profile.ReviewerCredentials)
+	}
+	if profile.LLM.CredentialRef != "codereview/open-cli-collective_x2frianjs-bot-llm" {
+		t.Fatalf("LLM.CredentialRef = %q, want normalized LLM ref", profile.LLM.CredentialRef)
+	}
+}
+
 func TestInitProfileV2NoRuntimeBootstrapRequestsExistingFlow(t *testing.T) {
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", nil, nil), 160, 40)
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldLLMRuntime)
@@ -13876,6 +13972,76 @@ func TestInitProfileV2GitCredentialNameFollowsChangedScopeDefaultWhenUnedited(t 
 	}
 	if draft.GitCredentialRef != "codereview/new-git" {
 		t.Fatalf("draft.GitCredentialRef = %q, want changed Git scope default", draft.GitCredentialRef)
+	}
+}
+
+func TestInitProfileV2ProfileNameUpdatesAutoManagedLLMCredentialName(t *testing.T) {
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"openai-work": {
+			Name:            "openai-work",
+			Preset:          initLLMRuntimePresetOpenAIAPIKey,
+			Provider:        config.LLMProviderOpenAI,
+			Auth:            config.LLMAuthAPIKey,
+			Adapter:         config.LLMAdapterOpenAIAPI,
+			CredentialStore: config.LocalOSCredentialStoreID,
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap(
+		"work",
+		"github.com/SignalFT",
+		llmRuntimes,
+		"openai-work",
+	), 160, 40)
+	if got := model.document.fieldValue(initProfileV2FieldLLMCredentialName); got != "codereview/work-llm" {
+		t.Fatalf("initial LLM credential name = %q, want auto-managed work ref", got)
+	}
+	refIndex := model.document.fieldIndexByID(initProfileV2FieldLLMCredentialName)
+	if refIndex < 0 || !model.document[refIndex].AutoManaged {
+		t.Fatalf("LLM credential name AutoManaged = false, want true")
+	}
+
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileName)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "open-cli-collective/rianjs-bot")
+
+	if got := model.document.fieldValue(initProfileV2FieldLLMCredentialName); got != "codereview/open-cli-collective_x2frianjs-bot-llm" {
+		t.Fatalf("LLM credential name after profile edit = %q, want normalized profile-derived ref", got)
+	}
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.LLMCredentialRef != "codereview/open-cli-collective_x2frianjs-bot-llm" {
+		t.Fatalf("draft.LLMCredentialRef = %q, want normalized profile-derived ref", draft.LLMCredentialRef)
+	}
+}
+
+func TestInitProfileV2ManualLLMCredentialNameStopsProfileNameAutoUpdate(t *testing.T) {
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"openai-work": {
+			Name:            "openai-work",
+			Preset:          initLLMRuntimePresetOpenAIAPIKey,
+			Provider:        config.LLMProviderOpenAI,
+			Auth:            config.LLMAuthAPIKey,
+			Adapter:         config.LLMAdapterOpenAIAPI,
+			CredentialStore: config.LocalOSCredentialStoreID,
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap(
+		"work",
+		"github.com/SignalFT",
+		llmRuntimes,
+		"openai-work",
+	), 160, 40)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldLLMCredentialName)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "codereview/custom-llm")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileName)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "open-cli-collective/rianjs-bot")
+
+	if got := model.document.fieldValue(initProfileV2FieldLLMCredentialName); got != "codereview/custom-llm" {
+		t.Fatalf("manual LLM credential name = %q, want profile edit not to overwrite it", got)
 	}
 }
 
@@ -21264,7 +21430,6 @@ func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 	}{
 		{name: "two stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--llm-api-key-stdin"}},
 		{name: "git and reviewer stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--reviewer-token-stdin"}},
-		{name: "invalid profile segment", args: []string{"--profile", "bad.profile", "init", "--non-interactive"}},
 		{name: "reviewer ref matches git ref", args: []string{"init", "--non-interactive", "--reviewer-credential-ref", "codereview/default"}},
 		{name: "unsupported git auth", args: []string{"init", "--non-interactive", "--git-auth-mode", string(config.GitAuthModeOAuthDevice)}},
 		{name: "git token ingress under github app", args: []string{"init", "--non-interactive", "--git-auth-mode", string(config.GitAuthModeGitHubApp), "--git-token-from-env", "CR_GIT_TOKEN"}},

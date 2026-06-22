@@ -1419,7 +1419,7 @@ func stageStandaloneInteractiveInitRepositoryAccess(session initSessionDraft, dr
 		scope.CredentialStore = initCredentialStoreDefaultID()
 	}
 	if scope.CredentialRef == "" {
-		ref, err := credentials.FormatRef(name)
+		ref, err := initCredentialRefFromSeed(name)
 		if err != nil {
 			return initSessionDraft{}, exitcode.Usage(err)
 		}
@@ -1708,7 +1708,7 @@ func stageStandaloneInteractiveInitLLMRuntime(session initSessionDraft, draft in
 		name = uniqueInitLLMRuntimeName(buildInitStandaloneLLMRuntimeNameSet(working.LLMRuntimes), runtime.suggestedName())
 	}
 	if runtime.Auth == config.LLMAuthAPIKey && strings.TrimSpace(runtime.CredentialRef) == "" {
-		ref, err := credentials.FormatRef(name)
+		ref, err := initCredentialRefFromSeed(name)
 		if err != nil {
 			return initSessionDraft{}, exitcode.Usage(err)
 		}
@@ -1818,7 +1818,7 @@ func stageStandaloneInteractiveInitReviewerEntity(session initSessionDraft, flag
 		if previous != nil && strings.TrimSpace(previous.CredentialRef) != "" {
 			entity.CredentialRef = strings.TrimSpace(previous.CredentialRef)
 		} else {
-			ref, err := credentials.FormatRef(name)
+			ref, err := initCredentialRefFromSeed(name)
 			if err != nil {
 				return initSessionDraft{}, exitcode.Usage(err)
 			}
@@ -2537,7 +2537,7 @@ func initReviewerEntityInventoryRows(ctx initPromptContext) []initInventoryRow {
 }
 
 func standardReviewerCredentialRef(profileName string) (string, error) {
-	return credentials.FormatRef(profileName + "-reviewer")
+	return initCredentialRefFromSeed(profileName + "-reviewer")
 }
 
 func standardReviewerCredentialRefForEntity(entity initReviewerEntityDraft) (string, error) {
@@ -2545,7 +2545,7 @@ func standardReviewerCredentialRefForEntity(entity initReviewerEntityDraft) (str
 	if name == "" {
 		name = entity.suggestedName()
 	}
-	return credentials.FormatRef(name)
+	return initCredentialRefFromSeed(name)
 }
 
 func (p huhInitPrompter) Run(ctx initPromptContext) (initDraft, error) {
@@ -3324,6 +3324,14 @@ func initStorageLabelUsesDefault(value, standard string) bool {
 	return value == "" || value == standard
 }
 
+func initCredentialRefFromSeed(seed string) (string, error) {
+	segment := credstore.EscapeRefSegment(strings.TrimSpace(seed))
+	if segment == "" {
+		return "", fmt.Errorf("credential name seed is required")
+	}
+	return credentials.FormatRef(segment)
+}
+
 type initStorageLabelFieldState struct {
 	Value       string
 	UsesDefault bool
@@ -3341,7 +3349,7 @@ func initStandardGitCredentialRef(profileName, selection string, scopes map[stri
 			return strings.TrimSpace(scope.CredentialRef), nil
 		}
 	}
-	return credentials.FormatRef(profileName)
+	return initCredentialRefFromSeed(profileName)
 }
 
 func initReviewerStorageLabelRelevant(selection string, entities map[string]initReviewerEntityDraft) bool {
@@ -3388,7 +3396,7 @@ func initStandardLLMCredentialRef(profileName, selection string, runtimes map[st
 	if runtime, ok := runtimes[selection]; ok && strings.TrimSpace(runtime.CredentialRef) != "" {
 		return strings.TrimSpace(runtime.CredentialRef), nil
 	}
-	return credentials.FormatRef(profileName + "-llm")
+	return initCredentialRefFromSeed(profileName + "-llm")
 }
 
 func normalizeInitProfileStorageLabels(draft *initDraft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime string, scopes map[string]initGitScopeDraft, entities map[string]initReviewerEntityDraft, runtimes map[string]initLLMRuntimeDraft, labels initStorageLabelNormalizationInput) error {
@@ -4457,9 +4465,9 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		existingCopy := existing
 		previousProfile = &existingCopy
 	}
-	defaultGitRef, err := credentials.FormatRef(profileName)
+	defaultGitRef, err := initCredentialRefFromSeed(profileName)
 	if err != nil {
-		return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q cannot be used as a credential name segment: %w", profileName, err))
+		return initPlan{}, exitcode.Usage(fmt.Errorf("profile %q cannot be used as a credential name seed: %w", profileName, err))
 	}
 	gitRef := flags.gitRef
 	if gitRef == "" {
@@ -4500,7 +4508,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			if previousProfile != nil && previousProfile.ReviewerCredentials != nil && previousProfile.ReviewerCredentials.CredentialRef != "" {
 				reviewerRef = previousProfile.ReviewerCredentials.CredentialRef
 			} else {
-				reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
+				reviewerRef, err = initCredentialRefFromSeed(profileName + "-reviewer")
 				if err != nil {
 					return initPlan{}, exitcode.Usage(err)
 				}
@@ -4518,7 +4526,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		if previousProfile != nil && previousProfile.LLM.Auth == config.LLMAuthAPIKey && previousProfile.LLM.CredentialRef != "" {
 			llmRef = previousProfile.LLM.CredentialRef
 		} else {
-			llmRef, err = credentials.FormatRef(profileName + "-llm")
+			llmRef, err = initCredentialRefFromSeed(profileName + "-llm")
 			if err != nil {
 				return initPlan{}, exitcode.Usage(err)
 			}
@@ -5471,7 +5479,7 @@ func initLLMConfigForReplacement(profileName string, runtime initLLMRuntimeDraft
 	if strings.TrimSpace(llm.CredentialRef) != "" {
 		return llm, nil
 	}
-	ref, err := credentials.FormatRef(profileName + "-llm")
+	ref, err := initCredentialRefFromSeed(profileName + "-llm")
 	if err != nil {
 		return config.LLMConfig{}, exitcode.Usage(err)
 	}
@@ -6082,9 +6090,9 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 		profile.LLM.Auth = config.LLMAuth(flags.llmAuth)
 		profile.LLM.Adapter = config.LLMAdapter(flags.llmAdapter)
 	}
-	defaultGitRef, err := credentials.FormatRef(profileName)
+	defaultGitRef, err := initCredentialRefFromSeed(profileName)
 	if err != nil {
-		return config.Profile{}, exitcode.Usage(fmt.Errorf("profile %q cannot be used as a credential name segment: %w", profileName, err))
+		return config.Profile{}, exitcode.Usage(fmt.Errorf("profile %q cannot be used as a credential name seed: %w", profileName, err))
 	}
 	profile.Git.Host = strings.TrimSpace(draft.GitHost)
 	profile.Git.AuthMode = config.GitAuthMode(draft.GitAuth)
@@ -6103,7 +6111,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 		if reviewerRef == "" {
 			// A blank draft ref means "use this profile's standard reviewer secret location";
 			// expand it here so renames and shared-entity propagation can re-derive consistently.
-			reviewerRef, err = credentials.FormatRef(profileName + "-reviewer")
+			reviewerRef, err = initCredentialRefFromSeed(profileName + "-reviewer")
 			if err != nil {
 				return config.Profile{}, exitcode.Usage(err)
 			}
@@ -6132,7 +6140,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	if profile.LLM.Auth == config.LLMAuthAPIKey {
 		llmRef := strings.TrimSpace(draft.LLMCredentialRef)
 		if llmRef == "" {
-			llmRef, err = credentials.FormatRef(profileName + "-llm")
+			llmRef, err = initCredentialRefFromSeed(profileName + "-llm")
 			if err != nil {
 				return config.Profile{}, exitcode.Usage(err)
 			}

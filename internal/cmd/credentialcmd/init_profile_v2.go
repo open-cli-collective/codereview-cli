@@ -13,7 +13,6 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
-	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
 
 type bubbleTeaInitProfileV2Prompter struct {
@@ -370,6 +369,7 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	if strings.TrimSpace(draft.LLMCredentialRef) == "" {
 		draft.LLMCredentialRef = standardLLMCredentialRef
 	}
+	llmCredentialAutoManaged := strings.TrimSpace(draft.LLMCredentialRef) != "" && strings.TrimSpace(draft.LLMCredentialRef) == strings.TrimSpace(standardLLMCredentialRef)
 	storeOptions := initCredentialStoreOptions(ctx.ExistingConfig)
 
 	var document initProfileV2Document
@@ -391,6 +391,9 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	initProfileV2AppendAgentSourcesSection(&document, draft.AgentSources)
 	initProfileV2AppendReviewPolicySection(&document, draft.ReviewPolicy, initProfileV2ReviewerEntityKindForSelection(selectedReviewerEntity, ctx.ReviewerEntities) == initReviewerEntityKindGitHubApp)
 	initProfileV2AppendProfileActionSection(&document)
+	if index := document.fieldIndexByID(initProfileV2FieldLLMCredentialName); index >= 0 {
+		document[index].AutoManaged = llmCredentialAutoManaged
+	}
 	return initProfileV2Editor{
 		Draft:                  draft,
 		GitScopes:              maps.Clone(ctx.GitScopes),
@@ -773,6 +776,13 @@ func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
 		m.syncGitScopeFields()
 		return
 	}
+	if id == initProfileV2FieldProfileName {
+		m.syncProfileNameDerivedCredentialFields()
+		return
+	}
+	if id == initProfileV2FieldLLMCredentialName {
+		m.document[index].AutoManaged = false
+	}
 	if id == initProfileV2FieldReviewerEntity {
 		m.syncReviewerGitHubAppInstallationFields(true)
 		return
@@ -920,6 +930,25 @@ func (m initProfileV2ReadOnlyModel) normalizeStorageLabels(*initDraft, string, s
 	return nil
 }
 
+func (m *initProfileV2ReadOnlyModel) syncProfileNameDerivedCredentialFields() {
+	index := m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName)
+	if index < 0 || m.document[index].Hidden || !m.document[index].AutoManaged {
+		return
+	}
+	ref, err := initStandardLLMCredentialRef(
+		m.document.fieldValue(initProfileV2FieldProfileName),
+		m.document.selectedValue(initProfileV2FieldLLMRuntime),
+		m.llmRuntimes,
+	)
+	if err == nil && strings.TrimSpace(ref) != "" {
+		m.setFieldValue(initProfileV2FieldLLMCredentialName, ref)
+		if index = m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName); index >= 0 {
+			m.document[index].AutoManaged = true
+		}
+	}
+	m.validateField(m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName))
+}
+
 func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
 	selectedGitScope := m.document.selectedValue(initProfileV2FieldGitScope)
 	if selectedGitScope == "" {
@@ -996,15 +1025,25 @@ func (m *initProfileV2ReadOnlyModel) syncLLMCredentialFields(reset bool) {
 	if !needsCredential {
 		return
 	}
-	if reset {
+	credentialNameIndex := m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName)
+	shouldPopulate := reset
+	if !shouldPopulate && credentialNameIndex >= 0 && strings.TrimSpace(m.document[credentialNameIndex].Value) == "" {
+		shouldPopulate = true
+	}
+	if shouldPopulate {
+		autoManaged := false
 		if strings.TrimSpace(draft.LLMCredentialRef) == "" {
-			ref, err := credentials.FormatRef(strings.TrimSpace(m.document.fieldValue(initProfileV2FieldProfileName)) + "-llm")
+			ref, err := initStandardLLMCredentialRef(m.document.fieldValue(initProfileV2FieldProfileName), selectedLLMRuntime, m.llmRuntimes)
 			if err == nil {
 				draft.LLMCredentialRef = ref
+				autoManaged = true
 			}
 		}
 		m.selectFieldValue(initProfileV2FieldLLMCredentialStore, initCredentialStoreDraftValue(draft.LLMCredentialStore))
 		m.setFieldValue(initProfileV2FieldLLMCredentialName, draft.LLMCredentialRef)
+		if credentialNameIndex = m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName); credentialNameIndex >= 0 {
+			m.document[credentialNameIndex].AutoManaged = autoManaged
+		}
 	}
 	m.validateField(m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName))
 }

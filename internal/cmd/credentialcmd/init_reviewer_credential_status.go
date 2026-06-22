@@ -186,7 +186,7 @@ func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, pro
 	for _, entry := range entries {
 		seen[initCredentialEntryKey(entry.Ref)] = struct{}{}
 	}
-	if standardRef, err := credentials.FormatRef(session.workspace.profileName + "-reviewer"); err == nil {
+	if standardRef, err := initCredentialRefFromSeed(session.workspace.profileName + "-reviewer"); err == nil {
 		entries = appendReviewerCredentialPlanEntry(entries, seen, resolved, plannedWriteKeys, config.CredentialRef{
 			Purpose: "reviewer_credentials",
 			Store:   reviewerStoreID,
