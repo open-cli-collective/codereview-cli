@@ -4431,6 +4431,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			profile.ReviewerCredentials.IdentityCache = previousProfile.ReviewerCredentials.IdentityCache
 		}
 	}
+	cfg, profile = materializeProfileRepositoryAccess(cfg, profileName, profile)
 	cfg, profile = materializeProfileReviewerEntity(cfg, profileName, profile)
 	cfg, profile = materializeProfileLLMRuntime(cfg, profileName, profile)
 
@@ -4520,6 +4521,7 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 	if err != nil {
 		return initWorkspaceDraft{}, err
 	}
+	working, profile = materializeProfileRepositoryAccess(working, profileName, profile)
 	working, profile = materializeProfileReviewerEntity(working, profileName, profile)
 	working, profile = materializeProfileLLMRuntime(working, profileName, profile)
 	if err := validateInteractiveInitConfig(initValidationConfigForProfileHost(working, profileName, previousProfile, profile.Git.Host)); err != nil {
@@ -5593,6 +5595,16 @@ func cloneInitConfigFile(cfg config.File) config.File {
 			cloned.Profiles[name] = cloneInitProfile(profile)
 		}
 	}
+	if cfg.RepositoryAccess != nil {
+		cloned.RepositoryAccess = make(map[string]config.RepositoryAccessConfig, len(cfg.RepositoryAccess))
+		for name, access := range cfg.RepositoryAccess {
+			if access.Git.GitHubApp != nil {
+				app := *access.Git.GitHubApp
+				access.Git.GitHubApp = &app
+			}
+			cloned.RepositoryAccess[name] = access
+		}
+	}
 	if len(cfg.RepositoryProfiles) > 0 {
 		cloned.RepositoryProfiles = make([]config.RepositoryProfile, len(cfg.RepositoryProfiles))
 		for i, route := range cfg.RepositoryProfiles {
@@ -5801,6 +5813,80 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	}
 	profile.SecretsProfile = strings.TrimSpace(draft.SecretsProfile)
 	return profile, nil
+}
+
+func materializeProfileRepositoryAccess(cfg config.File, profileName string, profile config.Profile) (config.File, config.Profile) {
+	if cfg.RepositoryAccess == nil {
+		cfg.RepositoryAccess = map[string]config.RepositoryAccessConfig{}
+	}
+	access := normalizeInitRepositoryAccessConfig(config.RepositoryAccessConfig{Git: profile.Git})
+	targetScope := initGitScopeDraftFromConfig(access.Git)
+
+	if currentName := strings.TrimSpace(profile.RepositoryAccess); currentName != "" {
+		if current, ok := cfg.RepositoryAccess[currentName]; ok && initGitScopeDraftFromConfig(current.Git).identityKey() == targetScope.identityKey() {
+			profile.RepositoryAccess = currentName
+			profile.Git = current.Git
+			if cfg.Profiles == nil {
+				cfg.Profiles = map[string]config.Profile{}
+			}
+			cfg.Profiles[profileName] = profile
+			return cfg, profile
+		}
+	}
+
+	accessNames := make([]string, 0, len(cfg.RepositoryAccess))
+	for name := range cfg.RepositoryAccess {
+		accessNames = append(accessNames, name)
+	}
+	sort.Strings(accessNames)
+	for _, name := range accessNames {
+		existing := cfg.RepositoryAccess[name]
+		if initGitScopeDraftFromConfig(existing.Git).identityKey() != targetScope.identityKey() {
+			continue
+		}
+		profile.RepositoryAccess = name
+		profile.Git = existing.Git
+		if cfg.Profiles == nil {
+			cfg.Profiles = map[string]config.Profile{}
+		}
+		cfg.Profiles[profileName] = profile
+		return cfg, profile
+	}
+
+	accessName := uniqueInitRepositoryAccessName(cfg.RepositoryAccess, profileName+"-git")
+	cfg.RepositoryAccess[accessName] = access
+	profile.RepositoryAccess = accessName
+	profile.Git = access.Git
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]config.Profile{}
+	}
+	cfg.Profiles[profileName] = profile
+	return cfg, profile
+}
+
+func normalizeInitRepositoryAccessConfig(access config.RepositoryAccessConfig) config.RepositoryAccessConfig {
+	cfg := config.Normalize(config.File{
+		RepositoryAccess: map[string]config.RepositoryAccessConfig{
+			"access": access,
+		},
+	})
+	return cfg.RepositoryAccess["access"]
+}
+
+func uniqueInitRepositoryAccessName(existing map[string]config.RepositoryAccessConfig, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "repository-access"
+	}
+	if _, ok := existing[base]; !ok {
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", base, suffix)
+		if _, ok := existing[candidate]; !ok {
+			return candidate
+		}
+	}
 }
 
 func materializeProfileReviewerEntity(cfg config.File, profileName string, profile config.Profile) (config.File, config.Profile) {

@@ -1737,6 +1737,11 @@ func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 		want.Profiles[name] = profile
 	}
 	want.Profiles["work"] = after.Profiles["work"]
+	want.RepositoryAccess = make(map[string]config.RepositoryAccessConfig, len(before.RepositoryAccess)+1)
+	for name, access := range before.RepositoryAccess {
+		want.RepositoryAccess[name] = access
+	}
+	want.RepositoryAccess[after.Profiles["work"].RepositoryAccess] = after.RepositoryAccess[after.Profiles["work"].RepositoryAccess]
 	want.LLMRuntimes = make(map[string]config.LLMConfig, len(before.LLMRuntimes)+1)
 	for name, runtime := range before.LLMRuntimes {
 		want.LLMRuntimes[name] = runtime
@@ -19158,7 +19163,7 @@ func TestApplyInteractiveInitSessionPlanRejectsInvalidConfigBeforeKeyringWrite(t
 			return nil
 		},
 	}, plan)
-	if err == nil || !strings.Contains(err.Error(), "profiles.broken.git.host is required") {
+	if err == nil || !strings.Contains(err.Error(), "profiles.broken.repository_access is required") {
 		t.Fatalf("error = %v, want config validation failure", err)
 	}
 	if storeOpened {

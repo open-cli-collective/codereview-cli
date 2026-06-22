@@ -167,6 +167,15 @@ func applyIdentityCacheUpdates(cfg config.File, profileName string, original con
 		}
 		switch result.CredentialSource {
 		case SourceGit:
+			accessName := strings.TrimSpace(original.RepositoryAccess)
+			if accessName != "" {
+				access, ok := cfg.RepositoryAccess[accessName]
+				if ok {
+					access.Git.IdentityCache = result.Identity.Login
+					cfg.RepositoryAccess[accessName] = access
+					continue
+				}
+			}
 			cfg.Profiles[profileName] = updated
 		case SourceReviewer:
 			if original.Reviewer.Kind == config.ProfileReviewerKindEntity {
@@ -207,6 +216,17 @@ func normalizeForUpdate(cfg config.File) config.File {
 			entities[name] = entity
 		}
 		cfg.ReviewerEntities = entities
+	}
+	if cfg.RepositoryAccess != nil {
+		accesses := make(map[string]config.RepositoryAccessConfig, len(cfg.RepositoryAccess))
+		for name, access := range cfg.RepositoryAccess {
+			if access.Git.GitHubApp != nil {
+				app := *access.Git.GitHubApp
+				access.Git.GitHubApp = &app
+			}
+			accesses[name] = access
+		}
+		cfg.RepositoryAccess = accesses
 	}
 	return cfg
 }

@@ -164,11 +164,12 @@ type EffectiveSecretsProfile = EffectiveSecretsStore
 
 // Profile is one named review profile.
 type Profile struct {
-	Git          GitConfig       `yaml:"git" json:"git"`
-	Reviewer     ProfileReviewer `yaml:"reviewer" json:"reviewer"`
-	LLMRuntime   string          `yaml:"llm_runtime" json:"llm_runtime"`
-	AgentSources []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
-	ReviewPolicy ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
+	RepositoryAccess string          `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
+	Git              GitConfig       `yaml:"-" json:"-"`
+	Reviewer         ProfileReviewer `yaml:"reviewer" json:"reviewer"`
+	LLMRuntime       string          `yaml:"llm_runtime" json:"llm_runtime"`
+	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
+	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
 
 	// SecretsProfile is retained as an ignored in-memory compatibility field.
 	SecretsProfile string `yaml:"-" json:"-"`
@@ -178,6 +179,45 @@ type Profile struct {
 	// LLM is the resolved effective runtime derived from LLMRuntime for runtime
 	// callers. It is not config schema.
 	LLM LLMConfig `yaml:"-" json:"-"`
+}
+
+type profileYAML struct {
+	RepositoryAccess string          `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
+	Git              GitConfig       `yaml:"git,omitempty" json:"git,omitempty"`
+	Reviewer         ProfileReviewer `yaml:"reviewer" json:"reviewer"`
+	LLMRuntime       string          `yaml:"llm_runtime" json:"llm_runtime"`
+	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
+	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
+}
+
+// UnmarshalYAML accepts the legacy profile git block while the data model moves
+// to profiles selecting reusable repository_access entries.
+func (p *Profile) UnmarshalYAML(value *yaml.Node) error {
+	var raw profileYAML
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*p = Profile{
+		RepositoryAccess: raw.RepositoryAccess,
+		Git:              raw.Git,
+		Reviewer:         raw.Reviewer,
+		LLMRuntime:       raw.LLMRuntime,
+		AgentSources:     raw.AgentSources,
+		ReviewPolicy:     raw.ReviewPolicy,
+	}
+	return nil
+}
+
+// MarshalYAML writes only the durable profile composition fields. Git is
+// resolved from repository_access at load/runtime boundaries.
+func (p Profile) MarshalYAML() (any, error) {
+	return profileYAML{
+		RepositoryAccess: p.RepositoryAccess,
+		Reviewer:         p.Reviewer,
+		LLMRuntime:       p.LLMRuntime,
+		AgentSources:     p.AgentSources,
+		ReviewPolicy:     p.ReviewPolicy,
+	}, nil
 }
 
 // GitConfig identifies the user's git-host credentials.
@@ -1027,6 +1067,12 @@ func gitCredentialRef(purpose string, mode GitAuthMode, credential CredentialLoc
 }
 
 func validateProfile(cfg File, name string, profile Profile) error {
+	if strings.TrimSpace(profile.RepositoryAccess) == "" {
+		return invalid("profiles.%s.repository_access is required", name)
+	}
+	if _, ok := cfg.RepositoryAccess[profile.RepositoryAccess]; !ok {
+		return fmt.Errorf("%w: profiles.%s.repository_access %q", ErrProfileNotFound, name, profile.RepositoryAccess)
+	}
 	if err := validateGitConfig(fmt.Sprintf("profiles.%s.git", name), profile.Git); err != nil {
 		return err
 	}
@@ -1587,6 +1633,10 @@ func (cfg File) normalized() File {
 }
 
 func (cfg File) projectProfileComponentReferences() File {
+	repositoryAccessNamesByKey := map[string]string{}
+	for name, access := range cfg.RepositoryAccess {
+		repositoryAccessNamesByKey[repositoryAccessIdentityKey(access)] = name
+	}
 	runtimeNamesByKey := map[string]string{}
 	for name, runtime := range cfg.LLMRuntimes {
 		runtimeNamesByKey[llmRuntimeIdentityKey(runtime)] = name
@@ -1606,6 +1656,20 @@ func (cfg File) projectProfileComponentReferences() File {
 	for _, name := range profileNames {
 		profile := cfg.Profiles[name]
 		profile = profile.normalized()
+		if strings.TrimSpace(profile.RepositoryAccess) == "" && !profile.Git.empty() {
+			access := repositoryAccessFromProfile(profile)
+			key := repositoryAccessIdentityKey(access)
+			accessName, ok := repositoryAccessNamesByKey[key]
+			if !ok {
+				if cfg.RepositoryAccess == nil {
+					cfg.RepositoryAccess = map[string]RepositoryAccessConfig{}
+				}
+				accessName = uniqueConfigComponentName(cfg.RepositoryAccess, suggestedRepositoryAccessName(name, access))
+				cfg.RepositoryAccess[accessName] = access
+				repositoryAccessNamesByKey[key] = accessName
+			}
+			profile.RepositoryAccess = accessName
+		}
 		if strings.TrimSpace(profile.LLMRuntime) == "" && !profile.LLM.empty() {
 			runtime := profile.LLM.normalized()
 			key := llmRuntimeIdentityKey(runtime)
@@ -1779,7 +1843,39 @@ func suggestedReviewerEntityName(profileName string, entity ReviewerEntity) stri
 	return "reviewer-entity"
 }
 
+func repositoryAccessFromProfile(profile Profile) RepositoryAccessConfig {
+	return RepositoryAccessConfig{
+		Git: profile.Git,
+	}.normalized()
+}
+
+func repositoryAccessIdentityKey(access RepositoryAccessConfig) string {
+	access = access.normalized()
+	return strings.Join([]string{
+		access.Git.Host,
+		string(access.Git.AuthMode),
+		access.Git.Credential.Store,
+		access.Git.Credential.Name,
+		gitHubAppID(access.Git.GitHubApp),
+	}, "\x00")
+}
+
+func suggestedRepositoryAccessName(profileName string, access RepositoryAccessConfig) string {
+	prefix := strings.TrimSpace(profileName)
+	if prefix != "" {
+		return prefix + "-git"
+	}
+	host := strings.ReplaceAll(access.normalized().Git.Host, ".", "-")
+	if strings.TrimSpace(host) != "" {
+		return host + "-git"
+	}
+	return "repository-access"
+}
+
 func (cfg File) resolveProfileRuntimeFields(profile Profile) Profile {
+	if access, ok := cfg.RepositoryAccess[profile.RepositoryAccess]; ok {
+		profile.Git = access.Git.normalized()
+	}
 	if runtime, ok := cfg.LLMRuntimes[profile.LLMRuntime]; ok {
 		profile.LLM = runtime.normalized()
 	}
@@ -1892,6 +1988,7 @@ func IsOnePasswordSecretsBackend(kind SecretsBackendKind) bool {
 
 func (p Profile) normalized() Profile {
 	p.SecretsProfile = strings.TrimSpace(p.SecretsProfile)
+	p.RepositoryAccess = strings.TrimSpace(p.RepositoryAccess)
 	p.Git = p.Git.normalized()
 	p.Reviewer = p.Reviewer.normalized()
 	p.LLMRuntime = strings.TrimSpace(p.LLMRuntime)
@@ -1934,6 +2031,15 @@ func (g GitConfig) normalized() GitConfig {
 	g.CredentialRef = g.Credential.Name
 	g.GitHubApp = normalizeGitHubAppForAuth(g.AuthMode, g.GitHubApp)
 	return g
+}
+
+func (g GitConfig) empty() bool {
+	g = g.normalized()
+	return g.Host == "" &&
+		g.AuthMode == "" &&
+		g.Credential.empty() &&
+		g.GitHubApp == nil &&
+		g.IdentityCache == ""
 }
 
 func (r RepositoryAccessConfig) normalized() RepositoryAccessConfig {

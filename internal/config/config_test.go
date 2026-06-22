@@ -1358,6 +1358,14 @@ func TestValidateSecretsStores(t *testing.T) {
 }
 
 func TestValidateCredentialLocations(t *testing.T) {
+	setProfileRepositoryAccessCredential := func(cfg *File, profileName string, location CredentialLocation) {
+		profile := cfg.Profiles[profileName]
+		access := cfg.RepositoryAccess[profile.RepositoryAccess]
+		access.Git.Credential = location
+		access.Git.CredentialRef = ""
+		cfg.RepositoryAccess[profile.RepositoryAccess] = access
+	}
+
 	tests := []struct {
 		name    string
 		mutate  func(*File)
@@ -1371,66 +1379,48 @@ func TestValidateCredentialLocations(t *testing.T) {
 					DisplayName: "Work File",
 					Backend:     SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
 				}
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: "work-file", Name: "codereview/home"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: "work-file", Name: "codereview/home"})
 			},
 		},
 		{
 			name: "missing store",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Name: "codereview/home"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Name: "codereview/home"})
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "profiles.home.git.credential.store is required",
+			wantMsg: "repository_access.home-git.git.credential.store is required",
 		},
 		{
 			name: "missing name",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: LocalOSCredentialStoreID})
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "profiles.home.git.credential.name is required",
+			wantMsg: "repository_access.home-git.git.credential.name is required",
 		},
 		{
 			name: "unknown configured store",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: "missing", Name: "codereview/home"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: "missing", Name: "codereview/home"})
 			},
 			wantErr: ErrSecretsStoreNotFound,
-			wantMsg: `profiles.home.git.credential.store "missing"`,
+			wantMsg: `repository_access.home-git.git.credential.store "missing"`,
 		},
 		{
 			name: "credential name invalid grammar",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/bad.profile"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/bad.profile"})
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "profiles.home.git.credential.name is invalid",
+			wantMsg: "repository_access.home-git.git.credential.name is invalid",
 		},
 		{
 			name: "credential name wrong service",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "other/home"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: LocalOSCredentialStoreID, Name: "other/home"})
 			},
 			wantErr: ErrInvalid,
-			wantMsg: `profiles.home.git.credential.name must use service "codereview"`,
+			wantMsg: `repository_access.home-git.git.credential.name must use service "codereview"`,
 		},
 		{
 			name: "same credential name in different stores",
@@ -1439,10 +1429,7 @@ func TestValidateCredentialLocations(t *testing.T) {
 					DisplayName: "Work File",
 					Backend:     SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
 				}
-				profile := cfg.Profiles["work"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["work"] = profile
+				setProfileRepositoryAccessCredential(cfg, "work", CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"})
 				entity := cfg.ReviewerEntities["work-reviewer"]
 				entity.Credential = CredentialLocation{Store: "work-file", Name: "codereview/shared"}
 				entity.CredentialRef = ""
@@ -1452,10 +1439,7 @@ func TestValidateCredentialLocations(t *testing.T) {
 		{
 			name: "same credential name in same store",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["work"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["work"] = profile
+				setProfileRepositoryAccessCredential(cfg, "work", CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"})
 				entity := cfg.ReviewerEntities["work-reviewer"]
 				entity.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
 				entity.CredentialRef = ""
