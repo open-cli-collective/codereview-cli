@@ -511,7 +511,7 @@ func initProfileV2AppendReviewerGitHubAppInstallationSection(document *initProfi
 	document.addSectionField(
 		initProfileV2FieldReviewerGitHubAppInstallationSection,
 		"GitHub App installation",
-		"Choose how cr finds the GitHub App installation for this review profile.",
+		"Choose how cr finds the GitHub App installation for this review profile. Discovery resolves the installation from each PR repository and supports profiles routed to multiple organizations or users. Pinning is only appropriate when every route for this profile uses the same installation.",
 		initProfileV2FieldOptions{Hidden: hidden},
 	)
 	document.addEditableSelect(
@@ -525,7 +525,7 @@ func initProfileV2AppendReviewerGitHubAppInstallationSection(document *initProfi
 	document.addEditableInput(
 		initProfileV2FieldReviewerGitHubAppInstallationID,
 		"Installation ID",
-		"Required when you pin an installation. Use the numeric GitHub App installation ID.",
+		"Required when pinning. Use one numeric GitHub App installation ID only when all routes for this profile share that installation.",
 		strings.TrimSpace(draft.ReviewerGitHubAppInstallationID),
 		validateOptionalGitHubAppInstallationID,
 		initProfileV2FieldOptions{Hidden: hidden || !pinned},
@@ -534,8 +534,8 @@ func initProfileV2AppendReviewerGitHubAppInstallationSection(document *initProfi
 
 func initProfileV2ReviewerGitHubAppInstallationModeOptions() []huh.Option[string] {
 	return []huh.Option[string]{
-		huh.NewOption("Discover from PR repository at review time", string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository)),
-		huh.NewOption("Pin an installation ID", string(config.ProfileReviewerGitHubAppInstallationPinned)),
+		huh.NewOption("Discover from PR repository at review time (recommended)", string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository)),
+		huh.NewOption("Pin one installation ID (advanced)", string(config.ProfileReviewerGitHubAppInstallationPinned)),
 	}
 }
 

@@ -13592,8 +13592,16 @@ func TestInitProfileV2GitHubAppInstallationFieldsFollowReviewerSelection(t *test
 	if model.document[idIndex].Hidden != true {
 		t.Fatalf("installation ID visible for discover mode:\n%s", model.View())
 	}
-	if !strings.Contains(model.View(), "Discover from PR repository at review time") {
-		t.Fatalf("view missing discovery option:\n%s", model.View())
+	for _, want := range []string{
+		"Discover from PR repository at review time (recommended)",
+		"Pin one installation ID (advanced)",
+		"supports profiles",
+		"routed to multiple organizations or users",
+		"every route for this profile uses the same installation",
+	} {
+		if !strings.Contains(model.View(), want) {
+			t.Fatalf("view missing GitHub App installation copy %q:\n%s", want, model.View())
+		}
 	}
 	draft, err := model.validatedDraft()
 	if err != nil {

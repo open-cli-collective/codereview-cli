@@ -228,8 +228,10 @@ matching are case-sensitive after trimming whitespace. An explicit `--profile`
 bypasses repository routing. Route targets still use the profile's configured
 auth mode. Passing `--profile ""` is invalid.
 For GitHub App reviewer entities, the review profile chooses whether `cr review`
-discovers the installation from the PR owner/repo or uses a pinned installation
-ID stored in profile config.
+discovers the installation from each PR owner/repo or uses one pinned
+installation ID stored in profile config. Discovery is the normal choice for
+profiles routed to multiple organizations or users; pinning is only appropriate
+when every route for that profile uses the same installation.
 
 Add or replace one credential later:
 
@@ -406,8 +408,8 @@ outside init. Example:
 
 GitHub App reviewer credentials store the App ID and private key only. The
 review profile stores installation routing: `discover_from_repository` for PR
-context lookup, or `pinned` with a numeric installation ID when commands without
-repository context should use one known installation.
+context lookup, or `pinned` with one numeric installation ID when every route for
+that profile shares the same installation.
 
 ```bash
 cr --profile work init --non-interactive \
