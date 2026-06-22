@@ -44,12 +44,13 @@ var (
 
 // File is the root config.yml schema.
 type File struct {
-	Secrets            SecretsConfig             `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	LLMRuntimes        map[string]LLMConfig      `yaml:"llm_runtimes,omitempty" json:"llm_runtimes,omitempty"`
-	ReviewerEntities   map[string]ReviewerEntity `yaml:"reviewer_entities,omitempty" json:"reviewer_entities,omitempty"`
-	RepositoryProfiles []RepositoryProfile       `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
-	Profiles           map[string]Profile        `yaml:"profiles,omitempty" json:"profiles,omitempty"`
-	Data               DataConfig                `yaml:"data,omitempty" json:"data"`
+	Secrets            SecretsConfig                     `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	RepositoryAccess   map[string]RepositoryAccessConfig `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
+	LLMRuntimes        map[string]LLMConfig              `yaml:"llm_runtimes,omitempty" json:"llm_runtimes,omitempty"`
+	ReviewerEntities   map[string]ReviewerEntity         `yaml:"reviewer_entities,omitempty" json:"reviewer_entities,omitempty"`
+	RepositoryProfiles []RepositoryProfile               `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
+	Profiles           map[string]Profile                `yaml:"profiles,omitempty" json:"profiles,omitempty"`
+	Data               DataConfig                        `yaml:"data,omitempty" json:"data"`
 
 	// Keyring is retained as an ignored in-memory compatibility field while
 	// credential-store runtime selection is rewritten. It is not config schema.
@@ -194,6 +195,12 @@ type GitConfig struct {
 // GitHubAppConfig stores non-secret GitHub App identifiers.
 type GitHubAppConfig struct {
 	AppID string `yaml:"app_id" json:"app_id"`
+}
+
+// RepositoryAccessConfig is one reusable Git host/user credential definition.
+type RepositoryAccessConfig struct {
+	DisplayName string    `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	Git         GitConfig `yaml:"git" json:"git"`
 }
 
 // ReviewerCredentials optionally identifies separate posting credentials.
@@ -717,6 +724,7 @@ func Save(path string, cfg File) error {
 func fileHasNoExplicitContent(cfg File) bool {
 	return cfg.Secrets.Stores == nil &&
 		cfg.Secrets.Profiles == nil &&
+		cfg.RepositoryAccess == nil &&
 		cfg.LLMRuntimes == nil &&
 		cfg.ReviewerEntities == nil &&
 		cfg.RepositoryProfiles == nil &&
@@ -770,6 +778,14 @@ func Validate(cfg File) error {
 	}
 	if err := ValidateRetention(cfg.Data.Retention); err != nil {
 		return err
+	}
+	for name, access := range cfg.RepositoryAccess {
+		if strings.TrimSpace(name) == "" {
+			return invalid("repository_access name is required")
+		}
+		if err := validateRepositoryAccess(cfg.Secrets, name, access); err != nil {
+			return err
+		}
 	}
 	for name, runtime := range cfg.LLMRuntimes {
 		if strings.TrimSpace(name) == "" {
@@ -1011,19 +1027,7 @@ func gitCredentialRef(purpose string, mode GitAuthMode, credential CredentialLoc
 }
 
 func validateProfile(cfg File, name string, profile Profile) error {
-	if strings.TrimSpace(profile.Git.Host) == "" {
-		return invalid("profiles.%s.git.host is required", name)
-	}
-	if !profile.Git.AuthMode.Valid() {
-		return invalid("profiles.%s.git.auth_mode %q is invalid", name, profile.Git.AuthMode)
-	}
-	if !profile.Git.AuthMode.Supported() {
-		return fmt.Errorf("%w: profiles.%s.git.auth_mode %q", ErrUnsupported, name, profile.Git.AuthMode)
-	}
-	if err := validateCredentialLocation(fmt.Sprintf("profiles.%s.git.credential", name), profile.Git.Credential); err != nil {
-		return err
-	}
-	if err := validateGitHubAppConfig(fmt.Sprintf("profiles.%s.git.github_app", name), profile.Git.AuthMode, profile.Git.GitHubApp); err != nil {
+	if err := validateGitConfig(fmt.Sprintf("profiles.%s.git", name), profile.Git); err != nil {
 		return err
 	}
 	if !profile.Reviewer.Kind.Valid() {
@@ -1123,19 +1127,7 @@ func validateProfileReviewerInstallation(profileName string, reviewer ProfileRev
 }
 
 func validateEffectiveProfile(name string, profile Profile) error {
-	if strings.TrimSpace(profile.Git.Host) == "" {
-		return invalid("%s.git.host is required", name)
-	}
-	if !profile.Git.AuthMode.Valid() {
-		return invalid("%s.git.auth_mode %q is invalid", name, profile.Git.AuthMode)
-	}
-	if !profile.Git.AuthMode.Supported() {
-		return fmt.Errorf("%w: %s.git.auth_mode %q", ErrUnsupported, name, profile.Git.AuthMode)
-	}
-	if err := validateCredentialLocation(name+".git.credential", profile.Git.Credential); err != nil {
-		return err
-	}
-	if err := validateGitHubAppConfig(name+".git.github_app", profile.Git.AuthMode, profile.Git.GitHubApp); err != nil {
+	if err := validateGitConfig(name+".git", profile.Git); err != nil {
 		return err
 	}
 	if profile.ReviewerCredentials != nil {
@@ -1229,6 +1221,38 @@ func validateReviewerEntity(secrets SecretsConfig, name string, entity ReviewerE
 		return err
 	}
 	if err := validateOptionalSingleLine(fmt.Sprintf("reviewer_entities.%s.display_name", name), entity.DisplayName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRepositoryAccess(secrets SecretsConfig, name string, access RepositoryAccessConfig) error {
+	if err := validateOptionalSingleLine(fmt.Sprintf("repository_access.%s.display_name", name), access.DisplayName); err != nil {
+		return err
+	}
+	if err := validateGitConfig(fmt.Sprintf("repository_access.%s.git", name), access.Git); err != nil {
+		return err
+	}
+	if err := validateCredentialStoreSelection(secrets, fmt.Sprintf("repository_access.%s.git.credential.store", name), access.Git.Credential.Store); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGitConfig(path string, git GitConfig) error {
+	if strings.TrimSpace(git.Host) == "" {
+		return invalid("%s.host is required", path)
+	}
+	if !git.AuthMode.Valid() {
+		return invalid("%s.auth_mode %q is invalid", path, git.AuthMode)
+	}
+	if !git.AuthMode.Supported() {
+		return fmt.Errorf("%w: %s.auth_mode %q", ErrUnsupported, path, git.AuthMode)
+	}
+	if err := validateCredentialLocation(path+".credential", git.Credential); err != nil {
+		return err
+	}
+	if err := validateGitHubAppConfig(path+".github_app", git.AuthMode, git.GitHubApp); err != nil {
 		return err
 	}
 	return nil
@@ -1510,6 +1534,13 @@ func ValidateRetention(retention RetentionConfig) error {
 }
 
 func (cfg File) normalized() File {
+	if cfg.RepositoryAccess != nil {
+		accesses := make(map[string]RepositoryAccessConfig, len(cfg.RepositoryAccess))
+		for name, access := range cfg.RepositoryAccess {
+			accesses[strings.TrimSpace(name)] = access.normalized()
+		}
+		cfg.RepositoryAccess = accesses
+	}
 	if cfg.LLMRuntimes != nil {
 		runtimes := make(map[string]LLMConfig, len(cfg.LLMRuntimes))
 		for name, runtime := range cfg.LLMRuntimes {
@@ -1890,6 +1921,8 @@ func (i ProfileReviewerGitHubAppInstallation) normalized() ProfileReviewerGitHub
 }
 
 func (g GitConfig) normalized() GitConfig {
+	g.Host = normalizeConfigHost(g.Host)
+	g.AuthMode = GitAuthMode(strings.TrimSpace(string(g.AuthMode)))
 	g.CredentialRef = strings.TrimSpace(g.CredentialRef)
 	g.Credential = g.Credential.normalized()
 	if g.Credential.Name == "" && g.CredentialRef != "" {
@@ -1901,6 +1934,12 @@ func (g GitConfig) normalized() GitConfig {
 	g.CredentialRef = g.Credential.Name
 	g.GitHubApp = normalizeGitHubAppForAuth(g.AuthMode, g.GitHubApp)
 	return g
+}
+
+func (r RepositoryAccessConfig) normalized() RepositoryAccessConfig {
+	r.DisplayName = strings.TrimSpace(r.DisplayName)
+	r.Git = r.Git.normalized()
+	return r
 }
 
 func (r ReviewerCredentials) normalized() ReviewerCredentials {
@@ -1948,10 +1987,13 @@ func (r ReviewerEntity) reviewerCredentials() *ReviewerCredentials {
 }
 
 func normalizeGitHubAppForAuth(authMode GitAuthMode, app *GitHubAppConfig) *GitHubAppConfig {
-	if authMode != GitAuthModeGitHubApp || app == nil {
+	if app == nil {
 		return nil
 	}
 	normalized := GitHubAppConfig{AppID: strings.TrimSpace(app.AppID)}
+	if authMode != GitAuthModeGitHubApp {
+		return &normalized
+	}
 	return &normalized
 }
 

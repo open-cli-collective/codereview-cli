@@ -1010,6 +1010,143 @@ func TestValidateAllowsLLMRuntimesWithoutReviewProfiles(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsRepositoryAccessWithoutReviewProfiles(t *testing.T) {
+	cfg := File{
+		RepositoryAccess: map[string]RepositoryAccessConfig{
+			"personal-github": {
+				DisplayName: "Personal GitHub",
+				Git: GitConfig{
+					Host:     " GitHub.com ",
+					AuthMode: GitAuthModePAT,
+					Credential: CredentialLocation{
+						Store: LocalOSCredentialStoreID,
+						Name:  "codereview/personal-github",
+					},
+				},
+			},
+			"work-app": {
+				Git: GitConfig{
+					Host:     "github.example.com",
+					AuthMode: GitAuthModeGitHubApp,
+					Credential: CredentialLocation{
+						Store: LocalOSCredentialStoreID,
+						Name:  "codereview/work-github-app",
+					},
+					GitHubApp: &GitHubAppConfig{AppID: "12345"},
+				},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate repository-access-only config: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save repository-access-only config: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load repository-access-only config: %v", err)
+	}
+	if len(loaded.Profiles) != 0 {
+		t.Fatalf("loaded profiles = %#v, want none", loaded.Profiles)
+	}
+	if got := loaded.RepositoryAccess["personal-github"].Git.Host; got != "github.com" {
+		t.Fatalf("repository access host = %q, want github.com", got)
+	}
+	if got := loaded.RepositoryAccess["work-app"].Git.GitHubApp.AppID; got != "12345" {
+		t.Fatalf("repository access app id = %q, want 12345", got)
+	}
+}
+
+func TestValidateRepositoryAccess(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*File)
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name: "blank name",
+			mutate: func(cfg *File) {
+				cfg.RepositoryAccess[" "] = cfg.RepositoryAccess["work"]
+				delete(cfg.RepositoryAccess, "work")
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "repository_access name is required",
+		},
+		{
+			name: "missing host",
+			mutate: func(cfg *File) {
+				access := cfg.RepositoryAccess["work"]
+				access.Git.Host = ""
+				cfg.RepositoryAccess["work"] = access
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "repository_access.work.git.host is required",
+		},
+		{
+			name: "unknown store",
+			mutate: func(cfg *File) {
+				access := cfg.RepositoryAccess["work"]
+				access.Git.Credential.Store = "missing"
+				cfg.RepositoryAccess["work"] = access
+			},
+			wantErr: ErrSecretsStoreNotFound,
+			wantMsg: `repository_access.work.git.credential.store "missing"`,
+		},
+		{
+			name: "github app requires app id",
+			mutate: func(cfg *File) {
+				access := cfg.RepositoryAccess["work"]
+				access.Git.AuthMode = GitAuthModeGitHubApp
+				access.Git.GitHubApp = nil
+				cfg.RepositoryAccess["work"] = access
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "repository_access.work.git.github_app.app_id is required",
+		},
+		{
+			name: "pat rejects github app config",
+			mutate: func(cfg *File) {
+				access := cfg.RepositoryAccess["work"]
+				access.Git.GitHubApp = &GitHubAppConfig{AppID: "12345"}
+				cfg.RepositoryAccess["work"] = access
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "repository_access.work.git.github_app must be empty unless auth_mode is github_app",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := File{
+				RepositoryAccess: map[string]RepositoryAccessConfig{
+					"work": {
+						Git: GitConfig{
+							Host:     "github.com",
+							AuthMode: GitAuthModePAT,
+							Credential: CredentialLocation{
+								Store: LocalOSCredentialStoreID,
+								Name:  "codereview/work",
+							},
+						},
+					},
+				},
+			}
+			tt.mutate(&cfg)
+			err := Validate(cfg)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Fatalf("Validate error = %q, want containing %q", err.Error(), tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestValidateSecretsStores(t *testing.T) {
 	tests := []struct {
 		name    string
