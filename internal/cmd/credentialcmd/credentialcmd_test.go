@@ -9318,9 +9318,11 @@ func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *test
 	}
 }
 
-func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedRepositoryAccessCredential(t *testing.T) {
+func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedPrimitiveCredentials(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	repositoryAccessRef := "codereview/github-rianjs"
+	reviewerRef := "codereview/rianjs-bot-reviewer"
+	llmRef := "codereview/openai-runtime"
 	cfg := config.Normalize(config.File{
 		RepositoryAccess: map[string]config.RepositoryAccessConfig{
 			"github-rianjs": {
@@ -9333,11 +9335,23 @@ func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedRepositoryAccessCre
 				},
 			},
 		},
+		ReviewerEntities: map[string]config.ReviewerEntity{
+			"rianjs-bot": {
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: reviewerRef},
+				CredentialRef: reviewerRef,
+				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
+				DisplayName:   "rianjs-bot",
+			},
+		},
 		LLMRuntimes: map[string]config.LLMConfig{
-			"claude-cli": {
-				Provider: config.LLMProviderAnthropic,
-				Auth:     config.LLMAuthSubscription,
-				Adapter:  config.LLMAdapterClaudeCLI,
+			"openai-api": {
+				Provider:      config.LLMProviderOpenAI,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterOpenAIAPI,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: llmRef},
+				CredentialRef: llmRef,
 			},
 		},
 		Profiles: map[string]config.Profile{},
@@ -9364,8 +9378,9 @@ func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedRepositoryAccessCre
 			}
 			draft := seedInteractiveInitDraft("rianjs", "", nil)
 			applyGitScopeSelection(&draft, "github-rianjs", ctx.GitScopes)
-			applyReviewerEntitySelection(&draft, string(initReviewerEntityKindUseGitIdentity))
-			applyLLMRuntimeInventorySelection(&draft, "claude-cli", ctx.LLMRuntimes)
+			applyReviewerEntityInventorySelection(&draft, "rianjs-bot", ctx.ReviewerEntities)
+			applyReviewerEntitySelection(&draft, string(initReviewerEntityDraftFromSeedDraft(draft).Kind))
+			applyLLMRuntimeInventorySelection(&draft, "openai-api", ctx.LLMRuntimes)
 			draft.RoutesSet = true
 			draft.Routes = []configedit.RepositoryRouteSpec{{
 				Host:      "github.com",
@@ -9396,7 +9411,7 @@ func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedRepositoryAccessCre
 		t.Fatalf("profile v2 calls = %d, want stage then reentry", calls)
 	}
 	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
-		t.Fatalf("secret prompts = actions:%d sources:%d, want profile staging to skip repository-access credentials", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
+		t.Fatalf("secret prompts = actions:%d sources:%d, want profile staging to skip selected primitive credentials", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
 	}
 	profile := next.cfg.Profiles["rianjs"]
 	if profile.RepositoryAccess != "github-rianjs" {
@@ -9404,6 +9419,15 @@ func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedRepositoryAccessCre
 	}
 	if profile.Git.CredentialRef != repositoryAccessRef {
 		t.Fatalf("git credential ref = %q, want selected repository access ref %q", profile.Git.CredentialRef, repositoryAccessRef)
+	}
+	if profile.Reviewer.Kind != config.ProfileReviewerKindEntity || profile.Reviewer.Entity != "rianjs-bot" {
+		t.Fatalf("reviewer = %#v, want selected rianjs-bot reviewer entity", profile.Reviewer)
+	}
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != reviewerRef {
+		t.Fatalf("reviewer credentials = %#v, want selected reviewer ref %q", profile.ReviewerCredentials, reviewerRef)
+	}
+	if profile.LLMRuntime != "openai-api" || profile.LLM.CredentialRef != llmRef {
+		t.Fatalf("llm runtime/ref = %q/%q, want openai-api/%q", profile.LLMRuntime, profile.LLM.CredentialRef, llmRef)
 	}
 }
 
