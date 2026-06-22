@@ -3,11 +3,13 @@ package credentialcmd
 import (
 	"fmt"
 	"io"
+	"os/exec"
 	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
@@ -27,6 +29,14 @@ const (
 )
 
 const initConfigureNewRepositoryAccessSelection = "__configure_new_repository_access__"
+
+var initRepositoryAccessGitConfigValue = func(key string) string {
+	out, err := exec.Command("git", "config", "--get", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
 func (p huhInitRepositoryAccessPrompter) EditRepositoryAccess(prompt initRepositoryAccessPrompt) (initDraft, error) {
 	seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
@@ -90,6 +100,10 @@ func initRepositoryAccessLinearEditor(ctx initPromptContext, seed initDraft) ini
 			switch model.document[index].ID {
 			case initRepositoryAccessFieldSelection:
 				initRepositoryAccessSyncFields(model, ctx)
+			case initRepositoryAccessFieldName:
+				initRepositoryAccessMaybeUpdateAutoCredentialRef(model)
+			case initRepositoryAccessFieldCredentialName:
+				model.document[index].AutoManaged = false
 			case initRepositoryAccessFieldAuth:
 				initRepositoryAccessSyncGitHubAppField(model)
 			}
@@ -158,14 +172,13 @@ func initRepositoryAccessScopeForSelection(ctx initPromptContext, selection stri
 	name := uniqueInitGitScopeName(ctx.GitScopes, initGitScopeDraft{
 		Host:     "github.com",
 		AuthMode: config.GitAuthModePAT,
-	}.suggestedName())
-	ref, _ := credentials.FormatRef(name)
+	}.suggestedRepositoryAccessName())
 	return initGitScopeDraft{
 		Name:            name,
 		Host:            "github.com",
 		AuthMode:        config.GitAuthModePAT,
 		CredentialStore: initCredentialStoreDefaultID(),
-		CredentialRef:   ref,
+		CredentialRef:   initRepositoryAccessCredentialRef(name),
 	}
 }
 
@@ -178,7 +191,54 @@ func initRepositoryAccessSyncFields(model *initLinearEditorModel, ctx initPrompt
 	model.setFieldValue(initRepositoryAccessFieldGitHubAppID, scope.GitHubAppID)
 	model.selectFieldValue(initRepositoryAccessFieldCredentialStore, initCredentialStoreDraftValue(scope.CredentialStore))
 	model.setFieldValue(initRepositoryAccessFieldCredentialName, scope.CredentialRef)
+	if refIndex := model.document.fieldIndexByID(initRepositoryAccessFieldCredentialName); refIndex >= 0 {
+		model.document[refIndex].AutoManaged = initRepositoryAccessCredentialRef(scope.Name) == strings.TrimSpace(scope.CredentialRef)
+	}
 	initRepositoryAccessSyncGitHubAppField(model)
+}
+
+func initRepositoryAccessMaybeUpdateAutoCredentialRef(model *initLinearEditorModel) {
+	refIndex := model.document.fieldIndexByID(initRepositoryAccessFieldCredentialName)
+	if refIndex < 0 || !model.document[refIndex].AutoManaged {
+		return
+	}
+	model.setFieldValue(initRepositoryAccessFieldCredentialName, initRepositoryAccessCredentialRef(model.document.fieldValue(initRepositoryAccessFieldName)))
+	if refIndex = model.document.fieldIndexByID(initRepositoryAccessFieldCredentialName); refIndex >= 0 {
+		model.document[refIndex].AutoManaged = true
+	}
+}
+
+func initRepositoryAccessCredentialRef(name string) string {
+	segment := credstore.EscapeRefSegment(strings.TrimSpace(name))
+	ref, err := credentials.FormatRef(segment)
+	if err != nil {
+		return ""
+	}
+	return ref
+}
+
+func (scope initGitScopeDraft) suggestedRepositoryAccessName() string {
+	if config.NormalizeHost(scope.Host) == "github.com" && scope.AuthMode == config.GitAuthModePAT {
+		if username := initRepositoryAccessLocalGitHubUsername(); username != "" {
+			return "github-" + username
+		}
+	}
+	return scope.suggestedName()
+}
+
+func initRepositoryAccessLocalGitHubUsername() string {
+	for _, key := range []string{"github.user", "github.username"} {
+		if username := normalizeRepositoryAccessNameSegment(initRepositoryAccessGitConfigValue(key)); username != "" {
+			return username
+		}
+	}
+	return ""
+}
+
+func normalizeRepositoryAccessNameSegment(value string) string {
+	segment := credstore.EscapeRefSegment(strings.TrimSpace(value))
+	segment = strings.Trim(segment, "-_")
+	return strings.ToLower(segment)
 }
 
 func initRepositoryAccessSyncGitHubAppField(model *initLinearEditorModel) {

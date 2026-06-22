@@ -14581,6 +14581,63 @@ func TestInitInteractiveMenuStagesStandaloneRepositoryAccess(t *testing.T) {
 	}
 }
 
+func TestInitRepositoryAccessEditorDefaultsToLocalGitHubUsername(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(key string) string {
+		if key == "github.user" {
+			return "RianJS"
+		}
+		return ""
+	}
+
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(initPromptContext{}, initDraft{}), 160, 40)
+
+	if got, want := model.document.fieldValue(initRepositoryAccessFieldName), "github-rianjs"; got != want {
+		t.Fatalf("repository access name = %q, want %q", got, want)
+	}
+	if got, want := model.document.fieldValue(initRepositoryAccessFieldCredentialName), "codereview/github-rianjs"; got != want {
+		t.Fatalf("credential name = %q, want %q", got, want)
+	}
+	refIndex := model.document.fieldIndexByID(initRepositoryAccessFieldCredentialName)
+	if refIndex < 0 || !model.document[refIndex].AutoManaged {
+		t.Fatalf("credential name AutoManaged = false, want true")
+	}
+}
+
+func TestInitRepositoryAccessEditorAutoUpdatesCredentialRefFromName(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(initPromptContext{}, initDraft{}), 160, 40)
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldName)
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitLinearText(t, model, "github-rianjs")
+
+	if got, want := model.document.fieldValue(initRepositoryAccessFieldCredentialName), "codereview/github-rianjs"; got != want {
+		t.Fatalf("credential name = %q, want %q", got, want)
+	}
+}
+
+func TestInitRepositoryAccessEditorManualCredentialRefStopsAutoUpdate(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(initPromptContext{}, initDraft{}), 160, 40)
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldCredentialName)
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitLinearText(t, model, "codereview/custom-git")
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldName)
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitLinearText(t, model, "github-rianjs")
+
+	if got, want := model.document.fieldValue(initRepositoryAccessFieldCredentialName), "codereview/custom-git"; got != want {
+		t.Fatalf("credential name = %q, want manual override %q", got, want)
+	}
+}
+
 func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
