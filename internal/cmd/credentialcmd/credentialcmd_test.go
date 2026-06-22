@@ -8404,7 +8404,21 @@ func TestHuhInitPrompterAccessibleHidesReviewerEntityLabelForProfileGitAccount(t
 
 	_, err := prompter.Run(initPromptContext{
 		RequestedProfileName: "default",
-		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+		ExistingConfig: config.File{
+			Profiles: map[string]config.Profile{},
+			RepositoryAccess: map[string]config.RepositoryAccessConfig{
+				testInitProfileV2GitScopeName: {
+					Git: config.GitConfig{
+						Host:     "github.com",
+						AuthMode: config.GitAuthModePAT,
+						Credential: config.CredentialLocation{
+							Store: config.LocalOSCredentialStoreID,
+							Name:  "codereview/github-work",
+						},
+					},
+				},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -12485,16 +12499,16 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 
 func TestInitMenuItemsUseInfrastructureDescriptionsBeforeConfiguredCounts(t *testing.T) {
 	items := initMenuItems(initMenuPrompt{
-		CanConfigureLLM:      true,
-		CanConfigureReviewer: true,
-		CanSave:              true,
+		RepositoryAccessCount: 1,
+		CanConfigureLLM:       true,
+		CanConfigureReviewer:  true,
+		CanSave:               true,
 	})
 	descriptions := map[initMenuAction]string{}
 	for _, item := range items {
 		descriptions[item.Action] = item.Description
 	}
 	tests := map[initMenuAction]string{
-		initMenuActionRepositoryAccess: "Git hosts and user credentials",
 		initMenuActionLLMRuntimes:      "Model providers and runtime credentials",
 		initMenuActionReviewerEntities: "Reviewer identities and posting credentials",
 		initMenuActionReviewProfiles:   "Repository routing and review composition",
@@ -12751,13 +12765,14 @@ func TestHuhInitMenuPrompterAccessibleNumericOrder(t *testing.T) {
 			stderr: &stderr,
 		}
 		action, err := prompter.ChooseAction(initMenuPrompt{
-			HasWorkspace:         true,
-			LLMRuntimeCount:      2,
-			ReviewerEntityCount:  3,
-			ReviewProfileCount:   1,
-			CanConfigureLLM:      true,
-			CanConfigureReviewer: true,
-			CanSave:              true,
+			HasWorkspace:          true,
+			RepositoryAccessCount: 1,
+			LLMRuntimeCount:       2,
+			ReviewerEntityCount:   3,
+			ReviewProfileCount:    1,
+			CanConfigureLLM:       true,
+			CanConfigureReviewer:  true,
+			CanSave:               true,
 		})
 		if err != nil {
 			t.Fatalf("ChooseAction(%q): %v", tt.input, err)
@@ -12945,13 +12960,12 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 
 	for _, want := range []string{
 		"Review profile",
+		"Repository access",
+		"github.enterprise via GitHub App",
 		"Profile name",
-		"> open-cli-collective",
+		"open-cli-collective",
 		"Automatic profile selection",
 		"github.com/open-cli-collective",
-		"Git scope",
-		"Git scope host",
-		"github.enterprise",
 		"Reviewer entity",
 		"OCC reviewer (GitHub App reviewer)",
 		"LLM runtime",
@@ -12967,11 +12981,6 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"Enable self-approve",
 		"Auto-resolve",
 		"24h",
-		"Git credentials",
-		"Git credential store",
-		initBuiltInOSCredentialStoreTitle(),
-		"Git credential name",
-		"codereview/custom-git",
 		"Profile action",
 		"Stage profile settings",
 		"Back without staging",
@@ -12996,19 +13005,29 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		}
 	}
 	assertContentOrder(
-		"Profile name",
+		"Repository access",
 		"Automatic profile selection",
 		"Route entries",
-		"Git scope",
 		"Reviewer entity",
 		"LLM runtime",
 		"Minimum reviewer model tier",
 		"Model tier mapping",
+		"Profile name",
 		"Additional reviewer-agent directories (optional)",
 		"Review policy",
-		"Git credentials",
 		"Profile action",
 	)
+	for _, absent := range []string{
+		"Git credentials",
+		"Git credential store",
+		"Git credential name",
+		"Git scope host",
+		"Git scope auth mode",
+	} {
+		if strings.Contains(content, absent) {
+			t.Fatalf("content contains removed profile-local Git control %q:\n%s", absent, content)
+		}
+	}
 }
 
 func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *testing.T) {
@@ -13363,45 +13382,23 @@ func TestInitProfileV2GitScopePreservesSelectedScopeInDraft(t *testing.T) {
 	}
 }
 
-func TestInitProfileV2GitScopeCustomEditsDraft(t *testing.T) {
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
-		"monit",
-		"gitlab.com/SignalFT",
-		initCustomGitScopeSelection,
-		nil,
-		initDraft{
-			OriginalProfileName: "monit",
-			ProfileName:         "monit",
-			GitHost:             "github.enterprise",
-			GitAuth:             string(config.GitAuthModeGitHubApp),
-		},
-	), 160, 24)
-
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitHost)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
-	model = typeInitProfileV2Text(t, model, "gitlab.com")
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitAuth)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
-
-	draft, err := model.validatedDraft()
-	if err != nil {
-		t.Fatalf("validatedDraft: %v", err)
-	}
-	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModePAT) {
-		t.Fatalf("draft Git = (%q,%q), want edited custom Git host/auth", draft.GitHost, draft.GitAuth)
-	}
-}
-
 func TestInitProfileV2GitScopeRejectsRoutesForDifferentHost(t *testing.T) {
+	gitScopes := map[string]initGitScopeDraft{
+		"gitlab-work": {
+			Host:          "gitlab.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/gitlab-work",
+		},
+	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
 		"monit",
 		"github.com/SignalFT",
-		initCustomGitScopeSelection,
-		nil,
+		"gitlab-work",
+		gitScopes,
 		initDraft{
 			OriginalProfileName: "monit",
 			ProfileName:         "monit",
-			GitHost:             "gitlab.com",
+			GitHost:             "github.com",
 			GitAuth:             string(config.GitAuthModePAT),
 		},
 	), 160, 24)
@@ -13745,8 +13742,8 @@ func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
 		config.ReviewPolicy{},
 		"codereview/monit",
 		true,
-		nil,
-		initCustomGitScopeSelection,
+		testInitProfileV2GitScopes(),
+		testInitProfileV2GitScopeName,
 	), 160, 40)
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewMajorEvent, string(config.ReviewMajorEventRequestChanges))
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldSelfApprove, initSelfApproveEnable)
@@ -13779,8 +13776,8 @@ func TestInitProfileV2ReviewPolicyRejectsInvalidDuration(t *testing.T) {
 		config.ReviewPolicy{},
 		"codereview/monit",
 		true,
-		nil,
-		initCustomGitScopeSelection,
+		testInitProfileV2GitScopes(),
+		testInitProfileV2GitScopeName,
 	), 160, 24)
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldResolveAfter)
 	model = typeInitProfileV2Text(t, model, "tomorrow")
@@ -13793,65 +13790,6 @@ func TestInitProfileV2ReviewPolicyRejectsInvalidDuration(t *testing.T) {
 	}
 	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "invalid duration") {
 		t.Fatalf("validatedDraft error = %v, want duration validation", err)
-	}
-}
-
-func TestInitProfileV2GitCredentialNameDraftsCustomName(t *testing.T) {
-	gitScopes := map[string]initGitScopeDraft{
-		"github-work": {
-			Host:            "github.com",
-			AuthMode:        config.GitAuthModePAT,
-			CredentialStore: config.LocalOSCredentialStoreID,
-			CredentialRef:   "codereview/monit",
-		},
-	}
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
-		"monit",
-		"github.com/SignalFT",
-		config.ReviewPolicy{},
-		"codereview/monit",
-		true,
-		gitScopes,
-		"github-work",
-	), 160, 40)
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitCredentialName)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
-	model = typeInitProfileV2Text(t, model, "codereview/custom-monit-git")
-
-	draft, err := model.validatedDraft()
-	if err != nil {
-		t.Fatalf("validatedDraft: %v", err)
-	}
-	if draft.GitCredentialRef != "codereview/custom-monit-git" {
-		t.Fatalf("draft.GitCredentialRef = %q, want custom credential name", draft.GitCredentialRef)
-	}
-	if draft.GitCredentialStore != config.LocalOSCredentialStoreID {
-		t.Fatalf("draft.GitCredentialStore = %q, want local-os", draft.GitCredentialStore)
-	}
-}
-
-func TestInitProfileV2GitCredentialNameRejectsInvalidCredentialRef(t *testing.T) {
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
-		"monit",
-		"github.com/SignalFT",
-		config.ReviewPolicy{},
-		"codereview/monit",
-		true,
-		nil,
-		initCustomGitScopeSelection,
-	), 160, 24)
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitCredentialName)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
-	model = typeInitProfileV2Text(t, model, "not-a-ref")
-
-	if !strings.Contains(model.View(), "credential ref") {
-		index := model.document.fieldIndexByID(initProfileV2FieldGitCredentialName)
-		if index < 0 || !strings.Contains(model.document[index].Error, "credential ref") {
-			t.Fatalf("git credential name field error = %q, want credential-ref validation", model.document[index].Error)
-		}
-	}
-	if _, err := model.validatedDraft(); err == nil {
-		t.Fatal("validatedDraft error = nil, want credential-ref validation")
 	}
 }
 
@@ -14019,7 +13957,21 @@ func TestBubbleTeaInitProfileV2PrompterSkipsChooserWhenNoProfilesExist(t *testin
 
 	_, err := prompter.Run(initPromptContext{
 		RequestedProfileName: "default",
-		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+		ExistingConfig: config.File{
+			Profiles: map[string]config.Profile{},
+			RepositoryAccess: map[string]config.RepositoryAccessConfig{
+				testInitProfileV2GitScopeName: {
+					Git: config.GitConfig{
+						Host:     "github.com",
+						AuthMode: config.GitAuthModePAT,
+						Credential: config.CredentialLocation{
+							Store: config.LocalOSCredentialStoreID,
+							Name:  "codereview/github-work",
+						},
+					},
+				},
+			},
+		},
 	})
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("Run error = %v, want direct create back to main menu", err)
@@ -14310,7 +14262,23 @@ func newTestInitProfileV2Editor(profileName string, routeText string) initProfil
 			GitHost:             "github.com",
 			GitAuth:             string(config.GitAuthModePAT),
 		},
-		Document: document,
+		GitScopes:        testInitProfileV2GitScopes(),
+		SelectedGitScope: testInitProfileV2GitScopeName,
+		Document:         document,
+	}
+}
+
+const testInitProfileV2GitScopeName = "github-work"
+
+func testInitProfileV2GitScopes() map[string]initGitScopeDraft {
+	return map[string]initGitScopeDraft{
+		testInitProfileV2GitScopeName: {
+			Name:            testInitProfileV2GitScopeName,
+			Host:            "github.com",
+			AuthMode:        config.GitAuthModePAT,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/github-work",
+		},
 	}
 }
 
@@ -14345,6 +14313,8 @@ func newTestInitProfileV2EditorWithSelections(profileName string, routeText stri
 	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
 	return initProfileV2Editor{
 		Draft:                  draft,
+		GitScopes:              testInitProfileV2GitScopes(),
+		SelectedGitScope:       testInitProfileV2GitScopeName,
 		ReviewerEntities:       reviewerEntities,
 		LLMRuntimes:            llmRuntimes,
 		CredentialStoreOptions: storeOptions,
@@ -14369,8 +14339,10 @@ func newTestInitProfileV2EditorWithModelMap(profileName string, routeText string
 	initProfileV2AppendRouteSection(&document, routeText)
 	initProfileV2AppendModelMapSection(&document, llm, modelMap)
 	return initProfileV2Editor{
-		Draft:    draft,
-		Document: document,
+		Draft:            draft,
+		GitScopes:        testInitProfileV2GitScopes(),
+		SelectedGitScope: testInitProfileV2GitScopeName,
+		Document:         document,
 	}
 }
 
@@ -14404,6 +14376,8 @@ func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeT
 	initProfileV2AppendModelMapSection(&document, initProfileEditorModelMapLLM(draft, normalizedRuntime, llmRuntimes), draft.ModelMap)
 	return initProfileV2Editor{
 		Draft:                  draft,
+		GitScopes:              testInitProfileV2GitScopes(),
+		SelectedGitScope:       testInitProfileV2GitScopeName,
 		LLMRuntimes:            llmRuntimes,
 		CredentialStoreOptions: storeOptions,
 		Document:               document,
@@ -14427,8 +14401,10 @@ func newTestInitProfileV2EditorWithAgentSources(profileName string, routeText st
 	initProfileV2AppendRouteSection(&document, routeText)
 	initProfileV2AppendAgentSourcesSection(&document, agentSources)
 	return initProfileV2Editor{
-		Draft:    draft,
-		Document: document,
+		Draft:            draft,
+		GitScopes:        testInitProfileV2GitScopes(),
+		SelectedGitScope: testInitProfileV2GitScopeName,
+		Document:         document,
 	}
 }
 

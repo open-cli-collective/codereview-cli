@@ -146,7 +146,11 @@ func initMenuDisabledReason(prompt initMenuPrompt, action initMenuAction) string
 		if !prompt.CanSave {
 			return "stage changes before committing"
 		}
-	case initMenuActionSecretsManagement, initMenuActionRepositoryAccess, initMenuActionLLMRuntimes, initMenuActionReviewerEntities, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+	case initMenuActionReviewProfiles:
+		if prompt.RepositoryAccessCount == 0 {
+			return "configure repository access before creating review profiles"
+		}
+	case initMenuActionSecretsManagement, initMenuActionRepositoryAccess, initMenuActionLLMRuntimes, initMenuActionReviewerEntities, initMenuActionGlobalSettings, initMenuActionExit:
 	}
 	return ""
 }

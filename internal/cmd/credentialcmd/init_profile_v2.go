@@ -198,6 +198,10 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 	if height <= 0 {
 		height = 28
 	}
+	selectedGitScope := editor.SelectedGitScope
+	if selectedGitScope == "" {
+		selectedGitScope = firstInitGitScopeName(editor.GitScopes)
+	}
 	vp := viewport.New(width, max(height-2, 1))
 	model := initProfileV2ReadOnlyModel{
 		viewport:                   vp,
@@ -206,7 +210,7 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 		reviewerEntities:           maps.Clone(editor.ReviewerEntities),
 		llmRuntimes:                maps.Clone(editor.LLMRuntimes),
 		credentialStoreOptions:     append([]huh.Option[string](nil), editor.CredentialStoreOptions...),
-		selectedGitScope:           editor.SelectedGitScope,
+		selectedGitScope:           selectedGitScope,
 		initialGitStorageLabel:     editor.InitialGitStorageLabel,
 		gitStorageLabelUsesDefault: editor.GitStorageLabelUsesDefault,
 		document:                   editor.Document,
@@ -323,26 +327,25 @@ func initProfileV2ReadOnlyDocument(ctx initPromptContext, selection string) (ini
 }
 
 func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initProfileV2Editor, error) {
+	if ctx.GitScopes == nil || ctx.ProfileGitScopes == nil {
+		ctx.GitScopes, ctx.ProfileGitScopes = buildInitGitScopeInventory(ctx.ExistingConfig)
+	}
+	if len(ctx.GitScopes) == 0 {
+		return initProfileV2Editor{}, fmt.Errorf("configure repository access before creating review profiles")
+	}
 	selectedProfileName, selectedExistingProfile, requestedProfileName := initProfileV2Selection(ctx, selection)
 	draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, selectedExistingProfile)
 	routeText := formatInitRouteSpecs(currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName))
 
 	selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
 	if selectedGitScope == "" {
-		selectedGitScope = initCustomGitScopeSelection
+		selectedGitScope = firstInitGitScopeName(ctx.GitScopes)
 	}
-	selectedGit := initGitScopeDraft{
-		Host:            draft.GitHost,
-		AuthMode:        config.GitAuthMode(draft.GitAuth),
-		GitHubAppID:     strings.TrimSpace(draft.GitHubAppID),
-		CredentialStore: initCredentialStoreDraftValue(draft.GitCredentialStore),
-		CredentialRef:   strings.TrimSpace(draft.GitCredentialRef),
+	if _, ok := ctx.GitScopes[selectedGitScope]; !ok {
+		selectedGitScope = firstInitGitScopeName(ctx.GitScopes)
 	}
-	if scopeName := ctx.ProfileGitScopes[selectedProfileName]; scopeName != "" {
-		if scope, ok := ctx.GitScopes[scopeName]; ok {
-			selectedGit = scope
-		}
-	}
+	applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
+	selectedGit := ctx.GitScopes[selectedGitScope]
 
 	reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
 	selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
@@ -360,12 +363,6 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	llmRuntimeOptions, selectedLLMRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, ctx.ProfileLLMRuntimes[selectedProfileName], draft)
 	modelMapLLM := initProfileEditorModelMapLLM(draft, selectedLLMRuntime, llmRuntimes)
 
-	standardGitCredentialRef, err := initStandardGitCredentialRef(draft.ProfileName, selectedGitScope, ctx.GitScopes)
-	if err != nil {
-		return initProfileV2Editor{}, err
-	}
-	gitStorageLabel := initEffectiveStorageLabelValue(draft.GitCredentialRef, standardGitCredentialRef)
-	gitStorageLabelUsesDefault := initStorageLabelUsesDefault(gitStorageLabel, standardGitCredentialRef)
 	standardLLMCredentialRef, err := initStandardLLMCredentialRef(draft.ProfileName, selectedLLMRuntime, llmRuntimes)
 	if err != nil {
 		return initProfileV2Editor{}, err
@@ -377,34 +374,31 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 
 	var document initProfileV2Document
 	document.addSection("Review profile", "Repository routing and review composition.")
-	profileNameInput := initProfileV2ProfileNameInput(ctx, selectedExistingProfile, draft)
-	profileNameValidate := validateProfileName
-	if selectedExistingProfile == nil && strings.TrimSpace(profileNameInput) == "" {
-		profileNameValidate = validateOptionalProfileName
-	}
-	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "Human-friendly name for this review profile.", profileNameInput, profileNameValidate)
+	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initRepositoryAccessProfileOptions(ctx.GitScopes), draft, true)
 	initProfileV2AppendRouteSection(&document, routeText)
-	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(ctx.GitScopes), draft, selectedGitScope == initCustomGitScopeSelection || len(ctx.GitScopes) > 1)
 	document.addEditableSelect(initProfileV2FieldReviewerEntity, "Reviewer entity", reviewerEntitySelectionDescription(), reviewerEntityOptions, selectedReviewerEntity)
 	initProfileV2AppendReviewerGitHubAppInstallationSection(&document, selectedReviewerEntity, ctx.ReviewerEntities, draft)
 	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
 	initProfileV2AppendLLMStorageSection(&document, storeOptions, draft.LLMCredentialStore, draft.LLMCredentialRef, !initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes))
 	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
 	initProfileV2AppendModelMapSection(&document, modelMapLLM, draft.ModelMap)
+	profileNameInput := initProfileV2ProfileNameInput(ctx, selectedExistingProfile, draft)
+	profileNameValidate := validateProfileName
+	if selectedExistingProfile == nil && strings.TrimSpace(profileNameInput) == "" {
+		profileNameValidate = validateOptionalProfileName
+	}
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "Human-friendly name for this review profile.", profileNameInput, profileNameValidate)
 	initProfileV2AppendAgentSourcesSection(&document, draft.AgentSources)
 	initProfileV2AppendReviewPolicySection(&document, draft.ReviewPolicy)
-	initProfileV2AppendGitStorageSection(&document, storeOptions, draft.GitCredentialStore, gitStorageLabel)
 	initProfileV2AppendProfileActionSection(&document)
 	return initProfileV2Editor{
-		Draft:                      draft,
-		GitScopes:                  maps.Clone(ctx.GitScopes),
-		ReviewerEntities:           maps.Clone(ctx.ReviewerEntities),
-		LLMRuntimes:                maps.Clone(llmRuntimes),
-		CredentialStoreOptions:     storeOptions,
-		SelectedGitScope:           selectedGitScope,
-		InitialGitStorageLabel:     gitStorageLabel,
-		GitStorageLabelUsesDefault: gitStorageLabelUsesDefault,
-		Document:                   document,
+		Draft:                  draft,
+		GitScopes:              maps.Clone(ctx.GitScopes),
+		ReviewerEntities:       maps.Clone(ctx.ReviewerEntities),
+		LLMRuntimes:            maps.Clone(llmRuntimes),
+		CredentialStoreOptions: storeOptions,
+		SelectedGitScope:       selectedGitScope,
+		Document:               document,
 	}, nil
 }
 
@@ -497,19 +491,12 @@ func initProfileV2AppendRouteSection(document *initProfileV2Document, routeText 
 	document.addEditableInput(initProfileV2FieldRoutes, "Route entries", "Examples: github.com/YourOrg; github.com/YourOrg/repo; github.com/YourOrg [RepoA, RepoB]. Leave blank for explicit --profile selection only.", routeText, validateInitProfileV2RouteText)
 }
 
-func initProfileV2AppendGitScopeSection(document *initProfileV2Document, selectedScope string, scopeOptions []huh.Option[string], draft initDraft, visible bool) {
+func initProfileV2AppendGitScopeSection(document *initProfileV2Document, selectedScope string, scopeOptions []huh.Option[string], _ initDraft, visible bool) {
 	if !visible {
 		return
 	}
-	customHidden := selectedScope != initCustomGitScopeSelection
-	document.addSection("Git scope", "Choose an existing Git scope or configure host/auth settings for this profile.")
-	document.addEditableSelect(initProfileV2FieldGitScope, "Git scope", "", scopeOptions, selectedScope)
-	document.addEditableInput(initProfileV2FieldGitHost, "Git scope host", "Git host this review profile applies to, such as github.com or github.mycompany.com.", draft.GitHost, validateRequiredText("git host is required"), initProfileV2FieldOptions{Hidden: customHidden})
-	document.addEditableSelect(initProfileV2FieldGitAuth, "Git scope auth mode", "", []huh.Option[string]{
-		huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
-		huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
-	}, draft.GitAuth, initProfileV2FieldOptions{Hidden: customHidden})
-	document.addEditableInput(initProfileV2FieldGitHubAppID, "GitHub App ID", "Numeric GitHub App ID. This is not a secret and is saved in config.yml.", draft.GitHubAppID, validateOptionalDecimalID("GitHub App ID"), initProfileV2FieldOptions{Hidden: customHidden || config.GitAuthMode(draft.GitAuth) != config.GitAuthModeGitHubApp})
+	document.addSection("Repository access", "Choose how cr accesses Git repositories for this profile.")
+	document.addEditableSelect(initProfileV2FieldGitScope, "Repository access", "", scopeOptions, selectedScope)
 }
 
 func initProfileV2AppendReviewerGitHubAppInstallationSection(document *initProfileV2Document, selectedReviewerEntity string, entities map[string]initReviewerEntityDraft, draft initDraft) {
@@ -835,41 +822,10 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 	if selectedGitScope == "" {
 		selectedGitScope = m.selectedGitScope
 	}
-	if selectedGitScope == "" {
-		selectedGitScope = initCustomGitScopeSelection
+	if selectedGitScope == "" || selectedGitScope == initCustomGitScopeSelection {
+		return draft, fmt.Errorf("repository access is required")
 	}
-	if selectedGitScope == initCustomGitScopeSelection {
-		gitHost := m.document.fieldValue(initProfileV2FieldGitHost)
-		if strings.TrimSpace(gitHost) != "" {
-			draft.GitHost = strings.TrimSpace(gitHost)
-		}
-		gitAuth := m.document.selectedValue(initProfileV2FieldGitAuth)
-		if gitAuth != "" {
-			draft.GitAuth = gitAuth
-		}
-		if config.GitAuthMode(draft.GitAuth) == config.GitAuthModeGitHubApp {
-			appID := strings.TrimSpace(m.document.fieldValue(initProfileV2FieldGitHubAppID))
-			if appID == "" {
-				return draft, fmt.Errorf("GitHub App ID is required when Git scope auth mode is GitHub App")
-			}
-			if err := validateOptionalDecimalID("GitHub App ID")(appID); err != nil {
-				return draft, err
-			}
-			draft.GitHubAppID = appID
-		} else {
-			draft.GitHubAppID = ""
-		}
-	} else {
-		applyGitScopeSelection(&draft, selectedGitScope, m.gitScopes)
-	}
-	if m.document.fieldIndexByID(initProfileV2FieldGitCredentialName) >= 0 {
-		gitName := strings.TrimSpace(m.document.fieldValue(initProfileV2FieldGitCredentialName))
-		if err := validateRequiredCredentialRef(gitName); err != nil {
-			return draft, err
-		}
-		draft.GitCredentialStore = initCredentialStoreDraftValue(m.document.selectedValue(initProfileV2FieldGitCredentialStore))
-		draft.GitCredentialRef = gitName
-	}
+	applyGitScopeSelection(&draft, selectedGitScope, m.gitScopes)
 	if _, err := applyInitProfileRoutes(nil, draft.ProfileName, draft.GitHost, routes); err != nil {
 		return draft, err
 	}
@@ -973,28 +929,18 @@ func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
 		selectedGitScope = initCustomGitScopeSelection
 	}
 	m.selectedGitScope = selectedGitScope
-	custom := selectedGitScope == initCustomGitScopeSelection
-	if !custom {
-		if scope, ok := m.gitScopes[selectedGitScope]; ok {
-			m.setFieldValue(initProfileV2FieldGitHost, scope.Host)
-			m.selectFieldValue(initProfileV2FieldGitAuth, string(scope.AuthMode))
-			m.setFieldValue(initProfileV2FieldGitHubAppID, scope.GitHubAppID)
-			m.selectFieldValue(initProfileV2FieldGitCredentialStore, initCredentialStoreDraftValue(scope.CredentialStore))
-			if strings.TrimSpace(scope.CredentialRef) != "" {
-				m.setFieldValue(initProfileV2FieldGitCredentialName, scope.CredentialRef)
-			}
+	if scope, ok := m.gitScopes[selectedGitScope]; ok {
+		m.setFieldValue(initProfileV2FieldGitHost, scope.Host)
+		m.selectFieldValue(initProfileV2FieldGitAuth, string(scope.AuthMode))
+		m.setFieldValue(initProfileV2FieldGitHubAppID, scope.GitHubAppID)
+		m.selectFieldValue(initProfileV2FieldGitCredentialStore, initCredentialStoreDraftValue(scope.CredentialStore))
+		if strings.TrimSpace(scope.CredentialRef) != "" {
+			m.setFieldValue(initProfileV2FieldGitCredentialName, scope.CredentialRef)
 		}
 	}
-	m.setFieldHidden(initProfileV2FieldGitHost, !custom)
-	m.setFieldHidden(initProfileV2FieldGitAuth, !custom)
-	if !custom || config.GitAuthMode(m.document.selectedValue(initProfileV2FieldGitAuth)) != config.GitAuthModeGitHubApp {
-		m.setFieldHidden(initProfileV2FieldGitHubAppID, true)
-		if custom {
-			m.setFieldValue(initProfileV2FieldGitHubAppID, "")
-		}
-	} else {
-		m.setFieldHidden(initProfileV2FieldGitHubAppID, false)
-	}
+	m.setFieldHidden(initProfileV2FieldGitHost, true)
+	m.setFieldHidden(initProfileV2FieldGitAuth, true)
+	m.setFieldHidden(initProfileV2FieldGitHubAppID, true)
 	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Hidden {
 		m.focused = m.document.nextFocusableField(m.focused)
 		if m.focused >= len(m.document) || m.document[m.focused].Hidden {

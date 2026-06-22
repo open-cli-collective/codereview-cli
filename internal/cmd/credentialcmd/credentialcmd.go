@@ -2939,6 +2939,32 @@ func initGitScopeOptions(scopes map[string]initGitScopeDraft) []huh.Option[strin
 	return options
 }
 
+func initRepositoryAccessProfileOptions(scopes map[string]initGitScopeDraft) []huh.Option[string] {
+	names := make([]string, 0, len(scopes))
+	for name := range scopes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	options := make([]huh.Option[string], 0, len(names))
+	for _, name := range names {
+		scope := scopes[name]
+		options = append(options, huh.NewOption(initGitScopeLabel(scope), name))
+	}
+	return options
+}
+
+func firstInitGitScopeName(scopes map[string]initGitScopeDraft) string {
+	names := make([]string, 0, len(scopes))
+	for name := range scopes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
 func initGitScopeLabel(scope initGitScopeDraft) string {
 	label := fmt.Sprintf("%s via %s", scope.Host, initGitAuthModeLabel(scope.AuthMode))
 	if strings.TrimSpace(scope.Name) != "" {
