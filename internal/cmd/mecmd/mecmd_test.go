@@ -167,7 +167,6 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("work-reviewer", map[string]string{
-		credentials.GitHubAppIDKey:         "12345",
 		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle reviewer: %v", err)
@@ -180,6 +179,7 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	cfg = withCredentialStore(cfg, testFileCredentialStoreID)
 	work := cfg.Profiles["work"]
 	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
+	work.ReviewerCredentials.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	cfg.Profiles["work"] = work
 	cfg = config.Normalize(cfg)
 	work = cfg.Profiles["work"]
@@ -467,7 +467,6 @@ func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T)
 	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("home", map[string]string{
-		credentials.GitHubAppIDKey:         "12345",
 		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle home: %v", err)
@@ -475,6 +474,7 @@ func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T)
 	cfg := fileBackendConfig(t)
 	home := cfg.Profiles["home"]
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
 	var out bytes.Buffer
@@ -504,7 +504,6 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("home", map[string]string{
-		credentials.GitHubAppIDKey:         "12345",
 		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle home: %v", err)
@@ -512,6 +511,7 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	home := cfg.Profiles["home"]
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	home.ReviewerCredentials = nil
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
@@ -623,6 +623,8 @@ reviewer_entities:
   work-reviewer:
     host: github.com
     auth_mode: github_app
+    github_app:
+      app_id: "12345"
     credential:
       store: test-memory
       name: codereview/work-reviewer

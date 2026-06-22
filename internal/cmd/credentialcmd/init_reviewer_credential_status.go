@@ -361,7 +361,11 @@ func initReviewerCredentialStatusDescription(status initReviewerCredentialStatus
 		}
 		lines = append(lines, trimmed)
 	}
-	lines = append(lines, "This is a credential name, not a PAT, GitHub App ID, or private key.")
+	if config.GitAuthMode(status.Ref.Mode) == config.GitAuthModeGitHubApp {
+		lines = append(lines, "GitHub App ID is saved in config.yml. Secret values are collected separately.")
+	} else {
+		lines = append(lines, "This is a credential name, not a PAT or secret value.")
+	}
 	if strings.TrimSpace(status.Unavailable) != "" {
 		lines = append(lines, strings.TrimSpace(status.Unavailable)+".")
 	}

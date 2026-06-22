@@ -583,6 +583,14 @@ func (m *initLinearEditorModel) setFieldDescription(id initLinearFieldID, descri
 	m.document[index].Description = description
 }
 
+func (m *initLinearEditorModel) setFieldTitle(id initLinearFieldID, title string) {
+	index := m.document.fieldIndexByID(id)
+	if index < 0 {
+		return
+	}
+	m.document[index].Title = title
+}
+
 func (m *initLinearEditorModel) selectFieldValue(id initLinearFieldID, value string) {
 	index := m.document.fieldIndexByID(id)
 	if index < 0 {

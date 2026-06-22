@@ -76,9 +76,9 @@ func newGitHubAppFromConfig(ctx context.Context, profile string, store TokenStor
 	if now == nil {
 		now = time.Now
 	}
-	issuer, err := readRequiredCredential(store, profile, credentials.GitHubAppIDKey)
-	if err != nil {
-		return nil, gitprovider.Credential{}, err
+	issuer := strings.TrimSpace(opts.AppID)
+	if issuer == "" {
+		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("github app app_id is required in config for github_app auth"))
 	}
 	privateKeyPEM, err := readRequiredCredential(store, profile, credentials.GitHubAppPrivateKeyKey)
 	if err != nil {

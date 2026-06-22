@@ -184,16 +184,23 @@ type GitConfig struct {
 	Host          string             `yaml:"host" json:"host"`
 	AuthMode      GitAuthMode        `yaml:"auth_mode" json:"auth_mode"`
 	Credential    CredentialLocation `yaml:"credential" json:"credential"`
+	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
 	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
 
 	// CredentialRef is retained as an ignored in-memory compatibility field.
 	CredentialRef string `yaml:"-" json:"-"`
 }
 
+// GitHubAppConfig stores non-secret GitHub App identifiers.
+type GitHubAppConfig struct {
+	AppID string `yaml:"app_id" json:"app_id"`
+}
+
 // ReviewerCredentials optionally identifies separate posting credentials.
 type ReviewerCredentials struct {
 	AuthMode      GitAuthMode        `yaml:"auth_mode" json:"auth_mode"`
 	Credential    CredentialLocation `yaml:"credential" json:"credential"`
+	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
 	DisplayName   string             `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
 
@@ -259,6 +266,7 @@ type ReviewerEntity struct {
 	Host          string             `yaml:"host" json:"host"`
 	AuthMode      GitAuthMode        `yaml:"auth_mode" json:"auth_mode"`
 	Credential    CredentialLocation `yaml:"credential" json:"credential"`
+	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
 	DisplayName   string             `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
 
@@ -1015,6 +1023,9 @@ func validateProfile(cfg File, name string, profile Profile) error {
 	if err := validateCredentialLocation(fmt.Sprintf("profiles.%s.git.credential", name), profile.Git.Credential); err != nil {
 		return err
 	}
+	if err := validateGitHubAppConfig(fmt.Sprintf("profiles.%s.git.github_app", name), profile.Git.AuthMode, profile.Git.GitHubApp); err != nil {
+		return err
+	}
 	if !profile.Reviewer.Kind.Valid() {
 		return invalid("profiles.%s.reviewer.kind %q is invalid", name, profile.Reviewer.Kind)
 	}
@@ -1124,6 +1135,9 @@ func validateEffectiveProfile(name string, profile Profile) error {
 	if err := validateCredentialLocation(name+".git.credential", profile.Git.Credential); err != nil {
 		return err
 	}
+	if err := validateGitHubAppConfig(name+".git.github_app", profile.Git.AuthMode, profile.Git.GitHubApp); err != nil {
+		return err
+	}
 	if profile.ReviewerCredentials != nil {
 		if !profile.ReviewerCredentials.AuthMode.Valid() {
 			return invalid("%s.reviewer_credentials.auth_mode %q is invalid", name, profile.ReviewerCredentials.AuthMode)
@@ -1132,6 +1146,9 @@ func validateEffectiveProfile(name string, profile Profile) error {
 			return fmt.Errorf("%w: %s.reviewer_credentials.auth_mode %q", ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
 		}
 		if err := validateCredentialLocation(name+".reviewer_credentials.credential", profile.ReviewerCredentials.Credential); err != nil {
+			return err
+		}
+		if err := validateGitHubAppConfig(name+".reviewer_credentials.github_app", profile.ReviewerCredentials.AuthMode, profile.ReviewerCredentials.GitHubApp); err != nil {
 			return err
 		}
 	}
@@ -1208,8 +1225,30 @@ func validateReviewerEntity(secrets SecretsConfig, name string, entity ReviewerE
 	if err := validateCredentialStoreSelection(secrets, fmt.Sprintf("reviewer_entities.%s.credential.store", name), entity.Credential.Store); err != nil {
 		return err
 	}
+	if err := validateGitHubAppConfig(fmt.Sprintf("reviewer_entities.%s.github_app", name), entity.AuthMode, entity.GitHubApp); err != nil {
+		return err
+	}
 	if err := validateOptionalSingleLine(fmt.Sprintf("reviewer_entities.%s.display_name", name), entity.DisplayName); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateGitHubAppConfig(path string, authMode GitAuthMode, app *GitHubAppConfig) error {
+	if authMode != GitAuthModeGitHubApp {
+		if app != nil {
+			return invalid("%s must be empty unless auth_mode is github_app", path)
+		}
+		return nil
+	}
+	if app == nil {
+		return invalid("%s.app_id is required for github_app auth", path)
+	}
+	if strings.TrimSpace(app.AppID) == "" {
+		return invalid("%s.app_id is required for github_app auth", path)
+	}
+	if _, err := strconv.ParseInt(strings.TrimSpace(app.AppID), 10, 64); err != nil {
+		return invalid("%s.app_id %q must be a decimal GitHub App ID", path, app.AppID)
 	}
 	return nil
 }
@@ -1671,6 +1710,7 @@ func reviewerEntityFromProfile(profile Profile) ReviewerEntity {
 		AuthMode:      reviewer.AuthMode,
 		Credential:    reviewer.Credential,
 		CredentialRef: reviewer.CredentialRef,
+		GitHubApp:     cloneGitHubAppConfig(reviewer.GitHubApp),
 		DisplayName:   reviewer.DisplayName,
 		IdentityCache: reviewer.IdentityCache,
 	}.normalized()
@@ -1683,7 +1723,15 @@ func reviewerEntityIdentityKey(entity ReviewerEntity) string {
 		string(entity.AuthMode),
 		entity.Credential.Store,
 		entity.Credential.Name,
+		gitHubAppID(entity.GitHubApp),
 	}, "\x00")
+}
+
+func gitHubAppID(app *GitHubAppConfig) string {
+	if app == nil {
+		return ""
+	}
+	return strings.TrimSpace(app.AppID)
 }
 
 func suggestedReviewerEntityName(profileName string, entity ReviewerEntity) string {
@@ -1851,6 +1899,7 @@ func (g GitConfig) normalized() GitConfig {
 		g.Credential.Name = g.CredentialRef
 	}
 	g.CredentialRef = g.Credential.Name
+	g.GitHubApp = normalizeGitHubAppForAuth(g.AuthMode, g.GitHubApp)
 	return g
 }
 
@@ -1864,6 +1913,7 @@ func (r ReviewerCredentials) normalized() ReviewerCredentials {
 		r.Credential.Name = r.CredentialRef
 	}
 	r.CredentialRef = r.Credential.Name
+	r.GitHubApp = normalizeGitHubAppForAuth(r.AuthMode, r.GitHubApp)
 	return r
 }
 
@@ -1879,6 +1929,7 @@ func (r ReviewerEntity) normalized() ReviewerEntity {
 		r.Credential.Name = r.CredentialRef
 	}
 	r.CredentialRef = r.Credential.Name
+	r.GitHubApp = normalizeGitHubAppForAuth(r.AuthMode, r.GitHubApp)
 	r.DisplayName = strings.TrimSpace(r.DisplayName)
 	r.IdentityCache = strings.TrimSpace(r.IdentityCache)
 	return r
@@ -1889,10 +1940,27 @@ func (r ReviewerEntity) reviewerCredentials() *ReviewerCredentials {
 	return &ReviewerCredentials{
 		AuthMode:      r.AuthMode,
 		Credential:    r.Credential,
+		GitHubApp:     cloneGitHubAppConfig(r.GitHubApp),
 		DisplayName:   r.DisplayName,
 		IdentityCache: r.IdentityCache,
 		CredentialRef: r.Credential.Name,
 	}
+}
+
+func normalizeGitHubAppForAuth(authMode GitAuthMode, app *GitHubAppConfig) *GitHubAppConfig {
+	if authMode != GitAuthModeGitHubApp || app == nil {
+		return nil
+	}
+	normalized := GitHubAppConfig{AppID: strings.TrimSpace(app.AppID)}
+	return &normalized
+}
+
+func cloneGitHubAppConfig(app *GitHubAppConfig) *GitHubAppConfig {
+	if app == nil {
+		return nil
+	}
+	cloned := *app
+	return &cloned
 }
 
 func (l LLMConfig) normalized() LLMConfig {

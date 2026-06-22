@@ -334,6 +334,7 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	selectedGit := initGitScopeDraft{
 		Host:            draft.GitHost,
 		AuthMode:        config.GitAuthMode(draft.GitAuth),
+		GitHubAppID:     strings.TrimSpace(draft.GitHubAppID),
 		CredentialStore: initCredentialStoreDraftValue(draft.GitCredentialStore),
 		CredentialRef:   strings.TrimSpace(draft.GitCredentialRef),
 	}
@@ -449,6 +450,7 @@ const (
 	initProfileV2FieldGitScope                             initProfileV2FieldID = "git_scope"
 	initProfileV2FieldGitHost                              initProfileV2FieldID = "git_host"
 	initProfileV2FieldGitAuth                              initProfileV2FieldID = "git_auth"
+	initProfileV2FieldGitHubAppID                          initProfileV2FieldID = "git_github_app_id" // #nosec G101 -- this is a field ID, not a secret value.
 	initProfileV2FieldReviewerEntity                       initProfileV2FieldID = "reviewer_entity"
 	initProfileV2FieldReviewerGitHubAppInstallationSection initProfileV2FieldID = "reviewer_github_app_installation_section"
 	initProfileV2FieldReviewerGitHubAppInstallationMode    initProfileV2FieldID = "reviewer_github_app_installation_mode"
@@ -507,6 +509,7 @@ func initProfileV2AppendGitScopeSection(document *initProfileV2Document, selecte
 		huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
 		huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
 	}, draft.GitAuth, initProfileV2FieldOptions{Hidden: customHidden})
+	document.addEditableInput(initProfileV2FieldGitHubAppID, "GitHub App ID", "Numeric GitHub App ID. This is not a secret and is saved in config.yml.", draft.GitHubAppID, validateOptionalDecimalID("GitHub App ID"), initProfileV2FieldOptions{Hidden: customHidden || config.GitAuthMode(draft.GitAuth) != config.GitAuthModeGitHubApp})
 }
 
 func initProfileV2AppendReviewerGitHubAppInstallationSection(document *initProfileV2Document, selectedReviewerEntity string, entities map[string]initReviewerEntityDraft, draft initDraft) {
@@ -779,6 +782,10 @@ func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
 		m.syncGitScopeFields()
 		return
 	}
+	if id == initProfileV2FieldGitAuth {
+		m.syncGitScopeFields()
+		return
+	}
 	if id == initProfileV2FieldReviewerEntity {
 		m.syncReviewerGitHubAppInstallationFields(true)
 		return
@@ -839,6 +846,18 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 		gitAuth := m.document.selectedValue(initProfileV2FieldGitAuth)
 		if gitAuth != "" {
 			draft.GitAuth = gitAuth
+		}
+		if config.GitAuthMode(draft.GitAuth) == config.GitAuthModeGitHubApp {
+			appID := strings.TrimSpace(m.document.fieldValue(initProfileV2FieldGitHubAppID))
+			if appID == "" {
+				return draft, fmt.Errorf("GitHub App ID is required when Git scope auth mode is GitHub App")
+			}
+			if err := validateOptionalDecimalID("GitHub App ID")(appID); err != nil {
+				return draft, err
+			}
+			draft.GitHubAppID = appID
+		} else {
+			draft.GitHubAppID = ""
 		}
 	} else {
 		applyGitScopeSelection(&draft, selectedGitScope, m.gitScopes)
@@ -959,6 +978,7 @@ func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
 		if scope, ok := m.gitScopes[selectedGitScope]; ok {
 			m.setFieldValue(initProfileV2FieldGitHost, scope.Host)
 			m.selectFieldValue(initProfileV2FieldGitAuth, string(scope.AuthMode))
+			m.setFieldValue(initProfileV2FieldGitHubAppID, scope.GitHubAppID)
 			m.selectFieldValue(initProfileV2FieldGitCredentialStore, initCredentialStoreDraftValue(scope.CredentialStore))
 			if strings.TrimSpace(scope.CredentialRef) != "" {
 				m.setFieldValue(initProfileV2FieldGitCredentialName, scope.CredentialRef)
@@ -967,6 +987,14 @@ func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
 	}
 	m.setFieldHidden(initProfileV2FieldGitHost, !custom)
 	m.setFieldHidden(initProfileV2FieldGitAuth, !custom)
+	if !custom || config.GitAuthMode(m.document.selectedValue(initProfileV2FieldGitAuth)) != config.GitAuthModeGitHubApp {
+		m.setFieldHidden(initProfileV2FieldGitHubAppID, true)
+		if custom {
+			m.setFieldValue(initProfileV2FieldGitHubAppID, "")
+		}
+	} else {
+		m.setFieldHidden(initProfileV2FieldGitHubAppID, false)
+	}
 	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Hidden {
 		m.focused = m.document.nextFocusableField(m.focused)
 		if m.focused >= len(m.document) || m.document[m.focused].Hidden {

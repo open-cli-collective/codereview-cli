@@ -747,10 +747,16 @@ func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 	if profile.ReviewerCredentials == nil {
 		return profile.Git
 	}
+	var githubApp *config.GitHubAppConfig
+	if profile.ReviewerCredentials.GitHubApp != nil {
+		app := *profile.ReviewerCredentials.GitHubApp
+		githubApp = &app
+	}
 	return config.GitConfig{
 		Host:          profile.Git.Host,
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
 		Credential:    profile.ReviewerCredentials.Credential,
+		GitHubApp:     githubApp,
 		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}

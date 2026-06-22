@@ -877,6 +877,7 @@ func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["work"]
 	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
+	work.ReviewerCredentials.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
 	cmd, out := newTestCommand(path)
@@ -897,7 +898,6 @@ func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
 	}
 	missing := false
 	want := []view.KeyStatus{
-		{Key: credentials.GitHubAppIDKey, Required: true, Present: &missing, Status: "missing"},
 		{Key: credentials.GitHubAppPrivateKeyKey, Required: true, Present: &missing, Status: "missing"},
 	}
 	if reviewer.Ref != "codereview/work-reviewer" || reviewer.Mode != "github_app" || !reflect.DeepEqual(reviewer.Keys, want) {
@@ -1973,16 +1973,15 @@ func TestConfigClearGitHubAppCredentialMatrix(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	home := cfg.Profiles["home"]
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	home.Git.CredentialRef = "codereview/home-app"
 	home.Git.Credential.Name = "codereview/home-app"
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
 	appKeys := []string{
-		credentials.GitHubAppIDKey,
 		credentials.GitHubAppPrivateKeyKey,
 	}
 	seedFileBackend(t, "home-app", map[string]string{
-		credentials.GitHubAppIDKey:         "12345",
 		credentials.GitHubAppPrivateKeyKey: "private-key",
 	})
 

@@ -46,6 +46,7 @@ type Options struct {
 	BaseURL            string
 	GraphQLURL         string
 	Now                func() time.Time
+	AppID              string
 	InstallationID     string
 	InstallationLookup *InstallationLookup
 }
@@ -111,6 +112,9 @@ func NewFromGitConfig(git config.GitConfig, store TokenStore, opts Options) (*Cl
 		return client, credential, nil
 	case config.GitAuthModeGitHubApp:
 		opts.Host = host
+		if git.GitHubApp != nil {
+			opts.AppID = strings.TrimSpace(git.GitHubApp.AppID)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), gitHubAppInitTimeout)
 		defer cancel()
 		return newGitHubAppFromConfig(ctx, parsed.Profile, store, opts)

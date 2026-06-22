@@ -407,6 +407,7 @@ cr --profile work init --non-interactive \
   --git-host github.com \
   --git-credential-ref codereview/work \
   --reviewer-auth-mode github_app \
+  --reviewer-github-app-id "$GITHUB_APP_ID" \
   --reviewer-credential-ref codereview/work-reviewer-app \
   --llm-provider anthropic \
   --llm-auth api_key \
@@ -417,13 +418,6 @@ printf '%s' "$USER_GITHUB_TOKEN" | cr set-credential \
   --store local-os \
   --name codereview/work \
   --key git_token \
-  --stdin \
-  --overwrite
-
-printf '%s' "$GITHUB_APP_ID" | cr set-credential \
-  --store local-os \
-  --name codereview/work-reviewer-app \
-  --key github_app_id \
   --stdin \
   --overwrite
 
@@ -587,7 +581,8 @@ Credential key matrix:
 |---------------|---------|---------------|---------------|---------------|-------------|
 | `git.credential` | User Git host auth | `pat` | `git_token` | None | Supported |
 | `reviewer_credentials.credential` | Reviewer Git host auth | `pat` | `git_token` | None | Supported; must use a distinct credential location from `git.credential` in the same profile |
-| `git.credential` / reviewer entity credential | Git host auth | `github_app` | `github_app_id`, `github_app_private_key` | None | Supported for GitHub. Reviewer GitHub App installation routing lives on `profiles.<name>.reviewer.github_app_installation`, not in the credential bundle |
+| `git.github_app.app_id` / reviewer entity `github_app.app_id` | Git host auth | `github_app` | Config field, not a credential key | None | Non-secret GitHub App ID stored in config. Scripted init uses `--git-github-app-id` or `--reviewer-github-app-id` |
+| `git.credential` / reviewer entity credential | Git host auth | `github_app` | `github_app_private_key` | None | Supported for GitHub. Reviewer GitHub App installation routing lives on `profiles.<name>.reviewer.github_app_installation`, not in the credential bundle |
 | `git.credential` / `reviewer_credentials.credential` | Git host auth | `oauth_device` | None | None | Reserved; config recognizes the mode but v1 rejects it and does not accept future keys such as `git_oauth_access_token` or `git_oauth_refresh_token` |
 | `llm.credential` | Anthropic direct API auth | `api_key` + `anthropic` | `anthropic_api_key` | None | Supported |
 | `llm.credential` | OpenAI direct API auth | `api_key` + `openai` | `openai_api_key` | None | Supported |
@@ -747,9 +742,10 @@ Flags:
 Only one stdin secret ingress flag may be used at a time. PAT reviewer
 credentials use key `git_token` under their own credential name, so
 `--reviewer-credential-ref` must differ from `--git-credential-ref`. GitHub App
-reviewer credentials use `github_app_id` and `github_app_private_key`;
-installation routing is profile config, not a credential key. `init` does not
-accept reviewer token ingress for `--reviewer-auth-mode github_app`. LLM API-key ingress requires
+reviewers store their non-secret App ID in config via `--reviewer-github-app-id`
+and use `github_app_private_key` as the only credential-store key; installation
+routing is profile config, not a credential key. `init` does not accept
+reviewer token ingress for `--reviewer-auth-mode github_app`. LLM API-key ingress requires
 `--llm-auth api_key`. `--overwrite` with API-key auth requires an LLM key
 ingress flag. `--allow-self-review` is intentionally runtime-only on
 `cr review`; `init` only stores the profile-level self-approval policy.
@@ -761,12 +757,12 @@ cr set-credential --store <id> --name <credential-name> --key <key> (--stdin | -
 ```
 
 Writes one secret value to the selected credential store. Globally allowed keys are
-`git_token`, `github_app_id`, `github_app_private_key`,
-`anthropic_api_key`, and `openai_api_key`. When
+`git_token`, `github_app_private_key`, `anthropic_api_key`, and
+`openai_api_key`. When
 `config.yml` declares the target credential location, `set-credential` narrows
 that global allowlist to the exact key set expected for that credential. PAT
 user Git credentials and PAT reviewer credentials use `git_token`; GitHub App
-credentials use `github_app_id` and `github_app_private_key`; Anthropic
+credentials use `github_app_private_key`; Anthropic
 LLM API-key credentials use `anthropic_api_key`; OpenAI LLM API-key credentials use
 `openai_api_key`.
 

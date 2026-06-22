@@ -123,7 +123,7 @@ func TestNewFromGitConfigUsesRepositoryInstallationLookup(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, credential, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "app-client-id", privateKey), Options{
+	_, credential, err := NewFromGitConfig(githubAppGitConfigWithAppID("codereview/app", "app-client-id"), githubAppStore(t, "app", "app-client-id", privateKey), Options{
 		BaseURL:    server.URL + "/api/v3",
 		GraphQLURL: server.URL + "/api/graphql",
 		InstallationLookup: &InstallationLookup{
@@ -152,7 +152,7 @@ func TestNewFromGitConfigExplainsMissingRepositoryInstallation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "app-client-id", privateKey), Options{
+	_, _, err := NewFromGitConfig(githubAppGitConfigWithAppID("codereview/app", "app-client-id"), githubAppStore(t, "app", "app-client-id", privateKey), Options{
 		BaseURL:    server.URL,
 		GraphQLURL: server.URL + "/graphql",
 		InstallationLookup: &InstallationLookup{
@@ -295,16 +295,20 @@ func TestNewFromGitConfigRequiresGitHubAppIdentity(t *testing.T) {
 }
 
 func githubAppGitConfig(ref string) config.GitConfig {
+	return githubAppGitConfigWithAppID(ref, "12345")
+}
+
+func githubAppGitConfigWithAppID(ref string, appID string) config.GitConfig {
 	return config.GitConfig{
 		Host:          "github.com",
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: appID},
 		CredentialRef: ref,
 	}
 }
 
 func githubAppStore(_ *testing.T, profile, appID, privateKey string) tokenStore {
 	values := map[string]string{
-		credentials.GitHubAppIDKey:         appID,
 		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}
 	return tokenStore{profile: values}

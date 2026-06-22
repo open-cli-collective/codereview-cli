@@ -94,12 +94,13 @@ func TestStoreOptionsInvalidBackendFlag(t *testing.T) {
 }
 
 func TestAllowedKeysExactCredentialMatrix(t *testing.T) {
-	want := []string{GitTokenKey, GitHubAppIDKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
+	want := []string{GitTokenKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
 	if got := AllowedKeys(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("AllowedKeys = %#v, want %#v", got, want)
 	}
 
 	for _, key := range []string{
+		GitHubAppIDKey,
 		GitHubAppInstallationIDKey,
 		LegacyLLMAPIKeyKey,
 		"git_oauth_access_token",
@@ -131,7 +132,6 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 			name: "user git github app",
 			ref:  config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: "github_app"},
 			want: []KeySpec{
-				{Key: GitHubAppIDKey, Required: true},
 				{Key: GitHubAppPrivateKeyKey, Required: true},
 			},
 		},
@@ -139,7 +139,6 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 			name: "reviewer github app",
 			ref:  config.CredentialRef{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "github_app"},
 			want: []KeySpec{
-				{Key: GitHubAppIDKey, Required: true},
 				{Key: GitHubAppPrivateKeyKey, Required: true},
 			},
 		},
@@ -208,7 +207,7 @@ func TestValidateAllowedKeyForConfigNarrowsDeclaredRefs(t *testing.T) {
 	if err := ValidateAllowedKeyForConfig(cfg, "codereview/git-a", AnthropicAPIKeyKey); !errors.Is(err, credstore.ErrKeyNotAllowed) {
 		t.Fatalf("ValidateAllowedKeyForConfig git llm key error = %v, want ErrKeyNotAllowed", err)
 	}
-	wantAppKeys := []string{GitHubAppIDKey, GitHubAppPrivateKeyKey}
+	wantAppKeys := []string{GitHubAppPrivateKeyKey}
 	gotAppKeys, err := ExpectedKeysForConfigRef(cfg, "codereview/app")
 	if err != nil {
 		t.Fatalf("ExpectedKeysForConfigRef github_app: %v", err)
@@ -236,6 +235,7 @@ func TestValidateAllowedKeyForConfigNarrowsDeclaredRefs(t *testing.T) {
 func githubAppMatrixProfile(ref string) config.Profile {
 	p := matrixProfile(ref, "codereview/app-llm", config.LLMProviderAnthropic)
 	p.Git.AuthMode = config.GitAuthModeGitHubApp
+	p.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	p.LLM.Auth = config.LLMAuthSubscription
 	p.LLM.Adapter = config.LLMAdapterClaudeCLI
 	p.LLM.CredentialRef = ""
@@ -533,7 +533,6 @@ func TestCredentialStatuses(t *testing.T) {
 				GitTokenKey: true,
 			},
 			"app": {
-				GitHubAppIDKey:         true,
 				GitHubAppPrivateKeyKey: true,
 			},
 			"llm": {
@@ -566,7 +565,6 @@ func TestCredentialStatuses(t *testing.T) {
 			Ref:     "codereview/app",
 			Mode:    "github_app",
 			Keys: []KeyStatus{
-				presentKeyStatus(GitHubAppIDKey, true),
 				presentKeyStatus(GitHubAppPrivateKeyKey, true),
 			},
 		},
@@ -654,9 +652,7 @@ func TestCredentialStatusesUnknown(t *testing.T) {
 func TestCredentialStatusesPartialRequiredBundle(t *testing.T) {
 	store := fakeKeyStatusStore{
 		present: map[string]map[string]bool{
-			"app": {
-				GitHubAppIDKey: true,
-			},
+			"app": {},
 		},
 	}
 	ref := config.CredentialRef{
@@ -674,7 +670,6 @@ func TestCredentialStatusesPartialRequiredBundle(t *testing.T) {
 		Ref:     "codereview/app",
 		Mode:    "github_app",
 		Keys: []KeyStatus{
-			presentKeyStatus(GitHubAppIDKey, true),
 			missingKeyStatus(GitHubAppPrivateKeyKey, true),
 		},
 	}
@@ -696,12 +691,11 @@ func TestMissingRequiredKeys(t *testing.T) {
 		Ref:     "codereview/app",
 		Mode:    "github_app",
 		Keys: []KeyStatus{
-			missingKeyStatus(GitHubAppIDKey, true),
 			unknownKeyStatus(GitHubAppPrivateKeyKey, true, "boom"),
 			missingKeyStatus("optional_test_key", false),
 		},
 	}
-	want := []string{GitHubAppIDKey}
+	var want []string
 	if got := MissingRequiredKeys(status); !reflect.DeepEqual(got, want) {
 		t.Fatalf("MissingRequiredKeys = %#v, want %#v", got, want)
 	}

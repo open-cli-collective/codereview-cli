@@ -367,7 +367,6 @@ func newAuditHarness(t *testing.T) *auditHarness {
 		h.reviewerSecret,
 		h.llmSecret,
 		h.keyringSecret,
-		h.githubAppIDSecret,
 		h.githubAppPrivateKey,
 		h.githubAppInstallationIDSecret,
 		h.githubAppInstallationToken,
@@ -491,6 +490,7 @@ func (h *auditHarness) githubAppReviewerConfig() config.File {
 	profile := cfg.Profiles["default"]
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: h.githubAppIDSecret},
 		Credential:    config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-reviewer-app"},
 		CredentialRef: "codereview/default-reviewer-app",
 	}
@@ -502,6 +502,7 @@ func (h *auditHarness) githubAppGitConfig() config.File {
 	cfg := h.config()
 	profile := cfg.Profiles["default"]
 	profile.Git.AuthMode = config.GitAuthModeGitHubApp
+	profile.Git.GitHubApp = &config.GitHubAppConfig{AppID: h.githubAppIDSecret}
 	profile.Git.Credential = config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-app"}
 	profile.Git.CredentialRef = "codereview/default-app"
 	profile.ReviewerCredentials = nil
@@ -542,7 +543,6 @@ func (h *auditHarness) seedGitHubAppConfigShowCredentials(t *testing.T) {
 	cfg := h.githubAppReviewerConfig()
 	h.seedCredentialWrites(t, cfg, []credentialSeed{
 		{ref: "codereview/default", key: credentials.GitTokenKey, secret: h.gitSecret},
-		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
 		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
@@ -552,7 +552,6 @@ func (h *auditHarness) seedGitHubAppGitCredentials(t *testing.T) {
 	t.Helper()
 	cfg := h.githubAppGitConfig()
 	h.seedCredentialWrites(t, cfg, []credentialSeed{
-		{ref: "codereview/default-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
 		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
@@ -562,7 +561,6 @@ func (h *auditHarness) seedGitHubAppGitLookupCredentials(t *testing.T) {
 	t.Helper()
 	cfg := h.githubAppGitConfig()
 	h.seedCredentialWrites(t, cfg, []credentialSeed{
-		{ref: "codereview/default-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
 		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
@@ -573,7 +571,6 @@ func (h *auditHarness) seedGitHubAppReviewerCredentials(t *testing.T) {
 	cfg := h.githubAppReviewerConfig()
 	h.seedCredentialWrites(t, cfg, []credentialSeed{
 		{ref: "codereview/default", key: credentials.GitTokenKey, secret: h.gitSecret},
-		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppIDKey, secret: h.githubAppIDSecret},
 		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
@@ -711,6 +708,7 @@ func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 	return config.GitConfig{
 		Host:          profile.Git.Host,
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
+		GitHubApp:     profile.ReviewerCredentials.GitHubApp,
 		Credential:    profile.ReviewerCredentials.Credential,
 		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,

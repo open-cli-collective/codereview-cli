@@ -846,7 +846,9 @@ func TestCredentialRefs(t *testing.T) {
 func TestCredentialRefsIncludesGitHubAppModes(t *testing.T) {
 	profile := validFile().normalized().Profiles["work"]
 	profile.Git.AuthMode = GitAuthModeGitHubApp
+	profile.Git.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 	profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
+	profile.ReviewerCredentials.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 
 	refs, err := CredentialRefs(profile)
 	if err != nil {
@@ -1550,11 +1552,13 @@ func TestValidateAcceptsGitHubAppAuthModes(t *testing.T) {
 		{name: "git github_app", mutate: func(cfg *File) {
 			profile := cfg.Profiles["home"]
 			profile.Git.AuthMode = GitAuthModeGitHubApp
+			profile.Git.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 			cfg.Profiles["home"] = profile
 		}},
 		{name: "reviewer github_app", mutate: func(cfg *File) {
 			entity := cfg.ReviewerEntities["work-reviewer"]
 			entity.AuthMode = GitAuthModeGitHubApp
+			entity.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 			cfg.ReviewerEntities["work-reviewer"] = entity
 			profile := cfg.Profiles["work"]
 			profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
@@ -1579,6 +1583,7 @@ func TestValidateProfileReviewerGitHubAppInstallation(t *testing.T) {
 	githubAppReviewer := func(cfg *File) {
 		entity := cfg.ReviewerEntities["work-reviewer"]
 		entity.AuthMode = GitAuthModeGitHubApp
+		entity.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 		cfg.ReviewerEntities["work-reviewer"] = entity
 	}
 	tests := []struct {
@@ -1799,6 +1804,8 @@ reviewer_entities:
     credential:
       store: local-os
       name: codereview/work-reviewer
+    github_app:
+      app_id: "12345"
 profiles:
   work:
     git:
@@ -1807,6 +1814,8 @@ profiles:
       credential:
         store: local-os
         name: codereview/work
+      github_app:
+        app_id: "12345"
     reviewer:
       kind: entity
       entity: work-reviewer
@@ -1838,6 +1847,8 @@ reviewer_entities:
     credential:
       store: local-os
       name: codereview/work-reviewer
+    github_app:
+      app_id: "12345"
     display_name: |
       line one
       line two
@@ -1849,6 +1860,8 @@ profiles:
       credential:
         store: local-os
         name: codereview/work
+      github_app:
+        app_id: "12345"
     reviewer:
       kind: entity
       entity: work-reviewer

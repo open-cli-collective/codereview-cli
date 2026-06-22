@@ -29,7 +29,8 @@ const (
 
 	// GitTokenKey stores the Git host access token for PAT auth.
 	GitTokenKey = "git_token"
-	// GitHubAppIDKey stores the GitHub App JWT issuer, usually the app ID.
+	// GitHubAppIDKey is a removed legacy key name. App IDs now belong to
+	// non-secret config, not credential bundles.
 	// #nosec G101 -- this is a keyring item name, not a secret value.
 	GitHubAppIDKey = "github_app_id"
 	// GitHubAppPrivateKeyKey stores the GitHub App PEM private key.
@@ -60,7 +61,7 @@ var (
 
 // AllowedKeys is cr's keyring write allowlist.
 func AllowedKeys() []string {
-	return []string{GitTokenKey, GitHubAppIDKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
+	return []string{GitTokenKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
 }
 
 // Ref is a parsed cr credential name.
@@ -496,7 +497,6 @@ func KeySpecsForPurpose(ref config.CredentialRef) ([]KeySpec, error) {
 			return []KeySpec{{Key: GitTokenKey, Required: true}}, nil
 		case config.GitAuthModeGitHubApp:
 			return []KeySpec{
-				{Key: GitHubAppIDKey, Required: true},
 				{Key: GitHubAppPrivateKeyKey, Required: true},
 			}, nil
 		case config.GitAuthModeOAuthDevice:
