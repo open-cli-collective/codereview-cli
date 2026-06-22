@@ -9318,6 +9318,95 @@ func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *test
 	}
 }
 
+func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedRepositoryAccessCredential(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	repositoryAccessRef := "codereview/github-rianjs"
+	cfg := config.Normalize(config.File{
+		RepositoryAccess: map[string]config.RepositoryAccessConfig{
+			"github-rianjs": {
+				DisplayName: "github-rianjs",
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: repositoryAccessRef},
+					CredentialRef: repositoryAccessRef,
+				},
+			},
+		},
+		LLMRuntimes: map[string]config.LLMConfig{
+			"claude-cli": {
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+		},
+		Profiles: map[string]config.Profile{},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	session := initSessionDraft{
+		path:                 path,
+		originalCfg:          cloneInitConfigFile(cfg),
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: "rianjs",
+	}
+	calls := 0
+	secretPrompter := &fakeInitSecretPrompter{}
+	deps := initDeps{
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			calls++
+			if calls == 2 {
+				return initDraft{}, errInitNavigateBack
+			}
+			draft := seedInteractiveInitDraft("rianjs", "", nil)
+			applyGitScopeSelection(&draft, "github-rianjs", ctx.GitScopes)
+			applyReviewerEntitySelection(&draft, string(initReviewerEntityKindUseGitIdentity))
+			applyLLMRuntimeInventorySelection(&draft, "claude-cli", ctx.LLMRuntimes)
+			draft.RoutesSet = true
+			draft.Routes = []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			}}
+			draft.ModelMapSet = true
+			draft.AgentSourcesSet = true
+			draft.ReviewPolicySet = true
+			draft.ReviewPolicy = config.ReviewPolicy{
+				MajorEvent:     config.ReviewMajorEventRequestChanges,
+				ResolveThreads: config.ResolveThreadsAuto,
+			}
+			return draft, nil
+		}),
+		secretPrompter:     secretPrompter,
+		clipboardSupported: func() bool { return false },
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore should not be called for profile-owned prompts when repository access owns the PAT")
+			return nil, nil
+		},
+	}
+
+	next, err := loopInteractiveInitProfileV2(&cobra.Command{}, opts, initOptions{}, deps, session)
+	if err != nil {
+		t.Fatalf("loopInteractiveInitProfileV2: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("profile v2 calls = %d, want stage then reentry", calls)
+	}
+	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
+		t.Fatalf("secret prompts = actions:%d sources:%d, want profile staging to skip repository-access credentials", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
+	}
+	profile := next.cfg.Profiles["rianjs"]
+	if profile.RepositoryAccess != "github-rianjs" {
+		t.Fatalf("repository_access = %q, want github-rianjs", profile.RepositoryAccess)
+	}
+	if profile.Git.CredentialRef != repositoryAccessRef {
+		t.Fatalf("git credential ref = %q, want selected repository access ref %q", profile.Git.CredentialRef, repositoryAccessRef)
+	}
+}
+
 func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := basicProfile("work")
@@ -19617,10 +19706,14 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
+	resolved, err := credentials.ResolveCredentialStore(config.File{}, config.LocalOSCredentialStoreID)
+	if err != nil {
+		t.Fatalf("ResolveCredentialStore: %v", err)
+	}
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
+				initMenuActionRepositoryAccess,
 				initMenuActionSave,
 			},
 		},
@@ -19628,19 +19721,19 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 			t.Fatal("finalize prompt should not run after keyring open failure")
 			return "", nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(initRepositoryAccessPrompt) (initDraft, error) {
 			return initDraft{
-				ProfileName: "default",
-				GitHost:     "github.com",
-				GitAuth:     string(config.GitAuthModePAT),
-				LLMProvider: string(config.LLMProviderAnthropic),
-				LLMAuth:     string(config.LLMAuthSubscription),
-				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				RepositoryAccessName:    "github-rianjs",
+				GitHost:                 "github.com",
+				GitAuth:                 string(config.GitAuthModePAT),
+				GitCredentialStore:      config.LocalOSCredentialStoreID,
+				GitCredentialRef:        "codereview/github-rianjs",
+				GitCredentialWriteRef:   "codereview/github-rianjs",
+				GitCredentialWriteStore: resolved,
+				GitCredentialWrites:     map[string]string{credentials.GitTokenKey: "github-token"},
+				GitCredentialSatisfied:  true,
 			}, nil
 		}),
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
-		},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return nil, errors.New("open failed")
 		},
@@ -19654,7 +19747,7 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 		},
 	}
 
-	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	err = runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
 	if err == nil || !strings.Contains(err.Error(), "open failed") {
 		t.Fatalf("error = %v, want keyring open failure", err)
 	}

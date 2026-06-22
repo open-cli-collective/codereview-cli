@@ -1617,7 +1617,7 @@ func applyInteractiveInitProfileDraft(cmd *cobra.Command, opts *root.Options, fl
 	session.requestedProfileName = workspace.profileName
 	session = recordTouchedProfile(session, workspace.profileName, draft.OriginalProfileName)
 	if deps.menuPrompter != nil || deps.prompter == nil {
-		session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"git", "reviewer_credentials", "llm"})
+		session, err = collectInteractiveInitSessionWorkspaceSecrets(opts, deps, session, []string{"reviewer_credentials", "llm"})
 		if errors.Is(err, errInitNavigateBack) {
 			return session, false, nil
 		}
