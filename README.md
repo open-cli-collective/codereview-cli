@@ -79,6 +79,12 @@ additional stores from interactive `cr init` under **Configure secrets
 storage**. The built-in `local-os` store is read-only configuration and cannot
 be removed.
 
+Interactive `cr init` treats credential stores, repository access, LLM runtimes,
+reviewer entities, and review profiles as separate reusable building blocks.
+Configure repository access to define how `cr` accesses Git repositories as the
+current user; review profiles then select one configured repository-access entry
+instead of editing Git credentials inline.
+
 Interactive `cr init` discovers available secrets backends by default so it can
 offer local 1Password account/vault choices and passive backend availability
 checks. Use `cr init --secret-backend-discovery=safe` to skip active inventory
@@ -707,15 +713,28 @@ Prints the build version as `cr <version-info>`. It takes no arguments.
 cr init [flags]
 ```
 
-Creates or updates non-secret config. In v1, `--non-interactive` is required.
-If the selected profile already exists, pass `--replace-profile` to replace the
-profile config.
+Creates or updates non-secret config. If the selected profile already exists,
+pass `--replace-profile` to replace the profile config.
+
+Without `--non-interactive`, `cr init` opens an interactive workspace builder.
+The main menu stages changes in reusable areas before a final commit:
+
+1. Configure secrets storage
+2. Configure repository access
+3. Configure LLM runtimes
+4. Configure reviewer entities
+5. Configure review profiles
+6. Configure global settings
+
+Review profiles compose repository access, reviewer entity, and LLM runtime
+selections. Repository access must be configured before creating a review
+profile.
 
 Flags:
 
 | Flag | Semantics |
 |------|-----------|
-| `--non-interactive` | Required in v1. Run without prompts. |
+| `--non-interactive` | Run without prompts. |
 | `--git-host <host>` | Git host, default `github.com`. The PR host must match this value. |
 | `--git-credential-ref <name>` | Credential name for Git auth. Defaults to `codereview/<profile>`. |
 | `--git-token-stdin` | Read the Git token from stdin and write key `git_token`. |

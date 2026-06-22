@@ -24,22 +24,22 @@ Use this document to answer:
 
 Interactive `init` should use these primary user-facing terms:
 
-- **Git scope**: the Git host and main Git credentials that define where a
-  review profile operates. Examples for v1 are `github.com` and GitHub
-  Enterprise hosts such as `github.mycompany.com`.
+- **Repository access**: the reusable Git host and current-user Git credentials
+  that define how `cr` accesses repositories. Examples for v1 are `github.com`
+  and GitHub Enterprise hosts such as `github.mycompany.com`.
 - **Reviewer entity**: the actor that posts `COMMENT`, `APPROVE`, or
   `REQUEST_CHANGES` on pull requests.
 - **LLM runtime**: the way reviewer agents run and authenticate, such as Claude
   CLI subscription auth, Codex CLI subscription auth, Pi local runtime, or a
   direct API-key-backed provider path.
-- **Review profile**: one saved profile assembled from a Git scope, an LLM
-  runtime, and a reviewer entity, plus its related review policy, routes, and
-  optional advanced settings.
+- **Review profile**: one saved profile assembled from repository access, an
+  LLM runtime, and a reviewer entity, plus its related review policy, routes,
+  and optional advanced settings.
 
 Supporting language is allowed when it helps teach the model:
 
 - A profile is the saved result.
-- A Git scope is the thing the user chooses while assembling that profile.
+- Repository access is the thing the user chooses while assembling that profile.
 - Credential storage is user-facing as **credential store** plus **credential
   name**. The name is the full visible `codereview/...` path written to the
   selected store.
@@ -48,7 +48,7 @@ Supporting language is allowed when it helps teach the model:
 
 Interactive `cr init` should teach this composition:
 
-`Git scope + reviewer entity + LLM runtime = review profile`
+`Repository access + reviewer entity + LLM runtime = review profile`
 
 The user should understand:
 
@@ -59,7 +59,7 @@ The user should understand:
 The user should not need to understand the on-disk config schema in order to
 complete the primary path.
 
-## GitHub Scope For V1
+## GitHub Repository Access For V1
 
 Prompt language for Git hosts should stay GitHub and GitHub Enterprise oriented
 for v1.
@@ -79,16 +79,19 @@ profiles before saving.
 The intended top-level shape is:
 
 1. Configure secrets storage
-2. Configure LLM runtimes
-3. Configure reviewer entities
-4. Configure review profiles
-5. Configure global settings
-6. Commit staged changes and exit
-7. Discard staged changes and exit
+2. Configure repository access
+3. Configure LLM runtimes
+4. Configure reviewer entities
+5. Configure review profiles
+6. Configure global settings
+7. Commit staged changes and exit
+8. Discard staged changes and exit
 
 This ordering is intentional:
 
 - LLM runtime setup is usually obvious to the user and easy to reason about.
+- Repository access setup makes current-user Git host and credential routing a
+  reusable building block instead of profile-local inline fields.
 - Reviewer entity setup gives the user a clear explanation for who will post
   reviews and why they may need a separate actor.
 - Review profiles compose those earlier choices into saved working
@@ -110,7 +113,7 @@ For a first-time user, interactive `init` should:
 The first-run user should be able to understand:
 
 - what a profile is
-- what Git scope means
+- what repository access means
 - what a reviewer entity is
 - why an LLM runtime is required
 - what is optional versus required to make a profile usable
@@ -126,7 +129,7 @@ When editing an existing profile, interactive `init` should:
 - default destructive changes to preserve
 - surface missing required secrets early enough for the user to react before the
   final save
-- keep route reconciliation tied to Git scope changes
+- keep route reconciliation tied to repository access changes
 - preserve the existing rename/default/route semantics owned by shared helpers
 
 ## Commit And Discard Semantics
@@ -194,9 +197,9 @@ secret values, and the final readiness summary should continue to report
 follow-up credential work without leaking values.
 
 All credential-bearing init flows should show equivalent non-secret destination
-context before collecting secret values. This includes Git credentials, reviewer
-PAT/GitHub App credentials, and LLM API keys handled by the shared credential
-collector.
+context before collecting secret values. This includes repository-access Git
+credentials, reviewer PAT/GitHub App credentials, and LLM API keys handled by
+the shared credential collector.
 
 Destination summaries should include:
 
@@ -215,14 +218,19 @@ environment variable names may be shown only as backend-auth env var names.
 
 ## Draft-Local Reuse Rules
 
-LLM runtimes and reviewer entities are reusable saved building blocks.
+Repository access definitions, LLM runtimes, and reviewer entities are reusable
+saved building blocks.
 
 That means:
 
+- interactive draft state may name and reuse repository access across multiple
+  draft profiles
 - interactive draft state may name and reuse LLM runtimes across multiple draft
   profiles
 - interactive draft state may name and reuse reviewer entities across multiple
   draft profiles
+- committed repository access definitions are persisted under
+  `repository_access`
 - committed LLM runtimes are persisted under `llm_runtimes`
 - committed reviewer entities are persisted under `reviewer_entities`
 - saved profiles reference those building blocks by name
@@ -247,7 +255,7 @@ contextual variants of the same fallback choice, such as:
 
 This means:
 
-- the review is posted with the profile's main Git credentials
+- the review is posted with the profile's selected repository access credentials
 - no separate reviewer credential location is created for that choice
 - in the current schema, that exports as `ReviewerCredentials=nil`
 
@@ -293,8 +301,9 @@ all of those profiles rather than only the active profile.
 Interactive `init` may hide the raw schema, but the contract between user terms
 and saved config must stay stable:
 
-- **Git scope** maps to `profile.git`, plus repository-route implications when
-  the profile participates in `repository_profiles`.
+- **Repository access** maps to a saved `repository_access.<name>` entry. A
+  profile selects it with `profiles.<profile>.repository_access`, and runtime
+  code resolves `profile.git` from that selection.
 - **LLM runtime** maps to a saved `llm_runtimes.<name>` entry. A profile selects
   it with `profiles.<profile>.llm_runtime`.
 - **Reviewer entity** maps to a saved `reviewer_entities.<name>` entry. A
@@ -312,17 +321,19 @@ Interactive `init` should show credential storage as an explicit destination
 choice, not as a hidden default.
 
 Primary-path users should choose a credential store and see or edit the full
-credential name. There is no namespace, label, or prefix prompt. Instead:
+credential name when configuring the building block that owns that credential.
+There is no namespace, label, or prefix prompt. Instead:
 
 - defaults should be generated automatically
+- repository access owns current-user Git credential locations
 - new reviewer defaults may follow the typed entity label, for example
   `rianjs-bot` becomes `codereview/rianjs-bot-reviewer`
 - changing an existing reviewer display name must not migrate or rename the
   existing credential name
-- users who need an override may edit the relevant inline **credential name**
-  fields for Git, reviewer, or LLM secrets
-- irrelevant reviewer/LLM credential-name fields should stay hidden when the
-  profile is using its Git account or a subscription runtime
+- users who need an override may edit the relevant **credential name** field on
+  the repository-access, reviewer-entity, or LLM-runtime building block
+- irrelevant reviewer/LLM credential-name fields should stay hidden when a
+  reviewer entity uses no separate secret or a runtime uses subscription auth
 - any advanced path should still explain that these names are non-secret
   pointers to credential-store entries, not the secrets themselves
 - users who need to change where secrets are stored should configure/select a
@@ -340,7 +351,7 @@ The top-level auxiliary areas should cover:
 - secrets-storage settings for credential-store/backend behavior
 
 These settings matter, but they are not part of the primary
-`Git scope + reviewer entity + LLM runtime = review profile` model.
+`Repository access + reviewer entity + LLM runtime = review profile` model.
 
 ## Non-Interactive Regression Contract
 
