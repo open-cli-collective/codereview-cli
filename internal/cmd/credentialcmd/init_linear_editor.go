@@ -444,6 +444,12 @@ func (m *initLinearEditorModel) handleFocusedInputKey(msg tea.KeyMsg) bool {
 		}
 		field.Value = initLinearInsertRunes(field.Value, field.Cursor, key.Runes)
 		field.Cursor += len(key.Runes)
+	case tea.KeySpace:
+		if msg.Alt {
+			return false
+		}
+		field.Value = initLinearInsertRunes(field.Value, field.Cursor, []rune{' '})
+		field.Cursor++
 	case tea.KeyBackspace, tea.KeyCtrlH:
 		field.Value, field.Cursor = initLinearDeleteBeforeCursor(field.Value, field.Cursor)
 	case tea.KeyDelete, tea.KeyCtrlD:

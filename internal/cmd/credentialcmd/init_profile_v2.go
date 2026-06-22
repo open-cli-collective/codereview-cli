@@ -658,6 +658,12 @@ func (m *initProfileV2ReadOnlyModel) handleFocusedInputKey(msg tea.KeyMsg) bool 
 		}
 		field.Value = initProfileV2InsertRunes(field.Value, field.Cursor, key.Runes)
 		field.Cursor += len(key.Runes)
+	case tea.KeySpace:
+		if msg.Alt {
+			return false
+		}
+		field.Value = initProfileV2InsertRunes(field.Value, field.Cursor, []rune{' '})
+		field.Cursor++
 	case tea.KeyBackspace, tea.KeyCtrlH:
 		field.Value, field.Cursor = initProfileV2DeleteBeforeCursor(field.Value, field.Cursor)
 	case tea.KeyDelete, tea.KeyCtrlD:

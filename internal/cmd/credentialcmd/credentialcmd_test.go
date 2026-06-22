@@ -10404,6 +10404,26 @@ func TestInitLinearEditorArrowKeysDoNotScrollFocusedInput(t *testing.T) {
 	}
 }
 
+func TestInitLinearEditorSpaceKeyEditsFocusedInputInsteadOfPagingDown(t *testing.T) {
+	const inputField initLinearFieldID = "input"
+	var document initLinearDocument
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	for i := 0; i < 20; i++ {
+		document.addSection(fmt.Sprintf("Section %02d", i), "Context line")
+	}
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 5)
+	beforeOffset := model.viewport.YOffset
+
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeySpace})
+
+	if got, want := model.document.fieldValue(inputField), "value "; got != want {
+		t.Fatalf("input field value = %q, want %q", got, want)
+	}
+	if got := model.viewport.YOffset; got != beforeOffset {
+		t.Fatalf("viewport YOffset after input space = %d, want unchanged %d", got, beforeOffset)
+	}
+}
+
 func TestInitLinearEditorOnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
 	const firstField initLinearFieldID = "first"
 	const secondField initLinearFieldID = "second"
@@ -13182,6 +13202,25 @@ func TestInitProfileV2ArrowKeysDoNotScrollFocusedInput(t *testing.T) {
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
 	if got := model.viewport.YOffset; got != 1 {
 		t.Fatalf("viewport YOffset after input up = %d, want unchanged 1", got)
+	}
+}
+
+func TestInitProfileV2SpaceKeyEditsFocusedInputInsteadOfPagingDown(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/rianjs", nil, nil), 120, 8)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldRoutes)
+	beforeOffset := model.viewport.YOffset
+	beforeFocus := model.focused
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeySpace})
+
+	if model.focused != beforeFocus {
+		t.Fatalf("focused field = %d, want unchanged %d", model.focused, beforeFocus)
+	}
+	if got, want := model.document.fieldValue(initProfileV2FieldRoutes), "github.com/rianjs "; got != want {
+		t.Fatalf("route field value = %q, want %q", got, want)
+	}
+	if got := model.viewport.YOffset; got != beforeOffset {
+		t.Fatalf("viewport YOffset after input space = %d, want unchanged %d", got, beforeOffset)
 	}
 }
 
