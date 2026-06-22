@@ -218,6 +218,10 @@ type initLLMRuntimePrompter interface {
 	EditLLMRuntime(initLLMRuntimePrompt) (initDraft, error)
 }
 
+type initRepositoryAccessPrompter interface {
+	EditRepositoryAccess(initRepositoryAccessPrompt) (initDraft, error)
+}
+
 type initReviewerEntityPrompter interface {
 	EditReviewerEntity(initReviewerEntityPrompt) (initDraft, error)
 }
@@ -227,28 +231,29 @@ type initFinalizePrompter interface {
 }
 
 type initPromptContext struct {
-	RequestedProfileName         string
-	ExistingProfileName          string
-	ExistingProfile              *config.Profile
-	ExistingProfileNames         []string
-	ExistingConfig               config.File
-	BackendArg                   string
-	BackendFlagSet               bool
-	GitScopes                    map[string]initGitScopeDraft
-	ProfileGitScopes             map[string]string
-	ReviewerEntities             map[string]initReviewerEntityDraft
-	ProfileReviewerEntities      map[string]string
-	ReviewerCredentialStatuses   []initReviewerCredentialStatus
-	StandaloneReviewerEntityMode bool
-	SecretsProfiles              []config.EffectiveSecretsProfile
-	ProfileSecretsProfiles       map[string]string
-	BrokenProfileSecretsProfiles map[string]string
-	LLMRuntimes                  map[string]initLLMRuntimeDraft
-	ProfileLLMRuntimes           map[string]string
-	ProfileWarnings              map[string][]string
-	PendingProfileDeletes        map[string]initPendingProfileDelete
-	PendingReviewerEntityDeletes map[string]initPendingReviewerEntityDelete
-	PendingLLMRuntimeDeletes     map[string]initPendingLLMRuntimeDelete
+	RequestedProfileName           string
+	ExistingProfileName            string
+	ExistingProfile                *config.Profile
+	ExistingProfileNames           []string
+	ExistingConfig                 config.File
+	BackendArg                     string
+	BackendFlagSet                 bool
+	GitScopes                      map[string]initGitScopeDraft
+	ProfileGitScopes               map[string]string
+	StandaloneRepositoryAccessMode bool
+	ReviewerEntities               map[string]initReviewerEntityDraft
+	ProfileReviewerEntities        map[string]string
+	ReviewerCredentialStatuses     []initReviewerCredentialStatus
+	StandaloneReviewerEntityMode   bool
+	SecretsProfiles                []config.EffectiveSecretsProfile
+	ProfileSecretsProfiles         map[string]string
+	BrokenProfileSecretsProfiles   map[string]string
+	LLMRuntimes                    map[string]initLLMRuntimeDraft
+	ProfileLLMRuntimes             map[string]string
+	ProfileWarnings                map[string][]string
+	PendingProfileDeletes          map[string]initPendingProfileDelete
+	PendingReviewerEntityDeletes   map[string]initPendingReviewerEntityDelete
+	PendingLLMRuntimeDeletes       map[string]initPendingLLMRuntimeDelete
 }
 
 type initDraftAction string
@@ -268,6 +273,7 @@ type initDraft struct {
 	ActionTarget                      string
 	OriginalProfileName               string
 	ProfileName                       string
+	RepositoryAccessName              string
 	GitHost                           string
 	GitAuth                           string
 	GitHubAppID                       string
@@ -388,6 +394,7 @@ type initMenuAction string
 
 const (
 	initMenuActionLLMRuntimes       initMenuAction = "llm_runtimes"
+	initMenuActionRepositoryAccess  initMenuAction = "repository_access"
 	initMenuActionReviewerEntities  initMenuAction = "reviewer_entities"
 	initMenuActionReviewProfiles    initMenuAction = "review_profiles"
 	initMenuActionGlobalSettings    initMenuAction = "global_settings"
@@ -402,17 +409,22 @@ var (
 )
 
 type initMenuPrompt struct {
-	HasWorkspace         bool
-	LLMRuntimeCount      int
-	ReviewerEntityCount  int
-	ReviewProfileCount   int
-	CanConfigureLLM      bool
-	CanConfigureReviewer bool
-	CanSave              bool
-	ActiveProfileName    string
+	HasWorkspace          bool
+	RepositoryAccessCount int
+	LLMRuntimeCount       int
+	ReviewerEntityCount   int
+	ReviewProfileCount    int
+	CanConfigureLLM       bool
+	CanConfigureReviewer  bool
+	CanSave               bool
+	ActiveProfileName     string
 }
 
 type initLLMRuntimePrompt struct {
+	Context initPromptContext
+}
+
+type initRepositoryAccessPrompt struct {
 	Context initPromptContext
 }
 
@@ -425,6 +437,7 @@ type initDeps struct {
 	profileV2Prompter    initPrompter
 	menuPrompter         initMenuPrompter
 	llmRuntimePrompter   initLLMRuntimePrompter
+	repositoryPrompter   initRepositoryAccessPrompter
 	reviewerPrompter     initReviewerEntityPrompter
 	finalizePrompter     initFinalizePrompter
 	modelMapPrompter     initModelMapPrompter
@@ -691,6 +704,7 @@ func defaultInitDeps() initDeps {
 	return initDeps{
 		menuPrompter:         nil,
 		llmRuntimePrompter:   nil,
+		repositoryPrompter:   nil,
 		reviewerPrompter:     nil,
 		finalizePrompter:     nil,
 		modelMapPrompter:     nil,
@@ -725,6 +739,9 @@ func (deps initDeps) withDefaults() initDeps {
 	}
 	if deps.llmRuntimePrompter == nil {
 		deps.llmRuntimePrompter = defaults.llmRuntimePrompter
+	}
+	if deps.repositoryPrompter == nil {
+		deps.repositoryPrompter = defaults.repositoryPrompter
 	}
 	if deps.reviewerPrompter == nil {
 		deps.reviewerPrompter = defaults.reviewerPrompter
@@ -1011,6 +1028,12 @@ type huhInitLLMRuntimePrompter struct {
 	editorRunner    initLLMRuntimeEditorRunner
 }
 
+type huhInitRepositoryAccessPrompter struct {
+	stdin        io.Reader
+	stderr       io.Writer
+	editorRunner initRepositoryAccessEditorRunner
+}
+
 type huhInitReviewerEntityPrompter struct {
 	stdin           io.Reader
 	stderr          io.Writer
@@ -1042,6 +1065,10 @@ func newHuhInitLLMRuntimePrompter(opts *root.Options) initLLMRuntimePrompter {
 		inventoryRunner: runInitInventory,
 		checker:         defaultInitLLMRuntimeAvailabilityNote,
 	}
+}
+
+func newHuhInitRepositoryAccessPrompter(opts *root.Options) initRepositoryAccessPrompter {
+	return huhInitRepositoryAccessPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
 }
 
 func newHuhInitReviewerEntityPrompter(opts *root.Options) initReviewerEntityPrompter {
@@ -1209,16 +1236,18 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 }
 
 func buildInteractiveInitMenuPrompt(session initSessionDraft) initMenuPrompt {
+	gitScopes, _ := buildInitGitScopeInventory(session.cfg)
 	llmRuntimes, _ := buildInitLLMRuntimeInventory(session.cfg)
 	reviewerEntities, _ := buildInitReviewerEntityInventory(session.cfg)
 	prompt := initMenuPrompt{
-		HasWorkspace:         session.workspace != nil,
-		LLMRuntimeCount:      len(llmRuntimes),
-		ReviewerEntityCount:  countConfiguredInitReviewerEntities(reviewerEntities),
-		ReviewProfileCount:   len(session.cfg.Profiles),
-		CanConfigureLLM:      true,
-		CanConfigureReviewer: true,
-		CanSave:              initSessionCanCommitWithoutWorkspace(session),
+		HasWorkspace:          session.workspace != nil,
+		RepositoryAccessCount: len(gitScopes),
+		LLMRuntimeCount:       len(llmRuntimes),
+		ReviewerEntityCount:   countConfiguredInitReviewerEntities(reviewerEntities),
+		ReviewProfileCount:    len(session.cfg.Profiles),
+		CanConfigureLLM:       true,
+		CanConfigureReviewer:  true,
+		CanSave:               initSessionCanCommitWithoutWorkspace(session),
 	}
 	if session.workspace == nil {
 		return prompt
@@ -1283,6 +1312,8 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 			return initSessionDraft{}, err
 		}
 		switch action {
+		case initMenuActionRepositoryAccess:
+			session, err = editInteractiveInitRepositoryAccess(cmd, opts, flags, deps, session)
 		case initMenuActionLLMRuntimes:
 			session, err = loopInteractiveInitLLMRuntime(cmd, opts, flags, deps, session)
 		case initMenuActionReviewerEntities:
@@ -1314,6 +1345,76 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 			return initSessionDraft{}, err
 		}
 	}
+}
+
+func editInteractiveInitRepositoryAccess(_ *cobra.Command, opts *root.Options, _ initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
+	prompter := deps.repositoryPrompter
+	if prompter == nil {
+		prompter = newHuhInitRepositoryAccessPrompter(opts)
+	}
+	promptCtx := currentInteractiveInitInventoryPromptContext(session)
+	promptCtx.StandaloneRepositoryAccessMode = true
+	draft, err := prompter.EditRepositoryAccess(initRepositoryAccessPrompt{Context: promptCtx})
+	if errors.Is(err, errInitNavigateBack) {
+		return session, nil
+	}
+	if err != nil {
+		return initSessionDraft{}, err
+	}
+	return stageStandaloneInteractiveInitRepositoryAccess(session, draft)
+}
+
+func stageStandaloneInteractiveInitRepositoryAccess(session initSessionDraft, draft initDraft) (initSessionDraft, error) {
+	name := strings.TrimSpace(draft.RepositoryAccessName)
+	if name == "" {
+		name = strings.TrimSpace(draft.ActionTarget)
+	}
+	if name == "" {
+		return initSessionDraft{}, exitcode.Usage(errors.New("repository access name is required"))
+	}
+	scope := initGitScopeDraft{
+		Name:            name,
+		Host:            strings.TrimSpace(draft.GitHost),
+		AuthMode:        config.GitAuthMode(draft.GitAuth),
+		GitHubAppID:     strings.TrimSpace(draft.GitHubAppID),
+		CredentialStore: initCredentialStoreDraftValue(draft.GitCredentialStore),
+		CredentialRef:   strings.TrimSpace(draft.GitCredentialRef),
+	}
+	if scope.Host == "" {
+		return initSessionDraft{}, exitcode.Usage(errors.New("git host is required"))
+	}
+	if scope.AuthMode == "" {
+		scope.AuthMode = config.GitAuthModePAT
+	}
+	if scope.CredentialStore == "" {
+		scope.CredentialStore = initCredentialStoreDefaultID()
+	}
+	if scope.CredentialRef == "" {
+		ref, err := credentials.FormatRef(name)
+		if err != nil {
+			return initSessionDraft{}, exitcode.Usage(err)
+		}
+		scope.CredentialRef = ref
+	}
+
+	working := cloneInitConfigFile(session.cfg)
+	if working.RepositoryAccess == nil {
+		working.RepositoryAccess = map[string]config.RepositoryAccessConfig{}
+	}
+	var previous *config.GitConfig
+	if existing, ok := working.RepositoryAccess[name]; ok {
+		existingGit := existing.Git
+		previous = &existingGit
+	}
+	working.RepositoryAccess[name] = normalizeInitRepositoryAccessConfig(config.RepositoryAccessConfig{
+		DisplayName: name,
+		Git:         scope.exportConfig(previous),
+	})
+	if err := config.Validate(working); err != nil {
+		return initSessionDraft{}, cmderr.Config(err)
+	}
+	session.cfg = config.Normalize(working)
+	return rebuildInteractiveInitWorkspace(session, preferredInteractiveInitProfile(session)), nil
 }
 
 func loopInteractiveInitProfileV2(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
@@ -5227,11 +5328,29 @@ func (scope initGitScopeDraft) matchesConfig(previous config.GitConfig) bool {
 }
 
 func buildInitGitScopeInventory(cfg config.File) (map[string]initGitScopeDraft, map[string]string) {
+	cfg = config.Normalize(cfg)
 	scopes := map[string]initGitScopeDraft{}
 	profileScopeNames := map[string]string{}
 	scopeNamesByKey := map[string]string{}
+	accessNames := make([]string, 0, len(cfg.RepositoryAccess))
+	for name := range cfg.RepositoryAccess {
+		accessNames = append(accessNames, name)
+	}
+	sort.Strings(accessNames)
+	for _, name := range accessNames {
+		scope := initGitScopeDraftFromConfig(cfg.RepositoryAccess[name].Git)
+		scope.Name = name
+		scopes[name] = scope
+		scopeNamesByKey[scope.identityKey()] = name
+	}
 	for _, profileName := range sortedProfileNames(cfg.Profiles) {
 		profile := cfg.Profiles[profileName]
+		if scopeName := strings.TrimSpace(profile.RepositoryAccess); scopeName != "" {
+			if _, ok := scopes[scopeName]; ok {
+				profileScopeNames[profileName] = scopeName
+				continue
+			}
+		}
 		scope := initGitScopeDraftFromConfig(profile.Git)
 		key := scope.identityKey()
 		if existingName, ok := scopeNamesByKey[key]; ok {

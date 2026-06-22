@@ -82,6 +82,11 @@ func initMenuItems(prompt initMenuPrompt) []initMenuItem {
 			Description: "Credential stores for tokens and keys",
 		},
 		{
+			Action:      initMenuActionRepositoryAccess,
+			Title:       "Configure repository access",
+			Description: initMenuConfiguredDescription(prompt.RepositoryAccessCount, "repository access", "repository access entries", "Git hosts and user credentials"),
+		},
+		{
 			Action:      initMenuActionLLMRuntimes,
 			Title:       "Configure LLM runtimes",
 			Description: initMenuConfiguredDescription(prompt.LLMRuntimeCount, "runtime", "runtimes", "Model providers and runtime credentials"),
@@ -141,7 +146,7 @@ func initMenuDisabledReason(prompt initMenuPrompt, action initMenuAction) string
 		if !prompt.CanSave {
 			return "stage changes before committing"
 		}
-	case initMenuActionSecretsManagement, initMenuActionLLMRuntimes, initMenuActionReviewerEntities, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+	case initMenuActionSecretsManagement, initMenuActionRepositoryAccess, initMenuActionLLMRuntimes, initMenuActionReviewerEntities, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
 	}
 	return ""
 }

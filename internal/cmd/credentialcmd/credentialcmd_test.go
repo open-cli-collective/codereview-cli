@@ -2156,7 +2156,7 @@ func TestBuildInitGitScopeInventoryDeduplicatesNormalizedGitHubEnterpriseHost(t 
 	}
 }
 
-func TestBuildInitGitScopeInventoryAssignsStableSuffixOnNameCollision(t *testing.T) {
+func TestBuildInitGitScopeInventoryUsesProjectedRepositoryAccessNames(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
 	home.Git.Host = "github.com"
@@ -2178,8 +2178,8 @@ func TestBuildInitGitScopeInventoryAssignsStableSuffixOnNameCollision(t *testing
 	if profileScopeNames["home"] == profileScopeNames["work"] {
 		t.Fatalf("profileScopeNames = %#v, want distinct names for colliding scope bases", profileScopeNames)
 	}
-	if profileScopeNames["home"] != "github-com-pat" && profileScopeNames["work"] != "github-com-pat" {
-		t.Fatalf("profileScopeNames = %#v, want one unsuffixed base name", profileScopeNames)
+	if profileScopeNames["home"] != "home-git" || profileScopeNames["work"] != "work-git" {
+		t.Fatalf("profileScopeNames = %#v, want projected repository access names", profileScopeNames)
 	}
 	if initGitScopeLabel(scopes[profileScopeNames["home"]]) == initGitScopeLabel(scopes[profileScopeNames["work"]]) {
 		t.Fatalf("git scope labels should be distinguishable: %#v", profileScopeNames)
@@ -12427,13 +12427,14 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCou
 
 func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 	items := initMenuItems(initMenuPrompt{
-		HasWorkspace:         true,
-		LLMRuntimeCount:      2,
-		ReviewerEntityCount:  3,
-		ReviewProfileCount:   1,
-		CanConfigureLLM:      true,
-		CanConfigureReviewer: true,
-		CanSave:              true,
+		HasWorkspace:          true,
+		RepositoryAccessCount: 4,
+		LLMRuntimeCount:       2,
+		ReviewerEntityCount:   3,
+		ReviewProfileCount:    1,
+		CanConfigureLLM:       true,
+		CanConfigureReviewer:  true,
+		CanSave:               true,
 	})
 	var actions []initMenuAction
 	var titles []string
@@ -12448,6 +12449,7 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 	}
 	wantActions := []initMenuAction{
 		initMenuActionSecretsManagement,
+		initMenuActionRepositoryAccess,
 		initMenuActionLLMRuntimes,
 		initMenuActionReviewerEntities,
 		initMenuActionReviewProfiles,
@@ -12460,6 +12462,7 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 	}
 	assertContentOrder(t, strings.Join(titles, "\n"),
 		"Configure secrets storage",
+		"Configure repository access",
 		"Configure LLM runtimes",
 		"Configure reviewer entities",
 		"Configure review profiles",
@@ -12469,6 +12472,7 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 	)
 	joinedDescriptions := strings.Join(descriptions, "\n")
 	for _, want := range []string{
+		"4 repository access entries configured",
 		"2 runtimes configured",
 		"3 reviewer entities configured",
 		"1 profile configured",
@@ -12490,6 +12494,7 @@ func TestInitMenuItemsUseInfrastructureDescriptionsBeforeConfiguredCounts(t *tes
 		descriptions[item.Action] = item.Description
 	}
 	tests := map[initMenuAction]string{
+		initMenuActionRepositoryAccess: "Git hosts and user credentials",
 		initMenuActionLLMRuntimes:      "Model providers and runtime credentials",
 		initMenuActionReviewerEntities: "Reviewer identities and posting credentials",
 		initMenuActionReviewProfiles:   "Repository routing and review composition",
@@ -12503,14 +12508,15 @@ func TestInitMenuItemsUseInfrastructureDescriptionsBeforeConfiguredCounts(t *tes
 
 func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 	model := newInitMenuModel(initMenuPrompt{
-		HasWorkspace:         true,
-		ActiveProfileName:    "default",
-		LLMRuntimeCount:      2,
-		ReviewerEntityCount:  3,
-		ReviewProfileCount:   1,
-		CanConfigureLLM:      true,
-		CanConfigureReviewer: true,
-		CanSave:              true,
+		HasWorkspace:          true,
+		ActiveProfileName:     "default",
+		RepositoryAccessCount: 4,
+		LLMRuntimeCount:       2,
+		ReviewerEntityCount:   3,
+		ReviewProfileCount:    1,
+		CanConfigureLLM:       true,
+		CanConfigureReviewer:  true,
+		CanSave:               true,
 	})
 	out := model.View()
 	assertContentOrder(t, out,
@@ -12519,6 +12525,8 @@ func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 		"Actions",
 		"Configure secrets storage",
 		"Credential stores for tokens and keys",
+		"Configure repository access",
+		"4 repository access entries configured",
 		"Configure LLM runtimes",
 		"2 runtimes configured",
 		"Configure reviewer entities",
@@ -12539,7 +12547,7 @@ func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 	if !strings.Contains(plainOut, "> [x] Configure secrets storage") {
 		t.Fatalf("view missing selected option marker:\n%s", out)
 	}
-	if !strings.Contains(plainOut, "  [ ] Configure LLM runtimes") {
+	if !strings.Contains(plainOut, "  [ ] Configure repository access") {
 		t.Fatalf("view missing unselected option marker:\n%s", out)
 	}
 	if strings.Contains(out, "Configure LLM runtimes (2)") || strings.Contains(out, "Configure review profiles (1)") {
@@ -12624,8 +12632,8 @@ func TestInitMenuNavigationSkipsDisabledRows(t *testing.T) {
 	model.selected = initMenuSelectedIndex(model.items, initMenuActionSecretsManagement)
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	result := next.(initMenuModel)
-	if got := result.items[result.selected].Action; got != initMenuActionLLMRuntimes {
-		t.Fatalf("after down selected action = %q, want LLM runtimes", got)
+	if got := result.items[result.selected].Action; got != initMenuActionRepositoryAccess {
+		t.Fatalf("after down selected action = %q, want repository access", got)
 	}
 
 	result.selected = initMenuSelectedIndex(result.items, initMenuActionReviewerEntities)
@@ -12670,7 +12678,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("7\n"),
+		stdin:  strings.NewReader("8\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{
@@ -12688,6 +12696,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	out := stderr.String()
 	for _, want := range []string{
 		"Configure secrets storage",
+		"Configure repository access",
 		"Configure LLM runtimes",
 		"Configure reviewer entities",
 		"Configure review profiles",
@@ -12710,6 +12719,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	}
 	assertContentOrder(t, out,
 		"Configure secrets storage",
+		"Configure repository access",
 		"Configure LLM runtimes",
 		"Configure reviewer entities",
 		"Configure review profiles",
@@ -12726,12 +12736,13 @@ func TestHuhInitMenuPrompterAccessibleNumericOrder(t *testing.T) {
 		want  initMenuAction
 	}{
 		{input: "1\n", want: initMenuActionSecretsManagement},
-		{input: "2\n", want: initMenuActionLLMRuntimes},
-		{input: "3\n", want: initMenuActionReviewerEntities},
-		{input: "4\n", want: initMenuActionReviewProfiles},
-		{input: "5\n", want: initMenuActionGlobalSettings},
-		{input: "6\n", want: initMenuActionSave},
-		{input: "7\n", want: initMenuActionExit},
+		{input: "2\n", want: initMenuActionRepositoryAccess},
+		{input: "3\n", want: initMenuActionLLMRuntimes},
+		{input: "4\n", want: initMenuActionReviewerEntities},
+		{input: "5\n", want: initMenuActionReviewProfiles},
+		{input: "6\n", want: initMenuActionGlobalSettings},
+		{input: "7\n", want: initMenuActionSave},
+		{input: "8\n", want: initMenuActionExit},
 	}
 	for _, tt := range tests {
 		var stderr bytes.Buffer
@@ -12822,8 +12833,8 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilChangesStaged(t *t
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"6", // Commit staged changes and exit (disabled)
-			"7", // Discard staged changes and exit
+			"7", // Commit staged changes and exit (disabled)
+			"8", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -12844,7 +12855,7 @@ func TestHuhInitMenuPrompterAccessibleAllowsLLMBeforeProfileExists(t *testing.T)
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("2\n"),
+		stdin:  strings.NewReader("3\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{})
@@ -12863,7 +12874,7 @@ func TestHuhInitMenuPrompterAccessibleAllowsReviewerBeforeProfileExists(t *testi
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("3\n"),
+		stdin:  strings.NewReader("4\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{})
@@ -14516,6 +14527,81 @@ func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
 	}
 	if openStoreCalls != 0 {
 		t.Fatalf("openStoreCalls = %d, want 0 on exit-without-save", openStoreCalls)
+	}
+}
+
+func TestInitInteractiveMenuStagesStandaloneRepositoryAccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionRepositoryAccess,
+			initMenuActionSave,
+		},
+	}
+	repositoryPrompts := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+			repositoryPrompts++
+			if repositoryPrompts > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
+			if !prompt.Context.StandaloneRepositoryAccessMode {
+				t.Fatal("repository access prompt did not run in standalone mode")
+			}
+			if len(prompt.Context.GitScopes) != 0 {
+				t.Fatalf("GitScopes = %#v, want empty before creating repository access", prompt.Context.GitScopes)
+			}
+			return initDraft{
+				RepositoryAccessName: "work-git",
+				GitHost:              "github.company.com",
+				GitAuth:              string(config.GitAuthModePAT),
+				GitCredentialStore:   config.LocalOSCredentialStoreID,
+				GitCredentialRef:     "codereview/work-git",
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if repositoryPrompts != 1 {
+		t.Fatalf("repositoryPrompts = %d, want 1", repositoryPrompts)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %d, want repository access then save", len(menu.prompts))
+	}
+	if !menu.prompts[1].CanSave {
+		t.Fatalf("second menu prompt CanSave = false, want true after repository access staging")
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	access, ok := cfg.RepositoryAccess["work-git"]
+	if !ok {
+		t.Fatalf("repository_access = %#v, want work-git", cfg.RepositoryAccess)
+	}
+	if access.DisplayName != "work-git" {
+		t.Fatalf("display_name = %q, want work-git", access.DisplayName)
+	}
+	if access.Git.Host != "github.company.com" || access.Git.AuthMode != config.GitAuthModePAT {
+		t.Fatalf("repository access git = %#v, want company PAT", access.Git)
+	}
+	if access.Git.Credential.Store != config.LocalOSCredentialStoreID || access.Git.Credential.Name != "codereview/work-git" {
+		t.Fatalf("repository access credential = %#v, want local-os/codereview/work-git", access.Git.Credential)
 	}
 }
 
@@ -21403,6 +21489,12 @@ func (f initMenuPrompterFunc) ChooseAction(prompt initMenuPrompt) (initMenuActio
 type initLLMRuntimePrompterFunc func(initLLMRuntimePrompt) (initDraft, error)
 
 func (f initLLMRuntimePrompterFunc) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
+	return f(prompt)
+}
+
+type initRepositoryAccessPrompterFunc func(initRepositoryAccessPrompt) (initDraft, error)
+
+func (f initRepositoryAccessPrompterFunc) EditRepositoryAccess(prompt initRepositoryAccessPrompt) (initDraft, error) {
 	return f(prompt)
 }
 
