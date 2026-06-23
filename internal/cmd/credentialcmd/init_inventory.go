@@ -400,20 +400,6 @@ func (m initInventoryModel) selectedRow() (initInventoryRow, bool) {
 	return item.row, true
 }
 
-func (m initInventoryModel) helpBindings() []key.Binding {
-	bindings := []key.Binding{m.keys.Select}
-	if row, ok := m.selectedRow(); ok {
-		if row.Deletable {
-			bindings = append(bindings, m.keys.Delete)
-		}
-		if row.Restorable {
-			bindings = append(bindings, m.keys.Restore)
-		}
-	}
-	bindings = append(bindings, m.keys.Back)
-	return bindings
-}
-
 func (r initInventoryRow) primaryAction() initInventoryAction {
 	if r.PrimaryAction != initInventoryActionNone {
 		return r.PrimaryAction

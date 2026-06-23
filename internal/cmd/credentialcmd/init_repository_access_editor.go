@@ -37,7 +37,7 @@ const initConfigureNewRepositoryAccessSelection = "__configure_new_repository_ac
 const initRepositoryAccessRestoreSelectionPrefix = "__restore_repository_access__:"
 
 var initRepositoryAccessGitConfigValue = func(key string) string {
-	out, err := exec.Command("git", "config", "--get", key).Output()
+	out, err := exec.Command("git", "config", "--get", key).Output() // #nosec G204 -- callers pass fixed git config keys only.
 	if err != nil {
 		return ""
 	}
@@ -88,7 +88,7 @@ func (p huhInitRepositoryAccessPrompter) runRepositoryAccessEditor(editor initLi
 	return model, nil
 }
 
-func initRepositoryAccessLinearEditor(ctx initPromptContext, seed initDraft) initLinearEditor {
+func initRepositoryAccessLinearEditor(ctx initPromptContext, _ initDraft) initLinearEditor {
 	options := initRepositoryAccessSelectionOptionsForContext(ctx)
 	selection := initRepositoryAccessDefaultSelection(ctx, options)
 	scope := initRepositoryAccessScopeForSelection(ctx, selection)
@@ -120,6 +120,7 @@ func initRepositoryAccessLinearEditor(ctx initPromptContext, seed initDraft) ini
 			if index < 0 || index >= len(model.document) {
 				return
 			}
+			//nolint:exhaustive // This repository-access editor reacts only to fields that affect derived repository-access state.
 			switch model.document[index].ID {
 			case initRepositoryAccessFieldSelection:
 				initRepositoryAccessSyncFields(model, ctx)
@@ -138,6 +139,8 @@ func initRepositoryAccessLinearEditor(ctx initPromptContext, seed initDraft) ini
 				initRepositoryAccessRefreshCredentialStatus(model, ctx)
 			case initRepositoryAccessFieldGitToken, initRepositoryAccessFieldGitHubAppPrivateKey:
 				initRepositoryAccessRefreshCredentialStatus(model, ctx)
+			default:
+				return
 			}
 		},
 		OnEnter: func(model *initLinearEditorModel) (bool, tea.Cmd) {
@@ -367,17 +370,6 @@ func initRepositoryAccessClearCredentialFieldValues(model *initLinearEditorModel
 		initRepositoryAccessFieldGitHubAppPrivateKey,
 	} {
 		model.setFieldValue(id, "")
-	}
-}
-
-func initRepositoryAccessCredentialFieldKey(id initLinearFieldID) string {
-	switch id {
-	case initRepositoryAccessFieldGitToken:
-		return credentials.GitTokenKey
-	case initRepositoryAccessFieldGitHubAppPrivateKey:
-		return credentials.GitHubAppPrivateKeyKey
-	default:
-		return ""
 	}
 }
 

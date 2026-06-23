@@ -13616,7 +13616,7 @@ func TestInitProfileV2GitScopeRejectsRoutesForDifferentHost(t *testing.T) {
 func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
 	// #nosec G101 -- test fixture credential reference, not a secret.
 	reviewerEntities := map[string]initReviewerEntityDraft{
-		"app-reviewer": {
+		"app-reviewer": { // #nosec G101 -- test fixture name, not credential material.
 			Kind:            initReviewerEntityKindGitHubApp,
 			AuthMode:        config.GitAuthModeGitHubApp,
 			CredentialStore: config.LocalOSCredentialStoreID,
@@ -13665,7 +13665,7 @@ func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
 
 func TestInitProfileV2GitHubAppInstallationFieldsFollowReviewerSelection(t *testing.T) {
 	reviewerEntities := map[string]initReviewerEntityDraft{
-		"app-reviewer": {
+		"app-reviewer": { // #nosec G101 -- test fixture name, not credential material.
 			Kind:            initReviewerEntityKindGitHubApp,
 			AuthMode:        config.GitAuthModeGitHubApp,
 			CredentialStore: config.LocalOSCredentialStoreID,
@@ -13753,6 +13753,7 @@ func TestInitProfileV2GitHubAppInstallationFieldsFollowReviewerSelection(t *test
 
 func TestInitProfileV2GitHubAppInstallationPinnedIDValidation(t *testing.T) {
 	reviewerEntities := map[string]initReviewerEntityDraft{
+		// #nosec G101 -- test fixture name, not credential material.
 		"app-reviewer": {
 			Kind:            initReviewerEntityKindGitHubApp,
 			AuthMode:        config.GitAuthModeGitHubApp,
@@ -14053,7 +14054,7 @@ func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
 
 func TestInitProfileV2ReviewPolicyHidesSelfApproveForGitHubAppReviewer(t *testing.T) {
 	reviewerEntities := map[string]initReviewerEntityDraft{
-		"app-reviewer": {
+		"app-reviewer": { // #nosec G101 -- test fixture name, not credential material.
 			Name:            "app-reviewer",
 			Kind:            initReviewerEntityKindGitHubApp,
 			AuthMode:        config.GitAuthModeGitHubApp,
@@ -15356,7 +15357,7 @@ func TestInitInteractiveMenuWritesStandaloneRepositoryAccessPAT(t *testing.T) {
 				initMenuActionSave,
 			},
 		},
-		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(_ initRepositoryAccessPrompt) (initDraft, error) {
 			return initDraft{
 				RepositoryAccessName:    "work-git",
 				GitHost:                 "github.company.com",
@@ -22525,10 +22526,6 @@ func basicProfile(profile string) config.Profile {
 			Adapter:  config.LLMAdapterClaudeCLI,
 		},
 	}
-}
-
-func normalizeTestProfile(profile config.Profile) config.Profile {
-	return normalizeTestProfileNamed("test", profile)
 }
 
 func normalizeTestProfileNamed(name string, profile config.Profile) config.Profile {

@@ -1739,7 +1739,7 @@ func loopInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 	}
 }
 
-func editInteractiveInitReviewerEntityStep(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
+func editInteractiveInitReviewerEntityStep(_ *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
 	prompter := deps.reviewerPrompter
 	if prompter == nil {
 		prompter = newHuhInitReviewerEntityPrompter(opts)
@@ -1981,38 +1981,6 @@ func filterInitCredentialWritesForDraftReviewerMode(writes map[string]string, dr
 	return filtered
 }
 
-func propagateSharedReviewerEntityChanges(priorCfg config.File, updatedCfg config.File, activeProfileName string, previousEntity initReviewerEntityDraft, nextEntity initReviewerEntityDraft) config.File {
-	if previousEntity.Kind == initReviewerEntityKindUseGitIdentity || previousEntity.identityKey() == "" {
-		return updatedCfg
-	}
-	identityKey := previousEntity.identityKey()
-	displayName := normalizeOptionalDisplayName(nextEntity.DisplayName)
-	credentialStore := initCredentialStoreDraftValue(nextEntity.CredentialStore)
-	credentialRef := strings.TrimSpace(nextEntity.CredentialRef)
-	for profileName, previousProfile := range priorCfg.Profiles {
-		if profileName == activeProfileName {
-			continue
-		}
-		if initReviewerEntityDraftFromConfig(previousProfile).identityKey() != identityKey {
-			continue
-		}
-		profile, ok := updatedCfg.Profiles[profileName]
-		if !ok || profile.ReviewerCredentials == nil {
-			continue
-		}
-		if initReviewerEntityDraftFromConfig(profile).identityKey() != identityKey {
-			continue
-		}
-		profile.ReviewerCredentials.AuthMode = nextEntity.AuthMode
-		profile.ReviewerCredentials.GitHubApp = initGitHubAppConfigForAuth(nextEntity.AuthMode, nextEntity.AppID)
-		profile.ReviewerCredentials.Credential = initCredentialLocation(credentialStore, credentialRef)
-		profile.ReviewerCredentials.CredentialRef = credentialRef
-		profile.ReviewerCredentials.DisplayName = displayName
-		updatedCfg.Profiles[profileName] = profile
-	}
-	return updatedCfg
-}
-
 func editInteractiveInitGlobalSettings(_ *cobra.Command, opts *root.Options, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
 	cfg, err := collectInteractiveInitRetentionConfig(opts, deps, cloneInitConfigFile(session.cfg))
 	if errors.Is(err, errInitNavigateBack) {
@@ -2080,7 +2048,7 @@ func (p huhInitMenuPrompter) ChooseAction(prompt initMenuPrompt) (initMenuAction
 	return action, nil
 }
 
-func initMenuInitialAction(prompt initMenuPrompt) initMenuAction {
+func initMenuInitialAction(_ initMenuPrompt) initMenuAction {
 	return initMenuActionSecretsManagement
 }
 
@@ -5385,7 +5353,7 @@ func deleteInteractiveInitLLMRuntime(session initSessionDraft, runtimeName strin
 		}
 	}
 	addedReplacement := false
-	replacementLLM := config.LLMConfig{}
+	var replacementLLM config.LLMConfig
 	if replacementName != "" {
 		replacementLLM = session.cfg.LLMRuntimes[replacementName]
 	} else {

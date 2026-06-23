@@ -1833,6 +1833,8 @@ func suggestedReviewerEntityName(profileName string, entity ReviewerEntity) stri
 		return "reviewer-github-app"
 	case GitAuthModePAT:
 		return "reviewer-pat"
+	case GitAuthModeOAuthDevice:
+		return "reviewer-oauth-device"
 	}
 	return "reviewer-entity"
 }

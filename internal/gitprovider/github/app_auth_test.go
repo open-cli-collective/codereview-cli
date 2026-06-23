@@ -307,7 +307,7 @@ func githubAppGitConfigWithAppID(ref string, appID string) config.GitConfig {
 	}
 }
 
-func githubAppStore(_ *testing.T, profile, appID, privateKey string) tokenStore {
+func githubAppStore(_ *testing.T, profile, _ string, privateKey string) tokenStore {
 	values := map[string]string{
 		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}
