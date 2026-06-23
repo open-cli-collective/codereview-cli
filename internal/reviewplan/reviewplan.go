@@ -126,6 +126,16 @@ type Request struct {
 	NewActionID ActionIDGenerator
 }
 
+// ThreadResponseRequest is the pure input to BuildThreadResponses.
+type ThreadResponseRequest struct {
+	PostMode     PostMode
+	ProviderCaps ProviderCaps
+	Responses    []review.ThreadResponseAction
+
+	Now         func() time.Time
+	NewActionID ActionIDGenerator
+}
+
 // Diff is the planner-owned diff metadata needed for anchoring.
 type Diff struct {
 	Files []DiffFile
@@ -252,6 +262,32 @@ func Build(req Request) (Plan, error) {
 		return b.buildNoDiff()
 	}
 	return b.buildReview()
+}
+
+// BuildThreadResponses turns thread response-domain values into a response-only
+// action plan. It never creates rollup comments or submit-review actions.
+func BuildThreadResponses(req ThreadResponseRequest) (Plan, error) {
+	b, err := newBuilder(Request{
+		PostMode:     req.PostMode,
+		ProviderCaps: req.ProviderCaps,
+		Now:          req.Now,
+		NewActionID:  req.NewActionID,
+	})
+	if err != nil {
+		return Plan{}, err
+	}
+	actions, err := b.threadResponseActions(req.Responses)
+	if err != nil {
+		return Plan{}, err
+	}
+	outcome := OutcomeNothingToReview
+	if len(actions) > 0 {
+		outcome = OutcomeComment
+	}
+	return Plan{
+		Outcome: outcome,
+		Actions: actions,
+	}, nil
 }
 
 // OutcomeFromReviewEvent maps a review-domain event into a planner outcome.
@@ -639,6 +675,46 @@ func (b *builder) threadActions() ([]Action, []Action, error) {
 		resolves = append(resolves, resolve)
 	}
 	return replies, resolves, nil
+}
+
+func (b *builder) threadResponseActions(responses []review.ThreadResponseAction) ([]Action, error) {
+	var replies []Action
+	var resolves []Action
+	for _, response := range responses {
+		if err := response.Validate(); err != nil {
+			return nil, fmt.Errorf("reviewplan: invalid thread response: %w", err)
+		}
+		reply, err := b.newAction(ActionKindThreadReply)
+		if err != nil {
+			return nil, err
+		}
+		reply.Required = true
+		reply.ThreadID = response.ThreadID
+		reply.Marker = MarkerPlacement{
+			BodyBearing:   true,
+			ThreadSummary: response.Kind == review.ThreadResponseSummaryReply,
+		}
+		reply.ThreadReply = &ThreadReplyPayload{
+			Body:    sanitize(response.Body),
+			Summary: response.Kind == review.ThreadResponseSummaryReply,
+		}
+		replies = append(replies, reply)
+		if !response.Resolve || !b.req.ProviderCaps.ThreadResolution {
+			continue
+		}
+		resolve, err := b.newAction(ActionKindResolveThread)
+		if err != nil {
+			return nil, err
+		}
+		resolve.Required = true
+		resolve.ThreadID = response.ThreadID
+		resolve.ResolveThread = &ResolveThreadPayload{}
+		resolves = append(resolves, resolve)
+	}
+	actions := make([]Action, 0, len(replies)+len(resolves))
+	actions = append(actions, replies...)
+	actions = append(actions, resolves...)
+	return actions, nil
 }
 
 func (b *builder) commentActions(ordered []review.Finding) ([]Action, error) {

@@ -39,6 +39,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
+	"github.com/open-cli-collective/codereview-cli/internal/threadrespond"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -96,6 +98,117 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	}
 	if text := out.String(); !strings.Contains(text, "Post mode: dry_run") || !strings.Contains(text, "Planned actions:") {
 		t.Fatalf("stdout = %q, want dry-run render", text)
+	}
+}
+
+func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
+	runner := &fakeRunner{respondResult: testThreadRespondResult(ledger.OutcomeDryRun)}
+	var cleanupCalled bool
+	cmd, out := newTestCommand(t, testConfig(), func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ RuntimeOptions) (Runtime, error) {
+		return Runtime{
+			Runner:          runner,
+			Responder:       runner,
+			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+			Cleanup:         func() { cleanupCalled = true },
+		}, nil
+	})
+
+	err := root.Execute(cmd, []string{
+		"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--no-resolve-threads",
+	})
+	if err != nil {
+		t.Fatalf("Execute respond: %v", err)
+	}
+	if len(runner.respondRequests) != 1 {
+		t.Fatalf("respond calls = %d, want 1", len(runner.respondRequests))
+	}
+	req := runner.respondRequests[0]
+	if req.PRRef.Number != 29 || req.ProfileName != "home" || req.PostingIdentity.Login != "review-bot" {
+		t.Fatalf("respond request identity/ref = %#v", req)
+	}
+	if !req.DryRun || !req.NoResolveThreads {
+		t.Fatalf("respond request flags = %#v, want dry-run no-resolve", req)
+	}
+	if req.RetryRunID != "" {
+		t.Fatalf("RetryRunID = %q, want empty", req.RetryRunID)
+	}
+	if !cleanupCalled {
+		t.Fatal("runtime cleanup was not called")
+	}
+	text := out.String()
+	if !strings.Contains(text, "Threads: considered 1, responded 1, resolved 1") || !strings.Contains(text, "Planned actions: 2") {
+		t.Fatalf("stdout = %q, want respond summary", text)
+	}
+}
+
+func TestRespondRetryPostsFlagCallsResponder(t *testing.T) {
+	result := testThreadRespondResult(ledger.OutcomeComment)
+	result.Plan = reviewplan.Plan{}
+	runner := &fakeRunner{respondResult: result}
+	cmd, out := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--retry-posts", "run-123",
+	})
+	if err != nil {
+		t.Fatalf("Execute respond retry: %v", err)
+	}
+	if len(runner.respondRequests) != 1 {
+		t.Fatalf("respond calls = %d, want 1", len(runner.respondRequests))
+	}
+	if got := runner.respondRequests[0].RetryRunID; got != "run-123" {
+		t.Fatalf("RetryRunID = %q, want run-123", got)
+	}
+	if runner.respondRequests[0].DryRun {
+		t.Fatalf("respond retry request = %#v, want live retry", runner.respondRequests[0])
+	}
+	if text := out.String(); !strings.Contains(text, "responded 1, resolved 1") || !strings.Contains(text, "Planned actions: 2") {
+		t.Fatalf("stdout = %q, want retry counts from planned actions", text)
+	}
+}
+
+func TestRespondJSONRendersStableShape(t *testing.T) {
+	runner := &fakeRunner{respondResult: testThreadRespondResult(ledger.OutcomeComment)}
+	cmd, out := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--json"}); err != nil {
+		t.Fatalf("Execute respond json: %v", err)
+	}
+	var decoded struct {
+		Run struct {
+			RunID   string `json:"run_id"`
+			Outcome string `json:"outcome"`
+		} `json:"run"`
+		Counts respondCounts `json:"counts"`
+		Outbox struct {
+			Posted int `json:"posted"`
+		} `json:"outbox"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal stdout: %v\n%s", err, out.String())
+	}
+	if decoded.Run.RunID != "respond-run-1" || decoded.Run.Outcome != "comment" || decoded.Counts.Responded != 1 || decoded.Outbox.Posted != 2 {
+		t.Fatalf("decoded json = %#v, want response summary", decoded)
+	}
+}
+
+func TestRespondRejectsRetryPostsWithDryRun(t *testing.T) {
+	runner := &fakeRunner{respondResult: testThreadRespondResult(ledger.OutcomeComment)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--retry-posts", "run-123",
+		"--dry-run",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--retry-posts cannot be used") {
+		t.Fatalf("Execute error = %v, want retry/dry-run usage", err)
+	}
+	if len(runner.respondRequests) != 0 {
+		t.Fatalf("respond calls = %d, want none", len(runner.respondRequests))
 	}
 }
 
@@ -2387,13 +2500,16 @@ func TestReviewMapsUnsafeAgentSourceError(t *testing.T) {
 }
 
 type fakeRunner struct {
-	result       pipeline.Result
-	err          error
-	requests     []pipeline.Request
-	liveResult   reviewrun.Result
-	liveErr      error
-	liveRequests []pipeline.Request
-	liveFlags    []reviewrun.Flags
+	result          pipeline.Result
+	err             error
+	requests        []pipeline.Request
+	liveResult      reviewrun.Result
+	liveErr         error
+	liveRequests    []pipeline.Request
+	liveFlags       []reviewrun.Flags
+	respondResult   threadrespond.Result
+	respondErr      error
+	respondRequests []threadrespond.Request
 }
 
 type noopLimiter struct{}
@@ -2417,9 +2533,17 @@ func (r *fakeRunner) Live(_ context.Context, req pipeline.Request, flags reviewr
 	return r.liveResult, nil
 }
 
+func (r *fakeRunner) Respond(_ context.Context, req threadrespond.Request) (threadrespond.Result, error) {
+	r.respondRequests = append(r.respondRequests, req)
+	if r.respondErr != nil {
+		return threadrespond.Result{}, r.respondErr
+	}
+	return r.respondResult, nil
+}
+
 func fakeFactory(runner *fakeRunner) RuntimeFactory {
 	return func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
-		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+		return Runtime{Runner: runner, Responder: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}
 }
 
@@ -2586,6 +2710,63 @@ func testPipelineResult(failOnTriggered bool) pipeline.Result {
 			PayloadJSON: `{"body":"Fix this","path":"main.go"}`,
 			Status:      ledger.PlannedActionPlannedOnly,
 		}},
+	}
+}
+
+func testThreadRespondResult(outcome ledger.Outcome) threadrespond.Result {
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	return threadrespond.Result{
+		Run: ledger.Run{
+			RunID:           "respond-run-1",
+			PRKey:           "github.com_open-cli-collective_codereview-cli_29",
+			SHA:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			BaseSHA:         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			PostMode:        ledger.PostModeLive,
+			PostingIdentity: "review-bot",
+			ArtifactPath:    "/tmp/respond-run-1",
+			Outcome:         &outcome,
+		},
+		PR: gitprovider.PR{
+			Ref:   ref,
+			Title: "CR respond",
+			URL:   "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		},
+		PRKey: "github.com_open-cli-collective_codereview-cli_29",
+		EligibleThreads: []threadcontext.Thread{{
+			ID: "thread-1",
+		}},
+		Plan: reviewplan.Plan{
+			Outcome: reviewplan.OutcomeComment,
+			Actions: []reviewplan.Action{
+				{
+					ActionID:  "thread_reply-1",
+					Kind:      reviewplan.ActionKindThreadReply,
+					ThreadID:  "thread-1",
+					PlannedAt: now,
+					Status:    reviewplan.ActionStatusPending,
+					Required:  true,
+					ThreadReply: &reviewplan.ThreadReplyPayload{
+						Body:    "Summary",
+						Summary: true,
+					},
+				},
+				{
+					ActionID:      "resolve_thread-1",
+					Kind:          reviewplan.ActionKindResolveThread,
+					ThreadID:      "thread-1",
+					PlannedAt:     now,
+					Status:        reviewplan.ActionStatusPending,
+					Required:      true,
+					ResolveThread: &reviewplan.ResolveThreadPayload{},
+				},
+			},
+		},
+		PlannedActions: []ledger.PlannedAction{
+			{ActionID: "thread_reply-1", RunID: "respond-run-1", Kind: ledger.PlannedActionThreadReply, Status: ledger.PlannedActionPending, Required: true},
+			{ActionID: "resolve_thread-1", RunID: "respond-run-1", Kind: ledger.PlannedActionResolveThread, Status: ledger.PlannedActionPending, Required: true},
+		},
+		Outbox: outbox.Result{Outcome: outcome, ExitCode: 0, Posted: 2},
 	}
 }
 

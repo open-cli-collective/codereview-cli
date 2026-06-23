@@ -13,8 +13,13 @@ session management, and local data lifecycle commands.
 The current Go code is a Cobra command tree in `internal/cmd/*` with a thin
 `cmd/cr` entrypoint, shared exit-code mapping in `internal/cmd/exitcode`, and
 version plumbing in `internal/version`. Review orchestration is split across
-`internal/pipeline`, `internal/reviewrun`, `internal/reviewplan`,
-`internal/outbox`, `internal/gate`, and `internal/gateio`.
+`internal/pipeline`, `internal/reviewrun`, `internal/threadrespond`,
+`internal/reviewplan`, `internal/outbox`, `internal/gate`, and
+`internal/gateio`.
+
+Architecture guardrails for LLM execution, model resolution, Git provider
+writes, inline thread lifecycle, and retention live in
+[`docs/architecture.md`](architecture.md).
 
 Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
 `SelectionOnly`. `DryRun` and `Live` execute the full review pipeline, while
@@ -80,7 +85,8 @@ make clean   # remove build artifacts
   state/config adapters in `internal/config`, `internal/ledger`, and
   `internal/statepaths`, provider/LLM adapters in their owning packages, and
   review posting/gating in `internal/outbox`, `internal/gate`, and
-  `internal/gateio`.
+  `internal/gateio`, and response-only inline discussion handling in
+  `internal/threadrespond`.
 
 ## Interactive Init Notes
 

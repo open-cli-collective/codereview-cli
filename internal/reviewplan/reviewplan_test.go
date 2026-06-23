@@ -177,6 +177,94 @@ func TestThreadDecisionRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestBuildThreadResponsesEmitsOnlyRequiredThreadActions(t *testing.T) {
+	plan, err := BuildThreadResponses(ThreadResponseRequest{
+		PostMode:     PostModeLive,
+		ProviderCaps: ProviderCaps{ThreadResolution: true},
+		Responses: []review.ThreadResponseAction{
+			{Kind: review.ThreadResponseReply, ThreadID: "thread-1", Body: "Please clarify."},
+			{Kind: review.ThreadResponseSummaryReply, ThreadID: "thread-2", Body: "Resolved summary.", Resolve: true},
+		},
+		Now:         func() time.Time { return testTime },
+		NewActionID: newIDGenerator(),
+	})
+	if err != nil {
+		t.Fatalf("BuildThreadResponses: %v", err)
+	}
+	if plan.Outcome != OutcomeComment {
+		t.Fatalf("Outcome = %q, want comment", plan.Outcome)
+	}
+	if got := actionKinds(plan.Actions); !reflect.DeepEqual(got, []ActionKind{ActionKindThreadReply, ActionKindThreadReply, ActionKindResolveThread}) {
+		t.Fatalf("action kinds = %#v, want reply/reply/resolve only", got)
+	}
+	for _, action := range plan.Actions {
+		if !action.Required {
+			t.Fatalf("action %#v Required = false, want true", action)
+		}
+		if action.Kind == ActionKindRollupComment || action.Kind == ActionKindSubmitReview {
+			t.Fatalf("response-only plan emitted %s", action.Kind)
+		}
+		if action.Status != ActionStatusPending {
+			t.Fatalf("action status = %q, want pending", action.Status)
+		}
+	}
+	if plan.Actions[0].ThreadReply == nil || plan.Actions[0].ThreadReply.Summary {
+		t.Fatalf("normal reply payload = %#v, want Summary=false", plan.Actions[0].ThreadReply)
+	}
+	if plan.Actions[1].ThreadReply == nil || !plan.Actions[1].ThreadReply.Summary || !plan.Actions[1].Marker.ThreadSummary {
+		t.Fatalf("summary reply = payload %#v marker %#v, want summary marker", plan.Actions[1].ThreadReply, plan.Actions[1].Marker)
+	}
+}
+
+func TestBuildThreadResponsesDryRunAndResolutionDisabled(t *testing.T) {
+	plan, err := BuildThreadResponses(ThreadResponseRequest{
+		PostMode:     PostModeDryRun,
+		ProviderCaps: ProviderCaps{ThreadResolution: false},
+		Responses: []review.ThreadResponseAction{
+			{Kind: review.ThreadResponseSummaryReply, ThreadID: "thread-1", Body: "Summary.", Resolve: true},
+		},
+		Now:         func() time.Time { return testTime },
+		NewActionID: newIDGenerator(),
+	})
+	if err != nil {
+		t.Fatalf("BuildThreadResponses: %v", err)
+	}
+	if got := actionKinds(plan.Actions); !reflect.DeepEqual(got, []ActionKind{ActionKindThreadReply}) {
+		t.Fatalf("action kinds = %#v, want reply only when resolution disabled", got)
+	}
+	if plan.Actions[0].Status != ActionStatusPlannedOnly {
+		t.Fatalf("status = %q, want planned_only", plan.Actions[0].Status)
+	}
+}
+
+func TestBuildThreadResponsesNoActions(t *testing.T) {
+	plan, err := BuildThreadResponses(ThreadResponseRequest{
+		PostMode:    PostModeLive,
+		Now:         func() time.Time { return testTime },
+		NewActionID: newIDGenerator(),
+	})
+	if err != nil {
+		t.Fatalf("BuildThreadResponses: %v", err)
+	}
+	if plan.Outcome != OutcomeNothingToReview || len(plan.Actions) != 0 {
+		t.Fatalf("plan = %#v, want nothing_to_review with no actions", plan)
+	}
+}
+
+func TestBuildThreadResponsesRejectsInvalidResponse(t *testing.T) {
+	_, err := BuildThreadResponses(ThreadResponseRequest{
+		PostMode: PostModeLive,
+		Responses: []review.ThreadResponseAction{
+			{Kind: review.ThreadResponseReply, ThreadID: "thread-1", Resolve: true},
+		},
+		Now:         func() time.Time { return testTime },
+		NewActionID: newIDGenerator(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "thread response") {
+		t.Fatalf("BuildThreadResponses error = %v, want invalid response", err)
+	}
+}
+
 func TestMultipleInlineActionsFollowRollupOrder(t *testing.T) {
 	req := baseRequest()
 	req.Findings = []review.Finding{

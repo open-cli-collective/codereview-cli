@@ -21,7 +21,7 @@ import (
 
 const (
 	// SchemaVersion is the current ledger schema version.
-	SchemaVersion = 2
+	SchemaVersion = 3
 	// DefaultBusyTimeout is the SQLite busy timeout configured at open.
 	DefaultBusyTimeout = 5 * time.Second
 	writeQueueSize     = 64
@@ -292,6 +292,66 @@ type Session struct {
 	CostUSD           *float64
 }
 
+// LLMStepStatus records durable LLM step completion state.
+type LLMStepStatus string
+
+// LLM step statuses.
+const (
+	LLMStepStatusCompleted LLMStepStatus = "completed"
+	LLMStepStatusFailed    LLMStepStatus = "failed"
+)
+
+func (s LLMStepStatus) String() string { return string(s) }
+
+// Valid reports whether s is a known LLM step status.
+func (s LLMStepStatus) Valid() bool {
+	switch s {
+	case LLMStepStatusCompleted, LLMStepStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// LLMStep records one durable structured LLM execution step.
+type LLMStep struct {
+	StepID               string
+	RunID                string
+	Stage                string
+	ScopeKey             string
+	InputHash            string
+	PromptHash           string
+	Provider             string
+	Adapter              string
+	Model                string
+	Effort               string
+	ProviderSessionID    string
+	Status               LLMStepStatus
+	StructuredOutputJSON string
+	StartedAt            time.Time
+	CompletedAt          *time.Time
+	DurationMS           *int64
+	TokensIn             *int64
+	TokensOut            *int64
+	CacheRead            *int64
+	CacheCreate          *int64
+	CostUSD              *float64
+	Error                *string
+}
+
+// LLMStepLookup identifies a reusable completed LLM step.
+type LLMStepLookup struct {
+	RunID      string
+	Stage      string
+	ScopeKey   string
+	InputHash  string
+	PromptHash string
+	Provider   string
+	Adapter    string
+	Model      string
+	Effort     string
+}
+
 // Finding records one harness-assigned review finding.
 type Finding struct {
 	FindingID    review.FindingID
@@ -463,6 +523,18 @@ func migrations() []dbmig.Migration {
 			Up: func(ctx context.Context, tx *sql.Tx) error {
 				_, err := tx.ExecContext(ctx, `ALTER TABLE planned_actions ADD COLUMN failure_class TEXT`)
 				return err
+			},
+		},
+		{
+			Version: 3,
+			Name:    "durable llm steps",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				for _, statement := range llmStepSchemaStatements {
+					if _, err := tx.ExecContext(ctx, statement); err != nil {
+						return err
+					}
+				}
+				return nil
 			},
 		},
 	}
@@ -817,6 +889,69 @@ FROM sessions WHERE run_id = ? ORDER BY session_row_id`, runID)
 	return sessions, nil
 }
 
+// InsertLLMStep inserts a durable LLM execution step row.
+func (s *Store) InsertLLMStep(ctx context.Context, step LLMStep) error {
+	if err := validateLLMStep(step); err != nil {
+		return err
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `
+INSERT INTO llm_steps (
+	step_id, run_id, stage, scope_key, input_hash, prompt_hash, provider, adapter, model, effort,
+	provider_session_id, status, structured_output_json, started_at, completed_at, duration_ms,
+	tokens_in, tokens_out, cache_read, cache_create, cost_usd, error
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			step.StepID, step.RunID, step.Stage, step.ScopeKey, step.InputHash, step.PromptHash,
+			step.Provider, step.Adapter, step.Model, step.Effort, step.ProviderSessionID,
+			step.Status.String(), step.StructuredOutputJSON, encodeTime(step.StartedAt),
+			encodeOptionalTime(step.CompletedAt), step.DurationMS, step.TokensIn, step.TokensOut,
+			step.CacheRead, step.CacheCreate, step.CostUSD, step.Error,
+		)
+		if err != nil {
+			return fmt.Errorf("ledger: insert llm step: %w", err)
+		}
+		return nil
+	})
+}
+
+// FindCompletedLLMStep returns a matching completed LLM step.
+func (s *Store) FindCompletedLLMStep(ctx context.Context, lookup LLMStepLookup) (LLMStep, error) {
+	if err := validateLLMStepLookup(lookup); err != nil {
+		return LLMStep{}, err
+	}
+	if err := s.checkOpen(); err != nil {
+		return LLMStep{}, err
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT step_id, run_id, stage, scope_key, input_hash, prompt_hash, provider, adapter, model, effort,
+	provider_session_id, status, structured_output_json, started_at, completed_at, duration_ms,
+	tokens_in, tokens_out, cache_read, cache_create, cost_usd, error
+FROM llm_steps
+WHERE run_id = ?
+  AND stage = ?
+  AND scope_key = ?
+  AND input_hash = ?
+  AND prompt_hash = ?
+  AND provider = ?
+  AND adapter = ?
+  AND model = ?
+  AND effort = ?
+  AND status = ?
+ORDER BY completed_at DESC, step_id DESC
+LIMIT 1`,
+		lookup.RunID, lookup.Stage, lookup.ScopeKey, lookup.InputHash, lookup.PromptHash,
+		lookup.Provider, lookup.Adapter, lookup.Model, lookup.Effort, LLMStepStatusCompleted.String(),
+	)
+	step, err := scanLLMStep(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LLMStep{}, ErrNotFound
+	}
+	if err != nil {
+		return LLMStep{}, fmt.Errorf("ledger: find completed llm step: %w", err)
+	}
+	return step, nil
+}
+
 // InsertFinding inserts a validated harness finding row.
 func (s *Store) InsertFinding(ctx context.Context, finding Finding) error {
 	if err := validateFinding(finding); err != nil {
@@ -1168,6 +1303,59 @@ func validateSession(session Session) error {
 	return nil
 }
 
+func validateLLMStep(step LLMStep) error {
+	for field, value := range map[string]string{
+		"step_id":             step.StepID,
+		"run_id":              step.RunID,
+		"stage":               step.Stage,
+		"scope_key":           step.ScopeKey,
+		"input_hash":          step.InputHash,
+		"prompt_hash":         step.PromptHash,
+		"provider":            step.Provider,
+		"adapter":             step.Adapter,
+		"model":               step.Model,
+		"provider_session_id": step.ProviderSessionID,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return invalidInput(field, value)
+		}
+	}
+	if !step.Status.Valid() {
+		return invalidInput("status", step.Status.String())
+	}
+	if step.Status == LLMStepStatusCompleted && strings.TrimSpace(step.StructuredOutputJSON) == "" {
+		return invalidInput("structured_output_json", step.StructuredOutputJSON)
+	}
+	if step.Status == LLMStepStatusCompleted && step.CompletedAt == nil {
+		return invalidInput("completed_at", "")
+	}
+	if step.Status == LLMStepStatusFailed && (step.Error == nil || strings.TrimSpace(*step.Error) == "") {
+		return invalidInput("error", "")
+	}
+	if step.StartedAt.IsZero() {
+		return invalidInput("started_at", "")
+	}
+	return nil
+}
+
+func validateLLMStepLookup(lookup LLMStepLookup) error {
+	for field, value := range map[string]string{
+		"run_id":      lookup.RunID,
+		"stage":       lookup.Stage,
+		"scope_key":   lookup.ScopeKey,
+		"input_hash":  lookup.InputHash,
+		"prompt_hash": lookup.PromptHash,
+		"provider":    lookup.Provider,
+		"adapter":     lookup.Adapter,
+		"model":       lookup.Model,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return invalidInput(field, value)
+		}
+	}
+	return nil
+}
+
 func validateFinding(finding Finding) error {
 	for field, value := range map[string]string{
 		"finding_id":     finding.FindingID.String(),
@@ -1351,6 +1539,51 @@ func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	session.CacheCreate = int64PtrFromNull(cacheCreate)
 	session.CostUSD = float64PtrFromNull(costUSD)
 	return session, nil
+}
+
+func scanLLMStep(row interface{ Scan(...any) error }) (LLMStep, error) {
+	var (
+		step        LLMStep
+		status      string
+		startedAt   string
+		completedAt sql.NullString
+		durationMS  sql.NullInt64
+		tokensIn    sql.NullInt64
+		tokensOut   sql.NullInt64
+		cacheRead   sql.NullInt64
+		cacheCreate sql.NullInt64
+		costUSD     sql.NullFloat64
+		errorText   sql.NullString
+	)
+	if err := row.Scan(
+		&step.StepID, &step.RunID, &step.Stage, &step.ScopeKey, &step.InputHash, &step.PromptHash,
+		&step.Provider, &step.Adapter, &step.Model, &step.Effort, &step.ProviderSessionID, &status,
+		&step.StructuredOutputJSON, &startedAt, &completedAt, &durationMS, &tokensIn, &tokensOut,
+		&cacheRead, &cacheCreate, &costUSD, &errorText,
+	); err != nil {
+		return LLMStep{}, err
+	}
+	step.Status = LLMStepStatus(normalizeStorageValue(status))
+	if !step.Status.Valid() {
+		return LLMStep{}, invalidInput("status", status)
+	}
+	var err error
+	step.StartedAt, err = parseTime(startedAt)
+	if err != nil {
+		return LLMStep{}, err
+	}
+	step.CompletedAt, err = timePtrFromNull(completedAt)
+	if err != nil {
+		return LLMStep{}, err
+	}
+	step.DurationMS = int64PtrFromNull(durationMS)
+	step.TokensIn = int64PtrFromNull(tokensIn)
+	step.TokensOut = int64PtrFromNull(tokensOut)
+	step.CacheRead = int64PtrFromNull(cacheRead)
+	step.CacheCreate = int64PtrFromNull(cacheCreate)
+	step.CostUSD = float64PtrFromNull(costUSD)
+	step.Error = stringPtrFromNull(errorText)
+	return step, nil
 }
 
 func scanFinding(row interface{ Scan(...any) error }) (Finding, error) {
@@ -1647,4 +1880,33 @@ var schemaStatements = []string{
   created_at     TEXT NOT NULL,
   last_used_at   TEXT NOT NULL
 )`,
+}
+
+var llmStepSchemaStatements = []string{
+	`CREATE TABLE llm_steps (
+  step_id                TEXT PRIMARY KEY,
+  run_id                 TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  stage                  TEXT NOT NULL,
+  scope_key              TEXT NOT NULL,
+  input_hash             TEXT NOT NULL,
+  prompt_hash            TEXT NOT NULL,
+  provider               TEXT NOT NULL,
+  adapter                TEXT NOT NULL,
+  model                  TEXT NOT NULL,
+  effort                 TEXT NOT NULL DEFAULT '',
+  provider_session_id    TEXT NOT NULL,
+  status                 TEXT NOT NULL,
+  structured_output_json TEXT NOT NULL DEFAULT '',
+  started_at             TEXT NOT NULL,
+  completed_at           TEXT,
+  duration_ms            INTEGER,
+  tokens_in              INTEGER,
+  tokens_out             INTEGER,
+  cache_read             INTEGER,
+  cache_create           INTEGER,
+  cost_usd               REAL,
+  error                  TEXT
+)`,
+	`CREATE INDEX llm_steps_run ON llm_steps(run_id)`,
+	`CREATE INDEX llm_steps_completed_lookup ON llm_steps(run_id, stage, scope_key, input_hash, prompt_hash, provider, adapter, model, effort, status)`,
 }

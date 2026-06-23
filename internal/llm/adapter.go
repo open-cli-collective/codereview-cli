@@ -120,6 +120,7 @@ type StructuredResult[T any] struct {
 	Response           Response
 	SessionID          string
 	ValidationAttempts []StructuredValidationAttempt
+	AcceptedOutput     []byte
 }
 
 // StructuredValidationAttempt records one failed schema-validation attempt.
@@ -179,9 +180,9 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if err != nil {
 		return StructuredResult[T]{Response: response, SessionID: sessionID}, err
 	}
-	value, decodeErr := decodeStructured(decode, response.StructuredOutput)
+	value, acceptedOutput, decodeErr := decodeStructuredAccepted(decode, response.StructuredOutput)
 	if decodeErr == nil {
-		return StructuredResult[T]{Value: value, Response: response, SessionID: sessionID}, nil
+		return StructuredResult[T]{Value: value, Response: response, SessionID: sessionID, AcceptedOutput: acceptedOutput}, nil
 	}
 	attempts := []StructuredValidationAttempt{{
 		Label:       "initial",
@@ -200,7 +201,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if err != nil {
 		return StructuredResult[T]{Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, err
 	}
-	retryValue, retryErr := decodeStructured(decode, retryResponse.StructuredOutput)
+	retryValue, retryAcceptedOutput, retryErr := decodeStructuredAccepted(decode, retryResponse.StructuredOutput)
 	if retryErr != nil {
 		attempts = append(attempts, StructuredValidationAttempt{
 			Label:       "retry",
@@ -210,7 +211,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 		})
 		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, &StructuredValidationError{Attempts: attempts}
 	}
-	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, nil
+	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts, AcceptedOutput: retryAcceptedOutput}, nil
 }
 
 // decodeStructured strict-decodes data, then on failure recovers a response
@@ -219,20 +220,25 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 // extracted object also fails the schema, that error is returned because it
 // describes the real schema violation; otherwise the strict error stands.
 func decodeStructured[T any](decode Decoder[T], data []byte) (T, error) {
+	value, _, err := decodeStructuredAccepted(decode, data)
+	return value, err
+}
+
+func decodeStructuredAccepted[T any](decode Decoder[T], data []byte) (T, []byte, error) {
 	value, err := decode(data)
 	if err == nil {
-		return value, nil
+		return value, data, nil
 	}
 	var zero T
 	extracted, ok := extractSingleJSONObject(data)
 	if !ok || bytes.Equal(extracted, data) {
-		return zero, err
+		return zero, nil, err
 	}
 	extractedValue, extractedErr := decode(extracted)
 	if extractedErr != nil {
-		return zero, extractedErr
+		return zero, nil, extractedErr
 	}
-	return extractedValue, nil
+	return extractedValue, extracted, nil
 }
 
 // runOnceWithSession runs a single attempt and retries transient provider
