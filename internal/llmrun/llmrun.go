@@ -111,7 +111,7 @@ func RunStructuredStep[T any](ctx context.Context, store Store, req Request, dec
 		message := runErr.Error()
 		step.Error = &message
 		if insertErr := store.InsertLLMStep(ctx, step); insertErr != nil {
-			return zero, fmt.Errorf("llmrun: persist failed step: %w; original error: %v", insertErr, runErr)
+			return zero, fmt.Errorf("llmrun: persist failed step: %w", errors.Join(insertErr, runErr))
 		}
 		return zero, runErr
 	}

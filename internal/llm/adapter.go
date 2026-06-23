@@ -215,16 +215,11 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts, AcceptedOutput: retryAcceptedOutput}, nil
 }
 
-// decodeStructured strict-decodes data, then on failure recovers a response
-// that wraps exactly one balanced top-level JSON object in surrounding prose by
-// decoding the extracted object with the same schema decoder. When the
+// decodeStructuredAccepted strict-decodes data, then on failure recovers a
+// response that wraps exactly one balanced top-level JSON object in surrounding
+// prose by decoding the extracted object with the same schema decoder. When the
 // extracted object also fails the schema, that error is returned because it
 // describes the real schema violation; otherwise the strict error stands.
-func decodeStructured[T any](decode Decoder[T], data []byte) (T, error) {
-	value, _, err := decodeStructuredAccepted(decode, data)
-	return value, err
-}
-
 func decodeStructuredAccepted[T any](decode Decoder[T], data []byte) (T, []byte, error) {
 	value, err := decode(data)
 	if err == nil {

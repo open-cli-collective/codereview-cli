@@ -27,7 +27,7 @@ func TestRunDryRunFiltersAndPlansThreadResponses(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.adapter.Queue(threadAnalysisResult("thread-clarify", threadanalysis.DecisionClarify, "Please clarify the intended behavior.", "", false))
 	fixture.adapter.Queue(threadAnalysisResult("thread-summarize", threadanalysis.DecisionSummarize, "", "Human confirmed this is fixed.", true))
-	fixture.provider.SetInlineThreads(fixture.ref, []gitprovider.InlineThread{
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
 		markedThread(t, "thread-clarify", "main.go", 10, false, fixture.bot, fixture.human),
 		markedThread(t, "thread-summarize", "main.go", 20, false, fixture.bot, fixture.human),
 		markedThread(t, "thread-resolved", "main.go", 30, true, fixture.bot, fixture.human),
@@ -83,7 +83,7 @@ func TestRunLivePostsThroughOutbox(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
 	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionSummarize, "", "Summary for future context.", true))
-	fixture.provider.SetInlineThreads(fixture.ref, []gitprovider.InlineThread{
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
 		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
 	})
 
@@ -123,7 +123,7 @@ func TestRunLivePostsThroughOutbox(t *testing.T) {
 func TestRunNoMatchingThreadsCompletesWithoutLLM(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
-	fixture.provider.SetInlineThreads(fixture.ref, []gitprovider.InlineThread{
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
 		humanOnlyThread("thread-human", "main.go", 10, fixture.human),
 	})
 
@@ -249,7 +249,7 @@ func TestRetryRejectsProfileMismatch(t *testing.T) {
 func TestRunFailedAnalysisCompletesRunFailed(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
-	fixture.provider.SetInlineThreads(fixture.ref, []gitprovider.InlineThread{
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
 		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
 	})
 
@@ -279,7 +279,7 @@ func TestRunLiveLocksBeforeReadingThreads(t *testing.T) {
 	events := &eventLog{}
 	fixture.provider = &recordingProvider{Fake: fixture.provider.Fake, events: events}
 	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionReplyOnly, "Reply", "", false))
-	fixture.provider.SetInlineThreads(fixture.ref, []gitprovider.InlineThread{
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
 		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
 	})
 	opts := fixture.options()
@@ -547,6 +547,13 @@ func insertAction(t *testing.T, store *ledger.Store, action ledger.PlannedAction
 	t.Helper()
 	if err := store.InsertPlannedAction(context.Background(), action); err != nil {
 		t.Fatalf("InsertPlannedAction: %v", err)
+	}
+}
+
+func setInlineThreads(t *testing.T, fixture *fixture, threads []gitprovider.InlineThread) {
+	t.Helper()
+	if err := fixture.provider.SetInlineThreads(fixture.ref, threads); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
 	}
 }
 
