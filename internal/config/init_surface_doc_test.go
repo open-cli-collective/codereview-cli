@@ -68,7 +68,6 @@ func initSurfaceExpectedSchemaPaths() []string {
 	paths = append(paths,
 		"config.repository_profiles[]",
 		"config.profiles.<name>",
-		"config.profiles.<name>.reviewer_credentials",
 	)
 	sort.Strings(paths)
 	return paths

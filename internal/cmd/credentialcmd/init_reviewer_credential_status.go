@@ -45,6 +45,30 @@ func currentInteractiveInitReviewerEntityPromptContext(opts *root.Options, deps 
 	return ctx
 }
 
+func currentInteractiveInitRepositoryAccessPromptContext(opts *root.Options, deps initDeps, session initSessionDraft) initPromptContext {
+	ctx := currentInteractiveInitInventoryPromptContext(session)
+	if opts != nil {
+		ctx.BackendArg = opts.Backend
+	}
+	ctx.BackendFlagSet = session.backendFlagSet
+	ctx.RepositoryAccessCredentialStatuses = buildInteractiveInitRepositoryAccessCredentialStatuses(opts, deps, session)
+	return ctx
+}
+
+func buildInteractiveInitRepositoryAccessCredentialStatuses(opts *root.Options, deps initDeps, session initSessionDraft) []initReviewerCredentialStatus {
+	plannedWriteKeys := projectInitPlannedWriteKeys(session.writes)
+	entries := standaloneRepositoryAccessPlanEntries(session.cfg, plannedWriteKeys)
+	writes, _, satisfiedRefs := filterInteractiveInitStagedCredentialStateByStore(
+		cloneInitWrites(session.writes),
+		map[string]bool{},
+		cloneInitBoolMap(session.satisfiedRefs),
+		session.credentialWriteStores,
+		entries,
+	)
+	entries = refreshInteractiveCredentialPlan(entries, projectInitPlannedWriteKeys(writes), satisfiedRefs)
+	return buildInteractiveInitCredentialStatuses(opts, deps, session, entries, writes, "git")
+}
+
 func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps initDeps, session initSessionDraft) []initReviewerCredentialStatus {
 	if session.workspace == nil {
 		return nil
@@ -60,6 +84,10 @@ func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps ini
 	)
 	plannedWriteKeys = projectInitPlannedWriteKeys(writes)
 	entries = refreshInteractiveCredentialPlan(entries, plannedWriteKeys, satisfiedRefs)
+	return buildInteractiveInitCredentialStatuses(opts, deps, session, entries, writes, "reviewer_credentials")
+}
+
+func buildInteractiveInitCredentialStatuses(opts *root.Options, deps initDeps, session initSessionDraft, entries []initCredentialPlanEntry, writes map[string]map[string]string, purpose string) []initReviewerCredentialStatus {
 	statuses := make([]initReviewerCredentialStatus, 0, len(entries))
 	stores := map[string]initStore{}
 	defer func() {
@@ -70,7 +98,7 @@ func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps ini
 		}
 	}()
 	for _, entry := range entries {
-		if entry.Ref.Purpose != "reviewer_credentials" || entry.State == initCredentialPlanStateClearRef {
+		if entry.Ref.Purpose != purpose || entry.State == initCredentialPlanStateClearRef {
 			continue
 		}
 		existing := map[string]bool{}
@@ -158,7 +186,7 @@ func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, pro
 	for _, entry := range entries {
 		seen[initCredentialEntryKey(entry.Ref)] = struct{}{}
 	}
-	if standardRef, err := credentials.FormatRef(session.workspace.profileName + "-reviewer"); err == nil {
+	if standardRef, err := initCredentialRefFromSeed(session.workspace.profileName + "-reviewer"); err == nil {
 		entries = appendReviewerCredentialPlanEntry(entries, seen, resolved, plannedWriteKeys, config.CredentialRef{
 			Purpose: "reviewer_credentials",
 			Store:   reviewerStoreID,
@@ -361,7 +389,11 @@ func initReviewerCredentialStatusDescription(status initReviewerCredentialStatus
 		}
 		lines = append(lines, trimmed)
 	}
-	lines = append(lines, "This is a credential name, not a PAT, GitHub App ID, private key, or installation ID.")
+	if config.GitAuthMode(status.Ref.Mode) == config.GitAuthModeGitHubApp {
+		lines = append(lines, "GitHub App ID is saved in config.yml. Secret values are collected separately.")
+	} else {
+		lines = append(lines, "This is a credential name, not a PAT or secret value.")
+	}
 	if strings.TrimSpace(status.Unavailable) != "" {
 		lines = append(lines, strings.TrimSpace(status.Unavailable)+".")
 	}

@@ -791,7 +791,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 
-	selectionPrompt, err := buildSelectionPrompt(req.ReviewPR, req.Catalog, req.ParsedDiff.Patches, req.Threads, req.SelectionPromptInstructions)
+	selectionPrompt, err := buildSelectionPrompt(req.ReviewPR, req.Catalog, req.ParsedDiff.Patches, req.Threads, req.MaxAgents, req.SelectionPromptInstructions)
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, err
 	}
@@ -812,10 +812,17 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, selectionSession, err
 	}
-	if len(selection.SelectedAgents) > req.MaxAgents {
-		return llm.Selection{}, selectionSession, fmt.Errorf("pipeline: selected agents %d exceeds max %d", len(selection.SelectedAgents), req.MaxAgents)
-	}
+	selection = opts.capSelectionAgents(selection, req.MaxAgents)
 	return selection, selectionSession, nil
+}
+
+func (opts Options) capSelectionAgents(selection llm.Selection, maxAgents int) llm.Selection {
+	if maxAgents <= 0 || len(selection.SelectedAgents) <= maxAgents {
+		return selection
+	}
+	opts.emitWarning(fmt.Sprintf("orchestrator selected %d agents; using first %d due to max-agents", len(selection.SelectedAgents), maxAgents))
+	selection.SelectedAgents = append([]llm.SelectedAgent(nil), selection.SelectedAgents[:maxAgents]...)
+	return selection
 }
 
 func getReviewDiff(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, baseSHA, headSHA string, pinned bool) (gitprovider.UnifiedDiff, error) {
@@ -1426,15 +1433,16 @@ func fetchFileOptional(ctx context.Context, provider ReadProvider, ref gitprovid
 
 const defaultSelectionTask = "select reviewer agents and thread actions; return selection JSON only"
 
-func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []FilePatch, threads []gitprovider.InlineThread, selectionInstructions string) (string, error) {
+func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []FilePatch, threads []gitprovider.InlineThread, maxAgents int, selectionInstructions string) (string, error) {
 	payload := map[string]any{
-		"task":            defaultSelectionTask,
-		"output_contract": selectionOutputContract(catalog.Agents, patches, threads),
-		"schema":          "selection",
-		"pr":              pr,
-		"agents":          selectionAgentPromptsFromCatalog(catalog),
-		"changed_files":   patchPaths(patches),
-		"threads":         threads,
+		"task":                defaultSelectionTask,
+		"output_contract":     selectionOutputContract(catalog.Agents, patches, threads, maxAgents),
+		"schema":              "selection",
+		"max_selected_agents": maxAgents,
+		"pr":                  pr,
+		"agents":              selectionAgentPromptsFromCatalog(catalog),
+		"changed_files":       patchPaths(patches),
+		"threads":             threads,
 	}
 	if instructions := strings.TrimSpace(selectionInstructions); instructions != "" {
 		payload["selection_instructions"] = instructions
@@ -1521,7 +1529,7 @@ type outputContract struct {
 	Example        any      `json:"example"`
 }
 
-func selectionOutputContract(agents []agents.Agent, patches []FilePatch, threads []gitprovider.InlineThread) outputContract {
+func selectionOutputContract(agents []agents.Agent, patches []FilePatch, threads []gitprovider.InlineThread, maxAgents int) outputContract {
 	agentIDs := make([]string, 0, len(agents))
 	for _, agent := range agents {
 		agentIDs = append(agentIDs, agent.ID)
@@ -1548,6 +1556,7 @@ func selectionOutputContract(agents []agents.Agent, patches []FilePatch, threads
 			"schema_version must be 1.",
 			"selected_agents[].agent_id must be one of the allowed_agent_ids.",
 			"selected_agents[].files must contain only paths from changed_files.",
+			"selected_agents must contain at most max_selected_agents entries, ordered from highest to lowest review value.",
 			"thread_actions must be an empty array when there are no threads.",
 		},
 		ResponseSchema: map[string]any{
@@ -1557,10 +1566,11 @@ func selectionOutputContract(agents []agents.Agent, patches []FilePatch, threads
 			"reasoning":       "string",
 		},
 		AllowedValues: map[string]any{
-			"allowed_agent_ids": agentIDs,
-			"changed_files":     changedFiles,
-			"known_thread_ids":  threadIDs,
-			"thread_decisions":  []string{"skip", "summarize_only", "summarize_and_resolve"},
+			"allowed_agent_ids":   agentIDs,
+			"changed_files":       changedFiles,
+			"known_thread_ids":    threadIDs,
+			"max_selected_agents": maxAgents,
+			"thread_decisions":    []string{"skip", "summarize_only", "summarize_and_resolve"},
 		},
 		Example: example,
 	}

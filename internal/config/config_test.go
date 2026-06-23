@@ -174,7 +174,12 @@ func TestLoadRejectsInvalidEnums(t *testing.T) {
 
 func TestLoadAcceptsPiRPCSubscriptionProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `profiles:
+	writeFile(t, path, `llm_runtimes:
+  pi-local:
+    provider: pi
+    auth: subscription
+    adapter: pi_rpc
+profiles:
   pi:
     git:
       host: github.com
@@ -182,10 +187,9 @@ func TestLoadAcceptsPiRPCSubscriptionProfile(t *testing.T) {
       credential:
         store: local-os
         name: codereview/pi
-    llm:
-      provider: pi
-      auth: subscription
-      adapter: pi_rpc
+    reviewer:
+      kind: git_identity
+    llm_runtime: pi-local
 `)
 	cfg, err := Load(path)
 	if err != nil {
@@ -206,7 +210,12 @@ func TestLoadAcceptsPiRPCSubscriptionProfile(t *testing.T) {
 
 func TestLoadAcceptsCodexCLISubscriptionProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `profiles:
+	writeFile(t, path, `llm_runtimes:
+  codex-local:
+    provider: openai
+    auth: subscription
+    adapter: codex_cli
+profiles:
   codex:
     git:
       host: github.com
@@ -214,10 +223,9 @@ func TestLoadAcceptsCodexCLISubscriptionProfile(t *testing.T) {
       credential:
         store: local-os
         name: codereview/codex
-    llm:
-      provider: openai
-      auth: subscription
-      adapter: codex_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: codex-local
 `)
 	cfg, err := Load(path)
 	if err != nil {
@@ -239,33 +247,34 @@ func TestLoadAcceptsCodexCLISubscriptionProfile(t *testing.T) {
 func TestValidateRejectsInvalidPiCombinations(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*Profile)
+		mutate func(*LLMConfig)
 	}{
-		{name: "api key auth", mutate: func(profile *Profile) {
-			profile.LLM.Auth = LLMAuthAPIKey
-			profile.LLM.CredentialRef = "codereview/pi-llm"
+		{name: "api key auth", mutate: func(llm *LLMConfig) {
+			llm.Auth = LLMAuthAPIKey
+			llm.CredentialRef = "codereview/pi-llm"
 		}},
-		{name: "claude cli adapter", mutate: func(profile *Profile) {
-			profile.LLM.Adapter = LLMAdapterClaudeCLI
+		{name: "claude cli adapter", mutate: func(llm *LLMConfig) {
+			llm.Adapter = LLMAdapterClaudeCLI
 		}},
-		{name: "anthropic api adapter", mutate: func(profile *Profile) {
-			profile.LLM.Adapter = LLMAdapterAnthropicAPI
+		{name: "anthropic api adapter", mutate: func(llm *LLMConfig) {
+			llm.Adapter = LLMAdapterAnthropicAPI
 		}},
-		{name: "pi rpc adapter with anthropic provider", mutate: func(profile *Profile) {
-			profile.LLM.Provider = LLMProviderAnthropic
+		{name: "pi rpc adapter with anthropic provider", mutate: func(llm *LLMConfig) {
+			llm.Provider = LLMProviderAnthropic
 		}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validFile()
-			profile := cfg.Profiles["home"]
-			profile.LLM.Provider = LLMProviderPi
-			profile.LLM.Auth = LLMAuthSubscription
-			profile.LLM.Adapter = LLMAdapterPiRPC
-			profile.LLM.CredentialRef = ""
-			tt.mutate(&profile)
-			cfg.Profiles["home"] = profile
+			llm := cfg.LLMRuntimes["home-llm"]
+			llm.Provider = LLMProviderPi
+			llm.Auth = LLMAuthSubscription
+			llm.Adapter = LLMAdapterPiRPC
+			llm.CredentialRef = ""
+			llm.Credential = CredentialLocation{}
+			tt.mutate(&llm)
+			cfg.LLMRuntimes["home-llm"] = llm
 			err := Validate(cfg)
 			if !errors.Is(err, ErrInvalid) {
 				t.Fatalf("Validate error = %v, want ErrInvalid", err)
@@ -280,27 +289,28 @@ func TestValidateRejectsInvalidPiCombinations(t *testing.T) {
 func TestValidateRejectsInvalidCodexCLICombinations(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*Profile)
+		mutate func(*LLMConfig)
 	}{
-		{name: "anthropic provider", mutate: func(profile *Profile) {
-			profile.LLM.Provider = LLMProviderAnthropic
+		{name: "anthropic provider", mutate: func(llm *LLMConfig) {
+			llm.Provider = LLMProviderAnthropic
 		}},
-		{name: "api key auth", mutate: func(profile *Profile) {
-			profile.LLM.Auth = LLMAuthAPIKey
-			profile.LLM.CredentialRef = "codereview/codex-llm"
+		{name: "api key auth", mutate: func(llm *LLMConfig) {
+			llm.Auth = LLMAuthAPIKey
+			llm.CredentialRef = "codereview/codex-llm"
 		}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validFile()
-			profile := cfg.Profiles["home"]
-			profile.LLM.Provider = LLMProviderOpenAI
-			profile.LLM.Auth = LLMAuthSubscription
-			profile.LLM.Adapter = LLMAdapterCodexCLI
-			profile.LLM.CredentialRef = ""
-			tt.mutate(&profile)
-			cfg.Profiles["home"] = profile
+			llm := cfg.LLMRuntimes["home-llm"]
+			llm.Provider = LLMProviderOpenAI
+			llm.Auth = LLMAuthSubscription
+			llm.Adapter = LLMAdapterCodexCLI
+			llm.CredentialRef = ""
+			llm.Credential = CredentialLocation{}
+			tt.mutate(&llm)
+			cfg.LLMRuntimes["home-llm"] = llm
 			err := Validate(cfg)
 			if !errors.Is(err, ErrInvalid) {
 				t.Fatalf("Validate error = %v, want ErrInvalid", err)
@@ -314,14 +324,14 @@ func TestValidateRejectsInvalidCodexCLICombinations(t *testing.T) {
 
 func TestModelMapValidationAndResolution(t *testing.T) {
 	cfg := validFile()
-	profile := cfg.Profiles["home"]
-	profile.LLM.Provider = LLMProviderOpenAI
-	profile.LLM.Auth = LLMAuthSubscription
-	profile.LLM.Adapter = LLMAdapterCodexCLI
-	profile.LLM.ModelMap = ModelMap{
+	llm := cfg.LLMRuntimes["home-llm"]
+	llm.Provider = LLMProviderOpenAI
+	llm.Auth = LLMAuthSubscription
+	llm.Adapter = LLMAdapterCodexCLI
+	llm.ModelMap = ModelMap{
 		" medium ": " gpt-custom ",
 	}
-	cfg.Profiles["home"] = profile
+	cfg.LLMRuntimes["home-llm"] = llm
 
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("Validate: %v", err)
@@ -347,9 +357,9 @@ func TestModelMapValidationAndResolution(t *testing.T) {
 
 func TestReviewerModelTierValidationAndNormalization(t *testing.T) {
 	cfg := validFile()
-	profile := cfg.Profiles["home"]
-	profile.LLM.ReviewerModelTier = " medium "
-	cfg.Profiles["home"] = profile
+	llm := cfg.LLMRuntimes["home-llm"]
+	llm.ReviewerModelTier = " medium "
+	cfg.LLMRuntimes["home-llm"] = llm
 
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("Validate: %v", err)
@@ -365,9 +375,9 @@ func TestReviewerModelTierValidationAndNormalization(t *testing.T) {
 
 func TestValidateRejectsInvalidReviewerModelTier(t *testing.T) {
 	cfg := validFile()
-	profile := cfg.Profiles["home"]
-	profile.LLM.ReviewerModelTier = "flagship"
-	cfg.Profiles["home"] = profile
+	llm := cfg.LLMRuntimes["home-llm"]
+	llm.ReviewerModelTier = "flagship"
+	cfg.LLMRuntimes["home-llm"] = llm
 
 	err := Validate(cfg)
 	if !errors.Is(err, ErrInvalid) {
@@ -440,9 +450,9 @@ func TestValidateRejectsInvalidModelMap(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validFile()
-			profile := cfg.Profiles["home"]
-			profile.LLM.ModelMap = tt.modelMap
-			cfg.Profiles["home"] = profile
+			llm := cfg.LLMRuntimes["home-llm"]
+			llm.ModelMap = tt.modelMap
+			cfg.LLMRuntimes["home-llm"] = llm
 			err := Validate(cfg)
 			if !errors.Is(err, ErrInvalid) {
 				t.Fatalf("Validate error = %v, want ErrInvalid", err)
@@ -836,7 +846,9 @@ func TestCredentialRefs(t *testing.T) {
 func TestCredentialRefsIncludesGitHubAppModes(t *testing.T) {
 	profile := validFile().normalized().Profiles["work"]
 	profile.Git.AuthMode = GitAuthModeGitHubApp
+	profile.Git.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 	profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
+	profile.ReviewerCredentials.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 
 	refs, err := CredentialRefs(profile)
 	if err != nil {
@@ -849,6 +861,42 @@ func TestCredentialRefsIncludesGitHubAppModes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(refs, want) {
 		t.Fatalf("CredentialRefs = %#v, want %#v", refs, want)
+	}
+}
+
+func TestPinnedGitHubAppInstallationIDForGit(t *testing.T) {
+	profile := validFile().normalized().Profiles["work"]
+	profile.ReviewerCredentials = &ReviewerCredentials{
+		AuthMode:      GitAuthModeGitHubApp,
+		Credential:    CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		CredentialRef: "codereview/work-reviewer",
+	}
+	profile.Reviewer = ProfileReviewer{
+		Kind:   ProfileReviewerKindEntity,
+		Entity: "work-reviewer",
+		GitHubAppInstallation: &ProfileReviewerGitHubAppInstallation{
+			Mode:           ProfileReviewerGitHubAppInstallationPinned,
+			InstallationID: "123456",
+		},
+	}
+	git := GitConfig{
+		Host:          "github.com",
+		AuthMode:      GitAuthModeGitHubApp,
+		CredentialRef: "codereview/work-reviewer",
+	}
+	if got := PinnedGitHubAppInstallationIDForGit(profile, git); got != "123456" {
+		t.Fatalf("PinnedGitHubAppInstallationIDForGit = %q, want 123456", got)
+	}
+
+	profile.Reviewer.GitHubAppInstallation.Mode = ProfileReviewerGitHubAppInstallationDiscoverFromRepository
+	profile.Reviewer.GitHubAppInstallation.InstallationID = ""
+	if got := PinnedGitHubAppInstallationIDForGit(profile, git); got != "" {
+		t.Fatalf("discover installation id = %q, want empty", got)
+	}
+
+	git.CredentialRef = "codereview/work"
+	if got := PinnedGitHubAppInstallationIDForGit(profile, git); got != "" {
+		t.Fatalf("unmatched credential installation id = %q, want empty", got)
 	}
 }
 
@@ -959,6 +1007,143 @@ func TestValidateAllowsLLMRuntimesWithoutReviewProfiles(t *testing.T) {
 	}
 	if got := loaded.LLMRuntimes["openai-api-key"].Credential.Name; got != "codereview/openai-api-key" {
 		t.Fatalf("openai runtime credential name = %q, want codereview/openai-api-key", got)
+	}
+}
+
+func TestValidateAllowsRepositoryAccessWithoutReviewProfiles(t *testing.T) {
+	cfg := File{
+		RepositoryAccess: map[string]RepositoryAccessConfig{
+			"personal-github": {
+				DisplayName: "Personal GitHub",
+				Git: GitConfig{
+					Host:     " GitHub.com ",
+					AuthMode: GitAuthModePAT,
+					Credential: CredentialLocation{
+						Store: LocalOSCredentialStoreID,
+						Name:  "codereview/personal-github",
+					},
+				},
+			},
+			"work-app": {
+				Git: GitConfig{
+					Host:     "github.example.com",
+					AuthMode: GitAuthModeGitHubApp,
+					Credential: CredentialLocation{
+						Store: LocalOSCredentialStoreID,
+						Name:  "codereview/work-github-app",
+					},
+					GitHubApp: &GitHubAppConfig{AppID: "12345"},
+				},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate repository-access-only config: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save repository-access-only config: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load repository-access-only config: %v", err)
+	}
+	if len(loaded.Profiles) != 0 {
+		t.Fatalf("loaded profiles = %#v, want none", loaded.Profiles)
+	}
+	if got := loaded.RepositoryAccess["personal-github"].Git.Host; got != "github.com" {
+		t.Fatalf("repository access host = %q, want github.com", got)
+	}
+	if got := loaded.RepositoryAccess["work-app"].Git.GitHubApp.AppID; got != "12345" {
+		t.Fatalf("repository access app id = %q, want 12345", got)
+	}
+}
+
+func TestValidateRepositoryAccess(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*File)
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name: "blank name",
+			mutate: func(cfg *File) {
+				cfg.RepositoryAccess[" "] = cfg.RepositoryAccess["work"]
+				delete(cfg.RepositoryAccess, "work")
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "repository_access name is required",
+		},
+		{
+			name: "missing host",
+			mutate: func(cfg *File) {
+				access := cfg.RepositoryAccess["work"]
+				access.Git.Host = ""
+				cfg.RepositoryAccess["work"] = access
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "repository_access.work.git.host is required",
+		},
+		{
+			name: "unknown store",
+			mutate: func(cfg *File) {
+				access := cfg.RepositoryAccess["work"]
+				access.Git.Credential.Store = "missing"
+				cfg.RepositoryAccess["work"] = access
+			},
+			wantErr: ErrSecretsStoreNotFound,
+			wantMsg: `repository_access.work.git.credential.store "missing"`,
+		},
+		{
+			name: "github app requires app id",
+			mutate: func(cfg *File) {
+				access := cfg.RepositoryAccess["work"]
+				access.Git.AuthMode = GitAuthModeGitHubApp
+				access.Git.GitHubApp = nil
+				cfg.RepositoryAccess["work"] = access
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "repository_access.work.git.github_app.app_id is required",
+		},
+		{
+			name: "pat rejects github app config",
+			mutate: func(cfg *File) {
+				access := cfg.RepositoryAccess["work"]
+				access.Git.GitHubApp = &GitHubAppConfig{AppID: "12345"}
+				cfg.RepositoryAccess["work"] = access
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "repository_access.work.git.github_app must be empty unless auth_mode is github_app",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := File{
+				RepositoryAccess: map[string]RepositoryAccessConfig{
+					"work": {
+						Git: GitConfig{
+							Host:     "github.com",
+							AuthMode: GitAuthModePAT,
+							Credential: CredentialLocation{
+								Store: LocalOSCredentialStoreID,
+								Name:  "codereview/work",
+							},
+						},
+					},
+				},
+			}
+			tt.mutate(&cfg)
+			err := Validate(cfg)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Fatalf("Validate error = %q, want containing %q", err.Error(), tt.wantMsg)
+			}
+		})
 	}
 }
 
@@ -1173,6 +1358,14 @@ func TestValidateSecretsStores(t *testing.T) {
 }
 
 func TestValidateCredentialLocations(t *testing.T) {
+	setProfileRepositoryAccessCredential := func(cfg *File, profileName string, location CredentialLocation) {
+		profile := cfg.Profiles[profileName]
+		access := cfg.RepositoryAccess[profile.RepositoryAccess]
+		access.Git.Credential = location
+		access.Git.CredentialRef = ""
+		cfg.RepositoryAccess[profile.RepositoryAccess] = access
+	}
+
 	tests := []struct {
 		name    string
 		mutate  func(*File)
@@ -1186,66 +1379,48 @@ func TestValidateCredentialLocations(t *testing.T) {
 					DisplayName: "Work File",
 					Backend:     SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
 				}
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: "work-file", Name: "codereview/home"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: "work-file", Name: "codereview/home"})
 			},
 		},
 		{
 			name: "missing store",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Name: "codereview/home"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Name: "codereview/home"})
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "profiles.home.git.credential.store is required",
+			wantMsg: "repository_access.home-git.git.credential.store is required",
 		},
 		{
 			name: "missing name",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: LocalOSCredentialStoreID})
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "profiles.home.git.credential.name is required",
+			wantMsg: "repository_access.home-git.git.credential.name is required",
 		},
 		{
 			name: "unknown configured store",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: "missing", Name: "codereview/home"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: "missing", Name: "codereview/home"})
 			},
 			wantErr: ErrSecretsStoreNotFound,
-			wantMsg: `profiles.home.git.credential.store "missing"`,
+			wantMsg: `repository_access.home-git.git.credential.store "missing"`,
 		},
 		{
 			name: "credential name invalid grammar",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/bad.profile"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/bad.profile"})
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "profiles.home.git.credential.name is invalid",
+			wantMsg: "repository_access.home-git.git.credential.name is invalid",
 		},
 		{
 			name: "credential name wrong service",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["home"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "other/home"}
-				profile.Git.CredentialRef = ""
-				cfg.Profiles["home"] = profile
+				setProfileRepositoryAccessCredential(cfg, "home", CredentialLocation{Store: LocalOSCredentialStoreID, Name: "other/home"})
 			},
 			wantErr: ErrInvalid,
-			wantMsg: `profiles.home.git.credential.name must use service "codereview"`,
+			wantMsg: `repository_access.home-git.git.credential.name must use service "codereview"`,
 		},
 		{
 			name: "same credential name in different stores",
@@ -1254,26 +1429,24 @@ func TestValidateCredentialLocations(t *testing.T) {
 					DisplayName: "Work File",
 					Backend:     SecretsStoreBackend{Kind: SecretsBackendKind(credstore.BackendFile)},
 				}
-				profile := cfg.Profiles["work"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
-				profile.Git.CredentialRef = ""
-				profile.ReviewerCredentials.Credential = CredentialLocation{Store: "work-file", Name: "codereview/shared"}
-				profile.ReviewerCredentials.CredentialRef = ""
-				cfg.Profiles["work"] = profile
+				setProfileRepositoryAccessCredential(cfg, "work", CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"})
+				entity := cfg.ReviewerEntities["work-reviewer"]
+				entity.Credential = CredentialLocation{Store: "work-file", Name: "codereview/shared"}
+				entity.CredentialRef = ""
+				cfg.ReviewerEntities["work-reviewer"] = entity
 			},
 		},
 		{
 			name: "same credential name in same store",
 			mutate: func(cfg *File) {
-				profile := cfg.Profiles["work"]
-				profile.Git.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
-				profile.Git.CredentialRef = ""
-				profile.ReviewerCredentials.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
-				profile.ReviewerCredentials.CredentialRef = ""
-				cfg.Profiles["work"] = profile
+				setProfileRepositoryAccessCredential(cfg, "work", CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"})
+				entity := cfg.ReviewerEntities["work-reviewer"]
+				entity.Credential = CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/shared"}
+				entity.CredentialRef = ""
+				cfg.ReviewerEntities["work-reviewer"] = entity
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "reviewer_credentials.credential must differ from git.credential",
+			wantMsg: "reviewer.entity \"work-reviewer\" credential must differ from git.credential",
 		},
 	}
 
@@ -1475,9 +1648,9 @@ func TestValidateRejectsReservedGitAuthModes(t *testing.T) {
 			cfg.Profiles["home"] = profile
 		}},
 		{name: "reviewer oauth_device", mutate: func(cfg *File) {
-			profile := cfg.Profiles["work"]
-			profile.ReviewerCredentials.AuthMode = GitAuthModeOAuthDevice
-			cfg.Profiles["work"] = profile
+			entity := cfg.ReviewerEntities["work-reviewer"]
+			entity.AuthMode = GitAuthModeOAuthDevice
+			cfg.ReviewerEntities["work-reviewer"] = entity
 		}},
 	}
 
@@ -1500,11 +1673,18 @@ func TestValidateAcceptsGitHubAppAuthModes(t *testing.T) {
 		{name: "git github_app", mutate: func(cfg *File) {
 			profile := cfg.Profiles["home"]
 			profile.Git.AuthMode = GitAuthModeGitHubApp
+			profile.Git.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 			cfg.Profiles["home"] = profile
 		}},
 		{name: "reviewer github_app", mutate: func(cfg *File) {
+			entity := cfg.ReviewerEntities["work-reviewer"]
+			entity.AuthMode = GitAuthModeGitHubApp
+			entity.GitHubApp = &GitHubAppConfig{AppID: "12345"}
+			cfg.ReviewerEntities["work-reviewer"] = entity
 			profile := cfg.Profiles["work"]
-			profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
+			profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+				Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+			}
 			cfg.Profiles["work"] = profile
 		}},
 	}
@@ -1515,6 +1695,124 @@ func TestValidateAcceptsGitHubAppAuthModes(t *testing.T) {
 			tt.mutate(&cfg)
 			if err := Validate(cfg); err != nil {
 				t.Fatalf("Validate error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestValidateProfileReviewerGitHubAppInstallation(t *testing.T) {
+	githubAppReviewer := func(cfg *File) {
+		entity := cfg.ReviewerEntities["work-reviewer"]
+		entity.AuthMode = GitAuthModeGitHubApp
+		entity.GitHubApp = &GitHubAppConfig{AppID: "12345"}
+		cfg.ReviewerEntities["work-reviewer"] = entity
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*File)
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name: "discover from repository",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+				}
+				cfg.Profiles["work"] = profile
+			},
+		},
+		{
+			name: "pinned installation",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode:           ProfileReviewerGitHubAppInstallationPinned,
+					InstallationID: "123456",
+				}
+				cfg.Profiles["work"] = profile
+			},
+		},
+		{
+			name: "missing for github app reviewer",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "profiles.work.reviewer.github_app_installation.mode is required",
+		},
+		{
+			name: "pinned without id",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode: ProfileReviewerGitHubAppInstallationPinned,
+				}
+				cfg.Profiles["work"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "installation_id is required",
+		},
+		{
+			name: "discover with id",
+			mutate: func(cfg *File) {
+				githubAppReviewer(cfg)
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode:           ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+					InstallationID: "123456",
+				}
+				cfg.Profiles["work"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "installation_id must be empty",
+		},
+		{
+			name: "pat reviewer with installation config",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["work"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+				}
+				cfg.Profiles["work"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "must be empty unless reviewer.entity uses github_app auth",
+		},
+		{
+			name: "git identity with installation config",
+			mutate: func(cfg *File) {
+				profile := cfg.Profiles["home"]
+				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+					Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+				}
+				cfg.Profiles["home"] = profile
+			},
+			wantErr: ErrInvalid,
+			wantMsg: "must be empty for git_identity reviewer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			tt.mutate(&cfg)
+			err := Validate(cfg)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("Validate: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Fatalf("Validate error = %v, want message containing %q", err, tt.wantMsg)
 			}
 		})
 	}
@@ -1531,9 +1829,9 @@ func TestSaveRejectsReservedGitAuthModes(t *testing.T) {
 			cfg.Profiles["home"] = profile
 		}},
 		{name: "reviewer oauth_device", mutate: func(cfg *File) {
-			profile := cfg.Profiles["work"]
-			profile.ReviewerCredentials.AuthMode = GitAuthModeOAuthDevice
-			cfg.Profiles["work"] = profile
+			entity := cfg.ReviewerEntities["work-reviewer"]
+			entity.AuthMode = GitAuthModeOAuthDevice
+			cfg.ReviewerEntities["work-reviewer"] = entity
 		}},
 	}
 
@@ -1557,7 +1855,12 @@ func TestLoadRejectsReservedGitAuthModes(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "git oauth_device", body: `profiles:
+		{name: "git oauth_device", body: `llm_runtimes:
+  claude-local:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+profiles:
   home:
     git:
       host: github.com
@@ -1565,12 +1868,23 @@ func TestLoadRejectsReservedGitAuthModes(t *testing.T) {
       credential:
         store: local-os
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-local
 `},
-		{name: "reviewer oauth_device", body: `profiles:
+		{name: "reviewer oauth_device", body: `llm_runtimes:
+  claude-local:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+reviewer_entities:
+  work-reviewer:
+    host: github.com
+    auth_mode: oauth_device
+    credential:
+      store: local-os
+      name: codereview/work-reviewer
+profiles:
   work:
     git:
       host: github.com
@@ -1578,15 +1892,10 @@ func TestLoadRejectsReservedGitAuthModes(t *testing.T) {
       credential:
         store: local-os
         name: codereview/work
-    reviewer_credentials:
-      auth_mode: oauth_device
-      credential:
-        store: local-os
-        name: codereview/work-reviewer
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: entity
+      entity: work-reviewer
+    llm_runtime: claude-local
 `},
 	}
 
@@ -1604,7 +1913,21 @@ func TestLoadRejectsReservedGitAuthModes(t *testing.T) {
 
 func TestLoadAcceptsGitHubAppAuthMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `profiles:
+	writeFile(t, path, `llm_runtimes:
+  claude-local:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+reviewer_entities:
+  work-reviewer:
+    host: github.com
+    auth_mode: github_app
+    credential:
+      store: local-os
+      name: codereview/work-reviewer
+    github_app:
+      app_id: "12345"
+profiles:
   work:
     git:
       host: github.com
@@ -1612,15 +1935,14 @@ func TestLoadAcceptsGitHubAppAuthMode(t *testing.T) {
       credential:
         store: local-os
         name: codereview/work
-    reviewer_credentials:
-      auth_mode: github_app
-      credential:
-        store: local-os
-        name: codereview/work-reviewer
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+      github_app:
+        app_id: "12345"
+    reviewer:
+      kind: entity
+      entity: work-reviewer
+      github_app_installation:
+        mode: discover_from_repository
+    llm_runtime: claude-local
 `)
 	cfg, err := Load(path)
 	if err != nil {
@@ -1634,7 +1956,24 @@ func TestLoadAcceptsGitHubAppAuthMode(t *testing.T) {
 
 func TestLoadRejectsMultilineReviewerDisplayName(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeFile(t, path, `profiles:
+	writeFile(t, path, `llm_runtimes:
+  claude-local:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+reviewer_entities:
+  work-reviewer:
+    host: github.com
+    auth_mode: github_app
+    credential:
+      store: local-os
+      name: codereview/work-reviewer
+    github_app:
+      app_id: "12345"
+    display_name: |
+      line one
+      line two
+profiles:
   work:
     git:
       host: github.com
@@ -1642,24 +1981,18 @@ func TestLoadRejectsMultilineReviewerDisplayName(t *testing.T) {
       credential:
         store: local-os
         name: codereview/work
-    reviewer_credentials:
-      auth_mode: github_app
-      credential:
-        store: local-os
-        name: codereview/work-reviewer
-      display_name: |
-        line one
-        line two
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+      github_app:
+        app_id: "12345"
+    reviewer:
+      kind: entity
+      entity: work-reviewer
+    llm_runtime: claude-local
 `)
 	_, err := Load(path)
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("Load error = %v, want ErrInvalid", err)
 	}
-	if !strings.Contains(err.Error(), "reviewer_credentials.display_name") {
+	if !strings.Contains(err.Error(), "reviewer_entities.work-reviewer.display_name") {
 		t.Fatalf("Load error = %v, want display_name validation", err)
 	}
 }
@@ -1713,10 +2046,10 @@ func TestSubscriptionLLMCredentialsAreAdapterManaged(t *testing.T) {
 
 func TestAPIKeyLLMRequiresCredentialRef(t *testing.T) {
 	cfg := validFile()
-	profile := cfg.Profiles["work"]
-	profile.LLM.CredentialRef = ""
-	profile.LLM.Credential = CredentialLocation{}
-	cfg.Profiles["work"] = profile
+	llm := cfg.LLMRuntimes["work-llm"]
+	llm.CredentialRef = ""
+	llm.Credential = CredentialLocation{}
+	cfg.LLMRuntimes["work-llm"] = llm
 
 	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("Validate error = %v, want ErrInvalid", err)
@@ -1729,30 +2062,34 @@ func TestValidateRejectsInvalidCredentialRefs(t *testing.T) {
 		mutate func(*File)
 	}{
 		{name: "subscription LLM stored ref", mutate: func(cfg *File) {
-			profile := cfg.Profiles["home"]
-			profile.LLM.CredentialRef = "codereview/home-llm"
-			cfg.Profiles["home"] = profile
+			llm := cfg.LLMRuntimes["home-llm"]
+			llm.CredentialRef = "codereview/home-llm"
+			cfg.LLMRuntimes["home-llm"] = llm
 		}},
 		{name: "empty reviewer credential ref", mutate: func(cfg *File) {
-			profile := cfg.Profiles["work"]
-			profile.ReviewerCredentials.CredentialRef = ""
-			profile.ReviewerCredentials.Credential = CredentialLocation{}
-			cfg.Profiles["work"] = profile
+			entity := cfg.ReviewerEntities["work-reviewer"]
+			entity.CredentialRef = ""
+			entity.Credential = CredentialLocation{}
+			cfg.ReviewerEntities["work-reviewer"] = entity
 		}},
 		{name: "reviewer credential ref matches git credential ref", mutate: func(cfg *File) {
 			profile := cfg.Profiles["work"]
-			profile.ReviewerCredentials.CredentialRef = profile.Git.CredentialRef
 			cfg.Profiles["work"] = profile
+			entity := cfg.ReviewerEntities["work-reviewer"]
+			entity.CredentialRef = profile.Git.CredentialRef
+			cfg.ReviewerEntities["work-reviewer"] = entity
 		}},
 		{name: "llm credential ref matches git credential ref", mutate: func(cfg *File) {
 			profile := cfg.Profiles["work"]
-			profile.LLM.CredentialRef = profile.Git.CredentialRef
-			cfg.Profiles["work"] = profile
+			llm := cfg.LLMRuntimes["work-llm"]
+			llm.CredentialRef = profile.Git.CredentialRef
+			cfg.LLMRuntimes["work-llm"] = llm
 		}},
 		{name: "llm credential ref matches reviewer credential ref", mutate: func(cfg *File) {
-			profile := cfg.Profiles["work"]
-			profile.LLM.CredentialRef = profile.ReviewerCredentials.CredentialRef
-			cfg.Profiles["work"] = profile
+			entity := cfg.ReviewerEntities["work-reviewer"]
+			llm := cfg.LLMRuntimes["work-llm"]
+			llm.CredentialRef = entity.CredentialRef
+			cfg.LLMRuntimes["work-llm"] = llm
 		}},
 		{name: "git ref invalid chars", mutate: func(cfg *File) {
 			profile := cfg.Profiles["home"]
@@ -1765,9 +2102,9 @@ func TestValidateRejectsInvalidCredentialRefs(t *testing.T) {
 			cfg.Profiles["home"] = profile
 		}},
 		{name: "llm ref invalid chars", mutate: func(cfg *File) {
-			profile := cfg.Profiles["work"]
-			profile.LLM.CredentialRef = "codereview/work.llm"
-			cfg.Profiles["work"] = profile
+			llm := cfg.LLMRuntimes["work-llm"]
+			llm.CredentialRef = "codereview/work.llm"
+			cfg.LLMRuntimes["work-llm"] = llm
 		}},
 	}
 
@@ -1800,14 +2137,6 @@ func TestValidationCoversAgentSourcesReviewPolicyAndRetention(t *testing.T) {
 	}
 
 	cfg = validFile()
-	profile = cfg.Profiles["work"]
-	profile.ReviewPolicy.ResolveAfter = "two days"
-	cfg.Profiles["work"] = profile
-	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("bad resolve_after Validate error = %v, want ErrInvalid", err)
-	}
-
-	cfg = validFile()
 	cfg.Data.Retention.MaxAgeDays = intPtr(-1)
 	if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("bad retention Validate error = %v, want ErrInvalid", err)
@@ -1817,7 +2146,12 @@ func TestValidationCoversAgentSourcesReviewPolicyAndRetention(t *testing.T) {
 func TestRetentionMaxAgeDefaultAndExplicitZero(t *testing.T) {
 	t.Run("omitted defaults to 90", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.yml")
-		writeFile(t, path, `profiles:
+		writeFile(t, path, `llm_runtimes:
+  claude-local:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+profiles:
   home:
     git:
       host: github.com
@@ -1825,10 +2159,9 @@ func TestRetentionMaxAgeDefaultAndExplicitZero(t *testing.T) {
       credential:
         store: local-os
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-local
 data:
   retention:
     enforcement: at_write
@@ -1844,7 +2177,12 @@ data:
 
 	t.Run("explicit zero means keep forever", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.yml")
-		writeFile(t, path, `profiles:
+		writeFile(t, path, `llm_runtimes:
+  claude-local:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+profiles:
   home:
     git:
       host: github.com
@@ -1852,10 +2190,9 @@ data:
       credential:
         store: local-os
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-local
 data:
   retention:
     max_age_days: 0
@@ -1894,6 +2231,28 @@ func TestValidateRetentionAppliesDefaultsAndPreservesExplicitZero(t *testing.T) 
 
 func validFile() File {
 	return File{
+		LLMRuntimes: map[string]LLMConfig{
+			"home-llm": {
+				Provider: LLMProviderAnthropic,
+				Auth:     LLMAuthSubscription,
+				Adapter:  LLMAdapterClaudeCLI,
+			},
+			"work-llm": {
+				Provider:      LLMProviderAnthropic,
+				Auth:          LLMAuthAPIKey,
+				Adapter:       LLMAdapterAnthropicAPI,
+				CredentialRef: "codereview/work-llm",
+			},
+		},
+		ReviewerEntities: map[string]ReviewerEntity{
+			"work-reviewer": {
+				Host:          "github.com",
+				AuthMode:      GitAuthModePAT,
+				CredentialRef: "codereview/work-reviewer",
+				DisplayName:   "Work reviewer bot",
+				IdentityCache: "acme-review-bot",
+			},
+		},
 		Profiles: map[string]Profile{
 			"home": {
 				Git: GitConfig{
@@ -1902,11 +2261,8 @@ func validFile() File {
 					CredentialRef: "codereview/home",
 					IdentityCache: "rianjs",
 				},
-				LLM: LLMConfig{
-					Provider: LLMProviderAnthropic,
-					Auth:     LLMAuthSubscription,
-					Adapter:  LLMAdapterClaudeCLI,
-				},
+				Reviewer:     ProfileReviewer{Kind: ProfileReviewerKindGitIdentity},
+				LLMRuntime:   "home-llm",
 				AgentSources: []string{"~/dev/my-reviewers"},
 				ReviewPolicy: ReviewPolicy{
 					MajorEvent:       ReviewMajorEventComment,
@@ -1920,24 +2276,13 @@ func validFile() File {
 					CredentialRef: "codereview/work",
 					IdentityCache: "rianjs",
 				},
-				ReviewerCredentials: &ReviewerCredentials{
-					AuthMode:      GitAuthModePAT,
-					CredentialRef: "codereview/work-reviewer",
-					DisplayName:   "Work reviewer bot",
-					IdentityCache: "acme-review-bot",
-				},
-				LLM: LLMConfig{
-					Provider:      LLMProviderAnthropic,
-					Auth:          LLMAuthAPIKey,
-					Adapter:       LLMAdapterAnthropicAPI,
-					CredentialRef: "codereview/work-llm",
-				},
+				Reviewer:     ProfileReviewer{Kind: ProfileReviewerKindEntity, Entity: "work-reviewer"},
+				LLMRuntime:   "work-llm",
 				AgentSources: []string{"~/dev/work-reviewers"},
 				ReviewPolicy: ReviewPolicy{
 					MajorEvent:       ReviewMajorEventRequestChanges,
 					AllowSelfApprove: true,
 					ResolveThreads:   ResolveThreadsNever,
-					ResolveAfter:     "48h",
 				},
 			},
 		},

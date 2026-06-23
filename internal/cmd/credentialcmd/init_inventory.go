@@ -284,17 +284,108 @@ func (m initInventoryModel) View() string {
 		// prompt starts, rather than appending the next form below stale content.
 		return ""
 	}
-	l := m.list
-	l.AdditionalShortHelpKeys = func() []key.Binding {
-		return m.helpBindings()
+	var lines []string
+	lines = append(lines, initLinearTheme.title.Render(m.title))
+	if m.desc != "" {
+		var descLines []string
+		initLinearAppendWrappedWithPrefix(&descLines, "", m.desc, initInventoryViewWidth(m))
+		for _, line := range descLines {
+			lines = append(lines, initLinearTheme.help.Render(line))
+		}
 	}
-	l.AdditionalFullHelpKeys = func() []key.Binding {
-		return m.helpBindings()
+	if filter := strings.TrimSpace(m.list.FilterValue()); filter != "" {
+		lines = append(lines, "", initLinearTheme.title.Render("Filter"), initLinearTheme.help.Render(filter))
 	}
-	if m.desc == "" {
-		return l.View()
+	lines = append(lines, m.renderRows()...)
+	lines = append(lines, "", initLinearTheme.help.Render(m.helpLine()))
+	return strings.Join(lines, "\n")
+}
+
+func (m initInventoryModel) renderRows() []string {
+	items := m.list.VisibleItems()
+	if len(items) == 0 {
+		return []string{"", initLinearTheme.help.Render("No matching entries")}
 	}
-	return m.desc + "\n\n" + l.View()
+	selectedIndex := m.list.Index()
+	var lines []string
+	currentSection := initInventoryRowKind("")
+	for index, item := range items {
+		inventoryItem, ok := item.(initInventoryItem)
+		if !ok {
+			continue
+		}
+		row := inventoryItem.row
+		if row.Kind != currentSection {
+			currentSection = row.Kind
+			lines = append(lines, "")
+			lines = append(lines, initLinearTheme.title.Render(initInventorySectionTitle(row.Kind)))
+		}
+		lines = append(lines, m.renderRow(row, index == selectedIndex)...)
+	}
+	return lines
+}
+
+func initInventorySectionTitle(kind initInventoryRowKind) string {
+	switch kind {
+	case initInventoryRowKindActive:
+		return "Configured"
+	case initInventoryRowKindPending:
+		return "Staged changes"
+	case initInventoryRowKindCommand:
+		return "Actions"
+	default:
+		return "Actions"
+	}
+}
+
+func (m initInventoryModel) renderRow(row initInventoryRow, selected bool) []string {
+	prefix := "  [ ] "
+	if selected {
+		prefix = "> [x] "
+	}
+	var titleLines []string
+	initLinearAppendWrappedWithPrefix(&titleLines, prefix, row.Title, initInventoryViewWidth(m))
+	title := strings.Join(titleLines, "\n")
+	switch {
+	case selected && initInventoryRowActionable(row):
+		title = initLinearStyleSelectedLine(title)
+	case !initInventoryRowActionable(row):
+		title = initLinearTheme.help.Render(title)
+	}
+	lines := []string{title}
+	if description := strings.TrimSpace(row.Description); description != "" {
+		var descriptionLines []string
+		initLinearAppendWrappedWithPrefix(&descriptionLines, "      ", description, initInventoryViewWidth(m))
+		for _, line := range descriptionLines {
+			lines = append(lines, initLinearTheme.help.Render(line))
+		}
+	}
+	return lines
+}
+
+func initInventoryViewWidth(m initInventoryModel) int {
+	if width := m.list.Width(); width > 0 {
+		return width
+	}
+	return 80
+}
+
+func initInventoryRowActionable(row initInventoryRow) bool {
+	return row.Selectable || row.Deletable || row.Restorable
+}
+
+func (m initInventoryModel) helpLine() string {
+	parts := []string{"up/k previous", "down/j next", "enter select"}
+	if row, ok := m.selectedRow(); ok {
+		if row.Deletable {
+			parts = append(parts, "d delete")
+		}
+		if row.Restorable {
+			parts = append(parts, "r restore")
+		}
+	}
+	parts = append(parts, "esc back")
+	return strings.Join(parts, " - ")
 }
 
 func (m initInventoryModel) selectedRow() (initInventoryRow, bool) {
@@ -307,20 +398,6 @@ func (m initInventoryModel) selectedRow() (initInventoryRow, bool) {
 		return initInventoryRow{}, false
 	}
 	return item.row, true
-}
-
-func (m initInventoryModel) helpBindings() []key.Binding {
-	bindings := []key.Binding{m.keys.Select}
-	if row, ok := m.selectedRow(); ok {
-		if row.Deletable {
-			bindings = append(bindings, m.keys.Delete)
-		}
-		if row.Restorable {
-			bindings = append(bindings, m.keys.Restore)
-		}
-	}
-	bindings = append(bindings, m.keys.Back)
-	return bindings
 }
 
 func (r initInventoryRow) primaryAction() initInventoryAction {

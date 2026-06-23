@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
-	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
 
 type initLLMRuntimeEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
@@ -488,7 +487,7 @@ func initLLMRuntimeDefaultCredentialName(ctx initPromptContext, draft initDraft,
 	if _, configured := ctx.LLMRuntimes[selection]; configured {
 		nameSeed = strings.TrimSpace(selection)
 	}
-	ref, err := credentials.FormatRef(nameSeed)
+	ref, err := initCredentialRefFromSeed(nameSeed)
 	if err != nil {
 		return ""
 	}

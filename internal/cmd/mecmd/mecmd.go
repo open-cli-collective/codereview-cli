@@ -231,7 +231,11 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 		return gitprovider.Identity{}, err
 	}
 	defer store.Close()
-	client, credential, err := newClient(git, store, r.options)
+	options := r.options
+	if installationID := config.PinnedGitHubAppInstallationIDForGit(r.cfg.Profiles[profileName], git); installationID != "" {
+		options.InstallationID = installationID
+	}
+	client, credential, err := newClient(git, store, options)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}

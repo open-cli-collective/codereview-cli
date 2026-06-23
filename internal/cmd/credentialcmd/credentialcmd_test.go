@@ -216,6 +216,7 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 			Store: testFileCredentialStoreID,
 			Name:  "codereview/work-reviewer",
 		},
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg.Profiles["work"] = work
@@ -240,9 +241,7 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 		key   string
 		value string
 	}{
-		{key: credentials.GitHubAppIDKey, value: "12345"},
 		{key: credentials.GitHubAppPrivateKeyKey, value: "private-key-value"},
-		{key: credentials.GitHubAppInstallationIDKey, value: "67890"},
 	} {
 		cmd, _, _ = newTestCommand(path, strings.NewReader(write.value))
 		err = root.Execute(cmd, []string{
@@ -258,8 +257,6 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 		assertStored(t, "work-reviewer", write.key, write.value)
 	}
 	assertFileBundleKeys(t, "work-reviewer", []string{
-		credentials.GitHubAppIDKey,
-		credentials.GitHubAppInstallationIDKey,
 		credentials.GitHubAppPrivateKeyKey,
 	})
 }
@@ -268,7 +265,12 @@ func TestSetCredentialRejectsUnsupportedConfigBeforeIngress(t *testing.T) {
 	hermeticFileBackend(t)
 	t.Setenv("CR_FUTURE_TOKEN", "")
 	path := filepath.Join(t.TempDir(), "config.yml")
-	writeRawCredentialTestConfig(t, path, `profiles:
+	writeRawCredentialTestConfig(t, path, `llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+profiles:
   future:
     git:
       host: github.com
@@ -276,10 +278,9 @@ func TestSetCredentialRejectsUnsupportedConfigBeforeIngress(t *testing.T) {
       credential:
         store: local-os
         name: codereview/future
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
 `)
 
 	tests := []struct {
@@ -514,6 +515,29 @@ func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
 	assertFakeStored(t, store, "default", credentials.GitTokenKey, "init-token")
 }
 
+func TestInitNonInteractiveNormalizesProfileNameCredentialRefs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	t.Setenv("CR_REVIEWER_TOKEN", "reviewer-token")
+	store := newFakeInitStore(nil)
+	flags := defaultNonInteractiveInitOptionsForTest()
+	flags.reviewerTokenEnv = "CR_REVIEWER_TOKEN"
+	_, _, err := runNonInteractiveInitWithFakeStore(t, path, "bad.profile", strings.NewReader(""), flags, store)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	profile := cfg.Profiles["bad.profile"]
+	if profile.Git.CredentialRef != "codereview/bad_x2eprofile" {
+		t.Fatalf("Git.CredentialRef = %q, want normalized profile ref", profile.Git.CredentialRef)
+	}
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/bad_x2eprofile-reviewer" {
+		t.Fatalf("ReviewerCredentials = %#v, want normalized reviewer ref", profile.ReviewerCredentials)
+	}
+}
+
 func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	t.Setenv("CR_GIT_TOKEN", "git-token")
@@ -557,6 +581,7 @@ func TestInitNonInteractiveWritesGitHubAppReviewerConfigOnly(t *testing.T) {
 		"init",
 		"--non-interactive",
 		"--reviewer-auth-mode", string(config.GitAuthModeGitHubApp),
+		"--reviewer-github-app-id", "12345",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -569,10 +594,16 @@ func TestInitNonInteractiveWritesGitHubAppReviewerConfigOnly(t *testing.T) {
 	if reviewer == nil || reviewer.AuthMode != config.GitAuthModeGitHubApp || reviewer.CredentialRef != "codereview/default-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want github_app codereview/default-reviewer", reviewer)
 	}
-	for _, key := range []string{credentials.GitHubAppIDKey, credentials.GitHubAppPrivateKeyKey} {
+	if reviewer.GitHubApp == nil || reviewer.GitHubApp.AppID != "12345" {
+		t.Fatalf("reviewer github_app = %#v, want app_id 12345", reviewer.GitHubApp)
+	}
+	for _, key := range []string{credentials.GitHubAppPrivateKeyKey} {
 		if !strings.Contains(errOut.String(), "--key "+key+" --stdin") {
 			t.Fatalf("stderr = %q, want setup hint for %s", errOut.String(), key)
 		}
+	}
+	if strings.Contains(errOut.String(), "--key "+credentials.GitHubAppIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want app id omitted from secret setup hints", errOut.String())
 	}
 	if strings.Contains(errOut.String(), "--key "+credentials.GitHubAppInstallationIDKey+" --stdin") {
 		t.Fatalf("stderr = %q, want optional installation id omitted from required setup hints", errOut.String())
@@ -777,6 +808,7 @@ func TestPlanInitCredentials(t *testing.T) {
 		desired := basicProfile("work")
 		desired.ReviewerCredentials = &config.ReviewerCredentials{
 			AuthMode:      config.GitAuthModeGitHubApp,
+			GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 			CredentialRef: "codereview/work-reviewer",
 		}
 		entries, err := planInitCredentials(nil, desired, nil)
@@ -790,11 +822,7 @@ func TestPlanInitCredentials(t *testing.T) {
 		if entry.Ref.Purpose != "reviewer_credentials" || entry.Ref.Ref != "codereview/work-reviewer" || entry.State != initCredentialPlanStateDefer {
 			t.Fatalf("reviewer entry = %#v, want deferred reviewer app ref", entry)
 		}
-		want := []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
-			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
-		}
+		want := []credentials.KeySpec{{Key: credentials.GitHubAppPrivateKeyKey, Required: true}}
 		if !reflect.DeepEqual(entry.KeySpecs, want) {
 			t.Fatalf("key specs = %#v, want %#v", entry.KeySpecs, want)
 		}
@@ -919,24 +947,25 @@ func TestPlanInitCredentials(t *testing.T) {
 		}
 	})
 
-	t.Run("partial github app bundle reports missing required keys", func(t *testing.T) {
+	t.Run("github app private key not staged defers credential setup", func(t *testing.T) {
 		desired := basicProfile("work")
 		desired.Git.AuthMode = config.GitAuthModeGitHubApp
+		desired.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 		entries, err := planInitCredentials(nil, desired, map[string][]string{
-			"codereview/work": []string{credentials.GitHubAppIDKey},
+			"codereview/work": {},
 		})
 		if err != nil {
 			t.Fatalf("planInitCredentials: %v", err)
 		}
 		entry := entries[0]
-		if entry.State != initCredentialPlanStateMissingRequired {
-			t.Fatalf("state = %s, want missing_required", entry.State)
+		if entry.State != initCredentialPlanStateDefer {
+			t.Fatalf("state = %s, want defer", entry.State)
 		}
-		if !reflect.DeepEqual(entry.PlannedWriteKeys, []string{credentials.GitHubAppIDKey}) {
-			t.Fatalf("planned write keys = %#v, want github_app_id only", entry.PlannedWriteKeys)
+		if len(entry.PlannedWriteKeys) != 0 {
+			t.Fatalf("planned write keys = %#v, want none", entry.PlannedWriteKeys)
 		}
-		if !reflect.DeepEqual(entry.MissingRequiredKeys, []string{credentials.GitHubAppPrivateKeyKey}) {
-			t.Fatalf("missing required = %#v, want github_app_private_key", entry.MissingRequiredKeys)
+		if len(entry.MissingRequiredKeys) != 0 {
+			t.Fatalf("missing required = %#v, want none without staged writes", entry.MissingRequiredKeys)
 		}
 	})
 }
@@ -1064,6 +1093,7 @@ func TestBuildInteractiveInitSessionPlanUsesOriginalProfileForRenamedTouchedProf
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModeGitHubApp,
+					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 					CredentialRef: "codereview/work-reviewer",
 					DisplayName:   "Old label",
 				},
@@ -1449,6 +1479,7 @@ func TestInitGitAuthModeFlagSupportsGitHubApp(t *testing.T) {
 		"init",
 		"--non-interactive",
 		"--git-auth-mode", string(config.GitAuthModeGitHubApp),
+		"--git-github-app-id", "12345",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -1461,9 +1492,12 @@ func TestInitGitAuthModeFlagSupportsGitHubApp(t *testing.T) {
 	if got.Profiles["default"].Git.AuthMode != config.GitAuthModeGitHubApp {
 		t.Fatalf("git.auth_mode = %q, want github_app", got.Profiles["default"].Git.AuthMode)
 	}
+	if got.Profiles["default"].Git.GitHubApp == nil || got.Profiles["default"].Git.GitHubApp.AppID != "12345" {
+		t.Fatalf("git.github_app = %#v, want app_id 12345", got.Profiles["default"].Git.GitHubApp)
+	}
 	stderr := errOut.String()
-	if !strings.Contains(stderr, "--key "+credentials.GitHubAppIDKey+" --stdin") {
-		t.Fatalf("stderr = %q, want github app id follow-up hint", stderr)
+	if strings.Contains(stderr, "--key "+credentials.GitHubAppIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want no github app id follow-up hint", stderr)
 	}
 	if !strings.Contains(stderr, "--key "+credentials.GitHubAppPrivateKeyKey+" --stdin") {
 		t.Fatalf("stderr = %q, want github app private key follow-up hint", stderr)
@@ -1489,7 +1523,6 @@ func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	if err := config.Save(path, config.File{
 		Profiles: map[string]config.Profile{
@@ -1517,7 +1550,7 @@ func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
 	}
 	expected := existing
 	expected.ReviewerCredentials = nil
-	expected = normalizeTestProfile(expected)
+	expected = normalizeTestProfileNamed("work", expected)
 	if !reflect.DeepEqual(got.Profiles["work"], expected) {
 		t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
 	}
@@ -1607,7 +1640,6 @@ func TestInitLLMReviewerModelTierFlags(t *testing.T) {
 			MajorEvent:       config.ReviewMajorEventRequestChanges,
 			AllowSelfApprove: true,
 			ResolveThreads:   config.ResolveThreadsNever,
-			ResolveAfter:     "24h",
 		}
 		if err := config.Save(path, config.File{
 			Profiles: map[string]config.Profile{
@@ -1635,7 +1667,7 @@ func TestInitLLMReviewerModelTierFlags(t *testing.T) {
 		}
 		expected := existing
 		expected.LLM.ReviewerModelTier = ""
-		expected = normalizeTestProfile(expected)
+		expected = normalizeTestProfileNamed("work", expected)
 		if !reflect.DeepEqual(got.Profiles["work"], expected) {
 			t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
 		}
@@ -1672,7 +1704,6 @@ func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	existing := config.File{
 		Keyring: config.KeyringConfig{Backend: "file"},
@@ -1726,8 +1757,18 @@ func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 		want.Profiles[name] = profile
 	}
 	want.Profiles["work"] = after.Profiles["work"]
+	want.RepositoryAccess = make(map[string]config.RepositoryAccessConfig, len(before.RepositoryAccess)+1)
+	for name, access := range before.RepositoryAccess {
+		want.RepositoryAccess[name] = access
+	}
+	want.RepositoryAccess[after.Profiles["work"].RepositoryAccess] = after.RepositoryAccess[after.Profiles["work"].RepositoryAccess]
+	want.LLMRuntimes = make(map[string]config.LLMConfig, len(before.LLMRuntimes)+1)
+	for name, runtime := range before.LLMRuntimes {
+		want.LLMRuntimes[name] = runtime
+	}
+	want.LLMRuntimes[after.Profiles["work"].LLMRuntime] = after.LLMRuntimes[after.Profiles["work"].LLMRuntime]
 	if !reflect.DeepEqual(after, want) {
-		t.Fatalf("config after init = %#v, want only work profile added to %#v", after, before)
+		t.Fatalf("config after init = %#v, want only work profile/runtime added to %#v", after, before)
 	}
 }
 
@@ -1926,6 +1967,7 @@ func TestInitGitScopeDraftRoundTripPreservesIdentityCacheFromPreviousProfile(t *
 		Host:          "https://github.mycompany.com/",
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work",
 		IdentityCache: "rianjs-work",
 	}
@@ -1943,6 +1985,7 @@ func TestInitGitScopeDraftExportClearsIdentityCacheWhenShapeChanges(t *testing.T
 		Host:          "https://github.mycompany.com/",
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work",
 		IdentityCache: "rianjs-work",
 	}
@@ -2011,6 +2054,7 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 				p.ReviewerCredentials = &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModeGitHubApp,
 					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 					CredentialRef: "codereview/work-reviewer",
 					IdentityCache: "review-app",
 				}
@@ -2019,12 +2063,14 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 			previous: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModeGitHubApp,
 				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-app",
 			},
 			want: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModeGitHubApp,
 				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-app",
 			},
@@ -2049,6 +2095,7 @@ func TestInitReviewerEntityDraftExportClearsIdentityCacheWhenShapeChanges(t *tes
 	previous := &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work-reviewer",
 		IdentityCache: "review-app",
 	}
@@ -2075,6 +2122,7 @@ func TestBuildInteractiveInitWorkspaceClearsReviewerDisplayNameWhenDraftLeavesIt
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work-reviewer",
 		DisplayName:   "Old label",
 	}
@@ -2128,7 +2176,7 @@ func TestBuildInitGitScopeInventoryDeduplicatesNormalizedGitHubEnterpriseHost(t 
 	}
 }
 
-func TestBuildInitGitScopeInventoryAssignsStableSuffixOnNameCollision(t *testing.T) {
+func TestBuildInitGitScopeInventoryUsesProjectedRepositoryAccessNames(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
 	home.Git.Host = "github.com"
@@ -2150,8 +2198,8 @@ func TestBuildInitGitScopeInventoryAssignsStableSuffixOnNameCollision(t *testing
 	if profileScopeNames["home"] == profileScopeNames["work"] {
 		t.Fatalf("profileScopeNames = %#v, want distinct names for colliding scope bases", profileScopeNames)
 	}
-	if profileScopeNames["home"] != "github-com-pat" && profileScopeNames["work"] != "github-com-pat" {
-		t.Fatalf("profileScopeNames = %#v, want one unsuffixed base name", profileScopeNames)
+	if profileScopeNames["home"] != "home-git" || profileScopeNames["work"] != "work-git" {
+		t.Fatalf("profileScopeNames = %#v, want projected repository access names", profileScopeNames)
 	}
 	if initGitScopeLabel(scopes[profileScopeNames["home"]]) == initGitScopeLabel(scopes[profileScopeNames["work"]]) {
 		t.Fatalf("git scope labels should be distinguishable: %#v", profileScopeNames)
@@ -2180,11 +2228,11 @@ func TestBuildInitReviewerEntityInventoryVariantsAndDeduping(t *testing.T) {
 
 	entities, profileEntityNames := buildInitReviewerEntityInventory(cfg)
 
-	if len(entities) != 2 {
-		t.Fatalf("len(entities) = %d, want 2; entities=%#v", len(entities), entities)
+	if len(entities) != 1 {
+		t.Fatalf("len(entities) = %d, want 1; entities=%#v", len(entities), entities)
 	}
-	if profileEntityNames["home"] == profileEntityNames["work"] {
-		t.Fatalf("profileEntityNames = %#v, want self entity distinct from PAT reviewer", profileEntityNames)
+	if profileEntityNames["home"] != string(initReviewerEntityKindUseGitIdentity) {
+		t.Fatalf("profileEntityNames = %#v, want home to use Git identity fallback", profileEntityNames)
 	}
 	if profileEntityNames["work"] != profileEntityNames["bot"] {
 		t.Fatalf("profileEntityNames = %#v, want deduped PAT reviewer entity", profileEntityNames)
@@ -2217,8 +2265,8 @@ func TestBuildInitReviewerEntityInventoryAssignsStableSuffixOnNameCollision(t *t
 	if profileEntityNames["home"] == profileEntityNames["work"] {
 		t.Fatalf("profileEntityNames = %#v, want distinct names for colliding reviewer bases", profileEntityNames)
 	}
-	if profileEntityNames["home"] != "reviewer-pat" && profileEntityNames["work"] != "reviewer-pat" {
-		t.Fatalf("profileEntityNames = %#v, want one unsuffixed base name", profileEntityNames)
+	if profileEntityNames["home"] != "home-reviewer" || profileEntityNames["work"] != "work-reviewer" {
+		t.Fatalf("profileEntityNames = %#v, want profile-derived reviewer entity names", profileEntityNames)
 	}
 	if initReviewerEntityLabel(entities[profileEntityNames["home"]]) == initReviewerEntityLabel(entities[profileEntityNames["work"]]) {
 		t.Fatalf("reviewer labels should be distinguishable: %#v", profileEntityNames)
@@ -2395,19 +2443,18 @@ func TestInitReviewerEntityInventoryRowsUseNameFirstConfiguredLabels(t *testing.
 		t.Fatalf("configuredTitles = %#v, want %#v", got, want)
 	}
 	if got, want := commandIDs, []string{
-		string(initReviewerEntityKindUseGitIdentity),
 		string(initReviewerEntityKindPAT),
 		string(initReviewerEntityKindGitHubApp),
 		initBackSelection,
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("commandIDs = %#v, want %#v", got, want)
 	}
-	if got, want := commandTitles[1:], []string{
+	if got, want := commandTitles, []string{
 		reviewerEntityTemplatePATLabel(),
 		reviewerEntityTemplateGitHubAppLabel(),
 		"Back to main menu",
 	}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("commandTitles[1:] = %#v, want %#v", got, want)
+		t.Fatalf("commandTitles = %#v, want %#v", got, want)
 	}
 }
 
@@ -2416,11 +2463,13 @@ func TestBuildInitReviewerEntityInventorySharedDisplayNameWinsWhenOnlyOneProfile
 	work := basicProfile("work")
 	home.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
 		DisplayName:   "OC Collective bot",
 	}
 	work.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
 	}
 
@@ -2440,20 +2489,28 @@ func TestBuildInitReviewerEntityInventorySharedDisplayNameWinsWhenOnlyOneProfile
 	}
 }
 
-func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *testing.T) {
+func TestEditInteractiveInitReviewerEntityStepUpdatesConfiguredEntity(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
-	home.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
-		DisplayName:   "Old home label",
+	reviewer := config.ProfileReviewer{
+		Kind:   config.ProfileReviewerKindEntity,
+		Entity: "oc-collective-bot",
+		GitHubAppInstallation: &config.ProfileReviewerGitHubAppInstallation{
+			Mode: config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+		},
 	}
-	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
-		DisplayName:   "Old work label",
-	}
+	home.Reviewer = reviewer
+	work.Reviewer = reviewer
 	cfg := config.File{
+		ReviewerEntities: map[string]config.ReviewerEntity{
+			"oc-collective-bot": {
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
+				CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+				DisplayName:   "Old label",
+			},
+		},
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
@@ -2473,12 +2530,13 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *tes
 	draft := seedInteractiveInitDraft("home", "home", &home)
 	draft.ReviewerEnabled = true
 	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	draft.ReviewerGitHubAppID = "12345"
 	draft.ReviewerCredentialRef = "codereview/open-cli-collective-rianjs-bot-renamed"
 	draft.ReviewerDisplayName = "OC Collective bot"
 
 	next, stayInCategory, err := editInteractiveInitReviewerEntityStep(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{
 		reviewerPrompter: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
-			draft.ActionTarget = "reviewer-github-app"
+			draft.ActionTarget = "oc-collective-bot"
 			return draft, nil
 		}),
 		prompter: initPrompterFunc(func(_ initPromptContext) (initDraft, error) {
@@ -2492,8 +2550,21 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *tes
 	if stayInCategory {
 		t.Fatal("stayInCategory = true, want focused reviewer flow to return to main menu after stage")
 	}
+	entity := next.cfg.ReviewerEntities["oc-collective-bot"]
+	if got, want := entity.AuthMode, config.GitAuthModeGitHubApp; got != want {
+		t.Fatalf("entity auth mode = %q, want %q", got, want)
+	}
+	if got, want := entity.CredentialRef, "codereview/open-cli-collective-rianjs-bot-renamed"; got != want {
+		t.Fatalf("entity credential ref = %q, want %q", got, want)
+	}
+	if got, want := entity.DisplayName, "OC Collective bot"; got != want {
+		t.Fatalf("entity display name = %q, want %q", got, want)
+	}
 	for _, profileName := range []string{"home", "work"} {
 		profile := next.cfg.Profiles[profileName]
+		if got, want := profile.Reviewer, reviewer; !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s reviewer selector = %#v, want %#v", profileName, got, want)
+		}
 		if profile.ReviewerCredentials == nil {
 			t.Fatalf("%s reviewer credentials cleared unexpectedly", profileName)
 		}
@@ -2509,18 +2580,9 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesSharedDisplayName(t *tes
 	}
 }
 
-func TestEditInteractiveInitReviewerEntityStepPropagatesConcreteSharedReviewerRefAfterStandardNoOpEdit(t *testing.T) {
+func TestEditInteractiveInitReviewerEntityStepDefaultsBlankRefToStandaloneEntityRef(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
-	home.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/home-reviewer",
-	}
-	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/home-reviewer",
-		DisplayName:   "Old work label",
-	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
 			"home": home,
@@ -2541,6 +2603,7 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesConcreteSharedReviewerRe
 	draft := seedInteractiveInitDraft("home", "home", &home)
 	draft.ReviewerEnabled = true
 	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	draft.ReviewerGitHubAppID = "12345"
 	draft.ReviewerCredentialRef = ""
 	draft.ReviewerDisplayName = "OC Collective bot"
 
@@ -2560,34 +2623,30 @@ func TestEditInteractiveInitReviewerEntityStepPropagatesConcreteSharedReviewerRe
 	if stayInCategory {
 		t.Fatal("stayInCategory = true, want focused reviewer flow to return to main menu after stage")
 	}
-	for _, profileName := range []string{"home", "work"} {
-		profile := next.cfg.Profiles[profileName]
-		if profile.ReviewerCredentials == nil {
-			t.Fatalf("%s reviewer credentials cleared unexpectedly", profileName)
-		}
-		if got, want := profile.ReviewerCredentials.CredentialRef, "codereview/home-reviewer"; got != want {
-			t.Fatalf("%s credential ref = %q, want %q", profileName, got, want)
-		}
-		if got, want := profile.ReviewerCredentials.DisplayName, "OC Collective bot"; got != want {
-			t.Fatalf("%s display name = %q, want %q", profileName, got, want)
-		}
+	entity := next.cfg.ReviewerEntities["reviewer-github-app"]
+	if got, want := entity.CredentialRef, "codereview/reviewer-github-app"; got != want {
+		t.Fatalf("entity credential ref = %q, want %q", got, want)
+	}
+	if got, want := entity.DisplayName, "OC Collective bot"; got != want {
+		t.Fatalf("entity display name = %q, want %q", got, want)
 	}
 }
 
 func TestEditInteractiveInitReviewerEntityStepSelectingFallbackDoesNotPropagateSharedEntity(t *testing.T) {
 	home := basicProfile("home")
 	work := basicProfile("work")
-	home.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
-		DisplayName:   "Old home label",
-	}
-	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
-		DisplayName:   "Old work label",
-	}
+	home.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: "oc-collective-bot"}
+	work.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: "oc-collective-bot"}
 	cfg := config.File{
+		ReviewerEntities: map[string]config.ReviewerEntity{
+			"oc-collective-bot": {
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
+				CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+				DisplayName:   "Old label",
+			},
+		},
 		Profiles: map[string]config.Profile{
 			"home": home,
 			"work": work,
@@ -2625,14 +2684,15 @@ func TestEditInteractiveInitReviewerEntityStepSelectingFallbackDoesNotPropagateS
 	if stayInCategory {
 		t.Fatal("stayInCategory = true, want focused reviewer flow to return to main menu after stage")
 	}
-	if got := next.cfg.Profiles["home"].ReviewerCredentials; got != nil {
-		t.Fatalf("home reviewer credentials = %#v, want cleared fallback reviewer", got)
+	normalized := config.Normalize(next.cfg)
+	if got := normalized.Profiles["home"].Reviewer; got != (config.ProfileReviewer{Kind: config.ProfileReviewerKindEntity, Entity: "oc-collective-bot"}) {
+		t.Fatalf("home reviewer selector = %#v, want unchanged configured entity", got)
 	}
-	workProfile := next.cfg.Profiles["work"]
+	workProfile := normalized.Profiles["work"]
 	if workProfile.ReviewerCredentials == nil {
 		t.Fatal("work reviewer credentials cleared unexpectedly")
 	}
-	if got, want := workProfile.ReviewerCredentials.DisplayName, "Old work label"; got != want {
+	if got, want := workProfile.ReviewerCredentials.DisplayName, "Old label"; got != want {
 		t.Fatalf("work display name = %q, want %q", got, want)
 	}
 	if got, want := workProfile.ReviewerCredentials.CredentialRef, "codereview/open-cli-collective-rianjs-bot"; got != want {
@@ -2725,14 +2785,13 @@ func TestInitReviewerEntityInventoryRowsUseExplicitGitAccountFallbackLabels(t *t
 		t.Run(tc.name, func(t *testing.T) {
 			profile := basicProfile("home")
 			profile.Git = tc.git
-			rows := initReviewerEntityInventoryRows(initPromptContext{
-				ExistingProfile: &profile,
-			})
-			if len(rows) == 0 {
-				t.Fatal("rows = empty, want fallback command row")
+			label := profileEditorReviewerEntityFallbackLabel(initGitScopeDraftFromConfig(profile.Git), &profile)
+			options := initReviewerEntitySelectionOptions(map[string]initReviewerEntityDraft{}, label)
+			if len(options) == 0 {
+				t.Fatal("options = empty, want fallback option")
 			}
-			if got := rows[0].Title; got != tc.wantText {
-				t.Fatalf("fallback row = %q, want %q", got, tc.wantText)
+			if got := options[0].Key; got != tc.wantText {
+				t.Fatalf("fallback option = %q, want %q", got, tc.wantText)
 			}
 		})
 	}
@@ -3282,12 +3341,14 @@ func TestBuildInteractiveInitWorkspaceImportsGitScopeAndReviewerEntityInventory(
 	existing := basicProfile("work")
 	existing.Git.Host = "github.mycompany.com"
 	existing.Git.AuthMode = config.GitAuthModeGitHubApp
+	existing.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	existing.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/office-git"}
 	existing.Git.CredentialRef = "codereview/office-git"
 	existing.Git.IdentityCache = "git-cache"
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/office-reviewer"},
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/office-reviewer",
 		IdentityCache: "reviewer-cache",
 	}
@@ -3385,6 +3446,7 @@ func TestInitInteractivePromptDrivenFlowStillExportsSeparateReviewerAfterDraftIn
 				GitCredentialRef:        "codereview/office-git",
 				ReviewerEnabled:         true,
 				ReviewerAuth:            string(config.GitAuthModeGitHubApp),
+				ReviewerGitHubAppID:     "12345",
 				ReviewerCredentialStore: config.LocalOSCredentialStoreID,
 				ReviewerCredentialRef:   "codereview/office-reviewer",
 				LLMProvider:             string(config.LLMProviderAnthropic),
@@ -3412,7 +3474,6 @@ func TestInitInteractivePromptDrivenFlowStillExportsSeparateReviewerAfterDraftIn
 					credentials.GitTokenKey: "existing-git-token",
 				},
 				"office-reviewer": {
-					credentials.GitHubAppIDKey:         "12345",
 					credentials.GitHubAppPrivateKeyKey: "private-key",
 				},
 			}), nil
@@ -3744,7 +3805,7 @@ func TestCollectInteractiveInitSecretsBackAfterPartialMultiKeyWriteDiscardsScrat
 			initSecretSourcePaste,
 			initSecretSourceBack,
 		},
-		pastes: []string{"12345"},
+		pastes: []string{"private-key"},
 	}
 	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
 		secretPrompter:     prompter,
@@ -3760,7 +3821,7 @@ func TestCollectInteractiveInitSecretsBackAfterPartialMultiKeyWriteDiscardsScrat
 	if err != nil {
 		t.Fatalf("collectInteractiveInitSecrets: %v", err)
 	}
-	if got := workspace.writes["codereview/default"][credentials.GitHubAppIDKey]; got != "" {
+	if got := workspace.writes["codereview/default"][credentials.GitHubAppPrivateKeyKey]; got != "" {
 		t.Fatalf("partial draft write = %q, want discarded after later source Back then defer", got)
 	}
 	if workspace.satisfiedRefs["codereview/default"] {
@@ -3904,12 +3965,12 @@ func testInitMultiKeySecretWorkspace() initWorkspaceDraft {
 				Mode:    string(config.GitAuthModeGitHubApp),
 			},
 			KeySpecs: []credentials.KeySpec{
-				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+				{Key: credentials.GitTokenKey, Required: true},
 			},
 			MissingRequiredKeys: []string{
-				credentials.GitHubAppIDKey,
 				credentials.GitHubAppPrivateKeyKey,
+				credentials.GitTokenKey,
 			},
 			State: initCredentialPlanStateMissingRequired,
 		}},
@@ -3949,11 +4010,8 @@ func TestWriteInitCredentialPlanHintsUsesMissingRequiredKeysOnly(t *testing.T) {
 			Mode:    string(config.GitAuthModeGitHubApp),
 		},
 		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
-		PlannedWriteKeys:    []string{credentials.GitHubAppIDKey},
 		MissingRequiredKeys: []string{credentials.GitHubAppPrivateKeyKey},
 		State:               initCredentialPlanStateMissingRequired,
 	}
@@ -3982,9 +4040,7 @@ func TestWriteInitCredentialPlanHintsForDeferredGitHubAppUsesRequiredKeysOnly(t 
 			Mode:    string(config.GitAuthModeGitHubApp),
 		},
 		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 		State: initCredentialPlanStateDefer,
 	}
@@ -3993,7 +4049,7 @@ func TestWriteInitCredentialPlanHintsForDeferredGitHubAppUsesRequiredKeysOnly(t 
 		t.Fatalf("writeInitCredentialPlanHints: %v", err)
 	}
 	got := stderr.String()
-	for _, key := range []string{credentials.GitHubAppIDKey, credentials.GitHubAppPrivateKeyKey} {
+	for _, key := range []string{credentials.GitHubAppPrivateKeyKey} {
 		if !strings.Contains(got, "cr set-credential --store local-os --name codereview/rianjs-bot --key "+key+" --stdin") {
 			t.Fatalf("stderr = %q, want required setup hint for %s", got, key)
 		}
@@ -5088,19 +5144,17 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 		},
 	}
 	reviewerEntities, profileReviewerEntities := buildInitReviewerEntityInventory(cfg)
+	selectedReviewerEntity := profileReviewerEntities["work"]
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
-		stderr: &stderr,
-		editorRunner: stageReviewerEntityEditorRunner(t, map[initLinearFieldID]string{
-			initReviewerEntityFieldGitHubAppID:         "12345",
-			initReviewerEntityFieldGitHubAppPrivateKey: testReviewerGitHubAppPrivateKey(),
-		}, ""),
+		stderr:       &stderr,
+		editorRunner: stageReviewerEntityEditorRunner(t, nil, ""),
 		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, out io.Writer) (initInventoryResult, error) {
 			_, _ = io.WriteString(out, "custom-work-reviewer (PAT reviewer)\n")
 			return initInventoryResult{
 				Action: initInventoryActionEdit,
 				Row: initInventoryRow{
-					ID:    "reviewer-pat",
+					ID:    selectedReviewerEntity,
 					Title: "custom-work-reviewer (PAT reviewer)",
 				},
 			}, nil
@@ -5109,19 +5163,23 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 
 	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{
 		Context: initPromptContext{
-			RequestedProfileName:    "home",
-			ExistingProfileName:     "home",
-			ExistingProfile:         &home,
-			ExistingConfig:          cfg,
-			ReviewerEntities:        reviewerEntities,
-			ProfileReviewerEntities: profileReviewerEntities,
+			RequestedProfileName:         "home",
+			ExistingProfileName:          "home",
+			ExistingProfile:              &home,
+			ExistingConfig:               cfg,
+			ReviewerEntities:             reviewerEntities,
+			ProfileReviewerEntities:      profileReviewerEntities,
+			StandaloneReviewerEntityMode: true,
 		},
 	})
 	if err != nil {
 		t.Fatalf("EditReviewerEntity: %v", err)
 	}
-	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) || draft.ReviewerCredentialRef != "codereview/custom-work-reviewer" {
+	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) || draft.ReviewerCredentialWriteRef != "codereview/custom-work-reviewer" {
 		t.Fatalf("draft reviewer = %#v, want configured PAT reviewer to round-trip intact", draft)
+	}
+	if draft.ReviewerCredentialRef != "" || draft.AdvancedStorageLabels {
+		t.Fatalf("draft reviewer location = %q / advanced=%v, want unchanged existing standalone entity location", draft.ReviewerCredentialRef, draft.AdvancedStorageLabels)
 	}
 }
 
@@ -6244,6 +6302,7 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerFallbackSeedDoesNotPersist
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
 	}
 	draft := seedInteractiveInitDraft("work", "work", &existing)
@@ -6270,12 +6329,14 @@ func TestHuhInitReviewerEntityPrompterAccessibleShowsSeededDisplayNamePrompt(t *
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work-reviewer",
 		DisplayName:   "Old label",
 	}
 	draft := seedInteractiveInitDraft("work", "work", &existing)
 	draft.ReviewerEnabled = true
 	draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+	draft.ReviewerGitHubAppID = "12345"
 	draft.ReviewerCredentialRef = "codereview/work-reviewer"
 	draft.ReviewerDisplayName = "Old label"
 	var stderr bytes.Buffer
@@ -6304,6 +6365,7 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCanEditLabel(t *testing.T)
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work-reviewer",
 	}
 	draft := seedInteractiveInitDraft("work", "work", &existing)
@@ -6339,23 +6401,30 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCanEditLabel(t *testing.T)
 func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T) {
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
-	prompter := huhInitReviewerEntityPrompter{
-		stderr: &stderr,
-		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
-			model := newInitLinearEditorModel(editor, 160, 60)
-			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindPAT))
-			model.setFieldValue(initReviewerEntityFieldGitToken, "reviewer-pat")
-			model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitToken))
-			model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
-			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
-			_, _ = io.WriteString(out, model.View())
-			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			next, ok := updated.(initLinearEditorModel)
-			if !ok {
-				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
-			}
-			return next, nil
-		},
+	prompter, ok := newHuhInitReviewerEntityPrompter(&root.Options{
+		Stdin:  strings.NewReader(""),
+		Stderr: &stderr,
+	}).(huhInitReviewerEntityPrompter)
+	if !ok {
+		t.Fatalf("newHuhInitReviewerEntityPrompter returned %T, want huhInitReviewerEntityPrompter", newHuhInitReviewerEntityPrompter(&root.Options{}))
+	}
+	if prompter.inventoryRunner != nil {
+		t.Fatal("reviewer entity prompter inventoryRunner = non-nil, want direct linear editor path")
+	}
+	prompter.editorRunner = func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
+		model := newInitLinearEditorModel(editor, 160, 60)
+		model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindPAT))
+		model.setFieldValue(initReviewerEntityFieldGitToken, "inline-secret-token")
+		model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitToken))
+		model = focusInitLinearField(t, model, initReviewerEntityFieldAction)
+		model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldAction, initDetailActionEdit)
+		_, _ = io.WriteString(out, model.View())
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		next, ok := updated.(initLinearEditorModel)
+		if !ok {
+			t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+		}
+		return next, nil
 	}
 
 	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: initPromptContext{
@@ -6370,7 +6439,7 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModePAT) {
 		t.Fatalf("draft = %#v, want PAT reviewer", draft)
 	}
-	if got := draft.ReviewerCredentialWrites[credentials.GitTokenKey]; got != "reviewer-pat" {
+	if got := draft.ReviewerCredentialWrites[credentials.GitTokenKey]; got != "inline-secret-token" {
 		t.Fatalf("staged reviewer PAT = %q, want inline token", got)
 	}
 	out := stderr.String()
@@ -6395,11 +6464,46 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 		}
 	}
 	assertContentOrder(t, out, "Reviewer entity", "Reviewer details", "Entity label", "Reviewer secret location", "Reviewer credential status", "Reviewer action")
-	if strings.Contains(out, "reviewer-pat") {
+	if strings.Contains(out, "inline-secret-token") {
 		t.Fatalf("stderr leaked reviewer PAT value:\n%s", out)
 	}
 	if strings.Contains(out, "Back to main menu") {
 		t.Fatalf("stderr = %q, want action-local Back without staging instead of inventory Back", out)
+	}
+}
+
+func TestReviewerEntityStandaloneLinearEditorUsesActionsWithoutProfileFallback(t *testing.T) {
+	ctx := initPromptContext{
+		StandaloneReviewerEntityMode: true,
+		ExistingConfig:               config.File{Profiles: map[string]config.Profile{}},
+	}
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, initDraft{}), 160, 60)
+	selectionIndex := model.document.fieldIndexByID(initReviewerEntityFieldSelection)
+	if selectionIndex < 0 {
+		t.Fatal("reviewer entity selection field missing")
+	}
+	if got, want := model.document[selectionIndex].Title, "Actions"; got != want {
+		t.Fatalf("selection title = %q, want %q", got, want)
+	}
+	if got, want := model.document.selectedValue(initReviewerEntityFieldSelection), string(initReviewerEntityKindPAT); got != want {
+		t.Fatalf("default standalone reviewer selection = %q, want %q", got, want)
+	}
+	optionLabels := make([]string, 0, len(model.document[selectionIndex].Options))
+	for _, option := range model.document[selectionIndex].Options {
+		optionLabels = append(optionLabels, option.Label)
+	}
+	for _, forbidden := range []string{reviewerEntityTemplateFallbackLabel(), "Back to main menu"} {
+		if slices.Contains(optionLabels, forbidden) {
+			t.Fatalf("standalone reviewer options = %#v, want no %q", optionLabels, forbidden)
+		}
+	}
+	for _, want := range []string{reviewerEntityTemplatePATLabel(), reviewerEntityTemplateGitHubAppLabel()} {
+		if !slices.Contains(optionLabels, want) {
+			t.Fatalf("standalone reviewer options = %#v, want %q", optionLabels, want)
+		}
+	}
+	if model.document.fieldHidden(initReviewerEntityFieldLabel) || model.document.fieldHidden(initReviewerEntityFieldSecretLocation) {
+		t.Fatalf("PAT reviewer detail fields hidden = label:%v location:%v, want visible", model.document.fieldHidden(initReviewerEntityFieldLabel), model.document.fieldHidden(initReviewerEntityFieldSecretLocation))
 	}
 }
 
@@ -6440,40 +6544,36 @@ func TestHuhInitReviewerEntityPrompterGitHubAppLinearFlowShowsCredentialBundleCo
 	if !draft.ReviewerEnabled || draft.ReviewerAuth != string(config.GitAuthModeGitHubApp) {
 		t.Fatalf("draft = %#v, want GitHub App reviewer", draft)
 	}
-	if got := draft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]; got != "12345" {
-		t.Fatalf("staged app id = %q, want inline app id", got)
+	if got := draft.ReviewerGitHubAppID; got != "12345" {
+		t.Fatalf("draft app id = %q, want inline app id", got)
+	}
+	if _, ok := draft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]; ok {
+		t.Fatalf("staged app id secret write present: %#v", draft.ReviewerCredentialWrites)
 	}
 	if got := draft.ReviewerCredentialWrites[credentials.GitHubAppPrivateKeyKey]; got != privateKey {
 		t.Fatalf("staged private key = %q, want inline private key", got)
 	}
 	out := stderr.String()
 	for _, want := range []string{
-		"GitHub App reviewer. Required credential keys",
-		"Reviewer secret location",
-		"Credential name for this reviewer",
-		"This is a credential name, not a PAT",
-		"Reviewer credential status",
-		credentials.GitHubAppIDKey,
+		"GitHub App reviewer. GitHub App ID is saved in config.yml; required credential key: " + credentials.GitHubAppPrivateKeyKey,
+		"Reviewer private-key location",
+		"Credential name for this reviewer's GitHub App private key",
+		"GitHub App ID is saved in config.yml",
+		"Reviewer private-key status",
 		credentials.GitHubAppPrivateKeyKey,
-		credentials.GitHubAppInstallationIDKey,
 		"staged",
-		credentials.GitHubAppIDKey,
 		credentials.GitHubAppPrivateKeyKey,
 		"Reviewer credential values",
 		"GitHub App ID",
 		"GitHub App private key",
-		"Optional credential key: " + credentials.GitHubAppInstallationIDKey,
-		"optional",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr missing %q:\n%s", want, out)
 		}
 	}
-	assertContentOrder(t, out, "Reviewer secret location", "Reviewer credential status", "Reviewer action")
-	for _, leaked := range []string{"12345", privateKey} {
-		if strings.Contains(out, leaked) {
-			t.Fatalf("stderr leaked GitHub App secret value %q:\n%s", leaked, out)
-		}
+	assertContentOrder(t, out, "Reviewer private-key location", "Reviewer private-key status", "Reviewer action")
+	if strings.Contains(out, privateKey) {
+		t.Fatalf("stderr leaked GitHub App private key:\n%s", out)
 	}
 }
 
@@ -6503,8 +6603,8 @@ func TestReviewerEntityLinearEditorNewLabelDerivesDefaultSecretLocation(t *testi
 	if !strings.Contains(status, "Destination: "+initBuiltInOSCredentialStoreTitle()+" / codereview/rianjs-bot-reviewer") {
 		t.Fatalf("status = %q, want label-derived destination", status)
 	}
-	if !strings.Contains(status, credentials.GitHubAppIDKey) || !strings.Contains(status, string(initReviewerCredentialKeyMissing)) || strings.Contains(status, string(initReviewerCredentialKeyUnavailable)) {
-		t.Fatalf("status = %q, want label-derived ref to show missing required keys, not unavailable", status)
+	if strings.Contains(status, credentials.GitHubAppIDKey) || !strings.Contains(status, credentials.GitHubAppPrivateKeyKey) || !strings.Contains(status, string(initReviewerCredentialKeyMissing)) || strings.Contains(status, string(initReviewerCredentialKeyUnavailable)) {
+		t.Fatalf("status = %q, want label-derived ref to show missing private key, not app id or unavailable", status)
 	}
 }
 
@@ -6587,7 +6687,7 @@ func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecrets(t *testin
 		AuthMode:      config.GitAuthModePAT,
 		CredentialRef: "codereview/existing-reviewer",
 		DisplayName:   "Existing reviewer",
-	}, seed, true)
+	}, seed, true, false)
 	if err != nil {
 		t.Fatalf("newReviewerEntityEditorState: %v", err)
 	}
@@ -6712,8 +6812,8 @@ func TestReviewerEntityLinearEditorGitHubAppRequiresInlineSecretsBeforeStaging(t
 	if actionIndex < 0 {
 		t.Fatal("action field missing")
 	}
-	if got := blocked.document[actionIndex].Error; !strings.Contains(got, credentials.GitHubAppIDKey) || !strings.Contains(got, credentials.GitHubAppPrivateKeyKey) {
-		t.Fatalf("action error = %q, want missing GitHub App required keys", got)
+	if got := blocked.document[actionIndex].Error; !strings.Contains(got, "GitHub App ID") {
+		t.Fatalf("action error = %q, want missing GitHub App ID", got)
 	}
 
 	blocked.setFieldValue(initReviewerEntityFieldGitHubAppID, "12345")
@@ -6743,14 +6843,14 @@ func TestReviewerEntityLinearEditorGitHubAppRequiresInlineSecretsBeforeStaging(t
 	if got, want := draft.ReviewerCredentialWriteRef, "codereview/rianjs-bot-reviewer"; got != want {
 		t.Fatalf("ReviewerCredentialWriteRef = %q, want %q", got, want)
 	}
-	if got := draft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]; got != "12345" {
-		t.Fatalf("staged github_app_id = %q, want 12345", got)
+	if got := draft.ReviewerGitHubAppID; got != "12345" {
+		t.Fatalf("draft github app id = %q, want 12345", got)
+	}
+	if _, ok := draft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]; ok {
+		t.Fatalf("staged github_app_id secret write present: %#v", draft.ReviewerCredentialWrites)
 	}
 	if got := draft.ReviewerCredentialWrites[credentials.GitHubAppPrivateKeyKey]; got != privateKey {
 		t.Fatalf("staged private key = %q, want multiline key", got)
-	}
-	if _, ok := draft.ReviewerCredentialWrites[credentials.GitHubAppInstallationIDKey]; ok {
-		t.Fatalf("optional installation id staged unexpectedly: %#v", draft.ReviewerCredentialWrites)
 	}
 }
 
@@ -6768,9 +6868,7 @@ func TestReviewerEntityLinearEditorLabelDerivedRefDoesNotMarkMissingStatusAsOver
 				Mode:    string(config.GitAuthModeGitHubApp),
 			},
 			Keys: []initReviewerCredentialKeyStatus{
-				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyMissing},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyOptional},
 			},
 		}},
 	}
@@ -6810,9 +6908,7 @@ func TestReviewerEntityLinearEditorManualRefDoesNotMarkUnavailableStatusAsOverwr
 				Mode:    string(config.GitAuthModeGitHubApp),
 			},
 			Keys: []initReviewerCredentialKeyStatus{
-				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyMissing},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyOptional},
 			},
 		}},
 	}
@@ -6853,9 +6949,7 @@ func TestReviewerEntityLinearEditorLabelDerivedRefPreservesBackendUnavailableSta
 			},
 			Unavailable: "credential backend status unavailable",
 			Keys: []initReviewerCredentialKeyStatus{
-				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyUnavailable},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyUnavailable},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyUnavailable},
 			},
 		}},
 	}
@@ -6984,34 +7078,32 @@ func TestHuhInitReviewerEntityDetailsGitHubAppShowsCredentialBundleCopy(t *testi
 	if !nextDraft.ReviewerEnabled || nextDraft.ReviewerAuth != string(config.GitAuthModeGitHubApp) {
 		t.Fatalf("draft = %#v, want GitHub App reviewer", nextDraft)
 	}
-	if got := nextDraft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]; got != "12345" {
-		t.Fatalf("staged app id = %q, want inline app id", got)
+	if got := nextDraft.ReviewerGitHubAppID; got != "12345" {
+		t.Fatalf("draft app id = %q, want inline app id", got)
+	}
+	if _, ok := nextDraft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]; ok {
+		t.Fatalf("staged app id secret write present: %#v", nextDraft.ReviewerCredentialWrites)
 	}
 	if got := nextDraft.ReviewerCredentialWrites[credentials.GitHubAppPrivateKeyKey]; got != privateKey {
 		t.Fatalf("staged private key = %q, want inline private key", got)
 	}
 	out := stderr.String()
 	for _, want := range []string{
-		"GitHub App reviewer. Required credential keys",
-		"Reviewer secret location",
-		"Credential name for this reviewer",
-		"This is a credential name, not a PAT",
+		"GitHub App reviewer. GitHub App ID is saved in config.yml; required credential key: " + credentials.GitHubAppPrivateKeyKey,
+		"Reviewer private-key location",
+		"Credential name for this reviewer's GitHub App private key",
+		"GitHub App ID is saved in config.yml",
 		"Reviewer credential values",
 		"GitHub App ID",
 		"GitHub App private key",
-		credentials.GitHubAppIDKey,
 		credentials.GitHubAppPrivateKeyKey,
-		"Optional credential key: " + credentials.GitHubAppInstallationIDKey,
-		"optional",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr missing %q:\n%s", want, out)
 		}
 	}
-	for _, leaked := range []string{"12345", privateKey} {
-		if strings.Contains(out, leaked) {
-			t.Fatalf("stderr leaked GitHub App secret value %q:\n%s", leaked, out)
-		}
+	if strings.Contains(out, privateKey) {
+		t.Fatalf("stderr leaked GitHub App private key:\n%s", out)
 	}
 }
 
@@ -7045,9 +7137,7 @@ func TestHuhInitReviewerEntityDetailsPreservesPromptContextCredentialStore(t *te
 			},
 			SecretsProfile: resolved,
 			Keys: []initReviewerCredentialKeyStatus{
-				{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyMissing},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false, State: initReviewerCredentialKeyOptional},
 			},
 		}},
 	}
@@ -7449,7 +7539,7 @@ func TestInitCredentialReadinessNoteNamesSelectedSecretsProfile(t *testing.T) {
 	}
 }
 
-func TestInitCredentialReadinessNoteLabelsGitHubAppRequiredAndOptionalKeys(t *testing.T) {
+func TestInitCredentialReadinessNoteLabelsGitHubAppRequiredKeys(t *testing.T) {
 	note := initCredentialReadinessNote(initCredentialPlanEntry{
 		Ref: config.CredentialRef{
 			Purpose: "reviewer_credentials",
@@ -7457,27 +7547,26 @@ func TestInitCredentialReadinessNoteLabelsGitHubAppRequiredAndOptionalKeys(t *te
 			Mode:    string(config.GitAuthModeGitHubApp),
 		},
 		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 		State: initCredentialPlanStateDefer,
 	})
 	for _, want := range []string{
 		"reviewer deferred",
-		"required: " + credentials.GitHubAppIDKey + ", " + credentials.GitHubAppPrivateKeyKey,
-		"optional: " + credentials.GitHubAppInstallationIDKey,
 	} {
 		if !strings.Contains(note, want) {
 			t.Fatalf("note = %q, want %q", note, want)
 		}
 	}
-	if strings.Contains(note, "missing "+credentials.GitHubAppInstallationIDKey) || strings.Contains(note, "required: "+credentials.GitHubAppInstallationIDKey) {
-		t.Fatalf("note = %q, want installation id labeled optional only", note)
+	if strings.Contains(note, "required:") || strings.Contains(note, credentials.GitHubAppPrivateKeyKey) {
+		t.Fatalf("note = %q, want single-key GitHub App readiness copy without key summary", note)
+	}
+	if strings.Contains(note, "optional:") || strings.Contains(note, credentials.GitHubAppInstallationIDKey) {
+		t.Fatalf("note = %q, want no optional installation id copy", note)
 	}
 }
 
-func TestInitCredentialReadinessNoteLabelsPartialGitHubAppOptionalKey(t *testing.T) {
+func TestInitCredentialReadinessNoteLabelsPartialGitHubAppRequiredKeys(t *testing.T) {
 	note := initCredentialReadinessNote(initCredentialPlanEntry{
 		Ref: config.CredentialRef{
 			Purpose: "reviewer_credentials",
@@ -7485,23 +7574,20 @@ func TestInitCredentialReadinessNoteLabelsPartialGitHubAppOptionalKey(t *testing
 			Mode:    string(config.GitAuthModeGitHubApp),
 		},
 		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 		MissingRequiredKeys: []string{credentials.GitHubAppPrivateKeyKey},
 		State:               initCredentialPlanStateMissingRequired,
 	})
 	for _, want := range []string{
-		"reviewer missing required " + credentials.GitHubAppPrivateKeyKey,
-		"optional: " + credentials.GitHubAppInstallationIDKey,
+		"reviewer missing " + credentials.GitHubAppPrivateKeyKey,
 	} {
 		if !strings.Contains(note, want) {
 			t.Fatalf("note = %q, want %q", note, want)
 		}
 	}
-	if strings.Contains(note, "missing "+credentials.GitHubAppInstallationIDKey) || strings.Contains(note, "required "+credentials.GitHubAppInstallationIDKey) {
-		t.Fatalf("note = %q, want optional installation id not treated as required", note)
+	if strings.Contains(note, "optional:") || strings.Contains(note, credentials.GitHubAppInstallationIDKey) {
+		t.Fatalf("note = %q, want no optional installation id copy", note)
 	}
 }
 
@@ -7509,12 +7595,11 @@ func TestInitProfileReadinessLineIncludesNotes(t *testing.T) {
 	line := initProfileReadinessLine(initProfileReadiness{
 		ProfileName: "work",
 		Ready:       false,
-		Notes:       []string{"reviewer deferred (required: github_app_id, github_app_private_key; optional: github_app_installation_id)"},
+		Notes:       []string{"reviewer deferred (required: github_app_private_key)"},
 	})
 	for _, want := range []string{
 		"- work: needs follow-up",
-		"required: github_app_id, github_app_private_key",
-		"optional: github_app_installation_id",
+		"required: github_app_private_key",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("line = %q, want %q", line, want)
@@ -8381,7 +8466,21 @@ func TestHuhInitPrompterAccessibleHidesReviewerEntityLabelForProfileGitAccount(t
 
 	_, err := prompter.Run(initPromptContext{
 		RequestedProfileName: "default",
-		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+		ExistingConfig: config.File{
+			Profiles: map[string]config.Profile{},
+			RepositoryAccess: map[string]config.RepositoryAccessConfig{
+				testInitProfileV2GitScopeName: {
+					Git: config.GitConfig{
+						Host:     "github.com",
+						AuthMode: config.GitAuthModePAT,
+						Credential: config.CredentialLocation{
+							Store: config.LocalOSCredentialStoreID,
+							Name:  "codereview/github-work",
+						},
+					},
+				},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -8675,11 +8774,10 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	var stderr bytes.Buffer
 	prompter := huhInitReviewPolicyPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"",    // Stage review-policy settings
-			"",    // keep comment
-			"",    // keep recommended self-approve false
-			"2",   // auto resolve
-			"24h", // resolve after
+			"", // Stage review-policy settings
+			"", // keep request changes
+			"", // keep recommended self-approve false
+			"", // keep auto resolve
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -8694,15 +8792,21 @@ func TestHuhInitReviewPolicyPrompterAccessibleShowsFields(t *testing.T) {
 	if !edit.Apply {
 		t.Fatal("edit.Apply = false, want true")
 	}
-	if edit.ReviewPolicy.MajorEvent != config.ReviewMajorEventComment {
-		t.Fatalf("review policy = %#v, want default comment major_event", edit.ReviewPolicy)
+	if edit.ReviewPolicy.MajorEvent != config.ReviewMajorEventRequestChanges {
+		t.Fatalf("review policy = %#v, want default request_changes major_event", edit.ReviewPolicy)
 	}
 	if edit.ReviewPolicy.AllowSelfApprove {
 		t.Fatalf("review policy = %#v, want self-approve false on default path", edit.ReviewPolicy)
 	}
+	if edit.ReviewPolicy.ResolveThreads != config.ResolveThreadsAuto {
+		t.Fatalf("review policy = %#v, want auto resolve_threads", edit.ReviewPolicy)
+	}
 	out := stderr.String()
-	if !strings.Contains(out, "Major findings event") || !strings.Contains(out, "Resolve-after duration") {
+	if !strings.Contains(out, "Major findings event") || !strings.Contains(out, "Resolve threads") {
 		t.Fatalf("stderr = %q, want review-policy fields", out)
+	}
+	if !strings.Contains(out, "Auto-resolve (recommended)") || !strings.Contains(out, "Never resolve automatically") {
+		t.Fatalf("stderr = %q, want explicit resolve choices", out)
 	}
 	if !strings.Contains(out, "Do not allow self-approve (recommended)") || !strings.Contains(out, "Enable self-approve") {
 		t.Fatalf("stderr = %q, want explicit self-approve choices", out)
@@ -8882,11 +8986,11 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	existing.LLM.ModelMap = config.ModelMap{"medium": "gpt-custom"}
 	existing.LLM.ReviewerModelTier = config.ModelTierLarge
 	existing.Git.AuthMode = config.GitAuthModeGitHubApp
+	existing.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	existing.Git.IdentityCache = "git-cache"
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
@@ -8920,9 +9024,11 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 				ProfileName:           "office",
 				GitHost:               "github.com",
 				GitAuth:               string(config.GitAuthModeGitHubApp),
+				GitHubAppID:           "12345",
 				GitCredentialRef:      "codereview/office-git",
 				ReviewerEnabled:       true,
 				ReviewerAuth:          string(config.GitAuthModeGitHubApp),
+				ReviewerGitHubAppID:   "67890",
 				ReviewerCredentialRef: "codereview/custom-office-reviewer",
 				LLMProvider:           string(config.LLMProviderOpenAI),
 				LLMAuth:               string(config.LLMAuthAPIKey),
@@ -9005,8 +9111,11 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	if !strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/custom-office-llm --key "+credentials.OpenAIAPIKeyKey+" --stdin") {
 		t.Fatalf("stderr = %q, want deferred llm follow-up hint", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/office-git --key "+credentials.GitHubAppIDKey+" --stdin") {
-		t.Fatalf("stderr = %q, want github app git follow-up hint", stderr.String())
+	if !strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/office-git --key "+credentials.GitHubAppPrivateKeyKey+" --stdin") {
+		t.Fatalf("stderr = %q, want github app git private key follow-up hint", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/office-git --key "+credentials.GitHubAppIDKey+" --stdin") {
+		t.Fatalf("stderr = %q, want no github app id follow-up hint", stderr.String())
 	}
 	if route := cfg.RepositoryProfiles[0]; route.Profile != "office" {
 		t.Fatalf("repository route profile = %q, want office", route.Profile)
@@ -9094,7 +9203,6 @@ func TestEditInteractiveInitProfileSkipsInlineProfileDetailCollectors(t *testing
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	deps := initDeps{
 		prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
@@ -9210,6 +9318,119 @@ func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *test
 	}
 }
 
+func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedPrimitiveCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	repositoryAccessRef := "codereview/github-rianjs"
+	reviewerRef := "codereview/rianjs-bot-reviewer"
+	llmRef := "codereview/openai-runtime"
+	cfg := config.Normalize(config.File{
+		RepositoryAccess: map[string]config.RepositoryAccessConfig{
+			"github-rianjs": {
+				DisplayName: "github-rianjs",
+				Git: config.GitConfig{
+					Host:          "github.com",
+					AuthMode:      config.GitAuthModePAT,
+					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: repositoryAccessRef},
+					CredentialRef: repositoryAccessRef,
+				},
+			},
+		},
+		ReviewerEntities: map[string]config.ReviewerEntity{
+			"rianjs-bot": {
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModeGitHubApp,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: reviewerRef},
+				CredentialRef: reviewerRef,
+				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
+				DisplayName:   "rianjs-bot",
+			},
+		},
+		LLMRuntimes: map[string]config.LLMConfig{
+			"openai-api": {
+				Provider:      config.LLMProviderOpenAI,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterOpenAIAPI,
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: llmRef},
+				CredentialRef: llmRef,
+			},
+		},
+		Profiles: map[string]config.Profile{},
+	})
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	session := initSessionDraft{
+		path:                 path,
+		originalCfg:          cloneInitConfigFile(cfg),
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: "rianjs",
+	}
+	calls := 0
+	secretPrompter := &fakeInitSecretPrompter{}
+	deps := initDeps{
+		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+			calls++
+			if calls == 2 {
+				return initDraft{}, errInitNavigateBack
+			}
+			draft := seedInteractiveInitDraft("rianjs", "", nil)
+			applyGitScopeSelection(&draft, "github-rianjs", ctx.GitScopes)
+			applyReviewerEntityInventorySelection(&draft, "rianjs-bot", ctx.ReviewerEntities)
+			applyReviewerEntitySelection(&draft, string(initReviewerEntityDraftFromSeedDraft(draft).Kind))
+			applyLLMRuntimeInventorySelection(&draft, "openai-api", ctx.LLMRuntimes)
+			draft.RoutesSet = true
+			draft.Routes = []configedit.RepositoryRouteSpec{{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			}}
+			draft.ModelMapSet = true
+			draft.AgentSourcesSet = true
+			draft.ReviewPolicySet = true
+			draft.ReviewPolicy = config.ReviewPolicy{
+				MajorEvent:     config.ReviewMajorEventRequestChanges,
+				ResolveThreads: config.ResolveThreadsAuto,
+			}
+			return draft, nil
+		}),
+		secretPrompter:     secretPrompter,
+		clipboardSupported: func() bool { return false },
+		openStore: func(string, bool, config.File) (initStore, error) {
+			t.Fatal("openStore should not be called for profile-owned prompts when repository access owns the PAT")
+			return nil, nil
+		},
+	}
+
+	next, err := loopInteractiveInitProfileV2(&cobra.Command{}, opts, initOptions{}, deps, session)
+	if err != nil {
+		t.Fatalf("loopInteractiveInitProfileV2: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("profile v2 calls = %d, want stage then reentry", calls)
+	}
+	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
+		t.Fatalf("secret prompts = actions:%d sources:%d, want profile staging to skip selected primitive credentials", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
+	}
+	profile := next.cfg.Profiles["rianjs"]
+	if profile.RepositoryAccess != "github-rianjs" {
+		t.Fatalf("repository_access = %q, want github-rianjs", profile.RepositoryAccess)
+	}
+	if profile.Git.CredentialRef != repositoryAccessRef {
+		t.Fatalf("git credential ref = %q, want selected repository access ref %q", profile.Git.CredentialRef, repositoryAccessRef)
+	}
+	if profile.Reviewer.Kind != config.ProfileReviewerKindEntity || profile.Reviewer.Entity != "rianjs-bot" {
+		t.Fatalf("reviewer = %#v, want selected rianjs-bot reviewer entity", profile.Reviewer)
+	}
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != reviewerRef {
+		t.Fatalf("reviewer credentials = %#v, want selected reviewer ref %q", profile.ReviewerCredentials, reviewerRef)
+	}
+	if profile.LLMRuntime != "openai-api" || profile.LLM.CredentialRef != llmRef {
+		t.Fatalf("llm runtime/ref = %q/%q, want openai-api/%q", profile.LLMRuntime, profile.LLM.CredentialRef, llmRef)
+	}
+}
+
 func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := basicProfile("work")
@@ -9236,7 +9457,6 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	deps := initDeps{
 		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
@@ -9480,8 +9700,8 @@ func TestCompleteInteractiveInitProfileV2DraftFillsUnsetFieldsAndDefaultsReviewP
 	if !draft.ReviewPolicySet {
 		t.Fatalf("ReviewPolicySet = false, want true")
 	}
-	if draft.ReviewPolicy.MajorEvent != config.ReviewMajorEventComment {
-		t.Fatalf("ReviewPolicy.MajorEvent = %q, want default comment", draft.ReviewPolicy.MajorEvent)
+	if draft.ReviewPolicy.MajorEvent != config.ReviewMajorEventRequestChanges {
+		t.Fatalf("ReviewPolicy.MajorEvent = %q, want default request_changes", draft.ReviewPolicy.MajorEvent)
 	}
 	if !draft.ReviewPolicy.AllowSelfApprove || draft.ReviewPolicy.ResolveThreads != config.ResolveThreadsNever {
 		t.Fatalf("ReviewPolicy = %#v, want existing fields preserved", draft.ReviewPolicy)
@@ -9568,8 +9788,7 @@ func TestInitInteractiveModelMapAddEditRemoveAndReset(t *testing.T) {
 			}
 			expected := existing
 			expected.LLM.ModelMap = copyModelMap(tt.want)
-			expected.ReviewPolicy.MajorEvent = config.ReviewMajorEventComment
-			expected = normalizeTestProfile(expected)
+			expected = normalizeTestProfileNamed("work", expected)
 			if !reflect.DeepEqual(cfg.Profiles["work"], expected) {
 				t.Fatalf("saved profile = %#v, want %#v", cfg.Profiles["work"], expected)
 			}
@@ -9700,7 +9919,6 @@ func TestInitInteractiveAgentSourcesPreserveAddRemoveAndReset(t *testing.T) {
 				MajorEvent:       config.ReviewMajorEventRequestChanges,
 				AllowSelfApprove: true,
 				ResolveThreads:   config.ResolveThreadsNever,
-				ResolveAfter:     "24h",
 			}
 			saveCredentialTestConfig(t, path, config.File{
 				Profiles: map[string]config.Profile{"work": existing},
@@ -9808,13 +10026,11 @@ func TestInitInteractiveReviewPolicyPreserveEditAndDefaults(t *testing.T) {
 				MajorEvent:       config.ReviewMajorEventRequestChanges,
 				AllowSelfApprove: true,
 				ResolveThreads:   config.ResolveThreadsNever,
-				ResolveAfter:     "24h",
 			}},
 			want: config.ReviewPolicy{
 				MajorEvent:       config.ReviewMajorEventRequestChanges,
 				AllowSelfApprove: true,
 				ResolveThreads:   config.ResolveThreadsNever,
-				ResolveAfter:     "24h",
 			},
 		},
 		{
@@ -9823,14 +10039,14 @@ func TestInitInteractiveReviewPolicyPreserveEditAndDefaults(t *testing.T) {
 				MajorEvent:       config.ReviewMajorEventRequestChanges,
 				AllowSelfApprove: true,
 				ResolveThreads:   config.ResolveThreadsAuto,
-				ResolveAfter:     "1h",
 			},
 			edit: initReviewPolicyEdit{Apply: true, ReviewPolicy: config.ReviewPolicy{
 				MajorEvent:       config.ReviewMajorEventComment,
 				AllowSelfApprove: false,
 			}},
 			want: config.ReviewPolicy{
-				MajorEvent: config.ReviewMajorEventComment,
+				MajorEvent:     config.ReviewMajorEventComment,
+				ResolveThreads: config.ResolveThreadsAuto,
 			},
 		},
 	}
@@ -9909,14 +10125,6 @@ func TestInitInteractiveReviewPolicyRejectsInvalidEntries(t *testing.T) {
 				ResolveThreads: "always",
 			}},
 			want: `review_policy.resolve_threads "always" is invalid`,
-		},
-		{
-			name: "invalid resolve_after",
-			edit: initReviewPolicyEdit{Apply: true, ReviewPolicy: config.ReviewPolicy{
-				MajorEvent:   config.ReviewMajorEventComment,
-				ResolveAfter: "tomorrow",
-			}},
-			want: `review_policy.resolve_after "tomorrow" is invalid`,
 		},
 	}
 
@@ -10306,6 +10514,26 @@ func TestInitLinearEditorArrowKeysDoNotScrollFocusedInput(t *testing.T) {
 	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
 	if got := model.viewport.YOffset; got != 1 {
 		t.Fatalf("viewport YOffset after input up = %d, want unchanged 1", got)
+	}
+}
+
+func TestInitLinearEditorSpaceKeyEditsFocusedInputInsteadOfPagingDown(t *testing.T) {
+	const inputField initLinearFieldID = "input"
+	var document initLinearDocument
+	document.addEditableInput(inputField, "Input", "", "value", nil)
+	for i := 0; i < 20; i++ {
+		document.addSection(fmt.Sprintf("Section %02d", i), "Context line")
+	}
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 5)
+	beforeOffset := model.viewport.YOffset
+
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeySpace})
+
+	if got, want := model.document.fieldValue(inputField), "value "; got != want {
+		t.Fatalf("input field value = %q, want %q", got, want)
+	}
+	if got := model.viewport.YOffset; got != beforeOffset {
+		t.Fatalf("viewport YOffset after input space = %d, want unchanged %d", got, beforeOffset)
 	}
 }
 
@@ -12299,12 +12527,12 @@ func TestInitSecretsProfileBackendFromInputsSwitchingAwayFromOnePasswordClearsBa
 	}
 }
 
-func TestBuildInteractiveInitMenuPromptNoWorkspaceDisablesProfileDependentActions(t *testing.T) {
+func TestBuildInteractiveInitMenuPromptNoWorkspaceEnablesStandaloneEditors(t *testing.T) {
 	prompt := buildInteractiveInitMenuPrompt(initSessionDraft{
 		cfg: config.File{Profiles: map[string]config.Profile{}},
 	})
-	if !prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
-		t.Fatalf("prompt = %#v, want LLM enabled and reviewer/save disabled without a workspace", prompt)
+	if !prompt.CanConfigureLLM || !prompt.CanConfigureReviewer || prompt.CanSave {
+		t.Fatalf("prompt = %#v, want LLM/reviewer enabled and save disabled without a workspace", prompt)
 	}
 	if prompt.ReviewProfileCount != 0 || prompt.LLMRuntimeCount != 0 || prompt.ReviewerEntityCount != 0 {
 		t.Fatalf("prompt counts = %#v, want zero counts without a workspace", prompt)
@@ -12328,8 +12556,8 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceCanSaveStagedCredentialStore(t
 		originalCfg: original,
 		cfg:         next,
 	})
-	if !prompt.CanConfigureLLM || prompt.CanConfigureReviewer {
-		t.Fatalf("prompt = %#v, want LLM enabled and reviewer disabled without a workspace", prompt)
+	if !prompt.CanConfigureLLM || !prompt.CanConfigureReviewer {
+		t.Fatalf("prompt = %#v, want LLM/reviewer enabled without a workspace", prompt)
 	}
 	if !prompt.CanSave {
 		t.Fatalf("prompt = %#v, want store-only staged changes to enable commit", prompt)
@@ -12345,8 +12573,8 @@ func TestBuildInteractiveInitMenuPromptAfterDeletingLastProfileDisablesSaveAndFo
 	}
 
 	prompt := buildInteractiveInitMenuPrompt(session)
-	if !prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
-		t.Fatalf("prompt = %#v, want LLM enabled and save/reviewer disabled with zero-profile draft", prompt)
+	if !prompt.CanConfigureLLM || !prompt.CanConfigureReviewer || prompt.CanSave {
+		t.Fatalf("prompt = %#v, want LLM/reviewer enabled and save disabled with zero-profile draft", prompt)
 	}
 	if prompt.ReviewProfileCount != 0 || prompt.LLMRuntimeCount != 0 || prompt.ReviewerEntityCount != 0 {
 		t.Fatalf("prompt counts = %#v, want effective inventory counts at zero after deleting last profile", prompt)
@@ -12388,8 +12616,8 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCou
 		originalCfg: cloneInitConfigFile(cfg),
 		cfg:         cfg,
 	})
-	if !prompt.CanConfigureLLM || prompt.CanConfigureReviewer || prompt.CanSave {
-		t.Fatalf("prompt = %#v, want LLM enabled and reviewer/save disabled without active workspace", prompt)
+	if !prompt.CanConfigureLLM || !prompt.CanConfigureReviewer || prompt.CanSave {
+		t.Fatalf("prompt = %#v, want LLM/reviewer enabled and save disabled without active workspace", prompt)
 	}
 	if prompt.LLMRuntimeCount != 2 || prompt.ReviewerEntityCount != 1 || prompt.ReviewProfileCount != 2 {
 		t.Fatalf("prompt counts = %#v, want existing inventory counts from session cfg", prompt)
@@ -12398,13 +12626,14 @@ func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCou
 
 func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 	items := initMenuItems(initMenuPrompt{
-		HasWorkspace:         true,
-		LLMRuntimeCount:      2,
-		ReviewerEntityCount:  3,
-		ReviewProfileCount:   1,
-		CanConfigureLLM:      true,
-		CanConfigureReviewer: true,
-		CanSave:              true,
+		HasWorkspace:          true,
+		RepositoryAccessCount: 4,
+		LLMRuntimeCount:       2,
+		ReviewerEntityCount:   3,
+		ReviewProfileCount:    1,
+		CanConfigureLLM:       true,
+		CanConfigureReviewer:  true,
+		CanSave:               true,
 	})
 	var actions []initMenuAction
 	var titles []string
@@ -12419,6 +12648,7 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 	}
 	wantActions := []initMenuAction{
 		initMenuActionSecretsManagement,
+		initMenuActionRepositoryAccess,
 		initMenuActionLLMRuntimes,
 		initMenuActionReviewerEntities,
 		initMenuActionReviewProfiles,
@@ -12431,6 +12661,7 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 	}
 	assertContentOrder(t, strings.Join(titles, "\n"),
 		"Configure secrets storage",
+		"Configure repository access",
 		"Configure LLM runtimes",
 		"Configure reviewer entities",
 		"Configure review profiles",
@@ -12440,6 +12671,7 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 	)
 	joinedDescriptions := strings.Join(descriptions, "\n")
 	for _, want := range []string{
+		"4 repository access entries configured",
 		"2 runtimes configured",
 		"3 reviewer entities configured",
 		"1 profile configured",
@@ -12452,9 +12684,10 @@ func TestInitMenuItemsOrdersRootMenuAndMovesCountsToDescriptions(t *testing.T) {
 
 func TestInitMenuItemsUseInfrastructureDescriptionsBeforeConfiguredCounts(t *testing.T) {
 	items := initMenuItems(initMenuPrompt{
-		CanConfigureLLM:      true,
-		CanConfigureReviewer: true,
-		CanSave:              true,
+		RepositoryAccessCount: 1,
+		CanConfigureLLM:       true,
+		CanConfigureReviewer:  true,
+		CanSave:               true,
 	})
 	descriptions := map[initMenuAction]string{}
 	for _, item := range items {
@@ -12474,14 +12707,15 @@ func TestInitMenuItemsUseInfrastructureDescriptionsBeforeConfiguredCounts(t *tes
 
 func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 	model := newInitMenuModel(initMenuPrompt{
-		HasWorkspace:         true,
-		ActiveProfileName:    "default",
-		LLMRuntimeCount:      2,
-		ReviewerEntityCount:  3,
-		ReviewProfileCount:   1,
-		CanConfigureLLM:      true,
-		CanConfigureReviewer: true,
-		CanSave:              true,
+		HasWorkspace:          true,
+		ActiveProfileName:     "default",
+		RepositoryAccessCount: 4,
+		LLMRuntimeCount:       2,
+		ReviewerEntityCount:   3,
+		ReviewProfileCount:    1,
+		CanConfigureLLM:       true,
+		CanConfigureReviewer:  true,
+		CanSave:               true,
 	})
 	out := model.View()
 	assertContentOrder(t, out,
@@ -12490,6 +12724,8 @@ func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 		"Actions",
 		"Configure secrets storage",
 		"Credential stores for tokens and keys",
+		"Configure repository access",
+		"4 repository access entries configured",
 		"Configure LLM runtimes",
 		"2 runtimes configured",
 		"Configure reviewer entities",
@@ -12510,7 +12746,7 @@ func TestInitMenuStyledViewShowsRootMenuOrder(t *testing.T) {
 	if !strings.Contains(plainOut, "> [x] Configure secrets storage") {
 		t.Fatalf("view missing selected option marker:\n%s", out)
 	}
-	if !strings.Contains(plainOut, "  [ ] Configure LLM runtimes") {
+	if !strings.Contains(plainOut, "  [ ] Configure repository access") {
 		t.Fatalf("view missing unselected option marker:\n%s", out)
 	}
 	if strings.Contains(out, "Configure LLM runtimes (2)") || strings.Contains(out, "Configure review profiles (1)") {
@@ -12554,10 +12790,6 @@ func TestInitMenuDisabledRowsShowErrorWithoutQuitting(t *testing.T) {
 		reason string
 	}{
 		{
-			action: initMenuActionReviewerEntities,
-			reason: "configure a review profile before editing reviewer entities",
-		},
-		{
 			action: initMenuActionSave,
 			reason: "stage changes before committing",
 		},
@@ -12592,21 +12824,25 @@ func TestInitMenuDisabledRowsShowErrorWithoutQuitting(t *testing.T) {
 
 func TestInitMenuNavigationSkipsDisabledRows(t *testing.T) {
 	model := newInitMenuModel(initMenuPrompt{})
-	if got := model.items[model.selected].Action; got != initMenuActionReviewProfiles {
-		t.Fatalf("initial action = %q, want review profiles", got)
+	if got := model.items[model.selected].Action; got != initMenuActionSecretsManagement {
+		t.Fatalf("initial action = %q, want secrets management", got)
 	}
 
 	model.selected = initMenuSelectedIndex(model.items, initMenuActionSecretsManagement)
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	result := next.(initMenuModel)
-	if got := result.items[result.selected].Action; got != initMenuActionLLMRuntimes {
-		t.Fatalf("after down selected action = %q, want LLM runtimes", got)
+	if got := result.items[result.selected].Action; got != initMenuActionRepositoryAccess {
+		t.Fatalf("after down selected action = %q, want repository access", got)
 	}
 
 	result.selected = initMenuSelectedIndex(result.items, initMenuActionReviewerEntities)
 	out := result.View()
-	if strings.Contains(out, "\x1b[38;5;42mConfigure reviewer entities") {
-		t.Fatalf("disabled selected row rendered with active selected color:\n%s", out)
+	plainOut := stripANSITest(out)
+	if !strings.Contains(plainOut, "> [x] Configure reviewer entities") {
+		t.Fatalf("selected reviewer row did not render active:\n%s", out)
+	}
+	if strings.Contains(plainOut, "Prerequisite: configure a review profile before editing reviewer entities") {
+		t.Fatalf("reviewer row rendered old profile prerequisite:\n%s", out)
 	}
 }
 
@@ -12641,7 +12877,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("7\n"),
+		stdin:  strings.NewReader("8\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{
@@ -12659,6 +12895,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	out := stderr.String()
 	for _, want := range []string{
 		"Configure secrets storage",
+		"Configure repository access",
 		"Configure LLM runtimes",
 		"Configure reviewer entities",
 		"Configure review profiles",
@@ -12681,6 +12918,7 @@ func TestHuhInitMenuPrompterAccessibleShowsMenuEntries(t *testing.T) {
 	}
 	assertContentOrder(t, out,
 		"Configure secrets storage",
+		"Configure repository access",
 		"Configure LLM runtimes",
 		"Configure reviewer entities",
 		"Configure review profiles",
@@ -12697,12 +12935,13 @@ func TestHuhInitMenuPrompterAccessibleNumericOrder(t *testing.T) {
 		want  initMenuAction
 	}{
 		{input: "1\n", want: initMenuActionSecretsManagement},
-		{input: "2\n", want: initMenuActionLLMRuntimes},
-		{input: "3\n", want: initMenuActionReviewerEntities},
-		{input: "4\n", want: initMenuActionReviewProfiles},
-		{input: "5\n", want: initMenuActionGlobalSettings},
-		{input: "6\n", want: initMenuActionSave},
-		{input: "7\n", want: initMenuActionExit},
+		{input: "2\n", want: initMenuActionRepositoryAccess},
+		{input: "3\n", want: initMenuActionLLMRuntimes},
+		{input: "4\n", want: initMenuActionReviewerEntities},
+		{input: "5\n", want: initMenuActionReviewProfiles},
+		{input: "6\n", want: initMenuActionGlobalSettings},
+		{input: "7\n", want: initMenuActionSave},
+		{input: "8\n", want: initMenuActionExit},
 	}
 	for _, tt := range tests {
 		var stderr bytes.Buffer
@@ -12711,13 +12950,14 @@ func TestHuhInitMenuPrompterAccessibleNumericOrder(t *testing.T) {
 			stderr: &stderr,
 		}
 		action, err := prompter.ChooseAction(initMenuPrompt{
-			HasWorkspace:         true,
-			LLMRuntimeCount:      2,
-			ReviewerEntityCount:  3,
-			ReviewProfileCount:   1,
-			CanConfigureLLM:      true,
-			CanConfigureReviewer: true,
-			CanSave:              true,
+			HasWorkspace:          true,
+			RepositoryAccessCount: 1,
+			LLMRuntimeCount:       2,
+			ReviewerEntityCount:   3,
+			ReviewProfileCount:    1,
+			CanConfigureLLM:       true,
+			CanConfigureReviewer:  true,
+			CanSave:               true,
 		})
 		if err != nil {
 			t.Fatalf("ChooseAction(%q): %v", tt.input, err)
@@ -12763,14 +13003,14 @@ func TestInitMenuInitialActionStartsAtSecretsManagementWhenWorkspaceIsActive(t *
 	}
 }
 
-func TestInitMenuInitialActionStartsAtReviewProfilesBeforeWorkspace(t *testing.T) {
+func TestInitMenuInitialActionStartsAtSecretsManagementBeforeWorkspace(t *testing.T) {
 	action := initMenuInitialAction(initMenuPrompt{})
-	if action != initMenuActionReviewProfiles {
-		t.Fatalf("action = %q, want review profiles before workspace-dependent actions are enabled", action)
+	if action != initMenuActionSecretsManagement {
+		t.Fatalf("action = %q, want secrets management before a workspace exists", action)
 	}
 }
 
-func TestHuhInitMenuPrompterDefaultStartsAtProfileSetupBeforeWorkspace(t *testing.T) {
+func TestHuhInitMenuPrompterDefaultStartsAtSecretsManagementBeforeWorkspace(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
@@ -12783,8 +13023,8 @@ func TestHuhInitMenuPrompterDefaultStartsAtProfileSetupBeforeWorkspace(t *testin
 	if err != nil {
 		t.Fatalf("ChooseAction: %v", err)
 	}
-	if action != initMenuActionReviewProfiles {
-		t.Fatalf("action = %q, want review profile setup before dependent workflows are enabled", action)
+	if action != initMenuActionSecretsManagement {
+		t.Fatalf("action = %q, want secrets management before a workspace exists", action)
 	}
 }
 
@@ -12793,8 +13033,8 @@ func TestHuhInitMenuPrompterAccessibleRejectsDisabledSaveUntilChangesStaged(t *t
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
 		stdin: strings.NewReader(strings.Join([]string{
-			"6", // Commit staged changes and exit (disabled)
-			"7", // Discard staged changes and exit
+			"7", // Commit staged changes and exit (disabled)
+			"8", // Discard staged changes and exit
 			"",
 		}, "\n")),
 		stderr: &stderr,
@@ -12815,7 +13055,7 @@ func TestHuhInitMenuPrompterAccessibleAllowsLLMBeforeProfileExists(t *testing.T)
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin:  strings.NewReader("2\n"),
+		stdin:  strings.NewReader("3\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{})
@@ -12830,26 +13070,22 @@ func TestHuhInitMenuPrompterAccessibleAllowsLLMBeforeProfileExists(t *testing.T)
 	}
 }
 
-func TestHuhInitMenuPrompterAccessibleRejectsDisabledReviewerUntilProfileExists(t *testing.T) {
+func TestHuhInitMenuPrompterAccessibleAllowsReviewerBeforeProfileExists(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitMenuPrompter{
-		stdin: strings.NewReader(strings.Join([]string{
-			"3", // Configure reviewer entities (disabled)
-			"7", // Discard staged changes and exit
-			"",
-		}, "\n")),
+		stdin:  strings.NewReader("4\n"),
 		stderr: &stderr,
 	}
 	action, err := prompter.ChooseAction(initMenuPrompt{})
 	if err != nil {
 		t.Fatalf("ChooseAction: %v", err)
 	}
-	if action == initMenuActionReviewerEntities {
-		t.Fatalf("action = %q, want disabled reviewer selection to be rejected", action)
+	if action != initMenuActionReviewerEntities {
+		t.Fatalf("action = %q, want reviewer entities", action)
 	}
-	if !strings.Contains(stderr.String(), "configure a review profile before editing reviewer entities") {
-		t.Fatalf("stderr = %q, want disabled-reviewer validation message", stderr.String())
+	if strings.Contains(stderr.String(), "configure a review profile before editing reviewer entities") {
+		t.Fatalf("stderr = %q, want no disabled-reviewer validation message", stderr.String())
 	}
 }
 
@@ -12875,7 +13111,6 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsAuto,
-		ResolveAfter:     "24h",
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -12909,13 +13144,12 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 
 	for _, want := range []string{
 		"Review profile",
+		"Repository access",
+		"github.enterprise via GitHub App",
 		"Profile name",
-		"> open-cli-collective",
+		"open-cli-collective",
 		"Automatic profile selection",
 		"github.com/open-cli-collective",
-		"Git scope",
-		"Git scope host",
-		"github.enterprise",
 		"Reviewer entity",
 		"OCC reviewer (GitHub App reviewer)",
 		"LLM runtime",
@@ -12928,14 +13162,7 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		"/opt/codereview/agents",
 		"Review policy",
 		"Request changes",
-		"Enable self-approve",
 		"Auto-resolve",
-		"24h",
-		"Git credentials",
-		"Git credential store",
-		initBuiltInOSCredentialStoreTitle(),
-		"Git credential name",
-		"codereview/custom-git",
 		"Profile action",
 		"Stage profile settings",
 		"Back without staging",
@@ -12943,6 +13170,9 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		if !strings.Contains(content, want) {
 			t.Fatalf("content missing %q:\n%s", want, content)
 		}
+	}
+	if strings.Contains(content, "Enable self-approve") || strings.Contains(content, "Allow self-approve") {
+		t.Fatalf("content shows self-approve for GitHub App reviewer:\n%s", content)
 	}
 
 	assertContentOrder := func(parts ...string) {
@@ -12960,19 +13190,29 @@ func TestInitProfileV2ReadOnlyContentRendersTargetOrderWithRealData(t *testing.T
 		}
 	}
 	assertContentOrder(
-		"Profile name",
+		"Repository access",
 		"Automatic profile selection",
 		"Route entries",
-		"Git scope",
 		"Reviewer entity",
 		"LLM runtime",
 		"Minimum reviewer model tier",
 		"Model tier mapping",
+		"Profile name",
 		"Additional reviewer-agent directories (optional)",
 		"Review policy",
-		"Git credentials",
 		"Profile action",
 	)
+	for _, absent := range []string{
+		"Git credentials",
+		"Git credential store",
+		"Git credential name",
+		"Git scope host",
+		"Git scope auth mode",
+	} {
+		if strings.Contains(content, absent) {
+			t.Fatalf("content contains removed profile-local Git control %q:\n%s", absent, content)
+		}
+	}
 }
 
 func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *testing.T) {
@@ -13075,6 +13315,25 @@ func TestInitProfileV2ArrowKeysDoNotScrollFocusedInput(t *testing.T) {
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
 	if got := model.viewport.YOffset; got != 1 {
 		t.Fatalf("viewport YOffset after input up = %d, want unchanged 1", got)
+	}
+}
+
+func TestInitProfileV2SpaceKeyEditsFocusedInputInsteadOfPagingDown(t *testing.T) {
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/rianjs", nil, nil), 120, 8)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldRoutes)
+	beforeOffset := model.viewport.YOffset
+	beforeFocus := model.focused
+
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeySpace})
+
+	if model.focused != beforeFocus {
+		t.Fatalf("focused field = %d, want unchanged %d", model.focused, beforeFocus)
+	}
+	if got, want := model.document.fieldValue(initProfileV2FieldRoutes), "github.com/rianjs "; got != want {
+		t.Fatalf("route field value = %q, want %q", got, want)
+	}
+	if got := model.viewport.YOffset; got != beforeOffset {
+		t.Fatalf("viewport YOffset after input space = %d, want unchanged %d", got, beforeOffset)
 	}
 }
 
@@ -13327,45 +13586,23 @@ func TestInitProfileV2GitScopePreservesSelectedScopeInDraft(t *testing.T) {
 	}
 }
 
-func TestInitProfileV2GitScopeCustomEditsDraft(t *testing.T) {
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
-		"monit",
-		"gitlab.com/SignalFT",
-		initCustomGitScopeSelection,
-		nil,
-		initDraft{
-			OriginalProfileName: "monit",
-			ProfileName:         "monit",
-			GitHost:             "github.enterprise",
-			GitAuth:             string(config.GitAuthModeGitHubApp),
-		},
-	), 160, 24)
-
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitHost)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
-	model = typeInitProfileV2Text(t, model, "gitlab.com")
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitAuth)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
-
-	draft, err := model.validatedDraft()
-	if err != nil {
-		t.Fatalf("validatedDraft: %v", err)
-	}
-	if draft.GitHost != "gitlab.com" || draft.GitAuth != string(config.GitAuthModePAT) {
-		t.Fatalf("draft Git = (%q,%q), want edited custom Git host/auth", draft.GitHost, draft.GitAuth)
-	}
-}
-
 func TestInitProfileV2GitScopeRejectsRoutesForDifferentHost(t *testing.T) {
+	gitScopes := map[string]initGitScopeDraft{
+		"gitlab-work": {
+			Host:          "gitlab.com",
+			AuthMode:      config.GitAuthModePAT,
+			CredentialRef: "codereview/gitlab-work",
+		},
+	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithGitScope(
 		"monit",
 		"github.com/SignalFT",
-		initCustomGitScopeSelection,
-		nil,
+		"gitlab-work",
+		gitScopes,
 		initDraft{
 			OriginalProfileName: "monit",
 			ProfileName:         "monit",
-			GitHost:             "gitlab.com",
+			GitHost:             "github.com",
 			GitAuth:             string(config.GitAuthModePAT),
 		},
 	), 160, 24)
@@ -13379,7 +13616,7 @@ func TestInitProfileV2GitScopeRejectsRoutesForDifferentHost(t *testing.T) {
 func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
 	// #nosec G101 -- test fixture credential reference, not a secret.
 	reviewerEntities := map[string]initReviewerEntityDraft{
-		"app-reviewer": {
+		"app-reviewer": { // #nosec G101 -- test fixture name, not credential material.
 			Kind:            initReviewerEntityKindGitHubApp,
 			AuthMode:        config.GitAuthModeGitHubApp,
 			CredentialStore: config.LocalOSCredentialStoreID,
@@ -13420,6 +13657,224 @@ func TestInitProfileV2SelectsDraftReviewerRuntimeAndModelTier(t *testing.T) {
 	}
 	if draft.LLMReviewerModelTier != string(config.ModelTierMedium) {
 		t.Fatalf("draft.LLMReviewerModelTier = %q, want medium", draft.LLMReviewerModelTier)
+	}
+	if draft.ReviewerGitHubAppInstallationMode != string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository) || draft.ReviewerGitHubAppInstallationID != "" {
+		t.Fatalf("draft reviewer installation = (%q,%q), want discover with empty id", draft.ReviewerGitHubAppInstallationMode, draft.ReviewerGitHubAppInstallationID)
+	}
+}
+
+func TestInitProfileV2GitHubAppInstallationFieldsFollowReviewerSelection(t *testing.T) {
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"app-reviewer": { // #nosec G101 -- test fixture name, not credential material.
+			Kind:            initReviewerEntityKindGitHubApp,
+			AuthMode:        config.GitAuthModeGitHubApp,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/app-reviewer",
+			DisplayName:     "enterprise/reviewer-bot",
+		},
+		"pat-reviewer": {
+			Kind:            initReviewerEntityKindPAT,
+			AuthMode:        config.GitAuthModePAT,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/pat-reviewer",
+			DisplayName:     "enterprise/pat-bot",
+		},
+	}
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"claude-work": {
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", reviewerEntities, llmRuntimes), 160, 36)
+	sectionIndex := model.document.fieldIndexByID(initProfileV2FieldReviewerGitHubAppInstallationSection)
+	idIndex := model.document.fieldIndexByID(initProfileV2FieldReviewerGitHubAppInstallationID)
+	if sectionIndex < 0 || idIndex < 0 {
+		t.Fatal("GitHub App installation fields missing")
+	}
+	if !model.document[sectionIndex].Hidden {
+		t.Fatalf("GitHub App installation section visible for Git identity reviewer:\n%s", model.View())
+	}
+
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "app-reviewer")
+	if model.document[sectionIndex].Hidden {
+		t.Fatalf("GitHub App installation section hidden for GitHub App reviewer:\n%s", model.View())
+	}
+	if model.document[idIndex].Hidden != true {
+		t.Fatalf("installation ID visible for discover mode:\n%s", model.View())
+	}
+	for _, want := range []string{
+		"Discover from PR repository at review time (recommended)",
+		"Pin one installation ID (advanced)",
+		"supports profiles",
+		"routed to multiple organizations or users",
+		"every route for this profile uses the same installation",
+	} {
+		if !strings.Contains(model.View(), want) {
+			t.Fatalf("view missing GitHub App installation copy %q:\n%s", want, model.View())
+		}
+	}
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft discover: %v", err)
+	}
+	if draft.ReviewerGitHubAppInstallationMode != string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository) || draft.ReviewerGitHubAppInstallationID != "" {
+		t.Fatalf("draft discover installation = (%q,%q)", draft.ReviewerGitHubAppInstallationMode, draft.ReviewerGitHubAppInstallationID)
+	}
+
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerGitHubAppInstallationMode, string(config.ProfileReviewerGitHubAppInstallationPinned))
+	if model.document[idIndex].Hidden {
+		t.Fatalf("installation ID hidden for pinned mode:\n%s", model.View())
+	}
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldReviewerGitHubAppInstallationID)
+	model = typeInitProfileV2Text(t, model, "123456")
+	draft, err = model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft pinned: %v", err)
+	}
+	if draft.ReviewerGitHubAppInstallationMode != string(config.ProfileReviewerGitHubAppInstallationPinned) || draft.ReviewerGitHubAppInstallationID != "123456" {
+		t.Fatalf("draft pinned installation = (%q,%q), want pinned 123456", draft.ReviewerGitHubAppInstallationMode, draft.ReviewerGitHubAppInstallationID)
+	}
+
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "pat-reviewer")
+	if !model.document[sectionIndex].Hidden {
+		t.Fatalf("GitHub App installation section visible for PAT reviewer:\n%s", model.View())
+	}
+	draft, err = model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft PAT: %v", err)
+	}
+	if draft.ReviewerGitHubAppInstallationMode != "" || draft.ReviewerGitHubAppInstallationID != "" {
+		t.Fatalf("draft PAT installation = (%q,%q), want empty", draft.ReviewerGitHubAppInstallationMode, draft.ReviewerGitHubAppInstallationID)
+	}
+}
+
+func TestInitProfileV2GitHubAppInstallationPinnedIDValidation(t *testing.T) {
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		// #nosec G101 -- test fixture name, not credential material.
+		"app-reviewer": {
+			Kind:            initReviewerEntityKindGitHubApp,
+			AuthMode:        config.GitAuthModeGitHubApp,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/app-reviewer",
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", reviewerEntities, nil), 160, 36)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "app-reviewer")
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerGitHubAppInstallationMode, string(config.ProfileReviewerGitHubAppInstallationPinned))
+	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "installation ID is required") {
+		t.Fatalf("validatedDraft empty pinned error = %v, want required installation ID", err)
+	}
+
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldReviewerGitHubAppInstallationID)
+	model = typeInitProfileV2Text(t, model, "not-decimal")
+	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "decimal") {
+		t.Fatalf("validatedDraft non-decimal error = %v, want decimal validation", err)
+	}
+}
+
+func TestSynthesizeInteractiveProfilePersistsPinnedGitHubAppInstallation(t *testing.T) {
+	draft := initDraft{
+		ProfileName:                       "monit",
+		GitHost:                           "github.com",
+		GitAuth:                           string(config.GitAuthModePAT),
+		GitCredentialRef:                  "codereview/monit",
+		ReviewerEnabled:                   true,
+		ReviewerAuth:                      string(config.GitAuthModeGitHubApp),
+		ReviewerCredentialStore:           config.LocalOSCredentialStoreID,
+		ReviewerCredentialRef:             "codereview/monit-reviewer",
+		ReviewerGitHubAppInstallationMode: string(config.ProfileReviewerGitHubAppInstallationPinned),
+		ReviewerGitHubAppInstallationID:   "987654",
+		LLMProvider:                       string(config.LLMProviderAnthropic),
+		LLMAuth:                           string(config.LLMAuthSubscription),
+		LLMAdapter:                        string(config.LLMAdapterClaudeCLI),
+	}
+	profile, err := synthesizeInteractiveProfile(initOptions{gitHost: "github.com"}, "monit", nil, draft)
+	if err != nil {
+		t.Fatalf("synthesizeInteractiveProfile: %v", err)
+	}
+	cfg, profile := materializeProfileReviewerEntity(config.File{}, "monit", profile)
+	got := profile.Reviewer.GitHubAppInstallation
+	if got == nil || got.Mode != config.ProfileReviewerGitHubAppInstallationPinned || got.InstallationID != "987654" {
+		t.Fatalf("profile reviewer installation = %#v, want pinned 987654", got)
+	}
+	if cfg.Profiles["monit"].Reviewer.GitHubAppInstallation == nil || cfg.Profiles["monit"].Reviewer.GitHubAppInstallation.InstallationID != "987654" {
+		t.Fatalf("config profile reviewer installation = %#v, want pinned 987654", cfg.Profiles["monit"].Reviewer.GitHubAppInstallation)
+	}
+}
+
+func TestInitCredentialRefFromSeedEscapesUnsafeCharacters(t *testing.T) {
+	tests := []struct {
+		name    string
+		seed    string
+		wantRef string
+	}{
+		{"plain ascii", "work", "codereview/work"},
+		{"digits and hyphen", "staging-2", "codereview/staging-2"},
+		{"underscore doubles", "github_rianjs", "codereview/github__rianjs"},
+		{"trims outer spaces", "  spaced name  ", "codereview/spaced_x20name"},
+		{"slash", "open-cli-collective/rianjs-bot", "codereview/open-cli-collective_x2frianjs-bot"},
+		{"backslash", `open-cli-collective\rianjs-bot`, "codereview/open-cli-collective_x5crianjs-bot"},
+		{"ascii punctuation", "a.b:c@d#e$f%g^h&i*j+k=1", "codereview/a_x2eb_x3ac_x40d_x23e_x24f_x25g_x5eh_x26i_x2aj_x2bk_x3d1"},
+		{"control characters", "line\nbreak\ttab", "codereview/line_x0abreak_x09tab"},
+		{"colon run", "foo::::::::::::::-bar", "codereview/foo" + strings.Repeat("_x3a", 14) + "-bar"},
+		{"accent and cjk", "Rían/机器人", "codereview/R_xc3_xadan_x2f_xe6_x9c_xba_xe5_x99_xa8_xe4_xba_xba"},
+		{"emoji", "reviewer 🤖🔥", "codereview/reviewer_x20_xf0_x9f_xa4_x96_xf0_x9f_x94_xa5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := initCredentialRefFromSeed(tt.seed)
+			if err != nil {
+				t.Fatalf("initCredentialRefFromSeed(%q): %v", tt.seed, err)
+			}
+			if got != tt.wantRef {
+				t.Fatalf("initCredentialRefFromSeed(%q) = %q, want %q", tt.seed, got, tt.wantRef)
+			}
+			if _, err := credentials.ParseRef(got); err != nil {
+				t.Fatalf("normalized ref %q failed ParseRef: %v", got, err)
+			}
+		})
+	}
+}
+
+func TestInitCredentialRefFromSeedRejectsEmptySeed(t *testing.T) {
+	for _, seed := range []string{"", "   ", "\n\t"} {
+		t.Run(fmt.Sprintf("%q", seed), func(t *testing.T) {
+			if got, err := initCredentialRefFromSeed(seed); err == nil {
+				t.Fatalf("initCredentialRefFromSeed(%q) = %q, want error", seed, got)
+			}
+		})
+	}
+}
+
+func TestSynthesizeInteractiveProfileNormalizesProfileNameCredentialRefs(t *testing.T) {
+	draft := initDraft{
+		ProfileName:             "open-cli-collective/rianjs-bot",
+		GitHost:                 "github.com",
+		GitAuth:                 string(config.GitAuthModePAT),
+		GitCredentialStore:      config.LocalOSCredentialStoreID,
+		ReviewerEnabled:         true,
+		ReviewerAuth:            string(config.GitAuthModePAT),
+		ReviewerCredentialStore: config.LocalOSCredentialStoreID,
+		LLMProvider:             string(config.LLMProviderOpenAI),
+		LLMAuth:                 string(config.LLMAuthAPIKey),
+		LLMAdapter:              string(config.LLMAdapterOpenAIAPI),
+		LLMCredentialStore:      config.LocalOSCredentialStoreID,
+	}
+	profile, err := synthesizeInteractiveProfile(initOptions{gitHost: "github.com"}, "open-cli-collective/rianjs-bot", nil, draft)
+	if err != nil {
+		t.Fatalf("synthesizeInteractiveProfile: %v", err)
+	}
+	if profile.Git.CredentialRef != "codereview/open-cli-collective_x2frianjs-bot" {
+		t.Fatalf("Git.CredentialRef = %q, want normalized profile ref", profile.Git.CredentialRef)
+	}
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/open-cli-collective_x2frianjs-bot-reviewer" {
+		t.Fatalf("ReviewerCredentials = %#v, want normalized reviewer ref", profile.ReviewerCredentials)
+	}
+	if profile.LLM.CredentialRef != "codereview/open-cli-collective_x2frianjs-bot-llm" {
+		t.Fatalf("LLM.CredentialRef = %q, want normalized LLM ref", profile.LLM.CredentialRef)
 	}
 }
 
@@ -13573,14 +14028,12 @@ func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
 		config.ReviewPolicy{},
 		"codereview/monit",
 		true,
-		nil,
-		initCustomGitScopeSelection,
+		testInitProfileV2GitScopes(),
+		testInitProfileV2GitScopeName,
 	), 160, 40)
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewMajorEvent, string(config.ReviewMajorEventRequestChanges))
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldSelfApprove, initSelfApproveEnable)
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldResolveThreads, string(config.ResolveThreadsAuto))
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldResolveAfter)
-	model = typeInitProfileV2Text(t, model, "24h")
 
 	draft, err := model.validatedDraft()
 	if err != nil {
@@ -13593,93 +14046,58 @@ func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsAuto,
-		ResolveAfter:     "24h",
 	}
 	if !reflect.DeepEqual(draft.ReviewPolicy, want) {
 		t.Fatalf("draft.ReviewPolicy = %#v, want %#v", draft.ReviewPolicy, want)
 	}
 }
 
-func TestInitProfileV2ReviewPolicyRejectsInvalidDuration(t *testing.T) {
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
-		"monit",
-		"github.com/SignalFT",
-		config.ReviewPolicy{},
-		"codereview/monit",
-		true,
-		nil,
-		initCustomGitScopeSelection,
-	), 160, 24)
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldResolveAfter)
-	model = typeInitProfileV2Text(t, model, "tomorrow")
-
-	if !strings.Contains(model.View(), "invalid duration") {
-		index := model.document.fieldIndexByID(initProfileV2FieldResolveAfter)
-		if index < 0 || !strings.Contains(model.document[index].Error, "invalid duration") {
-			t.Fatalf("duration field error = %q, want invalid duration", model.document[index].Error)
-		}
-	}
-	if _, err := model.validatedDraft(); err == nil || !strings.Contains(err.Error(), "invalid duration") {
-		t.Fatalf("validatedDraft error = %v, want duration validation", err)
-	}
-}
-
-func TestInitProfileV2GitCredentialNameDraftsCustomName(t *testing.T) {
-	gitScopes := map[string]initGitScopeDraft{
-		"github-work": {
-			Host:            "github.com",
-			AuthMode:        config.GitAuthModePAT,
+func TestInitProfileV2ReviewPolicyHidesSelfApproveForGitHubAppReviewer(t *testing.T) {
+	reviewerEntities := map[string]initReviewerEntityDraft{
+		"app-reviewer": { // #nosec G101 -- test fixture name, not credential material.
+			Name:            "app-reviewer",
+			Kind:            initReviewerEntityKindGitHubApp,
+			AuthMode:        config.GitAuthModeGitHubApp,
+			AppID:           "12345",
 			CredentialStore: config.LocalOSCredentialStoreID,
-			CredentialRef:   "codereview/monit",
+			CredentialRef:   "codereview/app-reviewer",
+			DisplayName:     "App reviewer",
 		},
 	}
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
-		"monit",
-		"github.com/SignalFT",
-		config.ReviewPolicy{},
-		"codereview/monit",
-		true,
-		gitScopes,
-		"github-work",
-	), 160, 40)
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitCredentialName)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
-	model = typeInitProfileV2Text(t, model, "codereview/custom-monit-git")
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"claude-work": {
+			Name:     "claude-work",
+			Preset:   initLLMRuntimePresetClaudeCLISubscription,
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		},
+	}
+	editor := newTestInitProfileV2EditorWithSelections("monit", "github.com/SignalFT", reviewerEntities, llmRuntimes)
+	initProfileV2AppendReviewPolicySection(&editor.Document, config.ReviewPolicy{
+		MajorEvent:       config.ReviewMajorEventRequestChanges,
+		AllowSelfApprove: true,
+		ResolveThreads:   config.ResolveThreadsAuto,
+	}, false)
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 40)
+	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldReviewerEntity, "app-reviewer")
 
+	index := model.document.fieldIndexByID(initProfileV2FieldSelfApprove)
+	if index < 0 {
+		t.Fatalf("self-approve field missing")
+	}
+	if !model.document[index].Hidden {
+		t.Fatalf("self-approve hidden = false, want hidden for GitHub App reviewer")
+	}
+	if strings.Contains(model.View(), "Allow self-approve") {
+		t.Fatalf("view shows self-approve for GitHub App reviewer:\n%s", model.View())
+	}
 	draft, err := model.validatedDraft()
 	if err != nil {
 		t.Fatalf("validatedDraft: %v", err)
 	}
-	if draft.GitCredentialRef != "codereview/custom-monit-git" {
-		t.Fatalf("draft.GitCredentialRef = %q, want custom credential name", draft.GitCredentialRef)
-	}
-	if draft.GitCredentialStore != config.LocalOSCredentialStoreID {
-		t.Fatalf("draft.GitCredentialStore = %q, want local-os", draft.GitCredentialStore)
-	}
-}
-
-func TestInitProfileV2GitCredentialNameRejectsInvalidCredentialRef(t *testing.T) {
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(
-		"monit",
-		"github.com/SignalFT",
-		config.ReviewPolicy{},
-		"codereview/monit",
-		true,
-		nil,
-		initCustomGitScopeSelection,
-	), 160, 24)
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldGitCredentialName)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
-	model = typeInitProfileV2Text(t, model, "not-a-ref")
-
-	if !strings.Contains(model.View(), "credential ref") {
-		index := model.document.fieldIndexByID(initProfileV2FieldGitCredentialName)
-		if index < 0 || !strings.Contains(model.document[index].Error, "credential ref") {
-			t.Fatalf("git credential name field error = %q, want credential-ref validation", model.document[index].Error)
-		}
-	}
-	if _, err := model.validatedDraft(); err == nil {
-		t.Fatal("validatedDraft error = nil, want credential-ref validation")
+	if draft.ReviewPolicy.AllowSelfApprove {
+		t.Fatalf("AllowSelfApprove = true, want false for GitHub App reviewer")
 	}
 }
 
@@ -13715,6 +14133,76 @@ func TestInitProfileV2GitCredentialNameFollowsChangedScopeDefaultWhenUnedited(t 
 	}
 	if draft.GitCredentialRef != "codereview/new-git" {
 		t.Fatalf("draft.GitCredentialRef = %q, want changed Git scope default", draft.GitCredentialRef)
+	}
+}
+
+func TestInitProfileV2ProfileNameUpdatesAutoManagedLLMCredentialName(t *testing.T) {
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"openai-work": {
+			Name:            "openai-work",
+			Preset:          initLLMRuntimePresetOpenAIAPIKey,
+			Provider:        config.LLMProviderOpenAI,
+			Auth:            config.LLMAuthAPIKey,
+			Adapter:         config.LLMAdapterOpenAIAPI,
+			CredentialStore: config.LocalOSCredentialStoreID,
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap(
+		"work",
+		"github.com/SignalFT",
+		llmRuntimes,
+		"openai-work",
+	), 160, 40)
+	if got := model.document.fieldValue(initProfileV2FieldLLMCredentialName); got != "codereview/work-llm" {
+		t.Fatalf("initial LLM credential name = %q, want auto-managed work ref", got)
+	}
+	refIndex := model.document.fieldIndexByID(initProfileV2FieldLLMCredentialName)
+	if refIndex < 0 || !model.document[refIndex].AutoManaged {
+		t.Fatalf("LLM credential name AutoManaged = false, want true")
+	}
+
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileName)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "open-cli-collective/rianjs-bot")
+
+	if got := model.document.fieldValue(initProfileV2FieldLLMCredentialName); got != "codereview/open-cli-collective_x2frianjs-bot-llm" {
+		t.Fatalf("LLM credential name after profile edit = %q, want normalized profile-derived ref", got)
+	}
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if draft.LLMCredentialRef != "codereview/open-cli-collective_x2frianjs-bot-llm" {
+		t.Fatalf("draft.LLMCredentialRef = %q, want normalized profile-derived ref", draft.LLMCredentialRef)
+	}
+}
+
+func TestInitProfileV2ManualLLMCredentialNameStopsProfileNameAutoUpdate(t *testing.T) {
+	llmRuntimes := map[string]initLLMRuntimeDraft{
+		"openai-work": {
+			Name:            "openai-work",
+			Preset:          initLLMRuntimePresetOpenAIAPIKey,
+			Provider:        config.LLMProviderOpenAI,
+			Auth:            config.LLMAuthAPIKey,
+			Adapter:         config.LLMAdapterOpenAIAPI,
+			CredentialStore: config.LocalOSCredentialStoreID,
+		},
+	}
+	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap(
+		"work",
+		"github.com/SignalFT",
+		llmRuntimes,
+		"openai-work",
+	), 160, 40)
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldLLMCredentialName)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "codereview/custom-llm")
+	model = focusInitProfileV2Field(t, model, initProfileV2FieldProfileName)
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitProfileV2Text(t, model, "open-cli-collective/rianjs-bot")
+
+	if got := model.document.fieldValue(initProfileV2FieldLLMCredentialName); got != "codereview/custom-llm" {
+		t.Fatalf("manual LLM credential name = %q, want profile edit not to overwrite it", got)
 	}
 }
 
@@ -13825,6 +14313,75 @@ func TestBubbleTeaInitProfileV2PrompterReturnsStagedDraft(t *testing.T) {
 	}
 }
 
+func TestBubbleTeaInitProfileV2PrompterCanStageProfileDelete(t *testing.T) {
+	profile := basicProfile("work")
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			return initInventoryResult{
+				Action: initInventoryActionStageDelete,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work",
+				},
+			}, nil
+		},
+		profileEditorRunner: func(initProfileV2Editor) (initProfileV2EditorResult, error) {
+			t.Fatal("profile editor should not open for delete action")
+			return initProfileV2EditorResult{}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"work"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": profile}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.Action != initDraftActionDeleteProfile || draft.ActionTarget != "work" {
+		t.Fatalf("draft delete action = %#v, want delete work", draft)
+	}
+}
+
+func TestBubbleTeaInitProfileV2PrompterCanRestoreProfileDelete(t *testing.T) {
+	profile := basicProfile("home")
+	prompter := bubbleTeaInitProfileV2Prompter{
+		inventoryRunner: func(_ initInventoryPrompt, _ io.Reader, _ io.Writer) (initInventoryResult, error) {
+			return initInventoryResult{
+				Action: initInventoryActionRestore,
+				Row: initInventoryRow{
+					ID:    "work",
+					Title: "work (Staged for deletion)",
+				},
+			}, nil
+		},
+		profileEditorRunner: func(initProfileV2Editor) (initProfileV2EditorResult, error) {
+			t.Fatal("profile editor should not open for restore action")
+			return initProfileV2EditorResult{}, nil
+		},
+	}
+
+	draft, err := prompter.Run(initPromptContext{
+		RequestedProfileName: "home",
+		ExistingProfileName:  "home",
+		ExistingProfile:      &profile,
+		ExistingProfileNames: []string{"home"},
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"home": profile}},
+		PendingProfileDeletes: map[string]initPendingProfileDelete{
+			"work": {ProfileName: "work"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if draft.Action != initDraftActionUndoDeleteProfile || draft.ActionTarget != "work" {
+		t.Fatalf("draft restore action = %#v, want restore work", draft)
+	}
+}
+
 func TestBubbleTeaInitProfileV2PrompterSkipsChooserWhenNoProfilesExist(t *testing.T) {
 	inventoryCalled := false
 	editorCalls := 0
@@ -13847,7 +14404,21 @@ func TestBubbleTeaInitProfileV2PrompterSkipsChooserWhenNoProfilesExist(t *testin
 
 	_, err := prompter.Run(initPromptContext{
 		RequestedProfileName: "default",
-		ExistingConfig:       config.File{Profiles: map[string]config.Profile{}},
+		ExistingConfig: config.File{
+			Profiles: map[string]config.Profile{},
+			RepositoryAccess: map[string]config.RepositoryAccessConfig{
+				testInitProfileV2GitScopeName: {
+					Git: config.GitConfig{
+						Host:     "github.com",
+						AuthMode: config.GitAuthModePAT,
+						Credential: config.CredentialLocation{
+							Store: config.LocalOSCredentialStoreID,
+							Name:  "codereview/github-work",
+						},
+					},
+				},
+			},
+		},
 	})
 	if !errors.Is(err, errInitNavigateBack) {
 		t.Fatalf("Run error = %v, want direct create back to main menu", err)
@@ -14138,7 +14709,23 @@ func newTestInitProfileV2Editor(profileName string, routeText string) initProfil
 			GitHost:             "github.com",
 			GitAuth:             string(config.GitAuthModePAT),
 		},
-		Document: document,
+		GitScopes:        testInitProfileV2GitScopes(),
+		SelectedGitScope: testInitProfileV2GitScopeName,
+		Document:         document,
+	}
+}
+
+const testInitProfileV2GitScopeName = "github-work"
+
+func testInitProfileV2GitScopes() map[string]initGitScopeDraft {
+	return map[string]initGitScopeDraft{
+		testInitProfileV2GitScopeName: {
+			Name:            testInitProfileV2GitScopeName,
+			Host:            "github.com",
+			AuthMode:        config.GitAuthModePAT,
+			CredentialStore: config.LocalOSCredentialStoreID,
+			CredentialRef:   "codereview/github-work",
+		},
 	}
 }
 
@@ -14167,11 +14754,14 @@ func newTestInitProfileV2EditorWithSelections(profileName string, routeText stri
 		initReviewerEntitySelectionOptions(reviewerEntities, reviewerEntityGitAccountFallbackLabel(config.GitAuthModePAT, "")),
 		string(initReviewerEntityKindUseGitIdentity),
 	)
+	initProfileV2AppendReviewerGitHubAppInstallationSection(&document, string(initReviewerEntityKindUseGitIdentity), reviewerEntities, draft)
 	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
 	initProfileV2AppendLLMStorageSection(&document, storeOptions, draft.LLMCredentialStore, draft.LLMCredentialRef, !initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes))
 	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
 	return initProfileV2Editor{
 		Draft:                  draft,
+		GitScopes:              testInitProfileV2GitScopes(),
+		SelectedGitScope:       testInitProfileV2GitScopeName,
 		ReviewerEntities:       reviewerEntities,
 		LLMRuntimes:            llmRuntimes,
 		CredentialStoreOptions: storeOptions,
@@ -14196,8 +14786,10 @@ func newTestInitProfileV2EditorWithModelMap(profileName string, routeText string
 	initProfileV2AppendRouteSection(&document, routeText)
 	initProfileV2AppendModelMapSection(&document, llm, modelMap)
 	return initProfileV2Editor{
-		Draft:    draft,
-		Document: document,
+		Draft:            draft,
+		GitScopes:        testInitProfileV2GitScopes(),
+		SelectedGitScope: testInitProfileV2GitScopeName,
+		Document:         document,
 	}
 }
 
@@ -14231,6 +14823,8 @@ func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeT
 	initProfileV2AppendModelMapSection(&document, initProfileEditorModelMapLLM(draft, normalizedRuntime, llmRuntimes), draft.ModelMap)
 	return initProfileV2Editor{
 		Draft:                  draft,
+		GitScopes:              testInitProfileV2GitScopes(),
+		SelectedGitScope:       testInitProfileV2GitScopeName,
 		LLMRuntimes:            llmRuntimes,
 		CredentialStoreOptions: storeOptions,
 		Document:               document,
@@ -14254,8 +14848,10 @@ func newTestInitProfileV2EditorWithAgentSources(profileName string, routeText st
 	initProfileV2AppendRouteSection(&document, routeText)
 	initProfileV2AppendAgentSourcesSection(&document, agentSources)
 	return initProfileV2Editor{
-		Draft:    draft,
-		Document: document,
+		Draft:            draft,
+		GitScopes:        testInitProfileV2GitScopes(),
+		SelectedGitScope: testInitProfileV2GitScopeName,
+		Document:         document,
 	}
 }
 
@@ -14282,7 +14878,7 @@ func newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(profileName string,
 	if selectedGitScope != "" && selectedGitScope != initCustomGitScopeSelection {
 		initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(gitScopes), draft, true)
 	}
-	initProfileV2AppendReviewPolicySection(&document, policy)
+	initProfileV2AppendReviewPolicySection(&document, policy, false)
 	initProfileV2AppendGitStorageSection(&document, storeOptions, config.LocalOSCredentialStoreID, gitStorageLabel)
 	return initProfileV2Editor{
 		Draft:                      draft,
@@ -14354,6 +14950,441 @@ func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
 	}
 	if openStoreCalls != 0 {
 		t.Fatalf("openStoreCalls = %d, want 0 on exit-without-save", openStoreCalls)
+	}
+}
+
+func TestInitInteractiveMenuStagesStandaloneRepositoryAccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionRepositoryAccess,
+			initMenuActionSave,
+		},
+	}
+	repositoryPrompts := 0
+	deps := initDeps{
+		menuPrompter: menu,
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+			repositoryPrompts++
+			if repositoryPrompts > 1 {
+				return initDraft{}, errInitNavigateBack
+			}
+			if !prompt.Context.StandaloneRepositoryAccessMode {
+				t.Fatal("repository access prompt did not run in standalone mode")
+			}
+			if len(prompt.Context.GitScopes) != 0 {
+				t.Fatalf("GitScopes = %#v, want empty before creating repository access", prompt.Context.GitScopes)
+			}
+			return initDraft{
+				RepositoryAccessName: "work-git",
+				GitHost:              "github.company.com",
+				GitAuth:              string(config.GitAuthModePAT),
+				GitCredentialStore:   config.LocalOSCredentialStoreID,
+				GitCredentialRef:     "codereview/work-git",
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if repositoryPrompts != 1 {
+		t.Fatalf("repositoryPrompts = %d, want 1", repositoryPrompts)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %d, want repository access then save", len(menu.prompts))
+	}
+	if !menu.prompts[1].CanSave {
+		t.Fatalf("second menu prompt CanSave = false, want true after repository access staging")
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	access, ok := cfg.RepositoryAccess["work-git"]
+	if !ok {
+		t.Fatalf("repository_access = %#v, want work-git", cfg.RepositoryAccess)
+	}
+	if access.DisplayName != "work-git" {
+		t.Fatalf("display_name = %q, want work-git", access.DisplayName)
+	}
+	if access.Git.Host != "github.company.com" || access.Git.AuthMode != config.GitAuthModePAT {
+		t.Fatalf("repository access git = %#v, want company PAT", access.Git)
+	}
+	if access.Git.Credential.Store != config.LocalOSCredentialStoreID || access.Git.Credential.Name != "codereview/work-git" {
+		t.Fatalf("repository access credential = %#v, want local-os/codereview/work-git", access.Git.Credential)
+	}
+}
+
+func TestInitRepositoryAccessEditorMarksConfiguredRepositoryAccessDeletable(t *testing.T) {
+	ctx := initPromptContext{
+		GitScopes: map[string]initGitScopeDraft{
+			"work-git": {
+				Name:            "work-git",
+				Host:            "github.com",
+				AuthMode:        config.GitAuthModePAT,
+				CredentialStore: config.LocalOSCredentialStoreID,
+				CredentialRef:   "codereview/work-git",
+			},
+		},
+		ExistingConfig: config.File{
+			RepositoryAccess: map[string]config.RepositoryAccessConfig{
+				"work-git": {
+					DisplayName: "work-git",
+					Git: config.GitConfig{
+						Host:     "github.com",
+						AuthMode: config.GitAuthModePAT,
+						Credential: config.CredentialLocation{
+							Store: config.LocalOSCredentialStoreID,
+							Name:  "codereview/work-git",
+						},
+					},
+				},
+			},
+		},
+	}
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
+	model = selectInitLinearFieldValue(t, model, initRepositoryAccessFieldSelection, "work-git")
+	selectionIndex := model.document.fieldIndexByID(initRepositoryAccessFieldSelection)
+	if selectionIndex < 0 {
+		t.Fatal("repository access selection field missing")
+	}
+	for _, option := range model.document[selectionIndex].Options {
+		if option.Value == "work-git" {
+			if !option.Deletable {
+				t.Fatalf("work-git option Deletable = false, want true")
+			}
+			return
+		}
+	}
+	t.Fatalf("work-git option missing: %#v", model.document[selectionIndex].Options)
+}
+
+func TestInitRepositoryAccessEditorMarksPendingRepositoryAccessRestorable(t *testing.T) {
+	ctx := initPromptContext{
+		PendingRepositoryAccessDeletes: map[string]initPendingRepositoryAccessDelete{
+			"work-git": {
+				Name: "work-git",
+			},
+		},
+	}
+	selection := initRepositoryAccessRestoreSelectionPrefix + "work-git"
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
+	model = selectInitLinearFieldValue(t, model, initRepositoryAccessFieldSelection, selection)
+	selectionIndex := model.document.fieldIndexByID(initRepositoryAccessFieldSelection)
+	if selectionIndex < 0 {
+		t.Fatal("repository access selection field missing")
+	}
+	for _, option := range model.document[selectionIndex].Options {
+		if option.Value != selection {
+			continue
+		}
+		if !option.Restorable {
+			t.Fatalf("pending work-git option Restorable = false, want true")
+		}
+		if !model.document.fieldHidden(initRepositoryAccessFieldName) || !model.document.fieldHidden(initRepositoryAccessFieldAction) {
+			t.Fatalf("repository access details hidden = name:%v action:%v, want both hidden", model.document.fieldHidden(initRepositoryAccessFieldName), model.document.fieldHidden(initRepositoryAccessFieldAction))
+		}
+		return
+	}
+	t.Fatalf("pending work-git option missing: %#v", model.document[selectionIndex].Options)
+}
+
+func TestDeleteInteractiveInitRepositoryAccessRemovesAndRestoresStandaloneEntry(t *testing.T) {
+	access := config.RepositoryAccessConfig{
+		DisplayName: "work-git",
+		Git: config.GitConfig{
+			Host:     "github.com",
+			AuthMode: config.GitAuthModePAT,
+			Credential: config.CredentialLocation{
+				Store: config.LocalOSCredentialStoreID,
+				Name:  "codereview/work-git",
+			},
+		},
+	}
+	session := initSessionDraft{
+		cfg: config.File{
+			RepositoryAccess: map[string]config.RepositoryAccessConfig{
+				"work-git": access,
+			},
+			Profiles: map[string]config.Profile{},
+		},
+	}
+
+	next, err := deleteInteractiveInitRepositoryAccess(session, "work-git")
+	if err != nil {
+		t.Fatalf("deleteInteractiveInitRepositoryAccess: %v", err)
+	}
+	if _, ok := next.cfg.RepositoryAccess["work-git"]; ok {
+		t.Fatalf("repository_access after delete = %#v, want work-git removed", next.cfg.RepositoryAccess)
+	}
+	if _, ok := next.pendingRepositoryAccessDeletes["work-git"]; !ok {
+		t.Fatalf("pendingRepositoryAccessDeletes = %#v, want work-git", next.pendingRepositoryAccessDeletes)
+	}
+
+	restored, err := undoInteractiveInitRepositoryAccessDelete(next, "work-git")
+	if err != nil {
+		t.Fatalf("undoInteractiveInitRepositoryAccessDelete: %v", err)
+	}
+	restoredAccess := restored.cfg.RepositoryAccess["work-git"]
+	if restoredAccess.DisplayName != access.DisplayName || restoredAccess.Git.Host != access.Git.Host || restoredAccess.Git.AuthMode != access.Git.AuthMode || restoredAccess.Git.Credential != access.Git.Credential {
+		t.Fatalf("restored repository access = %#v, want display/host/auth/credential from %#v", restoredAccess, access)
+	}
+	if _, ok := restored.pendingRepositoryAccessDeletes["work-git"]; ok {
+		t.Fatalf("pendingRepositoryAccessDeletes after undo = %#v, want cleared work-git", restored.pendingRepositoryAccessDeletes)
+	}
+}
+
+func TestInitInteractiveMenuDeletesStandaloneRepositoryAccessAndEnablesSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	access := config.RepositoryAccessConfig{
+		DisplayName: "work-git",
+		Git: config.GitConfig{
+			Host:     "github.com",
+			AuthMode: config.GitAuthModePAT,
+			Credential: config.CredentialLocation{
+				Store: config.LocalOSCredentialStoreID,
+				Name:  "codereview/work-git",
+			},
+		},
+	}
+	menu := &fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionRepositoryAccess,
+			initMenuActionSave,
+		},
+	}
+	deps := initDeps{
+		menuPrompter: menu,
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+			if !prompt.Context.StandaloneRepositoryAccessMode {
+				t.Fatal("repository access prompt did not run in standalone mode")
+			}
+			if _, ok := prompt.Context.ExistingConfig.RepositoryAccess["work-git"]; !ok {
+				t.Fatalf("prompt repository_access = %#v, want work-git", prompt.Context.ExistingConfig.RepositoryAccess)
+			}
+			return initDraft{
+				Action:       initDraftActionDeleteRepositoryAccess,
+				ActionTarget: "work-git",
+			}, nil
+		}),
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{
+				Profiles: map[string]config.Profile{},
+				RepositoryAccess: map[string]config.RepositoryAccessConfig{
+					"work-git": access,
+				},
+			}, true, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if len(menu.prompts) != 2 {
+		t.Fatalf("menu prompts = %d, want repository access then save", len(menu.prompts))
+	}
+	if !menu.prompts[1].CanSave {
+		t.Fatalf("second menu prompt CanSave = false, want true after repository access deletion")
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if _, ok := cfg.RepositoryAccess["work-git"]; ok {
+		t.Fatalf("repository_access after save = %#v, want work-git removed", cfg.RepositoryAccess)
+	}
+}
+
+func TestInitRepositoryAccessEditorDefaultsToLocalGitHubUsername(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(key string) string {
+		if key == "github.user" {
+			return "RianJS"
+		}
+		return ""
+	}
+
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(initPromptContext{}, initDraft{}), 160, 40)
+
+	if got, want := model.document.fieldValue(initRepositoryAccessFieldName), "github-rianjs"; got != want {
+		t.Fatalf("repository access name = %q, want %q", got, want)
+	}
+	if got, want := model.document.fieldValue(initRepositoryAccessFieldCredentialName), "codereview/github-rianjs"; got != want {
+		t.Fatalf("credential name = %q, want %q", got, want)
+	}
+	refIndex := model.document.fieldIndexByID(initRepositoryAccessFieldCredentialName)
+	if refIndex < 0 || !model.document[refIndex].AutoManaged {
+		t.Fatalf("credential name AutoManaged = false, want true")
+	}
+}
+
+func TestInitRepositoryAccessEditorAutoUpdatesCredentialRefFromName(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(initPromptContext{}, initDraft{}), 160, 40)
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldName)
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitLinearText(t, model, "github-rianjs")
+
+	if got, want := model.document.fieldValue(initRepositoryAccessFieldCredentialName), "codereview/github-rianjs"; got != want {
+		t.Fatalf("credential name = %q, want %q", got, want)
+	}
+}
+
+func TestInitRepositoryAccessEditorManualCredentialRefStopsAutoUpdate(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(initPromptContext{}, initDraft{}), 160, 40)
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldCredentialName)
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitLinearText(t, model, "codereview/custom-git")
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldName)
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = typeInitLinearText(t, model, "github-rianjs")
+
+	if got, want := model.document.fieldValue(initRepositoryAccessFieldCredentialName), "codereview/custom-git"; got != want {
+		t.Fatalf("credential name = %q, want manual override %q", got, want)
+	}
+}
+
+func TestInitRepositoryAccessEditorRequiresPATBeforeStaging(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(initPromptContext{}, initDraft{}), 160, 60)
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldAction)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	actionIndex := next.document.fieldIndexByID(initRepositoryAccessFieldAction)
+	if actionIndex < 0 || !strings.Contains(next.document[actionIndex].Error, "set repository access credentials before staging: git_token") {
+		t.Fatalf("action error = %q, want missing git_token", next.document[actionIndex].Error)
+	}
+}
+
+func TestInitRepositoryAccessEditorStagesPATCredentialWrite(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+
+	ctx := initPromptContext{}
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
+	model = focusInitLinearField(t, model, initRepositoryAccessFieldGitToken)
+	model = typeInitLinearText(t, model, "work-token")
+
+	draft := initRepositoryAccessDraftFromDocument(ctx, initDraft{}, model.document)
+	if got, want := draft.GitCredentialWriteRef, "codereview/github-com-pat"; got != want {
+		t.Fatalf("GitCredentialWriteRef = %q, want %q", got, want)
+	}
+	if got := draft.GitCredentialWrites[credentials.GitTokenKey]; got != "work-token" {
+		t.Fatalf("git_token write = %q, want work-token", got)
+	}
+	if !draft.GitCredentialSatisfied {
+		t.Fatal("GitCredentialSatisfied = false, want true after staged PAT")
+	}
+}
+
+func TestInitRepositoryAccessEditorAcceptsExistingPATCredential(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+	resolved, err := credentials.ResolveCredentialStore(config.File{}, config.LocalOSCredentialStoreID)
+	if err != nil {
+		t.Fatalf("ResolveCredentialStore: %v", err)
+	}
+	ctx := initPromptContext{
+		RepositoryAccessCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref:            config.CredentialRef{Purpose: "git", Store: config.LocalOSCredentialStoreID, Ref: "codereview/github-com-pat", Mode: string(config.GitAuthModePAT)},
+			SecretsProfile: resolved,
+			Keys:           []initReviewerCredentialKeyStatus{{Key: credentials.GitTokenKey, Required: true, State: initReviewerCredentialKeyExisting}},
+		}},
+	}
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
+
+	if err := validateRepositoryAccessDocument(ctx, model.document); err != nil {
+		t.Fatalf("validateRepositoryAccessDocument: %v", err)
+	}
+}
+
+func TestInitInteractiveMenuWritesStandaloneRepositoryAccessPAT(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, "profiles: {}\n")
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	store := newFakeInitStore(map[string]map[string]string{})
+	resolved, err := credentials.ResolveCredentialStore(config.File{}, config.LocalOSCredentialStoreID)
+	if err != nil {
+		t.Fatalf("ResolveCredentialStore: %v", err)
+	}
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionRepositoryAccess,
+				initMenuActionSave,
+			},
+		},
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(_ initRepositoryAccessPrompt) (initDraft, error) {
+			return initDraft{
+				RepositoryAccessName:    "work-git",
+				GitHost:                 "github.company.com",
+				GitAuth:                 string(config.GitAuthModePAT),
+				GitCredentialStore:      config.LocalOSCredentialStoreID,
+				GitCredentialRef:        "codereview/work-git",
+				GitCredentialWriteRef:   "codereview/work-git",
+				GitCredentialWriteStore: resolved,
+				GitCredentialWrites:     map[string]string{credentials.GitTokenKey: "work-token"},
+				GitCredentialSatisfied:  true,
+			}, nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: func(string) (config.File, bool, error) {
+			return config.File{Profiles: map[string]config.Profile{}}, false, nil
+		},
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if got := store.bundles["work-git"][credentials.GitTokenKey]; got != "work-token" {
+		t.Fatalf("stored git_token = %q, want work-token; bundles=%#v", got, store.bundles)
 	}
 }
 
@@ -14957,6 +15988,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		IdentityCache: "reviewer-cache",
 	}
 	profile.LLM.ModelMap = config.ModelMap{"medium": "claude-custom"}
@@ -14966,7 +15998,6 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 		MajorEvent:       config.ReviewMajorEventRequestChanges,
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
-		ResolveAfter:     "24h",
 	}
 	wantRoutes := []config.RepositoryProfile{{
 		Profile: "work",
@@ -14980,7 +16011,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 		RepositoryProfiles: wantRoutes,
 		Profiles:           map[string]config.Profile{"work": profile},
 	})
-	profile = normalizeTestProfile(profile)
+	profile = normalizeTestProfileNamed("work", profile)
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
 		Stdout:     &bytes.Buffer{},
@@ -15069,7 +16100,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 	saveCredentialTestConfig(t, path, config.File{
 		Profiles: map[string]config.Profile{"work": wantProfile},
 	})
-	wantProfile = normalizeTestProfile(wantProfile)
+	wantProfile = normalizeTestProfileNamed("work", wantProfile)
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
 		Stdout:     &bytes.Buffer{},
@@ -15131,7 +16162,6 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 	if cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 14/at_write", cfg.Data.Retention)
 	}
-	wantProfile.ReviewPolicy.MajorEvent = config.ReviewMajorEventComment
 	if !reflect.DeepEqual(cfg.Profiles["work"], wantProfile) {
 		t.Fatalf("profile = %#v, want unchanged %#v", cfg.Profiles["work"], wantProfile)
 	}
@@ -15280,6 +16310,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
+			draft.ReviewerGitHubAppID = "12345"
 			return draft, nil
 		}),
 		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
@@ -15302,8 +16333,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 				"default": {
 					credentials.GitTokenKey: "existing-token",
 				},
-				"default-reviewer": {
-					credentials.GitHubAppIDKey:         "12345",
+				"reviewer-github-app": {
 					credentials.GitHubAppPrivateKeyKey: "private-key",
 				},
 			}), nil
@@ -15323,14 +16353,25 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 		t.Fatalf("Load config: %v", err)
 	}
 	profile := cfg.Profiles["default"]
-	if profile.ReviewerCredentials == nil {
-		t.Fatal("reviewer credentials = nil, want focused reviewer edit to enable separate reviewer")
+	if profile.Reviewer.Kind != config.ProfileReviewerKindGitIdentity {
+		t.Fatalf("profile reviewer = %#v, want reusable reviewer entity to stay unattached until selected by profile", profile.Reviewer)
 	}
-	if profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp {
-		t.Fatalf("reviewer credentials = %#v, want github app reviewer", profile.ReviewerCredentials)
+	var gotEntity *config.ReviewerEntity
+	for name, entity := range cfg.ReviewerEntities {
+		if entity.AuthMode == config.GitAuthModeGitHubApp {
+			entityCopy := entity
+			gotEntity = &entityCopy
+			if name == "" {
+				t.Fatal("reviewer entity name is empty")
+			}
+			break
+		}
 	}
-	if profile.ReviewerCredentials.CredentialRef == "" {
-		t.Fatalf("reviewer credential ref = %q, want generated ref after reviewer rebuild", profile.ReviewerCredentials.CredentialRef)
+	if gotEntity == nil {
+		t.Fatalf("reviewer_entities = %#v, want staged GitHub App reviewer entity", cfg.ReviewerEntities)
+	}
+	if gotEntity.CredentialRef == "" {
+		t.Fatalf("reviewer entity credential ref = %q, want generated ref after reviewer rebuild", gotEntity.CredentialRef)
 	}
 	if cfg.Keyring.Backend != "" || cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("global settings after reviewer rebuild = %#v / %#v, want empty backend + 14/at_write", cfg.Keyring, cfg.Data.Retention)
@@ -15345,9 +16386,7 @@ func TestInitCredentialSecretPromptTitleReviewerKeys(t *testing.T) {
 			Mode:    string(config.GitAuthModeGitHubApp),
 		},
 		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 	}
 	patEntry := initCredentialPlanEntry{
@@ -15369,7 +16408,7 @@ func TestInitCredentialSecretPromptTitleReviewerKeys(t *testing.T) {
 			got: initCredentialSecretPromptTitle(initCredentialSecretPrompt{
 				Entry: githubAppEntry,
 			}),
-			want: "How should init handle GitHub App reviewer secrets? (codereview/rianjs-bot) (required: github_app_id, github_app_private_key; optional: github_app_installation_id)",
+			want: "How should init handle GitHub App reviewer secrets? (codereview/rianjs-bot)",
 		},
 		{
 			name: "pat action title",
@@ -15690,25 +16729,20 @@ func TestInitReviewerCredentialStatusStates(t *testing.T) {
 			Mode:    string(config.GitAuthModeGitHubApp),
 		},
 		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 	}
-	decisions := map[initCredentialDecisionKey]initCredentialDecisionKind{}
-	decisions[initCredentialDecisionMapKey(entry, credentials.GitHubAppInstallationIDKey)] = initCredentialDecisionSkipOptional
 
 	status := initReviewerCredentialStatusFromEntry(
 		entry,
 		map[string]string{credentials.GitHubAppPrivateKeyKey: "sentinel-private-key"},
-		decisions,
-		map[string]bool{credentials.GitHubAppIDKey: true},
+		map[initCredentialDecisionKey]initCredentialDecisionKind{},
+		map[string]bool{},
 		"",
 	)
 
-	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppIDKey, initReviewerCredentialKeyExisting)
+	assertReviewerCredentialKeyAbsent(t, status, credentials.GitHubAppIDKey)
 	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyStaged)
-	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppInstallationIDKey, initReviewerCredentialKeySkippedOptional)
 	if strings.Contains(initReviewerCredentialStatusDescription(status), "sentinel-private-key") {
 		t.Fatalf("status description leaked secret value: %s", initReviewerCredentialStatusDescription(status))
 	}
@@ -15722,9 +16756,7 @@ func TestInitReviewerCredentialStatusDeferPreservesPartialExistingKeys(t *testin
 			Mode:    string(config.GitAuthModeGitHubApp),
 		},
 		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 	}
 	decisions := map[initCredentialDecisionKey]initCredentialDecisionKind{}
@@ -15734,13 +16766,12 @@ func TestInitReviewerCredentialStatusDeferPreservesPartialExistingKeys(t *testin
 		entry,
 		nil,
 		decisions,
-		map[string]bool{credentials.GitHubAppIDKey: true},
+		map[string]bool{},
 		"",
 	)
 
-	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppIDKey, initReviewerCredentialKeyExisting)
+	assertReviewerCredentialKeyAbsent(t, status, credentials.GitHubAppIDKey)
 	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyDeferred)
-	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppInstallationIDKey, initReviewerCredentialKeyOptional)
 }
 
 func TestInitReviewerCredentialStatusSelectionFiltersByAuthMode(t *testing.T) {
@@ -15756,7 +16787,6 @@ func TestInitReviewerCredentialStatusSelectionFiltersByAuthMode(t *testing.T) {
 					Mode:    string(config.GitAuthModeGitHubApp),
 				},
 				Keys: []initReviewerCredentialKeyStatus{
-					{Key: credentials.GitHubAppIDKey, Required: true, State: initReviewerCredentialKeyStaged},
 					{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyStaged},
 				},
 			},
@@ -15915,6 +16945,7 @@ func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t 
 	originalProfile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:   config.GitAuthModeGitHubApp,
 		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
 	}
 	originalCfg := config.File{Profiles: map[string]config.Profile{"work": originalProfile}}
 	originalResolved, err := credentials.ResolveSecretsProfileForProfile(originalCfg, originalProfile)
@@ -15942,7 +16973,6 @@ func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t 
 		},
 		writes: map[string]map[string]string{
 			"codereview/work-reviewer": {
-				credentials.GitHubAppIDKey:         "12345",
 				credentials.GitHubAppPrivateKeyKey: "private-key",
 			},
 		},
@@ -15964,7 +16994,7 @@ func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t 
 
 	statuses := buildInteractiveInitReviewerCredentialStatuses(&root.Options{}, deps, session)
 	status := findReviewerCredentialStatusForTest(t, statuses, "codereview/work-reviewer", string(config.GitAuthModeGitHubApp))
-	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppIDKey, initReviewerCredentialKeyMissing)
+	assertReviewerCredentialKeyAbsent(t, status, credentials.GitHubAppIDKey)
 	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyMissing)
 }
 
@@ -16083,10 +17113,10 @@ func stageDraftInlineGitHubAppReviewerCredentials(draft *initDraft, ref string, 
 	if strings.TrimSpace(draft.ReviewerCredentialStore) == "" {
 		draft.ReviewerCredentialStore = config.LocalOSCredentialStoreID
 	}
+	draft.ReviewerGitHubAppID = strings.TrimSpace(appID)
 	draft.ReviewerCredentialWriteRef = ref
 	draft.ReviewerCredentialWriteStore = testLocalOSResolvedCredentialStore()
 	draft.ReviewerCredentialWrites = map[string]string{
-		credentials.GitHubAppIDKey:         appID,
 		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}
 	draft.ReviewerCredentialSatisfied = true
@@ -16122,8 +17152,8 @@ func TestMergeReviewerCredentialDraftWritesDropsStaleKeysWhenAuthModeChanges(t *
 		if _, ok := session.writes[ref][credentials.GitTokenKey]; ok {
 			t.Fatalf("writes[%q] kept stale PAT key: %#v", ref, session.writes[ref])
 		}
-		if got := session.writes[ref][credentials.GitHubAppIDKey]; got != "12345" {
-			t.Fatalf("github_app_id = %q, want current GitHub App staged value", got)
+		if _, ok := session.writes[ref][credentials.GitHubAppIDKey]; ok {
+			t.Fatalf("writes[%q] staged non-secret app id: %#v", ref, session.writes[ref])
 		}
 		if got := session.writes[ref][credentials.GitHubAppPrivateKeyKey]; got != privateKey {
 			t.Fatalf("github_app_private_key = %q, want current GitHub App staged value", got)
@@ -16135,6 +17165,7 @@ func TestMergeReviewerCredentialDraftWritesDropsStaleKeysWhenAuthModeChanges(t *
 		profile := basicProfile("work")
 		profile.ReviewerCredentials = &config.ReviewerCredentials{
 			AuthMode:      config.GitAuthModeGitHubApp,
+			GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 			CredentialRef: ref,
 		}
 		if _, err := planInitCredentialsWithConfig(config.File{Profiles: map[string]config.Profile{"work": profile}}, nil, profile, projectInitPlannedWriteKeys(session.writes)); err != nil {
@@ -16271,28 +17302,29 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHint
 		t.Fatalf("Load config: %v", err)
 	}
 	profile := got.Profiles["work"]
-	if profile.ReviewerCredentials == nil {
-		t.Fatal("reviewer credentials = nil, want deferred GitHub App reviewer saved")
+	if profile.Reviewer.Kind != config.ProfileReviewerKindGitIdentity {
+		t.Fatalf("profile reviewer = %#v, want standalone reviewer entity to remain unattached", profile.Reviewer)
 	}
-	if profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp ||
-		profile.ReviewerCredentials.CredentialRef != "codereview/rianjs-bot" ||
-		profile.ReviewerCredentials.DisplayName != "rianjs-bot" {
-		t.Fatalf("reviewer credentials = %#v, want rianjs-bot GitHub App reviewer", profile.ReviewerCredentials)
+	entity := got.ReviewerEntities["reviewer-github-app"]
+	if entity.AuthMode != config.GitAuthModeGitHubApp ||
+		entity.CredentialRef != "codereview/rianjs-bot" ||
+		entity.DisplayName != "rianjs-bot" {
+		t.Fatalf("reviewer entity = %#v, want rianjs-bot GitHub App reviewer", entity)
+	}
+	if entity.GitHubApp == nil || entity.GitHubApp.AppID != "12345" {
+		t.Fatalf("reviewer entity GitHubApp = %#v, want app id 12345", entity.GitHubApp)
 	}
 	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
 		t.Fatalf("secret prompts = actions:%d sources:%d, want inline reviewer credential collection only", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
 	}
-	if got := store.bundles["rianjs-bot"][credentials.GitHubAppIDKey]; got != "12345" {
-		t.Fatalf("stored app id = %q, want staged inline value", got)
+	if _, ok := store.bundles["rianjs-bot"][credentials.GitHubAppIDKey]; ok {
+		t.Fatalf("stored app id unexpectedly: %#v", store.bundles["rianjs-bot"])
 	}
 	if got := store.bundles["rianjs-bot"][credentials.GitHubAppPrivateKeyKey]; got != privateKey {
 		t.Fatalf("stored private key = %q, want staged inline private key", got)
 	}
 	if _, ok := store.bundles["rianjs-bot"][credentials.GitHubAppInstallationIDKey]; ok {
 		t.Fatalf("installation id stored unexpectedly: %#v", store.bundles["rianjs-bot"])
-	}
-	if !strings.Contains(stdout.String(), "- work: ready") {
-		t.Fatalf("stdout = %q, want ready profile after inline reviewer credentials", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "reviewer deferred") || strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/rianjs-bot") {
 		t.Fatalf("stdout/stderr kept follow-up hint:\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
@@ -16363,8 +17395,8 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndD
 	if len(secretPrompter.actionPrompts) != 0 || len(secretPrompter.sourcePrompts) != 0 {
 		t.Fatalf("secret prompts = actions:%d sources:%d, want no separate reviewer credential prompt", len(secretPrompter.actionPrompts), len(secretPrompter.sourcePrompts))
 	}
-	if got := store.bundles["rianjs-bot"][credentials.GitHubAppIDKey]; got != "12345" {
-		t.Fatalf("stored app id = %q, want staged value written at commit", got)
+	if _, ok := store.bundles["rianjs-bot"][credentials.GitHubAppIDKey]; ok {
+		t.Fatalf("stored app id unexpectedly: %#v", store.bundles["rianjs-bot"])
 	}
 	if got := store.bundles["rianjs-bot"][credentials.GitHubAppPrivateKeyKey]; got != privateKey {
 		t.Fatalf("stored private key = %q, want multi-line private key", got)
@@ -16374,9 +17406,6 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndD
 	}
 	if strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/rianjs-bot") {
 		t.Fatalf("stderr = %q, want no follow-up hints after set-now reviewer flow", stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "- work: ready") {
-		t.Fatalf("stdout = %q, want ready profile after set-now reviewer flow", stdout.String())
 	}
 }
 
@@ -16399,7 +17428,6 @@ func TestInitInteractiveMenuLabelDerivedReviewerRefDoesNotOverwriteUnconfiguredE
 	store := newFakeInitStore(map[string]map[string]string{
 		"work": {credentials.GitTokenKey: "existing-token"},
 		"rianjs-bot-reviewer": {
-			credentials.GitHubAppIDKey:         "existing-app-id",
 			credentials.GitHubAppPrivateKeyKey: "existing-private-key",
 		},
 	})
@@ -16453,9 +17481,6 @@ func TestInitInteractiveMenuLabelDerivedReviewerRefDoesNotOverwriteUnconfiguredE
 	if err == nil || !strings.Contains(err.Error(), credstore.ErrExists.Error()) {
 		t.Fatalf("runInitWithDeps error = %v, want no-overwrite conflict", err)
 	}
-	if got := store.bundles["rianjs-bot-reviewer"][credentials.GitHubAppIDKey]; got != "existing-app-id" {
-		t.Fatalf("stored github_app_id = %q, want existing value preserved after conflict", got)
-	}
 	if got := store.bundles["rianjs-bot-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != "existing-private-key" {
 		t.Fatalf("stored private key = %q, want existing value preserved after conflict", got)
 	}
@@ -16483,7 +17508,6 @@ func TestInitInteractiveMenuManualReviewerRefDoesNotOverwriteUnconfiguredExistin
 	store := newFakeInitStore(map[string]map[string]string{
 		"work": {credentials.GitTokenKey: "existing-token"},
 		"manual-reviewer": {
-			credentials.GitHubAppIDKey:         "existing-app-id",
 			credentials.GitHubAppPrivateKeyKey: "existing-private-key",
 		},
 	})
@@ -16536,9 +17560,6 @@ func TestInitInteractiveMenuManualReviewerRefDoesNotOverwriteUnconfiguredExistin
 	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
 	if err == nil || !strings.Contains(err.Error(), credstore.ErrExists.Error()) {
 		t.Fatalf("runInitWithDeps error = %v, want no-overwrite conflict", err)
-	}
-	if got := store.bundles["manual-reviewer"][credentials.GitHubAppIDKey]; got != "existing-app-id" {
-		t.Fatalf("stored github_app_id = %q, want existing value preserved after conflict", got)
 	}
 	if got := store.bundles["manual-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != "existing-private-key" {
 		t.Fatalf("stored private key = %q, want existing value preserved after conflict", got)
@@ -16693,7 +17714,8 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 				draft.ReviewerCredentialRef = "codereview/rianjs-bot"
 				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "12345", testReviewerGitHubAppPrivateKey())
 			case 2:
-				draft.ReviewerEnabled = false
+				draft.Action = initDraftActionDeleteReviewerEntity
+				draft.ActionTarget = "reviewer-github-app"
 			default:
 				return initDraft{}, errInitNavigateBack
 			}
@@ -16721,8 +17743,8 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if got.Profiles["work"].ReviewerCredentials != nil {
-		t.Fatalf("reviewer credentials = %#v, want cleared reviewer", got.Profiles["work"].ReviewerCredentials)
+	if _, ok := got.ReviewerEntities["reviewer-github-app"]; ok {
+		t.Fatalf("reviewer_entities = %#v, want deleted standalone reviewer entity absent", got.ReviewerEntities)
 	}
 }
 
@@ -16762,11 +17784,13 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			switch reviewerPrompterCalls {
 			case 1:
+				draft.ActionTarget = "reviewer-github-app"
 				draft.ReviewerCredentialRef = "codereview/old-reviewer"
-				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "old-app-id", testReviewerGitHubAppPrivateKey())
+				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "111", testReviewerGitHubAppPrivateKey())
 			case 2:
+				draft.ActionTarget = "reviewer-github-app"
 				draft.ReviewerCredentialRef = "codereview/new-reviewer"
-				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "new-app-id", testReviewerGitHubAppPrivateKey())
+				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "222", testReviewerGitHubAppPrivateKey())
 			default:
 				return initDraft{}, errInitNavigateBack
 			}
@@ -16797,15 +17821,19 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 	if _, ok := store.bundles["old-reviewer"]; ok {
 		t.Fatalf("old reviewer bundle = %#v, want stale inline write filtered", store.bundles["old-reviewer"])
 	}
-	if got := store.bundles["new-reviewer"][credentials.GitHubAppIDKey]; got != "new-app-id" {
-		t.Fatalf("new reviewer app id = %q, want active inline write", got)
+	if _, ok := store.bundles["new-reviewer"][credentials.GitHubAppIDKey]; ok {
+		t.Fatalf("new reviewer stored app id unexpectedly: %#v", store.bundles["new-reviewer"])
 	}
 	got, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if got.Profiles["work"].ReviewerCredentials == nil || got.Profiles["work"].ReviewerCredentials.CredentialRef != "codereview/new-reviewer" {
-		t.Fatalf("reviewer credentials = %#v, want new reviewer ref", got.Profiles["work"].ReviewerCredentials)
+	entity := got.ReviewerEntities["reviewer-github-app"]
+	if entity.CredentialRef != "codereview/new-reviewer" {
+		t.Fatalf("reviewer entity = %#v, want new reviewer ref", entity)
+	}
+	if entity.GitHubApp == nil || entity.GitHubApp.AppID != "222" {
+		t.Fatalf("reviewer entity GitHubApp = %#v, want new app id", entity.GitHubApp)
 	}
 }
 
@@ -16841,7 +17869,7 @@ func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
-			stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "sentinel-app-id", "sentinel-private-key")
+			stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "333", "sentinel-private-key")
 			return draft, nil
 		}),
 		secretPrompter: &fakeInitSecretPrompter{},
@@ -16976,16 +18004,15 @@ func TestInitInteractiveMenuReviewerCredentialStatusShowsStagedOnReentry(t *test
 				draft.ReviewerEnabled = true
 				draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 				draft.ReviewerCredentialRef = "codereview/rianjs-bot"
-				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "sentinel-app-id", "sentinel-private-key")
+				stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "444", "sentinel-private-key")
 				return draft, nil
 			case 2:
 				if len(prompt.Context.ReviewerCredentialStatuses) == 0 {
 					t.Fatalf("second prompt reviewer statuses empty; existing profile name = %q; staged profile = %#v", prompt.Context.ExistingProfileName, prompt.Context.ExistingConfig.Profiles["work"].ReviewerCredentials)
 				}
 				status := findReviewerCredentialStatusForTest(t, prompt.Context.ReviewerCredentialStatuses, "codereview/rianjs-bot", string(config.GitAuthModeGitHubApp))
-				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppIDKey, initReviewerCredentialKeyStaged)
+				assertReviewerCredentialKeyAbsent(t, status, credentials.GitHubAppIDKey)
 				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyStaged)
-				assertReviewerCredentialKeyState(t, status, credentials.GitHubAppInstallationIDKey, initReviewerCredentialKeyOptional)
 				description := initReviewerCredentialStatusDescription(status)
 				if strings.Contains(description, "sentinel") {
 					t.Fatalf("status leaked secret value: %s", description)
@@ -17048,6 +18075,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 		},
 		ReviewerCredentials: &config.ReviewerCredentials{
 			AuthMode:      config.GitAuthModeGitHubApp,
+			GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 			CredentialRef: "codereview/custom-work-reviewer",
 		},
 		LLM: config.LLMConfig{
@@ -17093,7 +18121,6 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 					credentials.GitTokenKey: "existing-token",
 				},
 				"custom-work-reviewer": {
-					credentials.GitHubAppIDKey:         "12345",
 					credentials.GitHubAppPrivateKeyKey: "private-key",
 				},
 			}), nil
@@ -17131,6 +18158,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModeGitHubApp,
+					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 					CredentialRef: "codereview/work-reviewer",
 					DisplayName:   "Old label",
 				},
@@ -17155,7 +18183,6 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 			credentials.GitTokenKey: "existing-token",
 		},
 		"work-reviewer": {
-			credentials.GitHubAppIDKey:         "12345",
 			credentials.GitHubAppPrivateKeyKey: "private-key",
 		},
 	})
@@ -17179,6 +18206,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 				return initDraft{}, errInitNavigateBack
 			}
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
+			draft.ActionTarget = "work-reviewer"
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerDisplayName = "OC Collective bot"
@@ -17211,7 +18239,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 	}
 }
 
-func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRefWhenDraftClearsCustomRef(t *testing.T) {
+func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesExistingCredentialRefWhenDraftClearsRef(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -17223,6 +18251,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModeGitHubApp,
+					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 					CredentialRef: "codereview/custom-work-reviewer",
 				},
 				LLM: config.LLMConfig{
@@ -17258,6 +18287,7 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 				return initDraft{}, errInitNavigateBack
 			}
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
+			draft.ActionTarget = "work-reviewer"
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = ""
@@ -17276,11 +18306,9 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 					credentials.GitTokenKey: "existing-token",
 				},
 				"work-reviewer": {
-					credentials.GitHubAppIDKey:         "12345",
 					credentials.GitHubAppPrivateKeyKey: "private-key",
 				},
 				"custom-work-reviewer": {
-					credentials.GitHubAppIDKey:         "legacy-id",
 					credentials.GitHubAppPrivateKeyKey: "legacy-private-key",
 				},
 			}), nil
@@ -17302,10 +18330,10 @@ func TestInitInteractiveMenuFocusedReviewerEntitySaveRestoresDefaultCredentialRe
 	}
 	profile := got.Profiles["work"]
 	if profile.ReviewerCredentials == nil {
-		t.Fatal("reviewer credentials = nil, want default reviewer ref restored after save")
+		t.Fatal("reviewer credentials = nil, want existing reviewer ref preserved after save")
 	}
-	if profile.ReviewerCredentials.CredentialRef != "codereview/work-reviewer" {
-		t.Fatalf("reviewer credential ref = %q, want generated default reviewer ref after clearing custom ref", profile.ReviewerCredentials.CredentialRef)
+	if profile.ReviewerCredentials.CredentialRef != "codereview/custom-work-reviewer" {
+		t.Fatalf("reviewer credential ref = %q, want existing reviewer ref preserved after clearing draft ref", profile.ReviewerCredentials.CredentialRef)
 	}
 }
 
@@ -17430,6 +18458,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *test
 				profile := basicProfile("work")
 				profile.ReviewerCredentials = &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModeGitHubApp,
+					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 					CredentialRef: "codereview/shared-reviewer",
 				}
 				return profile
@@ -17456,20 +18485,20 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *test
 			reviewerCalls++
 			switch reviewerCalls {
 			case 1:
-				if _, ok := prompt.Context.ReviewerEntities["reviewer-github-app"]; !ok {
-					t.Fatalf("ReviewerEntities = %#v, want configured reviewer-github-app before delete", prompt.Context.ReviewerEntities)
+				if _, ok := prompt.Context.ReviewerEntities["work-reviewer"]; !ok {
+					t.Fatalf("ReviewerEntities = %#v, want configured work-reviewer before delete", prompt.Context.ReviewerEntities)
 				}
 				return initDraft{
 					Action:       initDraftActionDeleteReviewerEntity,
-					ActionTarget: "reviewer-github-app",
+					ActionTarget: "work-reviewer",
 				}, nil
 			case 2:
-				if _, ok := prompt.Context.PendingReviewerEntityDeletes["reviewer-github-app"]; !ok {
-					t.Fatalf("PendingReviewerEntityDeletes = %#v, want reviewer-github-app pending delete before undo", prompt.Context.PendingReviewerEntityDeletes)
+				if _, ok := prompt.Context.PendingReviewerEntityDeletes["work-reviewer"]; !ok {
+					t.Fatalf("PendingReviewerEntityDeletes = %#v, want work-reviewer pending delete before undo", prompt.Context.PendingReviewerEntityDeletes)
 				}
 				return initDraft{
 					Action:       initDraftActionUndoDeleteReviewerEntity,
-					ActionTarget: "reviewer-github-app",
+					ActionTarget: "work-reviewer",
 				}, nil
 			case 3:
 				return initDraft{}, errInitNavigateBack
@@ -17651,8 +18680,8 @@ func TestInitInteractiveMenuCanCommitLLMRuntimeBeforeReviewProfile(t *testing.T)
 	if len(menu.prompts) != 2 {
 		t.Fatalf("menu prompts = %#v, want main menu before category entry and after stage", menu.prompts)
 	}
-	if !menu.prompts[0].CanConfigureLLM || menu.prompts[0].CanConfigureReviewer || menu.prompts[0].CanSave {
-		t.Fatalf("initial prompt = %#v, want LLM enabled and reviewer/save disabled", menu.prompts[0])
+	if !menu.prompts[0].CanConfigureLLM || !menu.prompts[0].CanConfigureReviewer || menu.prompts[0].CanSave {
+		t.Fatalf("initial prompt = %#v, want LLM/reviewer enabled and save disabled", menu.prompts[0])
 	}
 	if !menu.prompts[1].CanSave {
 		t.Fatalf("post-stage menu prompt = %#v, want staged runtime edit to be saveable", menu.prompts[1])
@@ -18044,11 +19073,13 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/shared-reviewer",
 	}
 	home := basicProfile("home")
 	home.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/shared-reviewer",
 	}
 	saveCredentialTestConfig(t, path, config.File{
@@ -18111,16 +19142,16 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 			reviewerEdits++
 			switch reviewerEdits {
 			case 1:
-				if _, ok := prompt.Context.ReviewerEntities["reviewer-github-app"]; !ok {
-					t.Fatalf("ReviewerEntities = %#v, want configured reviewer-github-app inventory entry", prompt.Context.ReviewerEntities)
+				if _, ok := prompt.Context.ReviewerEntities["home-reviewer"]; !ok {
+					t.Fatalf("ReviewerEntities = %#v, want configured home-reviewer inventory entry", prompt.Context.ReviewerEntities)
 				}
 				return initDraft{
 					Action:       initDraftActionDeleteReviewerEntity,
-					ActionTarget: "reviewer-github-app",
+					ActionTarget: "home-reviewer",
 				}, nil
 			case 2:
-				if _, ok := prompt.Context.PendingReviewerEntityDeletes["reviewer-github-app"]; !ok {
-					t.Fatalf("PendingReviewerEntityDeletes = %#v, want reviewer-github-app pending delete before leaving category", prompt.Context.PendingReviewerEntityDeletes)
+				if _, ok := prompt.Context.PendingReviewerEntityDeletes["home-reviewer"]; !ok {
+					t.Fatalf("PendingReviewerEntityDeletes = %#v, want home-reviewer pending delete before leaving category", prompt.Context.PendingReviewerEntityDeletes)
 				}
 				return initDraft{}, errInitNavigateBack
 			default:
@@ -18769,10 +19800,14 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
+	resolved, err := credentials.ResolveCredentialStore(config.File{}, config.LocalOSCredentialStoreID)
+	if err != nil {
+		t.Fatalf("ResolveCredentialStore: %v", err)
+	}
 	deps := initDeps{
 		menuPrompter: &fakeInitMenuPrompter{
 			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
+				initMenuActionRepositoryAccess,
 				initMenuActionSave,
 			},
 		},
@@ -18780,19 +19815,19 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 			t.Fatal("finalize prompt should not run after keyring open failure")
 			return "", nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(initRepositoryAccessPrompt) (initDraft, error) {
 			return initDraft{
-				ProfileName: "default",
-				GitHost:     "github.com",
-				GitAuth:     string(config.GitAuthModePAT),
-				LLMProvider: string(config.LLMProviderAnthropic),
-				LLMAuth:     string(config.LLMAuthSubscription),
-				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+				RepositoryAccessName:    "github-rianjs",
+				GitHost:                 "github.com",
+				GitAuth:                 string(config.GitAuthModePAT),
+				GitCredentialStore:      config.LocalOSCredentialStoreID,
+				GitCredentialRef:        "codereview/github-rianjs",
+				GitCredentialWriteRef:   "codereview/github-rianjs",
+				GitCredentialWriteStore: resolved,
+				GitCredentialWrites:     map[string]string{credentials.GitTokenKey: "github-token"},
+				GitCredentialSatisfied:  true,
 			}, nil
 		}),
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
-		},
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return nil, errors.New("open failed")
 		},
@@ -18806,7 +19841,7 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 		},
 	}
 
-	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
+	err = runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
 	if err == nil || !strings.Contains(err.Error(), "open failed") {
 		t.Fatalf("error = %v, want keyring open failure", err)
 	}
@@ -18869,8 +19904,8 @@ func TestInitInteractiveMenuCanCommitSecretsStorageBeforeReviewProfile(t *testin
 	if menu.prompts[0].CanSave {
 		t.Fatalf("initial prompt = %#v, want commit disabled before staged changes", menu.prompts[0])
 	}
-	if !menu.prompts[1].CanSave || !menu.prompts[1].CanConfigureLLM || menu.prompts[1].CanConfigureReviewer {
-		t.Fatalf("post-edit prompt = %#v, want commit and LLM runtime configuration enabled without workspace", menu.prompts[1])
+	if !menu.prompts[1].CanSave || !menu.prompts[1].CanConfigureLLM || !menu.prompts[1].CanConfigureReviewer {
+		t.Fatalf("post-edit prompt = %#v, want commit, LLM runtime configuration, and reviewer entity configuration enabled without workspace", menu.prompts[1])
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -18999,7 +20034,7 @@ func TestApplyInteractiveInitSessionPlanRejectsInvalidConfigBeforeKeyringWrite(t
 			return nil
 		},
 	}, plan)
-	if err == nil || !strings.Contains(err.Error(), "profiles.broken.git.host is required") {
+	if err == nil || !strings.Contains(err.Error(), "profiles.broken.repository_access is required") {
 		t.Fatalf("error = %v, want config validation failure", err)
 	}
 	if storeOpened {
@@ -19255,6 +20290,7 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 	profile.SecretsProfile = "work-file"
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg := config.File{
@@ -19277,7 +20313,6 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 		profileNames: []string{"work"},
 		writes: map[string]map[string]string{
 			"codereview/work-reviewer": {
-				credentials.GitHubAppIDKey:         "12345",
 				credentials.GitHubAppPrivateKeyKey: "private-key",
 			},
 		},
@@ -19289,9 +20324,7 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 			},
 			SecretsProfile: resolved,
 			KeySpecs: []credentials.KeySpec{
-				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateWrite,
 		}},
@@ -19313,8 +20346,8 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 	if err != nil {
 		t.Fatalf("applyInteractiveInitSessionPlan: %v", err)
 	}
-	if got := workStore.bundles["work-reviewer"][credentials.GitHubAppIDKey]; got != "12345" {
-		t.Fatalf("stored reviewer app id = %q, want named-store value", got)
+	if _, ok := workStore.bundles["work-reviewer"][credentials.GitHubAppIDKey]; ok {
+		t.Fatalf("stored reviewer app id unexpectedly: %#v", workStore.bundles["work-reviewer"])
 	}
 	if got := workStore.bundles["work-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != "private-key" {
 		t.Fatalf("stored reviewer private key = %q, want named-store value", got)
@@ -20416,6 +21449,7 @@ func TestInitInteractiveCanKeepExistingSecretsAfterInspectingTargetRef(t *testin
 
 func TestInitInteractiveCollectsGitHubAppBundle(t *testing.T) {
 	store := newFakeInitStore(nil)
+	var savedCfg config.File
 	opts := &root.Options{
 		Stdin:      strings.NewReader(""),
 		Stdout:     &bytes.Buffer{},
@@ -20428,6 +21462,7 @@ func TestInitInteractiveCollectsGitHubAppBundle(t *testing.T) {
 				ProfileName: "default",
 				GitHost:     "github.com",
 				GitAuth:     string(config.GitAuthModeGitHubApp),
+				GitHubAppID: "12345",
 				LLMProvider: string(config.LLMProviderAnthropic),
 				LLMAuth:     string(config.LLMAuthSubscription),
 				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
@@ -20437,19 +21472,20 @@ func TestInitInteractiveCollectsGitHubAppBundle(t *testing.T) {
 			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
 			sources: []initSecretSource{
 				initSecretSourcePaste,
-				initSecretSourceClipboard,
-				initSecretSourceSkip,
 			},
-			pastes: []string{"12345"},
+			pastes: []string{"private-key"},
 		},
 		clipboardSupported: func() bool { return true },
-		clipboardRead:      func() (string, error) { return "private-key", nil },
+		clipboardRead:      func() (string, error) { return "", nil },
 		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
-		saveConfig: func(string, config.File) error { return nil },
-		openStore:  func(string, bool, config.File) (initStore, error) { return store, nil },
+		saveConfig: func(_ string, cfg config.File) error {
+			savedCfg = cloneInitConfigFile(cfg)
+			return nil
+		},
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
 	}
 
 	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
@@ -20457,11 +21493,14 @@ func TestInitInteractiveCollectsGitHubAppBundle(t *testing.T) {
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
 	bundle := store.bundles["default"]
-	if bundle[credentials.GitHubAppIDKey] != "12345" {
-		t.Fatalf("github_app_id = %q, want 12345", bundle[credentials.GitHubAppIDKey])
+	if _, ok := bundle[credentials.GitHubAppIDKey]; ok {
+		t.Fatalf("github_app_id stored unexpectedly: %#v", bundle)
 	}
 	if bundle[credentials.GitHubAppPrivateKeyKey] != "private-key" {
 		t.Fatalf("github_app_private_key = %q, want private-key", bundle[credentials.GitHubAppPrivateKeyKey])
+	}
+	if savedCfg.Profiles["default"].Git.GitHubApp == nil || savedCfg.Profiles["default"].Git.GitHubApp.AppID != "12345" {
+		t.Fatalf("git github_app config = %#v, want app id 12345", savedCfg.Profiles["default"].Git.GitHubApp)
 	}
 	if _, ok := bundle[credentials.GitHubAppInstallationIDKey]; ok {
 		t.Fatalf("github_app_installation_id present, want skipped optional key")
@@ -20625,7 +21664,6 @@ func TestInitRejectsInvalidSecretAndProfileInputs(t *testing.T) {
 	}{
 		{name: "two stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--llm-api-key-stdin"}},
 		{name: "git and reviewer stdin secrets", args: []string{"init", "--non-interactive", "--git-token-stdin", "--reviewer-token-stdin"}},
-		{name: "invalid profile segment", args: []string{"--profile", "bad.profile", "init", "--non-interactive"}},
 		{name: "reviewer ref matches git ref", args: []string{"init", "--non-interactive", "--reviewer-credential-ref", "codereview/default"}},
 		{name: "unsupported git auth", args: []string{"init", "--non-interactive", "--git-auth-mode", string(config.GitAuthModeOAuthDevice)}},
 		{name: "git token ingress under github app", args: []string{"init", "--non-interactive", "--git-auth-mode", string(config.GitAuthModeGitHubApp), "--git-token-from-env", "CR_GIT_TOKEN"}},
@@ -20698,7 +21736,6 @@ func TestWriteBundlesLeavesStaleReviewerKeysForPostSaveCleanup(t *testing.T) {
 	}
 	written, err := writeBundles(store, map[string]map[string]string{
 		"codereview/work-reviewer": {
-			credentials.GitHubAppIDKey:         "12345",
 			credentials.GitHubAppPrivateKeyKey: "private-key",
 		},
 	}, false, nil)
@@ -20711,8 +21748,8 @@ func TestWriteBundlesLeavesStaleReviewerKeysForPostSaveCleanup(t *testing.T) {
 	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || !ok {
 		t.Fatalf("stale git_token exists = %t, err = %v; want retained until config save succeeds", ok, err)
 	}
-	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
-		t.Fatalf("github_app_id exists = %t, err = %v; want written", ok, err)
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppPrivateKeyKey); err != nil || !ok {
+		t.Fatalf("github_app_private_key exists = %t, err = %v; want written", ok, err)
 	}
 }
 
@@ -20730,7 +21767,6 @@ func TestWriteBundlesKeepsStaleReviewerKeysRequiredByAnotherActiveMode(t *testin
 	}
 	if _, err := writeBundles(store, map[string]map[string]string{
 		"codereview/shared-reviewer": {
-			credentials.GitHubAppIDKey:         "12345",
 			credentials.GitHubAppPrivateKeyKey: "private-key",
 		},
 	}, false, nil); err != nil {
@@ -20753,6 +21789,7 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work-reviewer",
 		DisplayName:   "work bot",
 	}
@@ -20785,9 +21822,7 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 			},
 			SecretsProfile: resolved,
 			KeySpecs: []credentials.KeySpec{
-				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateKeepExisting,
 		}},
@@ -20809,14 +21844,14 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || ok {
 		t.Fatalf("stale git_token exists = %t, err = %v; want deleted", ok, err)
 	}
-	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
-		t.Fatalf("github_app_id exists = %t, err = %v; want retained", ok, err)
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || ok {
+		t.Fatalf("github_app_id exists = %t, err = %v; want deleted as stale legacy key", ok, err)
 	}
 	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppPrivateKeyKey); err != nil || !ok {
 		t.Fatalf("github_app_private_key exists = %t, err = %v; want retained", ok, err)
 	}
-	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppInstallationIDKey); err != nil || !ok {
-		t.Fatalf("github_app_installation_id exists = %t, err = %v; want retained", ok, err)
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppInstallationIDKey); err != nil || ok {
+		t.Fatalf("github_app_installation_id exists = %t, err = %v; want deleted as stale legacy key", ok, err)
 	}
 }
 
@@ -20831,6 +21866,7 @@ func TestApplyInteractiveInitSessionPlanSaveFailureDoesNotDeleteStaleReviewerKey
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg := config.File{Profiles: map[string]config.Profile{"work": profile}}
@@ -20855,9 +21891,7 @@ func TestApplyInteractiveInitSessionPlanSaveFailureDoesNotDeleteStaleReviewerKey
 			},
 			SecretsProfile: resolved,
 			KeySpecs: []credentials.KeySpec{
-				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateKeepExisting,
 		}},
@@ -20882,6 +21916,7 @@ func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitc
 	appProfile := basicProfile("app")
 	appProfile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/shared-reviewer",
 	}
 	patProfile := basicProfile("pat")
@@ -20905,7 +21940,6 @@ func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitc
 		profileNames: []string{"app"},
 		writes: map[string]map[string]string{
 			"codereview/shared-reviewer": {
-				credentials.GitHubAppIDKey:         "12345",
 				credentials.GitHubAppPrivateKeyKey: "private-key",
 			},
 		},
@@ -20922,9 +21956,7 @@ func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitc
 			},
 			SecretsProfile: resolved,
 			KeySpecs: []credentials.KeySpec{
-				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateWrite,
 		}},
@@ -20940,8 +21972,8 @@ func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitc
 	if ok, err := store.Exists("shared-reviewer", credentials.GitTokenKey); err != nil || !ok {
 		t.Fatalf("git_token exists = %t, err = %v; want retained for untouched PAT profile", ok, err)
 	}
-	if ok, err := store.Exists("shared-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
-		t.Fatalf("github_app_id exists = %t, err = %v; want staged app key written", ok, err)
+	if ok, err := store.Exists("shared-reviewer", credentials.GitHubAppIDKey); err != nil || ok {
+		t.Fatalf("github_app_id exists = %t, err = %v; want no staged app key", ok, err)
 	}
 }
 
@@ -20956,6 +21988,7 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/work-reviewer",
 		DisplayName:   "work bot",
 	}
@@ -20982,9 +22015,7 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 			},
 			SecretsProfile: resolved,
 			KeySpecs: []credentials.KeySpec{
-				{Key: credentials.GitHubAppIDKey, Required: true},
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-				{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 			},
 			State: initCredentialPlanStateKeepExisting,
 		}},
@@ -21002,8 +22033,8 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || ok {
 		t.Fatalf("stale git_token exists = %t, err = %v; want deleted", ok, err)
 	}
-	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
-		t.Fatalf("github_app_id exists = %t, err = %v; want retained", ok, err)
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || ok {
+		t.Fatalf("github_app_id exists = %t, err = %v; want deleted as stale legacy key", ok, err)
 	}
 }
 
@@ -21027,15 +22058,14 @@ func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t
 			Mode:    string(config.GitAuthModePAT),
 		},
 		KeySpecs: []credentials.KeySpec{
-			{Key: credentials.GitHubAppIDKey, Required: true},
 			{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
-			{Key: credentials.GitHubAppInstallationIDKey, Required: false},
 		},
 		State: initCredentialPlanStateKeepExisting,
 	}
 	appProfile := basicProfile("app")
 	appProfile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
 		CredentialRef: "codereview/shared-reviewer",
 	}
 	patProfile := basicProfile("pat")
@@ -21065,11 +22095,14 @@ func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t
 	if err != nil {
 		t.Fatalf("deleteStaleReviewerCredentialKeysForRefs: %v", err)
 	}
-	if len(cleanedRefs) != 0 {
-		t.Fatalf("cleaned refs = %#v, want none because both modes are active", cleanedRefs)
+	if !reflect.DeepEqual(cleanedRefs, []string{"codereview/shared-reviewer"}) {
+		t.Fatalf("cleaned refs = %#v, want shared reviewer stale legacy app id deleted", cleanedRefs)
 	}
 	if ok, err := store.Exists("shared-reviewer", credentials.GitTokenKey); err != nil || !ok {
 		t.Fatalf("git_token exists = %t, err = %v; want retained for active PAT entry", ok, err)
+	}
+	if ok, err := store.Exists("shared-reviewer", credentials.GitHubAppIDKey); err != nil || ok {
+		t.Fatalf("github_app_id exists = %t, err = %v; want deleted as stale legacy key", ok, err)
 	}
 }
 
@@ -21240,6 +22273,12 @@ func (f initMenuPrompterFunc) ChooseAction(prompt initMenuPrompt) (initMenuActio
 type initLLMRuntimePrompterFunc func(initLLMRuntimePrompt) (initDraft, error)
 
 func (f initLLMRuntimePrompterFunc) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
+	return f(prompt)
+}
+
+type initRepositoryAccessPrompterFunc func(initRepositoryAccessPrompt) (initDraft, error)
+
+func (f initRepositoryAccessPrompterFunc) EditRepositoryAccess(prompt initRepositoryAccessPrompt) (initDraft, error) {
 	return f(prompt)
 }
 
@@ -21489,13 +22528,13 @@ func basicProfile(profile string) config.Profile {
 	}
 }
 
-func normalizeTestProfile(profile config.Profile) config.Profile {
+func normalizeTestProfileNamed(name string, profile config.Profile) config.Profile {
 	cfg := config.Normalize(config.File{
 		Profiles: map[string]config.Profile{
-			"test": profile,
+			name: profile,
 		},
 	})
-	return cfg.Profiles["test"]
+	return cfg.Profiles[name]
 }
 
 func apiKeyProfile(profile string, provider config.LLMProvider) config.Profile {

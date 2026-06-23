@@ -62,10 +62,11 @@ func TestNewFromGitConfigBuildsGitHubAppClientAndRefreshesToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, credential, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", privateKeyPEM, "42"), Options{
-		BaseURL:    server.URL,
-		GraphQLURL: server.URL + "/graphql",
-		Now:        func() time.Time { return now },
+	client, credential, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", privateKeyPEM), Options{
+		BaseURL:        server.URL,
+		GraphQLURL:     server.URL + "/graphql",
+		Now:            func() time.Time { return now },
+		InstallationID: "42",
 	})
 	if err != nil {
 		t.Fatalf("NewFromGitConfig: %v", err)
@@ -122,7 +123,7 @@ func TestNewFromGitConfigUsesRepositoryInstallationLookup(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, credential, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "app-client-id", privateKey, ""), Options{
+	_, credential, err := NewFromGitConfig(githubAppGitConfigWithAppID("codereview/app", "app-client-id"), githubAppStore(t, "app", "app-client-id", privateKey), Options{
 		BaseURL:    server.URL + "/api/v3",
 		GraphQLURL: server.URL + "/api/graphql",
 		InstallationLookup: &InstallationLookup{
@@ -135,6 +136,60 @@ func TestNewFromGitConfigUsesRepositoryInstallationLookup(t *testing.T) {
 	}
 	if credential.Token != repoInstallationToken || credential.Login != "cr-reviewer[bot]" {
 		t.Fatalf("credential = %#v, want repo lookup app token", credential)
+	}
+}
+
+func TestNewFromGitConfigExplainsMissingRepositoryInstallation(t *testing.T) {
+	privateKey := testPrivateKeyPEM(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.EscapedPath() {
+		case "/repos/open-cli/codereview-cli/installation":
+			assertJWTAuth(t, r, "app-client-id")
+			http.NotFound(w, r)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	_, _, err := NewFromGitConfig(githubAppGitConfigWithAppID("codereview/app", "app-client-id"), githubAppStore(t, "app", "app-client-id", privateKey), Options{
+		BaseURL:    server.URL,
+		GraphQLURL: server.URL + "/graphql",
+		InstallationLookup: &InstallationLookup{
+			Owner: "open-cli",
+			Repo:  "codereview-cli",
+		},
+	})
+	if !errors.Is(err, gitprovider.ErrNotFound) {
+		t.Fatalf("NewFromGitConfig error = %v, want ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "github app is not installed for open-cli/codereview-cli or cannot access that repository") {
+		t.Fatalf("NewFromGitConfig error = %v, want repository installation detail", err)
+	}
+}
+
+func TestNewFromGitConfigExplainsMissingPinnedInstallation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.EscapedPath() {
+		case "/app/installations/42":
+			assertJWTAuth(t, r, "12345")
+			http.NotFound(w, r)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	_, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t)), Options{
+		BaseURL:        server.URL,
+		GraphQLURL:     server.URL + "/graphql",
+		InstallationID: "42",
+	})
+	if !errors.Is(err, gitprovider.ErrNotFound) {
+		t.Fatalf("NewFromGitConfig error = %v, want ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "github app installation 42 was not found for this app") {
+		t.Fatalf("NewFromGitConfig error = %v, want pinned installation detail", err)
 	}
 }
 
@@ -174,9 +229,10 @@ func TestGitHubAppClientUsesInstallationTokenForRESTWritesAndGraphQL(t *testing.
 	}))
 	defer server.Close()
 
-	client, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t), "42"), Options{
-		BaseURL:    server.URL,
-		GraphQLURL: server.URL + "/graphql",
+	client, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t)), Options{
+		BaseURL:        server.URL,
+		GraphQLURL:     server.URL + "/graphql",
+		InstallationID: "42",
 	})
 	if err != nil {
 		t.Fatalf("NewFromGitConfig: %v", err)
@@ -194,9 +250,12 @@ func TestGitHubAppClientUsesInstallationTokenForRESTWritesAndGraphQL(t *testing.
 }
 
 func TestNewFromGitConfigRequiresInstallationIDWithoutLookup(t *testing.T) {
-	_, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t), ""), Options{})
+	_, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t)), Options{})
 	if !errors.Is(err, gitprovider.ErrAuth) {
 		t.Fatalf("NewFromGitConfig error = %v, want ErrAuth", err)
+	}
+	if !strings.Contains(err.Error(), "installation discovery requires repository context") {
+		t.Fatalf("NewFromGitConfig error = %v, want repository-context detail", err)
 	}
 	if strings.Contains(err.Error(), "PRIVATE KEY") {
 		t.Fatalf("error leaked private key material: %v", err)
@@ -222,9 +281,10 @@ func TestNewFromGitConfigRequiresGitHubAppIdentity(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t), "42"), Options{
-		BaseURL:    server.URL,
-		GraphQLURL: server.URL + "/graphql",
+	_, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t)), Options{
+		BaseURL:        server.URL,
+		GraphQLURL:     server.URL + "/graphql",
+		InstallationID: "42",
 	})
 	if !errors.Is(err, gitprovider.ErrAuth) {
 		t.Fatalf("NewFromGitConfig error = %v, want ErrAuth", err)
@@ -235,20 +295,21 @@ func TestNewFromGitConfigRequiresGitHubAppIdentity(t *testing.T) {
 }
 
 func githubAppGitConfig(ref string) config.GitConfig {
+	return githubAppGitConfigWithAppID(ref, "12345")
+}
+
+func githubAppGitConfigWithAppID(ref string, appID string) config.GitConfig {
 	return config.GitConfig{
 		Host:          "github.com",
 		AuthMode:      config.GitAuthModeGitHubApp,
+		GitHubApp:     &config.GitHubAppConfig{AppID: appID},
 		CredentialRef: ref,
 	}
 }
 
-func githubAppStore(_ *testing.T, profile, appID, privateKey, installationID string) tokenStore {
+func githubAppStore(_ *testing.T, profile, _ string, privateKey string) tokenStore {
 	values := map[string]string{
-		credentials.GitHubAppIDKey:         appID,
 		credentials.GitHubAppPrivateKeyKey: privateKey,
-	}
-	if installationID != "" {
-		values[credentials.GitHubAppInstallationIDKey] = installationID
 	}
 	return tokenStore{profile: values}
 }

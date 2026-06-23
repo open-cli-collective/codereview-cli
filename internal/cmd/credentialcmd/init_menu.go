@@ -82,6 +82,11 @@ func initMenuItems(prompt initMenuPrompt) []initMenuItem {
 			Description: "Credential stores for tokens and keys",
 		},
 		{
+			Action:      initMenuActionRepositoryAccess,
+			Title:       "Configure repository access",
+			Description: initMenuConfiguredDescription(prompt.RepositoryAccessCount, "repository access", "repository access entries", "Git hosts and user credentials"),
+		},
+		{
 			Action:      initMenuActionLLMRuntimes,
 			Title:       "Configure LLM runtimes",
 			Description: initMenuConfiguredDescription(prompt.LLMRuntimeCount, "runtime", "runtimes", "Model providers and runtime credentials"),
@@ -137,15 +142,15 @@ func initMenuCountDescription(count int, singular, plural string) string {
 
 func initMenuDisabledReason(prompt initMenuPrompt, action initMenuAction) string {
 	switch action {
-	case initMenuActionReviewerEntities:
-		if !prompt.CanConfigureReviewer {
-			return "configure a review profile before editing reviewer entities"
-		}
 	case initMenuActionSave:
 		if !prompt.CanSave {
 			return "stage changes before committing"
 		}
-	case initMenuActionSecretsManagement, initMenuActionLLMRuntimes, initMenuActionReviewProfiles, initMenuActionGlobalSettings, initMenuActionExit:
+	case initMenuActionReviewProfiles:
+		if prompt.RepositoryAccessCount == 0 {
+			return "configure repository access before creating review profiles"
+		}
+	case initMenuActionSecretsManagement, initMenuActionRepositoryAccess, initMenuActionLLMRuntimes, initMenuActionReviewerEntities, initMenuActionGlobalSettings, initMenuActionExit:
 	}
 	return ""
 }

@@ -218,6 +218,7 @@ Credentials:
 Review policy:
   Major event: comment
   Allow self approve: false
+  Resolve threads: auto
 Data retention:
   Max age days: 90
   Enforcement: at_write
@@ -790,7 +791,6 @@ func workProfile() config.Profile {
 			MajorEvent:       config.ReviewMajorEventRequestChanges,
 			AllowSelfApprove: true,
 			ResolveThreads:   config.ResolveThreadsNever,
-			ResolveAfter:     "48h",
 		},
 	}
 }

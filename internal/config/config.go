@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,11 +44,13 @@ var (
 
 // File is the root config.yml schema.
 type File struct {
-	Secrets            SecretsConfig        `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	LLMRuntimes        map[string]LLMConfig `yaml:"llm_runtimes,omitempty" json:"llm_runtimes,omitempty"`
-	RepositoryProfiles []RepositoryProfile  `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
-	Profiles           map[string]Profile   `yaml:"profiles,omitempty" json:"profiles,omitempty"`
-	Data               DataConfig           `yaml:"data,omitempty" json:"data"`
+	Secrets            SecretsConfig                     `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	RepositoryAccess   map[string]RepositoryAccessConfig `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
+	LLMRuntimes        map[string]LLMConfig              `yaml:"llm_runtimes,omitempty" json:"llm_runtimes,omitempty"`
+	ReviewerEntities   map[string]ReviewerEntity         `yaml:"reviewer_entities,omitempty" json:"reviewer_entities,omitempty"`
+	RepositoryProfiles []RepositoryProfile               `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
+	Profiles           map[string]Profile                `yaml:"profiles,omitempty" json:"profiles,omitempty"`
+	Data               DataConfig                        `yaml:"data,omitempty" json:"data"`
 
 	// Keyring is retained as an ignored in-memory compatibility field while
 	// credential-store runtime selection is rewritten. It is not config schema.
@@ -161,14 +164,60 @@ type EffectiveSecretsProfile = EffectiveSecretsStore
 
 // Profile is one named review profile.
 type Profile struct {
-	Git                 GitConfig            `yaml:"git" json:"git"`
-	ReviewerCredentials *ReviewerCredentials `yaml:"reviewer_credentials,omitempty" json:"reviewer_credentials,omitempty"`
-	LLM                 LLMConfig            `yaml:"llm" json:"llm"`
-	AgentSources        []string             `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
-	ReviewPolicy        ReviewPolicy         `yaml:"review_policy,omitempty" json:"review_policy"`
+	RepositoryAccess string          `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
+	Git              GitConfig       `yaml:"-" json:"-"`
+	Reviewer         ProfileReviewer `yaml:"reviewer" json:"reviewer"`
+	LLMRuntime       string          `yaml:"llm_runtime" json:"llm_runtime"`
+	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
+	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
 
 	// SecretsProfile is retained as an ignored in-memory compatibility field.
 	SecretsProfile string `yaml:"-" json:"-"`
+	// ReviewerCredentials is the resolved effective reviewer credential block
+	// derived from ReviewerEntities for runtime callers. It is not config schema.
+	ReviewerCredentials *ReviewerCredentials `yaml:"-" json:"-"`
+	// LLM is the resolved effective runtime derived from LLMRuntime for runtime
+	// callers. It is not config schema.
+	LLM LLMConfig `yaml:"-" json:"-"`
+}
+
+type profileYAML struct {
+	RepositoryAccess string          `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
+	Git              GitConfig       `yaml:"git,omitempty" json:"git,omitempty"`
+	Reviewer         ProfileReviewer `yaml:"reviewer" json:"reviewer"`
+	LLMRuntime       string          `yaml:"llm_runtime" json:"llm_runtime"`
+	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
+	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
+}
+
+// UnmarshalYAML accepts the legacy profile git block while the data model moves
+// to profiles selecting reusable repository_access entries.
+func (p *Profile) UnmarshalYAML(value *yaml.Node) error {
+	var raw profileYAML
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*p = Profile{
+		RepositoryAccess: raw.RepositoryAccess,
+		Git:              raw.Git,
+		Reviewer:         raw.Reviewer,
+		LLMRuntime:       raw.LLMRuntime,
+		AgentSources:     raw.AgentSources,
+		ReviewPolicy:     raw.ReviewPolicy,
+	}
+	return nil
+}
+
+// MarshalYAML writes only the durable profile composition fields. Git is
+// resolved from repository_access at load/runtime boundaries.
+func (p Profile) MarshalYAML() (any, error) {
+	return profileYAML{
+		RepositoryAccess: p.RepositoryAccess,
+		Reviewer:         p.Reviewer,
+		LLMRuntime:       p.LLMRuntime,
+		AgentSources:     p.AgentSources,
+		ReviewPolicy:     p.ReviewPolicy,
+	}, nil
 }
 
 // GitConfig identifies the user's git-host credentials.
@@ -176,16 +225,95 @@ type GitConfig struct {
 	Host          string             `yaml:"host" json:"host"`
 	AuthMode      GitAuthMode        `yaml:"auth_mode" json:"auth_mode"`
 	Credential    CredentialLocation `yaml:"credential" json:"credential"`
+	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
 	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
 
 	// CredentialRef is retained as an ignored in-memory compatibility field.
 	CredentialRef string `yaml:"-" json:"-"`
 }
 
+// GitHubAppConfig stores non-secret GitHub App identifiers.
+type GitHubAppConfig struct {
+	AppID string `yaml:"app_id" json:"app_id"`
+}
+
+// RepositoryAccessConfig is one reusable Git host/user credential definition.
+type RepositoryAccessConfig struct {
+	DisplayName string    `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	Git         GitConfig `yaml:"git" json:"git"`
+}
+
 // ReviewerCredentials optionally identifies separate posting credentials.
 type ReviewerCredentials struct {
 	AuthMode      GitAuthMode        `yaml:"auth_mode" json:"auth_mode"`
 	Credential    CredentialLocation `yaml:"credential" json:"credential"`
+	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
+	DisplayName   string             `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
+
+	// CredentialRef is retained as an ignored in-memory compatibility field.
+	CredentialRef string `yaml:"-" json:"-"`
+}
+
+// ProfileReviewer selects the identity used to post review comments.
+type ProfileReviewer struct {
+	Kind                  ProfileReviewerKind                   `yaml:"kind" json:"kind"`
+	Entity                string                                `yaml:"entity,omitempty" json:"entity,omitempty"`
+	GitHubAppInstallation *ProfileReviewerGitHubAppInstallation `yaml:"github_app_installation,omitempty" json:"github_app_installation,omitempty"`
+}
+
+// ProfileReviewerKind identifies how a profile chooses its posting identity.
+type ProfileReviewerKind string
+
+// Profile reviewer kinds.
+const (
+	ProfileReviewerKindGitIdentity ProfileReviewerKind = "git_identity"
+	ProfileReviewerKindEntity      ProfileReviewerKind = "entity"
+)
+
+// Valid reports whether k is a known profile reviewer selector.
+func (k ProfileReviewerKind) Valid() bool {
+	switch k {
+	case ProfileReviewerKindGitIdentity, ProfileReviewerKindEntity:
+		return true
+	default:
+		return false
+	}
+}
+
+// ProfileReviewerGitHubAppInstallation selects the GitHub App installation a
+// profile uses when its reviewer entity is a GitHub App.
+type ProfileReviewerGitHubAppInstallation struct {
+	Mode           ProfileReviewerGitHubAppInstallationMode `yaml:"mode" json:"mode"`
+	InstallationID string                                   `yaml:"installation_id,omitempty" json:"installation_id,omitempty"`
+}
+
+// ProfileReviewerGitHubAppInstallationMode identifies how a profile resolves a
+// GitHub App installation.
+type ProfileReviewerGitHubAppInstallationMode string
+
+// GitHub App installation resolution modes.
+const (
+	ProfileReviewerGitHubAppInstallationDiscoverFromRepository ProfileReviewerGitHubAppInstallationMode = "discover_from_repository"
+	ProfileReviewerGitHubAppInstallationPinned                 ProfileReviewerGitHubAppInstallationMode = "pinned"
+)
+
+// Valid reports whether m is a known GitHub App installation resolution mode.
+func (m ProfileReviewerGitHubAppInstallationMode) Valid() bool {
+	switch m {
+	case ProfileReviewerGitHubAppInstallationDiscoverFromRepository, ProfileReviewerGitHubAppInstallationPinned:
+		return true
+	default:
+		return false
+	}
+}
+
+// ReviewerEntity is one reusable configured posting identity.
+type ReviewerEntity struct {
+	Host          string             `yaml:"host" json:"host"`
+	AuthMode      GitAuthMode        `yaml:"auth_mode" json:"auth_mode"`
+	Credential    CredentialLocation `yaml:"credential" json:"credential"`
+	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
 	DisplayName   string             `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
 
@@ -268,7 +396,6 @@ type ReviewPolicy struct {
 	MajorEvent       ReviewMajorEvent     `yaml:"major_event,omitempty" json:"major_event"`
 	AllowSelfApprove bool                 `yaml:"allow_self_approve,omitempty" json:"allow_self_approve"`
 	ResolveThreads   ResolveThreadsPolicy `yaml:"resolve_threads,omitempty" json:"resolve_threads,omitempty"`
-	ResolveAfter     string               `yaml:"resolve_after,omitempty" json:"resolve_after,omitempty"`
 }
 
 // DataConfig carries non-secret durable data policy.
@@ -636,7 +763,9 @@ func Save(path string, cfg File) error {
 func fileHasNoExplicitContent(cfg File) bool {
 	return cfg.Secrets.Stores == nil &&
 		cfg.Secrets.Profiles == nil &&
+		cfg.RepositoryAccess == nil &&
 		cfg.LLMRuntimes == nil &&
+		cfg.ReviewerEntities == nil &&
 		cfg.RepositoryProfiles == nil &&
 		cfg.Profiles == nil &&
 		cfg.Data.Retention.MaxAgeDays == nil &&
@@ -689,6 +818,14 @@ func Validate(cfg File) error {
 	if err := ValidateRetention(cfg.Data.Retention); err != nil {
 		return err
 	}
+	for name, access := range cfg.RepositoryAccess {
+		if strings.TrimSpace(name) == "" {
+			return invalid("repository_access name is required")
+		}
+		if err := validateRepositoryAccess(cfg.Secrets, name, access); err != nil {
+			return err
+		}
+	}
 	for name, runtime := range cfg.LLMRuntimes {
 		if strings.TrimSpace(name) == "" {
 			return invalid("llm_runtimes name is required")
@@ -702,6 +839,14 @@ func Validate(cfg File) error {
 			}
 		}
 	}
+	for name, entity := range cfg.ReviewerEntities {
+		if strings.TrimSpace(name) == "" {
+			return invalid("reviewer_entities name is required")
+		}
+		if err := validateReviewerEntity(cfg.Secrets, name, entity); err != nil {
+			return err
+		}
+	}
 	if len(cfg.Profiles) == 0 {
 		if len(cfg.RepositoryProfiles) > 0 {
 			return invalid("profiles is required")
@@ -712,10 +857,10 @@ func Validate(cfg File) error {
 		if strings.TrimSpace(name) == "" {
 			return invalid("profile name is required")
 		}
-		if err := validateProfile(name, profile); err != nil {
+		if err := validateProfile(cfg, name, profile); err != nil {
 			return err
 		}
-		if err := validateProfileCredentialStoreSelections(cfg.Secrets, name, profile); err != nil {
+		if err := validateProfileCredentialStoreSelections(cfg, name, profile); err != nil {
 			return err
 		}
 	}
@@ -859,7 +1004,7 @@ func ResolveProfileForRepositoryWithSource(cfg File, requestedName string, expli
 // CredentialRefs returns all credential-store refs declared by profile.
 func CredentialRefs(profile Profile) ([]CredentialRef, error) {
 	profile = profile.normalized()
-	if err := validateProfile("profile", profile); err != nil {
+	if err := validateEffectiveProfile("profile", profile); err != nil {
 		return nil, err
 	}
 
@@ -890,6 +1035,29 @@ func CredentialRefs(profile Profile) ([]CredentialRef, error) {
 	return refs, nil
 }
 
+// PinnedGitHubAppInstallationIDForGit returns the profile-level pinned
+// installation id that applies to git when git is the selected GitHub App
+// reviewer entity for profile.
+func PinnedGitHubAppInstallationIDForGit(profile Profile, git GitConfig) string {
+	profile = profile.normalized()
+	git = git.normalized()
+	if git.AuthMode != GitAuthModeGitHubApp || profile.ReviewerCredentials == nil {
+		return ""
+	}
+	if profile.Reviewer.Kind != ProfileReviewerKindEntity || profile.Reviewer.GitHubAppInstallation == nil {
+		return ""
+	}
+	installation := profile.Reviewer.GitHubAppInstallation.normalized()
+	if installation.Mode != ProfileReviewerGitHubAppInstallationPinned {
+		return ""
+	}
+	reviewerCredentials := profile.ReviewerCredentials.normalized()
+	if reviewerCredentials.AuthMode != GitAuthModeGitHubApp || !sameCredentialLocation(reviewerCredentials.Credential, git.Credential) {
+		return ""
+	}
+	return installation.InstallationID
+}
+
 func gitCredentialRef(purpose string, mode GitAuthMode, credential CredentialLocation) (CredentialRef, error) {
 	if !mode.Supported() {
 		return CredentialRef{}, fmt.Errorf("%w: %s auth_mode %q", ErrUnsupported, purpose, mode)
@@ -897,48 +1065,60 @@ func gitCredentialRef(purpose string, mode GitAuthMode, credential CredentialLoc
 	return CredentialRef{Purpose: purpose, Store: credential.Store, Ref: credential.Name, Mode: string(mode)}, nil
 }
 
-func validateProfile(name string, profile Profile) error {
-	if strings.TrimSpace(profile.Git.Host) == "" {
-		return invalid("profiles.%s.git.host is required", name)
+func validateProfile(cfg File, name string, profile Profile) error {
+	if strings.TrimSpace(profile.RepositoryAccess) == "" {
+		return invalid("profiles.%s.repository_access is required", name)
 	}
-	if !profile.Git.AuthMode.Valid() {
-		return invalid("profiles.%s.git.auth_mode %q is invalid", name, profile.Git.AuthMode)
+	if _, ok := cfg.RepositoryAccess[profile.RepositoryAccess]; !ok {
+		return fmt.Errorf("%w: profiles.%s.repository_access %q", ErrProfileNotFound, name, profile.RepositoryAccess)
 	}
-	if !profile.Git.AuthMode.Supported() {
-		return fmt.Errorf("%w: profiles.%s.git.auth_mode %q", ErrUnsupported, name, profile.Git.AuthMode)
-	}
-	if err := validateCredentialLocation(fmt.Sprintf("profiles.%s.git.credential", name), profile.Git.Credential); err != nil {
+	if err := validateGitConfig(fmt.Sprintf("profiles.%s.git", name), profile.Git); err != nil {
 		return err
 	}
-	if profile.ReviewerCredentials != nil {
-		if !profile.ReviewerCredentials.AuthMode.Valid() {
-			return invalid("profiles.%s.reviewer_credentials.auth_mode %q is invalid", name, profile.ReviewerCredentials.AuthMode)
+	if !profile.Reviewer.Kind.Valid() {
+		return invalid("profiles.%s.reviewer.kind %q is invalid", name, profile.Reviewer.Kind)
+	}
+	var reviewerEntity *ReviewerEntity
+	switch profile.Reviewer.Kind {
+	case ProfileReviewerKindGitIdentity:
+		if strings.TrimSpace(profile.Reviewer.Entity) != "" {
+			return invalid("profiles.%s.reviewer.entity must be empty for git_identity reviewer", name)
 		}
-		if !profile.ReviewerCredentials.AuthMode.Supported() {
-			return fmt.Errorf("%w: profiles.%s.reviewer_credentials.auth_mode %q", ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
+		if profile.Reviewer.GitHubAppInstallation != nil {
+			return invalid("profiles.%s.reviewer.github_app_installation must be empty for git_identity reviewer", name)
 		}
-		if err := validateCredentialLocation(fmt.Sprintf("profiles.%s.reviewer_credentials.credential", name), profile.ReviewerCredentials.Credential); err != nil {
-			return err
+	case ProfileReviewerKindEntity:
+		if strings.TrimSpace(profile.Reviewer.Entity) == "" {
+			return invalid("profiles.%s.reviewer.entity is required", name)
 		}
-		if sameCredentialLocation(profile.ReviewerCredentials.Credential, profile.Git.Credential) {
-			return invalid("profiles.%s.reviewer_credentials.credential must differ from git.credential when store and name match", name)
+		entity, ok := cfg.ReviewerEntities[profile.Reviewer.Entity]
+		if !ok {
+			return fmt.Errorf("%w: profiles.%s.reviewer.entity %q", ErrProfileNotFound, name, profile.Reviewer.Entity)
 		}
-		if err := validateOptionalSingleLine(fmt.Sprintf("profiles.%s.reviewer_credentials.display_name", name), profile.ReviewerCredentials.DisplayName); err != nil {
+		reviewerEntity = &entity
+		if normalizeConfigHost(entity.Host) != normalizeConfigHost(profile.Git.Host) {
+			return invalid("profiles.%s.reviewer.entity %q host %q must match git.host %q", name, profile.Reviewer.Entity, entity.Host, profile.Git.Host)
+		}
+		if sameCredentialLocation(entity.Credential, profile.Git.Credential) {
+			return invalid("profiles.%s.reviewer.entity %q credential must differ from git.credential when store and name match", name, profile.Reviewer.Entity)
+		}
+		if err := validateProfileReviewerInstallation(name, profile.Reviewer, entity); err != nil {
 			return err
 		}
 	}
-	if err := validateLLMConfig(fmt.Sprintf("profiles.%s.llm", name), profile.LLM); err != nil {
-		return err
+	if strings.TrimSpace(profile.LLMRuntime) == "" {
+		return invalid("profiles.%s.llm_runtime is required", name)
 	}
-	if profile.LLM.Auth == LLMAuthAPIKey {
-		if err := validateCredentialLocation(fmt.Sprintf("profiles.%s.llm.credential", name), profile.LLM.Credential); err != nil {
-			return err
+	runtime, ok := cfg.LLMRuntimes[profile.LLMRuntime]
+	if !ok {
+		return fmt.Errorf("%w: profiles.%s.llm_runtime %q", ErrProfileNotFound, name, profile.LLMRuntime)
+	}
+	if runtime.Auth == LLMAuthAPIKey {
+		if sameCredentialLocation(runtime.Credential, profile.Git.Credential) {
+			return invalid("profiles.%s.llm_runtime %q credential must differ from git.credential when store and name match", name, profile.LLMRuntime)
 		}
-		if sameCredentialLocation(profile.LLM.Credential, profile.Git.Credential) {
-			return invalid("profiles.%s.llm.credential must differ from git.credential when store and name match", name)
-		}
-		if profile.ReviewerCredentials != nil && sameCredentialLocation(profile.LLM.Credential, profile.ReviewerCredentials.Credential) {
-			return invalid("profiles.%s.llm.credential must differ from reviewer_credentials.credential when store and name match", name)
+		if reviewerEntity != nil && sameCredentialLocation(runtime.Credential, reviewerEntity.Credential) {
+			return invalid("profiles.%s.llm_runtime %q credential must differ from reviewer entity credential when store and name match", name, profile.LLMRuntime)
 		}
 	}
 	for index, source := range profile.AgentSources {
@@ -949,13 +1129,63 @@ func validateProfile(name string, profile Profile) error {
 	if !profile.ReviewPolicy.MajorEvent.Valid() {
 		return invalid("profiles.%s.review_policy.major_event %q is invalid", name, profile.ReviewPolicy.MajorEvent)
 	}
-	if profile.ReviewPolicy.ResolveThreads != "" && !profile.ReviewPolicy.ResolveThreads.Valid() {
+	if !profile.ReviewPolicy.ResolveThreads.Valid() {
 		return invalid("profiles.%s.review_policy.resolve_threads %q is invalid", name, profile.ReviewPolicy.ResolveThreads)
 	}
-	if profile.ReviewPolicy.ResolveAfter != "" {
-		if _, err := time.ParseDuration(profile.ReviewPolicy.ResolveAfter); err != nil {
-			return invalid("profiles.%s.review_policy.resolve_after %q is invalid: %v", name, profile.ReviewPolicy.ResolveAfter, err)
+	return nil
+}
+
+func validateProfileReviewerInstallation(profileName string, reviewer ProfileReviewer, entity ReviewerEntity) error {
+	path := fmt.Sprintf("profiles.%s.reviewer.github_app_installation", profileName)
+	if entity.AuthMode != GitAuthModeGitHubApp {
+		if reviewer.GitHubAppInstallation != nil {
+			return invalid("%s must be empty unless reviewer.entity uses github_app auth", path)
 		}
+		return nil
+	}
+	if reviewer.GitHubAppInstallation == nil {
+		return invalid("%s.mode is required for github_app reviewer entities", path)
+	}
+	installation := reviewer.GitHubAppInstallation.normalized()
+	if !installation.Mode.Valid() {
+		return invalid("%s.mode %q is invalid", path, installation.Mode)
+	}
+	switch installation.Mode {
+	case ProfileReviewerGitHubAppInstallationDiscoverFromRepository:
+		if strings.TrimSpace(installation.InstallationID) != "" {
+			return invalid("%s.installation_id must be empty when mode is discover_from_repository", path)
+		}
+	case ProfileReviewerGitHubAppInstallationPinned:
+		if strings.TrimSpace(installation.InstallationID) == "" {
+			return invalid("%s.installation_id is required when mode is pinned", path)
+		}
+		if _, err := strconv.ParseInt(installation.InstallationID, 10, 64); err != nil {
+			return invalid("%s.installation_id %q must be a decimal GitHub App installation ID", path, installation.InstallationID)
+		}
+	}
+	return nil
+}
+
+func validateEffectiveProfile(name string, profile Profile) error {
+	if err := validateGitConfig(name+".git", profile.Git); err != nil {
+		return err
+	}
+	if profile.ReviewerCredentials != nil {
+		if !profile.ReviewerCredentials.AuthMode.Valid() {
+			return invalid("%s.reviewer_credentials.auth_mode %q is invalid", name, profile.ReviewerCredentials.AuthMode)
+		}
+		if !profile.ReviewerCredentials.AuthMode.Supported() {
+			return fmt.Errorf("%w: %s.reviewer_credentials.auth_mode %q", ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
+		}
+		if err := validateCredentialLocation(name+".reviewer_credentials.credential", profile.ReviewerCredentials.Credential); err != nil {
+			return err
+		}
+		if err := validateGitHubAppConfig(name+".reviewer_credentials.github_app", profile.ReviewerCredentials.AuthMode, profile.ReviewerCredentials.GitHubApp); err != nil {
+			return err
+		}
+	}
+	if err := validateLLMConfig(name+".llm", profile.LLM); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1011,9 +1241,85 @@ func validateLLMConfig(field string, llm LLMConfig) error {
 	return nil
 }
 
-func validateProfileCredentialStoreSelections(secrets SecretsConfig, name string, profile Profile) error {
-	for _, credential := range profileCredentialLocations(profile) {
-		if err := validateCredentialStoreSelection(secrets, fmt.Sprintf("profiles.%s.%s.credential.store", name, credential.path), credential.location.Store); err != nil {
+func validateReviewerEntity(secrets SecretsConfig, name string, entity ReviewerEntity) error {
+	if strings.TrimSpace(entity.Host) == "" {
+		return invalid("reviewer_entities.%s.host is required", name)
+	}
+	if !entity.AuthMode.Valid() {
+		return invalid("reviewer_entities.%s.auth_mode %q is invalid", name, entity.AuthMode)
+	}
+	if !entity.AuthMode.Supported() {
+		return fmt.Errorf("%w: reviewer_entities.%s.auth_mode %q", ErrUnsupported, name, entity.AuthMode)
+	}
+	if err := validateCredentialLocation(fmt.Sprintf("reviewer_entities.%s.credential", name), entity.Credential); err != nil {
+		return err
+	}
+	if err := validateCredentialStoreSelection(secrets, fmt.Sprintf("reviewer_entities.%s.credential.store", name), entity.Credential.Store); err != nil {
+		return err
+	}
+	if err := validateGitHubAppConfig(fmt.Sprintf("reviewer_entities.%s.github_app", name), entity.AuthMode, entity.GitHubApp); err != nil {
+		return err
+	}
+	if err := validateOptionalSingleLine(fmt.Sprintf("reviewer_entities.%s.display_name", name), entity.DisplayName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRepositoryAccess(secrets SecretsConfig, name string, access RepositoryAccessConfig) error {
+	if err := validateOptionalSingleLine(fmt.Sprintf("repository_access.%s.display_name", name), access.DisplayName); err != nil {
+		return err
+	}
+	if err := validateGitConfig(fmt.Sprintf("repository_access.%s.git", name), access.Git); err != nil {
+		return err
+	}
+	if err := validateCredentialStoreSelection(secrets, fmt.Sprintf("repository_access.%s.git.credential.store", name), access.Git.Credential.Store); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGitConfig(path string, git GitConfig) error {
+	if strings.TrimSpace(git.Host) == "" {
+		return invalid("%s.host is required", path)
+	}
+	if !git.AuthMode.Valid() {
+		return invalid("%s.auth_mode %q is invalid", path, git.AuthMode)
+	}
+	if !git.AuthMode.Supported() {
+		return fmt.Errorf("%w: %s.auth_mode %q", ErrUnsupported, path, git.AuthMode)
+	}
+	if err := validateCredentialLocation(path+".credential", git.Credential); err != nil {
+		return err
+	}
+	if err := validateGitHubAppConfig(path+".github_app", git.AuthMode, git.GitHubApp); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGitHubAppConfig(path string, authMode GitAuthMode, app *GitHubAppConfig) error {
+	if authMode != GitAuthModeGitHubApp {
+		if app != nil {
+			return invalid("%s must be empty unless auth_mode is github_app", path)
+		}
+		return nil
+	}
+	if app == nil {
+		return invalid("%s.app_id is required for github_app auth", path)
+	}
+	if strings.TrimSpace(app.AppID) == "" {
+		return invalid("%s.app_id is required for github_app auth", path)
+	}
+	if _, err := strconv.ParseInt(strings.TrimSpace(app.AppID), 10, 64); err != nil {
+		return invalid("%s.app_id %q must be a decimal GitHub App ID", path, app.AppID)
+	}
+	return nil
+}
+
+func validateProfileCredentialStoreSelections(cfg File, name string, profile Profile) error {
+	for _, credential := range profileCredentialLocations(cfg, profile) {
+		if err := validateCredentialStoreSelection(cfg.Secrets, fmt.Sprintf("profiles.%s.%s.credential.store", name, credential.path), credential.location.Store); err != nil {
 			return err
 		}
 	}
@@ -1025,21 +1331,22 @@ type profileCredentialLocation struct {
 	location CredentialLocation
 }
 
-func profileCredentialLocations(profile Profile) []profileCredentialLocation {
+func profileCredentialLocations(cfg File, profile Profile) []profileCredentialLocation {
 	locations := []profileCredentialLocation{{
 		path:     "git",
 		location: profile.Git.Credential,
 	}}
-	if profile.ReviewerCredentials != nil {
+	if profile.Reviewer.Kind == ProfileReviewerKindEntity {
+		entity := cfg.ReviewerEntities[profile.Reviewer.Entity]
 		locations = append(locations, profileCredentialLocation{
-			path:     "reviewer_credentials",
-			location: profile.ReviewerCredentials.Credential,
+			path:     "reviewer.entity",
+			location: entity.Credential,
 		})
 	}
-	if profile.LLM.Auth == LLMAuthAPIKey {
+	if runtime := cfg.LLMRuntimes[profile.LLMRuntime]; runtime.Auth == LLMAuthAPIKey {
 		locations = append(locations, profileCredentialLocation{
-			path:     "llm",
-			location: profile.LLM.Credential,
+			path:     "llm_runtime",
+			location: runtime.Credential,
 		})
 	}
 	return locations
@@ -1267,14 +1574,13 @@ func ValidateRetention(retention RetentionConfig) error {
 }
 
 func (cfg File) normalized() File {
-	if cfg.Profiles == nil {
-		cfg.Profiles = map[string]Profile{}
+	if cfg.RepositoryAccess != nil {
+		accesses := make(map[string]RepositoryAccessConfig, len(cfg.RepositoryAccess))
+		for name, access := range cfg.RepositoryAccess {
+			accesses[strings.TrimSpace(name)] = access.normalized()
+		}
+		cfg.RepositoryAccess = accesses
 	}
-	profiles := make(map[string]Profile, len(cfg.Profiles))
-	for name, profile := range cfg.Profiles {
-		profiles[name] = profile.normalized()
-	}
-	cfg.Profiles = profiles
 	if cfg.LLMRuntimes != nil {
 		runtimes := make(map[string]LLMConfig, len(cfg.LLMRuntimes))
 		for name, runtime := range cfg.LLMRuntimes {
@@ -1282,6 +1588,22 @@ func (cfg File) normalized() File {
 		}
 		cfg.LLMRuntimes = runtimes
 	}
+	if cfg.ReviewerEntities != nil {
+		entities := make(map[string]ReviewerEntity, len(cfg.ReviewerEntities))
+		for name, entity := range cfg.ReviewerEntities {
+			entities[strings.TrimSpace(name)] = entity.normalized()
+		}
+		cfg.ReviewerEntities = entities
+	}
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]Profile{}
+	}
+	cfg = cfg.projectProfileComponentReferences()
+	profiles := make(map[string]Profile, len(cfg.Profiles))
+	for name, profile := range cfg.Profiles {
+		profiles[name] = cfg.resolveProfileRuntimeFields(profile.normalized())
+	}
+	cfg.Profiles = profiles
 	if len(cfg.RepositoryProfiles) > 0 {
 		routes := make([]RepositoryProfile, len(cfg.RepositoryProfiles))
 		for index, route := range cfg.RepositoryProfiles {
@@ -1302,6 +1624,266 @@ func (cfg File) normalized() File {
 	cfg.Data.Retention = cfg.Data.Retention.normalized()
 	cfg.Secrets = cfg.Secrets.normalized()
 	return cfg
+}
+
+func (cfg File) projectProfileComponentReferences() File {
+	repositoryAccessNamesByKey := map[string]string{}
+	for name, access := range cfg.RepositoryAccess {
+		repositoryAccessNamesByKey[repositoryAccessIdentityKey(access)] = name
+	}
+	runtimeNamesByKey := map[string]string{}
+	for name, runtime := range cfg.LLMRuntimes {
+		runtimeNamesByKey[llmRuntimeIdentityKey(runtime)] = name
+	}
+	reviewerNamesByKey := map[string]string{}
+	for name, entity := range cfg.ReviewerEntities {
+		reviewerNamesByKey[reviewerEntityIdentityKey(entity)] = name
+	}
+
+	profileNames := make([]string, 0, len(cfg.Profiles))
+	for name := range cfg.Profiles {
+		profileNames = append(profileNames, name)
+	}
+	sort.Strings(profileNames)
+	reviewerDisplayNameConflicts := map[string]bool{}
+	profiles := make(map[string]Profile, len(cfg.Profiles))
+	for _, name := range profileNames {
+		profile := cfg.Profiles[name]
+		profile = profile.normalized()
+		if strings.TrimSpace(profile.RepositoryAccess) == "" && !profile.Git.empty() {
+			access := repositoryAccessFromProfile(profile)
+			key := repositoryAccessIdentityKey(access)
+			accessName, ok := repositoryAccessNamesByKey[key]
+			if !ok {
+				if cfg.RepositoryAccess == nil {
+					cfg.RepositoryAccess = map[string]RepositoryAccessConfig{}
+				}
+				accessName = uniqueConfigComponentName(cfg.RepositoryAccess, suggestedRepositoryAccessName(name, access))
+				cfg.RepositoryAccess[accessName] = access
+				repositoryAccessNamesByKey[key] = accessName
+			}
+			profile.RepositoryAccess = accessName
+		}
+		if strings.TrimSpace(profile.LLMRuntime) == "" && !profile.LLM.empty() {
+			runtime := profile.LLM.normalized()
+			key := llmRuntimeIdentityKey(runtime)
+			runtimeName, ok := runtimeNamesByKey[key]
+			if !ok {
+				if cfg.LLMRuntimes == nil {
+					cfg.LLMRuntimes = map[string]LLMConfig{}
+				}
+				runtimeName = uniqueConfigComponentName(cfg.LLMRuntimes, suggestedLLMRuntimeName(runtime))
+				cfg.LLMRuntimes[runtimeName] = runtime
+				runtimeNamesByKey[key] = runtimeName
+			}
+			profile.LLMRuntime = runtimeName
+		}
+		if !profile.Reviewer.Kind.Valid() {
+			if profile.ReviewerCredentials == nil {
+				profile.Reviewer.Kind = ProfileReviewerKindGitIdentity
+			} else {
+				entity := reviewerEntityFromProfile(profile)
+				key := reviewerEntityIdentityKey(entity)
+				entityName, ok := reviewerNamesByKey[key]
+				if !ok {
+					if cfg.ReviewerEntities == nil {
+						cfg.ReviewerEntities = map[string]ReviewerEntity{}
+					}
+					entityName = uniqueConfigComponentName(cfg.ReviewerEntities, suggestedReviewerEntityName(name, entity))
+					cfg.ReviewerEntities[entityName] = entity
+					reviewerNamesByKey[key] = entityName
+				} else if existing := cfg.ReviewerEntities[entityName]; !reviewerDisplayNameConflicts[entityName] {
+					displayName := mergeProjectedReviewerEntityDisplayName(existing.DisplayName, entity.DisplayName)
+					if displayName == "" && strings.TrimSpace(existing.DisplayName) != "" && strings.TrimSpace(entity.DisplayName) != "" && strings.TrimSpace(existing.DisplayName) != strings.TrimSpace(entity.DisplayName) {
+						reviewerDisplayNameConflicts[entityName] = true
+					}
+					existing.DisplayName = displayName
+					cfg.ReviewerEntities[entityName] = existing
+				}
+				profile.Reviewer = projectedProfileReviewerForEntity(entityName, entity.AuthMode)
+			}
+		}
+		profiles[name] = profile
+	}
+	cfg.Profiles = profiles
+	return cfg
+}
+
+func projectedProfileReviewerForEntity(entityName string, authMode GitAuthMode) ProfileReviewer {
+	reviewer := ProfileReviewer{Kind: ProfileReviewerKindEntity, Entity: strings.TrimSpace(entityName)}
+	if authMode == GitAuthModeGitHubApp {
+		reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+			Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+		}
+	}
+	return reviewer
+}
+
+func mergeProjectedReviewerEntityDisplayName(existing, next string) string {
+	existing = strings.TrimSpace(existing)
+	next = strings.TrimSpace(next)
+	switch {
+	case existing == "":
+		return next
+	case next == "":
+		return existing
+	case existing == next:
+		return existing
+	default:
+		return ""
+	}
+}
+
+func uniqueConfigComponentName[T any](existing map[string]T, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "component"
+	}
+	if _, ok := existing[base]; !ok {
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", base, suffix)
+		if _, ok := existing[candidate]; !ok {
+			return candidate
+		}
+	}
+}
+
+func llmRuntimeIdentityKey(llm LLMConfig) string {
+	llm = llm.normalized()
+	modelKeys := make([]string, 0, len(llm.ModelMap))
+	for tier := range llm.ModelMap {
+		modelKeys = append(modelKeys, tier)
+	}
+	sort.Strings(modelKeys)
+	models := make([]string, 0, len(modelKeys))
+	for _, tier := range modelKeys {
+		models = append(models, tier+"="+strings.TrimSpace(llm.ModelMap[tier]))
+	}
+	return strings.Join([]string{
+		string(llm.Provider),
+		string(llm.Auth),
+		string(llm.Adapter),
+		llm.Credential.Store,
+		llm.Credential.Name,
+		strings.Join(models, "\x1f"),
+		string(llm.ReviewerModelTier),
+	}, "\x00")
+}
+
+func suggestedLLMRuntimeName(llm LLMConfig) string {
+	switch {
+	case llm.Provider == LLMProviderAnthropic && llm.Auth == LLMAuthSubscription && llm.Adapter == LLMAdapterClaudeCLI:
+		return "claude-cli"
+	case llm.Provider == LLMProviderOpenAI && llm.Auth == LLMAuthSubscription && llm.Adapter == LLMAdapterCodexCLI:
+		return "codex-cli"
+	case llm.Provider == LLMProviderPi && llm.Auth == LLMAuthSubscription && llm.Adapter == LLMAdapterPiRPC:
+		return "pi-local"
+	case llm.Provider == LLMProviderAnthropic && llm.Auth == LLMAuthAPIKey && llm.Adapter == LLMAdapterAnthropicAPI:
+		return "anthropic-api-key"
+	case llm.Provider == LLMProviderOpenAI && llm.Auth == LLMAuthAPIKey && llm.Adapter == LLMAdapterOpenAIAPI:
+		return "openai-api-key"
+	}
+	name := strings.Trim(strings.Join([]string{string(llm.Provider), string(llm.Auth), string(llm.Adapter)}, "-"), "-")
+	if name == "" {
+		return "llm-runtime"
+	}
+	return name
+}
+
+func reviewerEntityFromProfile(profile Profile) ReviewerEntity {
+	reviewer := profile.ReviewerCredentials.normalized()
+	return ReviewerEntity{
+		Host:          profile.Git.Host,
+		AuthMode:      reviewer.AuthMode,
+		Credential:    reviewer.Credential,
+		CredentialRef: reviewer.CredentialRef,
+		GitHubApp:     cloneGitHubAppConfig(reviewer.GitHubApp),
+		DisplayName:   reviewer.DisplayName,
+		IdentityCache: reviewer.IdentityCache,
+	}.normalized()
+}
+
+func reviewerEntityIdentityKey(entity ReviewerEntity) string {
+	entity = entity.normalized()
+	return strings.Join([]string{
+		entity.Host,
+		string(entity.AuthMode),
+		entity.Credential.Store,
+		entity.Credential.Name,
+		gitHubAppID(entity.GitHubApp),
+	}, "\x00")
+}
+
+func gitHubAppID(app *GitHubAppConfig) string {
+	if app == nil {
+		return ""
+	}
+	return strings.TrimSpace(app.AppID)
+}
+
+func suggestedReviewerEntityName(profileName string, entity ReviewerEntity) string {
+	prefix := strings.TrimSpace(profileName)
+	if prefix != "" {
+		return prefix + "-reviewer"
+	}
+	switch entity.AuthMode {
+	case GitAuthModeGitHubApp:
+		return "reviewer-github-app"
+	case GitAuthModePAT:
+		return "reviewer-pat"
+	case GitAuthModeOAuthDevice:
+		return "reviewer-oauth-device"
+	}
+	return "reviewer-entity"
+}
+
+func repositoryAccessFromProfile(profile Profile) RepositoryAccessConfig {
+	return RepositoryAccessConfig{
+		Git: profile.Git,
+	}.normalized()
+}
+
+func repositoryAccessIdentityKey(access RepositoryAccessConfig) string {
+	access = access.normalized()
+	return strings.Join([]string{
+		access.Git.Host,
+		string(access.Git.AuthMode),
+		access.Git.Credential.Store,
+		access.Git.Credential.Name,
+		gitHubAppID(access.Git.GitHubApp),
+	}, "\x00")
+}
+
+func suggestedRepositoryAccessName(profileName string, access RepositoryAccessConfig) string {
+	prefix := strings.TrimSpace(profileName)
+	if prefix != "" {
+		return prefix + "-git"
+	}
+	host := strings.ReplaceAll(access.normalized().Git.Host, ".", "-")
+	if strings.TrimSpace(host) != "" {
+		return host + "-git"
+	}
+	return "repository-access"
+}
+
+func (cfg File) resolveProfileRuntimeFields(profile Profile) Profile {
+	if access, ok := cfg.RepositoryAccess[profile.RepositoryAccess]; ok {
+		profile.Git = access.Git.normalized()
+	}
+	if runtime, ok := cfg.LLMRuntimes[profile.LLMRuntime]; ok {
+		profile.LLM = runtime.normalized()
+	}
+	switch profile.Reviewer.Kind {
+	case ProfileReviewerKindGitIdentity:
+		profile.ReviewerCredentials = nil
+	case ProfileReviewerKindEntity:
+		if entity, ok := cfg.ReviewerEntities[profile.Reviewer.Entity]; ok {
+			profile.ReviewerCredentials = entity.reviewerCredentials()
+		}
+	}
+	return profile
 }
 
 func (s SecretsConfig) normalized() SecretsConfig {
@@ -1402,7 +1984,10 @@ func IsOnePasswordSecretsBackend(kind SecretsBackendKind) bool {
 
 func (p Profile) normalized() Profile {
 	p.SecretsProfile = strings.TrimSpace(p.SecretsProfile)
+	p.RepositoryAccess = strings.TrimSpace(p.RepositoryAccess)
 	p.Git = p.Git.normalized()
+	p.Reviewer = p.Reviewer.normalized()
+	p.LLMRuntime = strings.TrimSpace(p.LLMRuntime)
 	if p.ReviewerCredentials != nil {
 		reviewer := p.ReviewerCredentials.normalized()
 		p.ReviewerCredentials = &reviewer
@@ -1412,7 +1997,25 @@ func (p Profile) normalized() Profile {
 	return p
 }
 
+func (r ProfileReviewer) normalized() ProfileReviewer {
+	r.Kind = ProfileReviewerKind(strings.TrimSpace(string(r.Kind)))
+	r.Entity = strings.TrimSpace(r.Entity)
+	if r.GitHubAppInstallation != nil {
+		installation := r.GitHubAppInstallation.normalized()
+		r.GitHubAppInstallation = &installation
+	}
+	return r
+}
+
+func (i ProfileReviewerGitHubAppInstallation) normalized() ProfileReviewerGitHubAppInstallation {
+	i.Mode = ProfileReviewerGitHubAppInstallationMode(strings.TrimSpace(string(i.Mode)))
+	i.InstallationID = strings.TrimSpace(i.InstallationID)
+	return i
+}
+
 func (g GitConfig) normalized() GitConfig {
+	g.Host = normalizeConfigHost(g.Host)
+	g.AuthMode = GitAuthMode(strings.TrimSpace(string(g.AuthMode)))
 	g.CredentialRef = strings.TrimSpace(g.CredentialRef)
 	g.Credential = g.Credential.normalized()
 	if g.Credential.Name == "" && g.CredentialRef != "" {
@@ -1422,7 +2025,23 @@ func (g GitConfig) normalized() GitConfig {
 		g.Credential.Name = g.CredentialRef
 	}
 	g.CredentialRef = g.Credential.Name
+	g.GitHubApp = normalizeGitHubAppForAuth(g.AuthMode, g.GitHubApp)
 	return g
+}
+
+func (g GitConfig) empty() bool {
+	g = g.normalized()
+	return g.Host == "" &&
+		g.AuthMode == "" &&
+		g.Credential.empty() &&
+		g.GitHubApp == nil &&
+		g.IdentityCache == ""
+}
+
+func (r RepositoryAccessConfig) normalized() RepositoryAccessConfig {
+	r.DisplayName = strings.TrimSpace(r.DisplayName)
+	r.Git = r.Git.normalized()
+	return r
 }
 
 func (r ReviewerCredentials) normalized() ReviewerCredentials {
@@ -1435,7 +2054,57 @@ func (r ReviewerCredentials) normalized() ReviewerCredentials {
 		r.Credential.Name = r.CredentialRef
 	}
 	r.CredentialRef = r.Credential.Name
+	r.GitHubApp = normalizeGitHubAppForAuth(r.AuthMode, r.GitHubApp)
 	return r
+}
+
+func (r ReviewerEntity) normalized() ReviewerEntity {
+	r.Host = normalizeConfigHost(r.Host)
+	r.AuthMode = GitAuthMode(strings.TrimSpace(string(r.AuthMode)))
+	r.CredentialRef = strings.TrimSpace(r.CredentialRef)
+	r.Credential = r.Credential.normalized()
+	if r.Credential.Name == "" && r.CredentialRef != "" {
+		if r.Credential.Store == "" {
+			r.Credential.Store = LocalOSCredentialStoreID
+		}
+		r.Credential.Name = r.CredentialRef
+	}
+	r.CredentialRef = r.Credential.Name
+	r.GitHubApp = normalizeGitHubAppForAuth(r.AuthMode, r.GitHubApp)
+	r.DisplayName = strings.TrimSpace(r.DisplayName)
+	r.IdentityCache = strings.TrimSpace(r.IdentityCache)
+	return r
+}
+
+func (r ReviewerEntity) reviewerCredentials() *ReviewerCredentials {
+	r = r.normalized()
+	return &ReviewerCredentials{
+		AuthMode:      r.AuthMode,
+		Credential:    r.Credential,
+		GitHubApp:     cloneGitHubAppConfig(r.GitHubApp),
+		DisplayName:   r.DisplayName,
+		IdentityCache: r.IdentityCache,
+		CredentialRef: r.Credential.Name,
+	}
+}
+
+func normalizeGitHubAppForAuth(authMode GitAuthMode, app *GitHubAppConfig) *GitHubAppConfig {
+	if app == nil {
+		return nil
+	}
+	normalized := GitHubAppConfig{AppID: strings.TrimSpace(app.AppID)}
+	if authMode != GitAuthModeGitHubApp {
+		return &normalized
+	}
+	return &normalized
+}
+
+func cloneGitHubAppConfig(app *GitHubAppConfig) *GitHubAppConfig {
+	if app == nil {
+		return nil
+	}
+	cloned := *app
+	return &cloned
 }
 
 func (l LLMConfig) normalized() LLMConfig {
@@ -1459,9 +2128,22 @@ func (l LLMConfig) normalized() LLMConfig {
 	return l
 }
 
+func (l LLMConfig) empty() bool {
+	return strings.TrimSpace(string(l.Provider)) == "" &&
+		strings.TrimSpace(string(l.Auth)) == "" &&
+		strings.TrimSpace(string(l.Adapter)) == "" &&
+		l.Credential.empty() &&
+		len(l.ModelMap) == 0 &&
+		strings.TrimSpace(string(l.ReviewerModelTier)) == "" &&
+		strings.TrimSpace(l.CredentialRef) == ""
+}
+
 func (p ReviewPolicy) normalized() ReviewPolicy {
 	if p.MajorEvent == "" {
-		p.MajorEvent = ReviewMajorEventComment
+		p.MajorEvent = ReviewMajorEventRequestChanges
+	}
+	if p.ResolveThreads == "" {
+		p.ResolveThreads = ResolveThreadsAuto
 	}
 	return p
 }

@@ -13,7 +13,6 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
-	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
 
 type bubbleTeaInitProfileV2Prompter struct {
@@ -58,6 +57,16 @@ func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, e
 		switch result.Action {
 		case initInventoryActionBack:
 			return initDraft{}, errInitNavigateBack
+		case initInventoryActionRestore:
+			return initDraft{
+				Action:       initDraftActionUndoDeleteProfile,
+				ActionTarget: result.Row.ID,
+			}, nil
+		case initInventoryActionStageDelete:
+			return initDraft{
+				Action:       initDraftActionDeleteProfile,
+				ActionTarget: result.Row.ID,
+			}, nil
 		case initInventoryActionEdit, initInventoryActionCommand:
 			draft, staged, err := p.runProfileEditor(ctx, result.Row.ID)
 			if err != nil {
@@ -67,8 +76,6 @@ func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, e
 				return draft, nil
 			}
 		case initInventoryActionNone:
-			continue
-		case initInventoryActionRestore, initInventoryActionStageDelete:
 			continue
 		default:
 			return initDraft{}, fmt.Errorf("unsupported profile v2 inventory action %q", result.Action)
@@ -165,12 +172,7 @@ func (p bubbleTeaInitProfileV2Prompter) runReadOnlyEditor(editor initProfileV2Ed
 }
 
 func initProfileV2InventoryRows(ctx initPromptContext) []initInventoryRow {
-	rows := initProfileInventoryRows(ctx)
-	for i := range rows {
-		rows[i].Deletable = false
-		rows[i].Restorable = false
-	}
-	return rows
+	return initProfileInventoryRows(ctx)
 }
 
 type initProfileV2ReadOnlyModel struct {
@@ -198,6 +200,10 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 	if height <= 0 {
 		height = 28
 	}
+	selectedGitScope := editor.SelectedGitScope
+	if selectedGitScope == "" {
+		selectedGitScope = firstInitGitScopeName(editor.GitScopes)
+	}
 	vp := viewport.New(width, max(height-2, 1))
 	model := initProfileV2ReadOnlyModel{
 		viewport:                   vp,
@@ -206,13 +212,14 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 		reviewerEntities:           maps.Clone(editor.ReviewerEntities),
 		llmRuntimes:                maps.Clone(editor.LLMRuntimes),
 		credentialStoreOptions:     append([]huh.Option[string](nil), editor.CredentialStoreOptions...),
-		selectedGitScope:           editor.SelectedGitScope,
+		selectedGitScope:           selectedGitScope,
 		initialGitStorageLabel:     editor.InitialGitStorageLabel,
 		gitStorageLabelUsesDefault: editor.GitStorageLabelUsesDefault,
 		document:                   editor.Document,
 		focused:                    editor.Document.firstFocusableField(),
 	}
 	model.syncGitScopeFields()
+	model.syncReviewerGitHubAppInstallationFields(false)
 	model.syncLLMCredentialFields(false)
 	model.syncModelMapFields()
 	model.validateAll()
@@ -322,25 +329,25 @@ func initProfileV2ReadOnlyDocument(ctx initPromptContext, selection string) (ini
 }
 
 func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initProfileV2Editor, error) {
+	if ctx.GitScopes == nil || ctx.ProfileGitScopes == nil {
+		ctx.GitScopes, ctx.ProfileGitScopes = buildInitGitScopeInventory(ctx.ExistingConfig)
+	}
+	if len(ctx.GitScopes) == 0 {
+		return initProfileV2Editor{}, fmt.Errorf("configure repository access before creating review profiles")
+	}
 	selectedProfileName, selectedExistingProfile, requestedProfileName := initProfileV2Selection(ctx, selection)
 	draft := seedInteractiveInitDraft(requestedProfileName, selectedProfileName, selectedExistingProfile)
 	routeText := formatInitRouteSpecs(currentProfileRouteSpecs(ctx.ExistingConfig.RepositoryProfiles, selectedProfileName))
 
 	selectedGitScope := ctx.ProfileGitScopes[selectedProfileName]
 	if selectedGitScope == "" {
-		selectedGitScope = initCustomGitScopeSelection
+		selectedGitScope = firstInitGitScopeName(ctx.GitScopes)
 	}
-	selectedGit := initGitScopeDraft{
-		Host:            draft.GitHost,
-		AuthMode:        config.GitAuthMode(draft.GitAuth),
-		CredentialStore: initCredentialStoreDraftValue(draft.GitCredentialStore),
-		CredentialRef:   strings.TrimSpace(draft.GitCredentialRef),
+	if _, ok := ctx.GitScopes[selectedGitScope]; !ok {
+		selectedGitScope = firstInitGitScopeName(ctx.GitScopes)
 	}
-	if scopeName := ctx.ProfileGitScopes[selectedProfileName]; scopeName != "" {
-		if scope, ok := ctx.GitScopes[scopeName]; ok {
-			selectedGit = scope
-		}
-	}
+	applyGitScopeSelection(&draft, selectedGitScope, ctx.GitScopes)
+	selectedGit := ctx.GitScopes[selectedGitScope]
 
 	reviewerEntity := initReviewerEntityDraftFromSeedDraft(draft)
 	selectedReviewerEntity := ctx.ProfileReviewerEntities[selectedProfileName]
@@ -358,12 +365,6 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	llmRuntimeOptions, selectedLLMRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, ctx.ProfileLLMRuntimes[selectedProfileName], draft)
 	modelMapLLM := initProfileEditorModelMapLLM(draft, selectedLLMRuntime, llmRuntimes)
 
-	standardGitCredentialRef, err := initStandardGitCredentialRef(draft.ProfileName, selectedGitScope, ctx.GitScopes)
-	if err != nil {
-		return initProfileV2Editor{}, err
-	}
-	gitStorageLabel := initEffectiveStorageLabelValue(draft.GitCredentialRef, standardGitCredentialRef)
-	gitStorageLabelUsesDefault := initStorageLabelUsesDefault(gitStorageLabel, standardGitCredentialRef)
 	standardLLMCredentialRef, err := initStandardLLMCredentialRef(draft.ProfileName, selectedLLMRuntime, llmRuntimes)
 	if err != nil {
 		return initProfileV2Editor{}, err
@@ -371,33 +372,57 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 	if strings.TrimSpace(draft.LLMCredentialRef) == "" {
 		draft.LLMCredentialRef = standardLLMCredentialRef
 	}
+	llmCredentialAutoManaged := strings.TrimSpace(draft.LLMCredentialRef) != "" && strings.TrimSpace(draft.LLMCredentialRef) == strings.TrimSpace(standardLLMCredentialRef)
 	storeOptions := initCredentialStoreOptions(ctx.ExistingConfig)
 
 	var document initProfileV2Document
 	document.addSection("Review profile", "Repository routing and review composition.")
-	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "Human-friendly name for this review profile.", draft.ProfileName, validateProfileName)
+	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initRepositoryAccessProfileOptions(ctx.GitScopes), draft, true)
 	initProfileV2AppendRouteSection(&document, routeText)
-	initProfileV2AppendGitScopeSection(&document, selectedGitScope, initGitScopeOptions(ctx.GitScopes), draft, selectedGitScope == initCustomGitScopeSelection || len(ctx.GitScopes) > 1)
 	document.addEditableSelect(initProfileV2FieldReviewerEntity, "Reviewer entity", reviewerEntitySelectionDescription(), reviewerEntityOptions, selectedReviewerEntity)
+	initProfileV2AppendReviewerGitHubAppInstallationSection(&document, selectedReviewerEntity, ctx.ReviewerEntities, draft)
 	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, selectedLLMRuntime)
 	initProfileV2AppendLLMStorageSection(&document, storeOptions, draft.LLMCredentialStore, draft.LLMCredentialRef, !initLLMStorageLabelRelevant(selectedLLMRuntime, llmRuntimes))
 	document.addEditableSelect(initProfileV2FieldReviewerModelTier, initReviewerModelTierTitle, initReviewerModelTierDescription, initReviewerModelTierOptions(), draft.LLMReviewerModelTier)
 	initProfileV2AppendModelMapSection(&document, modelMapLLM, draft.ModelMap)
+	profileNameInput := initProfileV2ProfileNameInput(ctx, selectedExistingProfile, draft)
+	profileNameValidate := validateProfileName
+	if selectedExistingProfile == nil && strings.TrimSpace(profileNameInput) == "" {
+		profileNameValidate = validateOptionalProfileName
+	}
+	document.addEditableInput(initProfileV2FieldProfileName, "Profile name", "Human-friendly name for this review profile.", profileNameInput, profileNameValidate)
 	initProfileV2AppendAgentSourcesSection(&document, draft.AgentSources)
-	initProfileV2AppendReviewPolicySection(&document, draft.ReviewPolicy)
-	initProfileV2AppendGitStorageSection(&document, storeOptions, draft.GitCredentialStore, gitStorageLabel)
+	initProfileV2AppendReviewPolicySection(&document, draft.ReviewPolicy, initProfileV2ReviewerEntityKindForSelection(selectedReviewerEntity, ctx.ReviewerEntities) == initReviewerEntityKindGitHubApp)
 	initProfileV2AppendProfileActionSection(&document)
+	if index := document.fieldIndexByID(initProfileV2FieldLLMCredentialName); index >= 0 {
+		document[index].AutoManaged = llmCredentialAutoManaged
+	}
 	return initProfileV2Editor{
-		Draft:                      draft,
-		GitScopes:                  maps.Clone(ctx.GitScopes),
-		ReviewerEntities:           maps.Clone(ctx.ReviewerEntities),
-		LLMRuntimes:                maps.Clone(llmRuntimes),
-		CredentialStoreOptions:     storeOptions,
-		SelectedGitScope:           selectedGitScope,
-		InitialGitStorageLabel:     gitStorageLabel,
-		GitStorageLabelUsesDefault: gitStorageLabelUsesDefault,
-		Document:                   document,
+		Draft:                  draft,
+		GitScopes:              maps.Clone(ctx.GitScopes),
+		ReviewerEntities:       maps.Clone(ctx.ReviewerEntities),
+		LLMRuntimes:            maps.Clone(llmRuntimes),
+		CredentialStoreOptions: storeOptions,
+		SelectedGitScope:       selectedGitScope,
+		Document:               document,
 	}, nil
+}
+
+func validateOptionalProfileName(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return validateProfileName(value)
+}
+
+func initProfileV2ProfileNameInput(ctx initPromptContext, existingProfile *config.Profile, draft initDraft) string {
+	if existingProfile != nil {
+		return draft.ProfileName
+	}
+	if strings.TrimSpace(ctx.RequestedProfileName) == initialInitProfileName && strings.TrimSpace(draft.ProfileName) == initialInitProfileName {
+		return ""
+	}
+	return draft.ProfileName
 }
 
 func initProfileV2Selection(ctx initPromptContext, selection string) (string, *config.Profile, string) {
@@ -420,25 +445,28 @@ const (
 )
 
 const (
-	initProfileV2FieldProfileName          initProfileV2FieldID = "profile_name"
-	initProfileV2FieldRoutes               initProfileV2FieldID = "routes"
-	initProfileV2FieldGitScope             initProfileV2FieldID = "git_scope"
-	initProfileV2FieldGitHost              initProfileV2FieldID = "git_host"
-	initProfileV2FieldGitAuth              initProfileV2FieldID = "git_auth"
-	initProfileV2FieldReviewerEntity       initProfileV2FieldID = "reviewer_entity"
-	initProfileV2FieldLLMRuntime           initProfileV2FieldID = "llm_runtime"
-	initProfileV2FieldReviewerModelTier    initProfileV2FieldID = "reviewer_model_tier"
-	initProfileV2FieldAgentSources         initProfileV2FieldID = "agent_sources"
-	initProfileV2FieldReviewMajorEvent     initProfileV2FieldID = "review_major_event"
-	initProfileV2FieldSelfApprove          initProfileV2FieldID = "self_approve"
-	initProfileV2FieldResolveThreads       initProfileV2FieldID = "resolve_threads"
-	initProfileV2FieldResolveAfter         initProfileV2FieldID = "resolve_after"
-	initProfileV2FieldGitCredentialStore   initProfileV2FieldID = "git_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
-	initProfileV2FieldGitCredentialName    initProfileV2FieldID = "git_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
-	initProfileV2FieldLLMCredentialSection initProfileV2FieldID = "llm_credentials_section"
-	initProfileV2FieldLLMCredentialStore   initProfileV2FieldID = "llm_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
-	initProfileV2FieldLLMCredentialName    initProfileV2FieldID = "llm_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
-	initProfileV2FieldProfileAction        initProfileV2FieldID = "profile_action"
+	initProfileV2FieldProfileName                          initProfileV2FieldID = "profile_name"
+	initProfileV2FieldRoutes                               initProfileV2FieldID = "routes"
+	initProfileV2FieldGitScope                             initProfileV2FieldID = "git_scope"
+	initProfileV2FieldGitHost                              initProfileV2FieldID = "git_host"
+	initProfileV2FieldGitAuth                              initProfileV2FieldID = "git_auth"
+	initProfileV2FieldGitHubAppID                          initProfileV2FieldID = "git_github_app_id" // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldReviewerEntity                       initProfileV2FieldID = "reviewer_entity"
+	initProfileV2FieldReviewerGitHubAppInstallationSection initProfileV2FieldID = "reviewer_github_app_installation_section"
+	initProfileV2FieldReviewerGitHubAppInstallationMode    initProfileV2FieldID = "reviewer_github_app_installation_mode"
+	initProfileV2FieldReviewerGitHubAppInstallationID      initProfileV2FieldID = "reviewer_github_app_installation_id" // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldLLMRuntime                           initProfileV2FieldID = "llm_runtime"
+	initProfileV2FieldReviewerModelTier                    initProfileV2FieldID = "reviewer_model_tier"
+	initProfileV2FieldAgentSources                         initProfileV2FieldID = "agent_sources"
+	initProfileV2FieldReviewMajorEvent                     initProfileV2FieldID = "review_major_event"
+	initProfileV2FieldSelfApprove                          initProfileV2FieldID = "self_approve"
+	initProfileV2FieldResolveThreads                       initProfileV2FieldID = "resolve_threads"
+	initProfileV2FieldGitCredentialStore                   initProfileV2FieldID = "git_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldGitCredentialName                    initProfileV2FieldID = "git_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldLLMCredentialSection                 initProfileV2FieldID = "llm_credentials_section"
+	initProfileV2FieldLLMCredentialStore                   initProfileV2FieldID = "llm_credential_store" // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldLLMCredentialName                    initProfileV2FieldID = "llm_credential_name"  // #nosec G101 -- this is a field ID, not a secret value.
+	initProfileV2FieldProfileAction                        initProfileV2FieldID = "profile_action"
 )
 
 func initProfileV2FieldModelMap(tier config.ModelTier) initProfileV2FieldID {
@@ -468,18 +496,61 @@ func initProfileV2AppendRouteSection(document *initProfileV2Document, routeText 
 	document.addEditableInput(initProfileV2FieldRoutes, "Route entries", "Examples: github.com/YourOrg; github.com/YourOrg/repo; github.com/YourOrg [RepoA, RepoB]. Leave blank for explicit --profile selection only.", routeText, validateInitProfileV2RouteText)
 }
 
-func initProfileV2AppendGitScopeSection(document *initProfileV2Document, selectedScope string, scopeOptions []huh.Option[string], draft initDraft, visible bool) {
+func initProfileV2AppendGitScopeSection(document *initProfileV2Document, selectedScope string, scopeOptions []huh.Option[string], _ initDraft, visible bool) {
 	if !visible {
 		return
 	}
-	customHidden := selectedScope != initCustomGitScopeSelection
-	document.addSection("Git scope", "Choose an existing Git scope or configure host/auth settings for this profile.")
-	document.addEditableSelect(initProfileV2FieldGitScope, "Git scope", "", scopeOptions, selectedScope)
-	document.addEditableInput(initProfileV2FieldGitHost, "Git scope host", "Git host this review profile applies to, such as github.com or github.mycompany.com.", draft.GitHost, validateRequiredText("git host is required"), initProfileV2FieldOptions{Hidden: customHidden})
-	document.addEditableSelect(initProfileV2FieldGitAuth, "Git scope auth mode", "", []huh.Option[string]{
-		huh.NewOption("Personal access token", string(config.GitAuthModePAT)),
-		huh.NewOption("GitHub App", string(config.GitAuthModeGitHubApp)),
-	}, draft.GitAuth, initProfileV2FieldOptions{Hidden: customHidden})
+	document.addSection("Repository access", "Choose how cr accesses Git repositories for this profile.")
+	document.addEditableSelect(initProfileV2FieldGitScope, "Repository access", "", scopeOptions, selectedScope)
+}
+
+func initProfileV2AppendReviewerGitHubAppInstallationSection(document *initProfileV2Document, selectedReviewerEntity string, entities map[string]initReviewerEntityDraft, draft initDraft) {
+	hidden := initProfileV2ReviewerEntityKindForSelection(selectedReviewerEntity, entities) != initReviewerEntityKindGitHubApp
+	mode := config.ProfileReviewerGitHubAppInstallationMode(strings.TrimSpace(draft.ReviewerGitHubAppInstallationMode))
+	if mode == "" {
+		mode = config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository
+	}
+	pinned := mode == config.ProfileReviewerGitHubAppInstallationPinned
+	document.addSectionField(
+		initProfileV2FieldReviewerGitHubAppInstallationSection,
+		"GitHub App installation",
+		"Choose how cr finds the GitHub App installation for this review profile. Discovery resolves the installation from each PR repository and supports profiles routed to multiple organizations or users. Pinning is only appropriate when every route for this profile uses the same installation.",
+		initProfileV2FieldOptions{Hidden: hidden},
+	)
+	document.addEditableSelect(
+		initProfileV2FieldReviewerGitHubAppInstallationMode,
+		"Installation lookup",
+		"",
+		initProfileV2ReviewerGitHubAppInstallationModeOptions(),
+		string(mode),
+		initProfileV2FieldOptions{Hidden: hidden},
+	)
+	document.addEditableInput(
+		initProfileV2FieldReviewerGitHubAppInstallationID,
+		"Installation ID",
+		"Required when pinning. Use one numeric GitHub App installation ID only when all routes for this profile share that installation.",
+		strings.TrimSpace(draft.ReviewerGitHubAppInstallationID),
+		validateOptionalGitHubAppInstallationID,
+		initProfileV2FieldOptions{Hidden: hidden || !pinned},
+	)
+}
+
+func initProfileV2ReviewerGitHubAppInstallationModeOptions() []huh.Option[string] {
+	return []huh.Option[string]{
+		huh.NewOption("Discover from PR repository at review time (recommended)", string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository)),
+		huh.NewOption("Pin one installation ID (advanced)", string(config.ProfileReviewerGitHubAppInstallationPinned)),
+	}
+}
+
+func initProfileV2ReviewerEntityKindForSelection(selection string, entities map[string]initReviewerEntityDraft) initReviewerEntityKind {
+	switch initReviewerEntityKind(selection) {
+	case initReviewerEntityKindUseGitIdentity, initReviewerEntityKindPAT, initReviewerEntityKindGitHubApp:
+		return initReviewerEntityKind(selection)
+	}
+	if entity, ok := entities[selection]; ok {
+		return entity.Kind
+	}
+	return initReviewerEntityKindUseGitIdentity
 }
 
 func initProfileV2AppendModelMapSection(document *initProfileV2Document, llm config.LLMConfig, modelMap config.ModelMap) {
@@ -499,22 +570,23 @@ func initProfileV2AppendAgentSourcesSection(document *initProfileV2Document, sou
 	document.addEditableTextarea(initProfileV2FieldAgentSources, "Additional trusted reviewer-agent directories", "Paths are deduplicated and normalized before save.", strings.Join(sources, "\n"))
 }
 
-func initProfileV2AppendReviewPolicySection(document *initProfileV2Document, policy config.ReviewPolicy) {
+func initProfileV2AppendReviewPolicySection(document *initProfileV2Document, policy config.ReviewPolicy, hideSelfApprove bool) {
 	if policy.MajorEvent == "" {
-		policy.MajorEvent = config.ReviewMajorEventComment
+		policy.MajorEvent = config.ReviewMajorEventRequestChanges
+	}
+	if policy.ResolveThreads == "" {
+		policy.ResolveThreads = config.ResolveThreadsAuto
 	}
 	document.addSection("Review policy", "Choose how cr posts major findings and handles review threads.")
-	document.addEditableSelect(initProfileV2FieldReviewMajorEvent, "Major findings event", "", []huh.Option[string]{
-		huh.NewOption("Comment", string(config.ReviewMajorEventComment)),
+	document.addEditableSelect(initProfileV2FieldReviewMajorEvent, "Major findings event", "Blocking findings always request changes. This controls what cr does when the highest severity is major: either request changes or leave a review comment.", []huh.Option[string]{
 		huh.NewOption("Request changes", string(config.ReviewMajorEventRequestChanges)),
+		huh.NewOption("Comment", string(config.ReviewMajorEventComment)),
 	}, string(policy.MajorEvent))
-	document.addEditableSelect(initProfileV2FieldSelfApprove, "Allow self-approve", "", initReviewPolicySelfApproveOptions(), initReviewPolicySelfApproveChoice(policy.AllowSelfApprove))
-	document.addEditableSelect(initProfileV2FieldResolveThreads, "Resolve threads", "", []huh.Option[string]{
-		huh.NewOption("Use built-in default", ""),
-		huh.NewOption("Auto-resolve", string(config.ResolveThreadsAuto)),
-		huh.NewOption("Never resolve", string(config.ResolveThreadsNever)),
+	document.addEditableSelect(initProfileV2FieldSelfApprove, "Allow self-approve", "Relevant when this profile posts using a user account. If that account authored the PR, cr downgrades approval to a comment unless enabled.", initReviewPolicySelfApproveOptions(), initReviewPolicySelfApproveChoice(policy.AllowSelfApprove), initProfileV2FieldOptions{Hidden: hideSelfApprove})
+	document.addEditableSelect(initProfileV2FieldResolveThreads, "Resolve threads", "Controls whether cr may mark inline discussion threads as \"resolved\" when it evaluates the dialog, and determines a decision has been made. When enabled, cr treats the final comment as the cached outcome of the discussion. This removes the discussion thread from future calls to the LLM provider, saving both time and tokens.", []huh.Option[string]{
+		huh.NewOption("Auto-resolve (recommended)", string(config.ResolveThreadsAuto)),
+		huh.NewOption("Never resolve automatically", string(config.ResolveThreadsNever)),
 	}, string(policy.ResolveThreads))
-	document.addEditableInput(initProfileV2FieldResolveAfter, "Resolve-after duration", "Optional. Leave blank to clear. Example: 24h or 30m.", policy.ResolveAfter, validateOptionalDuration)
 }
 
 func initProfileV2AppendGitStorageSection(document *initProfileV2Document, storeOptions []huh.Option[string], storeID string, credentialName string) {
@@ -589,6 +661,12 @@ func (m *initProfileV2ReadOnlyModel) handleFocusedInputKey(msg tea.KeyMsg) bool 
 		}
 		field.Value = initProfileV2InsertRunes(field.Value, field.Cursor, key.Runes)
 		field.Cursor += len(key.Runes)
+	case tea.KeySpace:
+		if msg.Alt {
+			return false
+		}
+		field.Value = initProfileV2InsertRunes(field.Value, field.Cursor, []rune{' '})
+		field.Cursor++
 	case tea.KeyBackspace, tea.KeyCtrlH:
 		field.Value, field.Cursor = initProfileV2DeleteBeforeCursor(field.Value, field.Cursor)
 	case tea.KeyDelete, tea.KeyCtrlD:
@@ -703,6 +781,25 @@ func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
 		m.syncGitScopeFields()
 		return
 	}
+	if id == initProfileV2FieldGitAuth {
+		m.syncGitScopeFields()
+		return
+	}
+	if id == initProfileV2FieldProfileName {
+		m.syncProfileNameDerivedCredentialFields()
+		return
+	}
+	if id == initProfileV2FieldLLMCredentialName {
+		m.document[index].AutoManaged = false
+	}
+	if id == initProfileV2FieldReviewerEntity {
+		m.syncReviewerGitHubAppInstallationFields(true)
+		return
+	}
+	if id == initProfileV2FieldReviewerGitHubAppInstallationMode {
+		m.syncReviewerGitHubAppInstallationFields(true)
+		return
+	}
 	if id == initProfileV2FieldLLMRuntime {
 		m.syncLLMCredentialFields(true)
 		m.syncModelMapFields()
@@ -744,29 +841,10 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 	if selectedGitScope == "" {
 		selectedGitScope = m.selectedGitScope
 	}
-	if selectedGitScope == "" {
-		selectedGitScope = initCustomGitScopeSelection
+	if selectedGitScope == "" || selectedGitScope == initCustomGitScopeSelection {
+		return draft, fmt.Errorf("repository access is required")
 	}
-	if selectedGitScope == initCustomGitScopeSelection {
-		gitHost := m.document.fieldValue(initProfileV2FieldGitHost)
-		if strings.TrimSpace(gitHost) != "" {
-			draft.GitHost = strings.TrimSpace(gitHost)
-		}
-		gitAuth := m.document.selectedValue(initProfileV2FieldGitAuth)
-		if gitAuth != "" {
-			draft.GitAuth = gitAuth
-		}
-	} else {
-		applyGitScopeSelection(&draft, selectedGitScope, m.gitScopes)
-	}
-	if m.document.fieldIndexByID(initProfileV2FieldGitCredentialName) >= 0 {
-		gitName := strings.TrimSpace(m.document.fieldValue(initProfileV2FieldGitCredentialName))
-		if err := validateRequiredCredentialRef(gitName); err != nil {
-			return draft, err
-		}
-		draft.GitCredentialStore = initCredentialStoreDraftValue(m.document.selectedValue(initProfileV2FieldGitCredentialStore))
-		draft.GitCredentialRef = gitName
-	}
+	applyGitScopeSelection(&draft, selectedGitScope, m.gitScopes)
 	if _, err := applyInitProfileRoutes(nil, draft.ProfileName, draft.GitHost, routes); err != nil {
 		return draft, err
 	}
@@ -775,6 +853,31 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 		applyReviewerEntityInventorySelection(&draft, selectedReviewerEntity, m.reviewerEntities)
 		reviewerMode := string(initReviewerEntityDraftFromSeedDraft(draft).Kind)
 		applyReviewerEntitySelection(&draft, reviewerMode)
+	}
+	if initProfileV2ReviewerEntityKindForSelection(selectedReviewerEntity, m.reviewerEntities) == initReviewerEntityKindGitHubApp {
+		mode := config.ProfileReviewerGitHubAppInstallationMode(strings.TrimSpace(m.document.selectedValue(initProfileV2FieldReviewerGitHubAppInstallationMode)))
+		if mode == "" {
+			mode = config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository
+		}
+		draft.ReviewerGitHubAppInstallationMode = string(mode)
+		switch mode {
+		case config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository:
+			draft.ReviewerGitHubAppInstallationID = ""
+		case config.ProfileReviewerGitHubAppInstallationPinned:
+			installationID := strings.TrimSpace(m.document.fieldValue(initProfileV2FieldReviewerGitHubAppInstallationID))
+			if installationID == "" {
+				return draft, fmt.Errorf("GitHub App installation ID is required when lookup is pinned")
+			}
+			if err := validateOptionalGitHubAppInstallationID(installationID); err != nil {
+				return draft, err
+			}
+			draft.ReviewerGitHubAppInstallationID = installationID
+		default:
+			return draft, fmt.Errorf("GitHub App installation lookup %q is invalid", mode)
+		}
+	} else {
+		draft.ReviewerGitHubAppInstallationMode = ""
+		draft.ReviewerGitHubAppInstallationID = ""
 	}
 	selectedLLMRuntime := m.document.selectedValue(initProfileV2FieldLLMRuntime)
 	if selectedLLMRuntime == initConfigureNewLLMRuntimeSelection {
@@ -836,6 +939,25 @@ func (m initProfileV2ReadOnlyModel) normalizeStorageLabels(*initDraft, string, s
 	return nil
 }
 
+func (m *initProfileV2ReadOnlyModel) syncProfileNameDerivedCredentialFields() {
+	index := m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName)
+	if index < 0 || m.document[index].Hidden || !m.document[index].AutoManaged {
+		return
+	}
+	ref, err := initStandardLLMCredentialRef(
+		m.document.fieldValue(initProfileV2FieldProfileName),
+		m.document.selectedValue(initProfileV2FieldLLMRuntime),
+		m.llmRuntimes,
+	)
+	if err == nil && strings.TrimSpace(ref) != "" {
+		m.setFieldValue(initProfileV2FieldLLMCredentialName, ref)
+		if index = m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName); index >= 0 {
+			m.document[index].AutoManaged = true
+		}
+	}
+	m.validateField(m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName))
+}
+
 func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
 	selectedGitScope := m.document.selectedValue(initProfileV2FieldGitScope)
 	if selectedGitScope == "" {
@@ -845,19 +967,18 @@ func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
 		selectedGitScope = initCustomGitScopeSelection
 	}
 	m.selectedGitScope = selectedGitScope
-	custom := selectedGitScope == initCustomGitScopeSelection
-	if !custom {
-		if scope, ok := m.gitScopes[selectedGitScope]; ok {
-			m.setFieldValue(initProfileV2FieldGitHost, scope.Host)
-			m.selectFieldValue(initProfileV2FieldGitAuth, string(scope.AuthMode))
-			m.selectFieldValue(initProfileV2FieldGitCredentialStore, initCredentialStoreDraftValue(scope.CredentialStore))
-			if strings.TrimSpace(scope.CredentialRef) != "" {
-				m.setFieldValue(initProfileV2FieldGitCredentialName, scope.CredentialRef)
-			}
+	if scope, ok := m.gitScopes[selectedGitScope]; ok {
+		m.setFieldValue(initProfileV2FieldGitHost, scope.Host)
+		m.selectFieldValue(initProfileV2FieldGitAuth, string(scope.AuthMode))
+		m.setFieldValue(initProfileV2FieldGitHubAppID, scope.GitHubAppID)
+		m.selectFieldValue(initProfileV2FieldGitCredentialStore, initCredentialStoreDraftValue(scope.CredentialStore))
+		if strings.TrimSpace(scope.CredentialRef) != "" {
+			m.setFieldValue(initProfileV2FieldGitCredentialName, scope.CredentialRef)
 		}
 	}
-	m.setFieldHidden(initProfileV2FieldGitHost, !custom)
-	m.setFieldHidden(initProfileV2FieldGitAuth, !custom)
+	m.setFieldHidden(initProfileV2FieldGitHost, true)
+	m.setFieldHidden(initProfileV2FieldGitAuth, true)
+	m.setFieldHidden(initProfileV2FieldGitHubAppID, true)
 	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Hidden {
 		m.focused = m.document.nextFocusableField(m.focused)
 		if m.focused >= len(m.document) || m.document[m.focused].Hidden {
@@ -865,6 +986,37 @@ func (m *initProfileV2ReadOnlyModel) syncGitScopeFields() {
 		}
 	}
 	m.validateAll()
+}
+
+func (m *initProfileV2ReadOnlyModel) syncReviewerGitHubAppInstallationFields(reset bool) {
+	kind := initProfileV2ReviewerEntityKindForSelection(m.document.selectedValue(initProfileV2FieldReviewerEntity), m.reviewerEntities)
+	visible := kind == initReviewerEntityKindGitHubApp
+	mode := config.ProfileReviewerGitHubAppInstallationMode(strings.TrimSpace(m.document.selectedValue(initProfileV2FieldReviewerGitHubAppInstallationMode)))
+	if mode == "" {
+		mode = config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository
+		m.selectFieldValue(initProfileV2FieldReviewerGitHubAppInstallationMode, string(mode))
+	}
+	pinned := visible && mode == config.ProfileReviewerGitHubAppInstallationPinned
+	m.setFieldHidden(initProfileV2FieldReviewerGitHubAppInstallationSection, !visible)
+	m.setFieldHidden(initProfileV2FieldReviewerGitHubAppInstallationMode, !visible)
+	m.setFieldHidden(initProfileV2FieldReviewerGitHubAppInstallationID, !pinned)
+	m.setFieldHidden(initProfileV2FieldSelfApprove, visible)
+	if !visible {
+		m.selectFieldValue(initProfileV2FieldReviewerGitHubAppInstallationMode, string(config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository))
+		m.setFieldValue(initProfileV2FieldReviewerGitHubAppInstallationID, "")
+	} else {
+		m.selectFieldValue(initProfileV2FieldSelfApprove, initSelfApproveDisallow)
+	}
+	if visible && reset && !pinned {
+		m.setFieldValue(initProfileV2FieldReviewerGitHubAppInstallationID, "")
+	}
+	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Hidden {
+		m.focused = m.document.nextFocusableField(m.focused)
+		if m.focused >= len(m.document) || m.document[m.focused].Hidden {
+			m.focused = m.document.previousFocusableField(len(m.document))
+		}
+	}
+	m.validateField(m.document.fieldIndexByID(initProfileV2FieldReviewerGitHubAppInstallationID))
 }
 
 func (m *initProfileV2ReadOnlyModel) syncLLMCredentialFields(reset bool) {
@@ -882,15 +1034,25 @@ func (m *initProfileV2ReadOnlyModel) syncLLMCredentialFields(reset bool) {
 	if !needsCredential {
 		return
 	}
-	if reset {
+	credentialNameIndex := m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName)
+	shouldPopulate := reset
+	if !shouldPopulate && credentialNameIndex >= 0 && strings.TrimSpace(m.document[credentialNameIndex].Value) == "" {
+		shouldPopulate = true
+	}
+	if shouldPopulate {
+		autoManaged := false
 		if strings.TrimSpace(draft.LLMCredentialRef) == "" {
-			ref, err := credentials.FormatRef(strings.TrimSpace(m.document.fieldValue(initProfileV2FieldProfileName)) + "-llm")
+			ref, err := initStandardLLMCredentialRef(m.document.fieldValue(initProfileV2FieldProfileName), selectedLLMRuntime, m.llmRuntimes)
 			if err == nil {
 				draft.LLMCredentialRef = ref
+				autoManaged = true
 			}
 		}
 		m.selectFieldValue(initProfileV2FieldLLMCredentialStore, initCredentialStoreDraftValue(draft.LLMCredentialStore))
 		m.setFieldValue(initProfileV2FieldLLMCredentialName, draft.LLMCredentialRef)
+		if credentialNameIndex = m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName); credentialNameIndex >= 0 {
+			m.document[credentialNameIndex].AutoManaged = autoManaged
+		}
 	}
 	m.validateField(m.document.fieldIndexByID(initProfileV2FieldLLMCredentialName))
 }
@@ -950,17 +1112,20 @@ func initProfileV2AgentSourcesFromDocument(document initProfileV2Document) []str
 func initProfileV2ReviewPolicyFromDocument(document initProfileV2Document) (config.ReviewPolicy, error) {
 	majorEvent := config.ReviewMajorEvent(document.selectedValue(initProfileV2FieldReviewMajorEvent))
 	if majorEvent == "" {
-		majorEvent = config.ReviewMajorEventComment
+		majorEvent = config.ReviewMajorEventRequestChanges
 	}
-	resolveAfter := strings.TrimSpace(document.fieldValue(initProfileV2FieldResolveAfter))
-	if err := validateOptionalDuration(resolveAfter); err != nil {
-		return config.ReviewPolicy{}, err
+	resolveThreads := config.ResolveThreadsPolicy(strings.TrimSpace(document.selectedValue(initProfileV2FieldResolveThreads)))
+	if resolveThreads == "" {
+		resolveThreads = config.ResolveThreadsAuto
+	}
+	allowSelfApprove := initReviewPolicyAllowSelfApprove(document.selectedValue(initProfileV2FieldSelfApprove))
+	if index := document.fieldIndexByID(initProfileV2FieldSelfApprove); index >= 0 && document[index].Hidden {
+		allowSelfApprove = false
 	}
 	return config.ReviewPolicy{
 		MajorEvent:       majorEvent,
-		AllowSelfApprove: initReviewPolicyAllowSelfApprove(document.selectedValue(initProfileV2FieldSelfApprove)),
-		ResolveThreads:   config.ResolveThreadsPolicy(strings.TrimSpace(document.selectedValue(initProfileV2FieldResolveThreads))),
-		ResolveAfter:     resolveAfter,
+		AllowSelfApprove: allowSelfApprove,
+		ResolveThreads:   resolveThreads,
 	}, nil
 }
 
@@ -1131,7 +1296,6 @@ var initProfileV2HeadingSet = func() map[string]bool {
 		"Major findings event":    true,
 		"Allow self-approve":      true,
 		"Resolve threads":         true,
-		"Resolve-after duration":  true,
 		"Git credentials":         true,
 		"Git credential store":    true,
 		"Git credential name":     true,

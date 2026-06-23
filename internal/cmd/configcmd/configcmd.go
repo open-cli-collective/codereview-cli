@@ -696,10 +696,16 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if profile.LLM.ModelMap == nil {
-				profile.LLM.ModelMap = config.ModelMap{}
+			runtimeName, runtime, err := activeProfileLLMRuntime(cfg, profileName, profile)
+			if err != nil {
+				return cmderr.Config(err)
 			}
-			profile.LLM.ModelMap[string(tier)] = model
+			if runtime.ModelMap == nil {
+				runtime.ModelMap = config.ModelMap{}
+			}
+			runtime.ModelMap[string(tier)] = model
+			cfg.LLMRuntimes[runtimeName] = runtime
+			profile.LLM = runtime
 			cfg.Profiles[profileName] = profile
 			if err := saveConfigFile(path, cfg); err != nil {
 				return cmderr.Config(err)
@@ -727,12 +733,18 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if profile.LLM.ModelMap != nil {
-				delete(profile.LLM.ModelMap, string(tier))
-				if len(profile.LLM.ModelMap) == 0 {
-					profile.LLM.ModelMap = nil
+			runtimeName, runtime, err := activeProfileLLMRuntime(cfg, profileName, profile)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			if runtime.ModelMap != nil {
+				delete(runtime.ModelMap, string(tier))
+				if len(runtime.ModelMap) == 0 {
+					runtime.ModelMap = nil
 				}
 			}
+			cfg.LLMRuntimes[runtimeName] = runtime
+			profile.LLM = runtime
 			cfg.Profiles[profileName] = profile
 			if err := saveConfigFile(path, cfg); err != nil {
 				return cmderr.Config(err)
@@ -766,7 +778,13 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 					return exitcode.Usage(fmt.Errorf("--provider %q does not match active profile provider %q", guard, profile.LLM.Provider))
 				}
 			}
-			profile.LLM.ModelMap = nil
+			runtimeName, runtime, err := activeProfileLLMRuntime(cfg, profileName, profile)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			runtime.ModelMap = nil
+			cfg.LLMRuntimes[runtimeName] = runtime
+			profile.LLM = runtime
 			cfg.Profiles[profileName] = profile
 			if err := saveConfigFile(path, cfg); err != nil {
 				return cmderr.Config(err)
@@ -897,6 +915,18 @@ func loadActiveProfile(opts *root.Options) (string, config.File, string, config.
 		return "", config.File{}, "", config.Profile{}, cmderr.Config(err)
 	}
 	return path, cfg, profileName, profile, nil
+}
+
+func activeProfileLLMRuntime(cfg config.File, profileName string, profile config.Profile) (string, config.LLMConfig, error) {
+	runtimeName := strings.TrimSpace(profile.LLMRuntime)
+	if runtimeName == "" {
+		return "", config.LLMConfig{}, fmt.Errorf("%w: profiles.%s.llm_runtime is required", config.ErrInvalid, profileName)
+	}
+	runtime, ok := cfg.LLMRuntimes[runtimeName]
+	if !ok {
+		return "", config.LLMConfig{}, fmt.Errorf("%w: profiles.%s.llm_runtime %q", config.ErrProfileNotFound, profileName, runtimeName)
+	}
+	return runtimeName, runtime, nil
 }
 
 func parseModelTierArg(raw string) (config.ModelTier, error) {

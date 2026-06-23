@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -75,9 +76,9 @@ func newGitHubAppFromConfig(ctx context.Context, profile string, store TokenStor
 	if now == nil {
 		now = time.Now
 	}
-	issuer, err := readRequiredCredential(store, profile, credentials.GitHubAppIDKey)
-	if err != nil {
-		return nil, gitprovider.Credential{}, err
+	issuer := strings.TrimSpace(opts.AppID)
+	if issuer == "" {
+		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("github app app_id is required in config for github_app auth"))
 	}
 	privateKeyPEM, err := readRequiredCredential(store, profile, credentials.GitHubAppPrivateKeyKey)
 	if err != nil {
@@ -87,12 +88,9 @@ func newGitHubAppFromConfig(ctx context.Context, profile string, store TokenStor
 	if err != nil {
 		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", err)
 	}
-	installationID, err := readOptionalCredential(store, profile, credentials.GitHubAppInstallationIDKey)
-	if err != nil {
-		return nil, gitprovider.Credential{}, err
-	}
+	installationID := strings.TrimSpace(opts.InstallationID)
 	if !canResolveInstallation(installationID, opts.InstallationLookup) {
-		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("github app credential %s/%s is required without repository context", profile, credentials.GitHubAppInstallationIDKey))
+		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("github app installation discovery requires repository context; pin an installation id or run against a repository"))
 	}
 	auth := &githubAppAuth{
 		issuer:         issuer,
@@ -170,14 +168,14 @@ func (a *githubAppAuth) resolveInstallation(ctx context.Context, op gitprovider.
 		endpoint := restURL(a.baseURL, "app", "installations", a.installationID)
 		var installation githubAppInstallation
 		if err := a.doAppREST(ctx, op, http.MethodGet, endpoint, jwt, nil, &installation); err != nil {
-			return githubAppInstallation{}, err
+			return githubAppInstallation{}, mapPinnedInstallationLookupError(op, a.installationID, err)
 		}
 		return installation, nil
 	}
 	endpoint := restURL(a.baseURL, "repos", a.lookup.Owner, a.lookup.Repo, "installation")
 	var installation githubAppInstallation
 	if err := a.doAppREST(ctx, op, http.MethodGet, endpoint, jwt, nil, &installation); err != nil {
-		return githubAppInstallation{}, err
+		return githubAppInstallation{}, mapRepositoryInstallationLookupError(op, a.lookup.Owner, a.lookup.Repo, err)
 	}
 	return installation, nil
 }
@@ -186,7 +184,7 @@ func (a *githubAppAuth) createInstallationToken(ctx context.Context, op gitprovi
 	endpoint := restURL(a.baseURL, "app", "installations", strconv.FormatInt(installationID, 10), "access_tokens")
 	var response installationTokenResponse
 	if err := a.doAppREST(ctx, op, http.MethodPost, endpoint, jwt, map[string]any{}, &response); err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, mapCreateInstallationTokenError(op, strconv.FormatInt(installationID, 10), err)
 	}
 	if strings.TrimSpace(response.Token) == "" {
 		return "", time.Time{}, gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("github app installation token is empty"))
@@ -195,6 +193,40 @@ func (a *githubAppAuth) createInstallationToken(ctx context.Context, op gitprovi
 		return "", time.Time{}, gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("github app installation token expiry is empty"))
 	}
 	return response.Token, response.ExpiresAt, nil
+}
+
+func mapPinnedInstallationLookupError(op gitprovider.Operation, installationID string, err error) error {
+	switch {
+	case errors.Is(err, gitprovider.ErrNotFound):
+		return gitprovider.WrapError(gitprovider.ErrNotFound, op, fmt.Errorf("github app installation %s was not found for this app; check the installation id configured on the review profile: %w", installationID, err))
+	case errors.Is(err, gitprovider.ErrPermission):
+		return gitprovider.WrapError(gitprovider.ErrPermission, op, fmt.Errorf("github app installation %s is not accessible to this app; check the installation id configured on the review profile: %w", installationID, err))
+	default:
+		return err
+	}
+}
+
+func mapRepositoryInstallationLookupError(op gitprovider.Operation, owner, repo string, err error) error {
+	repository := strings.Trim(strings.TrimSpace(owner)+"/"+strings.TrimSpace(repo), "/")
+	switch {
+	case errors.Is(err, gitprovider.ErrNotFound):
+		return gitprovider.WrapError(gitprovider.ErrNotFound, op, fmt.Errorf("github app is not installed for %s or cannot access that repository; install the app for this repository or pin the correct installation id on the review profile: %w", repository, err))
+	case errors.Is(err, gitprovider.ErrPermission):
+		return gitprovider.WrapError(gitprovider.ErrPermission, op, fmt.Errorf("github app cannot access installation information for %s; check app installation access and permissions: %w", repository, err))
+	default:
+		return err
+	}
+}
+
+func mapCreateInstallationTokenError(op gitprovider.Operation, installationID string, err error) error {
+	switch {
+	case errors.Is(err, gitprovider.ErrNotFound):
+		return gitprovider.WrapError(gitprovider.ErrNotFound, op, fmt.Errorf("github app installation %s was not found while creating an installation token: %w", installationID, err))
+	case errors.Is(err, gitprovider.ErrPermission):
+		return gitprovider.WrapError(gitprovider.ErrPermission, op, fmt.Errorf("github app installation %s cannot create an installation token with the requested access; check app installation access and permissions: %w", installationID, err))
+	default:
+		return err
+	}
 }
 
 func (a *githubAppAuth) doAppREST(ctx context.Context, op gitprovider.Operation, method, endpoint, jwt string, in any, out any) error {
@@ -277,17 +309,6 @@ func canResolveInstallation(installationID string, lookup *InstallationLookup) b
 		return true
 	}
 	return lookup != nil && strings.TrimSpace(lookup.Owner) != "" && strings.TrimSpace(lookup.Repo) != ""
-}
-
-func readOptionalCredential(store TokenStore, profile, key string) (string, error) {
-	exists, err := store.Exists(profile, key)
-	if err != nil {
-		return "", gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("check github app credential %s/%s: %w", profile, key, err))
-	}
-	if !exists {
-		return "", nil
-	}
-	return readRequiredCredential(store, profile, key)
 }
 
 func parseGitHubAppPrivateKey(privateKeyPEM string) (*rsa.PrivateKey, error) {

@@ -877,6 +877,7 @@ func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["work"]
 	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
+	work.ReviewerCredentials.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
 	cmd, out := newTestCommand(path)
@@ -897,9 +898,7 @@ func TestConfigShowGitHubAppCredentialStatus(t *testing.T) {
 	}
 	missing := false
 	want := []view.KeyStatus{
-		{Key: credentials.GitHubAppIDKey, Required: true, Present: &missing, Status: "missing"},
 		{Key: credentials.GitHubAppPrivateKeyKey, Required: true, Present: &missing, Status: "missing"},
-		{Key: credentials.GitHubAppInstallationIDKey, Required: false, Present: &missing, Status: "missing"},
 	}
 	if reviewer.Ref != "codereview/work-reviewer" || reviewer.Mode != "github_app" || !reflect.DeepEqual(reviewer.Keys, want) {
 		t.Fatalf("reviewer credential status = %#v, want app keys %#v", reviewer, want)
@@ -1453,7 +1452,7 @@ func TestConfigRetentionSetMutatesAndPreservesUnrelatedConfig(t *testing.T) {
 	if saved.Data.Retention.MaxAgeDaysValue() != 30 || saved.Data.Retention.Enforcement != config.RetentionManualOnly {
 		t.Fatalf("retention = %#v, want 30/manual_only", saved.Data.Retention)
 	}
-	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) {
+	if !reflect.DeepEqual(saved.Profiles, config.Normalize(cfg).Profiles) {
 		t.Fatalf("profiles = %#v, want preserved", saved.Profiles)
 	}
 	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
@@ -1595,7 +1594,7 @@ func TestConfigRetentionResetRestoresDefaultsAndPreservesConfig(t *testing.T) {
 	if saved.Data.Retention.MaxAgeDaysValue() != 90 || saved.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 90/at_write", saved.Data.Retention)
 	}
-	if !reflect.DeepEqual(saved.Profiles, cfg.Profiles) {
+	if !reflect.DeepEqual(saved.Profiles, config.Normalize(cfg).Profiles) {
 		t.Fatalf("profiles = %#v, want preserved", saved.Profiles)
 	}
 	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
@@ -1871,6 +1870,11 @@ func TestConfigShowReservedAuthModeExitCode(t *testing.T) {
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
 profiles:
   home:
     git:
@@ -1879,10 +1883,9 @@ profiles:
       credential:
         store: test-memory
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
 `)
 	cmd, _ := newTestCommand(path)
 
@@ -1970,19 +1973,16 @@ func TestConfigClearGitHubAppCredentialMatrix(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	home := cfg.Profiles["home"]
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	home.Git.CredentialRef = "codereview/home-app"
 	home.Git.Credential.Name = "codereview/home-app"
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
 	appKeys := []string{
-		credentials.GitHubAppIDKey,
-		credentials.GitHubAppInstallationIDKey,
 		credentials.GitHubAppPrivateKeyKey,
 	}
 	seedFileBackend(t, "home-app", map[string]string{
-		credentials.GitHubAppIDKey:             "12345",
-		credentials.GitHubAppPrivateKeyKey:     "private-key",
-		credentials.GitHubAppInstallationIDKey: "42",
+		credentials.GitHubAppPrivateKeyKey: "private-key",
 	})
 
 	dryRunCmd, dryRunOut := newTestCommand(path)

@@ -691,7 +691,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	provider, credential, err := newGitProvider(providerGit, providerStore, gitProviderOptions(runtimeOpts.PRRef))
+	provider, credential, err := newGitProvider(providerGit, providerStore, gitProviderOptions(profile, providerGit, runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
@@ -747,10 +747,16 @@ func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 	if profile.ReviewerCredentials == nil {
 		return profile.Git
 	}
+	var githubApp *config.GitHubAppConfig
+	if profile.ReviewerCredentials.GitHubApp != nil {
+		app := *profile.ReviewerCredentials.GitHubApp
+		githubApp = &app
+	}
 	return config.GitConfig{
 		Host:          profile.Git.Host,
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
 		Credential:    profile.ReviewerCredentials.Credential,
+		GitHubApp:     githubApp,
 		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}
@@ -801,14 +807,19 @@ func normalizeRuntimeProfile(profile config.Profile) config.Profile {
 	}).Profiles["runtime"]
 }
 
-func gitProviderOptions(ref gitprovider.PRRef) githubprovider.Options {
-	if strings.TrimSpace(ref.Owner) == "" || strings.TrimSpace(ref.Repo) == "" {
-		return githubprovider.Options{}
+func gitProviderOptions(profile config.Profile, git config.GitConfig, ref gitprovider.PRRef) githubprovider.Options {
+	opts := githubprovider.Options{}
+	if installationID := config.PinnedGitHubAppInstallationIDForGit(profile, git); installationID != "" {
+		opts.InstallationID = installationID
+		return opts
 	}
-	return githubprovider.Options{InstallationLookup: &githubprovider.InstallationLookup{
-		Owner: ref.Owner,
-		Repo:  ref.Repo,
-	}}
+	if strings.TrimSpace(ref.Owner) != "" && strings.TrimSpace(ref.Repo) != "" {
+		opts.InstallationLookup = &githubprovider.InstallationLookup{
+			Owner: ref.Owner,
+			Repo:  ref.Repo,
+		}
+	}
+	return opts
 }
 
 func runtimeLayout() (statepaths.Layout, error) {

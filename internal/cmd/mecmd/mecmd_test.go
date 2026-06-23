@@ -167,9 +167,7 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("work-reviewer", map[string]string{
-		credentials.GitHubAppIDKey:             "12345",
-		credentials.GitHubAppPrivateKeyKey:     privateKey,
-		credentials.GitHubAppInstallationIDKey: "42",
+		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle reviewer: %v", err)
 	}
@@ -181,6 +179,14 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	cfg = withCredentialStore(cfg, testFileCredentialStoreID)
 	work := cfg.Profiles["work"]
 	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
+	work.ReviewerCredentials.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
+	cfg.Profiles["work"] = work
+	cfg = config.Normalize(cfg)
+	work = cfg.Profiles["work"]
+	work.Reviewer.GitHubAppInstallation = &config.ProfileReviewerGitHubAppInstallation{
+		Mode:           config.ProfileReviewerGitHubAppInstallationPinned,
+		InstallationID: "42",
+	}
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
 
@@ -461,7 +467,6 @@ func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T)
 	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("home", map[string]string{
-		credentials.GitHubAppIDKey:         "12345",
 		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle home: %v", err)
@@ -469,6 +474,7 @@ func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T)
 	cfg := fileBackendConfig(t)
 	home := cfg.Profiles["home"]
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
 	var out bytes.Buffer
@@ -484,8 +490,8 @@ func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T)
 	if !errors.Is(err, gitprovider.ErrAuth) {
 		t.Fatalf("Execute error = %v, want ErrAuth", err)
 	}
-	if !strings.Contains(err.Error(), credentials.GitHubAppInstallationIDKey) {
-		t.Fatalf("Execute error = %v, want missing installation id detail", err)
+	if !strings.Contains(err.Error(), "installation discovery requires repository context") {
+		t.Fatalf("Execute error = %v, want missing repository context detail", err)
 	}
 	if strings.Contains(err.Error()+out.String(), privateKey) {
 		t.Fatalf("output leaked private key: err=%v out=%q", err, out.String())
@@ -498,15 +504,14 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
 	if _, err := store.SetBundle("home", map[string]string{
-		credentials.GitHubAppIDKey:             "12345",
-		credentials.GitHubAppPrivateKeyKey:     privateKey,
-		credentials.GitHubAppInstallationIDKey: "42",
+		credentials.GitHubAppPrivateKeyKey: privateKey,
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle home: %v", err)
 	}
 	cfg := fileBackendConfig(t)
 	home := cfg.Profiles["home"]
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
+	home.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	home.ReviewerCredentials = nil
 	cfg.Profiles["home"] = home
 	path := saveTestConfig(t, cfg)
@@ -535,8 +540,9 @@ func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
 		return &githubResolver{
 			cfg: cfg,
 			options: githubprovider.Options{
-				BaseURL:    server.URL,
-				GraphQLURL: server.URL + "/graphql",
+				BaseURL:        server.URL,
+				GraphQLURL:     server.URL + "/graphql",
+				InstallationID: "42",
 			},
 		}, nil, nil
 	})
@@ -567,6 +573,11 @@ func TestMeReservedAuthModeExitCode(t *testing.T) {
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
 profiles:
   home:
     git:
@@ -575,10 +586,9 @@ profiles:
       credential:
         store: test-memory
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
 `)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
@@ -604,6 +614,20 @@ func TestMeReviewerGitHubAppAuthModeUsesResolver(t *testing.T) {
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+reviewer_entities:
+  work-reviewer:
+    host: github.com
+    auth_mode: github_app
+    github_app:
+      app_id: "12345"
+    credential:
+      store: test-memory
+      name: codereview/work-reviewer
 profiles:
   work:
     git:
@@ -612,15 +636,12 @@ profiles:
       credential:
         store: test-memory
         name: codereview/work
-    reviewer_credentials:
-      auth_mode: github_app
-      credential:
-        store: test-memory
-        name: codereview/work-reviewer
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: entity
+      entity: work-reviewer
+      github_app_installation:
+        mode: discover_from_repository
+    llm_runtime: claude-cli
 `)
 	resolver := &fakeResolver{
 		identities: map[string]gitprovider.Identity{"codereview/work-reviewer": {Login: "cr-reviewer[bot]", ID: "12345"}},
@@ -647,6 +668,18 @@ func TestMeAllReservedAuthModeDoesNotOpenResolverFactory(t *testing.T) {
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+reviewer_entities:
+  work-reviewer:
+    host: github.com
+    auth_mode: oauth_device
+    credential:
+      store: test-memory
+      name: codereview/work-reviewer
 profiles:
   home:
     git:
@@ -655,10 +688,9 @@ profiles:
       credential:
         store: test-memory
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
   work:
     git:
       host: github.com
@@ -666,15 +698,10 @@ profiles:
       credential:
         store: test-memory
         name: codereview/work
-    reviewer_credentials:
-      auth_mode: oauth_device
-      credential:
-        store: test-memory
-        name: codereview/work-reviewer
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: entity
+      entity: work-reviewer
+    llm_runtime: claude-cli
 `)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
@@ -697,6 +724,18 @@ func TestMeAllReservedGitAuthModeWithReviewerDoesNotOpenResolverFactory(t *testi
     test-memory:
       backend:
         kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+reviewer_entities:
+  work-reviewer:
+    host: github.com
+    auth_mode: pat
+    credential:
+      store: test-memory
+      name: codereview/work-reviewer
 profiles:
   home:
     git:
@@ -705,10 +744,9 @@ profiles:
       credential:
         store: test-memory
         name: codereview/home
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
   work:
     git:
       host: github.com
@@ -716,15 +754,10 @@ profiles:
       credential:
         store: test-memory
         name: codereview/work
-    reviewer_credentials:
-      auth_mode: pat
-      credential:
-        store: test-memory
-        name: codereview/work-reviewer
-    llm:
-      provider: anthropic
-      auth: subscription
-      adapter: claude_cli
+    reviewer:
+      kind: entity
+      entity: work-reviewer
+    llm_runtime: claude-cli
 `)
 	factoryOpened := false
 	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {

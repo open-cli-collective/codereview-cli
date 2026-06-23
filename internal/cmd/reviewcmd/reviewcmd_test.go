@@ -466,9 +466,11 @@ func TestNewRuntimePassesPRRefForGitHubAppInstallationLookup(t *testing.T) {
 	prRef := gitprovider.PRRef{Host: "github.com", Owner: "open-cli", Repo: "codereview-cli", Number: 76}
 
 	var gotLookup *githubprovider.InstallationLookup
+	var gotInstallationID string
 	withReviewRuntimeSeams(t,
 		func(_ config.GitConfig, _ githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			gotLookup = opts.InstallationLookup
+			gotInstallationID = opts.InstallationID
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "github_app", Token: "installation-token", Login: "cr-reviewer[bot]"}, nil
 		},
 		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
@@ -489,6 +491,69 @@ func TestNewRuntimePassesPRRefForGitHubAppInstallationLookup(t *testing.T) {
 	}
 	if gotLookup == nil || gotLookup.Owner != "open-cli" || gotLookup.Repo != "codereview-cli" {
 		t.Fatalf("InstallationLookup = %#v, want PR owner/repo", gotLookup)
+	}
+	if gotInstallationID != "" {
+		t.Fatalf("InstallationID = %q, want empty for repository lookup", gotInstallationID)
+	}
+}
+
+func TestNewRuntimePassesPinnedGitHubAppReviewerInstallationID(t *testing.T) {
+	statedirtest.Hermetic(t)
+	cfg := testConfig()
+	cfg.Keyring.Backend = "memory"
+	cfg.ReviewerEntities = map[string]config.ReviewerEntity{
+		"cr-reviewer": {
+			Host:     "github.com",
+			AuthMode: config.GitAuthModeGitHubApp,
+			Credential: config.CredentialLocation{
+				Store: "test-memory",
+				Name:  "codereview/cr-reviewer",
+			},
+		},
+	}
+	profile := cfg.Profiles["home"]
+	profile.Reviewer = config.ProfileReviewer{
+		Kind:   config.ProfileReviewerKindEntity,
+		Entity: "cr-reviewer",
+		GitHubAppInstallation: &config.ProfileReviewerGitHubAppInstallation{
+			Mode:           config.ProfileReviewerGitHubAppInstallationPinned,
+			InstallationID: "42",
+		},
+	}
+	cfg.Profiles["home"] = profile
+	cfg = config.Normalize(cfg)
+	profile = cfg.Profiles["home"]
+	prRef := gitprovider.PRRef{Host: "github.com", Owner: "open-cli", Repo: "codereview-cli", Number: 76}
+
+	var gotLookup *githubprovider.InstallationLookup
+	var gotInstallationID string
+	withReviewRuntimeSeams(t,
+		func(_ config.GitConfig, _ githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			gotLookup = opts.InstallationLookup
+			gotInstallationID = opts.InstallationID
+			return &gitprovider.Fake{}, gitprovider.Credential{Type: "github_app", Token: "installation-token", Login: "cr-reviewer[bot]"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return gitprovider.Identity{Login: "cr-reviewer[bot]", ID: "12345"}, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	runtime, err := newRuntime(cmd, &root.Options{Stderr: io.Discard}, cfg, profile, RuntimeOptions{PRRef: prRef})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+	if gotInstallationID != "42" {
+		t.Fatalf("InstallationID = %q, want pinned id", gotInstallationID)
+	}
+	if gotLookup != nil {
+		t.Fatalf("InstallationLookup = %#v, want nil when pinned", gotLookup)
 	}
 }
 
