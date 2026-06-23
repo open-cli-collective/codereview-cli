@@ -561,7 +561,7 @@ func TestSelectionOnlyRejectsInvalidSelection(t *testing.T) {
 	}
 }
 
-func TestSelectionOnlyEnforcesMaxAgents(t *testing.T) {
+func TestSelectionOnlyCapsMaxAgents(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
 	dir := t.TempDir()
@@ -570,6 +570,7 @@ func TestSelectionOnlyEnforcesMaxAgents(t *testing.T) {
 	trustCurrentTempFixtures(t)
 	req.Profile.AgentSources = []string{dir}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	var warnings bytes.Buffer
 	adapter.Queue(fakeLLMResult("selection-session", `{
 		"schema_version": 1,
 		"selected_agents": [
@@ -580,14 +581,28 @@ func TestSelectionOnlyEnforcesMaxAgents(t *testing.T) {
 		"reasoning": "too many"
 	}`, 10, 2))
 
-	_, err := SelectionOnly(ctx, Options{
+	result, err := SelectionOnly(ctx, Options{
 		Provider:  provider,
 		Adapter:   adapter,
 		Now:       fixedNow,
 		MaxAgents: 1,
+		Warnings:  &warnings,
 	}, selectionRequestFromReview(req, t.TempDir()))
-	if err == nil || !strings.Contains(err.Error(), "selected agents 2 exceeds max 1") {
-		t.Fatalf("SelectionOnly error = %v, want max-agent rejection", err)
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+	if len(result.Selection.SelectedAgents) != 1 || result.Selection.SelectedAgents[0].AgentID != "harness:alpha" {
+		t.Fatalf("selected agents = %#v, want first selected agent only", result.Selection.SelectedAgents)
+	}
+	if got := warnings.String(); !strings.Contains(got, "orchestrator selected 2 agents; using first 1 due to max-agents") {
+		t.Fatalf("warnings = %q, want max-agent cap warning", got)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("adapter requests = %#v, want one selection request", requests)
+	}
+	if !strings.Contains(requests[0].Prompt, `"max_selected_agents": 1`) {
+		t.Fatalf("selection prompt = %q, want max_selected_agents", requests[0].Prompt)
 	}
 }
 
@@ -2228,7 +2243,7 @@ func TestDryRunRejectsSelfReviewWhenReviewerCredentialsMatchAuthor(t *testing.T)
 }
 
 func TestSelectionOutputContractExampleHasNoAgentsWhenCatalogEmpty(t *testing.T) {
-	contract := selectionOutputContract(nil, []FilePatch{{Path: "main.go"}}, nil)
+	contract := selectionOutputContract(nil, []FilePatch{{Path: "main.go"}}, nil, 3)
 	example, ok := contract.Example.(map[string]any)
 	if !ok {
 		t.Fatalf("Example = %#v, want map", contract.Example)
@@ -2239,6 +2254,39 @@ func TestSelectionOutputContractExampleHasNoAgentsWhenCatalogEmpty(t *testing.T)
 	}
 	if len(selected) != 0 {
 		t.Fatalf("selected_agents = %#v, want empty when no agents are allowed", selected)
+	}
+}
+
+func TestSelectionPromptIncludesMaxSelectedAgentsContract(t *testing.T) {
+	prompt, err := buildSelectionPrompt(
+		gitprovider.PR{},
+		agents.Catalog{Agents: []agents.Agent{{ID: "agent-1"}}},
+		[]FilePatch{{Path: "main.go"}},
+		nil,
+		3,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("buildSelectionPrompt: %v", err)
+	}
+	var payload struct {
+		MaxSelectedAgents int `json:"max_selected_agents"`
+		OutputContract    struct {
+			Instructions  []string       `json:"instructions"`
+			AllowedValues map[string]any `json:"allowed_values"`
+		} `json:"output_contract"`
+	}
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		t.Fatalf("Unmarshal prompt: %v", err)
+	}
+	if payload.MaxSelectedAgents != 3 {
+		t.Fatalf("max_selected_agents = %d, want 3", payload.MaxSelectedAgents)
+	}
+	if got := payload.OutputContract.AllowedValues["max_selected_agents"]; got != float64(3) {
+		t.Fatalf("allowed max_selected_agents = %#v, want 3", got)
+	}
+	if !strings.Contains(strings.Join(payload.OutputContract.Instructions, "\n"), "at most max_selected_agents") {
+		t.Fatalf("instructions = %#v, want max-selected-agents guidance", payload.OutputContract.Instructions)
 	}
 }
 
