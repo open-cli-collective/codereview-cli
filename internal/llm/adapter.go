@@ -15,6 +15,7 @@ import (
 const maxValidationErrorSummaryLen = 500
 
 var validationQuotedValueRE = regexp.MustCompile(`"([^"\\]|\\.)*"`)
+var validationUnknownFieldRE = regexp.MustCompile(`json: unknown field "([^"\\]+)"`)
 
 // ErrStructuredOutputInvalidAfterRetry marks a structured-output request whose
 // initial response and single validation retry both failed decoding.
@@ -294,8 +295,36 @@ func retryPrompt(prompt string, err error) string {
 
 func validationErrorSummary(err error) string {
 	summary := strings.Join(strings.Fields(strings.TrimSpace(err.Error())), " ")
+	unknownField := safeUnknownFieldName(summary)
 	summary = validationQuotedValueRE.ReplaceAllString(summary, `"<value>"`)
+	if unknownField != "" {
+		summary = strings.Replace(summary, `json: unknown field "<value>"`, fmt.Sprintf(`json: unknown field %q`, unknownField), 1)
+	}
 	return truncateRunes(summary, maxValidationErrorSummaryLen)
+}
+
+func safeUnknownFieldName(summary string) string {
+	matches := validationUnknownFieldRE.FindStringSubmatch(summary)
+	if len(matches) != 2 || !safeJSONFieldName(matches[1]) {
+		return ""
+	}
+	return matches[1]
+}
+
+func safeJSONFieldName(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, ch := range value {
+		if (ch >= 'a' && ch <= 'z') ||
+			(ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') ||
+			ch == '_' || ch == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func truncateRunes(value string, maxRunes int) string {
