@@ -37,8 +37,8 @@ Load-bearing metadata fields are:
 - `phase`: task phase, such as `selection`, `reviewer`, or `rollup`.
 - `dependency_task_ids`: task IDs whose completed state was included in this
   task input.
-- `input_fingerprint`: hash of the task schema version, task identity, phase,
-  model/effort, prompt, and dependency task IDs.
+- `input_fingerprint`: hash of the task schema version, adapter, task identity,
+  phase, model/effort, prompt, and dependency task IDs.
 - `agent_id`: reviewer agent ID for reviewer tasks.
 - `status`: one of `succeeded`, `failed_isolated`, or `failed_blocking`.
 - `session_row_id` and `provider_session_id`: ledger/provider session handles
@@ -57,11 +57,14 @@ reuse the output only when the metadata schema and input fingerprint still match
 the current task.
 
 `failed_isolated` is for reviewer-local LLM failures while the caller context is
-still valid. This includes structured validation failures and provider
-start/wait failures. The failed reviewer is treated as dependency-satisfied for
-downstream rollup, and the rollup receives a diagnostic. Sibling reviewers
-continue to run. A review with any isolated reviewer failure must not approve;
-the final event is clamped to at least `comment`.
+still valid. This includes structured validation failures and provider failures
+after a task provider session has started. Provider start failures with no
+session are treated as blocking because they can indicate auth, quota, or other
+systemic adapter problems. The failed reviewer is treated as
+dependency-satisfied for downstream rollup, and the rollup receives a
+diagnostic. Sibling reviewers continue to run. A review with any isolated
+reviewer failure must not approve; the final event is clamped to at least
+`comment`.
 
 `failed_blocking` means the task prevents dependent phases from safely running.
 Selection and rollup failures are blocking. Once a run exists, blocking LLM task

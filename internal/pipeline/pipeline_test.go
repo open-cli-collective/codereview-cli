@@ -1151,6 +1151,7 @@ func TestLoadStructuredTaskRejectsValidatedOutputOutsideTaskDir(t *testing.T) {
 		TaskID:            spec.taskID,
 		Phase:             spec.phase,
 		InputFingerprint:  spec.inputFingerprint,
+		Adapter:           "fake-llm",
 		Status:            llmTaskStatusSucceeded,
 		SessionRowID:      "session-row",
 		ProviderSessionID: "provider-session",
@@ -1167,7 +1168,7 @@ func TestLoadStructuredTaskRejectsValidatedOutputOutsideTaskDir(t *testing.T) {
 		t.Fatalf("writeLLMTaskMetadata: %v", err)
 	}
 
-	_, _, _, ok, err := loadStructuredTask[string](ctx, Options{}, spec, func(data []byte) (string, error) {
+	_, _, _, ok, err := loadStructuredTask[string](ctx, Options{Adapter: &llm.FakeAdapter{NameValue: "fake-llm"}}, spec, func(data []byte) (string, error) {
 		return string(data), nil
 	})
 	if !ok {
@@ -1175,6 +1176,81 @@ func TestLoadStructuredTaskRejectsValidatedOutputOutsideTaskDir(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "outside the task artifact directory") {
 		t.Fatalf("loadStructuredTask error = %v, want outside task artifact directory", err)
+	}
+}
+
+func TestRunStructuredTaskRejectsAdapterMismatchBeforeRetry(t *testing.T) {
+	ctx := context.Background()
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	spec := llmTaskSpec{
+		runID:            "run-adapter-mismatch",
+		taskID:           orchestratorRollupStage,
+		phase:            "rollup",
+		inputFingerprint: "fingerprint",
+		artifacts:        artifacts,
+		role:             ledger.SessionRoleOrchestrator,
+		model:            "model",
+		effort:           "medium",
+		prompt:           "prompt",
+	}
+	meta := llmTaskMetadata{
+		SchemaVersion:     llmTaskSchemaVersion,
+		TaskID:            spec.taskID,
+		Phase:             spec.phase,
+		InputFingerprint:  spec.inputFingerprint,
+		Adapter:           "old-llm",
+		Status:            llmTaskStatusFailedBlocking,
+		SessionRowID:      "session-row",
+		ProviderSessionID: "old-provider-session",
+	}
+	if err := writeLLMTaskMetadata(artifacts, meta); err != nil {
+		t.Fatalf("writeLLMTaskMetadata: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "new-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("new-session", `"ok"`, 1, 1))
+
+	_, _, _, err := runStructuredTask[string](ctx, Options{Adapter: adapter}, spec, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	if err == nil || !strings.Contains(err.Error(), `adapter = "old-llm", want "new-llm"`) {
+		t.Fatalf("runStructuredTask error = %v, want adapter mismatch", err)
+	}
+	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter invoked despite mismatch: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+	}
+}
+
+func TestRunStructuredTaskReviewerStartFailureIsBlocking(t *testing.T) {
+	ctx := context.Background()
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	startErr := errors.New("auth failed")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(llm.FakeResult{StartErr: startErr})
+	spec := llmTaskSpec{
+		runID:            "run-reviewer-start-failure",
+		taskID:           reviewerTaskID("harness:beta"),
+		phase:            "reviewer",
+		inputFingerprint: "fingerprint",
+		artifacts:        artifacts,
+		role:             ledger.SessionRoleReviewer,
+		model:            "model",
+		effort:           "medium",
+		prompt:           "prompt",
+		llmFailureStatus: llmTaskStatusFailedIsolated,
+	}
+
+	_, _, _, err := runStructuredTask[string](ctx, Options{Adapter: adapter}, spec, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	if !errors.Is(err, startErr) || !errors.Is(err, errLLMTaskFailedBlocking) {
+		t.Fatalf("runStructuredTask error = %v, want blocking start error wrapping %v", err, startErr)
+	}
+	meta, ok, readErr := readLLMTaskMetadata(artifacts, spec.taskID)
+	if readErr != nil || !ok {
+		t.Fatalf("read task metadata = ok %v err %v", ok, readErr)
+	}
+	if meta.Status != llmTaskStatusFailedBlocking || meta.ProviderSessionID != "" {
+		t.Fatalf("metadata = %#v, want failed_blocking without provider session", meta)
 	}
 }
 

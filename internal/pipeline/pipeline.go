@@ -686,7 +686,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			taskID:            orchestratorRollupStage,
 			phase:             "rollup",
 			dependencyTaskIDs: rollupDeps,
-			inputFingerprint:  llmTaskFingerprint(orchestratorRollupStage, "rollup", rollupModel, rollupEffort, rollupPrompt, rollupDeps),
+			inputFingerprint:  llmTaskFingerprint(opts.Adapter.Name(), orchestratorRollupStage, "rollup", rollupModel, rollupEffort, rollupPrompt, rollupDeps),
 			artifacts:         prepared.artifacts,
 			role:              ledger.SessionRoleOrchestrator,
 			model:             rollupModel,
@@ -950,7 +950,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 			runID:            req.RunID,
 			taskID:           orchestratorSelectionStage,
 			phase:            "selection",
-			inputFingerprint: llmTaskFingerprint(orchestratorSelectionStage, "selection", model, effort, selectionPrompt, nil),
+			inputFingerprint: llmTaskFingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, nil),
 			artifacts:        req.Artifacts,
 			role:             ledger.SessionRoleOrchestrator,
 			model:            model,
@@ -1123,7 +1123,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		taskID:            taskID,
 		phase:             "reviewer",
 		dependencyTaskIDs: dependencyTaskIDs,
-		inputFingerprint:  llmTaskFingerprint(taskID, "reviewer", model, effort, prompt, dependencyTaskIDs),
+		inputFingerprint:  llmTaskFingerprint(opts.Adapter.Name(), taskID, "reviewer", model, effort, prompt, dependencyTaskIDs),
 		artifacts:         artifacts,
 		role:              ledger.SessionRoleReviewer,
 		agentID:           &agentID,
@@ -1278,7 +1278,7 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 	}
 
 	meta.Error = sanitizeTaskErrorForMarkdown(err)
-	meta.Status = llmTaskFailureStatus(ctx, spec, err)
+	meta.Status = llmTaskFailureStatus(ctx, spec, err, result.SessionID, len(result.ValidationAttempts) > 0)
 	meta.SessionRowID = session.SessionRowID
 	meta.ProviderSessionID = session.ProviderSessionID
 	if writeErr := writeLLMTaskFailure(spec.artifacts, &meta, result.ValidationAttempts); writeErr != nil {
@@ -1289,8 +1289,9 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 	return zero, draft, session, &llmTaskError{status: meta.Status, err: err}
 }
 
-func llmTaskFailureStatus(ctx context.Context, spec llmTaskSpec, err error) llmTaskStatus {
-	if spec.llmFailureStatus != "" && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+func llmTaskFailureStatus(ctx context.Context, spec llmTaskSpec, err error, providerSessionID string, hasValidationAttempt bool) llmTaskStatus {
+	if spec.llmFailureStatus != "" && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) &&
+		(errors.Is(err, llm.ErrStructuredOutputInvalidAfterRetry) || strings.TrimSpace(providerSessionID) != "" || hasValidationAttempt) {
 		return spec.llmFailureStatus
 	}
 	return llmTaskStatusFailedBlocking
@@ -1302,7 +1303,7 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 	if err != nil || !ok {
 		return zero, sessionDraft{}, ledger.Session{}, ok, err
 	}
-	if err := validateLLMTaskMetadata(meta, spec); err != nil {
+	if err := validateLLMTaskMetadata(meta, spec, llmTaskAdapterName(opts.Adapter)); err != nil {
 		return zero, sessionDraft{}, ledger.Session{}, true, err
 	}
 	switch meta.Status {
@@ -1373,7 +1374,7 @@ func validateLLMTaskPayloadPath(paths ArtifactPaths, taskID, field, recordedPath
 	return absPath, nil
 }
 
-func validateLLMTaskMetadata(meta llmTaskMetadata, spec llmTaskSpec) error {
+func validateLLMTaskMetadata(meta llmTaskMetadata, spec llmTaskSpec, adapter string) error {
 	if meta.SchemaVersion != llmTaskSchemaVersion {
 		return fmt.Errorf("pipeline: LLM task %q schema version = %d, want %d", spec.taskID, meta.SchemaVersion, llmTaskSchemaVersion)
 	}
@@ -1383,9 +1384,12 @@ func validateLLMTaskMetadata(meta llmTaskMetadata, spec llmTaskSpec) error {
 	if meta.Phase != spec.phase {
 		return fmt.Errorf("pipeline: LLM task %q phase = %q, want %q", spec.taskID, meta.Phase, spec.phase)
 	}
+	if strings.TrimSpace(adapter) != "" && meta.Adapter != adapter {
+		return fmt.Errorf("pipeline: LLM task %q adapter = %q, want %q; pass --rerun to start a fresh review", spec.taskID, meta.Adapter, adapter)
+	}
 	fingerprint := strings.TrimSpace(spec.inputFingerprint)
 	if fingerprint == "" {
-		fingerprint = llmTaskFingerprint(spec.taskID, spec.phase, spec.model, spec.effort, spec.prompt, spec.dependencyTaskIDs)
+		fingerprint = llmTaskFingerprint(adapter, spec.taskID, spec.phase, spec.model, spec.effort, spec.prompt, spec.dependencyTaskIDs)
 	}
 	if meta.InputFingerprint != fingerprint {
 		return fmt.Errorf("pipeline: LLM task %q input fingerprint changed; pass --rerun to start a fresh review", spec.taskID)
@@ -1497,7 +1501,7 @@ func baseLLMTaskMetadata(opts Options, spec llmTaskSpec, draft sessionDraft) llm
 	}
 	fingerprint := strings.TrimSpace(spec.inputFingerprint)
 	if fingerprint == "" {
-		fingerprint = llmTaskFingerprint(spec.taskID, spec.phase, spec.model, spec.effort, spec.prompt, spec.dependencyTaskIDs)
+		fingerprint = llmTaskFingerprint(llmTaskAdapterName(opts.Adapter), spec.taskID, spec.phase, spec.model, spec.effort, spec.prompt, spec.dependencyTaskIDs)
 	}
 	return llmTaskMetadata{
 		SchemaVersion:     llmTaskSchemaVersion,
@@ -1515,10 +1519,18 @@ func baseLLMTaskMetadata(opts Options, spec llmTaskSpec, draft sessionDraft) llm
 	}
 }
 
-func llmTaskFingerprint(taskID, phase, model, effort, prompt string, deps []string) string {
+func llmTaskAdapterName(adapter llm.Adapter) string {
+	if adapter == nil {
+		return ""
+	}
+	return adapter.Name()
+}
+
+func llmTaskFingerprint(adapter, taskID, phase, model, effort, prompt string, deps []string) string {
 	hash := sha256.New()
 	for _, part := range []string{
 		fmt.Sprintf("schema=%d", llmTaskSchemaVersion),
+		"adapter=" + adapter,
 		"task=" + taskID,
 		"phase=" + phase,
 		"model=" + model,
