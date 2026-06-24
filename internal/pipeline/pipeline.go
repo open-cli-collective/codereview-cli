@@ -4499,17 +4499,54 @@ func renderDossierChangeMap(files []dossierChangedFileArtifact) string {
 func renderDossierRepoGuidance(repo dossierRepoContextArtifact) string {
 	var out strings.Builder
 	out.WriteString("# Repo Guidance\n\n")
-	out.WriteString("No dedicated repo review-guidance source is defined yet.\n\n")
-	if repo.RepoInfo != nil {
-		out.WriteString("Repo-local agent provenance: ")
-		out.WriteString(repo.RepoInfo.Provenance)
-		out.WriteString("\n\n")
-		if note := strings.TrimSpace(repo.RepoInfo.TrustNote()); note != "" {
-			out.WriteString(note)
-			out.WriteString("\n")
+	out.WriteString("Repo review guidance for this run comes from trusted repo-local agents in `.codereview/agents/` on the PR base branch.\n\n")
+	if repo.RepoInfo == nil {
+		out.WriteString("Guidance provenance: unavailable.\n")
+		return out.String()
+	}
+	out.WriteString("Guidance provenance: ")
+	out.WriteString(repo.RepoInfo.Provenance)
+	out.WriteString("\n")
+	if source, ok := repoGuidanceSource(repo.Sources); ok {
+		out.WriteString("Guidance source status: ")
+		out.WriteString(string(source.Status))
+		out.WriteString("\n")
+		switch source.Status {
+		case agents.SourceStatusAvailable:
+			out.WriteString("Base branch `.codereview/agents/` was loaded for this review.\n")
+		case agents.SourceStatusMissing:
+			out.WriteString("Base branch `.codereview/agents/` was not present for this review.\n")
+		case agents.SourceStatusUnreadable, agents.SourceStatusInvalid:
+			out.WriteString("Base branch `.codereview/agents/` could not be used as review guidance.\n")
+			if msg := strings.TrimSpace(source.Error); msg != "" {
+				out.WriteString("Source detail: ")
+				out.WriteString(msg)
+				out.WriteString("\n")
+			}
 		}
 	}
+	if note := strings.TrimSpace(repo.RepoInfo.TrustNote()); note != "" {
+		out.WriteString("\n")
+		out.WriteString(note)
+		out.WriteString("\n")
+	}
+	if repo.ExplicitReviewGuidance {
+		out.WriteString("\nAdditional explicit review guidance source: ")
+		out.WriteString(strings.TrimSpace(repo.ExplicitReviewGuidanceSource))
+		out.WriteString("\n")
+	} else {
+		out.WriteString("\nSeparate review-guidance files are not used for this review; repo-local agents are the repo-owned guidance surface.\n")
+	}
 	return out.String()
+}
+
+func repoGuidanceSource(sources []agents.SourceInfo) (agents.SourceInfo, bool) {
+	for _, source := range sources {
+		if source.Kind == agents.SourceRepo {
+			return source, true
+		}
+	}
+	return agents.SourceInfo{}, false
 }
 
 func buildDossierIndex(dir string) (dossierIndexArtifact, error) {
