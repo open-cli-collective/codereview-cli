@@ -2,8 +2,9 @@ package reviewcmd
 
 import (
 	"context"
-	"path/filepath"
+	pathpkg "path"
 	"strings"
+	"unicode"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
@@ -124,10 +125,16 @@ func (p progressProvider) Capabilities() gitprovider.ProviderCaps {
 	return p.provider.Capabilities()
 }
 
-func fileTarget(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
+func fileTarget(pathValue string) string {
+	pathValue = strings.TrimSpace(pathValue)
+	if pathValue == "" {
 		return "file"
 	}
-	return "file:" + strings.ReplaceAll(filepath.Clean(path), "\n", "_")
+	sanitized := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '_'
+		}
+		return r
+	}, pathValue)
+	return "file:" + pathpkg.Clean(sanitized)
 }

@@ -1855,6 +1855,24 @@ func TestReviewQuietSuppressesProgressOnly(t *testing.T) {
 	}
 }
 
+func TestReviewQuietSuppressesProgressOnlyForTextOutput(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), fakeFactory(runner), true)
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want no progress output", errOut.String())
+	}
+	if strings.Contains(out.String(), "cr progress") {
+		t.Fatalf("stdout leaked progress = %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Post mode: dry_run") {
+		t.Fatalf("stdout = %q, want text dry-run render", out.String())
+	}
+}
+
 func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 	cfg := testConfig()
 	ref, pr := reviewCommandPR()
@@ -1983,7 +2001,7 @@ func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
 	}
 }
 
-func TestProgressAdapterResumeErrorWritesResumeSessionID(t *testing.T) {
+func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
 	var errOut bytes.Buffer
 	adapter := &llm.FakeAdapter{
 		NameValue:           "fake-llm",
@@ -2009,6 +2027,13 @@ func TestWithProgressProviderPreservesOptionalRangeDiffCapability(t *testing.T) 
 		GetDiffBetweenRefs(context.Context, gitprovider.PRRef, string, string) (gitprovider.UnifiedDiff, error)
 	}); ok {
 		t.Fatalf("wrapped provider unexpectedly advertises GetDiffBetweenRefs")
+	}
+}
+
+func TestFileTargetSanitizesRepoPath(t *testing.T) {
+	got := fileTarget(" ./dir/../a\r\nb.go ")
+	if got != "file:a__b.go" {
+		t.Fatalf("fileTarget = %q, want sanitized repo path", got)
 	}
 }
 
