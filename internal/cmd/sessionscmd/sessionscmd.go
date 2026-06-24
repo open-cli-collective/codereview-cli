@@ -13,6 +13,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -43,7 +44,7 @@ func newListCommand(opts *root.Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			store, cleanup, err := openStore(cmd.Context(), false)
+			store, cleanup, err := openStore(cmd.Context(), nil, "sessions.list", false)
 			if err != nil {
 				return err
 			}
@@ -83,7 +84,7 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
-			store, cleanup, err := openStore(cmd.Context(), false)
+			store, cleanup, err := openStore(cmd.Context(), nil, "sessions.show", false)
 			if err != nil {
 				return err
 			}
@@ -122,7 +123,8 @@ func newDeleteCommand(opts *root.Options) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
-			store, cleanup, err := openStore(cmd.Context(), true)
+			logger := newProgressLogger(opts)
+			store, cleanup, err := openStore(cmd.Context(), logger, "sessions.delete", true)
 			if err != nil {
 				return err
 			}
@@ -130,11 +132,15 @@ func newDeleteCommand(opts *root.Options) *cobra.Command {
 			if store == nil {
 				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
 			}
+			deleteSpan := logger.Start("sessions.delete", "delete_session", "session")
 			if err := store.DeleteNamedSession(cmd.Context(), name); errors.Is(err, ledger.ErrNotFound) {
+				deleteSpan.End(err)
 				return exitcode.With(exitcode.Failure, fmt.Errorf("session %q not found", name))
 			} else if err != nil {
+				deleteSpan.End(err)
 				return err
 			}
+			deleteSpan.End(nil)
 			result := view.NewSessionsDelete(name)
 			if flags.jsonOutput {
 				return view.RenderSessionsDeleteJSON(opts.Stdout, result)
@@ -150,24 +156,48 @@ func addCommonFlags(cmd *cobra.Command, flags *commandFlags) {
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 }
 
-func openStore(ctx context.Context, migrateLegacyData bool) (*ledger.Store, func(), error) {
+func openStore(ctx context.Context, logger *progress.Logger, command string, migrateLegacyData bool) (*ledger.Store, func(), error) {
+	if logger == nil {
+		logger = progress.New(nil, true, nil)
+	}
+	layoutSpan := logger.Start(command, "resolve_layout", "session")
 	layout, err := statepaths.DefaultLayout()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, endProgressSpan(layoutSpan, err)
 	}
+	layoutSpan.End(nil)
 	if migrateLegacyData {
+		migrateSpan := logger.Start(command, "migrate_legacy", "session")
 		if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
-			return nil, nil, err
+			return nil, nil, endProgressSpan(migrateSpan, err)
 		}
+		migrateSpan.End(nil)
 	}
+	ledgerSpan := logger.Start(command, "open_ledger", "session")
 	if _, err := os.Stat(layout.LedgerDB()); errors.Is(err, os.ErrNotExist) {
+		ledgerSpan.End(nil)
 		return nil, func() {}, nil
 	} else if err != nil {
-		return nil, nil, err
+		return nil, nil, endProgressSpan(ledgerSpan, err)
 	}
 	store, err := ledger.Open(ctx, layout.LedgerDB())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, endProgressSpan(ledgerSpan, err)
 	}
+	ledgerSpan.End(nil)
 	return store, func() { _ = store.Close() }, nil
+}
+
+func newProgressLogger(opts *root.Options) *progress.Logger {
+	if opts == nil {
+		return progress.New(nil, true, nil)
+	}
+	return progress.New(opts.Stderr, opts.Quiet, nil)
+}
+
+func endProgressSpan(span *progress.Span, err error) error {
+	if span != nil {
+		span.End(err)
+	}
+	return err
 }

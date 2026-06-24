@@ -26,6 +26,25 @@ Structured LLM calls in the review pipeline are durable per-task units. See
 `docs/llm-task-artifacts.md` for the artifact schema, status taxonomy, and
 resume invariants.
 
+## Progress Logging
+
+Non-review CLI progress now flows through one reusable component in
+`internal/progress`. The contract for this slice is:
+
+- progress writes to stderr only
+- JSON and text result payloads stay on stdout
+- `--quiet` suppresses progress only
+- lines are single-line structured records:
+  `cr progress event=<start|finish|error> command="..." op="..." target="..." ...`
+
+Current command coverage is `benchmark run`, `benchmark select`,
+`benchmark compare`, `data prune`, `data purge`, `config clear`, and
+`sessions delete`.
+
+Command packages own the `command=` label and stderr sink. Lower-level reuse is
+intentionally narrow: `internal/datalifecycle` accepts a tiny start/end
+progress interface rather than importing Cobra or root options.
+
 ## Quick Commands
 
 ```bash

@@ -20,6 +20,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -241,30 +242,39 @@ func newRunCommand(opts *root.Options) *cobra.Command {
 }
 
 func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, suitePath string) (benchmarkSuiteSummary, error) {
+	logger := newProgressLogger(opts)
+	suiteSpan := logger.Start("benchmark.run", "load_suite", "suite")
 	suite, _, err := loadConfigAndSuite(opts, suitePath)
 	if err != nil {
-		return benchmarkSuiteSummary{}, err
+		return benchmarkSuiteSummary{}, endProgressSpan(suiteSpan, err)
 	}
+	suiteSpan.End(nil)
+	selectSpan := logger.Start("benchmark.run", "select_matrix", suite.Suite.ID)
 	selectedCandidates, selectedCases, err := benchmark.Select(suite, flags.candidates, flags.cases)
 	if err != nil {
-		return benchmarkSuiteSummary{}, mapBenchmarkError(err)
+		return benchmarkSuiteSummary{}, endProgressSpan(selectSpan, mapBenchmarkError(err))
 	}
+	selectSpan.End(nil)
+	resolveSpan := logger.Start("benchmark.run", "resolve_cr_bin", suite.Suite.ID)
 	crBin, err := resolveRunCRBin(flags.crBin)
 	if err != nil {
-		return benchmarkSuiteSummary{}, mapBenchmarkError(err)
+		return benchmarkSuiteSummary{}, endProgressSpan(resolveSpan, mapBenchmarkError(err))
 	}
+	resolveSpan.End(nil)
 	started := benchmarkNow().UTC()
+	resultsSpan := logger.Start("benchmark.run", "prepare_results", suite.Suite.ID)
 	resultsDir, err := resolveRunResultsDir(suite.Suite.ID, flags.resultsDir, started)
 	if err != nil {
-		return benchmarkSuiteSummary{}, err
+		return benchmarkSuiteSummary{}, endProgressSpan(resultsSpan, err)
 	}
 	suiteHash, err := suiteFileSHA256(suite.Path)
 	if err != nil {
-		return benchmarkSuiteSummary{}, err
+		return benchmarkSuiteSummary{}, endProgressSpan(resultsSpan, err)
 	}
 	if err := os.MkdirAll(resultsDir, artifactDirPerm); err != nil {
-		return benchmarkSuiteSummary{}, fmt.Errorf("benchmark: create results dir: %w", err)
+		return benchmarkSuiteSummary{}, endProgressSpan(resultsSpan, fmt.Errorf("benchmark: create results dir: %w", err))
 	}
+	resultsSpan.End(nil)
 
 	suiteDir := filepath.Dir(suite.Path)
 	summary := benchmarkSuiteSummary{
@@ -294,7 +304,7 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 		for caseIndex, benchCase := range selectedCases {
 			matrixIndex++
 			runID := benchmarkRunID(matrixIndex, candidateIndex, caseIndex, candidate, benchCase)
-			runSummary, err := executeBenchmarkRun(ctx, suiteDir, resultsDir, crBin, runID, candidate, benchCase)
+			runSummary, err := executeBenchmarkRun(ctx, logger, suiteDir, resultsDir, crBin, runID, candidate, benchCase)
 			if err != nil {
 				return benchmarkSuiteSummary{}, err
 			}
@@ -315,19 +325,24 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 	completed := benchmarkNow().UTC()
 	summary.CompletedAt = completed.Format(time.RFC3339)
 	summary.DurationMS = durationMS(completed.Sub(started))
+	writeArtifactsSpan := logger.Start("benchmark.run", "write_suite_artifacts", suite.Suite.ID)
 	if err := writeSuiteArtifacts(summary); err != nil {
-		return benchmarkSuiteSummary{}, err
+		return benchmarkSuiteSummary{}, endProgressSpan(writeArtifactsSpan, err)
 	}
+	writeArtifactsSpan.End(nil)
+	compareSpan := logger.Start("benchmark.run", "write_comparison", suite.Suite.ID)
 	if _, err := writeComparisonArtifactsForResultsDir(summary.ResultsDir); err != nil {
-		return benchmarkSuiteSummary{}, fmt.Errorf("benchmark: write comparison artifacts after suite artifacts were written to %s; rerun `cr benchmark compare %s`: %w", summary.ResultsDir, summary.ResultsDir, err)
+		return benchmarkSuiteSummary{}, endProgressSpan(compareSpan, fmt.Errorf("benchmark: write comparison artifacts after suite artifacts were written to %s; rerun `cr benchmark compare %s`: %w", summary.ResultsDir, summary.ResultsDir, err))
 	}
+	compareSpan.End(nil)
 	return summary, nil
 }
 
-func executeBenchmarkRun(ctx context.Context, suiteDir, resultsDir, crBin, runID string, candidate benchmark.Candidate, benchCase benchmark.Case) (benchmarkRun, error) {
+func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir, resultsDir, crBin, runID string, candidate benchmark.Candidate, benchCase benchmark.Case) (benchmarkRun, error) {
+	runSpan := logger.Start("benchmark.run", "execute_run", runID)
 	runDir := filepath.Join(resultsDir, runID)
 	if err := os.MkdirAll(runDir, artifactDirPerm); err != nil {
-		return benchmarkRun{}, fmt.Errorf("benchmark: create run dir %s: %w", runID, err)
+		return benchmarkRun{}, endProgressSpan(runSpan, fmt.Errorf("benchmark: create run dir %s: %w", runID, err))
 	}
 	artifacts := runArtifacts{
 		Dir:         runDir,
@@ -336,7 +351,9 @@ func executeBenchmarkRun(ctx context.Context, suiteDir, resultsDir, crBin, runID
 		MetricsJSON: filepath.Join(runDir, "metrics.json"),
 	}
 	args := reviewArgs(suiteDir, candidate, benchCase)
+	childSpan := logger.Start("benchmark.run", "child_review", runID)
 	child := runReviewCommand(ctx, crBin, args)
+	childSpan.End(child.Err)
 
 	runSummary := benchmarkRun{
 		RunID:                  runID,
@@ -378,14 +395,15 @@ func executeBenchmarkRun(ctx context.Context, suiteDir, resultsDir, crBin, runID
 	}
 
 	if err := writeArtifactFile(artifacts.ReviewJSON, child.Stdout); err != nil {
-		return benchmarkRun{}, err
+		return benchmarkRun{}, endProgressSpan(runSpan, err)
 	}
 	if err := writeArtifactFile(artifacts.Stderr, child.Stderr); err != nil {
-		return benchmarkRun{}, err
+		return benchmarkRun{}, endProgressSpan(runSpan, err)
 	}
 	if err := writeJSONFile(artifacts.MetricsJSON, runSummary); err != nil {
-		return benchmarkRun{}, err
+		return benchmarkRun{}, endProgressSpan(runSpan, err)
 	}
+	runSpan.End(nil)
 	return runSummary, nil
 }
 
@@ -419,7 +437,7 @@ func runReviewCommandReal(ctx context.Context, crBin string, args []string) revi
 }
 
 func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchmark.Case) []string {
-	args := []string{"--profile", candidate.Profile, "review", benchCase.PR, "--dry-run", "--json"}
+	args := []string{"--profile", candidate.Profile, "--quiet", "review", benchCase.PR, "--dry-run", "--json"}
 	if benchCase.ReviewBaseSHA != "" {
 		args = append(args, "--review-base-sha", benchCase.ReviewBaseSHA)
 	}

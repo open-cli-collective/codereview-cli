@@ -22,6 +22,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -418,66 +419,84 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			logger := newProgressLogger(opts)
+			mode := "live"
+			if clearDryRun {
+				mode = "dry-run"
+			}
+			modeSpan := logger.Start("config.clear", "mode", mode)
+			modeSpan.End(nil)
+			loadSpan := logger.Start("config.clear", "load_config", "active-profile")
 			path, err := configPath(opts)
 			if err != nil {
-				return exitcode.AuthConfig(err)
+				return exitcode.AuthConfig(endProgressSpan(loadSpan, err))
 			}
 			cfg, err := config.Load(path)
 			if err != nil {
-				return cmderr.Config(err)
+				return cmderr.Config(endProgressSpan(loadSpan, err))
 			}
+			loadSpan.End(nil)
+			profileSpan := logger.Start("config.clear", "resolve_profile", "active-profile")
 			profileName, profile, err := config.ResolveProfile(cfg, opts.Profile)
 			if err != nil {
-				return cmderr.Config(err)
+				return cmderr.Config(endProgressSpan(profileSpan, err))
 			}
 			resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
 			if err != nil {
-				return cmderr.Config(err)
+				return cmderr.Config(endProgressSpan(profileSpan, err))
 			}
 			refs, err := config.CredentialRefs(profile)
 			if err != nil {
-				return cmderr.Config(err)
+				return cmderr.Config(endProgressSpan(profileSpan, err))
 			}
 			profiles, err := distinctCredentialProfiles(refs)
 			if err != nil {
-				return cmderr.Credential(err)
+				return cmderr.Credential(endProgressSpan(profileSpan, err))
 			}
+			profileSpan.End(nil)
+			storeSpan := logger.Start("config.clear", "open_credential_store", "active-profile")
 			store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
 			if err != nil {
 				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
-					return cmderr.Config(err)
+					return cmderr.Config(endProgressSpan(storeSpan, err))
 				}
-				return cmderr.Credential(err)
+				return cmderr.Credential(endProgressSpan(storeSpan, err))
 			}
 			defer store.Close()
 			backend, source, err := backendMetadata(store, opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
 			if err != nil {
-				return cmderr.Credential(err)
+				return cmderr.Credential(endProgressSpan(storeSpan, err))
 			}
+			storeSpan.End(nil)
 			result := view.ConfigClear{
 				Backend:              string(backend),
 				BackendSource:        string(source),
 				ActiveSecretsProfile: resolvedSecretsProfileViewPtr(resolvedSecretsProfile),
 				DryRun:               clearDryRun,
 			}
-			for _, profile := range profiles {
-				keys, err := clearCredentialBundle(store, profile.Profile, clearDryRun)
+			clearSpan := logger.Start("config.clear", "clear_credentials", "active-profile")
+			for _, credentialProfile := range profiles {
+				keys, err := clearCredentialBundle(store, credentialProfile.Profile, clearDryRun)
 				if err != nil {
-					return cmderr.Credential(err)
+					return cmderr.Credential(endProgressSpan(clearSpan, err))
 				}
 				result.Cleared = append(result.Cleared, view.ClearedCredentialRef{
-					Ref:  profile.Full,
+					Ref:  credentialProfile.Full,
 					Keys: keys,
 				})
 			}
+			clearSpan.End(nil)
 			if clearAll {
+				configSpan := logger.Start("config.clear", "remove_profile_config", profileName)
 				change, err := clearProfileFromConfig(path, cfg, profileName, clearDryRun)
 				if err != nil {
-					return fmt.Errorf("config clear --all credentials already cleared for profile %q (%s), but config reset failed: %w", profileName, credentialRefList(profiles), err)
+					return endProgressSpan(configSpan, fmt.Errorf("config clear --all credentials already cleared for profile %q (%s), but config reset failed: %w", profileName, credentialRefList(profiles), err))
 				}
+				configSpan.End(nil)
 				result.ConfigProfileRemoved = change.profileRemoved
 				result.ConfigPathRemoved = change.configPathRemoved
 
+				cacheSpan := logger.Start("config.clear", "remove_cache", profileName)
 				cache, err := clearCacheRoot(clearDryRun)
 				result.Cache = &cache
 				if err != nil {
@@ -491,13 +510,14 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 					}
 					if clearJSON {
 						if renderErr := view.RenderConfigClearJSON(opts.Stdout, result); renderErr != nil {
-							return renderErr
+							return endProgressSpan(cacheSpan, renderErr)
 						}
 					} else if renderErr := view.RenderConfigClearText(opts.Stdout, result); renderErr != nil {
-						return renderErr
+						return endProgressSpan(cacheSpan, renderErr)
 					}
-					return cacheErr
+					return endProgressSpan(cacheSpan, cacheErr)
 				}
+				cacheSpan.End(nil)
 			}
 			if clearJSON {
 				return view.RenderConfigClearJSON(opts.Stdout, result)
@@ -511,6 +531,20 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 
 	configCmd.AddCommand(showCmd, pathCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newSecretsProfileCommand(opts), newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
+}
+
+func newProgressLogger(opts *root.Options) *progress.Logger {
+	if opts == nil {
+		return progress.New(nil, true, nil)
+	}
+	return progress.New(opts.Stderr, opts.Quiet, nil)
+}
+
+func endProgressSpan(span *progress.Span, err error) error {
+	if span != nil {
+		span.End(err)
+	}
+	return err
 }
 
 func newRetentionCommand(opts *root.Options) *cobra.Command {

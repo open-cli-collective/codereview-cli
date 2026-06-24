@@ -13,6 +13,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
@@ -48,7 +49,7 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			layout, store, cleanup, err := openStore(cmd.Context(), false)
+			layout, store, cleanup, err := openStore(cmd.Context(), progress.New(nil, true, nil), "data.show", false)
 			if err != nil {
 				return err
 			}
@@ -81,6 +82,7 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			logger := newProgressLogger(opts)
 			olderThanChanged := cmd.Flags().Changed("older-than")
 			keepLastChanged := cmd.Flags().Changed("keep-last")
 			if flags.olderThan > 0 && keepLastChanged {
@@ -97,12 +99,16 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 				keepLast = &flags.keepLast
 			}
 
-			layout, store, cleanup, err := openStore(cmd.Context(), !flags.dryRun)
+			layout, store, cleanup, err := openStore(cmd.Context(), logger, "data.prune", !flags.dryRun)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
-			result, err := datalifecycle.Prune(cmd.Context(), datalifecycle.Options{Layout: layout, Store: store}, datalifecycle.PruneOptions{
+			result, err := datalifecycle.Prune(cmd.Context(), datalifecycle.Options{
+				Layout:   layout,
+				Store:    store,
+				Progress: lifecycleProgressReporter{logger: logger, command: "data.prune"},
+			}, datalifecycle.PruneOptions{
 				OlderThan: flags.olderThan,
 				KeepLast:  keepLast,
 				DryRun:    flags.dryRun,
@@ -111,14 +117,16 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 				return err
 			}
 			if flags.dryRun {
+				legacySpan := logger.Start("data.prune", "check_legacy", "data-root")
 				legacyExists, err := statepaths.LegacyDataRootExists(layout)
 				if err != nil {
-					return err
+					return endProgressSpan(legacySpan, err)
 				}
 				if legacyExists {
 					legacyRoot := statepaths.LegacyDataRoot(layout)
 					result.Warnings = append(result.Warnings, fmt.Sprintf("legacy data exists at %s or %s.migrating; dry-run does not migrate it, so this preview excludes legacy runs until a write command migrates them", legacyRoot, legacyRoot))
 				}
+				legacySpan.End(nil)
 			}
 			rendered := view.NewDataPrune(result)
 			if flags.jsonOutput {
@@ -146,17 +154,22 @@ func newPurgeCommand(opts *root.Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(_ *cobra.Command, _ []string) error {
+			logger := newProgressLogger(opts)
 			if flags.yes && flags.dryRun {
 				return exitcode.Usage(fmt.Errorf("--yes and --dry-run are mutually exclusive"))
 			}
+			layoutSpan := logger.Start("data.purge", "resolve_layout", "data-root")
 			layout, err := statepaths.DefaultLayout()
 			if err != nil {
-				return err
+				return endProgressSpan(layoutSpan, err)
 			}
+			layoutSpan.End(nil)
+			purgeSpan := logger.Start("data.purge", "purge_root", "data-root")
 			result, err := datalifecycle.Purge(layout, flags.dryRun, flags.yes, nil)
 			if err != nil {
-				return exitcode.Usage(err)
+				return exitcode.Usage(endProgressSpan(purgeSpan, err))
 			}
+			purgeSpan.End(nil)
 			rendered := view.NewDataPurge(result)
 			if flags.jsonOutput {
 				return view.RenderDataPurgeJSON(opts.Stdout, rendered)
@@ -174,26 +187,56 @@ func addJSONFlag(cmd *cobra.Command, flags *commandFlags) {
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 }
 
-func openStore(ctx context.Context, migrateLegacyData bool) (statepaths.Layout, datalifecycle.Store, func(), error) {
+func openStore(ctx context.Context, logger *progress.Logger, command string, migrateLegacyData bool) (statepaths.Layout, datalifecycle.Store, func(), error) {
+	layoutSpan := logger.Start(command, "resolve_layout", "data-root")
 	layout, err := statepaths.DefaultLayout()
 	if err != nil {
-		return statepaths.Layout{}, nil, nil, err
+		return statepaths.Layout{}, nil, nil, endProgressSpan(layoutSpan, err)
 	}
+	layoutSpan.End(nil)
 	if migrateLegacyData {
+		migrateSpan := logger.Start(command, "migrate_legacy", "data-root")
 		if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
-			return statepaths.Layout{}, nil, nil, err
+			return statepaths.Layout{}, nil, nil, endProgressSpan(migrateSpan, err)
 		}
+		migrateSpan.End(nil)
 	}
+	ledgerSpan := logger.Start(command, "open_ledger", "data-root")
 	if _, err := os.Stat(layout.LedgerDB()); errors.Is(err, os.ErrNotExist) {
+		ledgerSpan.End(nil)
 		return layout, emptyLifecycleStore{}, func() {}, nil
 	} else if err != nil {
-		return statepaths.Layout{}, nil, nil, err
+		return statepaths.Layout{}, nil, nil, endProgressSpan(ledgerSpan, err)
 	}
 	store, err := ledger.Open(ctx, layout.LedgerDB())
 	if err != nil {
-		return statepaths.Layout{}, nil, nil, err
+		return statepaths.Layout{}, nil, nil, endProgressSpan(ledgerSpan, err)
 	}
+	ledgerSpan.End(nil)
 	return layout, store, func() { _ = store.Close() }, nil
+}
+
+type lifecycleProgressReporter struct {
+	logger  *progress.Logger
+	command string
+}
+
+func (r lifecycleProgressReporter) Start(op, target string) datalifecycle.ProgressSpan {
+	return r.logger.Start(r.command, op, target)
+}
+
+func newProgressLogger(opts *root.Options) *progress.Logger {
+	if opts == nil {
+		return progress.New(nil, true, nil)
+	}
+	return progress.New(opts.Stderr, opts.Quiet, nil)
+}
+
+func endProgressSpan(span *progress.Span, err error) error {
+	if span != nil {
+		span.End(err)
+	}
+	return err
 }
 
 type emptyLifecycleStore struct{}

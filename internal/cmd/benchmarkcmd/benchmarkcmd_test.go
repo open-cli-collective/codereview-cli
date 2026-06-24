@@ -125,6 +125,99 @@ func TestDoctorJSONUsesDefaultExecutable(t *testing.T) {
 	}
 }
 
+func TestBenchmarkCompareProgressWritesToStderr(t *testing.T) {
+	resultsDir := t.TempDir()
+	summary := benchmarkSuiteSummary{
+		SchemaVersion: benchmarkArtifactSchemaVersion,
+		Mode:          benchmarkModeReview,
+		SuiteID:       "suite1",
+		ResultsDir:    resultsDir,
+		SelectedCandidates: []benchmarkCandidate{{
+			ID:      "first",
+			Profile: "home",
+			Stages: benchmarkCandidateStages{Selection: benchmarkSelectionStage{Model: "kimi"}},
+		}},
+		SelectedCases: []benchmarkCase{{ID: "case_one", PR: "https://github.com/open-cli-collective/codereview-cli/pull/1"}},
+		Runs: []benchmarkRun{
+			matrixFixtureRun(resultsDir, "0001-c01-k01-first-case_one", "first", "case_one", 0, failureNone, 1, map[string]int{"major": 1}, 10),
+		},
+		Artifacts: suiteArtifacts{
+			Manifest:           filepath.Join(resultsDir, "manifest.json"),
+			SummaryJSONL:       filepath.Join(resultsDir, "summary.jsonl"),
+			SuiteSummary:       filepath.Join(resultsDir, "suite-summary.json"),
+			Report:             filepath.Join(resultsDir, "report.md"),
+			ComparisonJSON:     filepath.Join(resultsDir, "comparison.json"),
+			ComparisonMarkdown: filepath.Join(resultsDir, "comparison.md"),
+		},
+	}
+	writeComparisonFixture(t, summary)
+	writeReviewJSON(t, summary.Runs[0].Artifacts.ReviewJSON, view.ReviewDryRun{Run: view.ReviewRun{RunID: "child-run-1"}})
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yml")
+	if err := config.Save(cfgPath, testConfig()); err != nil {
+		t.Fatalf("config Save: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: cfgPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		Quiet:      false,
+	})
+	Register(cmd, opts)
+
+	if err := root.Execute(cmd, []string{"benchmark", "compare", resultsDir, "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(stderr.String(), `command="benchmark.compare" op="load_summary"`) {
+		t.Fatalf("stderr = %q, want load_summary progress", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `command="benchmark.compare" op="write_markdown"`) {
+		t.Fatalf("stderr = %q, want write_markdown progress", stderr.String())
+	}
+	var got comparisonReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunProgressWritesToStderr(t *testing.T) {
+	cmd, out, errOut := newTestCommandWithStderr(t, false)
+	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
+	crBin := writeExecutableCRBin(t)
+	resultsDir := filepath.Join(t.TempDir(), "results")
+	withBenchmarkRunSeams(t, fixedBenchmarkTime(), func(_ context.Context, _ string, _ []string) reviewCommandResult {
+		return reviewCommandResult{
+			Stdout:   reviewDryRunJSON(t, "child-run-1"),
+			Stderr:   []byte("child stderr\n"),
+			ExitCode: 0,
+			Duration: time.Second,
+		}
+	})
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "run", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", resultsDir,
+		"--cr-bin", crBin,
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(errOut.String(), `command="benchmark.run" op="execute_run"`) {
+		t.Fatalf("stderr = %q, want execute_run progress", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), `command="benchmark.run" op="write_comparison"`) {
+		t.Fatalf("stderr = %q, want write_comparison progress", errOut.String())
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+}
+
 func TestDoctorJSONReportsOptionalSynthesisStage(t *testing.T) {
 	cmd, out := newTestCommand(t)
 	synthesisPrompt := filepath.Join(t.TempDir(), "synthesis-v1.md")
@@ -424,6 +517,7 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	}
 	wantFirstArgs := []string{
 		"--profile", "home",
+		"--quiet",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/1",
 		"--dry-run", "--json",
 		"--selection-model", "claude-sonnet-4-6",
@@ -440,6 +534,7 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	}
 	wantSecondArgs := []string{
 		"--profile", "home",
+		"--quiet",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/2",
 		"--dry-run", "--json",
 		"--review-base-sha", "1111111",
@@ -461,6 +556,7 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	}
 	wantThirdArgs := []string{
 		"--profile", "home",
+		"--quiet",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/1",
 		"--dry-run", "--json",
 		"--selection-model", "kimi",
@@ -475,6 +571,7 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	}
 	wantFourthArgs := []string{
 		"--profile", "home",
+		"--quiet",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/2",
 		"--dry-run", "--json",
 		"--review-base-sha", "1111111",
@@ -935,19 +1032,26 @@ func TestRunReusesExplicitResultsDirAndOverwritesOwnedArtifacts(t *testing.T) {
 }
 
 func newTestCommand(t *testing.T) (*cobra.Command, *bytes.Buffer) {
+	cmd, out, _ := newTestCommandWithStderr(t, true)
+	return cmd, out
+}
+
+func newTestCommandWithStderr(t *testing.T, quiet bool) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	cfgPath := filepath.Join(t.TempDir(), "config.yml")
 	if err := config.Save(cfgPath, testConfig()); err != nil {
 		t.Fatalf("config Save: %v", err)
 	}
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		ConfigPath: cfgPath,
 		Stdout:     &out,
-		Stderr:     &bytes.Buffer{},
+		Stderr:     &errOut,
+		Quiet:      quiet,
 	})
 	Register(cmd, opts)
-	return cmd, &out
+	return cmd, &out, &errOut
 }
 
 func writeBenchmarkSuite(t *testing.T, body string) string {

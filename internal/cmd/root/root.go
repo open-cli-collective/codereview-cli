@@ -21,6 +21,7 @@ type Options struct {
 	Profile    string
 	Backend    string
 	ConfigPath string
+	Quiet      bool
 	Stdin      io.Reader
 	Stdout     io.Writer
 	Stderr     io.Writer
@@ -74,6 +75,7 @@ func NewCommandWithOptions(opts *Options) (*cobra.Command, *Options) {
 	cmd.Flags().BoolVar(&showVersion, "version", false, "Print the build version")
 	cmd.PersistentFlags().StringVar(&opts.Profile, profileFlagName, "", "Profile name")
 	cmd.PersistentFlags().StringVar(&opts.Backend, credstore.BackendFlagName, "", credstore.BackendFlagUsage())
+	cmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "Suppress progress logs")
 	cmd.AddCommand(newVersionCommand(opts))
 
 	return cmd, opts

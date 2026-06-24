@@ -381,8 +381,32 @@ func TestDataPurgeRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestDataPruneProgressWritesToStderr(t *testing.T) {
+	statedirtest.Hermetic(t)
+	seedRun(t, "old-live", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
+	var stdout, stderr bytes.Buffer
+
+	if err := runDataCommandWithQuiet(&stdout, &stderr, false, "data", "prune", "--dry-run", "--json"); err != nil {
+		t.Fatalf("runDataCommand: %v; stderr = %q", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `command="data.prune" op="resolve_layout"`) {
+		t.Fatalf("stderr = %q, want resolve_layout progress", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `command="data.prune" op="find_orphans"`) {
+		t.Fatalf("stderr = %q, want find_orphans progress", stderr.String())
+	}
+	var decoded view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v; stdout = %q", err, stdout.String())
+	}
+}
+
 func runDataCommand(stdout, stderr *bytes.Buffer, args ...string) error {
-	cmd, opts := root.NewCommandWithOptions(&root.Options{Stdout: stdout, Stderr: stderr})
+	return runDataCommandWithQuiet(stdout, stderr, true, args...)
+}
+
+func runDataCommandWithQuiet(stdout, stderr *bytes.Buffer, quiet bool, args ...string) error {
+	cmd, opts := root.NewCommandWithOptions(&root.Options{Stdout: stdout, Stderr: stderr, Quiet: quiet})
 	Register(cmd, opts)
 	return root.Execute(cmd, args)
 }
