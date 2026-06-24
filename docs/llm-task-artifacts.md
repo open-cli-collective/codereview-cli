@@ -15,6 +15,10 @@ llm-tasks/<encoded-task-id>/
   retry.json
 ```
 
+Raw failed-attempt files are named `<label>.json` in the task directory. The
+current structured adapter labels are `initial` and `retry`, which produce
+`initial.json` and `retry.json` when raw invalid output is available.
+
 `metadata.json` is the commit marker. Writers must publish it last, after any
 validated output or raw failed-attempt payloads are written and after the ledger
 session row exists when a provider session is available. Resume code must only
