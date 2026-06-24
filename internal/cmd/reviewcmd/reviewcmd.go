@@ -703,6 +703,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 	profile = normalizeRuntimeProfile(profile)
 	stores := newRuntimeCredentialStores(cfg, opts.Backend, cmderr.BackendFlagChanged(cmd))
 	cleanup := stores.Close
+	logger := newProgressLogger(opts)
 	providerGit := gitConfigForReviewerAuth(profile)
 	providerStore, err := stores.Open(providerGit.Credential)
 	if err != nil {
@@ -714,6 +715,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
+	provider = withProgressProvider(logger, provider)
 	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), provider, credential, providerStore, profile)
 	if err != nil {
 		cleanup()

@@ -32,6 +32,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
@@ -426,8 +427,9 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 			return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
 		},
 		func(_ context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ githubprovider.TokenStore, _ config.Profile) (gitprovider.Identity, error) {
-			if provider != reviewerProvider || credential.Token != "reviewer-token" {
-				t.Fatalf("identity resolver got provider=%p credential=%#v, want reviewer provider/token", provider, credential)
+			wrapped, ok := provider.(progressProvider)
+			if !ok || wrapped.provider != reviewerProvider || credential.Token != "reviewer-token" {
+				t.Fatalf("identity resolver got provider=%T %#v credential=%#v, want wrapped reviewer provider/token", provider, provider, credential)
 			}
 			return identity, nil
 		},
@@ -451,8 +453,13 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	if !ok {
 		t.Fatalf("Runner type = %T, want reviewRunner", runtime.Runner)
 	}
-	if runner.pipeline.Provider != reviewerProvider || runner.live.Provider != reviewerProvider {
-		t.Fatalf("runtime providers = pipeline:%p live:%p, want reviewer provider %p", runner.pipeline.Provider, runner.live.Provider, reviewerProvider)
+	pipelineProvider, ok := runner.pipeline.Provider.(progressProvider)
+	if !ok || pipelineProvider.provider != reviewerProvider {
+		t.Fatalf("pipeline provider = %#v, want wrapped reviewer provider", runner.pipeline.Provider)
+	}
+	liveProvider, ok := runner.live.Provider.(progressProvider)
+	if !ok || liveProvider.provider != reviewerProvider {
+		t.Fatalf("live provider = %#v, want wrapped reviewer provider", runner.live.Provider)
 	}
 }
 
@@ -1839,6 +1846,81 @@ func TestReviewQuietSuppressesProgressOnly(t *testing.T) {
 	}
 	if decoded.Run.PostMode != "dry_run" {
 		t.Fatalf("decoded post mode = %q, want dry_run", decoded.Run.PostMode)
+	}
+}
+
+func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
+	cfg := testConfig()
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	cmd, out, errOut := newTestCommandWithStderr(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		runner := buildReviewRunner(
+			store,
+			withProgressProvider(newProgressLogger(opts), provider),
+			adapter,
+			profile,
+			noopLimiter{},
+			statepaths.NewLayout(t.TempDir(), t.TempDir()),
+			opts.Stderr,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	}, false)
+
+	if err := root.Execute(cmd, []string{"review", pr.URL, "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	stderr := errOut.String()
+	for _, want := range []string{
+		`command="review" op="fetch_pr" target="pr"`,
+		`command="review" op="fetch_diff" target="pr"`,
+		`command="review" op="list_threads" target="threads"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
+	}
+	if strings.Contains(out.String(), "cr progress") {
+		t.Fatalf("stdout leaked progress = %q", out.String())
+	}
+}
+
+func TestProgressProviderGetPRErrorWritesErrorBreadcrumb(t *testing.T) {
+	var errOut bytes.Buffer
+	provider := &gitprovider.Fake{}
+	provider.SetError(gitprovider.OperationGetPR, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, context.DeadlineExceeded))
+	wrapped := withProgressProvider(progress.New(&errOut, false, nil), provider)
+
+	_, err := wrapped.GetPR(context.Background(), gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29})
+	if err == nil {
+		t.Fatal("GetPR error = nil, want provider failure")
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `event=error`) || !strings.Contains(stderr, `command="review" op="fetch_pr" target="pr"`) {
+		t.Fatalf("stderr = %q, want error breadcrumb for fetch_pr", stderr)
 	}
 }
 
