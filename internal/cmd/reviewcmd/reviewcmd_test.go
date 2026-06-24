@@ -2314,8 +2314,14 @@ func TestNewReviewDryRunMapsPlanSummary(t *testing.T) {
 			Model:             "sonnet",
 			PostingIdentity:   "review-bot",
 			SelectedReviewers: []string{"go:tests"},
-			WallDurationMS:    &wall,
-			Workstreams:       []reviewplan.WorkstreamUsage{{Name: "go:tests", Model: "sonnet", TokensIn: &tokensIn}},
+			ReviewerCoverage: []reviewplan.ReviewerCoverageSummary{{
+				AgentID:        "go:tests",
+				Status:         "complete_broad",
+				Scope:          []string{"main.go"},
+				InspectedFiles: []string{"main.go"},
+			}},
+			WallDurationMS: &wall,
+			Workstreams:    []reviewplan.WorkstreamUsage{{Name: "go:tests", Model: "sonnet", TokensIn: &tokensIn}},
 		},
 		Totals: reviewplan.AggregateUsage{TokensIn: &tokensIn},
 	}
@@ -2341,6 +2347,13 @@ func TestNewReviewDryRunMapsPlanSummary(t *testing.T) {
 		run.Workstreams[0].TokensIn == nil || *run.Workstreams[0].TokensIn != tokensIn ||
 		run.Workstreams[0].CostUSD != nil {
 		t.Fatalf("summary workstreams = %#v", run.Workstreams)
+	}
+	if len(run.ReviewerCoverage) != 1 ||
+		run.ReviewerCoverage[0].AgentID != "go:tests" ||
+		run.ReviewerCoverage[0].Status != "complete_broad" ||
+		len(run.ReviewerCoverage[0].InspectedFiles) != 1 ||
+		run.ReviewerCoverage[0].InspectedFiles[0] != "main.go" {
+		t.Fatalf("reviewer coverage = %#v", run.ReviewerCoverage)
 	}
 	if rendered.Summary.Totals.TokensIn == nil || *rendered.Summary.Totals.TokensIn != tokensIn || rendered.Summary.Totals.CostUSD != nil {
 		t.Fatalf("summary totals = %#v", rendered.Summary.Totals)

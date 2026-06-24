@@ -338,6 +338,66 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
+	t.Run("incomplete reviewer coverage renders diagnostics and force comment", func(t *testing.T) {
+		req := baseRequest()
+		req.Findings = nil
+		req.Rollup = review.Rollup{
+			ReviewEvent:          review.ReviewEventApprove,
+			ReviewEventRationale: "no findings",
+			OrderedFindings:      nil,
+		}
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"go:implementation-tests"},
+			ReviewerCoverage: []ReviewerCoverageSummary{{
+				AgentID:        "go:implementation-tests",
+				Status:         "incomplete_skipped",
+				Scope:          []string{"main.go"},
+				InspectedFiles: []string{"main.go"},
+				SkippedFiles:   []string{"schema.sql"},
+				Constraints:    []string{"read-only tools"},
+			}},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if plan.Outcome != OutcomeComment {
+			t.Fatalf("outcome = %q, want comment", plan.Outcome)
+		}
+		md := plan.RollupMarkdown
+		for _, want := range []string{
+			"### Reviewer Coverage",
+			"| go:implementation-tests | incomplete_skipped | main.go | schema.sql | read-only tools |",
+		} {
+			if !strings.Contains(md, want) {
+				t.Fatalf("rollup missing %q:\n%s", want, md)
+			}
+		}
+	})
+
+	t.Run("unknown reviewer coverage status force comment", func(t *testing.T) {
+		req := baseRequest()
+		req.Findings = nil
+		req.Rollup = review.Rollup{
+			ReviewEvent:          review.ReviewEventApprove,
+			ReviewEventRationale: "no findings",
+			OrderedFindings:      nil,
+		}
+		req.RunSummary = RunSummary{
+			ReviewerCoverage: []ReviewerCoverageSummary{{
+				AgentID: "go:implementation-tests",
+				Status:  "partial_coverage",
+			}},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if plan.Outcome != OutcomeComment {
+			t.Fatalf("outcome = %q, want comment for unknown coverage status", plan.Outcome)
+		}
+	})
+
 	t.Run("rollup marker placement unchanged with run summary", func(t *testing.T) {
 		for _, mode := range []PostMode{PostModeLive, PostModeDryRun} {
 			req := summaryRequest()

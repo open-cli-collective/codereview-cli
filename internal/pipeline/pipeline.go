@@ -396,6 +396,7 @@ type Result struct {
 	ReviewBaseSHA         string
 	ReviewHeadSHA         string
 	ReviewerFailures      []ReviewerFailure
+	ReviewerCoverage      []reviewplan.ReviewerCoverageSummary
 }
 
 // ReviewerFailure records an isolated reviewer LLM task failure that should not
@@ -405,6 +406,14 @@ type ReviewerFailure struct {
 	AgentID string `json:"agent_id"`
 	Error   string `json:"error"`
 }
+
+const (
+	reviewerCoverageCompleteBroad        = "complete_broad"
+	reviewerCoverageCompleteConstrained  = "complete_constrained"
+	reviewerCoverageIncompleteSkipped    = "incomplete_skipped"
+	reviewerCoverageIncompleteFailed     = "incomplete_failed"
+	reviewerCoverageIncompleteUnassigned = "incomplete_unassigned"
+)
 
 // SelectionSession describes the single LLM turn used for selection-only execution.
 type SelectionSession struct {
@@ -783,7 +792,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		namedSession.recordSessionID(selectionSession)
 
 		selectionTaskIDs := []string{orchestratorSelectionStage}
-		findings, reviewerSessions, reviewerLedgerSessions, reviewerFindingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency)
+		findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, reviewerFindingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency)
 		if err != nil {
 			if errors.Is(err, errLLMTaskFailedBlocking) {
 				failureOutcome = ledger.OutcomeIncomplete
@@ -792,6 +801,8 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.Findings = findings
 		result.ReviewerFailures = reviewerFailures
+		reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles)
+		result.ReviewerCoverage = reviewerCoverage
 		result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerLedgerSessions...)
 		for id, rowID := range reviewerFindingSessions {
 			findingSession[id] = rowID
@@ -803,7 +814,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
 
-		rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, findings, reviewerFailures)
+		rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, findings, reviewerFailures, reviewerCoverage)
 		if err != nil {
 			return Result{}, err
 		}
@@ -857,6 +868,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			selectedAgents:   selection.SelectedAgents,
 			findingSessions:  findingSession,
 			reviewerFailures: reviewerFailures,
+			reviewerCoverage: reviewerCoverage,
 			startedAt:        now,
 		})
 		if err != nil {
@@ -1200,7 +1212,7 @@ func appendSessionsIfPresent(sessions []ledger.Session, more ...ledger.Session) 
 	return sessions
 }
 
-func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int) ([]review.Finding, []sessionDraft, []ledger.Session, map[review.FindingID]string, []ReviewerFailure, error) {
+func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int) ([]review.Finding, []llm.Findings, []sessionDraft, []ledger.Session, map[review.FindingID]string, []ReviewerFailure, error) {
 	type job struct {
 		selected llm.SelectedAgent
 		agent    agents.Agent
@@ -1209,12 +1221,12 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 	for _, selected := range selection.SelectedAgents {
 		agent, ok := catalog.Find(selected.AgentID)
 		if !ok {
-			return nil, nil, nil, nil, nil, fmt.Errorf("pipeline: selected agent %q not found", selected.AgentID)
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("pipeline: selected agent %q not found", selected.AgentID)
 		}
 		jobs = append(jobs, job{selected: selected, agent: agent})
 	}
 	if len(jobs) == 0 {
-		return nil, nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil, nil
 	}
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].agent.ID < jobs[j].agent.ID })
 
@@ -1223,6 +1235,7 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 	sem := make(chan struct{}, maxConcurrency)
 	var mu sync.Mutex
 	var allFindings []review.Finding
+	var reviewerResults []llm.Findings
 	var sessions []sessionDraft
 	var ledgerSessions []ledger.Session
 	findingSessions := map[review.FindingID]string{}
@@ -1240,7 +1253,7 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 				return
 			}
 			defer func() { <-sem }()
-			findings, session, ledgerSession, failure, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs)
+			result, session, ledgerSession, failure, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs)
 			mu.Lock()
 			defer mu.Unlock()
 			if failure != nil {
@@ -1258,7 +1271,8 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 			}
 			sessions = append(sessions, session)
 			ledgerSessions = appendSessionIfPresent(ledgerSessions, ledgerSession)
-			for _, finding := range findings {
+			reviewerResults = append(reviewerResults, result)
+			for _, finding := range result.Findings {
 				allFindings = append(allFindings, finding)
 				findingSessions[finding.ID] = session.rowID
 			}
@@ -1266,35 +1280,38 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 	}
 	wg.Wait()
 	if firstErr != nil {
-		return nil, nil, nil, nil, nil, firstErr
+		return nil, nil, nil, nil, nil, nil, firstErr
 	}
 	sort.Slice(allFindings, func(i, j int) bool { return allFindings[i].ID < allFindings[j].ID })
+	sort.Slice(reviewerResults, func(i, j int) bool { return reviewerResults[i].AgentID < reviewerResults[j].AgentID })
 	sort.Slice(failures, func(i, j int) bool { return failures[i].AgentID < failures[j].AgentID })
-	return allFindings, sessions, ledgerSessions, findingSessions, failures, nil
+	return allFindings, reviewerResults, sessions, ledgerSessions, findingSessions, failures, nil
 }
 
-func runReviewer(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent, dependencyTaskIDs []string) ([]review.Finding, sessionDraft, ledger.Session, *ReviewerFailure, error) {
+func runReviewer(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent, dependencyTaskIDs []string) (llm.Findings, sessionDraft, ledger.Session, *ReviewerFailure, error) {
 	runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 	if err != nil {
-		return nil, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
-	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent)
+	changedFilePaths := patchPaths(parsed.Patches)
+	reviewerScope := reviewerReadableFiles(selected, changedFilePaths)
+	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths)
 	if err != nil {
-		return nil, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
 	if err := opts.checkPromptBudget("reviewer", agent.ID, model, strings.Join(selected.Files, ","), prompt); err != nil {
-		return nil, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
 	logPath, err := artifacts.AgentLog(agent.ID)
 	if err != nil {
-		return nil, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
 	agentID := agent.ID
 	taskID := reviewerTaskID(agent.ID)
 	request, err := buildCheckoutReadonlyRequest(opts, artifacts, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
 	if err != nil {
-		return nil, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
@@ -1315,22 +1332,22 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
 			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: changedFiles(parsed.Patches),
+			ChangedFiles: stringSet(reviewerScope),
 			NewFindingID: opts.newFindingID,
 		})
 	})
 	if err != nil {
 		var taskErr *llmTaskError
 		if errors.As(err, &taskErr) && taskErr.status == llmTaskStatusFailedIsolated {
-			return nil, session, ledgerSession, &ReviewerFailure{
+			return llm.Findings{}, session, ledgerSession, &ReviewerFailure{
 				TaskID:  taskID,
 				AgentID: agent.ID,
 				Error:   sanitizeTaskErrorForMarkdown(err),
 			}, nil
 		}
-		return nil, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
-	return findings.Findings, session, ledgerSession, nil, nil
+	return findings, session, ledgerSession, nil, nil
 }
 
 func reviewerTaskID(agentID string) string {
@@ -2044,6 +2061,7 @@ type planRunInputs struct {
 	selectedAgents   []llm.SelectedAgent
 	findingSessions  map[review.FindingID]string
 	reviewerFailures []ReviewerFailure
+	reviewerCoverage []reviewplan.ReviewerCoverageSummary
 	startedAt        time.Time
 }
 
@@ -2079,6 +2097,7 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		PostingIdentity:   postingKey(req.PostingIdentity),
 		SelectedReviewers: selectedIDs,
 		ReviewerFailures:  reviewerFailureSummaries(inputs.reviewerFailures),
+		ReviewerCoverage:  inputs.reviewerCoverage,
 		WallDurationMS:    &wallMS,
 		Workstreams:       workstreams,
 	}
@@ -2100,6 +2119,136 @@ func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerF
 			Error:   failure.Error,
 		})
 	}
+	return out
+}
+
+func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string) []reviewplan.ReviewerCoverageSummary {
+	if len(selected) == 0 {
+		return nil
+	}
+	resultByAgent := make(map[string]llm.Findings, len(results))
+	for _, result := range results {
+		resultByAgent[result.AgentID] = result
+	}
+	failureByAgent := make(map[string]ReviewerFailure, len(failures))
+	for _, failure := range failures {
+		failureByAgent[failure.AgentID] = failure
+	}
+	assigned := map[string]bool{}
+	out := make([]reviewplan.ReviewerCoverageSummary, 0, len(selected)+1)
+	for _, agent := range selected {
+		scope := reviewerAssignmentScope(agent, changedFiles)
+		for _, file := range scope {
+			assigned[file] = true
+		}
+		entry := reviewplan.ReviewerCoverageSummary{
+			AgentID: agent.AgentID,
+			Scope:   scope,
+		}
+		if failure, ok := failureByAgent[agent.AgentID]; ok {
+			entry.Status = reviewerCoverageIncompleteFailed
+			entry.Diagnostic = failure.Error
+			out = append(out, entry)
+			continue
+		}
+		result, ok := resultByAgent[agent.AgentID]
+		if !ok {
+			entry.Status = reviewerCoverageIncompleteFailed
+			entry.Diagnostic = "reviewer result was not recorded"
+			out = append(out, entry)
+			continue
+		}
+		entry.InspectedFiles = copySortedStrings(result.InspectedFiles)
+		entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
+		entry.Constraints = copySortedStrings(result.Constraints)
+		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
+		switch {
+		case len(entry.SkippedFiles) > 0 || len(missing) > 0:
+			entry.Status = reviewerCoverageIncompleteSkipped
+			if len(missing) > 0 {
+				entry.Diagnostic = "assigned files were neither inspected nor skipped: " + strings.Join(missing, ", ")
+			}
+		case len(agent.AllowedFiles) > 0:
+			entry.Status = reviewerCoverageCompleteConstrained
+		default:
+			entry.Status = reviewerCoverageCompleteBroad
+		}
+		out = append(out, entry)
+	}
+	var unassigned []string
+	for _, file := range changedFiles {
+		if !assigned[file] {
+			unassigned = append(unassigned, file)
+		}
+	}
+	if len(unassigned) > 0 {
+		out = append(out, reviewplan.ReviewerCoverageSummary{
+			AgentID:      "unassigned",
+			Status:       reviewerCoverageIncompleteUnassigned,
+			SkippedFiles: copySortedStrings(unassigned),
+			Diagnostic:   "changed files were not assigned to a selected reviewer",
+		})
+	}
+	return out
+}
+
+// reviewerReadableFiles is the schema/decoder scope: broad reviewers may read
+// every changed file, while allowed_files narrows highly specialized reviewers.
+func reviewerReadableFiles(agent llm.SelectedAgent, changedFiles []string) []string {
+	if len(agent.AllowedFiles) > 0 {
+		return copySortedStrings(agent.AllowedFiles)
+	}
+	return copySortedStrings(changedFiles)
+}
+
+// reviewerAssignmentScope is the coverage expectation: broad reviewers may read
+// the whole checkout, but selected files define the work they were asked to cover.
+func reviewerAssignmentScope(agent llm.SelectedAgent, changedFiles []string) []string {
+	if len(agent.AllowedFiles) > 0 {
+		return copySortedStrings(agent.AllowedFiles)
+	}
+	if len(agent.Files) > 0 {
+		return copySortedStrings(agent.Files)
+	}
+	return copySortedStrings(changedFiles)
+}
+
+func coverageMissingFiles(scope, inspected, skipped []string) []string {
+	covered := stringSet(inspected)
+	for _, file := range skipped {
+		covered[file] = true
+	}
+	var missing []string
+	for _, file := range scope {
+		if !covered[file] {
+			missing = append(missing, file)
+		}
+	}
+	return copySortedStrings(missing)
+}
+
+func sortedIntersection(values, scope []string) []string {
+	inScope := stringSet(scope)
+	var out []string
+	for _, value := range values {
+		if inScope[value] {
+			out = append(out, value)
+		}
+	}
+	return copySortedStrings(out)
+}
+
+func stringSet(values []string) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for _, value := range values {
+		out[value] = true
+	}
+	return out
+}
+
+func copySortedStrings(values []string) []string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
 	return out
 }
 
@@ -2237,14 +2386,15 @@ func pruneRetention(ctx context.Context, layout statepaths.Layout, store datalif
 	return nil
 }
 
-func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent) (string, []string, error) {
+func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string) (string, []string, error) {
 	input, deps, err := reviewerPromptInputFromArtifacts(paths, pr, selected, agent)
 	if err != nil {
 		return "", nil, err
 	}
+	reviewerScope := reviewerReadableFiles(selected, changedFiles)
 	payload := map[string]any{
 		"task":            "review files and return findings JSON only",
-		"output_contract": findingsOutputContract(agent.ID, append([]string(nil), input.Assignment.Files...)),
+		"output_contract": findingsOutputContract(agent.ID, reviewerScope),
 		"agent":           reviewerAgentPromptFromAgent(agent),
 		"assignment":      input.Assignment,
 		"dossier":         input.Dossier,
@@ -2603,7 +2753,7 @@ func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierD
 	return out
 }
 
-func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure) (string, error) {
+func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure, reviewerCoverage []reviewplan.ReviewerCoverageSummary) (string, error) {
 	payload := map[string]any{
 		"task":              "dedupe findings and return rollup JSON only",
 		"output_contract":   rollupOutputContract(findings),
@@ -2611,12 +2761,39 @@ func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFai
 		"pr":                promptPRFromPR(pr),
 		"findings":          rollupFindingsPrompt(findings),
 		"reviewer_failures": reviewerFailures,
+		"reviewer_coverage": rollupCoveragePrompt(reviewerCoverage),
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("pipeline: build rollup prompt: %w", err)
 	}
 	return string(body), nil
+}
+
+type rollupCoveragePromptEntry struct {
+	AgentID        string   `json:"agent_id"`
+	Status         string   `json:"status"`
+	Scope          []string `json:"scope,omitempty"`
+	InspectedFiles []string `json:"inspected_files,omitempty"`
+	SkippedFiles   []string `json:"skipped_files,omitempty"`
+	Constraints    []string `json:"constraints,omitempty"`
+	Diagnostic     string   `json:"diagnostic,omitempty"`
+}
+
+func rollupCoveragePrompt(coverage []reviewplan.ReviewerCoverageSummary) []rollupCoveragePromptEntry {
+	out := make([]rollupCoveragePromptEntry, 0, len(coverage))
+	for _, entry := range coverage {
+		out = append(out, rollupCoveragePromptEntry{
+			AgentID:        entry.AgentID,
+			Status:         entry.Status,
+			Scope:          append([]string(nil), entry.Scope...),
+			InspectedFiles: append([]string(nil), entry.InspectedFiles...),
+			SkippedFiles:   append([]string(nil), entry.SkippedFiles...),
+			Constraints:    append([]string(nil), entry.Constraints...),
+			Diagnostic:     entry.Diagnostic,
+		})
+	}
+	return out
 }
 
 type rollupFindingPrompt struct {
@@ -2741,22 +2918,32 @@ func findingsOutputContract(agentID string, changedFiles []string) outputContrac
 			"allowed_values is context only; do not include allowed_values keys in the response.",
 			"schema_version must be 1.",
 			"agent_id must match the provided agent id.",
+			"inspected_files must list assigned changed files you actually inspected, even when findings is empty.",
+			"skipped_files must list assigned changed files you intentionally did not inspect or could not inspect.",
+			"At least one of inspected_files or skipped_files must be non-empty.",
+			"constraints must list any material review constraints, such as intentionally narrow scope, missing context, or tool limitations.",
 			"findings must be an empty array when there are no actionable findings.",
 			"file_path must be one of changed_files.",
 			"Do not provide finding_id; the harness assigns IDs.",
 		},
 		ResponseSchema: map[string]any{
-			"schema_version": "number, required, must be 1",
-			"agent_id":       "string, required",
-			"findings":       "array of {severity: string, file_path: string, anchor: {kind: 'file'} or {kind: 'line', side: 'RIGHT'|'LEFT', line: positive number}, body: string}",
+			"schema_version":  "number, required, must be 1",
+			"agent_id":        "string, required",
+			"inspected_files": "string[], assigned changed files inspected by this reviewer",
+			"skipped_files":   "string[], assigned changed files intentionally not inspected or not inspectable",
+			"constraints":     "string[], material scope/tool/context constraints",
+			"findings":        "array of {severity: string, file_path: string, anchor: {kind: 'file'} or {kind: 'line', side: 'RIGHT'|'LEFT', line: positive number}, body: string}",
 		},
 		AllowedValues: map[string]any{
 			"severities":    []string{"blocking", "major", "minor", "nits"},
 			"changed_files": changedFiles,
 		},
 		Example: map[string]any{
-			"schema_version": 1,
-			"agent_id":       agentID,
+			"schema_version":  1,
+			"agent_id":        agentID,
+			"inspected_files": firstNOrPlaceholder(changedFiles, "path/to/changed-file.ext", 1),
+			"skipped_files":   []string{},
+			"constraints":     []string{},
 			"findings": []map[string]any{{
 				"severity":  "major",
 				"file_path": firstOrPlaceholder(changedFiles, "path/to/changed-file.ext"),

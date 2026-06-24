@@ -319,6 +319,22 @@ func applySelfApprovalPolicy(event review.ReviewEvent, opts EventOptions) review
 	return event
 }
 
+func hasIncompleteReviewerCoverage(coverage []ReviewerCoverageSummary) bool {
+	for _, entry := range coverage {
+		switch entry.Status {
+		case "", "complete_broad", "complete_constrained":
+			continue
+		case "incomplete_skipped", "incomplete_failed", "incomplete_unassigned":
+			return true
+		default:
+			// Unknown coverage statuses are treated conservatively so a new
+			// incomplete state cannot silently bypass approval coercion.
+			return true
+		}
+	}
+	return false
+}
+
 func newBuilder(req Request) (*builder, error) {
 	if !req.PostMode.Valid() {
 		return nil, fmt.Errorf("reviewplan: invalid post mode %q", req.PostMode)
@@ -392,6 +408,9 @@ func (b *builder) buildReview() (Plan, error) {
 	}
 	event = applySelfApprovalPolicy(event, b.req.EventOptions)
 	if len(b.req.RunSummary.ReviewerFailures) > 0 && event == review.ReviewEventApprove {
+		event = review.ReviewEventComment
+	}
+	if hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage) && event == review.ReviewEventApprove {
 		event = review.ReviewEventComment
 	}
 	outcome, err := OutcomeFromReviewEvent(event)
@@ -748,6 +767,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 	if len(summary.Reviewers) > 0 {
 		writeReviewerTable(&out, summary.Reviewers)
 		b.writeReviewerSections(&out, anchored, summary.Reviewers)
+		writeReviewerCoverageDiagnostics(&out, summary.Run.ReviewerCoverage)
 		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)
 	} else {
 		counts := severityCounts(ordered)
@@ -772,6 +792,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		}
 	}
 	if len(summary.Reviewers) == 0 {
+		writeReviewerCoverageDiagnostics(&out, summary.Run.ReviewerCoverage)
 		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)
 	}
 	fmt.Fprintf(&out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", summary.Threads.Considered, summary.Threads.Summarized, summary.Threads.Resolved)

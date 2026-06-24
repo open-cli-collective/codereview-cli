@@ -33,6 +33,18 @@ type ReviewReviewerSummary struct {
 	Findings int    `json:"findings"`
 }
 
+// ReviewReviewerCoverageSummary describes reviewer coverage rendered in the
+// rollup summary.
+type ReviewReviewerCoverageSummary struct {
+	AgentID        string   `json:"agent_id"`
+	Status         string   `json:"status"`
+	Scope          []string `json:"scope,omitempty"`
+	InspectedFiles []string `json:"inspected_files,omitempty"`
+	SkippedFiles   []string `json:"skipped_files,omitempty"`
+	Constraints    []string `json:"constraints,omitempty"`
+	Diagnostic     string   `json:"diagnostic,omitempty"`
+}
+
 // ReviewThreadCounts summarizes PR discussion thread handling.
 type ReviewThreadCounts struct {
 	Considered int `json:"considered"`
@@ -42,13 +54,14 @@ type ReviewThreadCounts struct {
 
 // ReviewRunSummary is the execution metadata rendered in the rollup footer.
 type ReviewRunSummary struct {
-	ToolVersion       string             `json:"tool_version,omitempty"`
-	Adapter           string             `json:"adapter,omitempty"`
-	Model             string             `json:"model,omitempty"`
-	PostingIdentity   string             `json:"posting_identity,omitempty"`
-	SelectedReviewers []string           `json:"selected_reviewers,omitempty"`
-	WallDurationMS    *int64             `json:"wall_duration_ms"`
-	Workstreams       []ReviewWorkstream `json:"workstreams"`
+	ToolVersion       string                          `json:"tool_version,omitempty"`
+	Adapter           string                          `json:"adapter,omitempty"`
+	Model             string                          `json:"model,omitempty"`
+	PostingIdentity   string                          `json:"posting_identity,omitempty"`
+	SelectedReviewers []string                        `json:"selected_reviewers,omitempty"`
+	ReviewerCoverage  []ReviewReviewerCoverageSummary `json:"reviewer_coverage,omitempty"`
+	WallDurationMS    *int64                          `json:"wall_duration_ms"`
+	Workstreams       []ReviewWorkstream              `json:"workstreams"`
 }
 
 // ReviewWorkstream is adapter-reported usage for one workstream.

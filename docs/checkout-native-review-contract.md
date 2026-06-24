@@ -240,11 +240,31 @@ stuffed diffs or full file bodies.
 
 Specialist reviewers must return structured output that includes:
 
-- findings
-- evidence and anchors
-- confidence
-- inspected areas
-- skipped areas or declared constraints
+- `findings`, each with severity, changed-file path, anchor, and body
+- `inspected_files`, listing assigned changed files the reviewer actually inspected
+- `skipped_files`, listing assigned changed files the reviewer intentionally did not or could not inspect
+- `constraints`, listing material scope, context, or tool constraints
 
-Rollup must treat isolated reviewer failures as incomplete coverage and must not
-turn a partially reviewed PR into a clean approval.
+Rollup receives compact reviewer coverage summaries derived from those fields.
+`allowed_files` is intentional scope narrowing, not incomplete coverage by
+itself. Isolated reviewer failures, skipped files, missing reviewer results, and
+unassigned changed files are incomplete coverage and must not turn into a clean
+approval silently.
+
+Coverage uses two related scopes:
+
+- readable files: `allowed_files` when present, otherwise all changed files in
+  the workbench
+- assignment scope: `allowed_files` when present, otherwise `files` when the
+  orchestrator supplied them, otherwise all changed files
+
+The coverage status values are:
+
+- `complete_broad`: a reviewer without `allowed_files` covered its assignment
+- `complete_constrained`: a reviewer with `allowed_files` covered that narrowed
+  assignment
+- `incomplete_skipped`: assigned files were skipped or not reported as inspected
+- `incomplete_failed`: an isolated reviewer failure or missing reviewer result
+  prevented coverage
+- `incomplete_unassigned`: changed files were not assigned to any selected
+  reviewer

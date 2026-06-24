@@ -32,6 +32,19 @@ type ReviewerSummary struct {
 	Findings int
 }
 
+// ReviewerCoverageSummary describes whether a selected reviewer actually
+// covered its assignment. It is compact by design so rollups can include it
+// without pulling diff or file content into context.
+type ReviewerCoverageSummary struct {
+	AgentID        string
+	Status         string
+	Scope          []string
+	InspectedFiles []string
+	SkippedFiles   []string
+	Constraints    []string
+	Diagnostic     string
+}
+
 // ThreadCounts summarizes PR discussion thread handling.
 type ThreadCounts struct {
 	Considered int
@@ -50,6 +63,7 @@ type RunSummary struct {
 	PostingIdentity   string
 	SelectedReviewers []string
 	ReviewerFailures  []ReviewerFailureSummary
+	ReviewerCoverage  []ReviewerCoverageSummary
 	WallDurationMS    *int64
 	Workstreams       []WorkstreamUsage
 }
@@ -92,7 +106,7 @@ type AggregateUsage struct {
 func (r RunSummary) hasData() bool {
 	return r.ToolVersion != "" || r.Adapter != "" || r.Model != "" ||
 		r.PostingIdentity != "" || len(r.SelectedReviewers) > 0 ||
-		len(r.ReviewerFailures) > 0 || r.WallDurationMS != nil ||
+		len(r.ReviewerFailures) > 0 || len(r.ReviewerCoverage) > 0 || r.WallDurationMS != nil ||
 		len(r.Workstreams) > 0
 }
 
@@ -235,6 +249,33 @@ func writeReviewerFailureDiagnostics(out *strings.Builder, failures []ReviewerFa
 		fmt.Fprintf(out, "| %s | failed | %s |\n", escapeCell(failure.AgentID), escapeCell(failure.Error))
 	}
 	out.WriteString("\n")
+}
+
+func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerCoverageSummary) {
+	if len(coverage) == 0 {
+		return
+	}
+	out.WriteString("### Reviewer Coverage\n\n")
+	out.WriteString("| Reviewer | Status | Inspected | Skipped | Constraints |\n")
+	out.WriteString("|----------|--------|-----------|---------|-------------|\n")
+	for _, entry := range coverage {
+		fmt.Fprintf(out, "| %s | %s | %s | %s | %s |\n",
+			escapeCell(entry.AgentID),
+			escapeCell(entry.Status),
+			escapeCell(orUnavailable(strings.Join(entry.InspectedFiles, ", "))),
+			escapeCell(orUnavailable(strings.Join(entry.SkippedFiles, ", "))),
+			escapeCell(coverageAnnotationCell(entry)),
+		)
+	}
+	out.WriteString("\n")
+}
+
+func coverageAnnotationCell(entry ReviewerCoverageSummary) string {
+	parts := append([]string(nil), entry.Constraints...)
+	if strings.TrimSpace(entry.Diagnostic) != "" {
+		parts = append(parts, entry.Diagnostic)
+	}
+	return orUnavailable(strings.Join(parts, "; "))
 }
 
 func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage) {
