@@ -27,21 +27,30 @@ keychain_probe:
     base: native_user_config
     path: "codereview/config.yml"
     content: |
-      profiles:
-        default:
+      repository_access:
+        default-git:
           git:
             host: github.com
             auth_mode: pat
-            credential_ref: codereview/default
-          llm:
-            provider: anthropic
-            auth: subscription
-            adapter: claude_cli
-  command: ["config", "show", "--json"]
+            credential:
+              store: local-os
+              name: codereview/default
+      llm_runtimes:
+        claude-cli:
+          provider: anthropic
+          auth: subscription
+          adapter: claude_cli
+      profiles:
+        default:
+          repository_access: default-git
+          reviewer:
+            kind: git_identity
+          llm_runtime: claude-cli
+  command: ["config", "show", "--profile", "default", "--json"]
   output: json
   assertions:
     .backend: keychain
-    .backend_source: auto
+    .backend_source: credential_store
     .credential_ref: codereview/default
 
 version_file: version.txt
