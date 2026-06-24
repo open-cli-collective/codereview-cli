@@ -20,7 +20,6 @@ type progressAdapter struct {
 type progressStream struct {
 	stream llm.Stream
 	span   *progress.Span
-	fields []progress.Field
 }
 
 func withProgressAdapter(logger *progress.Logger, adapter llm.Adapter, provider, harness string) llm.Adapter {
@@ -71,8 +70,7 @@ func (a progressAdapter) start(ctx context.Context, op string, req llm.Request, 
 		span.End(err)
 		return nil, err
 	}
-	endFields := llmResponseFields(stream.SessionID(), llm.Response{})
-	return progressStream{stream: stream, span: span, fields: endFields}, nil
+	return progressStream{stream: stream, span: span}, nil
 }
 
 func (s progressStream) SessionID() string {
@@ -81,7 +79,7 @@ func (s progressStream) SessionID() string {
 
 func (s progressStream) Wait(ctx context.Context) (llm.Response, error) {
 	resp, err := s.stream.Wait(ctx)
-	fields := llmResponseFields(s.stream.SessionID(), resp)
+	fields := llmResponseFields(resp)
 	s.span.EndFields(err, fields...)
 	return resp, err
 }
@@ -103,17 +101,11 @@ func llmProgressFields(provider, harness string, req llm.Request, resumeSessionI
 	if logPath := strings.TrimSpace(req.LogPath); logPath != "" {
 		fields = append(fields, progress.Field{Key: "log_file", Value: filepath.Base(logPath)})
 	}
-	if resumeSessionID = strings.TrimSpace(resumeSessionID); resumeSessionID != "" {
-		fields = append(fields, progress.Field{Key: "resume_session_id", Value: resumeSessionID})
-	}
 	return fields
 }
 
-func llmResponseFields(sessionID string, resp llm.Response) []progress.Field {
+func llmResponseFields(resp llm.Response) []progress.Field {
 	fields := []progress.Field{}
-	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
-		fields = append(fields, progress.Field{Key: "session_id", Value: sessionID})
-	}
 	if resp.Usage.TokensIn != nil {
 		fields = append(fields, progress.Field{Key: "tokens_in", Value: strconv.Itoa(*resp.Usage.TokensIn)})
 	}

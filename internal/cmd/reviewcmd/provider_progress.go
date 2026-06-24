@@ -2,7 +2,7 @@ package reviewcmd
 
 import (
 	"context"
-	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -14,6 +14,10 @@ type progressProvider struct {
 	logger   *progress.Logger
 }
 
+type progressRangeProvider struct {
+	progressProvider
+}
+
 func withProgressProvider(logger *progress.Logger, provider gitprovider.GitProvider) gitprovider.GitProvider {
 	if provider == nil {
 		return nil
@@ -21,7 +25,13 @@ func withProgressProvider(logger *progress.Logger, provider gitprovider.GitProvi
 	if logger == nil {
 		return provider
 	}
-	return progressProvider{provider: provider, logger: logger}
+	wrapped := progressProvider{provider: provider, logger: logger}
+	if _, ok := provider.(interface {
+		GetDiffBetweenRefs(context.Context, gitprovider.PRRef, string, string) (gitprovider.UnifiedDiff, error)
+	}); ok {
+		return progressRangeProvider{progressProvider: wrapped}
+	}
+	return wrapped
 }
 
 func (p progressProvider) WhoAmI(ctx context.Context, creds gitprovider.Credential) (gitprovider.Identity, error) {
@@ -42,13 +52,10 @@ func (p progressProvider) GetDiff(ctx context.Context, ref gitprovider.PRRef) (g
 	return diff, endProgressSpan(span, err)
 }
 
-func (p progressProvider) GetDiffBetweenRefs(ctx context.Context, ref gitprovider.PRRef, baseSHA, headSHA string) (gitprovider.UnifiedDiff, error) {
-	rangeProvider, ok := p.provider.(interface {
+func (p progressRangeProvider) GetDiffBetweenRefs(ctx context.Context, ref gitprovider.PRRef, baseSHA, headSHA string) (gitprovider.UnifiedDiff, error) {
+	rangeProvider := p.provider.(interface {
 		GetDiffBetweenRefs(context.Context, gitprovider.PRRef, string, string) (gitprovider.UnifiedDiff, error)
 	})
-	if !ok {
-		return gitprovider.UnifiedDiff{}, fmt.Errorf("review: provider does not support compare diff")
-	}
 	span := p.logger.Start("review", "fetch_diff_between_refs", "pr")
 	diff, err := rangeProvider.GetDiffBetweenRefs(ctx, ref, baseSHA, headSHA)
 	return diff, endProgressSpan(span, err)
@@ -122,5 +129,5 @@ func fileTarget(path string) string {
 	if path == "" {
 		return "file"
 	}
-	return "file:" + path
+	return "file:" + strings.ReplaceAll(filepath.Clean(path), "\n", "_")
 }

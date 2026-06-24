@@ -1296,7 +1296,10 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 	if strings.TrimSpace(draft.providerSessionID) != "" {
 		session = draft.toLedger(spec.runID)
 		if err := opts.Store.InsertSession(ctx, session); err != nil {
+			meta.Status = llmTaskStatusFailedBlocking
+			meta.ProviderSessionID = draft.providerSessionID
 			var zero T
+			endLLMTaskProgress(progressSpan, err, llmTaskProgressResult(meta, result, false))
 			return zero, sessionDraft{}, ledger.Session{}, err
 		}
 	}

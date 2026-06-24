@@ -1974,7 +1974,6 @@ func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
 		`model="gpt-5.5"`,
 		`effort="high"`,
 		`log_file="selector.jsonl"`,
-		`session_id="sess-123"`,
 		`tokens_in="11"`,
 		`tokens_out="7"`,
 	} {
@@ -1999,9 +1998,17 @@ func TestProgressAdapterResumeErrorWritesResumeSessionID(t *testing.T) {
 	}
 	stderr := errOut.String()
 	if !strings.Contains(stderr, `command="review" op="resume_llm" target="llm"`) ||
-		!strings.Contains(stderr, `resume_session_id="stored-session"`) ||
 		!strings.Contains(stderr, `event=error`) {
 		t.Fatalf("stderr = %q, want resume error breadcrumb", stderr)
+	}
+}
+
+func TestWithProgressProviderPreservesOptionalRangeDiffCapability(t *testing.T) {
+	wrapped := withProgressProvider(progress.New(io.Discard, false, nil), &gitprovider.Fake{})
+	if _, ok := wrapped.(interface {
+		GetDiffBetweenRefs(context.Context, gitprovider.PRRef, string, string) (gitprovider.UnifiedDiff, error)
+	}); ok {
+		t.Fatalf("wrapped provider unexpectedly advertises GetDiffBetweenRefs")
 	}
 }
 
@@ -2074,6 +2081,47 @@ func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
 	if !strings.Contains(stderr, `command="review" op="plan_live_review" target="pr"`) ||
 		!strings.Contains(stderr, `run_id="run-123"`) {
 		t.Fatalf("stderr = %q, want planner breadcrumb", stderr)
+	}
+}
+
+func TestReviewDryRunTextProgressWritesStructuredStderrWithoutStdoutLeak(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), fakeFactory(runner), false)
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String(), "cr progress") {
+		t.Fatalf("stdout leaked progress = %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Post mode: dry_run") {
+		t.Fatalf("stdout = %q, want text dry-run render", out.String())
+	}
+	assertProgressOutput(t, errOut.String(), []string{
+		`command="review" op="load_config" target="config"`,
+		`command="review" op="execute_dry_run" target="pr"`,
+		`command="review" op="render_result" target="stdout"`,
+	})
+}
+
+func assertProgressOutput(t *testing.T, stderr string, wants []string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		t.Fatal("stderr has no progress lines")
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "cr progress ") {
+			t.Fatalf("stderr line = %q, want progress prefix", line)
+		}
+		if !strings.Contains(line, " event=") || !strings.Contains(line, ` command="`) || !strings.Contains(line, ` op="`) || !strings.Contains(line, ` target="`) {
+			t.Fatalf("stderr line = %q, want structured progress fields", line)
+		}
+	}
+	for _, want := range wants {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
 	}
 }
 
