@@ -397,7 +397,7 @@ func TestDryRunSelectionPromptInstructionsStayInsideStructuredPayload(t *testing
 	if !strings.Contains(selectionPrompt, `"selection_instructions": "Prefer applies_when over prompt wording when routing."`) {
 		t.Fatalf("selection prompt missing custom instruction field: %s", selectionPrompt)
 	}
-	if !strings.Contains(selectionPrompt, `"task": "select reviewer agents and thread actions; return selection JSON only"`) {
+	if !strings.Contains(selectionPrompt, `"task": "`+defaultSelectionTask+`"`) {
 		t.Fatalf("selection prompt missing stable task field: %s", selectionPrompt)
 	}
 	if !strings.Contains(selectionPrompt, `"output_contract"`) || !strings.Contains(selectionPrompt, `"schema": "selection"`) {
@@ -518,17 +518,18 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	trustCurrentTempFixtures(t)
 	req.Profile.AgentSources = []string{dir}
 	req.SelectionPromptInstructions = "Prefer applies_when over prompt wording when routing."
-	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+	provider.diff.Raw = largeDiff("main.go", "+selection_prompt_should_not_embed_this_unique_hunk_line\n") + smallDiff("other.go")
 	provider.pr.Body = "Selection prompt body should stay out of prompt payloads."
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Open thread at main.go:2"}}), 8, 2))
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:alpha", "main.go"), 10, 2))
 
-	if _, err := selectionOnlyForTest(ctx, Options{
+	result, err := selectionOnlyForTest(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
-	}, selectionRequestFromReview(req, t.TempDir())); err != nil {
+	}, selectionRequestFromReview(req, t.TempDir()))
+	if err != nil {
 		t.Fatalf("SelectionOnly: %v", err)
 	}
 
@@ -538,14 +539,15 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	}
 	selectionPrompt := requests[1].Prompt
 	var payload struct {
-		Task                  string                     `json:"task"`
-		Schema                string                     `json:"schema"`
-		SelectionInstructions string                     `json:"selection_instructions"`
-		OutputContract        map[string]any             `json:"output_contract"`
-		PR                    promptPR                   `json:"pr"`
-		Agents                []selectionAgentPrompt     `json:"agents"`
-		ChangedFiles          []string                   `json:"changed_files"`
-		Threads               []gitprovider.InlineThread `json:"threads"`
+		Task                  string                   `json:"task"`
+		Schema                string                   `json:"schema"`
+		SelectionInstructions string                   `json:"selection_instructions"`
+		OutputContract        map[string]any           `json:"output_contract"`
+		Agents                []selectionAgentPrompt   `json:"agents"`
+		ChangedFiles          []string                 `json:"changed_files"`
+		Dossier               selectionPromptDossier   `json:"dossier"`
+		Workbench             selectionPromptWorkbench `json:"workbench"`
+		Threads               []selectionThreadPrompt  `json:"threads"`
 	}
 	if err := json.Unmarshal([]byte(selectionPrompt), &payload); err != nil {
 		t.Fatalf("unmarshal selection prompt: %v", err)
@@ -556,15 +558,23 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	if payload.Task != defaultSelectionTask || payload.Schema != "selection" || payload.OutputContract == nil {
 		t.Fatalf("selection prompt envelope = %#v, want task/schema/output contract", payload)
 	}
-	if payload.PR.Title != provider.pr.Title || payload.PR.URL != provider.pr.URL || payload.PR.Author.Login != provider.pr.Author.Login ||
-		payload.PR.Base.SHA != provider.pr.Base.SHA || payload.PR.Head.SHA != provider.pr.Head.SHA {
-		t.Fatalf("selection prompt pr = %#v, want title/url/author/base/head from provider PR", payload.PR)
-	}
 	if !reflect.DeepEqual(payload.ChangedFiles, []string{"main.go", "other.go"}) {
 		t.Fatalf("changed files = %#v, want main.go/other.go", payload.ChangedFiles)
 	}
-	if len(payload.Threads) != 1 || payload.Threads[0].ID != "thread-1" || payload.Threads[0].Path != "main.go" {
+	if len(payload.Threads) != 1 || payload.Threads[0].ThreadID != "thread-1" || payload.Threads[0].Path != "main.go" || payload.Threads[0].Summary != "Open thread at main.go:2" {
 		t.Fatalf("threads = %#v, want thread-1 on main.go", payload.Threads)
+	}
+	if !strings.Contains(payload.Dossier.PRIntent, provider.pr.Title) || !strings.Contains(payload.Dossier.PRIntent, provider.pr.Body) {
+		t.Fatalf("pr intent = %q, want title and PR body", payload.Dossier.PRIntent)
+	}
+	if !strings.Contains(payload.Dossier.ChangeMap, "main.go") || !strings.Contains(payload.Dossier.Discussion, "Open thread at main.go:2") {
+		t.Fatalf("dossier payload = %#v, want change map and summarized discussion", payload.Dossier)
+	}
+	if payload.Workbench.Head.SHA != provider.pr.Head.SHA || payload.Workbench.Base.SHA != provider.pr.Base.SHA {
+		t.Fatalf("workbench payload = %#v, want review head/base SHAs", payload.Workbench)
+	}
+	if payload.Workbench.CheckoutMode == "" || payload.Workbench.PR.Number != provider.pr.Ref.Number {
+		t.Fatalf("workbench payload = %#v, want checkout mode and PR identity", payload.Workbench)
 	}
 	if len(payload.Agents) != 2 {
 		t.Fatalf("agents len = %d, want 2", len(payload.Agents))
@@ -591,8 +601,18 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 			t.Fatalf("selection prompt leaked reviewer execution detail %q: %s", forbidden, selectionPrompt)
 		}
 	}
-	if strings.Contains(selectionPrompt, "Selection prompt body should stay out of prompt payloads.") {
-		t.Fatalf("selection prompt leaked PR body: %s", selectionPrompt)
+	for _, forbidden := range []string{"diff --git", "@@ -", "@@ +"} {
+		if strings.Contains(selectionPrompt, forbidden) {
+			t.Fatalf("selection prompt leaked diff hunk content %q: %s", forbidden, selectionPrompt)
+		}
+	}
+	if strings.Contains(selectionPrompt, "selection_prompt_should_not_embed_this_unique_hunk_line") {
+		t.Fatalf("selection prompt leaked raw patch content: %s", selectionPrompt)
+	}
+	for _, forbidden := range []string{result.Artifacts.WorkbenchRepoDir, result.Artifacts.WorkbenchScratch, result.Artifacts.DossierDir, `"source_repo_root"`, `"repo_path"`, `"scratch_path"`, `"metadata_path"`, `"metadata_sha256"`, `"fingerprint_inputs"`, `"root_dir"`, `"index_path"`, `"index_sha256"`} {
+		if strings.Contains(selectionPrompt, forbidden) {
+			t.Fatalf("selection prompt leaked harness-only workbench detail %q: %s", forbidden, selectionPrompt)
+		}
 	}
 }
 
@@ -2333,6 +2353,49 @@ func TestRunStructuredTaskRejectsAdapterMismatchBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestRunStructuredTaskRejectsDependencyTaskIDMismatchBeforeRetry(t *testing.T) {
+	ctx := context.Background()
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	spec := llmTaskSpec{
+		runID:             "run-dependency-mismatch",
+		taskID:            orchestratorSelectionStage,
+		phase:             "selection",
+		dependencyTaskIDs: []string{dossierSummaryTaskID},
+		inputFingerprint:  "fingerprint",
+		artifacts:         artifacts,
+		role:              ledger.SessionRoleOrchestrator,
+		model:             "model",
+		effort:            "medium",
+		prompt:            "prompt",
+	}
+	meta := llmTaskMetadata{
+		SchemaVersion:     llmTaskSchemaVersion,
+		TaskID:            spec.taskID,
+		Phase:             spec.phase,
+		DependencyTaskIDs: nil,
+		InputFingerprint:  spec.inputFingerprint,
+		Adapter:           "fake-llm",
+		Status:            llmTaskStatusFailedBlocking,
+		SessionRowID:      "session-row",
+		ProviderSessionID: "provider-session",
+	}
+	if err := writeLLMTaskMetadata(artifacts, meta); err != nil {
+		t.Fatalf("writeLLMTaskMetadata: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("new-session", `"ok"`, 1, 1))
+
+	_, _, _, err := runStructuredTask[string](ctx, Options{Adapter: adapter}, spec, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "dependency task ids") {
+		t.Fatalf("runStructuredTask error = %v, want dependency task id mismatch", err)
+	}
+	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter invoked despite dependency mismatch: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+	}
+}
+
 func TestRunStructuredTaskReviewerStartFailureIsBlocking(t *testing.T) {
 	ctx := context.Background()
 	artifacts := ArtifactPathsFromDir(t.TempDir())
@@ -3536,7 +3599,7 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 			if !strings.Contains(request.Prompt, `"applies_when"`) {
 				t.Fatalf("selection prompt missing applies_when routing metadata: %s", request.Prompt)
 			}
-			for _, forbidden := range []string{"Review alpha files.", "Review beta files.", `"prompt"`, `"owner"`, `"provenance"`, `"overridden"`} {
+			for _, forbidden := range []string{"Review alpha files.", "Review beta files.", `"prompt"`, `"provenance"`, `"overridden"`} {
 				if strings.Contains(request.Prompt, forbidden) {
 					t.Fatalf("selection prompt leaked reviewer execution instructions %q: %s", forbidden, request.Prompt)
 				}
@@ -3883,7 +3946,7 @@ func TestDryRunRejectsSelfReviewWhenReviewerCredentialsMatchAuthor(t *testing.T)
 }
 
 func TestSelectionOutputContractExampleHasNoAgentsWhenCatalogEmpty(t *testing.T) {
-	contract := selectionOutputContract(nil, []FilePatch{{Path: "main.go"}}, nil, 3)
+	contract := selectionOutputContract(nil, []string{"main.go"}, nil, 3)
 	example, ok := contract.Example.(map[string]any)
 	if !ok {
 		t.Fatalf("Example = %#v, want map", contract.Example)
@@ -3899,10 +3962,8 @@ func TestSelectionOutputContractExampleHasNoAgentsWhenCatalogEmpty(t *testing.T)
 
 func TestSelectionPromptIncludesMaxSelectedAgentsContract(t *testing.T) {
 	prompt, err := buildSelectionPrompt(
-		gitprovider.PR{},
 		agents.Catalog{Agents: []agents.Agent{{ID: "agent-1"}}},
-		[]FilePatch{{Path: "main.go"}},
-		nil,
+		selectionPromptInput{ChangedFiles: []string{"main.go"}},
 		3,
 		"",
 	)
@@ -3927,6 +3988,202 @@ func TestSelectionPromptIncludesMaxSelectedAgentsContract(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(payload.OutputContract.Instructions, "\n"), "at most max_selected_agents") {
 		t.Fatalf("instructions = %#v, want max-selected-agents guidance", payload.OutputContract.Instructions)
+	}
+	if !strings.Contains(prompt, "allowed_files") {
+		t.Fatalf("selection prompt contract missing allowed_files: %s", prompt)
+	}
+}
+
+func TestSelectionOutputContractExampleOmitsAllowedFilesForBroadReviewer(t *testing.T) {
+	contract := selectionOutputContract([]agents.Agent{{ID: "agent-1"}}, []string{"main.go"}, nil, 3)
+	example, ok := contract.Example.(map[string]any)
+	if !ok {
+		t.Fatalf("Example = %#v, want map", contract.Example)
+	}
+	selected, ok := example["selected_agents"].([]map[string]any)
+	if !ok || len(selected) != 1 {
+		t.Fatalf("selected_agents = %#v, want one example reviewer", example["selected_agents"])
+	}
+	if _, ok := selected[0]["allowed_files"]; ok {
+		t.Fatalf("selection example unexpectedly set allowed_files for broad reviewer: %#v", selected[0])
+	}
+}
+
+func TestSelectionPromptDependenciesTrackDossierAndWorkbenchDigests(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+
+	result, err := selectionOnlyForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+	}, selectionRequestFromReview(req, t.TempDir()))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+
+	_, deps1, err := selectionPromptInputFromArtifacts(result.Artifacts, result.Threads)
+	if err != nil {
+		t.Fatalf("selectionPromptInputFromArtifacts first: %v", err)
+	}
+	if len(deps1) != 2 {
+		t.Fatalf("deps len = %d, want dossier/workbench deps", len(deps1))
+	}
+
+	indexPath := result.Artifacts.DossierIndexPath()
+	if err := os.WriteFile(indexPath, []byte(`{"hash_algorithm":"sha256","files":[{"path":"final/pr-intent.md","sha256":"changed"}]}`+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", indexPath, err)
+	}
+	_, deps2, err := selectionPromptInputFromArtifacts(result.Artifacts, result.Threads)
+	if err != nil {
+		t.Fatalf("selectionPromptInputFromArtifacts dossier change: %v", err)
+	}
+	if reflect.DeepEqual(deps1, deps2) {
+		t.Fatalf("deps after dossier index change = %#v, want changed from %#v", deps2, deps1)
+	}
+
+	metaPath := result.Artifacts.WorkbenchMetadataPath()
+	var meta workbenchMetadataArtifact
+	if err := readJSONFile(metaPath, &meta); err != nil {
+		t.Fatalf("read workbench metadata: %v", err)
+	}
+	meta.FingerprintInputs.ChangedFiles = append(meta.FingerprintInputs.ChangedFiles, "extra.go")
+	if err := writeJSONFile(metaPath, meta); err != nil {
+		t.Fatalf("write workbench metadata: %v", err)
+	}
+	_, deps3, err := selectionPromptInputFromArtifacts(result.Artifacts, result.Threads)
+	if err != nil {
+		t.Fatalf("selectionPromptInputFromArtifacts workbench change: %v", err)
+	}
+	if reflect.DeepEqual(deps2, deps3) {
+		t.Fatalf("deps after workbench metadata change = %#v, want changed from %#v", deps3, deps2)
+	}
+}
+
+func TestSelectionTaskMetadataDependsOnDossierSummaryTask(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "body"), 10, 2))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 10, 2))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-selection-deps" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	selectionMeta, ok, err := readLLMTaskMetadata(ArtifactPathsFromDir(result.Run.ArtifactPath), orchestratorSelectionStage)
+	if err != nil || !ok {
+		t.Fatalf("read selection metadata: ok=%v err=%v", ok, err)
+	}
+	if !reflect.DeepEqual(selectionMeta.DependencyTaskIDs, []string{dossierSummaryTaskID}) {
+		t.Fatalf("selection dependency_task_ids = %#v, want dossier summary dependency", selectionMeta.DependencyTaskIDs)
+	}
+}
+
+func TestRunSelectionPhaseRejectsStaleSelectionMetadataWhenDossierDigestChanges(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-selection-stale-dossier", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	opts := Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+	}
+	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
+	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
+		PRRef:         req.PRRef,
+		Profile:       req.Profile,
+		AgentDirs:     req.AgentDirs,
+		ReviewBaseSHA: req.ReviewBaseSHA,
+		ReviewHeadSHA: req.ReviewHeadSHA,
+		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
+			return ArtifactPathsFromDir(run.ArtifactPath), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareSelectionContext: %v", err)
+	}
+	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+		PRRef:        req.PRRef,
+		ReviewPR:     prepared.reviewPR,
+		ChangedFiles: prepared.changedFiles,
+		Artifacts:    prepared.artifacts,
+	}); err != nil {
+		t.Fatalf("prepareWorkbenchArtifacts: %v", err)
+	}
+	defer func() {
+		if err := unlockWorkbenchRepo(prepared.artifacts.WorkbenchRepoDir); err != nil {
+			t.Fatalf("unlockWorkbenchRepo: %v", err)
+		}
+	}()
+	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: prepared.artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts: %v", err)
+	}
+	if _, _, _, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
+		RunID:      run.RunID,
+		Profile:    req.Profile,
+		ReviewPR:   prepared.reviewPR,
+		Catalog:    prepared.catalog,
+		ParsedDiff: prepared.parsed,
+		Threads:    prepared.threads,
+		Artifacts:  prepared.artifacts,
+		MaxAgents:  1,
+	}); err != nil {
+		t.Fatalf("runSelectionPhase first: %v", err)
+	}
+	indexPath := prepared.artifacts.DossierIndexPath()
+	if err := os.WriteFile(indexPath, []byte(`{"hash_algorithm":"sha256","files":[{"path":"final/pr-intent.md","sha256":"changed"}]}`+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", indexPath, err)
+	}
+	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	secondOpts := opts
+	secondOpts.Adapter = secondAdapter
+	_, _, _, err = runSelectionPhase(ctx, secondOpts, selectionPhaseRequest{
+		RunID:      run.RunID,
+		Profile:    req.Profile,
+		ReviewPR:   prepared.reviewPR,
+		Catalog:    prepared.catalog,
+		ParsedDiff: prepared.parsed,
+		Threads:    prepared.threads,
+		Artifacts:  prepared.artifacts,
+		MaxAgents:  1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("runSelectionPhase stale dossier error = %v, want input fingerprint changed", err)
+	}
+	if len(secondAdapter.Requests()) != 0 || len(secondAdapter.Resumes()) != 0 {
+		t.Fatalf("adapter invoked despite stale selection metadata: starts=%#v resumes=%#v", secondAdapter.Requests(), secondAdapter.Resumes())
 	}
 }
 
@@ -4027,10 +4284,10 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 		},
 		{
 			name:   "reviewer diff",
-			budget: 5000,
+			budget: 9500,
 			mutate: func(t *testing.T, provider *readOnlyProvider, _ *Request, _ *llm.FakeAdapter) {
 				t.Helper()
-				provider.diff.Raw = largeDiff("main.go", strings.Repeat("+var x = true\n", 400))
+				provider.diff.Raw = largeDiff("main.go", strings.Repeat("+var x = true\n", 1600))
 			},
 			queue: func(adapter *llm.FakeAdapter) {
 				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
@@ -4040,7 +4297,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 		},
 		{
 			name:   "full content default model",
-			budget: 10000,
+			budget: 9500,
 			mutate: func(t *testing.T, provider *readOnlyProvider, req *Request, _ *llm.FakeAdapter) {
 				t.Helper()
 				dir := t.TempDir()
@@ -4074,30 +4331,6 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 			},
 			want:  "context budget exceeded for full-content agent harness:reviewer file main.go model bench-model",
 			runID: "run-budget-full-content-override",
-		},
-		{
-			name:   "rollup default model",
-			budget: 5000,
-			queue: func(adapter *llm.FakeAdapter) {
-				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
-				adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, strings.Repeat("body ", 1000)), 1, 1))
-			},
-			want:  "context budget exceeded for rollup model claude-sonnet-4-6",
-			runID: "run-budget-rollup-default",
-		},
-		{
-			name:   "rollup keeps default model under selection override",
-			budget: 5000,
-			mutate: func(t *testing.T, _ *readOnlyProvider, req *Request, _ *llm.FakeAdapter) {
-				t.Helper()
-				req.SelectionModelOverride = "bench-model"
-			},
-			queue: func(adapter *llm.FakeAdapter) {
-				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
-				adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, strings.Repeat("body ", 1000)), 1, 1))
-			},
-			want:  "context budget exceeded for rollup model claude-sonnet-4-6",
-			runID: "run-budget-rollup-override",
 		},
 	}
 
@@ -4134,6 +4367,39 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				t.Fatalf("DryRun error = %v, want substring %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestRollupPromptBudgetUsesSynthesisModel(t *testing.T) {
+	provider, req := dryRunHarness(t)
+	rollupRuntime, err := resolveSynthesisRuntimeConfig(req)
+	if err != nil {
+		t.Fatalf("resolveSynthesisRuntimeConfig: %v", err)
+	}
+	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil)
+	if err != nil {
+		t.Fatalf("buildRollupPrompt: %v", err)
+	}
+	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", "", rollupRuntime.model, "", prompt)
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-4-6") {
+		t.Fatalf("rollup budget error = %v, want synthesis-model budget failure", err)
+	}
+}
+
+func TestRollupPromptBudgetIgnoresSelectionModelOverride(t *testing.T) {
+	provider, req := dryRunHarness(t)
+	req.SelectionModelOverride = "bench-model"
+	rollupRuntime, err := resolveSynthesisRuntimeConfig(req)
+	if err != nil {
+		t.Fatalf("resolveSynthesisRuntimeConfig: %v", err)
+	}
+	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil)
+	if err != nil {
+		t.Fatalf("buildRollupPrompt: %v", err)
+	}
+	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", "", rollupRuntime.model, "", prompt)
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-4-6") {
+		t.Fatalf("rollup budget error = %v, want default synthesis model despite selection override", err)
 	}
 }
 
@@ -4958,6 +5224,24 @@ func findingsJSON(agentID, file, severity string, line int, body string) string 
 	return string(data)
 }
 
+func largeRollupFindings(count int, filePath, body string) []review.Finding {
+	out := make([]review.Finding, 0, count)
+	for i := 0; i < count; i++ {
+		out = append(out, review.Finding{
+			ID:       review.FindingID(fmt.Sprintf("finding-%d", i+1)),
+			Severity: review.SeverityMajor,
+			FilePath: filePath,
+			Anchor: review.Anchor{
+				Kind: review.AnchorKindLine,
+				Side: review.DiffSideRight,
+				Line: i + 2,
+			},
+			Body: body,
+		})
+	}
+	return out
+}
+
 func findingsFileAliasJSON(agentID, file, severity string, line int, body string) string {
 	payload := map[string]any{
 		"schema_version": 1,
@@ -5323,7 +5607,6 @@ func assertPromptOmitsLocalAgentSourceProvenance(t *testing.T, prompt string, so
 	for _, forbidden := range []string{
 		"configured_path",
 		"canonical_path",
-		"fingerprint",
 		"Source warning",
 		"OS temp directory",
 		"Git worktree",
