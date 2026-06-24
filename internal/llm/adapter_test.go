@@ -258,6 +258,22 @@ func TestRunStructuredWithSessionResume(t *testing.T) {
 			t.Fatalf("retry prompt = %q, want validation suffix", resumes[1].Request.Prompt)
 		}
 	})
+
+	t.Run("wait error preserves started session", func(t *testing.T) {
+		waitErr := errors.New("wait failed")
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{SessionID: "started-session", WaitErr: waitErr})
+
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, func(_ []byte) (string, error) {
+			return "unused", nil
+		})
+		if !errors.Is(err, waitErr) {
+			t.Fatalf("RunStructuredWithSessionResume error = %v, want %v", err, waitErr)
+		}
+		if result.SessionID != "started-session" {
+			t.Fatalf("result.SessionID = %q, want started-session", result.SessionID)
+		}
+	})
 }
 
 func TestRunStructuredValidationAttempts(t *testing.T) {

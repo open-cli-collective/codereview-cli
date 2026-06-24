@@ -1119,19 +1119,19 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	agentID := agent.ID
 	taskID := reviewerTaskID(agent.ID)
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
-		runID:                   runID,
-		taskID:                  taskID,
-		phase:                   "reviewer",
-		dependencyTaskIDs:       dependencyTaskIDs,
-		inputFingerprint:        llmTaskFingerprint(taskID, "reviewer", model, effort, prompt, dependencyTaskIDs),
-		artifacts:               artifacts,
-		role:                    ledger.SessionRoleReviewer,
-		agentID:                 &agentID,
-		model:                   model,
-		effort:                  effort,
-		logPath:                 logPath,
-		prompt:                  prompt,
-		validationFailureStatus: llmTaskStatusFailedIsolated,
+		runID:             runID,
+		taskID:            taskID,
+		phase:             "reviewer",
+		dependencyTaskIDs: dependencyTaskIDs,
+		inputFingerprint:  llmTaskFingerprint(taskID, "reviewer", model, effort, prompt, dependencyTaskIDs),
+		artifacts:         artifacts,
+		role:              ledger.SessionRoleReviewer,
+		agentID:           &agentID,
+		model:             model,
+		effort:            effort,
+		logPath:           logPath,
+		prompt:            prompt,
+		llmFailureStatus:  llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
 			KnownAgents:  map[string]bool{agent.ID: true},
@@ -1198,20 +1198,20 @@ func runStructuredResume[T any](ctx context.Context, opts Options, role ledger.S
 }
 
 type llmTaskSpec struct {
-	runID                   string
-	taskID                  string
-	phase                   string
-	dependencyTaskIDs       []string
-	inputFingerprint        string
-	artifacts               ArtifactPaths
-	role                    ledger.SessionRole
-	agentID                 *string
-	model                   string
-	effort                  string
-	logPath                 string
-	prompt                  string
-	resumeSessionID         string
-	validationFailureStatus llmTaskStatus
+	runID             string
+	taskID            string
+	phase             string
+	dependencyTaskIDs []string
+	inputFingerprint  string
+	artifacts         ArtifactPaths
+	role              ledger.SessionRole
+	agentID           *string
+	model             string
+	effort            string
+	logPath           string
+	prompt            string
+	resumeSessionID   string
+	llmFailureStatus  llmTaskStatus
 }
 
 func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpec, decode llm.Decoder[T]) (T, sessionDraft, ledger.Session, error) {
@@ -1222,8 +1222,10 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 	if meta, ok, err := readLLMTaskMetadata(spec.artifacts, spec.taskID); err != nil {
 		var zero T
 		return zero, sessionDraft{}, ledger.Session{}, err
-	} else if ok && strings.TrimSpace(resumeSessionID) == "" && meta.Status == llmTaskStatusFailedBlocking {
-		resumeSessionID = taskResumeSessionID(meta)
+	} else if ok && meta.Status == llmTaskStatusFailedBlocking {
+		if taskSessionID := taskResumeSessionID(meta); strings.TrimSpace(taskSessionID) != "" {
+			resumeSessionID = taskSessionID
+		}
 	}
 
 	started := opts.now()
@@ -1276,10 +1278,7 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 	}
 
 	meta.Error = sanitizeTaskErrorForMarkdown(err)
-	meta.Status = llmTaskStatusFailedBlocking
-	if spec.validationFailureStatus != "" && errors.Is(err, llm.ErrStructuredOutputInvalidAfterRetry) {
-		meta.Status = spec.validationFailureStatus
-	}
+	meta.Status = llmTaskFailureStatus(ctx, spec, err)
 	meta.SessionRowID = session.SessionRowID
 	meta.ProviderSessionID = session.ProviderSessionID
 	if writeErr := writeLLMTaskFailure(spec.artifacts, &meta, result.ValidationAttempts); writeErr != nil {
@@ -1288,6 +1287,13 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 	}
 	var zero T
 	return zero, draft, session, &llmTaskError{status: meta.Status, err: err}
+}
+
+func llmTaskFailureStatus(ctx context.Context, spec llmTaskSpec, err error) llmTaskStatus {
+	if spec.llmFailureStatus != "" && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return spec.llmFailureStatus
+	}
+	return llmTaskStatusFailedBlocking
 }
 
 func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpec, decode llm.Decoder[T]) (T, sessionDraft, ledger.Session, bool, error) {
@@ -1306,7 +1312,10 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 			return zero, sessionDraft{}, ledger.Session{}, true, err
 		}
 		if strings.TrimSpace(meta.ValidatedOutputPath) != "" {
-			outputPath = meta.ValidatedOutputPath
+			outputPath, err = validateLLMTaskPayloadPath(spec.artifacts, spec.taskID, "validated_output_path", meta.ValidatedOutputPath)
+			if err != nil {
+				return zero, sessionDraft{}, ledger.Session{}, true, err
+			}
 		}
 		data, err := os.ReadFile(outputPath) // #nosec G304 -- validated task output path is scoped to run artifacts.
 		if err != nil {
@@ -1322,7 +1331,7 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 		}
 		return value, sessionDraftFromLedger(session), session, true, nil
 	case llmTaskStatusFailedIsolated:
-		if spec.validationFailureStatus != llmTaskStatusFailedIsolated {
+		if spec.llmFailureStatus != llmTaskStatusFailedIsolated {
 			return zero, sessionDraft{}, ledger.Session{}, true, fmt.Errorf("pipeline: LLM task %q has isolated failure status outside reviewer phase", spec.taskID)
 		}
 		session, draft, err := loadOptionalTaskSession(ctx, opts, spec.runID, meta)
@@ -1335,6 +1344,33 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 	default:
 		return zero, sessionDraft{}, ledger.Session{}, true, fmt.Errorf("pipeline: LLM task %q has unknown status %q", spec.taskID, meta.Status)
 	}
+}
+
+func validateLLMTaskPayloadPath(paths ArtifactPaths, taskID, field, recordedPath string) (string, error) {
+	recordedPath = strings.TrimSpace(recordedPath)
+	if recordedPath == "" {
+		return "", fmt.Errorf("pipeline: LLM task %q %s is empty", taskID, field)
+	}
+	taskDir, err := paths.LLMTaskDir(taskID)
+	if err != nil {
+		return "", err
+	}
+	absDir, err := filepath.Abs(taskDir)
+	if err != nil {
+		return "", fmt.Errorf("pipeline: resolve LLM task %q directory: %w", taskID, err)
+	}
+	absPath, err := filepath.Abs(recordedPath)
+	if err != nil {
+		return "", fmt.Errorf("pipeline: resolve LLM task %q %s: %w", taskID, field, err)
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil {
+		return "", fmt.Errorf("pipeline: compare LLM task %q %s: %w", taskID, field, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("pipeline: LLM task %q %s points outside the task artifact directory; pass --rerun to start a fresh review", taskID, field)
+	}
+	return absPath, nil
 }
 
 func validateLLMTaskMetadata(meta llmTaskMetadata, spec llmTaskSpec) error {

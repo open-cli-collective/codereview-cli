@@ -987,11 +987,73 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 	}
 }
 
+func TestDryRunReviewerProviderFailureIsolation(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	writeAgent(t, req.Profile.AgentSources[0], "harness", "alpha", "alpha desc", "Review alpha.")
+	writeAgent(t, req.Profile.AgentSources[0], "harness", "beta", "beta desc", "Review beta.")
+	writeAgent(t, req.Profile.AgentSources[0], "harness", "gamma", "gamma desc", "Review gamma.")
+	betaErr := errors.New("provider wait failed")
+	adapter := &reviewerIsolationAdapter{betaProviderErr: betaErr}
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-reviewer-provider-isolation" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Findings) != 2 {
+		t.Fatalf("findings len = %d, want 2 successful reviewer findings", len(result.Findings))
+	}
+	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].AgentID != "harness:beta" {
+		t.Fatalf("reviewer failures = %#v, want isolated beta failure", result.ReviewerFailures)
+	}
+	betaMeta, ok, err := readLLMTaskMetadata(result.Artifacts, reviewerTaskID("harness:beta"))
+	if err != nil || !ok {
+		t.Fatalf("read beta task metadata = ok %v err %v", ok, err)
+	}
+	if betaMeta.Status != llmTaskStatusFailedIsolated || betaMeta.ProviderSessionID != "beta-provider-session" {
+		t.Fatalf("beta metadata = %#v, want isolated failure with provider session", betaMeta)
+	}
+	if len(betaMeta.Attempts) != 0 {
+		t.Fatalf("beta attempts = %#v, want none for provider wait failure", betaMeta.Attempts)
+	}
+	if !strings.Contains(betaMeta.Error, "provider wait failed") {
+		t.Fatalf("beta error = %q, want provider diagnostic", betaMeta.Error)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 5 {
+		t.Fatalf("requests len = %d, want selection, three reviewers, rollup", len(requests))
+	}
+	rollupPrompt := requests[len(requests)-1].Prompt
+	if !strings.Contains(rollupPrompt, `"reviewer_failures"`) || !strings.Contains(rollupPrompt, `"agent_id": "harness:beta"`) {
+		t.Fatalf("rollup prompt missing isolated reviewer failure context: %s", rollupPrompt)
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeComment {
+		t.Fatalf("plan outcome = %q, want comment with isolated reviewer failure", result.Plan.Outcome)
+	}
+}
+
 func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	req.SessionName = "daily"
+	if err := store.UpsertNamedSession(ctx, namedSessionForRequest(req, "stored-session")); err != nil {
+		t.Fatalf("UpsertNamedSession: %v", err)
+	}
 	run := allocateLiveRun(t, store, provider, req, "run-rollup-resume")
 	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
@@ -1004,6 +1066,7 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 		Provider:        provider,
 		Adapter:         firstAdapter,
 		Store:           store,
+		NamedSessions:   store,
 		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		Now:             fixedNow,
 		NewSessionRowID: sequence("session"),
@@ -1040,6 +1103,7 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 		Provider:        provider,
 		Adapter:         secondAdapter,
 		Store:           store,
+		NamedSessions:   store,
 		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		Now:             fixedNow,
 		NewSessionRowID: sequence("resume-session"),
@@ -1065,6 +1129,52 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 	}
 	if len(result.PlannedActions) == 0 {
 		t.Fatal("planned actions len = 0, want resumed pipeline to synthesize actions")
+	}
+}
+
+func TestLoadStructuredTaskRejectsValidatedOutputOutsideTaskDir(t *testing.T) {
+	ctx := context.Background()
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	spec := llmTaskSpec{
+		runID:            "run-output-path",
+		taskID:           orchestratorSelectionStage,
+		phase:            "selection",
+		inputFingerprint: "fingerprint",
+		artifacts:        artifacts,
+		role:             ledger.SessionRoleOrchestrator,
+		model:            "model",
+		effort:           "medium",
+		prompt:           "prompt",
+	}
+	meta := llmTaskMetadata{
+		SchemaVersion:     llmTaskSchemaVersion,
+		TaskID:            spec.taskID,
+		Phase:             spec.phase,
+		InputFingerprint:  spec.inputFingerprint,
+		Status:            llmTaskStatusSucceeded,
+		SessionRowID:      "session-row",
+		ProviderSessionID: "provider-session",
+	}
+	if err := writeLLMTaskSuccess(artifacts, &meta, []byte(`"ok"`)); err != nil {
+		t.Fatalf("writeLLMTaskSuccess: %v", err)
+	}
+	outsidePath := filepath.Join(t.TempDir(), "validated-output.json")
+	if err := os.WriteFile(outsidePath, []byte(`"outside"`), 0o600); err != nil {
+		t.Fatalf("WriteFile outside: %v", err)
+	}
+	meta.ValidatedOutputPath = outsidePath
+	if err := writeLLMTaskMetadata(artifacts, meta); err != nil {
+		t.Fatalf("writeLLMTaskMetadata: %v", err)
+	}
+
+	_, _, _, ok, err := loadStructuredTask[string](ctx, Options{}, spec, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	if !ok {
+		t.Fatal("loadStructuredTask ok = false, want metadata considered present")
+	}
+	if err == nil || !strings.Contains(err.Error(), "outside the task artifact directory") {
+		t.Fatalf("loadStructuredTask error = %v, want outside task artifact directory", err)
 	}
 }
 
@@ -2752,9 +2862,10 @@ func (a *promptAwareAdapter) Requests() []llm.Request {
 }
 
 type reviewerIsolationAdapter struct {
-	mu           sync.Mutex
-	requests     []llm.Request
-	betaAttempts int
+	mu              sync.Mutex
+	requests        []llm.Request
+	betaAttempts    int
+	betaProviderErr error
 }
 
 func (a *reviewerIsolationAdapter) Name() string {
@@ -2794,6 +2905,9 @@ func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (ll
 	case strings.Contains(req.Prompt, `"id": "harness:alpha"`):
 		return staticStream{sessionID: "alpha-session", output: findingsJSON("harness:alpha", "main.go", "major", 2, "alpha finding")}, nil
 	case strings.Contains(req.Prompt, `"id": "harness:beta"`):
+		if a.betaProviderErr != nil {
+			return staticStream{sessionID: "beta-provider-session", err: a.betaProviderErr}, nil
+		}
 		a.mu.Lock()
 		a.betaAttempts++
 		attempt := a.betaAttempts
@@ -2819,6 +2933,7 @@ func (a *reviewerIsolationAdapter) Requests() []llm.Request {
 type staticStream struct {
 	sessionID string
 	output    string
+	err       error
 }
 
 func (s staticStream) SessionID() string {
@@ -2826,6 +2941,9 @@ func (s staticStream) SessionID() string {
 }
 
 func (s staticStream) Wait(context.Context) (llm.Response, error) {
+	if s.err != nil {
+		return llm.Response{DurationMS: 1}, s.err
+	}
 	return llm.Response{StructuredOutput: []byte(s.output), DurationMS: 1}, nil
 }
 

@@ -133,7 +133,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	var zero T
 	sessionID, response, err := runOnceWithSession(ctx, adapter, resumeSessionID, req)
 	if err != nil {
-		return StructuredResult[T]{Response: response}, err
+		return StructuredResult[T]{Response: response, SessionID: sessionID}, err
 	}
 	value, decodeErr := decodeStructured(decode, response.StructuredOutput)
 	if decodeErr == nil {
@@ -154,7 +154,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	}
 	retrySessionID, retryResponse, err := runOnceWithSession(ctx, adapter, retryResumeSessionID, retryReq)
 	if err != nil {
-		return StructuredResult[T]{Response: retryResponse}, err
+		return StructuredResult[T]{Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, err
 	}
 	retryValue, retryErr := decodeStructured(decode, retryResponse.StructuredOutput)
 	if retryErr != nil {

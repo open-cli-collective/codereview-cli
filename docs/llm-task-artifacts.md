@@ -56,11 +56,12 @@ Load-bearing metadata fields are:
 reuse the output only when the metadata schema and input fingerprint still match
 the current task.
 
-`failed_isolated` is for reviewer-local structured validation failures. The
-failed reviewer is treated as dependency-satisfied for downstream rollup, and
-the rollup receives a diagnostic. Sibling reviewers continue to run. A review
-with any isolated reviewer failure must not approve; the final event is clamped
-to at least `comment`.
+`failed_isolated` is for reviewer-local LLM failures while the caller context is
+still valid. This includes structured validation failures and provider
+start/wait failures. The failed reviewer is treated as dependency-satisfied for
+downstream rollup, and the rollup receives a diagnostic. Sibling reviewers
+continue to run. A review with any isolated reviewer failure must not approve;
+the final event is clamped to at least `comment`.
 
 `failed_blocking` means the task prevents dependent phases from safely running.
 Selection and rollup failures are blocking. Once a run exists, blocking LLM task
