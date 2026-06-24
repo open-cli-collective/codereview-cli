@@ -250,3 +250,21 @@ Rollup receives compact reviewer coverage summaries derived from those fields.
 itself. Isolated reviewer failures, skipped files, missing reviewer results, and
 unassigned changed files are incomplete coverage and must not turn into a clean
 approval silently.
+
+Coverage uses two related scopes:
+
+- readable files: `allowed_files` when present, otherwise all changed files in
+  the workbench
+- assignment scope: `allowed_files` when present, otherwise `files` when the
+  orchestrator supplied them, otherwise all changed files
+
+The coverage status values are:
+
+- `complete_broad`: a reviewer without `allowed_files` covered its assignment
+- `complete_constrained`: a reviewer with `allowed_files` covered that narrowed
+  assignment
+- `incomplete_skipped`: assigned files were skipped or not reported as inspected
+- `incomplete_failed`: an isolated reviewer failure or missing reviewer result
+  prevented coverage
+- `incomplete_unassigned`: changed files were not assigned to any selected
+  reviewer

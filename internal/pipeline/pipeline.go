@@ -1295,7 +1295,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := patchPaths(parsed.Patches)
-	reviewerScope := reviewerReviewableScope(selected, changedFilePaths)
+	reviewerScope := reviewerReadableFiles(selected, changedFilePaths)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
@@ -2137,7 +2137,7 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 	assigned := map[string]bool{}
 	out := make([]reviewplan.ReviewerCoverageSummary, 0, len(selected)+1)
 	for _, agent := range selected {
-		scope := reviewerCoverageScope(agent, changedFiles)
+		scope := reviewerAssignmentScope(agent, changedFiles)
 		for _, file := range scope {
 			assigned[file] = true
 		}
@@ -2158,9 +2158,9 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			out = append(out, entry)
 			continue
 		}
-		entry.InspectedFiles = appendSortedStrings(result.InspectedFiles)
-		entry.SkippedFiles = intersectSortedStrings(result.SkippedFiles, scope)
-		entry.Constraints = appendSortedStrings(result.Constraints)
+		entry.InspectedFiles = copySortedStrings(result.InspectedFiles)
+		entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
+		entry.Constraints = copySortedStrings(result.Constraints)
 		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
 		switch {
 		case len(entry.SkippedFiles) > 0 || len(missing) > 0:
@@ -2185,28 +2185,32 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 		out = append(out, reviewplan.ReviewerCoverageSummary{
 			AgentID:      "unassigned",
 			Status:       reviewerCoverageIncompleteUnassigned,
-			SkippedFiles: appendSortedStrings(unassigned),
+			SkippedFiles: copySortedStrings(unassigned),
 			Diagnostic:   "changed files were not assigned to a selected reviewer",
 		})
 	}
 	return out
 }
 
-func reviewerReviewableScope(agent llm.SelectedAgent, changedFiles []string) []string {
+// reviewerReadableFiles is the schema/decoder scope: broad reviewers may read
+// every changed file, while allowed_files narrows highly specialized reviewers.
+func reviewerReadableFiles(agent llm.SelectedAgent, changedFiles []string) []string {
 	if len(agent.AllowedFiles) > 0 {
-		return appendSortedStrings(agent.AllowedFiles)
+		return copySortedStrings(agent.AllowedFiles)
 	}
-	return appendSortedStrings(changedFiles)
+	return copySortedStrings(changedFiles)
 }
 
-func reviewerCoverageScope(agent llm.SelectedAgent, changedFiles []string) []string {
+// reviewerAssignmentScope is the coverage expectation: broad reviewers may read
+// the whole checkout, but selected files define the work they were asked to cover.
+func reviewerAssignmentScope(agent llm.SelectedAgent, changedFiles []string) []string {
 	if len(agent.AllowedFiles) > 0 {
-		return appendSortedStrings(agent.AllowedFiles)
+		return copySortedStrings(agent.AllowedFiles)
 	}
 	if len(agent.Files) > 0 {
-		return appendSortedStrings(agent.Files)
+		return copySortedStrings(agent.Files)
 	}
-	return appendSortedStrings(changedFiles)
+	return copySortedStrings(changedFiles)
 }
 
 func coverageMissingFiles(scope, inspected, skipped []string) []string {
@@ -2220,10 +2224,10 @@ func coverageMissingFiles(scope, inspected, skipped []string) []string {
 			missing = append(missing, file)
 		}
 	}
-	return appendSortedStrings(missing)
+	return copySortedStrings(missing)
 }
 
-func intersectSortedStrings(values, scope []string) []string {
+func sortedIntersection(values, scope []string) []string {
 	inScope := stringSet(scope)
 	var out []string
 	for _, value := range values {
@@ -2231,7 +2235,7 @@ func intersectSortedStrings(values, scope []string) []string {
 			out = append(out, value)
 		}
 	}
-	return appendSortedStrings(out)
+	return copySortedStrings(out)
 }
 
 func stringSet(values []string) map[string]bool {
@@ -2242,7 +2246,7 @@ func stringSet(values []string) map[string]bool {
 	return out
 }
 
-func appendSortedStrings(values []string) []string {
+func copySortedStrings(values []string) []string {
 	out := append([]string(nil), values...)
 	sort.Strings(out)
 	return out
@@ -2387,7 +2391,7 @@ func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.Se
 	if err != nil {
 		return "", nil, err
 	}
-	reviewerScope := reviewerReviewableScope(selected, changedFiles)
+	reviewerScope := reviewerReadableFiles(selected, changedFiles)
 	payload := map[string]any{
 		"task":            "review files and return findings JSON only",
 		"output_contract": findingsOutputContract(agent.ID, reviewerScope),

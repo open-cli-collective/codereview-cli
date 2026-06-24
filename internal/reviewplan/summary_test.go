@@ -375,6 +375,29 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
+	t.Run("unknown reviewer coverage status force comment", func(t *testing.T) {
+		req := baseRequest()
+		req.Findings = nil
+		req.Rollup = review.Rollup{
+			ReviewEvent:          review.ReviewEventApprove,
+			ReviewEventRationale: "no findings",
+			OrderedFindings:      nil,
+		}
+		req.RunSummary = RunSummary{
+			ReviewerCoverage: []ReviewerCoverageSummary{{
+				AgentID: "go:implementation-tests",
+				Status:  "partial_coverage",
+			}},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if plan.Outcome != OutcomeComment {
+			t.Fatalf("outcome = %q, want comment for unknown coverage status", plan.Outcome)
+		}
+	})
+
 	t.Run("rollup marker placement unchanged with run summary", func(t *testing.T) {
 		for _, mode := range []PostMode{PostModeLive, PostModeDryRun} {
 			req := summaryRequest()

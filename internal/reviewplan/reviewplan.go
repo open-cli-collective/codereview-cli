@@ -321,7 +321,14 @@ func applySelfApprovalPolicy(event review.ReviewEvent, opts EventOptions) review
 
 func hasIncompleteReviewerCoverage(coverage []ReviewerCoverageSummary) bool {
 	for _, entry := range coverage {
-		if strings.HasPrefix(entry.Status, "incomplete_") {
+		switch entry.Status {
+		case "", "complete_broad", "complete_constrained":
+			continue
+		case "incomplete_skipped", "incomplete_failed", "incomplete_unassigned":
+			return true
+		default:
+			// Unknown coverage statuses are treated conservatively so a new
+			// incomplete state cannot silently bypass approval coercion.
 			return true
 		}
 	}

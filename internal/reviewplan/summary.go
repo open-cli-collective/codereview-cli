@@ -264,13 +264,13 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 			escapeCell(entry.Status),
 			escapeCell(orUnavailable(strings.Join(entry.InspectedFiles, ", "))),
 			escapeCell(orUnavailable(strings.Join(entry.SkippedFiles, ", "))),
-			escapeCell(coverageConstraintCell(entry)),
+			escapeCell(coverageAnnotationCell(entry)),
 		)
 	}
 	out.WriteString("\n")
 }
 
-func coverageConstraintCell(entry ReviewerCoverageSummary) string {
+func coverageAnnotationCell(entry ReviewerCoverageSummary) string {
 	parts := append([]string(nil), entry.Constraints...)
 	if strings.TrimSpace(entry.Diagnostic) != "" {
 		parts = append(parts, entry.Diagnostic)
