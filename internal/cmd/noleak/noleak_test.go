@@ -179,6 +179,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", "--dry-run", h.prURL}
 			},
+			wantErr: true,
 		},
 		{
 			name:    "review dry-run json verbose",
@@ -186,6 +187,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", "--dry-run", "--json", "--verbose", h.prURL}
 			},
+			wantErr: true,
 		},
 		{
 			name:    "review live text",
@@ -193,6 +195,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", h.prURL}
 			},
+			wantErr: true,
 		},
 		{
 			name:    "review live json",
@@ -200,6 +203,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", "--json", h.prURL}
 			},
+			wantErr: true,
 		},
 		{
 			name:    "review github app reviewer live",
@@ -207,6 +211,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", h.prURL}
 			},
+			wantErr: true,
 		},
 		{
 			name:    "review github app git live",
@@ -214,6 +219,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", h.prURL}
 			},
+			wantErr: true,
 		},
 		{
 			name:    "review usage failure",

@@ -302,9 +302,8 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	if !strings.Contains(result.Artifacts.Dir, reviewHeadSHA) || !strings.Contains(result.Artifacts.Dir, reviewBaseSHA) {
 		t.Fatalf("artifact dir = %s, want pinned head/base SHAs", result.Artifacts.Dir)
 	}
-	if !containsFileCall(provider.fileCalls, fileKey{gitRef: reviewBaseSHA, path: "main.go"}) ||
-		!containsFileCall(provider.fileCalls, fileKey{gitRef: reviewHeadSHA, path: "main.go"}) {
-		t.Fatalf("file calls = %#v, want pinned base/head refs", provider.fileCalls)
+	if len(provider.fileCalls) != 0 {
+		t.Fatalf("file calls = %#v, want no stuffed file reads in checkout-readonly reviewer mode", provider.fileCalls)
 	}
 	requests := adapter.Requests()
 	if len(requests) < 1 {
@@ -316,6 +315,14 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	}
 	if strings.Contains(selectionPrompt, provider.pr.Head.SHA) {
 		t.Fatalf("selection prompt contains current PR SHAs: %s", selectionPrompt)
+	}
+	if requests[1].CheckoutReadonly == nil {
+		t.Fatalf("reviewer request = %#v, want checkout-readonly access", requests[1])
+	}
+	if requests[1].CheckoutReadonly.RootDir != result.Artifacts.WorkbenchRepoDir ||
+		requests[1].CheckoutReadonly.ScratchDir != result.Artifacts.WorkbenchScratch ||
+		requests[1].CheckoutReadonly.MaxToolOutputBytes != defaultCheckoutReadonlyToolOutputBytes {
+		t.Fatalf("reviewer checkout request = %#v, want workbench repo/scratch with default cap", requests[1].CheckoutReadonly)
 	}
 	if provider.threadCalls != 0 {
 		t.Fatalf("thread calls = %d, want no live thread reads for pinned review", provider.threadCalls)
@@ -1970,7 +1977,7 @@ func TestPrepareCheckoutReadonlyAccessRejectsSymlinkTargets(t *testing.T) {
 
 func TestBuildCheckoutReadonlyRequestUnsupportedAdapterFailsWithoutFallback(t *testing.T) {
 	artifacts := ArtifactPathsFromDir(t.TempDir())
-	req, err := buildCheckoutReadonlyRequest(Options{Adapter: &promptAwareAdapter{}}, artifacts, "harness:smoke", nil, "gpt-5.5", "medium", "smoke", filepath.Join(t.TempDir(), "smoke.jsonl"))
+	req, err := buildCheckoutReadonlyRequest(Options{Adapter: &llm.FakeAdapter{NameValue: "fake-unsupported", SupportsCheckoutReadonlySet: true}}, artifacts, "harness:smoke", nil, "gpt-5.5", "medium", "smoke", filepath.Join(t.TempDir(), "smoke.jsonl"))
 	if err == nil || !strings.Contains(err.Error(), "checkout-readonly capability") {
 		t.Fatalf("buildCheckoutReadonlyRequest error = %v, want missing checkout-readonly capability", err)
 	}
@@ -3814,8 +3821,8 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 		}
 		if strings.Contains(request.Prompt, `"schema": "findings"`) {
 			reviewerPrompts++
-			if !strings.Contains(request.Prompt, `"agent"`) || !strings.Contains(request.Prompt, `"files"`) {
-				t.Fatalf("reviewer prompt missing agent/files context: %s", request.Prompt)
+			if !strings.Contains(request.Prompt, `"agent"`) || !strings.Contains(request.Prompt, `"assignment"`) || !strings.Contains(request.Prompt, `"dossier"`) || !strings.Contains(request.Prompt, `"workbench"`) {
+				t.Fatalf("reviewer prompt missing checkout-native context: %s", request.Prompt)
 			}
 			if !strings.Contains(request.Prompt, `"file_path"`) ||
 				!strings.Contains(request.Prompt, `"anchor"`) ||
@@ -3827,6 +3834,11 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 			}
 			if !strings.Contains(request.Prompt, "Review alpha files.") && !strings.Contains(request.Prompt, "Review beta files.") {
 				t.Fatalf("reviewer prompt missing prompt.md body text: %s", request.Prompt)
+			}
+			for _, forbidden := range []string{`"diff"`, `"base_content"`, `"head_content"`, `"needs_full_file_content"`, `"provenance"`, `"overridden"`, `"model_tier"`, `"model_id"`, `"effort"`} {
+				if strings.Contains(request.Prompt, forbidden) {
+					t.Fatalf("reviewer prompt leaked legacy or stuffed field %q: %s", forbidden, request.Prompt)
+				}
 			}
 		}
 		if strings.Contains(request.Prompt, `"schema": "rollup"`) &&
@@ -4412,6 +4424,137 @@ func TestFindingsOutputContractScopesAnchorToFindingItems(t *testing.T) {
 	}
 }
 
+func TestRunReviewerRejectsStaleWorkbenchMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-reviewer-stale-workbench", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	opts := Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+	}
+	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
+	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
+		PRRef:         req.PRRef,
+		Profile:       req.Profile,
+		AgentDirs:     req.AgentDirs,
+		ReviewBaseSHA: req.ReviewBaseSHA,
+		ReviewHeadSHA: req.ReviewHeadSHA,
+		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
+			return ArtifactPathsFromDir(run.ArtifactPath), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareSelectionContext: %v", err)
+	}
+	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+		PRRef:        req.PRRef,
+		ReviewPR:     prepared.reviewPR,
+		ChangedFiles: prepared.changedFiles,
+		Artifacts:    prepared.artifacts,
+	}); err != nil {
+		t.Fatalf("prepareWorkbenchArtifacts: %v", err)
+	}
+	defer func() {
+		if err := unlockWorkbenchRepo(prepared.artifacts.WorkbenchRepoDir); err != nil {
+			t.Fatalf("unlockWorkbenchRepo: %v", err)
+		}
+	}()
+	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: prepared.artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts: %v", err)
+	}
+	selection, _, _, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
+		RunID:      run.RunID,
+		Profile:    req.Profile,
+		ReviewPR:   prepared.reviewPR,
+		Catalog:    prepared.catalog,
+		ParsedDiff: prepared.parsed,
+		Threads:    prepared.threads,
+		Artifacts:  prepared.artifacts,
+		MaxAgents:  1,
+	})
+	if err != nil {
+		t.Fatalf("runSelectionPhase first: %v", err)
+	}
+	agent, ok := prepared.catalog.Find(selection.SelectedAgents[0].AgentID)
+	if !ok {
+		t.Fatalf("selected agent %q missing from catalog", selection.SelectedAgents[0].AgentID)
+	}
+	if _, _, _, _, err := runReviewer(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.parsed, prepared.artifacts, selection.SelectedAgents[0], agent, []string{orchestratorSelectionStage}); err != nil {
+		t.Fatalf("runReviewer first: %v", err)
+	}
+	metaPath := prepared.artifacts.WorkbenchMetadataPath()
+	var meta workbenchMetadataArtifact
+	if err := readJSONFile(metaPath, &meta); err != nil {
+		t.Fatalf("read workbench metadata: %v", err)
+	}
+	meta.FingerprintInputs.ChangedFiles = append(meta.FingerprintInputs.ChangedFiles, "extra.go")
+	if err := writeJSONFile(metaPath, meta); err != nil {
+		t.Fatalf("write workbench metadata: %v", err)
+	}
+	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	secondOpts := opts
+	secondOpts.Adapter = secondAdapter
+	runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
+	if err != nil {
+		t.Fatalf("resolveReviewerRuntimeConfig: %v", err)
+	}
+	prompt, promptDeps, err := buildReviewerPrompt(prepared.artifacts, prepared.reviewPR, selection.SelectedAgents[0], agent)
+	if err != nil {
+		t.Fatalf("buildReviewerPrompt: %v", err)
+	}
+	logPath, err := prepared.artifacts.AgentLog(agent.ID)
+	if err != nil {
+		t.Fatalf("AgentLog: %v", err)
+	}
+	agentID := agent.ID
+	fingerprintDeps := append([]string{orchestratorSelectionStage}, promptDeps...)
+	_, _, _, ok, err = loadStructuredTask[llm.Findings](ctx, secondOpts, llmTaskSpec{
+		runID:             run.RunID,
+		taskID:            reviewerTaskID(agent.ID),
+		phase:             "reviewer",
+		dependencyTaskIDs: []string{orchestratorSelectionStage},
+		inputFingerprint:  llmTaskFingerprint(secondOpts.Adapter.Name(), reviewerTaskID(agent.ID), "reviewer", runtimeConfig.model, runtimeConfig.effort, prompt, fingerprintDeps),
+		artifacts:         prepared.artifacts,
+		role:              ledger.SessionRoleReviewer,
+		agentID:           &agentID,
+		model:             runtimeConfig.model,
+		effort:            runtimeConfig.effort,
+		logPath:           logPath,
+		prompt:            prompt,
+	}, func(data []byte) (llm.Findings, error) {
+		return llm.DecodeFindings(data, llm.FindingsOptions{
+			KnownAgents:  map[string]bool{agent.ID: true},
+			ChangedFiles: changedFiles(prepared.parsed.Patches),
+			NewFindingID: findingSequence("reload"),
+		})
+	})
+	if !ok {
+		t.Fatal("loadStructuredTask ok = false, want persisted reviewer metadata to be loaded and rejected")
+	}
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("loadStructuredTask stale workbench error = %v, want input fingerprint changed", err)
+	}
+	if len(secondAdapter.Requests()) != 0 || len(secondAdapter.Resumes()) != 0 {
+		t.Fatalf("adapter invoked despite stale reviewer metadata: starts=%#v resumes=%#v", secondAdapter.Requests(), secondAdapter.Resumes())
+	}
+}
+
 func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	prompt, err := buildRollupPrompt(gitprovider.PR{Body: "Rollup prompt body should stay out of prompt payloads."}, []review.Finding{
 		{
@@ -4489,56 +4632,6 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 			want:  "context budget exceeded for selection model bench-model",
 			runID: "run-budget-selection-override",
 		},
-		{
-			name:   "reviewer diff",
-			budget: 9500,
-			mutate: func(t *testing.T, provider *readOnlyProvider, _ *Request, _ *llm.FakeAdapter) {
-				t.Helper()
-				provider.diff.Raw = largeDiff("main.go", strings.Repeat("+var x = true\n", 1600))
-			},
-			queue: func(adapter *llm.FakeAdapter) {
-				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
-			},
-			want:  "context budget exceeded for reviewer agent harness:reviewer",
-			runID: "run-budget-reviewer",
-		},
-		{
-			name:   "full content default model",
-			budget: 9500,
-			mutate: func(t *testing.T, provider *readOnlyProvider, req *Request, _ *llm.FakeAdapter) {
-				t.Helper()
-				dir := t.TempDir()
-				writeAgentFullContent(t, dir, "harness", "reviewer")
-				trustCurrentTempFixtures(t)
-				req.Profile.AgentSources = []string{dir}
-				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: "main.go"}] = []byte(strings.Repeat("base\n", 3000))
-				provider.files[fileKey{gitRef: provider.pr.Head.SHA, path: "main.go"}] = []byte("package main\n")
-			},
-			queue: func(adapter *llm.FakeAdapter) {
-				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
-			},
-			want:  "context budget exceeded for full-content agent harness:reviewer file main.go model claude-sonnet-4-6",
-			runID: "run-budget-full-content-default",
-		},
-		{
-			name:   "full content override model",
-			budget: 10000,
-			mutate: func(t *testing.T, provider *readOnlyProvider, req *Request, _ *llm.FakeAdapter) {
-				t.Helper()
-				dir := t.TempDir()
-				writeAgentFullContent(t, dir, "harness", "reviewer")
-				trustCurrentTempFixtures(t)
-				req.Profile.AgentSources = []string{dir}
-				req.ReviewerModelOverride = "bench-model"
-				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: "main.go"}] = []byte(strings.Repeat("base\n", 3000))
-				provider.files[fileKey{gitRef: provider.pr.Head.SHA, path: "main.go"}] = []byte("package main\n")
-			},
-			queue: func(adapter *llm.FakeAdapter) {
-				adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
-			},
-			want:  "context budget exceeded for full-content agent harness:reviewer file main.go model bench-model",
-			runID: "run-budget-full-content-override",
-		},
 	}
 
 	for _, tt := range tests {
@@ -4572,6 +4665,91 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("DryRun error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDryRunReviewerCheckoutReadonlyAvoidsContextStuffingBudgetFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		budget int
+		mutate func(t *testing.T, provider *readOnlyProvider, req *Request)
+		runID  string
+	}{
+		{
+			name:   "large reviewer diff",
+			budget: 9500,
+			mutate: func(t *testing.T, provider *readOnlyProvider, _ *Request) {
+				t.Helper()
+				provider.diff.Raw = largeDiff("main.go", strings.Repeat("+var x = true\n", 1600))
+			},
+			runID: "run-budget-reviewer-checkout",
+		},
+		{
+			name:   "legacy full-content agent no longer stuffs base head",
+			budget: 9500,
+			mutate: func(t *testing.T, provider *readOnlyProvider, req *Request) {
+				t.Helper()
+				dir := t.TempDir()
+				writeAgentFullContent(t, dir, "harness", "reviewer")
+				trustCurrentTempFixtures(t)
+				req.Profile.AgentSources = []string{dir}
+				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: "main.go"}] = []byte(strings.Repeat("base\n", 3000))
+				provider.files[fileKey{gitRef: provider.pr.Head.SHA, path: "main.go"}] = []byte("package main\n")
+			},
+			runID: "run-budget-reviewer-legacy-agent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+			tt.mutate(t, provider, &req)
+			adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+			adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 1, 1))
+			adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 1, 1))
+
+			result, err := dryRunForTest(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:             fixedNow,
+				NewRunID:        func() string { return tt.runID },
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    findingSequence("finding"),
+				NewActionID:     actionSequence(),
+				Budget:          ContextBudget{MaxPromptBytes: tt.budget},
+				MaxConcurrency:  1,
+			}, req)
+			if err != nil {
+				t.Fatalf("DryRun: %v", err)
+			}
+			requests := adapter.Requests()
+			if len(requests) < 2 {
+				t.Fatalf("adapter requests = %#v, want selection and reviewer calls", requests)
+			}
+			reviewerPrompt := requests[1].Prompt
+			for _, forbidden := range []string{`"diff"`, `"base_content"`, `"head_content"`} {
+				if strings.Contains(reviewerPrompt, forbidden) {
+					t.Fatalf("reviewer prompt leaked stuffed code field %q: %s", forbidden, reviewerPrompt)
+				}
+			}
+			if requests[1].CheckoutReadonly == nil {
+				t.Fatalf("reviewer request = %#v, want checkout-readonly access", requests[1])
+			}
+			if requests[1].CheckoutReadonly.RootDir != result.Artifacts.WorkbenchRepoDir ||
+				requests[1].CheckoutReadonly.ScratchDir != result.Artifacts.WorkbenchScratch ||
+				requests[1].CheckoutReadonly.MaxToolOutputBytes != defaultCheckoutReadonlyToolOutputBytes {
+				t.Fatalf("reviewer checkout request = %#v, want workbench repo/scratch with default cap", requests[1].CheckoutReadonly)
+			}
+			if len(result.Findings) != 1 {
+				t.Fatalf("findings len = %d, want reviewer success under bounded prompt budget", len(result.Findings))
 			}
 		})
 	}
@@ -4662,6 +4840,10 @@ func (a *promptAwareAdapter) SupportsResume() bool {
 	return false
 }
 
+func (a *promptAwareAdapter) SupportsCheckoutReadonly() bool {
+	return true
+}
+
 func (a *promptAwareAdapter) SupportsCacheAccounting() bool {
 	return false
 }
@@ -4739,6 +4921,10 @@ func (a *reviewerIsolationAdapter) Name() string {
 
 func (a *reviewerIsolationAdapter) SupportsResume() bool {
 	return false
+}
+
+func (a *reviewerIsolationAdapter) SupportsCheckoutReadonly() bool {
+	return true
 }
 
 func (a *reviewerIsolationAdapter) SupportsCacheAccounting() bool {

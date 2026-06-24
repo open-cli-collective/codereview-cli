@@ -472,7 +472,7 @@ func TestFakeAdapterQuotaAndResume(t *testing.T) {
 }
 
 func TestCheckoutReadonlyCapabilityHelpers(t *testing.T) {
-	unsupported := &FakeAdapter{NameValue: "fake-unsupported"}
+	unsupported := &FakeAdapter{NameValue: "fake-unsupported", SupportsCheckoutReadonlySet: true}
 	if SupportsCheckoutReadonly(unsupported) {
 		t.Fatal("SupportsCheckoutReadonly = true, want false")
 	}
@@ -480,7 +480,7 @@ func TestCheckoutReadonlyCapabilityHelpers(t *testing.T) {
 		t.Fatalf("RequireCheckoutReadonly unsupported error = %v, want missing capability with adapter name", err)
 	}
 
-	supported := &FakeAdapter{NameValue: "fake-supported", SupportsCheckoutReadonlyValue: true}
+	supported := &FakeAdapter{NameValue: "fake-supported", SupportsCheckoutReadonlySet: true, SupportsCheckoutReadonlyValue: true}
 	if !SupportsCheckoutReadonly(supported) {
 		t.Fatal("SupportsCheckoutReadonly = false, want true")
 	}

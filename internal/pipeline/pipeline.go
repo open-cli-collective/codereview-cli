@@ -195,6 +195,9 @@ type SelectionRequest struct {
 }
 
 // ArtifactPaths contains per-run artifact paths.
+// The pipeline constructs these from caller-owned artifact roots plus fixed
+// child names, so methods on this type return pipeline-owned paths rather than
+// arbitrary user input.
 type ArtifactPaths struct {
 	Dir              string `json:"dir"`
 	DiffPatch        string `json:"diff_patch"`
@@ -1276,7 +1279,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return nil, sessionDraft{}, ledger.Session{}, nil, err
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
-	prompt, err := buildReviewerPrompt(ctx, opts, req, pr, parsed, selected, agent, model)
+	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent)
 	if err != nil {
 		return nil, sessionDraft{}, ledger.Session{}, nil, err
 	}
@@ -1289,12 +1292,17 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}
 	agentID := agent.ID
 	taskID := reviewerTaskID(agent.ID)
+	request, err := buildCheckoutReadonlyRequest(opts, artifacts, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
+	if err != nil {
+		return nil, sessionDraft{}, ledger.Session{}, nil, err
+	}
+	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            taskID,
 		phase:             "reviewer",
 		dependencyTaskIDs: dependencyTaskIDs,
-		inputFingerprint:  llmTaskFingerprint(opts.Adapter.Name(), taskID, "reviewer", model, effort, prompt, dependencyTaskIDs),
+		inputFingerprint:  llmTaskFingerprint(opts.Adapter.Name(), taskID, "reviewer", model, effort, prompt, fingerprintDeps),
 		artifacts:         artifacts,
 		role:              ledger.SessionRoleReviewer,
 		agentID:           &agentID,
@@ -1302,6 +1310,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		effort:            effort,
 		logPath:           logPath,
 		prompt:            prompt,
+		baseRequest:       request,
 		llmFailureStatus:  llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
@@ -1382,6 +1391,7 @@ type llmTaskSpec struct {
 	effort            string
 	logPath           string
 	prompt            string
+	baseRequest       llm.Request
 	resumeSessionID   string
 	llmFailureStatus  llmTaskStatus
 }
@@ -1407,12 +1417,12 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 	progressSpan := startLLMTaskProgress(opts, progressEvent)
 
 	started := opts.now()
-	result, err := llm.RunStructuredWithSessionResume(ctx, opts.Adapter, resumeSessionID, llm.Request{
-		Model:   spec.model,
-		Effort:  spec.effort,
-		Prompt:  spec.prompt,
-		LogPath: spec.logPath,
-	}, decode)
+	request := spec.baseRequest
+	request.Model = spec.model
+	request.Effort = spec.effort
+	request.Prompt = spec.prompt
+	request.LogPath = spec.logPath
+	result, err := llm.RunStructuredWithSessionResume(ctx, opts.Adapter, resumeSessionID, request, decode)
 	completed := opts.now()
 	draft := sessionDraft{
 		rowID:                     opts.newSessionRowID(),
@@ -2227,91 +2237,26 @@ func pruneRetention(ctx context.Context, layout statepaths.Layout, store datalif
 	return nil
 }
 
-func buildReviewerPrompt(ctx context.Context, opts Options, req Request, pr gitprovider.PR, parsed ParsedDiff, selected llm.SelectedAgent, agent agents.Agent, model string) (string, error) {
-	patchesByPath := map[string]FilePatch{}
-	for _, patch := range parsed.Patches {
-		patchesByPath[patch.Path] = patch
-		if patch.OldPath != "" {
-			patchesByPath[patch.OldPath] = patch
-		}
-	}
-	var files []fileContext
-	for _, path := range selected.Files {
-		patch, ok := patchesByPath[path]
-		if !ok {
-			return "", fmt.Errorf("pipeline: selected file %q missing patch", path)
-		}
-		fc := fileContext{Path: patch.Path, Diff: patch.Patch}
-		if agent.NeedsFullFileContent {
-			basePath := patch.OldPath
-			if basePath == "" {
-				basePath = patch.Path
-			}
-			baseBytes, err := fetchFileOptional(ctx, opts.Provider, req.PRRef, pr.Base.SHA, basePath)
-			if err != nil {
-				return "", err
-			}
-			if err := opts.checkPromptBudget("full-content", agent.ID, model, basePath, string(baseBytes)); err != nil {
-				return "", err
-			}
-			headBytes, err := fetchFileOptional(ctx, opts.Provider, req.PRRef, pr.Head.SHA, patch.Path)
-			if err != nil {
-				return "", err
-			}
-			if err := opts.checkPromptBudget("full-content", agent.ID, model, patch.Path, string(headBytes)); err != nil {
-				return "", err
-			}
-			fc.BaseContent = string(baseBytes)
-			fc.HeadContent = string(headBytes)
-		}
-		files = append(files, fc)
+func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent) (string, []string, error) {
+	input, deps, err := reviewerPromptInputFromArtifacts(paths, pr, selected, agent)
+	if err != nil {
+		return "", nil, err
 	}
 	payload := map[string]any{
 		"task":            "review files and return findings JSON only",
-		"output_contract": findingsOutputContract(agent.ID, patchPathsFromContexts(files)),
-		"agent":           agentPromptFromAgent(agent),
-		"files":           files,
+		"output_contract": findingsOutputContract(agent.ID, append([]string(nil), input.Assignment.Files...)),
+		"agent":           reviewerAgentPromptFromAgent(agent),
+		"assignment":      input.Assignment,
+		"dossier":         input.Dossier,
+		"workbench":       input.Workbench,
+		"pr":              input.PR,
 		"schema":          "findings",
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return string(body), nil
-}
-
-type agentPrompt struct {
-	ID                   string          `json:"id"`
-	Name                 string          `json:"name"`
-	Category             agents.Category `json:"category"`
-	Description          string          `json:"description,omitempty"`
-	ModelTier            string          `json:"model_tier,omitempty"`
-	ModelID              string          `json:"model_id,omitempty"`
-	Effort               string          `json:"effort,omitempty"`
-	FileGlobs            []string        `json:"file_globs,omitempty"`
-	AppliesWhen          []string        `json:"applies_when,omitempty"`
-	NeedsFullFileContent bool            `json:"needs_full_file_content"`
-	Prompt               string          `json:"prompt,omitempty"`
-	Provenance           string          `json:"provenance"`
-	Overridden           []string        `json:"overridden,omitempty"`
-}
-
-func agentPromptFromAgent(agent agents.Agent) agentPrompt {
-	return agentPrompt{
-		ID:                   agent.ID,
-		Name:                 agent.Name,
-		Category:             agent.Category,
-		Description:          agent.Description,
-		ModelTier:            agent.ModelTier,
-		ModelID:              agent.ModelID,
-		Effort:               agent.Effort,
-		FileGlobs:            append([]string(nil), agent.FileGlobs...),
-		AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
-		NeedsFullFileContent: agent.NeedsFullFileContent,
-		Prompt:               agent.Prompt,
-		Provenance:           agent.Provenance.String(),
-		Overridden:           append([]string(nil), agent.Overridden...),
-	}
+	return string(body), deps, nil
 }
 
 type selectionAgentPrompt struct {
@@ -2396,19 +2341,50 @@ func selectionAgentPromptsFromCatalog(catalog agents.Catalog) []selectionAgentPr
 	return out
 }
 
-type fileContext struct {
-	Path        string `json:"path"`
-	Diff        string `json:"diff"`
-	BaseContent string `json:"base_content,omitempty"`
-	HeadContent string `json:"head_content,omitempty"`
+type reviewerAgentPrompt struct {
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Category    agents.Category `json:"category"`
+	Description string          `json:"description,omitempty"`
+	Prompt      string          `json:"prompt,omitempty"`
 }
 
-func fetchFileOptional(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, gitRef string, path string) ([]byte, error) {
-	data, err := provider.GetFileAtRef(ctx, ref, gitRef, path)
-	if errors.Is(err, gitprovider.ErrNotFound) {
-		return nil, nil
+func reviewerAgentPromptFromAgent(agent agents.Agent) reviewerAgentPrompt {
+	return reviewerAgentPrompt{
+		ID:          agent.ID,
+		Name:        agent.Name,
+		Category:    agent.Category,
+		Description: agent.Description,
+		Prompt:      agent.Prompt,
 	}
-	return data, err
+}
+
+type reviewerPromptDossier struct {
+	PRIntent     string `json:"pr_intent"`
+	ChangeMap    string `json:"change_map"`
+	RepoGuidance string `json:"repo_guidance"`
+	Discussion   string `json:"discussion"`
+}
+
+type reviewerPromptWorkbench struct {
+	CheckoutMode string                  `json:"checkout_mode"`
+	PR           workbenchPRIdentity     `json:"pr"`
+	Base         workbenchBranchArtifact `json:"base"`
+	Head         workbenchBranchArtifact `json:"head"`
+}
+
+type reviewerPromptAssignment struct {
+	AgentID      string   `json:"agent_id"`
+	Rationale    string   `json:"rationale,omitempty"`
+	Files        []string `json:"files"`
+	AllowedFiles []string `json:"allowed_files,omitempty"`
+}
+
+type reviewerPromptInput struct {
+	PR         promptPR                 `json:"pr"`
+	Dossier    reviewerPromptDossier    `json:"dossier"`
+	Workbench  reviewerPromptWorkbench  `json:"workbench"`
+	Assignment reviewerPromptAssignment `json:"assignment"`
 }
 
 const defaultSelectionTask = "select reviewer agents and thread actions from dossier/workbench context; return selection JSON only"
@@ -2524,6 +2500,80 @@ func selectionPromptContentFromPath(path string) (string, error) {
 		return "", fmt.Errorf("pipeline: read dossier artifact %s: %w", filepath.Base(path), err)
 	}
 	return string(data), nil
+}
+
+func reviewerPromptInputFromArtifacts(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent) (reviewerPromptInput, []string, error) {
+	prIntentPath, err := paths.DossierFinalPath("pr-intent.md")
+	if err != nil {
+		return reviewerPromptInput{}, nil, err
+	}
+	changeMapPath, err := paths.DossierFinalPath("change-map.md")
+	if err != nil {
+		return reviewerPromptInput{}, nil, err
+	}
+	repoGuidancePath, err := paths.DossierFinalPath("repo-guidance.md")
+	if err != nil {
+		return reviewerPromptInput{}, nil, err
+	}
+	discussionPath, err := paths.DossierFinalPath("discussion.md")
+	if err != nil {
+		return reviewerPromptInput{}, nil, err
+	}
+	prIntent, err := selectionPromptContentFromPath(prIntentPath)
+	if err != nil {
+		return reviewerPromptInput{}, nil, err
+	}
+	changeMap, err := selectionPromptContentFromPath(changeMapPath)
+	if err != nil {
+		return reviewerPromptInput{}, nil, err
+	}
+	repoGuidance, err := selectionPromptContentFromPath(repoGuidancePath)
+	if err != nil {
+		return reviewerPromptInput{}, nil, err
+	}
+	discussion, err := selectionPromptContentFromPath(discussionPath)
+	if err != nil {
+		return reviewerPromptInput{}, nil, err
+	}
+	indexBytes, err := os.ReadFile(paths.DossierIndexPath()) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
+	if err != nil {
+		return reviewerPromptInput{}, nil, fmt.Errorf("pipeline: read dossier artifact %s: %w", filepath.Base(paths.DossierIndexPath()), err)
+	}
+	metaPath := paths.WorkbenchMetadataPath()
+	metaBytes, err := os.ReadFile(metaPath) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
+	if err != nil {
+		return reviewerPromptInput{}, nil, fmt.Errorf("pipeline: read workbench metadata: %w", err)
+	}
+	var meta workbenchMetadataArtifact
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		return reviewerPromptInput{}, nil, fmt.Errorf("pipeline: decode workbench metadata: %w", err)
+	}
+	input := reviewerPromptInput{
+		PR: promptPRFromPR(pr),
+		Dossier: reviewerPromptDossier{
+			PRIntent:     prIntent,
+			ChangeMap:    changeMap,
+			RepoGuidance: repoGuidance,
+			Discussion:   discussion,
+		},
+		Workbench: reviewerPromptWorkbench{
+			CheckoutMode: meta.CheckoutMode,
+			PR:           meta.PR,
+			Base:         meta.Base,
+			Head:         meta.Head,
+		},
+		Assignment: reviewerPromptAssignment{
+			AgentID:      agent.ID,
+			Rationale:    selected.Rationale,
+			Files:        append([]string(nil), selected.Files...),
+			AllowedFiles: append([]string(nil), selected.AllowedFiles...),
+		},
+	}
+	deps := []string{
+		"dossier_index=" + sha256Hex(indexBytes),
+		"workbench_metadata=" + sha256Hex(metaBytes),
+	}
+	return input, deps, nil
 }
 
 func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
@@ -2753,14 +2803,6 @@ func rollupOutputContract(findings []review.Finding) outputContract {
 			"ordered_findings":       findingIDs,
 		},
 	}
-}
-
-func patchPathsFromContexts(files []fileContext) []string {
-	paths := make([]string, 0, len(files))
-	for _, file := range files {
-		paths = append(paths, file.Path)
-	}
-	return paths
 }
 
 func firstOrPlaceholder(values []string, placeholder string) string {

@@ -121,6 +121,28 @@ Reviewer-facing dossier context must not include:
 The current `needs_full_file_content` flag is legacy prompt behavior. It should
 not participate in checkout-native reviewer execution.
 
+## Reviewer Prompt Contract
+
+Checkout-native specialist reviewers receive a compact prompt contract plus
+bounded checkout access. The prompt payload is reviewer-facing context only:
+
+- assignment metadata, including selected files and any `allowed_files`
+- reviewer instructions
+- reviewer-facing dossier content
+- pinned workbench identity metadata
+
+The prompt payload must not embed:
+
+- raw diff hunks as reviewer input
+- base/head file bodies
+- harness/runtime selection fields such as model tier, resolved model IDs, or
+  effort knobs
+
+`needs_full_file_content` is deprecated in checkout-native mode. Legacy agents
+that still declare it must receive checkout-readonly review behavior instead of
+prompt stuffing, and agent-authoring guidance should treat checkout-native
+review as the supported path going forward.
+
 ## Harness-Only State
 
 The harness owns process and safety data that should stay out of reviewer
