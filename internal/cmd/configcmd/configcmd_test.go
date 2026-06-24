@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedirtest"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
@@ -112,6 +114,65 @@ func TestConfigShowJSON(t *testing.T) {
 	}
 	if len(wantKeys) != 0 {
 		t.Fatalf("missing credential purposes: %#v", wantKeys)
+	}
+}
+
+func TestKeychainProbeManifestMatchesConfigShowContract(t *testing.T) {
+	manifest := readKeychainProbeManifest(t)
+	wantCommand := []string{"config", "show", "--profile", "default", "--json"}
+	if !reflect.DeepEqual(manifest.KeychainProbe.Command, wantCommand) {
+		t.Fatalf("keychain probe command = %#v, want %#v", manifest.KeychainProbe.Command, wantCommand)
+	}
+	if manifest.KeychainProbe.SeedConfig.Content == "" {
+		t.Fatal("keychain probe seed config content is empty")
+	}
+	if len(manifest.KeychainProbe.Assertions) == 0 {
+		t.Fatal("keychain probe assertions are empty")
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawConfig(t, path, manifest.KeychainProbe.SeedConfig.Content)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load(seed): %v", err)
+	}
+	profile, ok := loaded.Profiles["default"]
+	if !ok {
+		t.Fatalf("loaded profiles missing default: %#v", loaded.Profiles)
+	}
+	if profile.RepositoryAccess != "default-git" {
+		t.Fatalf("default repository_access = %q, want default-git", profile.RepositoryAccess)
+	}
+
+	cmd, out := newTestCommand(path)
+	if err := root.Execute(cmd, manifest.KeychainProbe.Command); err != nil {
+		t.Fatalf("Execute keychain probe command: %v", err)
+	}
+
+	var got view.ConfigShow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal keychain probe JSON: %v\n%s", err, out.String())
+	}
+	if got.Backend != "keychain" {
+		if runtime.GOOS == "darwin" {
+			t.Fatalf("backend = %q, want keychain", got.Backend)
+		}
+	}
+	if got.CredentialRef != "codereview/default" {
+		t.Fatalf("credential_ref = %q, want codereview/default", got.CredentialRef)
+	}
+	for key, want := range manifest.KeychainProbe.Assertions {
+		gotValue, ok := configShowAssertionValue(got, key)
+		if !ok {
+			t.Fatalf("unsupported manifest assertion key %q", key)
+		}
+		if runtime.GOOS != "darwin" && (key == ".backend" || key == ".backend_source") {
+			continue
+		}
+		if gotValue != want {
+			t.Fatalf("assertion %s = %q, want %q", key, gotValue, want)
+		}
 	}
 }
 
@@ -2830,6 +2891,44 @@ func writeRawConfig(t *testing.T, path, body string) {
 	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+type keychainProbeManifest struct {
+	KeychainProbe struct {
+		SeedConfig struct {
+			Content string `yaml:"content"`
+		} `yaml:"seed_config"`
+		Command    []string          `yaml:"command"`
+		Assertions map[string]string `yaml:"assertions"`
+	} `yaml:"keychain_probe"`
+}
+
+func readKeychainProbeManifest(t *testing.T) keychainProbeManifest {
+	t.Helper()
+	path := filepath.Join("..", "..", "..", "packaging", "identity.yml")
+	// #nosec G304 -- test reads a fixed repo-local manifest path.
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	var manifest keychainProbeManifest
+	if err := yaml.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("yaml.Unmarshal(%s): %v", path, err)
+	}
+	return manifest
+}
+
+func configShowAssertionValue(show view.ConfigShow, key string) (string, bool) {
+	switch key {
+	case ".backend":
+		return show.Backend, true
+	case ".backend_source":
+		return show.BackendSource, true
+	case ".credential_ref":
+		return show.CredentialRef, true
+	default:
+		return "", false
 	}
 }
 
