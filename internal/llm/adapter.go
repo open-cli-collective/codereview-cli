@@ -31,12 +31,56 @@ type Adapter interface {
 	Resume(context.Context, string, Request) (Stream, error)
 }
 
+// CheckoutReadonlyCapable reports whether an adapter can safely inspect a
+// caller-provided read-only checkout with writes limited to a caller-owned
+// scratch root.
+type CheckoutReadonlyCapable interface {
+	SupportsCheckoutReadonly() bool
+}
+
+// CheckoutReadonlyRequest describes bounded checkout access for a single LLM
+// invocation. RootDir is the reviewer-visible read root; ScratchDir is the
+// writable scratch root owned by the harness; AllowedFiles preserves the
+// orchestrator's optional narrowing intent for logs and smoke-path assertions.
+type CheckoutReadonlyRequest struct {
+	RootDir            string
+	ScratchDir         string
+	AllowedFiles       []string
+	MaxToolOutputBytes int
+}
+
+// ErrCheckoutReadonlyUnsupported reports that an adapter cannot safely provide
+// checkout-readonly review access.
+var ErrCheckoutReadonlyUnsupported = errors.New("llm adapter: missing checkout-readonly capability")
+
+// SupportsCheckoutReadonly reports whether adapter exposes the supplemental
+// checkout-readonly capability.
+func SupportsCheckoutReadonly(adapter Adapter) bool {
+	capable, ok := adapter.(CheckoutReadonlyCapable)
+	return ok && capable.SupportsCheckoutReadonly()
+}
+
+// RequireCheckoutReadonly returns a stable error when adapter does not expose
+// the supplemental checkout-readonly capability.
+func RequireCheckoutReadonly(adapter Adapter) error {
+	if SupportsCheckoutReadonly(adapter) {
+		return nil
+	}
+	name := "<nil>"
+	if adapter != nil {
+		name = adapter.Name()
+	}
+	return fmt.Errorf("%w: %s", ErrCheckoutReadonlyUnsupported, name)
+}
+
 // Request describes one LLM invocation.
 type Request struct {
 	Model   string
 	Effort  string
 	Prompt  string
 	LogPath string
+
+	CheckoutReadonly *CheckoutReadonlyRequest
 }
 
 // Stream is a started LLM request.
@@ -216,6 +260,11 @@ func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string
 		stream Stream
 		err    error
 	)
+	if req.CheckoutReadonly != nil {
+		if err := RequireCheckoutReadonly(adapter); err != nil {
+			return "", Response{}, err
+		}
+	}
 	if strings.TrimSpace(resumeSessionID) != "" && adapter.SupportsResume() {
 		stream, err = adapter.Resume(ctx, resumeSessionID, req)
 	} else {

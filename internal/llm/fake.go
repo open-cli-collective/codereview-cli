@@ -11,10 +11,11 @@ import (
 type FakeAdapter struct {
 	mu sync.Mutex
 
-	NameValue                    string
-	SupportsResumeValue          bool
-	SupportsCacheAccountingValue bool
-	SupportsCostReportingValue   bool
+	NameValue                     string
+	SupportsResumeValue           bool
+	SupportsCheckoutReadonlyValue bool
+	SupportsCacheAccountingValue  bool
+	SupportsCostReportingValue    bool
 
 	QuotaValue     Quota
 	QuotaSupported bool
@@ -54,6 +55,14 @@ func (f *FakeAdapter) SupportsResume() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.SupportsResumeValue
+}
+
+// SupportsCheckoutReadonly reports whether the fake supports checkout-readonly
+// invocation mode.
+func (f *FakeAdapter) SupportsCheckoutReadonly() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.SupportsCheckoutReadonlyValue
 }
 
 // SupportsCacheAccounting reports whether cache usage metrics are supported.

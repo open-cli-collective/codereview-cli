@@ -40,9 +40,10 @@ import (
 )
 
 const (
-	defaultMaxAgents      = 5
-	defaultMaxConcurrency = 5
-	defaultMaxPromptBytes = 512 * 1024
+	defaultMaxAgents                       = 5
+	defaultMaxConcurrency                  = 5
+	defaultMaxPromptBytes                  = 512 * 1024
+	defaultCheckoutReadonlyToolOutputBytes = 32 * 1024
 )
 
 // ErrStructuredOutputInvalidAfterRetry marks a selector or rollup response that
@@ -3315,6 +3316,164 @@ func workbenchBranchArtifactFromRef(ref gitprovider.PRBranchRef) workbenchBranch
 		Ref:   ref.Ref,
 		SHA:   ref.SHA,
 	}
+}
+
+func buildCheckoutReadonlyRequest(opts Options, artifacts ArtifactPaths, agentID string, allowedFiles []string, model, effort, prompt, logPath string) (llm.Request, error) {
+	if err := llm.RequireCheckoutReadonly(opts.Adapter); err != nil {
+		return llm.Request{}, fmt.Errorf("pipeline: %w", err)
+	}
+	access, err := prepareCheckoutReadonlyAccess(artifacts, agentID, allowedFiles, defaultCheckoutReadonlyToolOutputBytes)
+	if err != nil {
+		return llm.Request{}, err
+	}
+	return llm.Request{
+		Model:            model,
+		Effort:           effort,
+		Prompt:           prompt,
+		LogPath:          logPath,
+		CheckoutReadonly: &access,
+	}, nil
+}
+
+func prepareCheckoutReadonlyAccess(artifacts ArtifactPaths, agentID string, allowedFiles []string, maxToolOutputBytes int) (llm.CheckoutReadonlyRequest, error) {
+	if strings.TrimSpace(artifacts.WorkbenchRepoDir) == "" {
+		return llm.CheckoutReadonlyRequest{}, fmt.Errorf("pipeline: workbench repo dir is required for checkout-readonly access")
+	}
+	if strings.TrimSpace(artifacts.WorkbenchScratch) == "" {
+		return llm.CheckoutReadonlyRequest{}, fmt.Errorf("pipeline: workbench scratch dir is required for checkout-readonly access")
+	}
+	rootDir := artifacts.WorkbenchRepoDir
+	if len(allowedFiles) > 0 {
+		scopeDir, err := materializeCheckoutReadonlyScope(artifacts, agentID, allowedFiles)
+		if err != nil {
+			return llm.CheckoutReadonlyRequest{}, err
+		}
+		rootDir = scopeDir
+	}
+	return llm.CheckoutReadonlyRequest{
+		RootDir:            rootDir,
+		ScratchDir:         artifacts.WorkbenchScratch,
+		AllowedFiles:       append([]string(nil), allowedFiles...),
+		MaxToolOutputBytes: maxToolOutputBytes,
+	}, nil
+}
+
+func materializeCheckoutReadonlyScope(artifacts ArtifactPaths, agentID string, allowedFiles []string) (string, error) {
+	if strings.TrimSpace(agentID) == "" {
+		return "", fmt.Errorf("pipeline: agent ID is required for checkout-readonly scope")
+	}
+	scopeRoot := filepath.Join(artifacts.WorkbenchDir, "scopes", statepaths.Encode(agentID))
+	if err := resetCheckoutReadonlyScope(scopeRoot); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(scopeRoot, 0o700); err != nil {
+		return "", fmt.Errorf("pipeline: create checkout-readonly scope: %w", err)
+	}
+	for _, path := range allowedFiles {
+		clean := filepath.Clean(strings.TrimSpace(path))
+		if isCheckoutScopeEscapePath(clean) {
+			return "", fmt.Errorf("pipeline: invalid checkout-readonly allowed file %q", path)
+		}
+		target := filepath.Join(artifacts.WorkbenchRepoDir, clean)
+		if err := validateCheckoutReadonlyScopeTarget(target, clean); err != nil {
+			return "", err
+		}
+		link := filepath.Join(scopeRoot, clean)
+		if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+			return "", fmt.Errorf("pipeline: create checkout-readonly scope dir: %w", err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			return "", fmt.Errorf("pipeline: link checkout-readonly scope file %s: %w", clean, err)
+		}
+	}
+	if err := lockCheckoutReadonlyScope(scopeRoot); err != nil {
+		return "", err
+	}
+	return scopeRoot, nil
+}
+
+func resetCheckoutReadonlyScope(scopeRoot string) error {
+	if _, err := os.Stat(scopeRoot); err == nil {
+		if unlockErr := unlockCheckoutReadonlyScope(scopeRoot); unlockErr != nil {
+			return unlockErr
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("pipeline: stat checkout-readonly scope: %w", err)
+	}
+	if err := os.RemoveAll(scopeRoot); err != nil {
+		return fmt.Errorf("pipeline: reset checkout-readonly scope: %w", err)
+	}
+	return nil
+}
+
+func isCheckoutScopeEscapePath(clean string) bool {
+	return clean == "." || clean == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator))
+}
+
+func validateCheckoutReadonlyScopeTarget(target string, displayPath string) error {
+	info, err := os.Lstat(target) // #nosec G304 -- target is derived from the pipeline-owned workbench checkout root plus validated relative paths.
+	if err != nil {
+		return fmt.Errorf("pipeline: stat checkout-readonly scope file %s: %w", displayPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("pipeline: checkout-readonly scope file %s must not be a symlink", displayPath)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("pipeline: checkout-readonly scope file %s must be a regular file", displayPath)
+	}
+	return nil
+}
+
+func lockCheckoutReadonlyScope(scopeRoot string) error {
+	if err := filepath.Walk(scopeRoot, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		var mode fs.FileMode
+		if info.IsDir() {
+			mode = 0o555
+		} else {
+			mode = 0o444
+		}
+		if chmodErr := os.Chmod(path, mode); chmodErr != nil { // #nosec G302,G122 -- scope files are pipeline-owned under the workbench artifact root; symlinks are skipped during the walk.
+			return chmodErr
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("pipeline: lock checkout-readonly scope: %w", err)
+	}
+	return nil
+}
+
+func unlockCheckoutReadonlyScope(scopeRoot string) error {
+	scopeRoot = strings.TrimSpace(scopeRoot)
+	if scopeRoot == "" {
+		return nil
+	}
+	if err := filepath.Walk(scopeRoot, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		var mode fs.FileMode
+		if info.IsDir() {
+			mode = 0o700
+		} else {
+			mode = 0o600
+		}
+		if chmodErr := os.Chmod(path, mode); chmodErr != nil { // #nosec G302,G122 -- scope files are pipeline-owned under the workbench artifact root; symlinks are skipped during the walk.
+			return chmodErr
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("pipeline: unlock checkout-readonly scope: %w", err)
+	}
+	return nil
 }
 
 type workbenchRemoteStyle struct {

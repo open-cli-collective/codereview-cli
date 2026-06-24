@@ -2127,7 +2127,7 @@ func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
 		statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		&errOut,
 		logger,
-		runtimeOptsWithWorkbench(t, RuntimeOptions{}),
+		runtimeOptsWithWorkbench(t, RuntimeOptions{PRRef: ref}),
 	)
 
 	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
