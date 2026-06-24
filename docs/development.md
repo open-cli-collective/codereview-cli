@@ -26,6 +26,12 @@ Structured LLM calls in the review pipeline are durable per-task units. See
 `docs/llm-task-artifacts.md` for the artifact schema, status taxonomy, and
 resume invariants.
 
+The target checkout-native review design for the "avoid context stuffing" work
+is documented in `docs/checkout-native-review-contract.md`. Treat that file as
+the source of truth for runtime order, reviewer-facing dossier boundaries,
+workbench ownership, and artifact-digest resume rules while the follow-on
+pipeline issues land.
+
 ## Progress Logging
 
 Non-review CLI progress now flows through one reusable component in
