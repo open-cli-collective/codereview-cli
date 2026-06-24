@@ -2225,6 +2225,28 @@ type selectionAgentPrompt struct {
 	NeedsFullFileContent bool     `json:"needs_full_file_content"`
 }
 
+type promptPR struct {
+	Ref    gitprovider.PRRef       `json:"ref"`
+	Title  string                  `json:"title"`
+	URL    string                  `json:"url"`
+	State  gitprovider.PRState     `json:"state"`
+	Author gitprovider.Identity    `json:"author"`
+	Head   gitprovider.PRBranchRef `json:"head"`
+	Base   gitprovider.PRBranchRef `json:"base"`
+}
+
+func promptPRFromPR(pr gitprovider.PR) promptPR {
+	return promptPR{
+		Ref:    pr.Ref,
+		Title:  pr.Title,
+		URL:    pr.URL,
+		State:  pr.State,
+		Author: pr.Author,
+		Head:   pr.Head,
+		Base:   pr.Base,
+	}
+}
+
 func selectionAgentPromptFromAgent(agent agents.Agent) selectionAgentPrompt {
 	return selectionAgentPrompt{
 		ID:                   agent.ID,
@@ -2267,7 +2289,7 @@ func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []F
 		"output_contract":     selectionOutputContract(catalog.Agents, patches, threads, maxAgents),
 		"schema":              "selection",
 		"max_selected_agents": maxAgents,
-		"pr":                  pr,
+		"pr":                  promptPRFromPR(pr),
 		"agents":              selectionAgentPromptsFromCatalog(catalog),
 		"changed_files":       patchPaths(patches),
 		"threads":             threads,
@@ -2287,7 +2309,7 @@ func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFai
 		"task":              "dedupe findings and return rollup JSON only",
 		"output_contract":   rollupOutputContract(findings),
 		"schema":            "rollup",
-		"pr":                pr,
+		"pr":                promptPRFromPR(pr),
 		"findings":          rollupFindingsPrompt(findings),
 		"reviewer_failures": reviewerFailures,
 	}
@@ -2724,7 +2746,7 @@ func writeDossierArtifacts(paths ArtifactPaths, in dossierInputs) error {
 		"pr-intent.md":     renderDossierPRIntent(prContext),
 		"change-map.md":    renderDossierChangeMap(changedFiles),
 		"repo-guidance.md": renderDossierRepoGuidance(repoContext),
-		"discussion.md":    renderDossierDiscussion(paths, discussion),
+		"discussion.md":    renderDossierDiscussion(discussion),
 	}
 	for name, body := range finalArtifacts {
 		path, err := paths.DossierFinalPath(name)
@@ -2924,10 +2946,7 @@ func renderDossierRepoGuidance(repo dossierRepoContextArtifact) string {
 	return out.String()
 }
 
-func renderDossierDiscussion(paths ArtifactPaths, discussion dossierDiscussionArtifact) string {
-	if summary, ok := readSummaryArtifact(paths, "discussion.md"); ok {
-		return summary
-	}
+func renderDossierDiscussion(discussion dossierDiscussionArtifact) string {
 	var out strings.Builder
 	out.WriteString("# Discussion\n\n")
 	if discussion.PinnedReview {
@@ -3005,18 +3024,6 @@ func renderDossierDiscussion(paths ArtifactPaths, discussion dossierDiscussionAr
 		out.WriteString(fmt.Sprintf("\nAdditional inline threads omitted: %d\n", len(discussion.InlineThreads)-dossierFinalMaxInlineThreads))
 	}
 	return out.String()
-}
-
-func readSummaryArtifact(paths ArtifactPaths, name string) (string, bool) {
-	path, err := paths.DossierSummaryPath(name)
-	if err != nil {
-		return "", false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	return string(data), true
 }
 
 func buildDossierIndex(dir string) (dossierIndexArtifact, error) {

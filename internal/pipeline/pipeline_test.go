@@ -495,6 +495,7 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	req.Profile.AgentSources = []string{dir}
 	req.SelectionPromptInstructions = "Prefer applies_when over prompt wording when routing."
 	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+	provider.pr.Body = "Selection prompt body should stay out of prompt payloads."
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:alpha", "main.go"), 10, 2))
 
@@ -559,6 +560,9 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 		if strings.Contains(selectionPrompt, forbidden) {
 			t.Fatalf("selection prompt leaked reviewer execution detail %q: %s", forbidden, selectionPrompt)
 		}
+	}
+	if strings.Contains(selectionPrompt, "Selection prompt body should stay out of prompt payloads.") {
+		t.Fatalf("selection prompt leaked PR body: %s", selectionPrompt)
 	}
 }
 
@@ -2888,7 +2892,7 @@ func TestFindingsOutputContractScopesAnchorToFindingItems(t *testing.T) {
 }
 
 func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
-	prompt, err := buildRollupPrompt(gitprovider.PR{}, []review.Finding{
+	prompt, err := buildRollupPrompt(gitprovider.PR{Body: "Rollup prompt body should stay out of prompt payloads."}, []review.Finding{
 		{
 			ID:       "finding-1",
 			Severity: review.SeverityMajor,
@@ -2922,6 +2926,9 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	}
 	if strings.Contains(prompt, `"anchor"`) {
 		t.Fatalf("rollup prompt leaked raw anchor key: %s", prompt)
+	}
+	if strings.Contains(prompt, "Rollup prompt body should stay out of prompt payloads.") {
+		t.Fatalf("rollup prompt leaked PR body: %s", prompt)
 	}
 }
 
