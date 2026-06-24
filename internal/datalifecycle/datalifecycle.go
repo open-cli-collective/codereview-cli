@@ -32,12 +32,24 @@ type Store interface {
 // RemoveAllFunc removes a path recursively.
 type RemoveAllFunc func(string) error
 
+// ProgressReporter records lifecycle sub-steps without depending on a specific
+// CLI surface.
+type ProgressReporter interface {
+	Start(op, target string) ProgressSpan
+}
+
+// ProgressSpan completes one lifecycle progress event.
+type ProgressSpan interface {
+	End(error)
+}
+
 // Options contains lifecycle operation dependencies.
 type Options struct {
 	Layout    statepaths.Layout
 	Store     Store
 	Now       func() time.Time
 	RemoveAll RemoveAllFunc
+	Progress  ProgressReporter
 }
 
 // PruneOptions selects runs to prune.
@@ -161,23 +173,33 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 	if err := validatePruneOptions(prune); err != nil {
 		return PruneResult{}, err
 	}
+	listSpan := startProgress(opts.Progress, "list_runs", "data-root")
 	runs, err := opts.Store.ListRuns(ctx)
 	if err != nil {
+		listSpan.End(err)
 		return PruneResult{}, err
 	}
+	listSpan.End(nil)
+	selectSpan := startProgress(opts.Progress, "select_runs", "data-root")
 	selected := selectRuns(runs, prune, opts.now())
+	selectSpan.End(nil)
 	result := PruneResult{DryRun: prune.DryRun, SelectedRuns: runItems(selected)}
 	if prune.DryRun {
+		orphanSpan := startProgress(opts.Progress, "find_orphans", "data-root")
 		orphanItems, err := findOrphans(opts.Layout, runs)
 		if err != nil {
+			orphanSpan.End(err)
 			return result, err
 		}
+		orphanSpan.End(nil)
 		result.OrphansRemoved = orphanItems
 		return result, nil
 	}
 
+	deleteSpan := startProgress(opts.Progress, "delete_runs", "data-root")
 	for _, run := range selected {
 		if err := opts.Store.DeleteRun(ctx, run.RunID); err != nil {
+			deleteSpan.End(err)
 			return result, err
 		}
 		item := runItem(run)
@@ -190,13 +212,19 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 			result.Warnings = append(result.Warnings, fmt.Sprintf("failed to remove artifacts for run %s at %s: %v", run.RunID, run.ArtifactPath, err))
 		}
 	}
+	deleteSpan.End(nil)
 
+	remainingSpan := startProgress(opts.Progress, "reload_runs", "data-root")
 	remaining, err := opts.Store.ListRuns(ctx)
 	if err != nil {
+		remainingSpan.End(err)
 		return result, err
 	}
+	remainingSpan.End(nil)
+	orphanSpan := startProgress(opts.Progress, "remove_orphans", "data-root")
 	orphans, err := findOrphans(opts.Layout, remaining)
 	if err != nil {
+		orphanSpan.End(err)
 		return result, err
 	}
 	for _, orphan := range orphans {
@@ -206,6 +234,7 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 		}
 		result.OrphansRemoved = append(result.OrphansRemoved, orphan)
 	}
+	orphanSpan.End(nil)
 	_ = removeEmptyParents(runsRoot(opts.Layout))
 	return result, nil
 }
@@ -324,6 +353,21 @@ func (p RetentionPolicy) retentionFor(mode ledger.PostMode) (time.Duration, bool
 		return 0, true
 	}
 	return p.LiveMaxAge, false
+}
+
+type noopProgressSpan struct{}
+
+func (noopProgressSpan) End(error) {}
+
+func startProgress(reporter ProgressReporter, op, target string) ProgressSpan {
+	if reporter == nil {
+		return noopProgressSpan{}
+	}
+	span := reporter.Start(op, target)
+	if span == nil {
+		return noopProgressSpan{}
+	}
+	return span
 }
 
 func findOrphans(layout statepaths.Layout, runs []ledger.Run) ([]OrphanItem, error) {

@@ -13,6 +13,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -183,7 +184,8 @@ func newCompareCommand(opts *root.Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(_ *cobra.Command, args []string) error {
-			comparison, err := writeComparisonArtifactsForResultsDir(args[0])
+			logger := newProgressLogger(opts)
+			comparison, err := writeComparisonArtifactsForResultsDirWithProgress(args[0], logger)
 			if err != nil {
 				return mapBenchmarkError(err)
 			}
@@ -200,17 +202,29 @@ func newCompareCommand(opts *root.Options) *cobra.Command {
 }
 
 func writeComparisonArtifactsForResultsDir(resultsDir string) (comparisonReport, error) {
+	return writeComparisonArtifactsForResultsDirWithProgress(resultsDir, progress.New(nil, true, nil))
+}
+
+func writeComparisonArtifactsForResultsDirWithProgress(resultsDir string, logger *progress.Logger) (comparisonReport, error) {
+	resolveSpan := logger.Start("benchmark.compare", "load_summary", "results")
 	summary, resolvedDir, err := loadBenchmarkSummaryForCompare(resultsDir)
 	if err != nil {
-		return comparisonReport{}, err
+		return comparisonReport{}, endProgressSpan(resolveSpan, err)
 	}
+	resolveSpan.End(nil)
+	buildSpan := logger.Start("benchmark.compare", "build_comparison", summary.SuiteID)
 	comparison := buildComparison(summary, resolvedDir)
+	buildSpan.End(nil)
+	jsonSpan := logger.Start("benchmark.compare", "write_json", summary.SuiteID)
 	if err := writeJSONFile(comparison.Artifacts.ComparisonJSON, comparison); err != nil {
-		return comparisonReport{}, err
+		return comparisonReport{}, endProgressSpan(jsonSpan, err)
 	}
+	jsonSpan.End(nil)
+	mdSpan := logger.Start("benchmark.compare", "write_markdown", summary.SuiteID)
 	if err := writeArtifactFile(comparison.Artifacts.ComparisonMarkdown, []byte(renderComparisonMarkdown(comparison))); err != nil {
-		return comparisonReport{}, err
+		return comparisonReport{}, endProgressSpan(mdSpan, err)
 	}
+	mdSpan.End(nil)
 	return comparison, nil
 }
 

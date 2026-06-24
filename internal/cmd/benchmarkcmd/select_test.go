@@ -141,6 +141,53 @@ func TestSelectExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	assertFileContains(t, got.Runs[0].Artifacts.RecipeJSON, `"case"`)
 }
 
+func TestSelectProgressWritesToStderr(t *testing.T) {
+	cmd, out, errOut := newTestCommandWithStderr(t, false)
+	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
+	resultsDir := filepath.Join(t.TempDir(), "results")
+
+	withBenchmarkSelectSeams(t,
+		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
+			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		},
+		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			artifacts := pipeline.ArtifactPathsFromDir(req.ArtifactDir)
+			if err := os.MkdirAll(artifacts.AgentLogsDir, 0o700); err != nil {
+				t.Fatalf("MkdirAll agent logs: %v", err)
+			}
+			return pipeline.SelectionResult{
+				Artifacts: artifacts,
+				Selection: llm.Selection{
+					SelectedAgents: []llm.SelectedAgent{{AgentID: "harness:alpha"}},
+				},
+				SelectionSession: pipeline.SelectionSession{
+					Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"selected_agents":[{"agent_id":"harness:alpha"}],"thread_actions":[]}`)},
+				},
+			}, nil
+		},
+	)
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "select", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", resultsDir,
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(errOut.String(), `command="benchmark.select" op="selection_pipeline"`) {
+		t.Fatalf("stderr = %q, want selection_pipeline progress", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), `command="benchmark.select" op="write_comparison"`) {
+		t.Fatalf("stderr = %q, want write_comparison progress", errOut.String())
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+}
+
 func TestSelectRecordsRuntimeFailuresWithoutInvokingSelection(t *testing.T) {
 	cmd, out := newTestCommand(t)
 	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))

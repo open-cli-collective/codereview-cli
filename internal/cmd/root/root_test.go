@@ -61,6 +61,22 @@ func TestPersistentProfileFlagPopulatesOptions(t *testing.T) {
 	}
 }
 
+func TestPersistentQuietFlagPopulatesOptions(t *testing.T) {
+	var out bytes.Buffer
+	cmd, opts := NewCommandWithOptions(&Options{
+		Stdin:  strings.NewReader(""),
+		Stdout: &out,
+		Stderr: &out,
+	})
+
+	if err := Execute(cmd, []string{"--quiet", "version"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !opts.Quiet {
+		t.Fatal("Quiet = false, want true")
+	}
+}
+
 func TestCompletionCommandIsNotExposed(t *testing.T) {
 	cmd, _ := NewCommand()
 	err := Execute(cmd, []string{"completion"})

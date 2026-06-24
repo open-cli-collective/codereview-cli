@@ -248,15 +248,40 @@ func TestSessionsDeleteMissingDoesNotCreateLedger(t *testing.T) {
 	assertSessionStateAbsent(t, layout)
 }
 
+func TestSessionsDeleteProgressWritesToStderr(t *testing.T) {
+	statedirtest.Hermetic(t)
+	insertNamedSession(t, namedSession("daily", "provider-session-2"))
+	cmd, stdout, stderr := newTestCommandWithOptions(&root.Options{Quiet: false})
+
+	if err := root.Execute(cmd, []string{"sessions", "delete", "daily", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(stderr.String(), `command="sessions.delete" op="delete_session" target="session"`) {
+		t.Fatalf("stderr = %q, want delete progress", stderr.String())
+	}
+	var decoded view.SessionsDelete
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, stdout.String())
+	}
+}
+
 func newTestCommand() (*cobra.Command, *bytes.Buffer) {
+	cmd, out, _ := newTestCommandWithOptions(&root.Options{Quiet: true})
+	return cmd, out
+}
+
+func newTestCommandWithOptions(opts *root.Options) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
-		Stdin:  strings.NewReader(""),
-		Stdout: &out,
-		Stderr: &out,
-	})
-	Register(cmd, opts)
-	return cmd, &out
+	var errOut bytes.Buffer
+	if opts == nil {
+		opts = &root.Options{}
+	}
+	opts.Stdin = strings.NewReader("")
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+	cmd, rootOpts := root.NewCommandWithOptions(opts)
+	Register(cmd, rootOpts)
+	return cmd, &out, &errOut
 }
 
 func insertNamedSession(t *testing.T, session ledger.NamedSession) {

@@ -2509,6 +2509,33 @@ func TestConfigClearAllJSONIncludesCacheCleanupFailure(t *testing.T) {
 	assertFileBackendMissing(t, "home", credentials.GitTokenKey)
 }
 
+func TestConfigClearAllJSONKeepsStdoutCleanAndReportsProgressErrorOnStderr(t *testing.T) {
+	path := saveTestConfig(t, fileBackendConfig(t))
+	_ = writeCacheSentinel(t)
+	seedFileBackend(t, "home", map[string]string{credentials.GitTokenKey: "home-token"})
+	cmd, out, errOut := newTestCommandWithStderr(path, false)
+	oldRemove := removeCacheRoot
+	removeCacheRoot = func(string) error {
+		return fmt.Errorf("permission denied")
+	}
+	t.Cleanup(func() { removeCacheRoot = oldRemove })
+
+	err := root.Execute(cmd, []string{"--profile", "home", "config", "clear", "--all", "--json"})
+	if err == nil {
+		t.Fatal("Execute error = nil, want cache cleanup failure")
+	}
+	var got view.ConfigClear
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), `command="config.clear" op="remove_cache" target="home"`) {
+		t.Fatalf("stderr = %q, want remove_cache progress", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), `event=error`) {
+		t.Fatalf("stderr = %q, want error event", errOut.String())
+	}
+}
+
 func TestConfigClearAllTextIncludesPartialResultOnCacheFailure(t *testing.T) {
 	path := saveTestConfig(t, fileBackendConfig(t))
 	cacheFile := writeCacheSentinel(t)
@@ -2599,20 +2626,36 @@ func newTestCommand(path string) (*cobra.Command, *bytes.Buffer) {
 	return newTestCommandWithOptions(&root.Options{
 		ConfigPath: path,
 		Stdin:      strings.NewReader(""),
+		Quiet:      true,
 	})
 }
 
 func newTestCommandWithOptions(opts *root.Options) (*cobra.Command, *bytes.Buffer) {
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	if opts == nil {
 		opts = &root.Options{}
 	}
 	opts.Stdin = strings.NewReader("")
 	opts.Stdout = &out
-	opts.Stderr = &out
+	opts.Stderr = &errOut
 	cmd, opts := root.NewCommandWithOptions(opts)
 	Register(cmd, opts)
 	return cmd, &out
+}
+
+func newTestCommandWithStderr(path string, quiet bool) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: path,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &out,
+		Stderr:     &errOut,
+		Quiet:      quiet,
+	})
+	Register(cmd, opts)
+	return cmd, &out, &errOut
 }
 
 const testFileCredentialStoreID = "test-file"

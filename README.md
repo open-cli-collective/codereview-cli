@@ -690,6 +690,15 @@ All commands accept the global flags:
 |------|-----------|
 | `--profile <name>` | Select a configured profile and bypass repo-aware routing. When omitted, PR-aware commands use `repository_profiles`; commands that cannot resolve a route require `--profile`. During `init`, an omitted profile starts with the suggested name `default`. |
 | `--backend <name>` | Compatibility/runtime backend selector. It cannot override an explicit credential store destination. |
+| `--quiet` | Suppress structured progress logs on stderr. Command stdout and stderr error reporting stay unchanged. |
+
+Progress-bearing commands emit one-line structured events on stderr in the
+form `cr progress event=<start|finish|error> command="..." op="..." target="..." ...`.
+This output is intended for human progress visibility and simple substring
+parsers. JSON and text results continue to write to stdout only. In this slice,
+structured progress is enabled for `benchmark run`, `benchmark select`,
+`benchmark compare`, `data prune`, `data purge`, `config clear`, and
+`sessions delete`.
 
 ### `cr`
 
@@ -899,6 +908,11 @@ reset, `config.yml` is removed.
 `config clear` never touches durable review data. Use `cr data purge` for the
 data pillar.
 
+When progress logging is enabled, `config clear` brackets config load, profile
+resolution, credential-store open, credential deletion, optional profile-config
+removal, and optional cache cleanup on stderr. Partial-success failures still
+render their JSON or text result on stdout before returning the final error.
+
 ### `cr me`
 
 ```text
@@ -1076,6 +1090,12 @@ reviewed by the dry-run child command. Optional `stages.synthesis` metadata is
 reserved for future benchmark support and does not change `benchmark run`
 execution yet.
 
+`benchmark run` emits progress on stderr for suite load and selection, results
+directory creation, each matrix run, child `cr review` subprocess execution,
+suite artifact writes, and comparison artifact generation. Child review
+subprocesses are invoked with `--quiet` so their internal progress does not
+pollute captured benchmark stderr artifacts.
+
 ### `cr benchmark select`
 
 ```text
@@ -1106,6 +1126,10 @@ When one selector run fails after partial execution, `benchmark select` records
 that run as failed and continues the remaining matrix when it can still write
 trustworthy suite artifacts.
 
+`benchmark select` emits progress on stderr for suite load and selection,
+results directory creation, per-profile runtime open, each selector run,
+selection pipeline execution, and artifact generation.
+
 ### `cr benchmark compare`
 
 ```text
@@ -1117,6 +1141,9 @@ Reads an existing benchmark results directory and writes deterministic
 does not invoke models, read live PR state, mutate Git provider state, or
 require provider credentials. `cr benchmark run` and `cr benchmark select`
 write the same comparison artifacts automatically.
+
+`benchmark compare` emits progress on stderr while it loads the suite summary,
+builds the comparison model, and writes JSON and Markdown artifacts.
 
 ### `cr sessions list`
 
@@ -1145,6 +1172,9 @@ cr sessions delete <name> [--json]
 
 Deletes one named LLM session row. It does not delete provider-side session
 state. Missing sessions return an error.
+
+`sessions delete` emits progress on stderr for layout resolution, legacy
+migration, ledger open, and session deletion.
 
 ### `cr data show`
 
@@ -1180,6 +1210,10 @@ Prune deletes the ledger row first, then removes artifact directories best
 effort. Unsafe artifact paths and remove failures are reported as warnings after
 the ledger row is deleted.
 
+When progress logging is enabled, `data prune` emits stderr brackets for layout
+resolution, optional legacy migration, ledger open, run selection, delete
+actions, orphan discovery and removal, and the dry-run legacy check.
+
 ### `cr data purge`
 
 ```text
@@ -1190,6 +1224,9 @@ cr data purge --dry-run [--json]
 Purges the whole local data root. `--yes` is required unless `--dry-run` is set.
 Purge does not open the ledger database, so it can remove a corrupt local data
 root. `--json` emits the data root, dry-run status, and removed status.
+
+`data purge` emits progress on stderr for layout resolution and the purge
+action itself.
 
 Flags:
 
