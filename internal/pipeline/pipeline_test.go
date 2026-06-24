@@ -166,6 +166,7 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "pr-intent.md"), "Document the checkout-native review contract.")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "main.go:2")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Top-level concern")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Review body")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "No dedicated repo review-guidance source is defined yet.")
 	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "final/discussion.md")
 	assertFileOmits(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "provider_session_id", "session_row_id", "mergeability", "approval", "CI status", "Approved body should stay out of reviewer-facing discussion")
@@ -517,6 +518,7 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 		Schema                string                     `json:"schema"`
 		SelectionInstructions string                     `json:"selection_instructions"`
 		OutputContract        map[string]any             `json:"output_contract"`
+		PR                    promptPR                   `json:"pr"`
 		Agents                []selectionAgentPrompt     `json:"agents"`
 		ChangedFiles          []string                   `json:"changed_files"`
 		Threads               []gitprovider.InlineThread `json:"threads"`
@@ -529,6 +531,10 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	}
 	if payload.Task != defaultSelectionTask || payload.Schema != "selection" || payload.OutputContract == nil {
 		t.Fatalf("selection prompt envelope = %#v, want task/schema/output contract", payload)
+	}
+	if payload.PR.Title != provider.pr.Title || payload.PR.URL != provider.pr.URL || payload.PR.Author.Login != provider.pr.Author.Login ||
+		payload.PR.Base.SHA != provider.pr.Base.SHA || payload.PR.Head.SHA != provider.pr.Head.SHA {
+		t.Fatalf("selection prompt pr = %#v, want title/url/author/base/head from provider PR", payload.PR)
 	}
 	if !reflect.DeepEqual(payload.ChangedFiles, []string{"main.go", "other.go"}) {
 		t.Fatalf("changed files = %#v, want main.go/other.go", payload.ChangedFiles)
@@ -3901,6 +3907,28 @@ func assertDossierIndexArtifact(t *testing.T, dir, wantPath string) {
 	if len(index.Files) == 0 {
 		t.Fatal("dossier index files = 0, want artifacts")
 	}
+	wantHashes := map[string]string{}
+	err = filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Base(path) == "index.json" {
+			return nil
+		}
+		fileData, err := os.ReadFile(path) // #nosec G304 -- test reads artifact paths under t.TempDir.
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		wantHashes[filepath.ToSlash(rel)] = sha256Hex(fileData)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(dossier): %v", err)
+	}
 	var saw bool
 	for _, file := range index.Files {
 		if file.Path == wantPath {
@@ -3909,9 +3937,20 @@ func assertDossierIndexArtifact(t *testing.T, dir, wantPath string) {
 		if file.Path == "" || file.SHA256 == "" {
 			t.Fatalf("index file = %#v, want non-empty path/hash", file)
 		}
+		wantHash, ok := wantHashes[file.Path]
+		if !ok {
+			t.Fatalf("index file = %#v, want tracked dossier artifact", file)
+		}
+		if file.SHA256 != wantHash {
+			t.Fatalf("index hash for %s = %q, want %q", file.Path, file.SHA256, wantHash)
+		}
+		delete(wantHashes, file.Path)
 	}
 	if !saw {
 		t.Fatalf("dossier index files = %#v, want %q", index.Files, wantPath)
+	}
+	if len(wantHashes) != 0 {
+		t.Fatalf("dossier index missing files = %#v", wantHashes)
 	}
 }
 
