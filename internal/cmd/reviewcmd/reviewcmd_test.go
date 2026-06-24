@@ -32,6 +32,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
@@ -403,6 +404,17 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	if runner.pipeline.Adapter == nil || runner.pipeline.Adapter.Name() != "codex_cli" {
 		t.Fatalf("pipeline adapter = %#v, want codex_cli", runner.pipeline.Adapter)
 	}
+	loadedAdapter, err := runner.pipeline.Adapter.(*lazyAdapter).get()
+	if err != nil {
+		t.Fatalf("lazy adapter get: %v", err)
+	}
+	progressAdapter, ok := loadedAdapter.(progressAdapter)
+	if !ok || progressAdapter.adapter == nil || progressAdapter.adapter.Name() != "codex_cli" {
+		t.Fatalf("loaded pipeline adapter = %#v, want wrapped codex_cli adapter", loadedAdapter)
+	}
+	if runner.pipeline.TaskProgress == nil {
+		t.Fatal("pipeline TaskProgress = nil, want review progress wiring")
+	}
 }
 
 func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
@@ -426,8 +438,9 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 			return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
 		},
 		func(_ context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ githubprovider.TokenStore, _ config.Profile) (gitprovider.Identity, error) {
-			if provider != reviewerProvider || credential.Token != "reviewer-token" {
-				t.Fatalf("identity resolver got provider=%p credential=%#v, want reviewer provider/token", provider, credential)
+			wrapped, ok := provider.(progressProvider)
+			if !ok || wrapped.provider != reviewerProvider || credential.Token != "reviewer-token" {
+				t.Fatalf("identity resolver got provider=%T %#v credential=%#v, want wrapped reviewer provider/token", provider, provider, credential)
 			}
 			return identity, nil
 		},
@@ -451,8 +464,13 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	if !ok {
 		t.Fatalf("Runner type = %T, want reviewRunner", runtime.Runner)
 	}
-	if runner.pipeline.Provider != reviewerProvider || runner.live.Provider != reviewerProvider {
-		t.Fatalf("runtime providers = pipeline:%p live:%p, want reviewer provider %p", runner.pipeline.Provider, runner.live.Provider, reviewerProvider)
+	pipelineProvider, ok := runner.pipeline.Provider.(progressProvider)
+	if !ok || pipelineProvider.provider != reviewerProvider {
+		t.Fatalf("pipeline provider = %#v, want wrapped reviewer provider", runner.pipeline.Provider)
+	}
+	liveProvider, ok := runner.live.Provider.(progressProvider)
+	if !ok || liveProvider.provider != reviewerProvider {
+		t.Fatalf("live provider = %#v, want wrapped reviewer provider", runner.live.Provider)
 	}
 }
 
@@ -1269,6 +1287,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 		noopLimiter{},
 		statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		&warnings,
+		nil,
 		RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2, Retention: retention, RetentionManualOnly: true},
 	)
 
@@ -1426,6 +1445,7 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1508,6 +1528,7 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 			noopLimiter{},
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1580,6 +1601,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1649,6 +1671,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1711,6 +1734,7 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1795,6 +1819,407 @@ func TestReviewDryRunJSONHasNoTextQuotaPrefix(t *testing.T) {
 	}
 	if decoded.FailOnTriggered || decoded.Artifacts.FindingsJSON != "/tmp/run-1/findings.json" || decoded.Artifacts.RollupMarkdown != "/tmp/run-1/rollup.md" {
 		t.Fatalf("decoded artifacts/fail-on = %#v", decoded)
+	}
+}
+
+func TestReviewDryRunProgressWritesToStderr(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), fakeFactory(runner), false)
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	stderr := errOut.String()
+	for _, want := range []string{
+		`command="review" op="load_config" target="config"`,
+		`command="review" op="parse_pr" target="pr"`,
+		`command="review" op="resolve_profile" target="profile"`,
+		`command="review" op="build_runtime" target="runtime"`,
+		`command="review" op="execute_dry_run" target="pr"`,
+		`command="review" op="render_result" target="stdout"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
+	}
+	if strings.Contains(out.String(), "cr progress") {
+		t.Fatalf("stdout leaked progress = %q", out.String())
+	}
+}
+
+func TestReviewQuietSuppressesProgressOnly(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), fakeFactory(runner), true)
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want no progress output", errOut.String())
+	}
+	var decoded view.ReviewDryRun
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if decoded.Run.PostMode != "dry_run" {
+		t.Fatalf("decoded post mode = %q, want dry_run", decoded.Run.PostMode)
+	}
+}
+
+func TestReviewQuietSuppressesProgressOnlyForTextOutput(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), fakeFactory(runner), true)
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want no progress output", errOut.String())
+	}
+	if strings.Contains(out.String(), "cr progress") {
+		t.Fatalf("stdout leaked progress = %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Post mode: dry_run") {
+		t.Fatalf("stdout = %q, want text dry-run render", out.String())
+	}
+}
+
+func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
+	cfg := testConfig()
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	cmd, out, errOut := newTestCommandWithStderr(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		logger := newProgressLogger(opts)
+		runner := buildReviewRunner(
+			store,
+			withProgressProvider(logger, provider),
+			adapter,
+			profile,
+			noopLimiter{},
+			statepaths.NewLayout(t.TempDir(), t.TempDir()),
+			opts.Stderr,
+			logger,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	}, true)
+
+	if err := root.Execute(cmd, []string{"review", pr.URL, "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want no quiet progress output", errOut.String())
+	}
+	var decoded view.ReviewDryRun
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if decoded.Run.PostMode != "dry_run" {
+		t.Fatalf("decoded post mode = %q, want dry_run", decoded.Run.PostMode)
+	}
+}
+
+func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
+	cfg := testConfig()
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	cmd, out, errOut := newTestCommandWithStderr(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		logger := newProgressLogger(opts)
+		runner := buildReviewRunner(
+			store,
+			withProgressProvider(logger, provider),
+			adapter,
+			profile,
+			noopLimiter{},
+			statepaths.NewLayout(t.TempDir(), t.TempDir()),
+			opts.Stderr,
+			logger,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	}, false)
+
+	if err := root.Execute(cmd, []string{"review", pr.URL, "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	stderr := errOut.String()
+	for _, want := range []string{
+		`command="review" op="fetch_pr" target="pr"`,
+		`command="review" op="fetch_diff" target="pr"`,
+		`command="review" op="list_threads" target="threads"`,
+		`command="review" op="run_llm_task" target="llm_task"`,
+		`event=start`,
+		`event=finish`,
+		`task_id="orchestrator-selection"`,
+		`phase="selection"`,
+		`session_id="selection-session"`,
+		`task_id="orchestrator-rollup"`,
+		`phase="rollup"`,
+		`session_id="rollup-session"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
+	}
+	if strings.Contains(out.String(), "cr progress") {
+		t.Fatalf("stdout leaked progress = %q", out.String())
+	}
+}
+
+func TestProgressProviderGetPRErrorWritesErrorBreadcrumb(t *testing.T) {
+	var errOut bytes.Buffer
+	provider := &gitprovider.Fake{}
+	provider.SetError(gitprovider.OperationGetPR, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, context.DeadlineExceeded))
+	wrapped := withProgressProvider(progress.New(&errOut, false, nil), provider)
+
+	_, err := wrapped.GetPR(context.Background(), gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29})
+	if err == nil {
+		t.Fatal("GetPR error = nil, want provider failure")
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `event=error`) || !strings.Contains(stderr, `command="review" op="fetch_pr" target="pr"`) {
+		t.Fatalf("stderr = %q, want error breadcrumb for fetch_pr", stderr)
+	}
+}
+
+func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
+	var errOut bytes.Buffer
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	tokensIn := 11
+	tokensOut := 7
+	adapter.Queue(llm.FakeResult{
+		SessionID: "sess-123",
+		Response: llm.Response{
+			Usage: llm.Usage{
+				TokensIn:  &tokensIn,
+				TokensOut: &tokensOut,
+			},
+		},
+	})
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), adapter, "openai", "codex_cli")
+
+	stream, err := wrapped.Start(context.Background(), llm.Request{
+		Model:   "gpt-5.5",
+		Effort:  "high",
+		LogPath: filepath.Join(t.TempDir(), "selector.jsonl"),
+		Prompt:  "prompt",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	stderr := errOut.String()
+	for _, want := range []string{
+		`command="review" op="start_llm" target="llm"`,
+		`provider="openai"`,
+		`harness="codex_cli"`,
+		`model="gpt-5.5"`,
+		`effort="high"`,
+		`log_file="selector.jsonl"`,
+		`tokens_in="11"`,
+		`tokens_out="7"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
+	}
+}
+
+func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
+	var errOut bytes.Buffer
+	adapter := &llm.FakeAdapter{
+		NameValue:           "fake-llm",
+		SupportsResumeValue: true,
+	}
+	adapter.Queue(llm.FakeResult{StartErr: context.DeadlineExceeded})
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), adapter, "openai", "codex_cli")
+
+	_, err := wrapped.Resume(context.Background(), "stored-session", llm.Request{Model: "gpt-5.5", Prompt: "prompt"})
+	if err == nil {
+		t.Fatal("Resume error = nil, want failure")
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="review" op="resume_llm" target="llm"`) ||
+		!strings.Contains(stderr, `event=error`) {
+		t.Fatalf("stderr = %q, want resume error breadcrumb", stderr)
+	}
+}
+
+func TestWithProgressProviderPreservesOptionalRangeDiffCapability(t *testing.T) {
+	wrapped := withProgressProvider(progress.New(io.Discard, false, nil), &gitprovider.Fake{})
+	if _, ok := wrapped.(interface {
+		GetDiffBetweenRefs(context.Context, gitprovider.PRRef, string, string) (gitprovider.UnifiedDiff, error)
+	}); ok {
+		t.Fatalf("wrapped provider unexpectedly advertises GetDiffBetweenRefs")
+	}
+}
+
+func TestFileTargetSanitizesRepoPath(t *testing.T) {
+	got := fileTarget(" ./dir/../a\r\nb.go ")
+	if got != "file:a__b.go" {
+		t.Fatalf("fileTarget = %q, want sanitized repo path", got)
+	}
+}
+
+func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
+	var errOut bytes.Buffer
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	provider := &gitprovider.Fake{}
+	ref, pr := reviewCommandPR()
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	logger := progress.New(&errOut, false, nil)
+	runner := buildReviewRunner(
+		store,
+		provider,
+		adapter,
+		testConfig().Profiles["home"],
+		noopLimiter{},
+		statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		&errOut,
+		logger,
+		RuntimeOptions{},
+	)
+
+	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		RunID:           "run-123",
+		PRKey:           "github_open-cli-collective_codereview-cli_29",
+		PRURL:           pr.URL,
+		Profile:         "home",
+		PostingIdentity: "review-bot",
+		PostMode:        ledger.PostModeLive,
+		SHA:             pr.Head.SHA,
+		BaseSHA:         pr.Base.SHA,
+		StartedAt:       time.Now().UTC(),
+		ArtifactPath:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	_, err = runner.live.Planner.Live(context.Background(), pipeline.Request{
+		PRRef:           ref,
+		PRURL:           pr.URL,
+		ProfileName:     "home",
+		Profile:         testConfig().Profiles["home"],
+		PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+	}, run)
+	if err != nil {
+		t.Fatalf("Planner.Live: %v", err)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="review" op="plan_live_review" target="pr"`) ||
+		!strings.Contains(stderr, `run_id="run-123"`) {
+		t.Fatalf("stderr = %q, want planner breadcrumb", stderr)
+	}
+}
+
+func TestReviewDryRunTextProgressWritesStructuredStderrWithoutStdoutLeak(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), fakeFactory(runner), false)
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String(), "cr progress") {
+		t.Fatalf("stdout leaked progress = %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Post mode: dry_run") {
+		t.Fatalf("stdout = %q, want text dry-run render", out.String())
+	}
+	assertProgressOutput(t, errOut.String(), []string{
+		`command="review" op="load_config" target="config"`,
+		`command="review" op="execute_dry_run" target="pr"`,
+		`command="review" op="render_result" target="stdout"`,
+	})
+}
+
+func assertProgressOutput(t *testing.T, stderr string, wants []string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		t.Fatal("stderr has no progress lines")
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "cr progress ") {
+			t.Fatalf("stderr line = %q, want progress prefix", line)
+		}
+		if !strings.Contains(line, " event=") || !strings.Contains(line, ` command="`) || !strings.Contains(line, ` op="`) || !strings.Contains(line, ` target="`) {
+			t.Fatalf("stderr line = %q, want structured progress fields", line)
+		}
+	}
+	for _, want := range wants {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
 	}
 }
 
@@ -2034,12 +2459,32 @@ func newTestCommand(t *testing.T, cfg config.File, factory RuntimeFactory) (*cob
 	var out bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		ConfigPath: path,
+		Quiet:      true,
 		Stdin:      strings.NewReader(""),
 		Stdout:     &out,
 		Stderr:     &out,
 	})
 	RegisterWithFactory(cmd, opts, factory)
 	return cmd, &out
+}
+
+func newTestCommandWithStderr(t *testing.T, cfg config.File, factory RuntimeFactory, quiet bool) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: path,
+		Quiet:      quiet,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &out,
+		Stderr:     &errOut,
+	})
+	RegisterWithFactory(cmd, opts, factory)
+	return cmd, &out, &errOut
 }
 
 func testConfig() config.File {
