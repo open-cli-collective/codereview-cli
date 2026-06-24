@@ -4542,7 +4542,7 @@ func TestRunReviewerRejectsStaleWorkbenchMetadata(t *testing.T) {
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
 			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(effectiveReviewerScope(selection.SelectedAgents[0], patchPaths(prepared.parsed.Patches))),
+			ChangedFiles: stringSet(reviewerReviewableScope(selection.SelectedAgents[0], patchPaths(prepared.parsed.Patches))),
 			NewFindingID: findingSequence("reload"),
 		})
 	})
@@ -4611,7 +4611,7 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 
 func TestBuildReviewerCoverageStatuses(t *testing.T) {
 	broad := buildReviewerCoverage(
-		[]llm.SelectedAgent{{AgentID: "harness:broad", Files: []string{"main.go"}}},
+		[]llm.SelectedAgent{{AgentID: "harness:broad", Files: []string{"main.go", "other.go"}}},
 		[]llm.Findings{{AgentID: "harness:broad", InspectedFiles: []string{"main.go", "other.go"}}},
 		nil,
 		[]string{"main.go", "other.go"},
@@ -4668,16 +4668,42 @@ func TestBuildReviewerCoverageMarksAssignedScopeMissing(t *testing.T) {
 	}
 }
 
-func TestEffectiveReviewerScopeUsesAllowedFilesOtherwiseAllChangedFiles(t *testing.T) {
+func TestReviewerScopesSeparateReadAccessFromExpectedCoverage(t *testing.T) {
 	changed := []string{"api.go", "main.go", "schema.sql"}
-	if got := effectiveReviewerScope(llm.SelectedAgent{
+	if got := reviewerReviewableScope(llm.SelectedAgent{
 		Files:        []string{"main.go"},
 		AllowedFiles: []string{"schema.sql"},
 	}, changed); !reflect.DeepEqual(got, []string{"schema.sql"}) {
-		t.Fatalf("constrained scope = %#v, want allowed_files", got)
+		t.Fatalf("constrained reviewable scope = %#v, want allowed_files", got)
 	}
-	if got := effectiveReviewerScope(llm.SelectedAgent{Files: []string{"main.go"}}, changed); !reflect.DeepEqual(got, []string{"api.go", "main.go", "schema.sql"}) {
-		t.Fatalf("broad scope = %#v, want all changed files", got)
+	if got := reviewerReviewableScope(llm.SelectedAgent{Files: []string{"main.go"}}, changed); !reflect.DeepEqual(got, []string{"api.go", "main.go", "schema.sql"}) {
+		t.Fatalf("broad reviewable scope = %#v, want all changed files", got)
+	}
+	if got := reviewerCoverageScope(llm.SelectedAgent{Files: []string{"main.go"}}, changed); !reflect.DeepEqual(got, []string{"main.go"}) {
+		t.Fatalf("broad coverage scope = %#v, want selected files", got)
+	}
+}
+
+func TestBuildReviewerCoverageAllowsBroadReviewerSplitAssignments(t *testing.T) {
+	got := buildReviewerCoverage(
+		[]llm.SelectedAgent{
+			{AgentID: "harness:alpha", Files: []string{"main.go"}},
+			{AgentID: "harness:beta", Files: []string{"other.go"}},
+		},
+		[]llm.Findings{
+			{AgentID: "harness:alpha", InspectedFiles: []string{"main.go"}},
+			{AgentID: "harness:beta", InspectedFiles: []string{"other.go"}},
+		},
+		nil,
+		[]string{"main.go", "other.go"},
+	)
+	if len(got) != 2 {
+		t.Fatalf("coverage entries = %#v, want two reviewer entries", got)
+	}
+	for _, entry := range got {
+		if entry.Status != reviewerCoverageCompleteBroad {
+			t.Fatalf("coverage entry = %#v, want complete broad", entry)
+		}
 	}
 }
 

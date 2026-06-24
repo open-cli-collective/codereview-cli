@@ -1295,7 +1295,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := patchPaths(parsed.Patches)
-	reviewerScope := effectiveReviewerScope(selected, changedFilePaths)
+	reviewerScope := reviewerReviewableScope(selected, changedFilePaths)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
@@ -2137,7 +2137,7 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 	assigned := map[string]bool{}
 	out := make([]reviewplan.ReviewerCoverageSummary, 0, len(selected)+1)
 	for _, agent := range selected {
-		scope := effectiveReviewerScope(agent, changedFiles)
+		scope := reviewerCoverageScope(agent, changedFiles)
 		for _, file := range scope {
 			assigned[file] = true
 		}
@@ -2192,9 +2192,19 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 	return out
 }
 
-func effectiveReviewerScope(agent llm.SelectedAgent, changedFiles []string) []string {
+func reviewerReviewableScope(agent llm.SelectedAgent, changedFiles []string) []string {
 	if len(agent.AllowedFiles) > 0 {
 		return appendSortedStrings(agent.AllowedFiles)
+	}
+	return appendSortedStrings(changedFiles)
+}
+
+func reviewerCoverageScope(agent llm.SelectedAgent, changedFiles []string) []string {
+	if len(agent.AllowedFiles) > 0 {
+		return appendSortedStrings(agent.AllowedFiles)
+	}
+	if len(agent.Files) > 0 {
+		return appendSortedStrings(agent.Files)
 	}
 	return appendSortedStrings(changedFiles)
 }
@@ -2366,7 +2376,7 @@ func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.Se
 	if err != nil {
 		return "", nil, err
 	}
-	reviewerScope := effectiveReviewerScope(selected, changedFiles)
+	reviewerScope := reviewerReviewableScope(selected, changedFiles)
 	payload := map[string]any{
 		"task":            "review files and return findings JSON only",
 		"output_contract": findingsOutputContract(agent.ID, reviewerScope),
