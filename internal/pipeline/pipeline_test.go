@@ -1318,6 +1318,9 @@ func TestRunStructuredTaskReportsProgressOnExecution(t *testing.T) {
 	if progress.starts[0].TaskID != orchestratorRollupStage || progress.starts[0].Phase != "rollup" || progress.starts[0].Source != "execute" {
 		t.Fatalf("start = %#v, want rollup execute event", progress.starts[0])
 	}
+	if progress.starts[0].Model != spec.model || progress.starts[0].Effort != spec.effort || progress.starts[0].LogPath != spec.logPath {
+		t.Fatalf("start fields = %#v, want model/effort/logPath from spec", progress.starts[0])
+	}
 	if progress.ends[0].result.Status != string(llmTaskStatusSucceeded) || progress.ends[0].result.ProviderSessionID != "task-session" || progress.ends[0].result.Cached {
 		t.Fatalf("end result = %#v, want succeeded uncached task-session", progress.ends[0].result)
 	}
@@ -1386,7 +1389,13 @@ func TestLoadStructuredTaskReportsCachedProgress(t *testing.T) {
 	if len(progress.loads) != 1 {
 		t.Fatalf("progress loads=%d, want 1", len(progress.loads))
 	}
-	if progress.loads[0].event.TaskID != orchestratorSelectionStage || !progress.loads[0].result.Cached || progress.loads[0].result.Status != string(llmTaskStatusSucceeded) {
+	if progress.loads[0].event.TaskID != orchestratorSelectionStage || progress.loads[0].event.Phase != "selection" || progress.loads[0].event.Source != "resume" {
+		t.Fatalf("load event = %#v, want selection resume event", progress.loads[0].event)
+	}
+	if progress.loads[0].event.ResumeSessionID != "cached-session" || progress.loads[0].event.Model != spec.model || progress.loads[0].event.Effort != spec.effort {
+		t.Fatalf("load event fields = %#v, want cached session/model/effort", progress.loads[0].event)
+	}
+	if !progress.loads[0].result.Cached || progress.loads[0].result.Status != string(llmTaskStatusSucceeded) || progress.loads[0].result.ProviderSessionID != "cached-session" {
 		t.Fatalf("load = %#v, want cached succeeded selection task", progress.loads[0])
 	}
 }

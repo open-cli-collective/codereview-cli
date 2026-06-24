@@ -404,6 +404,17 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	if runner.pipeline.Adapter == nil || runner.pipeline.Adapter.Name() != "codex_cli" {
 		t.Fatalf("pipeline adapter = %#v, want codex_cli", runner.pipeline.Adapter)
 	}
+	loadedAdapter, err := runner.pipeline.Adapter.(*lazyAdapter).get()
+	if err != nil {
+		t.Fatalf("lazy adapter get: %v", err)
+	}
+	progressAdapter, ok := loadedAdapter.(progressAdapter)
+	if !ok || progressAdapter.adapter == nil || progressAdapter.adapter.Name() != "codex_cli" {
+		t.Fatalf("loaded pipeline adapter = %#v, want wrapped codex_cli adapter", loadedAdapter)
+	}
+	if runner.pipeline.TaskProgress == nil {
+		t.Fatal("pipeline TaskProgress = nil, want review progress wiring")
+	}
 }
 
 func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
@@ -1873,6 +1884,64 @@ func TestReviewQuietSuppressesProgressOnlyForTextOutput(t *testing.T) {
 	}
 }
 
+func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
+	cfg := testConfig()
+	ref, pr := reviewCommandPR()
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	cmd, out, errOut := newTestCommandWithStderr(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		logger := newProgressLogger(opts)
+		runner := buildReviewRunner(
+			store,
+			withProgressProvider(logger, provider),
+			adapter,
+			profile,
+			noopLimiter{},
+			statepaths.NewLayout(t.TempDir(), t.TempDir()),
+			opts.Stderr,
+			logger,
+			runtimeOpts,
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	}, true)
+
+	if err := root.Execute(cmd, []string{"review", pr.URL, "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want no quiet progress output", errOut.String())
+	}
+	var decoded view.ReviewDryRun
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if decoded.Run.PostMode != "dry_run" {
+		t.Fatalf("decoded post mode = %q, want dry_run", decoded.Run.PostMode)
+	}
+}
+
 func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 	cfg := testConfig()
 	ref, pr := reviewCommandPR()
@@ -1925,10 +1994,14 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 		`command="review" op="fetch_diff" target="pr"`,
 		`command="review" op="list_threads" target="threads"`,
 		`command="review" op="run_llm_task" target="llm_task"`,
+		`event=start`,
+		`event=finish`,
 		`task_id="orchestrator-selection"`,
 		`phase="selection"`,
+		`session_id="selection-session"`,
 		`task_id="orchestrator-rollup"`,
 		`phase="rollup"`,
+		`session_id="rollup-session"`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want substring %q", stderr, want)
