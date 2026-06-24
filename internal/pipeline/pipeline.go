@@ -1324,6 +1324,7 @@ type llmTaskSpec struct {
 	taskID            string
 	phase             string
 	dependencyTaskIDs []string
+	allowNoRunCache   bool
 	inputFingerprint  string
 	artifacts         ArtifactPaths
 	role              ledger.SessionRole
@@ -1337,6 +1338,10 @@ type llmTaskSpec struct {
 }
 
 func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpec, decode llm.Decoder[T]) (T, sessionDraft, ledger.Session, error) {
+	if strings.TrimSpace(spec.runID) == "" && !spec.allowNoRunCache {
+		var zero T
+		return zero, sessionDraft{}, ledger.Session{}, fmt.Errorf("pipeline: structured task %q requires a persisted run", spec.taskID)
+	}
 	if loaded, draft, session, ok, err := loadStructuredTask(ctx, opts, spec, decode); err != nil || ok {
 		return loaded, draft, session, err
 	}
@@ -2740,6 +2745,12 @@ type dossierDiscussionPromptInput struct {
 	InlineThreadsOmitted    int                            `json:"inline_threads_omitted,omitempty"`
 }
 
+type dossierDiscussionPromptData struct {
+	Input             dossierDiscussionPromptInput
+	SourceFingerprint string
+	InlineThreadMap   map[string]dossierInlineThreadArtifact
+}
+
 type dossierPromptTopLevelComment struct {
 	Kind   string `json:"kind,omitempty"`
 	Author string `json:"author,omitempty"`
@@ -2798,6 +2809,26 @@ const (
 	dossierSummaryMaxThreadComments = 5
 	dossierSummaryExcerptRunes      = 480
 )
+
+var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\bprovider[_ ]session[_ ]id\b`),
+	regexp.MustCompile(`\bsession[_ ]row[_ ]id\b`),
+	regexp.MustCompile(`\bsession[_ ]id\b`),
+	regexp.MustCompile(`\brun[_ ]id\b`),
+	regexp.MustCompile(`\bretry[_ ]state\b`),
+	regexp.MustCompile(`\bcache[_ ]state\b`),
+	regexp.MustCompile(`\bcache hit\b`),
+	regexp.MustCompile(`\bledger\b`),
+	regexp.MustCompile(`\bmergeab(?:le|ility)\b`),
+	regexp.MustCompile(`\bdraft\b`),
+	regexp.MustCompile(`\bapprovals?\b`),
+	regexp.MustCompile(`\bapproved\b`),
+	regexp.MustCompile(`\brequested reviewers?\b`),
+	regexp.MustCompile(`\brequested review\b`),
+	regexp.MustCompile(`\bci status\b`),
+	regexp.MustCompile(`\bbuild failed\b`),
+	regexp.MustCompile(`\bcheck(s)? failed\b`),
+}
 
 func writeRawDossierArtifacts(paths ArtifactPaths, in dossierInputs) error {
 	rawDir := filepath.Join(paths.DossierDir, "raw")
@@ -2907,22 +2938,22 @@ func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossier
 			DiscussionOmittedNote: strings.TrimSpace(discussion.DiscussionOmittedNote),
 		}, nil
 	}
-	input, fingerprint := dossierDiscussionPromptInputFromDiscussion(discussion)
-	if len(input.TopLevelComments) == 0 && len(input.InlineThreads) == 0 {
+	promptData := dossierDiscussionPromptInputFromDiscussion(discussion)
+	if len(promptData.Input.TopLevelComments) == 0 && len(promptData.Input.InlineThreads) == 0 {
 		return dossierDiscussionSummaryArtifact{
 			SchemaVersion:     dossierSummarySchemaVersion,
-			SourceFingerprint: fingerprint,
+			SourceFingerprint: promptData.SourceFingerprint,
 		}, nil
 	}
 	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
 	if err != nil {
 		return dossierDiscussionSummaryArtifact{}, err
 	}
-	prompt, err := buildDossierDiscussionSummaryPrompt(input)
+	prompt, err := buildDossierDiscussionSummaryPrompt(promptData)
 	if err != nil {
 		return dossierDiscussionSummaryArtifact{}, err
 	}
-	inputFingerprint := llmTaskFingerprint(opts.Adapter.Name(), dossierSummaryTaskID, "dossier", runtimeConfig.model, runtimeConfig.effort, prompt, nil)
+	inputFingerprint := llmTaskFingerprint(opts.Adapter.Name(), dossierSummaryTaskID, "dossier", runtimeConfig.model, runtimeConfig.effort, prompt, []string{"discussion=" + promptData.SourceFingerprint})
 	if err := resetLLMTaskIfInputFingerprintChanged(req.Artifacts, dossierSummaryTaskID, inputFingerprint); err != nil {
 		return dossierDiscussionSummaryArtifact{}, err
 	}
@@ -2937,6 +2968,7 @@ func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossier
 		runID:            req.RunID,
 		taskID:           dossierSummaryTaskID,
 		phase:            "dossier",
+		allowNoRunCache:  strings.TrimSpace(req.RunID) == "",
 		inputFingerprint: inputFingerprint,
 		artifacts:        req.Artifacts,
 		role:             ledger.SessionRoleOrchestrator,
@@ -2945,14 +2977,14 @@ func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossier
 		logPath:          logPath,
 		prompt:           prompt,
 	}, func(data []byte) (dossierDiscussionSummaryArtifact, error) {
-		return decodeDossierDiscussionSummary(data, fingerprint)
+		return decodeDossierDiscussionSummary(data, promptData)
 	})
 	if err != nil {
 		return dossierDiscussionSummaryArtifact{}, err
 	}
 	summary.SchemaVersion = dossierSummarySchemaVersion
 	if strings.TrimSpace(summary.SourceFingerprint) == "" {
-		summary.SourceFingerprint = fingerprint
+		summary.SourceFingerprint = promptData.SourceFingerprint
 	}
 	return summary, nil
 }
@@ -3031,10 +3063,13 @@ func readJSONFile(path string, out any) error {
 	return nil
 }
 
-func buildDossierDiscussionSummaryPrompt(input dossierDiscussionPromptInput) (string, error) {
+func buildDossierDiscussionSummaryPrompt(input dossierDiscussionPromptData) (string, error) {
 	payload := map[string]any{
 		"task":   "summarize PR discussion for reviewer-facing dossier output; return discussion_summary JSON only",
 		"schema": "discussion_summary",
+		"provenance": map[string]any{
+			"source_fingerprint": input.SourceFingerprint,
+		},
 		"output_contract": map[string]any{
 			"schema_version": dossierSummarySchemaVersion,
 			"rules": []string{
@@ -3048,7 +3083,7 @@ func buildDossierDiscussionSummaryPrompt(input dossierDiscussionPromptInput) (st
 			"inline_thread_fields":      []string{"path", "line", "side", "anchor_kind", "resolved", "status", "summary"},
 			"inline_thread_statuses":    []string{"settled", "unresolved", "noted"},
 		},
-		"discussion": input,
+		"discussion": input.Input,
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -3057,9 +3092,10 @@ func buildDossierDiscussionSummaryPrompt(input dossierDiscussionPromptInput) (st
 	return string(body), nil
 }
 
-func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArtifact) (dossierDiscussionPromptInput, string) {
+func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArtifact) dossierDiscussionPromptData {
 	filteredTopLevel := reviewerFacingTopLevelComments(discussion.TopLevelComments)
 	input := dossierDiscussionPromptInput{}
+	inlineThreadMap := make(map[string]dossierInlineThreadArtifact, len(discussion.InlineThreads))
 	for _, comment := range capTopLevelCommentsForSummary(filteredTopLevel) {
 		body := singleLineExcerpt(comment.Body, dossierSummaryExcerptRunes)
 		if shouldExcludeDiscussionSummaryText(body) {
@@ -3096,15 +3132,31 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 			promptThread.CommentsOmitted = len(thread.Comments) - dossierSummaryMaxThreadComments
 		}
 		input.InlineThreads = append(input.InlineThreads, promptThread)
+		inlineThreadMap[dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)] = thread
 	}
 	if len(discussion.InlineThreads) > dossierSummaryMaxInlineThreads {
 		input.InlineThreadsOmitted = len(discussion.InlineThreads) - dossierSummaryMaxInlineThreads
 	}
-	data, _ := json.Marshal(input)
-	return input, sha256Hex(data)
+	sourcePayload := struct {
+		PinnedReview          bool                             `json:"pinned_review"`
+		DiscussionOmittedNote string                           `json:"discussion_omitted_note,omitempty"`
+		TopLevelComments      []dossierTopLevelCommentArtifact `json:"top_level_comments,omitempty"`
+		InlineThreads         []dossierInlineThreadArtifact    `json:"inline_threads,omitempty"`
+	}{
+		PinnedReview:          discussion.PinnedReview,
+		DiscussionOmittedNote: strings.TrimSpace(discussion.DiscussionOmittedNote),
+		TopLevelComments:      filteredTopLevel,
+		InlineThreads:         discussion.InlineThreads,
+	}
+	data, _ := json.Marshal(sourcePayload)
+	return dossierDiscussionPromptData{
+		Input:             input,
+		SourceFingerprint: sha256Hex(data),
+		InlineThreadMap:   inlineThreadMap,
+	}
 }
 
-func decodeDossierDiscussionSummary(data []byte, sourceFingerprint string) (dossierDiscussionSummaryArtifact, error) {
+func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPromptData) (dossierDiscussionSummaryArtifact, error) {
 	var decoded dossierDiscussionSummaryArtifact
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return dossierDiscussionSummaryArtifact{}, err
@@ -3113,7 +3165,7 @@ func decodeDossierDiscussionSummary(data []byte, sourceFingerprint string) (doss
 		return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary schema_version = %d, want %d", decoded.SchemaVersion, dossierSummarySchemaVersion)
 	}
 	decoded.SchemaVersion = dossierSummarySchemaVersion
-	decoded.SourceFingerprint = sourceFingerprint
+	decoded.SourceFingerprint = promptData.SourceFingerprint
 	for i := range decoded.TopLevelComments {
 		decoded.TopLevelComments[i].Kind = strings.TrimSpace(decoded.TopLevelComments[i].Kind)
 		decoded.TopLevelComments[i].Author = strings.TrimSpace(decoded.TopLevelComments[i].Author)
@@ -3142,11 +3194,25 @@ func decodeDossierDiscussionSummary(data []byte, sourceFingerprint string) (doss
 		default:
 			return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d].status = %q, want settled|unresolved|noted", i, decoded.InlineThreads[i].Status)
 		}
+		anchorKey := dossierInlineThreadAnchorKey(decoded.InlineThreads[i].Path, decoded.InlineThreads[i].Side, decoded.InlineThreads[i].Line, decoded.InlineThreads[i].AnchorKind)
+		expected, ok := promptData.InlineThreadMap[anchorKey]
+		if !ok {
+			return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d] anchor %q is not present in the source discussion", i, anchorKey)
+		}
+		decoded.InlineThreads[i].Path = expected.Path
+		decoded.InlineThreads[i].Side = expected.Side
+		decoded.InlineThreads[i].Line = expected.Line
+		decoded.InlineThreads[i].AnchorKind = expected.AnchorKind
+		decoded.InlineThreads[i].Resolved = expected.Resolved
 		if err := validateDiscussionSummaryText(decoded.InlineThreads[i].Summary); err != nil {
 			return dossierDiscussionSummaryArtifact{}, err
 		}
 	}
 	return decoded, nil
+}
+
+func dossierInlineThreadAnchorKey(path, side string, line int, anchorKind string) string {
+	return fmt.Sprintf("%s|%s|%d|%s", strings.TrimSpace(path), strings.TrimSpace(side), line, strings.TrimSpace(anchorKind))
 }
 
 func renderDossierDiscussionSummaryMarkdown(summary dossierDiscussionSummaryArtifact, title string) string {
@@ -3229,8 +3295,8 @@ func shouldExcludeDiscussionSummaryText(text string) bool {
 	if normalized == "" {
 		return false
 	}
-	for _, forbidden := range []string{"provider_session_id", "session_row_id", "mergeability", "approval", "ci status"} {
-		if strings.Contains(normalized, forbidden) {
+	for _, forbidden := range forbiddenDiscussionSummaryPatterns {
+		if forbidden.MatchString(normalized) {
 			return true
 		}
 	}

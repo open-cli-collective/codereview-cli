@@ -730,6 +730,124 @@ func TestPrepareDossierArtifactsUsesSummaryForFinalDiscussionAndInvalidatesOnDis
 	assertFileContains(t, filepath.Join(artifacts.DossierDir, "final", "discussion.md"), "Updated concern")
 }
 
+func TestPrepareDossierArtifactsInvalidatesSummaryWhenOmittedOrTruncatedDiscussionChanges(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-dossier-fingerprint", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	sessionIDs := sequence("session")
+
+	writeComments := func(bodies []string) {
+		comments := make([]gitprovider.IssueComment, 0, len(bodies))
+		for i, body := range bodies {
+			comments = append(comments, gitprovider.IssueComment{
+				ID:     gitprovider.CommentID(fmt.Sprintf("issue-%d", i+1)),
+				Body:   body,
+				Author: gitprovider.Identity{Login: "maintainer"},
+			})
+		}
+		if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+			CurrentPR:      provider.pr,
+			ReviewPR:       provider.pr,
+			ChangedFiles:   parseDiffPatchesForTest(t, provider.diff.Raw),
+			IssueComments:  comments,
+			Catalog:        agents.Catalog{},
+			CurrentBaseSHA: provider.pr.Base.SHA,
+			CurrentHeadSHA: provider.pr.Head.SHA,
+		}); err != nil {
+			t.Fatalf("writeRawDossierArtifacts: %v", err)
+		}
+	}
+
+	bodies := make([]string, 0, dossierSummaryMaxTopLevel+1)
+	for i := 0; i < dossierSummaryMaxTopLevel; i++ {
+		bodies = append(bodies, fmt.Sprintf("Visible concern %02d", i))
+	}
+	bodies = append(bodies, "Omitted concern v1")
+	writeComments(bodies)
+
+	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Initial summary"}, nil), 8, 2))
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         firstAdapter,
+		Store:           store,
+		Now:             fixedNow,
+		NewSessionRowID: sessionIDs,
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts first run: %v", err)
+	}
+
+	bodies[len(bodies)-1] = "Omitted concern v2"
+	writeComments(bodies)
+	omittedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	omittedAdapter.Queue(fakeLLMResult("dossier-summary-session-2", discussionSummaryJSON([]string{"Summary after omitted change"}, nil), 8, 2))
+	omittedProgress := &fakeTaskProgress{}
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         omittedAdapter,
+		Store:           store,
+		TaskProgress:    omittedProgress,
+		Now:             fixedNow,
+		NewSessionRowID: sessionIDs,
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts omitted-change run: %v", err)
+	}
+	if len(omittedProgress.starts) != 1 || omittedProgress.starts[0].TaskID != dossierSummaryTaskID {
+		t.Fatalf("omitted-change progress starts = %#v, want dossier summary rerun", omittedProgress.starts)
+	}
+	assertFileContains(t, filepath.Join(artifacts.DossierDir, "final", "discussion.md"), "Summary after omitted change")
+
+	longBody := strings.Repeat("a", dossierSummaryExcerptRunes) + "tail-v1"
+	writeComments([]string{longBody})
+	truncatedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	truncatedAdapter.Queue(fakeLLMResult("dossier-summary-session-3", discussionSummaryJSON([]string{"Summary after truncated change"}, nil), 8, 2))
+	truncatedProgress := &fakeTaskProgress{}
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         truncatedAdapter,
+		Store:           store,
+		TaskProgress:    truncatedProgress,
+		Now:             fixedNow,
+		NewSessionRowID: sessionIDs,
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts truncated baseline run: %v", err)
+	}
+	writeComments([]string{strings.Repeat("a", dossierSummaryExcerptRunes) + "tail-v2"})
+	truncatedAdapter2 := &llm.FakeAdapter{NameValue: "fake-llm"}
+	truncatedAdapter2.Queue(fakeLLMResult("dossier-summary-session-4", discussionSummaryJSON([]string{"Summary after truncated tail change"}, nil), 8, 2))
+	truncatedProgress2 := &fakeTaskProgress{}
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         truncatedAdapter2,
+		Store:           store,
+		TaskProgress:    truncatedProgress2,
+		Now:             fixedNow,
+		NewSessionRowID: sessionIDs,
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts truncated-tail run: %v", err)
+	}
+	if len(truncatedProgress2.starts) != 1 || truncatedProgress2.starts[0].TaskID != dossierSummaryTaskID {
+		t.Fatalf("truncated-tail progress starts = %#v, want dossier summary rerun", truncatedProgress2.starts)
+	}
+	assertFileContains(t, filepath.Join(artifacts.DossierDir, "final", "discussion.md"), "Summary after truncated tail change")
+}
+
 func TestPrepareDossierArtifactsSummaryPromptBudgetFailure(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -770,12 +888,40 @@ func TestPrepareDossierArtifactsSummaryPromptBudgetFailure(t *testing.T) {
 }
 
 func TestDecodeDossierDiscussionSummaryRejectsProcessState(t *testing.T) {
+	promptData := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{})
+	for _, text := range []string{"CI status is red", "Build failed in CI", "Approved by alice", "run_id=1234"} {
+		_, err := decodeDossierDiscussionSummary([]byte(fmt.Sprintf(`{
+			"schema_version": 1,
+			"top_level_comments": [{"summary": %q}]
+		}`, text)), promptData)
+		if err == nil || !strings.Contains(err.Error(), "excluded reviewer-facing process state") {
+			t.Fatalf("decodeDossierDiscussionSummary(%q) error = %v, want excluded process state", text, err)
+		}
+	}
+}
+
+func TestDecodeDossierDiscussionSummaryRejectsUnknownAnchor(t *testing.T) {
+	promptData := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{
+		InlineThreads: []dossierInlineThreadArtifact{{
+			Path:       "main.go",
+			Side:       "RIGHT",
+			Line:       2,
+			AnchorKind: "line",
+			Resolved:   true,
+		}},
+	})
 	_, err := decodeDossierDiscussionSummary([]byte(`{
 		"schema_version": 1,
-		"top_level_comments": [{"summary": "CI status is red"}]
-	}`), "fingerprint")
-	if err == nil || !strings.Contains(err.Error(), "excluded reviewer-facing process state") {
-		t.Fatalf("decodeDossierDiscussionSummary error = %v, want excluded process state", err)
+		"inline_threads": [{
+			"path": "other.go",
+			"side": "RIGHT",
+			"line": 2,
+			"anchor_kind": "line",
+			"summary": "Moved thread"
+		}]
+	}`), promptData)
+	if err == nil || !strings.Contains(err.Error(), "is not present in the source discussion") {
+		t.Fatalf("decodeDossierDiscussionSummary error = %v, want source anchor rejection", err)
 	}
 }
 
@@ -3924,10 +4070,13 @@ func rollupJSON(event string, ordered []string) string {
 }
 
 type threadSummary struct {
-	path    string
-	line    int
-	status  string
-	summary string
+	path       string
+	side       string
+	line       int
+	anchorKind string
+	resolved   bool
+	status     string
+	summary    string
 }
 
 func discussionSummaryJSON(topLevel []string, threads []threadSummary) string {
@@ -3941,11 +4090,22 @@ func discussionSummaryJSON(topLevel []string, threads []threadSummary) string {
 	}
 	threadPayload := make([]map[string]any, 0, len(threads))
 	for _, thread := range threads {
+		side := thread.side
+		if side == "" {
+			side = string(review.DiffSideRight)
+		}
+		anchorKind := thread.anchorKind
+		if anchorKind == "" {
+			anchorKind = string(review.AnchorKindLine)
+		}
 		threadPayload = append(threadPayload, map[string]any{
-			"path":    thread.path,
-			"line":    thread.line,
-			"status":  thread.status,
-			"summary": thread.summary,
+			"path":        thread.path,
+			"side":        side,
+			"line":        thread.line,
+			"anchor_kind": anchorKind,
+			"resolved":    thread.resolved,
+			"status":      thread.status,
+			"summary":     thread.summary,
 		})
 	}
 	payload := map[string]any{
