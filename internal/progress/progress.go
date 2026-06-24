@@ -1,8 +1,9 @@
+// Package progress writes structured progress breadcrumbs to stderr for long-running CLI work.
 package progress
 
 import (
-	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -114,7 +115,7 @@ func (l *Logger) writeLine(line progressLine) {
 	}
 	if line.durationMS > 0 || line.event == "finish" || line.event == "error" {
 		b.WriteString(" duration_ms=")
-		b.WriteString(fmt.Sprintf("%d", line.durationMS))
+		b.WriteString(strconv.FormatInt(line.durationMS, 10))
 	}
 	if line.status != "" {
 		b.WriteString(" status=")
