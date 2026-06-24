@@ -52,6 +52,8 @@ type ReadProvider interface {
 	GetFileAtRef(context.Context, gitprovider.PRRef, string, string) ([]byte, error)
 	ListTreeAtRef(context.Context, gitprovider.PRRef, string, string) ([]gitprovider.TreeEntry, error)
 	ListInlineThreads(context.Context, gitprovider.PRRef) ([]gitprovider.InlineThread, error)
+	ListReviews(context.Context, gitprovider.PRRef) ([]gitprovider.Review, error)
+	ListIssueComments(context.Context, gitprovider.PRRef) ([]gitprovider.IssueComment, error)
 	Capabilities() gitprovider.ProviderCaps
 }
 
@@ -193,6 +195,7 @@ type ArtifactPaths struct {
 	AgentSourcesJSON string `json:"agent_sources_json"`
 	AgentLogsDir     string `json:"agent_logs_dir"`
 	LLMTasksDir      string `json:"llm_tasks_dir"`
+	DossierDir       string `json:"dossier_dir"`
 }
 
 // SlicePatch returns the artifact path for an agent/file diff slice.
@@ -251,6 +254,37 @@ func (p ArtifactPaths) LLMTaskRawAttempt(taskID, attempt string) (string, error)
 		return "", fmt.Errorf("pipeline: LLM task attempt is required")
 	}
 	return filepath.Join(dir, statepaths.Encode(attempt)+".json"), nil
+}
+
+// DossierRawPath returns a raw dossier artifact path by file name.
+func (p ArtifactPaths) DossierRawPath(name string) (string, error) {
+	return dossierChildPath(filepath.Join(p.DossierDir, "raw"), name)
+}
+
+// DossierSummaryPath returns a summary dossier artifact path by file name.
+func (p ArtifactPaths) DossierSummaryPath(name string) (string, error) {
+	return dossierChildPath(filepath.Join(p.DossierDir, "summary"), name)
+}
+
+// DossierFinalPath returns a reviewer-facing dossier artifact path by file name.
+func (p ArtifactPaths) DossierFinalPath(name string) (string, error) {
+	return dossierChildPath(filepath.Join(p.DossierDir, "final"), name)
+}
+
+// DossierIndexPath returns the dossier index artifact path.
+func (p ArtifactPaths) DossierIndexPath() string {
+	return filepath.Join(p.DossierDir, "index.json")
+}
+
+func dossierChildPath(dir, name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("pipeline: dossier artifact name is required")
+	}
+	if strings.Contains(name, "/") || strings.Contains(name, string(filepath.Separator)) {
+		return "", fmt.Errorf("pipeline: dossier artifact name must be a file name")
+	}
+	return filepath.Join(dir, name), nil
 }
 
 const llmTaskSchemaVersion = 1
@@ -436,6 +470,8 @@ type preparedSelectionContext struct {
 	parsed           ParsedDiff
 	changedFiles     []string
 	threads          []gitprovider.InlineThread
+	reviews          []gitprovider.Review
+	issueComments    []gitprovider.IssueComment
 	catalog          agents.Catalog
 	effectiveCaps    reviewplan.ProviderCaps
 	agentDefsChanged bool
@@ -874,6 +910,9 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 	if err := os.MkdirAll(artifacts.LLMTasksDir, 0o700); err != nil {
 		return preparedSelectionContext{}, fmt.Errorf("pipeline: create LLM task dir: %w", err)
 	}
+	if err := os.MkdirAll(artifacts.DossierDir, 0o700); err != nil {
+		return preparedSelectionContext{}, fmt.Errorf("pipeline: create dossier dir: %w", err)
+	}
 
 	quota, quotaSupported, err := opts.Adapter.Quota(ctx)
 	if err != nil {
@@ -888,8 +927,18 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		return preparedSelectionContext{}, err
 	}
 	var threads []gitprovider.InlineThread
+	var reviews []gitprovider.Review
+	var issueComments []gitprovider.IssueComment
 	if !reviewCtx.pinnedReview {
 		threads, err = opts.Provider.ListInlineThreads(ctx, req.PRRef)
+		if err != nil {
+			return preparedSelectionContext{}, err
+		}
+		reviews, err = opts.Provider.ListReviews(ctx, req.PRRef)
+		if err != nil {
+			return preparedSelectionContext{}, err
+		}
+		issueComments, err = opts.Provider.ListIssueComments(ctx, req.PRRef)
 		if err != nil {
 			return preparedSelectionContext{}, err
 		}
@@ -904,7 +953,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		return preparedSelectionContext{}, err
 	}
 
-	return preparedSelectionContext{
+	out := preparedSelectionContext{
 		pr:               pr,
 		reviewPR:         reviewPR,
 		prKey:            prKey,
@@ -916,6 +965,8 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		parsed:           parsed,
 		changedFiles:     patchPaths(parsed.Patches),
 		threads:          threads,
+		reviews:          reviews,
+		issueComments:    issueComments,
 		catalog:          catalog,
 		effectiveCaps:    effectiveCaps(opts.Provider.Capabilities(), req.NoResolveThreads),
 		agentDefsChanged: agentDefinitionsChanged(parsed.Patches),
@@ -923,7 +974,23 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		currentHeadSHA:   reviewCtx.currentHeadSHA,
 		reviewBaseSHA:    reviewPR.Base.SHA,
 		reviewHeadSHA:    reviewPR.Head.SHA,
-	}, nil
+	}
+	if err := writeDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:             pr,
+		ReviewPR:              reviewPR,
+		PinnedReview:          reviewCtx.pinnedReview,
+		ChangedFiles:          parsed.Patches,
+		Threads:               threads,
+		Reviews:               reviews,
+		IssueComments:         issueComments,
+		Catalog:               catalog,
+		CurrentBaseSHA:        reviewCtx.currentBaseSHA,
+		CurrentHeadSHA:        reviewCtx.currentHeadSHA,
+		DiscussionOmittedNote: "Current PR discussion omitted because this review is pinned to explicit base/head SHAs.",
+	}); err != nil {
+		return preparedSelectionContext{}, err
+	}
+	return out, nil
 }
 
 func resolveReviewPRContext(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, reviewBaseSHA, reviewHeadSHA string) (reviewPRContext, error) {
@@ -2491,6 +2558,541 @@ func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, ca
 	return nil
 }
 
+type dossierInputs struct {
+	CurrentPR             gitprovider.PR
+	ReviewPR              gitprovider.PR
+	PinnedReview          bool
+	ChangedFiles          []FilePatch
+	Threads               []gitprovider.InlineThread
+	Reviews               []gitprovider.Review
+	IssueComments         []gitprovider.IssueComment
+	Catalog               agents.Catalog
+	CurrentBaseSHA        string
+	CurrentHeadSHA        string
+	DiscussionOmittedNote string
+}
+
+type dossierChangedFileArtifact struct {
+	Path      string `json:"path"`
+	OldPath   string `json:"old_path,omitempty"`
+	Status    string `json:"status"`
+	Binary    bool   `json:"binary,omitempty"`
+	Deleted   bool   `json:"deleted,omitempty"`
+	Additions int    `json:"additions,omitempty"`
+	Deletions int    `json:"deletions,omitempty"`
+	HunkCount int    `json:"hunk_count,omitempty"`
+}
+
+type dossierTopLevelCommentArtifact struct {
+	Kind      string    `json:"kind"`
+	URL       string    `json:"url,omitempty"`
+	Author    string    `json:"author,omitempty"`
+	Body      string    `json:"body"`
+	Event     string    `json:"event,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+type dossierThreadCommentArtifact struct {
+	URL       string    `json:"url,omitempty"`
+	Author    string    `json:"author,omitempty"`
+	Body      string    `json:"body"`
+	CommitSHA string    `json:"commit_sha,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+type dossierInlineThreadArtifact struct {
+	ID         string                         `json:"id"`
+	Path       string                         `json:"path,omitempty"`
+	Side       string                         `json:"side,omitempty"`
+	Line       int                            `json:"line,omitempty"`
+	AnchorKind string                         `json:"anchor_kind,omitempty"`
+	Resolved   bool                           `json:"resolved"`
+	CommitSHA  string                         `json:"commit_sha,omitempty"`
+	Comments   []dossierThreadCommentArtifact `json:"comments,omitempty"`
+}
+
+type dossierRepoContextArtifact struct {
+	RepoInfo                     *agents.RepoInfo    `json:"repo_info,omitempty"`
+	Sources                      []agents.SourceInfo `json:"sources,omitempty"`
+	ExplicitReviewGuidance       bool                `json:"explicit_review_guidance"`
+	ExplicitReviewGuidanceSource string              `json:"explicit_review_guidance_source,omitempty"`
+}
+
+type dossierPRContextArtifact struct {
+	Title         string `json:"title"`
+	URL           string `json:"url"`
+	Author        string `json:"author,omitempty"`
+	BaseRef       string `json:"base_ref,omitempty"`
+	BaseSHA       string `json:"base_sha,omitempty"`
+	HeadRef       string `json:"head_ref,omitempty"`
+	HeadSHA       string `json:"head_sha,omitempty"`
+	ReviewBaseSHA string `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA string `json:"review_head_sha,omitempty"`
+	PinnedReview  bool   `json:"pinned_review"`
+	Body          string `json:"body,omitempty"`
+}
+
+type dossierDiscussionArtifact struct {
+	PinnedReview          bool                             `json:"pinned_review"`
+	DiscussionOmittedNote string                           `json:"discussion_omitted_note,omitempty"`
+	TopLevelComments      []dossierTopLevelCommentArtifact `json:"top_level_comments,omitempty"`
+	InlineThreads         []dossierInlineThreadArtifact    `json:"inline_threads,omitempty"`
+}
+
+type dossierIndexArtifact struct {
+	HashAlgorithm string                     `json:"hash_algorithm"`
+	Files         []dossierIndexFileArtifact `json:"files"`
+}
+
+type dossierIndexFileArtifact struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+func writeDossierArtifacts(paths ArtifactPaths, in dossierInputs) error {
+	rawDir := filepath.Join(paths.DossierDir, "raw")
+	summaryDir := filepath.Join(paths.DossierDir, "summary")
+	finalDir := filepath.Join(paths.DossierDir, "final")
+	for _, dir := range []string{paths.DossierDir, rawDir, summaryDir, finalDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("pipeline: create dossier dir: %w", err)
+		}
+	}
+
+	prContext := dossierPRContextArtifact{
+		Title:         in.CurrentPR.Title,
+		URL:           in.CurrentPR.URL,
+		Author:        in.CurrentPR.Author.Login,
+		BaseRef:       in.CurrentPR.Base.Ref,
+		BaseSHA:       in.CurrentBaseSHA,
+		HeadRef:       in.CurrentPR.Head.Ref,
+		HeadSHA:       in.CurrentHeadSHA,
+		ReviewBaseSHA: in.ReviewPR.Base.SHA,
+		ReviewHeadSHA: in.ReviewPR.Head.SHA,
+		PinnedReview:  in.PinnedReview,
+		Body:          strings.TrimSpace(in.CurrentPR.Body),
+	}
+
+	changedFiles := dossierChangedFiles(in.ChangedFiles)
+	topLevelComments := dossierTopLevelComments(in.IssueComments, in.Reviews)
+	inlineThreads := dossierInlineThreads(in.Threads)
+	repoContext := dossierRepoContextArtifact{
+		RepoInfo:               in.Catalog.Repo,
+		Sources:                append([]agents.SourceInfo(nil), in.Catalog.Sources...),
+		ExplicitReviewGuidance: false,
+	}
+	discussion := dossierDiscussionArtifact{
+		PinnedReview:          in.PinnedReview,
+		DiscussionOmittedNote: strings.TrimSpace(in.DiscussionOmittedNote),
+	}
+	if !in.PinnedReview {
+		discussion.TopLevelComments = topLevelComments
+		discussion.InlineThreads = inlineThreads
+	}
+
+	rawFiles := map[string]any{
+		"pr-context.json":         prContext,
+		"changed-files.json":      changedFiles,
+		"top-level-comments.json": topLevelComments,
+		"inline-threads.json":     inlineThreads,
+		"repo-context.json":       repoContext,
+		"discussion.json":         discussion,
+	}
+	for name, payload := range rawFiles {
+		path, err := paths.DossierRawPath(name)
+		if err != nil {
+			return err
+		}
+		if err := writeJSONFile(path, payload); err != nil {
+			return err
+		}
+	}
+
+	finalArtifacts := map[string]string{
+		"pr-intent.md":     renderDossierPRIntent(prContext),
+		"change-map.md":    renderDossierChangeMap(changedFiles),
+		"repo-guidance.md": renderDossierRepoGuidance(repoContext),
+		"discussion.md":    renderDossierDiscussion(paths, discussion),
+	}
+	for name, body := range finalArtifacts {
+		path, err := paths.DossierFinalPath(name)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			return fmt.Errorf("pipeline: write dossier artifact %s: %w", name, err)
+		}
+	}
+
+	index, err := buildDossierIndex(paths.DossierDir)
+	if err != nil {
+		return err
+	}
+	return writeJSONFile(paths.DossierIndexPath(), index)
+}
+
+func dossierChangedFiles(patches []FilePatch) []dossierChangedFileArtifact {
+	out := make([]dossierChangedFileArtifact, 0, len(patches))
+	for _, patch := range patches {
+		additions, deletions := diffStats(patch.Patch)
+		out = append(out, dossierChangedFileArtifact{
+			Path:      patch.Path,
+			OldPath:   oldPathIfDifferent(patch.OldPath, patch.Path),
+			Status:    filePatchStatus(patch),
+			Binary:    patch.Binary,
+			Deleted:   patch.Deleted,
+			Additions: additions,
+			Deletions: deletions,
+			HunkCount: len(patch.Hunks),
+		})
+	}
+	return out
+}
+
+func dossierTopLevelComments(issueComments []gitprovider.IssueComment, reviews []gitprovider.Review) []dossierTopLevelCommentArtifact {
+	out := make([]dossierTopLevelCommentArtifact, 0, len(issueComments)+len(reviews))
+	for _, comment := range issueComments {
+		body := strings.TrimSpace(comment.Body)
+		if body == "" {
+			continue
+		}
+		out = append(out, dossierTopLevelCommentArtifact{
+			Kind:      "issue_comment",
+			URL:       comment.URL,
+			Author:    comment.Author.Login,
+			Body:      body,
+			CreatedAt: comment.CreatedAt,
+			UpdatedAt: comment.UpdatedAt,
+		})
+	}
+	for _, reviewRecord := range reviews {
+		body := strings.TrimSpace(reviewRecord.Body)
+		if body == "" {
+			continue
+		}
+		out = append(out, dossierTopLevelCommentArtifact{
+			Kind:      "review",
+			URL:       reviewRecord.URL,
+			Author:    reviewRecord.Author.Login,
+			Body:      body,
+			Event:     string(reviewRecord.Event),
+			CreatedAt: reviewRecord.SubmittedAt,
+			UpdatedAt: reviewRecord.SubmittedAt,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].URL < out[j].URL
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out
+}
+
+func dossierInlineThreads(threads []gitprovider.InlineThread) []dossierInlineThreadArtifact {
+	out := make([]dossierInlineThreadArtifact, 0, len(threads))
+	for _, thread := range threads {
+		comments := make([]dossierThreadCommentArtifact, 0, len(thread.Comments))
+		for _, comment := range thread.Comments {
+			comments = append(comments, dossierThreadCommentArtifact{
+				URL:       comment.URL,
+				Author:    comment.Author.Login,
+				Body:      strings.TrimSpace(comment.Body),
+				CommitSHA: comment.CommitSHA,
+				CreatedAt: comment.CreatedAt,
+				UpdatedAt: comment.UpdatedAt,
+			})
+		}
+		out = append(out, dossierInlineThreadArtifact{
+			ID:         string(thread.ID),
+			Path:       thread.Path,
+			Side:       string(thread.Side),
+			Line:       thread.Line,
+			AnchorKind: string(thread.SubjectType),
+			Resolved:   thread.Resolved,
+			CommitSHA:  thread.CommitSHA,
+			Comments:   comments,
+		})
+	}
+	return out
+}
+
+func renderDossierPRIntent(pr dossierPRContextArtifact) string {
+	var out strings.Builder
+	out.WriteString("# PR Intent\n\n")
+	if title := strings.TrimSpace(pr.Title); title != "" {
+		out.WriteString("Title: ")
+		out.WriteString(title)
+		out.WriteString("\n\n")
+	}
+	if body := strings.TrimSpace(pr.Body); body != "" {
+		out.WriteString(body)
+		out.WriteString("\n\n")
+	} else {
+		out.WriteString("No PR body provided.\n\n")
+	}
+	if pr.URL != "" {
+		out.WriteString("URL: ")
+		out.WriteString(pr.URL)
+		out.WriteString("\n")
+	}
+	if pr.Author != "" {
+		out.WriteString("Author: ")
+		out.WriteString(pr.Author)
+		out.WriteString("\n")
+	}
+	out.WriteString("Review SHAs: ")
+	out.WriteString(shortSHAOrValue(pr.ReviewBaseSHA))
+	out.WriteString(" -> ")
+	out.WriteString(shortSHAOrValue(pr.ReviewHeadSHA))
+	out.WriteString("\n")
+	if pr.PinnedReview {
+		out.WriteString("Pinned review: true\n")
+	}
+	return out.String()
+}
+
+func renderDossierChangeMap(files []dossierChangedFileArtifact) string {
+	var out strings.Builder
+	out.WriteString("# Change Map\n\n")
+	if len(files) == 0 {
+		out.WriteString("No changed files.\n")
+		return out.String()
+	}
+	for _, file := range files {
+		out.WriteString("- ")
+		out.WriteString(file.Status)
+		out.WriteString(": ")
+		out.WriteString(file.Path)
+		if file.OldPath != "" {
+			out.WriteString(" (from ")
+			out.WriteString(file.OldPath)
+			out.WriteString(")")
+		}
+		out.WriteString(fmt.Sprintf(" [+%d -%d]", file.Additions, file.Deletions))
+		if file.Binary {
+			out.WriteString(" binary")
+		}
+		out.WriteString("\n")
+	}
+	return out.String()
+}
+
+func renderDossierRepoGuidance(repo dossierRepoContextArtifact) string {
+	var out strings.Builder
+	out.WriteString("# Repo Guidance\n\n")
+	out.WriteString("No dedicated repo review-guidance source is defined yet.\n\n")
+	if repo.RepoInfo != nil {
+		out.WriteString("Repo-local agent provenance: ")
+		out.WriteString(repo.RepoInfo.Provenance)
+		out.WriteString("\n\n")
+		if note := strings.TrimSpace(repo.RepoInfo.TrustNote()); note != "" {
+			out.WriteString(note)
+			out.WriteString("\n")
+		}
+	}
+	return out.String()
+}
+
+func renderDossierDiscussion(paths ArtifactPaths, discussion dossierDiscussionArtifact) string {
+	if summary, ok := readSummaryArtifact(paths, "discussion.md"); ok {
+		return summary
+	}
+	var out strings.Builder
+	out.WriteString("# Discussion\n\n")
+	if discussion.PinnedReview {
+		note := strings.TrimSpace(discussion.DiscussionOmittedNote)
+		if note == "" {
+			note = "Current PR discussion omitted for pinned review."
+		}
+		out.WriteString(note)
+		out.WriteString("\n")
+		return out.String()
+	}
+	out.WriteString("## Top-level comments\n\n")
+	if len(discussion.TopLevelComments) == 0 {
+		out.WriteString("None.\n\n")
+	} else {
+		for _, comment := range discussion.TopLevelComments {
+			out.WriteString("- ")
+			if comment.Kind != "" {
+				out.WriteString(comment.Kind)
+				out.WriteString(" ")
+			}
+			if comment.Author != "" {
+				out.WriteString("by ")
+				out.WriteString(comment.Author)
+			}
+			if comment.Event != "" {
+				out.WriteString(" (")
+				out.WriteString(comment.Event)
+				out.WriteString(")")
+			}
+			out.WriteString(": ")
+			out.WriteString(singleLine(comment.Body))
+			out.WriteString("\n")
+		}
+		out.WriteString("\n")
+	}
+	out.WriteString("## Inline threads\n\n")
+	if len(discussion.InlineThreads) == 0 {
+		out.WriteString("None.\n")
+		return out.String()
+	}
+	for _, thread := range discussion.InlineThreads {
+		out.WriteString("- ")
+		out.WriteString(thread.Path)
+		if thread.Line > 0 {
+			out.WriteString(fmt.Sprintf(":%d", thread.Line))
+		}
+		if thread.Side != "" {
+			out.WriteString(" [")
+			out.WriteString(thread.Side)
+			out.WriteString("]")
+		}
+		if thread.AnchorKind != "" {
+			out.WriteString(" {")
+			out.WriteString(thread.AnchorKind)
+			out.WriteString("}")
+		}
+		if thread.Resolved {
+			out.WriteString(" resolved")
+		}
+		out.WriteString("\n")
+		for _, comment := range thread.Comments {
+			out.WriteString("  ")
+			if comment.Author != "" {
+				out.WriteString(comment.Author)
+				out.WriteString(": ")
+			}
+			out.WriteString(singleLine(comment.Body))
+			out.WriteString("\n")
+		}
+	}
+	return out.String()
+}
+
+func readSummaryArtifact(paths ArtifactPaths, name string) (string, bool) {
+	path, err := paths.DossierSummaryPath(name)
+	if err != nil {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+func buildDossierIndex(dir string) (dossierIndexArtifact, error) {
+	var files []dossierIndexFileArtifact
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if filepath.Base(path) == "index.json" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, dossierIndexFileArtifact{
+			Path:   filepath.ToSlash(rel),
+			SHA256: sha256Hex(data),
+		})
+		return nil
+	})
+	if err != nil {
+		return dossierIndexArtifact{}, fmt.Errorf("pipeline: build dossier index: %w", err)
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return dossierIndexArtifact{HashAlgorithm: "sha256", Files: files}, nil
+}
+
+func writeJSONFile(path string, payload any) error {
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("pipeline: write dossier artifact %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
+func diffStats(patch string) (int, int) {
+	additions := 0
+	deletions := 0
+	for _, line := range splitLines(patch) {
+		switch {
+		case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
+			continue
+		case strings.HasPrefix(line, "+"):
+			additions++
+		case strings.HasPrefix(line, "-"):
+			deletions++
+		}
+	}
+	return additions, deletions
+}
+
+func filePatchStatus(patch FilePatch) string {
+	switch {
+	case patch.Deleted:
+		return "deleted"
+	case strings.Contains(patch.Patch, "new file mode") || strings.Contains(patch.Patch, "--- /dev/null"):
+		return "added"
+	case patch.OldPath != "" && patch.Path != "" && patch.OldPath != patch.Path:
+		return "renamed"
+	default:
+		return "modified"
+	}
+}
+
+func oldPathIfDifferent(oldPath, path string) string {
+	oldPath = strings.TrimSpace(oldPath)
+	path = strings.TrimSpace(path)
+	if oldPath == "" || oldPath == path {
+		return ""
+	}
+	return oldPath
+}
+
+func singleLine(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "(empty)"
+	}
+	return value
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func shortSHAOrValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 12 {
+		return value[:12]
+	}
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
 func agentSourcesArtifactFromCatalog(catalog agents.Catalog, reviewerRuntime map[string]reviewerRuntimeResolution) agentSourcesArtifact {
 	artifact := agentSourcesArtifact{
 		Sources: append([]agents.SourceInfo(nil), catalog.Sources...),
@@ -2762,6 +3364,7 @@ func ArtifactPathsForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr git
 		AgentSourcesJSON: filepath.Join(dir, "agent-sources.json"),
 		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
 		LLMTasksDir:      filepath.Join(dir, "llm-tasks"),
+		DossierDir:       filepath.Join(dir, "dossier"),
 	}, nil
 }
 
@@ -2776,6 +3379,7 @@ func ArtifactPathsFromDir(dir string) ArtifactPaths {
 		AgentSourcesJSON: filepath.Join(dir, "agent-sources.json"),
 		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
 		LLMTasksDir:      filepath.Join(dir, "llm-tasks"),
+		DossierDir:       filepath.Join(dir, "dossier"),
 	}
 }
 
