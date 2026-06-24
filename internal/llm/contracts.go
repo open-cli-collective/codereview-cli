@@ -24,6 +24,9 @@ const (
 
 	// DefaultMaxResolvedThreads is the default selected thread resolution cap.
 	DefaultMaxResolvedThreads = 25
+
+	defaultMaxCoverageConstraints     = 10
+	defaultMaxCoverageConstraintRunes = 300
 )
 
 // Selection is validated orchestrator selection output.
@@ -249,6 +252,9 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 	if err != nil {
 		return Findings{}, err
 	}
+	if err := validateCoverageFileDisjoint(inspected, skipped); err != nil {
+		return Findings{}, err
+	}
 	constraints, err := decodeCoverageStrings("constraints", wire.Constraints)
 	if err != nil {
 		return Findings{}, err
@@ -330,12 +336,18 @@ func decodeCoverageFiles(name string, files []string, changedFiles map[string]bo
 }
 
 func decodeCoverageStrings(name string, values []string) ([]string, error) {
+	if len(values) > defaultMaxCoverageConstraints {
+		return nil, fmt.Errorf("llm: %s cap exceeded", name)
+	}
 	out := make([]string, 0, len(values))
 	seen := map[string]bool{}
 	for _, value := range values {
 		value = sanitize(value)
 		if strings.TrimSpace(value) == "" {
 			return nil, fmt.Errorf("llm: %s entries must be non-empty", name)
+		}
+		if utf8.RuneCountInString(value) > defaultMaxCoverageConstraintRunes {
+			return nil, fmt.Errorf("llm: %s entry length out of bounds", name)
 		}
 		if seen[value] {
 			return nil, fmt.Errorf("llm: duplicate %s entry %q", name, value)
@@ -344,6 +356,19 @@ func decodeCoverageStrings(name string, values []string) ([]string, error) {
 		out = append(out, value)
 	}
 	return out, nil
+}
+
+func validateCoverageFileDisjoint(inspected, skipped []string) error {
+	seen := map[string]bool{}
+	for _, file := range inspected {
+		seen[file] = true
+	}
+	for _, file := range skipped {
+		if seen[file] {
+			return fmt.Errorf("llm: coverage file %q cannot be both inspected and skipped", file)
+		}
+	}
+	return nil
 }
 
 func (wire findingWire) normalizedFilePath() (string, error) {

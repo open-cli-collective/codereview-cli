@@ -1294,7 +1294,9 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
-	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent)
+	changedFilePaths := patchPaths(parsed.Patches)
+	reviewerScope := effectiveReviewerScope(selected, changedFilePaths)
+	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
@@ -1330,7 +1332,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
 			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: changedFiles(parsed.Patches),
+			ChangedFiles: stringSet(reviewerScope),
 			NewFindingID: opts.newFindingID,
 		})
 	})
@@ -2135,7 +2137,7 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 	assigned := map[string]bool{}
 	out := make([]reviewplan.ReviewerCoverageSummary, 0, len(selected)+1)
 	for _, agent := range selected {
-		scope := reviewerCoverageScope(agent, changedFiles)
+		scope := effectiveReviewerScope(agent, changedFiles)
 		for _, file := range scope {
 			assigned[file] = true
 		}
@@ -2159,9 +2161,13 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 		entry.InspectedFiles = appendSortedStrings(result.InspectedFiles)
 		entry.SkippedFiles = appendSortedStrings(result.SkippedFiles)
 		entry.Constraints = appendSortedStrings(result.Constraints)
+		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
 		switch {
-		case len(entry.SkippedFiles) > 0:
+		case len(entry.SkippedFiles) > 0 || len(missing) > 0:
 			entry.Status = reviewerCoverageIncompleteSkipped
+			if len(missing) > 0 {
+				entry.Diagnostic = "assigned files were neither inspected nor skipped: " + strings.Join(missing, ", ")
+			}
 		case len(agent.AllowedFiles) > 0:
 			entry.Status = reviewerCoverageCompleteConstrained
 		default:
@@ -2186,14 +2192,33 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 	return out
 }
 
-func reviewerCoverageScope(agent llm.SelectedAgent, changedFiles []string) []string {
+func effectiveReviewerScope(agent llm.SelectedAgent, changedFiles []string) []string {
 	if len(agent.AllowedFiles) > 0 {
 		return appendSortedStrings(agent.AllowedFiles)
 	}
-	if len(agent.Files) > 0 {
-		return appendSortedStrings(agent.Files)
-	}
 	return appendSortedStrings(changedFiles)
+}
+
+func coverageMissingFiles(scope, inspected, skipped []string) []string {
+	covered := stringSet(inspected)
+	for _, file := range skipped {
+		covered[file] = true
+	}
+	var missing []string
+	for _, file := range scope {
+		if !covered[file] {
+			missing = append(missing, file)
+		}
+	}
+	return appendSortedStrings(missing)
+}
+
+func stringSet(values []string) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for _, value := range values {
+		out[value] = true
+	}
+	return out
 }
 
 func appendSortedStrings(values []string) []string {
@@ -2336,14 +2361,15 @@ func pruneRetention(ctx context.Context, layout statepaths.Layout, store datalif
 	return nil
 }
 
-func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent) (string, []string, error) {
+func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string) (string, []string, error) {
 	input, deps, err := reviewerPromptInputFromArtifacts(paths, pr, selected, agent)
 	if err != nil {
 		return "", nil, err
 	}
+	reviewerScope := effectiveReviewerScope(selected, changedFiles)
 	payload := map[string]any{
 		"task":            "review files and return findings JSON only",
-		"output_contract": findingsOutputContract(agent.ID, append([]string(nil), input.Assignment.Files...)),
+		"output_contract": findingsOutputContract(agent.ID, reviewerScope),
 		"agent":           reviewerAgentPromptFromAgent(agent),
 		"assignment":      input.Assignment,
 		"dossier":         input.Dossier,
