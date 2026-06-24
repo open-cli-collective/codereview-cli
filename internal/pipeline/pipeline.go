@@ -2159,12 +2159,11 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			continue
 		}
 		entry.InspectedFiles = appendSortedStrings(result.InspectedFiles)
-		entry.SkippedFiles = appendSortedStrings(result.SkippedFiles)
+		entry.SkippedFiles = intersectSortedStrings(result.SkippedFiles, scope)
 		entry.Constraints = appendSortedStrings(result.Constraints)
-		scopedSkipped := intersectSortedStrings(entry.SkippedFiles, scope)
-		missing := coverageMissingFiles(scope, entry.InspectedFiles, scopedSkipped)
+		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
 		switch {
-		case len(scopedSkipped) > 0 || len(missing) > 0:
+		case len(entry.SkippedFiles) > 0 || len(missing) > 0:
 			entry.Status = reviewerCoverageIncompleteSkipped
 			if len(missing) > 0 {
 				entry.Diagnostic = "assigned files were neither inspected nor skipped: " + strings.Join(missing, ", ")

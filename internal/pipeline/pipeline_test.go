@@ -4720,6 +4720,9 @@ func TestBuildReviewerCoverageIgnoresSkippedFilesOutsideAssignmentScope(t *testi
 	if got[0].AgentID != "harness:reviewer" || got[0].Status != reviewerCoverageCompleteBroad {
 		t.Fatalf("reviewer coverage = %#v, want complete broad for assigned scope", got[0])
 	}
+	if len(got[0].SkippedFiles) != 0 {
+		t.Fatalf("reviewer skipped files = %#v, want outside-assignment skipped file filtered", got[0].SkippedFiles)
+	}
 	if got[1].AgentID != "unassigned" || got[1].Status != reviewerCoverageIncompleteUnassigned {
 		t.Fatalf("unassigned coverage = %#v, want other.go unassigned", got[1])
 	}
