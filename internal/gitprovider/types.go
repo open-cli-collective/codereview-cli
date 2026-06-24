@@ -87,6 +87,7 @@ func (s PRState) Valid() bool {
 type PR struct {
 	Ref    PRRef
 	Title  string
+	Body   string
 	URL    string
 	State  PRState
 	Author Identity

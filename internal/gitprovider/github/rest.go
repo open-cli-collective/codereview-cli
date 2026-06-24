@@ -31,6 +31,7 @@ type branchResponse struct {
 
 type prResponse struct {
 	Title   string         `json:"title"`
+	Body    string         `json:"body"`
 	HTMLURL string         `json:"html_url"`
 	State   string         `json:"state"`
 	Merged  bool           `json:"merged"`
@@ -103,6 +104,7 @@ func (c *Client) GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.
 	return gitprovider.PR{
 		Ref:    ref,
 		Title:  payload.Title,
+		Body:   payload.Body,
 		URL:    payload.HTMLURL,
 		State:  state,
 		Author: identityFromUser(payload.User),

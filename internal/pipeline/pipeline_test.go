@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -31,6 +32,36 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	provider.pr.Body = "Document the checkout-native review contract."
+	provider.threads = []gitprovider.InlineThread{{
+		ID:          "thread-1",
+		Resolved:    false,
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        2,
+		SubjectType: review.AnchorKindLine,
+		Comments: []gitprovider.ThreadComment{{
+			ID:     "comment-1",
+			Body:   "Inline concern",
+			Author: gitprovider.Identity{Login: "reviewer"},
+		}},
+	}}
+	provider.issueComments = []gitprovider.IssueComment{{
+		ID:     "issue-1",
+		Body:   "Top-level concern",
+		Author: gitprovider.Identity{Login: "maintainer"},
+	}}
+	provider.reviews = []gitprovider.Review{{
+		ID:     "review-1",
+		Body:   "Review body",
+		Author: gitprovider.Identity{Login: "architect"},
+		Event:  review.ReviewEventComment,
+	}, {
+		ID:     "review-2",
+		Body:   "Approved body should stay out of reviewer-facing discussion",
+		Author: gitprovider.Identity{Login: "approver"},
+		Event:  review.ReviewEventApprove,
+	}}
 	adapter := &llm.FakeAdapter{
 		NameValue:      "fake-llm",
 		QuotaValue:     llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
@@ -133,6 +164,14 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	assertFileContains(t, result.Artifacts.FindingsJSON, `"severity": "major"`)
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
 	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "pr-intent.md"), "Document the checkout-native review contract.")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "main.go:2")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Top-level concern")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Review body")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "No dedicated repo review-guidance source is defined yet.")
+	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "final/discussion.md")
+	assertFileOmits(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "provider_session_id", "session_row_id", "mergeability", "approval", "CI status", "Approved body should stay out of reviewer-facing discussion")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "raw", "top-level-comments.json"), "Approved body should stay out of reviewer-facing discussion")
 	slicePath, err := result.Artifacts.SlicePatch("harness:reviewer", "main.go")
 	if err != nil {
 		t.Fatalf("SlicePatch: %v", err)
@@ -260,6 +299,9 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	if provider.threadCalls != 0 {
 		t.Fatalf("thread calls = %d, want no live thread reads for pinned review", provider.threadCalls)
 	}
+	if provider.reviewCalls != 0 || provider.issueCommentCalls != 0 {
+		t.Fatalf("review/comment calls = %d/%d, want no live discussion reads for pinned review", provider.reviewCalls, provider.issueCommentCalls)
+	}
 	if !containsFileCall(provider.treeCalls, fileKey{gitRef: currentBaseSHA, path: ".codereview/agents"}) {
 		t.Fatalf("tree calls = %#v, want repo agents loaded from current base SHA", provider.treeCalls)
 	}
@@ -267,6 +309,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 		t.Fatalf("tree calls = %#v, want no repo agent load from pinned review base SHA", provider.treeCalls)
 	}
 	assertFileContains(t, result.Artifacts.DiffPatch, "diff --git a/main.go b/main.go")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Current PR discussion omitted because this review is pinned to explicit base/head SHAs.")
 }
 
 func TestDryRunWithPinnedReviewSHAsRejectsForkHeads(t *testing.T) {
@@ -414,6 +457,7 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 	if result.SelectionSession.ProviderSessionID != "selection-session" || result.SelectionSession.Model != "claude-sonnet-4-6" || result.SelectionSession.Effort != "medium" {
 		t.Fatalf("selection session = %#v, want selection-session claude-sonnet-4-6/medium", result.SelectionSession)
 	}
+	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "final/change-map.md")
 	expectedLog, err := expectedArtifacts.AgentLog("orchestrator-selection")
 	if err != nil {
 		t.Fatalf("AgentLog: %v", err)
@@ -431,6 +475,8 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 	if _, err := os.Stat(result.Artifacts.RollupMarkdown); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("rollup artifact stat error = %v, want not exist", err)
 	}
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "main.go:2")
+	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "raw/pr-context.json")
 }
 
 func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(t *testing.T) {
@@ -451,6 +497,7 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	req.Profile.AgentSources = []string{dir}
 	req.SelectionPromptInstructions = "Prefer applies_when over prompt wording when routing."
 	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+	provider.pr.Body = "Selection prompt body should stay out of prompt payloads."
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:alpha", "main.go"), 10, 2))
 
@@ -472,6 +519,7 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 		Schema                string                     `json:"schema"`
 		SelectionInstructions string                     `json:"selection_instructions"`
 		OutputContract        map[string]any             `json:"output_contract"`
+		PR                    promptPR                   `json:"pr"`
 		Agents                []selectionAgentPrompt     `json:"agents"`
 		ChangedFiles          []string                   `json:"changed_files"`
 		Threads               []gitprovider.InlineThread `json:"threads"`
@@ -484,6 +532,10 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	}
 	if payload.Task != defaultSelectionTask || payload.Schema != "selection" || payload.OutputContract == nil {
 		t.Fatalf("selection prompt envelope = %#v, want task/schema/output contract", payload)
+	}
+	if payload.PR.Title != provider.pr.Title || payload.PR.URL != provider.pr.URL || payload.PR.Author.Login != provider.pr.Author.Login ||
+		payload.PR.Base.SHA != provider.pr.Base.SHA || payload.PR.Head.SHA != provider.pr.Head.SHA {
+		t.Fatalf("selection prompt pr = %#v, want title/url/author/base/head from provider PR", payload.PR)
 	}
 	if !reflect.DeepEqual(payload.ChangedFiles, []string{"main.go", "other.go"}) {
 		t.Fatalf("changed files = %#v, want main.go/other.go", payload.ChangedFiles)
@@ -515,6 +567,9 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 		if strings.Contains(selectionPrompt, forbidden) {
 			t.Fatalf("selection prompt leaked reviewer execution detail %q: %s", forbidden, selectionPrompt)
 		}
+	}
+	if strings.Contains(selectionPrompt, "Selection prompt body should stay out of prompt payloads.") {
+		t.Fatalf("selection prompt leaked PR body: %s", selectionPrompt)
 	}
 }
 
@@ -2844,7 +2899,7 @@ func TestFindingsOutputContractScopesAnchorToFindingItems(t *testing.T) {
 }
 
 func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
-	prompt, err := buildRollupPrompt(gitprovider.PR{}, []review.Finding{
+	prompt, err := buildRollupPrompt(gitprovider.PR{Body: "Rollup prompt body should stay out of prompt payloads."}, []review.Finding{
 		{
 			ID:       "finding-1",
 			Severity: review.SeverityMajor,
@@ -2878,6 +2933,9 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	}
 	if strings.Contains(prompt, `"anchor"`) {
 		t.Fatalf("rollup prompt leaked raw anchor key: %s", prompt)
+	}
+	if strings.Contains(prompt, "Rollup prompt body should stay out of prompt payloads.") {
+		t.Fatalf("rollup prompt leaked PR body: %s", prompt)
 	}
 }
 
@@ -3043,19 +3101,23 @@ func TestSessionRowIDForFindingRequiresReviewerSession(t *testing.T) {
 }
 
 type readOnlyProvider struct {
-	pr               gitprovider.PR
-	diff             gitprovider.UnifiedDiff
-	diffCalls        int
-	diffBetween      gitprovider.UnifiedDiff
-	diffBetweenCalls []shaPair
-	files            map[fileKey][]byte
-	fileCalls        []fileKey
-	trees            map[fileKey][]gitprovider.TreeEntry
-	treeCalls        []fileKey
-	threads          []gitprovider.InlineThread
-	threadCalls      int
-	caps             gitprovider.ProviderCaps
-	onGetPR          func()
+	pr                gitprovider.PR
+	diff              gitprovider.UnifiedDiff
+	diffCalls         int
+	diffBetween       gitprovider.UnifiedDiff
+	diffBetweenCalls  []shaPair
+	files             map[fileKey][]byte
+	fileCalls         []fileKey
+	trees             map[fileKey][]gitprovider.TreeEntry
+	treeCalls         []fileKey
+	threads           []gitprovider.InlineThread
+	reviews           []gitprovider.Review
+	issueComments     []gitprovider.IssueComment
+	threadCalls       int
+	reviewCalls       int
+	issueCommentCalls int
+	caps              gitprovider.ProviderCaps
+	onGetPR           func()
 }
 
 type shaPair struct {
@@ -3335,6 +3397,16 @@ func (p *readOnlyProvider) ListInlineThreads(context.Context, gitprovider.PRRef)
 	return append([]gitprovider.InlineThread(nil), p.threads...), nil
 }
 
+func (p *readOnlyProvider) ListReviews(context.Context, gitprovider.PRRef) ([]gitprovider.Review, error) {
+	p.reviewCalls++
+	return append([]gitprovider.Review(nil), p.reviews...), nil
+}
+
+func (p *readOnlyProvider) ListIssueComments(context.Context, gitprovider.PRRef) ([]gitprovider.IssueComment, error) {
+	p.issueCommentCalls++
+	return append([]gitprovider.IssueComment(nil), p.issueComments...), nil
+}
+
 func (p *readOnlyProvider) Capabilities() gitprovider.ProviderCaps {
 	return p.caps
 }
@@ -3356,6 +3428,7 @@ func dryRunHarness(t *testing.T) (*readOnlyProvider, Request) {
 	pr := gitprovider.PR{
 		Ref:    ref,
 		Title:  "CR-20 dry-run",
+		Body:   "Default PR body.",
 		URL:    prURL(ref),
 		State:  gitprovider.PRStateOpen,
 		Author: gitprovider.Identity{Login: "author", ID: "author-id"},
@@ -3819,6 +3892,84 @@ func assertReviewerRuntimeArtifact(t *testing.T, path, wantAgent string, want re
 	t.Fatalf("artifact agents = %#v, want reviewer runtime for %s", artifact.Agents, wantAgent)
 }
 
+func assertDossierIndexArtifact(t *testing.T, dir, wantPath string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "index.json")) // #nosec G304 -- test reads artifact path under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(dossier index): %v", err)
+	}
+	var index dossierIndexArtifact
+	if err := json.Unmarshal(data, &index); err != nil {
+		t.Fatalf("Unmarshal dossier index: %v\n%s", err, data)
+	}
+	if index.HashAlgorithm != "sha256" {
+		t.Fatalf("hash algorithm = %q, want sha256", index.HashAlgorithm)
+	}
+	if len(index.Files) == 0 {
+		t.Fatal("dossier index files = 0, want artifacts")
+	}
+	wantHashes := map[string]string{}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot(%s): %v", dir, err)
+	}
+	defer root.Close()
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Base(path) == "index.json" {
+			return nil
+		}
+		fileData, err := root.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		wantHashes[filepath.ToSlash(path)] = sha256Hex(fileData)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(dossier): %v", err)
+	}
+	var saw bool
+	for _, file := range index.Files {
+		if file.Path == wantPath {
+			saw = true
+		}
+		if file.Path == "" || file.SHA256 == "" {
+			t.Fatalf("index file = %#v, want non-empty path/hash", file)
+		}
+		wantHash, ok := wantHashes[file.Path]
+		if !ok {
+			t.Fatalf("index file = %#v, want tracked dossier artifact", file)
+		}
+		if file.SHA256 != wantHash {
+			t.Fatalf("index hash for %s = %q, want %q", file.Path, file.SHA256, wantHash)
+		}
+		delete(wantHashes, file.Path)
+	}
+	if !saw {
+		t.Fatalf("dossier index files = %#v, want %q", index.Files, wantPath)
+	}
+	if len(wantHashes) != 0 {
+		t.Fatalf("dossier index missing files = %#v", wantHashes)
+	}
+}
+
+func assertFileOmits(t *testing.T, path string, forbidden ...string) {
+	t.Helper()
+	data, err := os.ReadFile(path) // #nosec G304 -- test reads artifact path returned by pipeline under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	text := string(data)
+	for _, needle := range forbidden {
+		if strings.Contains(text, needle) {
+			t.Fatalf("artifact %s contains forbidden substring %q:\n%s", path, needle, text)
+		}
+	}
+}
+
 func findArtifactSource(sources []agents.SourceInfo, kind agents.SourceKind) (agents.SourceInfo, bool) {
 	for _, source := range sources {
 		if source.Kind == kind {
@@ -3914,6 +4065,14 @@ func (p *failingProvider) ListTreeAtRef(context.Context, gitprovider.PRRef, stri
 }
 
 func (p *failingProvider) ListInlineThreads(context.Context, gitprovider.PRRef) ([]gitprovider.InlineThread, error) {
+	return nil, p.err
+}
+
+func (p *failingProvider) ListReviews(context.Context, gitprovider.PRRef) ([]gitprovider.Review, error) {
+	return nil, p.err
+}
+
+func (p *failingProvider) ListIssueComments(context.Context, gitprovider.PRRef) ([]gitprovider.IssueComment, error) {
 	return nil, p.err
 }
 
