@@ -1290,8 +1290,10 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 }
 
 func llmTaskFailureStatus(ctx context.Context, spec llmTaskSpec, err error, providerSessionID string, hasValidationAttempt bool) llmTaskStatus {
-	if spec.llmFailureStatus != "" && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) &&
-		(errors.Is(err, llm.ErrStructuredOutputInvalidAfterRetry) || strings.TrimSpace(providerSessionID) != "" || hasValidationAttempt) {
+	supportsIsolation := spec.llmFailureStatus != ""
+	callerContextActive := ctx.Err() == nil && !isContextError(err)
+	hasTaskExecutionEvidence := errors.Is(err, llm.ErrStructuredOutputInvalidAfterRetry) || strings.TrimSpace(providerSessionID) != "" || hasValidationAttempt
+	if supportsIsolation && callerContextActive && hasTaskExecutionEvidence {
 		return spec.llmFailureStatus
 	}
 	return llmTaskStatusFailedBlocking
