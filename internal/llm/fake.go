@@ -13,6 +13,7 @@ type FakeAdapter struct {
 
 	NameValue                     string
 	SupportsResumeValue           bool
+	SupportsCheckoutReadonlySet   bool
 	SupportsCheckoutReadonlyValue bool
 	SupportsCacheAccountingValue  bool
 	SupportsCostReportingValue    bool
@@ -62,6 +63,9 @@ func (f *FakeAdapter) SupportsResume() bool {
 func (f *FakeAdapter) SupportsCheckoutReadonly() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if !f.SupportsCheckoutReadonlySet {
+		return true
+	}
 	return f.SupportsCheckoutReadonlyValue
 }
 
