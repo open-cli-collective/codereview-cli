@@ -67,6 +67,7 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 		QuotaValue:     llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
 		QuotaSupported: true,
 	}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body"}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
@@ -107,8 +108,8 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 		t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(result.Sessions))
 	}
 	requests := adapter.Requests()
-	if len(requests) != 3 {
-		t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("requests len = %d, want dossier-summary/selection/reviewer/rollup", len(requests))
 	}
 	for _, request := range requests {
 		if request.Model != "claude-sonnet-4-6" || request.Effort != "medium" {
@@ -149,7 +150,7 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListFindings: %v", err)
 	}
-	if len(storedFindings) != 1 || storedFindings[0].SessionRowID != "session-2" {
+	if len(storedFindings) != 1 || storedFindings[0].SessionRowID != "session-3" {
 		t.Fatalf("stored findings = %#v, want reviewer session FK", storedFindings)
 	}
 	storedActions, err := store.ListPlannedActions(ctx, "run-1")
@@ -396,6 +397,7 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 		SubjectType: review.AnchorKindLine,
 	}}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Open thread at main.go:2"}}), 8, 2))
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	artifactDir := t.TempDir()
 
@@ -412,8 +414,8 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 	if !reflect.DeepEqual(result.Artifacts, expectedArtifacts) {
 		t.Fatalf("artifacts = %#v, want %#v", result.Artifacts, expectedArtifacts)
 	}
-	if len(adapter.Requests()) != 1 {
-		t.Fatalf("adapter requests = %d, want selection only", len(adapter.Requests()))
+	if len(adapter.Requests()) != 2 {
+		t.Fatalf("adapter requests = %d, want dossier summary + selection only", len(adapter.Requests()))
 	}
 	if len(adapter.Resumes()) != 0 {
 		t.Fatalf("adapter resumes = %#v, want none", adapter.Resumes())
@@ -462,7 +464,7 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 	if err != nil {
 		t.Fatalf("AgentLog: %v", err)
 	}
-	request := adapter.Requests()[0]
+	request := adapter.Requests()[1]
 	if request.LogPath != expectedLog {
 		t.Fatalf("selection log path = %q, want %q", request.LogPath, expectedLog)
 	}
@@ -499,6 +501,7 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
 	provider.pr.Body = "Selection prompt body should stay out of prompt payloads."
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Open thread at main.go:2"}}), 8, 2))
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:alpha", "main.go"), 10, 2))
 
 	if _, err := SelectionOnly(ctx, Options{
@@ -510,10 +513,10 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	}
 
 	requests := adapter.Requests()
-	if len(requests) != 1 {
-		t.Fatalf("adapter requests = %d, want selection only", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("adapter requests = %d, want dossier summary + selection only", len(requests))
 	}
-	selectionPrompt := requests[0].Prompt
+	selectionPrompt := requests[1].Prompt
 	var payload struct {
 		Task                  string                     `json:"task"`
 		Schema                string                     `json:"schema"`
@@ -570,6 +573,209 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	}
 	if strings.Contains(selectionPrompt, "Selection prompt body should stay out of prompt payloads.") {
 		t.Fatalf("selection prompt leaked PR body: %s", selectionPrompt)
+	}
+}
+
+func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	provider.issueComments = []gitprovider.IssueComment{{
+		ID:     "issue-1",
+		Body:   "Top-level concern",
+		Author: gitprovider.Identity{Login: "maintainer"},
+	}}
+	artifactDir := t.TempDir()
+
+	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Compact concern"}, nil), 8, 2))
+	firstAdapter.Queue(fakeLLMResult("selection-session-1", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	firstProgress := &fakeTaskProgress{}
+	if _, err := SelectionOnly(ctx, Options{
+		Provider:        provider,
+		Adapter:         firstAdapter,
+		TaskProgress:    firstProgress,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+	}, selectionRequestFromReview(req, artifactDir)); err != nil {
+		t.Fatalf("SelectionOnly first run: %v", err)
+	}
+	if len(firstProgress.starts) != 1 || firstProgress.starts[0].TaskID != dossierSummaryTaskID || firstProgress.starts[0].Phase != "dossier" {
+		t.Fatalf("first progress starts = %#v, want dossier summary execute", firstProgress.starts)
+	}
+
+	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	secondAdapter.Queue(fakeLLMResult("selection-session-2", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	secondProgress := &fakeTaskProgress{}
+	if _, err := SelectionOnly(ctx, Options{
+		Provider:        provider,
+		Adapter:         secondAdapter,
+		TaskProgress:    secondProgress,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+	}, selectionRequestFromReview(req, artifactDir)); err != nil {
+		t.Fatalf("SelectionOnly second run: %v", err)
+	}
+	if len(secondProgress.loads) != 1 || secondProgress.loads[0].event.TaskID != dossierSummaryTaskID || secondProgress.loads[0].event.Phase != "dossier" {
+		t.Fatalf("second progress loads = %#v, want cached dossier summary load", secondProgress.loads)
+	}
+	if len(secondAdapter.Requests()) != 1 {
+		t.Fatalf("second adapter requests = %d, want selection only after cached dossier summary load", len(secondAdapter.Requests()))
+	}
+}
+
+func TestPrepareDossierArtifactsUsesSummaryForFinalDiscussionAndInvalidatesOnDiscussionChange(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-dossier-summary", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	sessionIDs := sequence("session")
+
+	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:    provider.pr,
+		ReviewPR:     provider.pr,
+		ChangedFiles: parseDiffPatchesForTest(t, provider.diff.Raw),
+		IssueComments: []gitprovider.IssueComment{{
+			ID:     "issue-1",
+			Body:   "Very long raw concern that should not appear in the final summary output.",
+			Author: gitprovider.Identity{Login: "maintainer"},
+		}},
+		Catalog:        agents.Catalog{},
+		CurrentBaseSHA: provider.pr.Base.SHA,
+		CurrentHeadSHA: provider.pr.Head.SHA,
+	}); err != nil {
+		t.Fatalf("writeRawDossierArtifacts: %v", err)
+	}
+
+	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Compact concern"}, nil), 8, 2))
+	firstProgress := &fakeTaskProgress{}
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         firstAdapter,
+		Store:           store,
+		TaskProgress:    firstProgress,
+		Now:             fixedNow,
+		NewSessionRowID: sessionIDs,
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts first run: %v", err)
+	}
+	assertFileContains(t, filepath.Join(artifacts.DossierDir, "final", "discussion.md"), "Compact concern")
+	assertFileOmits(t, filepath.Join(artifacts.DossierDir, "final", "discussion.md"), "Very long raw concern")
+	meta, ok, err := readLLMTaskMetadata(artifacts, dossierSummaryTaskID)
+	if err != nil || !ok {
+		t.Fatalf("read dossier summary metadata = ok %v err %v", ok, err)
+	}
+	if meta.Status != llmTaskStatusSucceeded || meta.SessionRowID == "" || meta.ProviderSessionID != "dossier-summary-session" {
+		t.Fatalf("dossier summary metadata = %#v, want succeeded run-backed task metadata", meta)
+	}
+
+	secondProgress := &fakeTaskProgress{}
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		TaskProgress:    secondProgress,
+		Now:             fixedNow,
+		NewSessionRowID: sessionIDs,
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts second run: %v", err)
+	}
+	if len(secondProgress.loads) != 1 || secondProgress.loads[0].event.TaskID != dossierSummaryTaskID {
+		t.Fatalf("second progress loads = %#v, want cached dossier summary load", secondProgress.loads)
+	}
+
+	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:    provider.pr,
+		ReviewPR:     provider.pr,
+		ChangedFiles: parseDiffPatchesForTest(t, provider.diff.Raw),
+		IssueComments: []gitprovider.IssueComment{{
+			ID:     "issue-2",
+			Body:   "A changed concern should invalidate the cached summary.",
+			Author: gitprovider.Identity{Login: "maintainer"},
+		}},
+		Catalog:        agents.Catalog{},
+		CurrentBaseSHA: provider.pr.Base.SHA,
+		CurrentHeadSHA: provider.pr.Head.SHA,
+	}); err != nil {
+		t.Fatalf("writeRawDossierArtifacts updated: %v", err)
+	}
+	thirdAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	thirdAdapter.Queue(fakeLLMResult("dossier-summary-session-2", discussionSummaryJSON([]string{"Updated concern"}, nil), 8, 2))
+	thirdProgress := &fakeTaskProgress{}
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         thirdAdapter,
+		Store:           store,
+		TaskProgress:    thirdProgress,
+		Now:             fixedNow,
+		NewSessionRowID: sessionIDs,
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts third run: %v", err)
+	}
+	if len(thirdProgress.starts) != 1 || thirdProgress.starts[0].TaskID != dossierSummaryTaskID {
+		t.Fatalf("third progress starts = %#v, want dossier summary rerun after raw discussion change", thirdProgress.starts)
+	}
+	assertFileContains(t, filepath.Join(artifacts.DossierDir, "final", "discussion.md"), "Updated concern")
+}
+
+func TestPrepareDossierArtifactsSummaryPromptBudgetFailure(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-dossier-budget", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:    provider.pr,
+		ReviewPR:     provider.pr,
+		ChangedFiles: parseDiffPatchesForTest(t, provider.diff.Raw),
+		IssueComments: []gitprovider.IssueComment{{
+			ID:     "issue-1",
+			Body:   "Top-level concern that should exceed an intentionally tiny prompt budget.",
+			Author: gitprovider.Identity{Login: "maintainer"},
+		}},
+		Catalog:        agents.Catalog{},
+		CurrentBaseSHA: provider.pr.Base.SHA,
+		CurrentHeadSHA: provider.pr.Head.SHA,
+	}); err != nil {
+		t.Fatalf("writeRawDossierArtifacts: %v", err)
+	}
+	err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		Budget:          ContextBudget{MaxPromptBytes: 10},
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	})
+	if err == nil || !strings.Contains(err.Error(), "dossier discussion summary prompt budget") {
+		t.Fatalf("prepareDossierArtifacts error = %v, want dossier summary prompt budget failure", err)
+	}
+}
+
+func TestDecodeDossierDiscussionSummaryRejectsProcessState(t *testing.T) {
+	_, err := decodeDossierDiscussionSummary([]byte(`{
+		"schema_version": 1,
+		"top_level_comments": [{"summary": "CI status is red"}]
+	}`), "fingerprint")
+	if err == nil || !strings.Contains(err.Error(), "excluded reviewer-facing process state") {
+		t.Fatalf("decodeDossierDiscussionSummary error = %v, want excluded process state", err)
 	}
 }
 
@@ -2391,6 +2597,7 @@ func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	req.NoResolveThreads = true
 	req.Profile.AgentSources = nil
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, []threadSummary{{path: "main.go", line: 2, status: "noted", summary: "Thread summary"}}), 1, 1))
 	adapter.Queue(fakeLLMResult("selection-session", `{
 		"schema_version": 1,
 		"selected_agents": [],
@@ -3714,6 +3921,52 @@ func rollupJSON(event string, ordered []string) string {
 		panic(err)
 	}
 	return string(data)
+}
+
+type threadSummary struct {
+	path    string
+	line    int
+	status  string
+	summary string
+}
+
+func discussionSummaryJSON(topLevel []string, threads []threadSummary) string {
+	topLevelPayload := make([]map[string]any, 0, len(topLevel))
+	for _, summary := range topLevel {
+		topLevelPayload = append(topLevelPayload, map[string]any{
+			"kind":    "issue_comment",
+			"author":  "reviewer",
+			"summary": summary,
+		})
+	}
+	threadPayload := make([]map[string]any, 0, len(threads))
+	for _, thread := range threads {
+		threadPayload = append(threadPayload, map[string]any{
+			"path":    thread.path,
+			"line":    thread.line,
+			"status":  thread.status,
+			"summary": thread.summary,
+		})
+	}
+	payload := map[string]any{
+		"schema_version":     dossierSummarySchemaVersion,
+		"top_level_comments": topLevelPayload,
+		"inline_threads":     threadPayload,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func parseDiffPatchesForTest(t *testing.T, raw string) []FilePatch {
+	t.Helper()
+	parsed, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	return parsed.Patches
 }
 
 func smallDiff(path string) string {

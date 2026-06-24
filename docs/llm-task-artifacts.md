@@ -26,15 +26,20 @@ trust the final `metadata.json` name, never a temporary metadata file.
 
 ## Schema Version
 
-`schema_version` is currently `1`. Bump it when changing any load-bearing field,
-status value, fingerprint input, task identity, or resume rule in a way that
-could make an in-flight run unsafe to resume.
+`schema_version` is currently `1`. Ticket `#369` adds a new dossier-phase task
+without changing the metadata shape, so the schema version stays at `1`.
+
+Bump it when changing any load-bearing field, status value, fingerprint input,
+task identity, or resume rule in a way that could make an in-flight run unsafe
+to resume.
 
 Load-bearing metadata fields are:
 
 - `task_id`: stable task identity. Current values are `orchestrator-selection`,
-  `reviewer-<encoded-agent-id>`, and `orchestrator-rollup`.
-- `phase`: task phase, such as `selection`, `reviewer`, or `rollup`.
+  `reviewer-<encoded-agent-id>`, `orchestrator-rollup`, and
+  `dossier-discussion-summary`.
+- `phase`: task phase, such as `selection`, `reviewer`, `rollup`, or
+  `dossier`.
 - `dependency_task_ids`: task IDs whose completed state was included in this
   task input.
 - `input_fingerprint`: hash of the task schema version, adapter, task identity,
@@ -42,7 +47,9 @@ Load-bearing metadata fields are:
 - `agent_id`: reviewer agent ID for reviewer tasks.
 - `status`: one of `succeeded`, `failed_isolated`, or `failed_blocking`.
 - `session_row_id` and `provider_session_id`: ledger/provider session handles
-  used for run summaries and provider-level resume.
+  used for run summaries and provider-level resume. `session_row_id` may be
+  empty only for caller-owned `SelectionOnly` artifact roots that reuse a
+  cached task without allocating a review run.
 - `adapter`, `model`, `effort`, and `log_path`: execution context.
 - `validated_output_path`: structured output to decode when reusing a succeeded
   task.
@@ -80,6 +87,8 @@ task call with that session if the adapter supports resume.
 Resume starts at the first task that cannot be reused:
 
 - Load a matching `succeeded` selection task instead of rerunning selection.
+- Load a matching `succeeded` dossier summary task instead of rerunning
+  discussion summarization.
 - Load matching `succeeded` reviewer tasks instead of rerunning reviewers.
 - Load `failed_isolated` reviewer diagnostics instead of rerunning those
   reviewers automatically.
@@ -90,3 +99,29 @@ Resume starts at the first task that cannot be reused:
 
 Raw invalid structured output is local artifact data. Public rollups may include
 concise diagnostics, but they must not include raw failed model output.
+
+## Dossier Summary Task
+
+`dossier-discussion-summary` is the durable LLM task that converts raw PR
+discussion artifacts into reviewer-facing normalized summary artifacts.
+
+- `task_id`: `dossier-discussion-summary`
+- `phase`: `dossier`
+- prompt input: bounded raw discussion projection from
+  `dossier/raw/top-level-comments.json` and `dossier/raw/inline-threads.json`
+- validated output: normalized summary JSON written both to the task artifact
+  directory and to `dossier/summary/discussion.json`
+
+For normal `cr review` runs, the dossier summary task executes after run
+allocation and persists a normal ledger-backed session row.
+
+For `SelectionOnly`, the caller owns the artifact root and no review run is
+allocated. In that scoped mode:
+
+- the cached task may still be loaded from task metadata plus validated output
+- `provider_session_id` may still be present for provider-level resume context
+- `session_row_id` may be empty
+- loading the cached task must not require a ledger session lookup
+
+This no-run behavior is intentionally limited to caller-owned artifact roots;
+the normal run-backed durable task model remains unchanged for full reviews.
