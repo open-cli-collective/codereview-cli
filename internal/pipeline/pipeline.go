@@ -1119,19 +1119,19 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	agentID := agent.ID
 	taskID := reviewerTaskID(agent.ID)
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
-		runID:             runID,
-		taskID:            taskID,
-		phase:             "reviewer",
-		dependencyTaskIDs: dependencyTaskIDs,
-		inputFingerprint:  llmTaskFingerprint(taskID, "reviewer", model, effort, prompt, dependencyTaskIDs),
-		artifacts:         artifacts,
-		role:              ledger.SessionRoleReviewer,
-		agentID:           &agentID,
-		model:             model,
-		effort:            effort,
-		logPath:           logPath,
-		prompt:            prompt,
-		validationFailure: llmTaskStatusFailedIsolated,
+		runID:                   runID,
+		taskID:                  taskID,
+		phase:                   "reviewer",
+		dependencyTaskIDs:       dependencyTaskIDs,
+		inputFingerprint:        llmTaskFingerprint(taskID, "reviewer", model, effort, prompt, dependencyTaskIDs),
+		artifacts:               artifacts,
+		role:                    ledger.SessionRoleReviewer,
+		agentID:                 &agentID,
+		model:                   model,
+		effort:                  effort,
+		logPath:                 logPath,
+		prompt:                  prompt,
+		validationFailureStatus: llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
 			KnownAgents:  map[string]bool{agent.ID: true},
@@ -1145,7 +1145,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 			return nil, session, ledgerSession, &ReviewerFailure{
 				TaskID:  taskID,
 				AgentID: agent.ID,
-				Error:   sanitizeTaskError(err),
+				Error:   sanitizeTaskErrorForMarkdown(err),
 			}, nil
 		}
 		return nil, sessionDraft{}, ledger.Session{}, nil, err
@@ -1198,20 +1198,20 @@ func runStructuredResume[T any](ctx context.Context, opts Options, role ledger.S
 }
 
 type llmTaskSpec struct {
-	runID             string
-	taskID            string
-	phase             string
-	dependencyTaskIDs []string
-	inputFingerprint  string
-	artifacts         ArtifactPaths
-	role              ledger.SessionRole
-	agentID           *string
-	model             string
-	effort            string
-	logPath           string
-	prompt            string
-	resumeSessionID   string
-	validationFailure llmTaskStatus
+	runID                   string
+	taskID                  string
+	phase                   string
+	dependencyTaskIDs       []string
+	inputFingerprint        string
+	artifacts               ArtifactPaths
+	role                    ledger.SessionRole
+	agentID                 *string
+	model                   string
+	effort                  string
+	logPath                 string
+	prompt                  string
+	resumeSessionID         string
+	validationFailureStatus llmTaskStatus
 }
 
 func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpec, decode llm.Decoder[T]) (T, sessionDraft, ledger.Session, error) {
@@ -1275,10 +1275,10 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 		return result.Value, draft, session, nil
 	}
 
-	meta.Error = sanitizeTaskError(err)
+	meta.Error = sanitizeTaskErrorForMarkdown(err)
 	meta.Status = llmTaskStatusFailedBlocking
-	if spec.validationFailure != "" && errors.Is(err, llm.ErrStructuredOutputInvalidAfterRetry) {
-		meta.Status = spec.validationFailure
+	if spec.validationFailureStatus != "" && errors.Is(err, llm.ErrStructuredOutputInvalidAfterRetry) {
+		meta.Status = spec.validationFailureStatus
 	}
 	meta.SessionRowID = session.SessionRowID
 	meta.ProviderSessionID = session.ProviderSessionID
@@ -1322,7 +1322,7 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 		}
 		return value, sessionDraftFromLedger(session), session, true, nil
 	case llmTaskStatusFailedIsolated:
-		if spec.validationFailure != llmTaskStatusFailedIsolated {
+		if spec.validationFailureStatus != llmTaskStatusFailedIsolated {
 			return zero, sessionDraft{}, ledger.Session{}, true, fmt.Errorf("pipeline: LLM task %q has isolated failure status outside reviewer phase", spec.taskID)
 		}
 		session, draft, err := loadOptionalTaskSession(ctx, opts, spec.runID, meta)
@@ -1513,12 +1513,12 @@ func writeLLMTaskSuccess(paths ArtifactPaths, meta *llmTaskMetadata, output []by
 func writeLLMTaskFailure(paths ArtifactPaths, meta *llmTaskMetadata, attempts []llm.StructuredValidationAttempt) error {
 	for _, attempt := range attempts {
 		attemptMeta := llmTaskAttemptMetadata{
-			Attempt:           attempt.Attempt,
+			Attempt:           attempt.Label,
 			ProviderSessionID: attempt.SessionID,
-			DecodeError:       sanitizeTaskError(attempt.DecodeError),
+			DecodeError:       sanitizeTaskErrorForMarkdown(attempt.DecodeError),
 		}
 		if len(attempt.Response.StructuredOutput) > 0 {
-			rawPath, err := paths.LLMTaskRawAttempt(meta.TaskID, attempt.Attempt)
+			rawPath, err := paths.LLMTaskRawAttempt(meta.TaskID, attempt.Label)
 			if err != nil {
 				return err
 			}
@@ -1555,7 +1555,7 @@ func writeFileAtomic(path string, data []byte) error {
 	return os.Rename(tmp, path)
 }
 
-func sanitizeTaskError(err error) string {
+func sanitizeTaskErrorForMarkdown(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -1757,8 +1757,8 @@ func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerF
 	out := make([]reviewplan.ReviewerFailureSummary, 0, len(failures))
 	for _, failure := range failures {
 		out = append(out, reviewplan.ReviewerFailureSummary{
-			Name:  failure.AgentID,
-			Error: failure.Error,
+			AgentID: failure.AgentID,
+			Error:   failure.Error,
 		})
 	}
 	return out

@@ -80,7 +80,7 @@ type StructuredResult[T any] struct {
 
 // StructuredValidationAttempt records one failed schema-validation attempt.
 type StructuredValidationAttempt struct {
-	Attempt     string
+	Label       string
 	SessionID   string
 	Response    Response
 	DecodeError error
@@ -140,7 +140,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 		return StructuredResult[T]{Value: value, Response: response, SessionID: sessionID}, nil
 	}
 	attempts := []StructuredValidationAttempt{{
-		Attempt:     "initial",
+		Label:       "initial",
 		SessionID:   sessionID,
 		Response:    cloneResponse(response),
 		DecodeError: decodeErr,
@@ -159,7 +159,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	retryValue, retryErr := decodeStructured(decode, retryResponse.StructuredOutput)
 	if retryErr != nil {
 		attempts = append(attempts, StructuredValidationAttempt{
-			Attempt:     "retry",
+			Label:       "retry",
 			SessionID:   retrySessionID,
 			Response:    cloneResponse(retryResponse),
 			DecodeError: retryErr,

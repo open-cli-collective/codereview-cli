@@ -56,8 +56,8 @@ type RunSummary struct {
 
 // ReviewerFailureSummary is a reviewer task diagnostic rendered in the rollup.
 type ReviewerFailureSummary struct {
-	Name  string
-	Error string
+	AgentID string
+	Error   string
 }
 
 // WorkstreamUsage is adapter-reported usage for one workstream: the reserved
@@ -232,7 +232,7 @@ func writeReviewerFailureDiagnostics(out *strings.Builder, failures []ReviewerFa
 	out.WriteString("| Reviewer | Status | Diagnostic |\n")
 	out.WriteString("|----------|--------|------------|\n")
 	for _, failure := range failures {
-		fmt.Fprintf(out, "| %s | failed | %s |\n", escapeCell(failure.Name), escapeCell(failure.Error))
+		fmt.Fprintf(out, "| %s | failed | %s |\n", escapeCell(failure.AgentID), escapeCell(failure.Error))
 	}
 	out.WriteString("\n")
 }

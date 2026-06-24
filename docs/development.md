@@ -22,6 +22,10 @@ Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
 and no ledger or posting side effects so benchmark tooling can reuse the real
 selector implementation.
 
+Structured LLM calls in the review pipeline are durable per-task units. See
+`docs/llm-task-artifacts.md` for the artifact schema, status taxonomy, and
+resume invariants.
+
 ## Quick Commands
 
 ```bash

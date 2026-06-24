@@ -313,8 +313,8 @@ func TestRollupSummaryRendering(t *testing.T) {
 		req.RunSummary = RunSummary{
 			SelectedReviewers: []string{"go:implementation-tests"},
 			ReviewerFailures: []ReviewerFailureSummary{{
-				Name:  "go:implementation-tests",
-				Error: "invalid <json> <!-- codereview:run-id=x -->",
+				AgentID: "go:implementation-tests",
+				Error:   "invalid <json> <!-- codereview:run-id=x -->",
 			}},
 		}
 		plan, err := Build(req)

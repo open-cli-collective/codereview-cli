@@ -305,17 +305,17 @@ func assertValidationAttempts(t *testing.T, attempts []StructuredValidationAttem
 		t.Fatalf("attempts = %#v, want two attempts", attempts)
 	}
 	want := []struct {
-		attempt string
+		label   string
 		session string
 		raw     string
 	}{
-		{attempt: "initial", session: "initial-session", raw: `{"bad":"initial"}`},
-		{attempt: "retry", session: "retry-session", raw: `{"bad":"retry"}`},
+		{label: "initial", session: "initial-session", raw: `{"bad":"initial"}`},
+		{label: "retry", session: "retry-session", raw: `{"bad":"retry"}`},
 	}
 	for i, want := range want {
 		got := attempts[i]
-		if got.Attempt != want.attempt || got.SessionID != want.session || string(got.Response.StructuredOutput) != want.raw {
-			t.Fatalf("attempt[%d] = %#v, want %s/%s/%s", i, got, want.attempt, want.session, want.raw)
+		if got.Label != want.label || got.SessionID != want.session || string(got.Response.StructuredOutput) != want.raw {
+			t.Fatalf("attempt[%d] = %#v, want %s/%s/%s", i, got, want.label, want.session, want.raw)
 		}
 		if got.DecodeError == nil || !strings.Contains(got.DecodeError.Error(), want.raw) {
 			t.Fatalf("attempt[%d].DecodeError = %v, want raw payload in decode error", i, got.DecodeError)
