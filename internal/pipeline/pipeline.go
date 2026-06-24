@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1089,7 +1090,13 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 
-	selectionPrompt, err := buildSelectionPrompt(req.ReviewPR, req.Catalog, req.ParsedDiff.Patches, req.Threads, req.MaxAgents, req.SelectionPromptInstructions)
+	promptInput, promptDeps, err := selectionPromptInputFromArtifacts(req.Artifacts, req.Threads)
+	if err != nil {
+		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+	}
+	dependencyTaskIDs := []string{dossierSummaryTaskID}
+	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
+	selectionPrompt, err := buildSelectionPrompt(req.Catalog, promptInput, req.MaxAgents, req.SelectionPromptInstructions)
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
 	}
@@ -1109,17 +1116,18 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	}
 	if strings.TrimSpace(req.RunID) != "" {
 		selection, selectionSession, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
-			runID:            req.RunID,
-			taskID:           orchestratorSelectionStage,
-			phase:            "selection",
-			inputFingerprint: llmTaskFingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, nil),
-			artifacts:        req.Artifacts,
-			role:             ledger.SessionRoleOrchestrator,
-			model:            model,
-			effort:           effort,
-			logPath:          selectionLog,
-			prompt:           selectionPrompt,
-			resumeSessionID:  req.ResumeSessionID,
+			runID:             req.RunID,
+			taskID:            orchestratorSelectionStage,
+			phase:             "selection",
+			dependencyTaskIDs: dependencyTaskIDs,
+			inputFingerprint:  llmTaskFingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, fingerprintDeps),
+			artifacts:         req.Artifacts,
+			role:              ledger.SessionRoleOrchestrator,
+			model:             model,
+			effort:            effort,
+			logPath:           selectionLog,
+			prompt:            selectionPrompt,
+			resumeSessionID:   req.ResumeSessionID,
 		}, decode)
 		if err != nil {
 			return llm.Selection{}, selectionSession, ledgerSession, err
@@ -1574,6 +1582,9 @@ func validateLLMTaskMetadata(meta llmTaskMetadata, spec llmTaskSpec, adapter str
 	}
 	if meta.Phase != spec.phase {
 		return fmt.Errorf("pipeline: LLM task %q phase = %q, want %q", spec.taskID, meta.Phase, spec.phase)
+	}
+	if !slices.Equal(meta.DependencyTaskIDs, spec.dependencyTaskIDs) {
+		return fmt.Errorf("pipeline: LLM task %q dependency task ids = %#v, want %#v; pass --rerun to start a fresh review", spec.taskID, meta.DependencyTaskIDs, spec.dependencyTaskIDs)
 	}
 	if strings.TrimSpace(adapter) != "" && meta.Adapter != adapter {
 		return fmt.Errorf("pipeline: LLM task %q adapter = %q, want %q; pass --rerun to start a fresh review", spec.taskID, meta.Adapter, adapter)
@@ -2311,6 +2322,38 @@ type selectionAgentPrompt struct {
 	NeedsFullFileContent bool     `json:"needs_full_file_content"`
 }
 
+type selectionPromptDossier struct {
+	PRIntent     string `json:"pr_intent"`
+	ChangeMap    string `json:"change_map"`
+	RepoGuidance string `json:"repo_guidance"`
+	Discussion   string `json:"discussion"`
+}
+
+type selectionPromptWorkbench struct {
+	CheckoutMode string                  `json:"checkout_mode"`
+	PR           workbenchPRIdentity     `json:"pr"`
+	Base         workbenchBranchArtifact `json:"base"`
+	Head         workbenchBranchArtifact `json:"head"`
+}
+
+type selectionThreadPrompt struct {
+	ThreadID   string `json:"thread_id"`
+	Path       string `json:"path"`
+	Line       int    `json:"line,omitempty"`
+	Side       string `json:"side,omitempty"`
+	AnchorKind string `json:"anchor_kind,omitempty"`
+	Resolved   bool   `json:"resolved,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+}
+
+type selectionPromptInput struct {
+	ChangedFiles []string                 `json:"changed_files"`
+	Dossier      selectionPromptDossier   `json:"dossier"`
+	Workbench    selectionPromptWorkbench `json:"workbench"`
+	Threads      []selectionThreadPrompt  `json:"threads,omitempty"`
+}
+
 type promptPR struct {
 	Ref    gitprovider.PRRef       `json:"ref"`
 	Title  string                  `json:"title"`
@@ -2367,18 +2410,23 @@ func fetchFileOptional(ctx context.Context, provider ReadProvider, ref gitprovid
 	return data, err
 }
 
-const defaultSelectionTask = "select reviewer agents and thread actions; return selection JSON only"
+const defaultSelectionTask = "select reviewer agents and thread actions from dossier/workbench context; return selection JSON only"
 
-func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []FilePatch, threads []gitprovider.InlineThread, maxAgents int, selectionInstructions string) (string, error) {
+func buildSelectionPrompt(catalog agents.Catalog, input selectionPromptInput, maxAgents int, selectionInstructions string) (string, error) {
+	threadIDs := make([]string, 0, len(input.Threads))
+	for _, thread := range input.Threads {
+		threadIDs = append(threadIDs, thread.ThreadID)
+	}
 	payload := map[string]any{
 		"task":                defaultSelectionTask,
-		"output_contract":     selectionOutputContract(catalog.Agents, patches, threads, maxAgents),
+		"output_contract":     selectionOutputContract(catalog.Agents, input.ChangedFiles, threadIDs, maxAgents),
 		"schema":              "selection",
 		"max_selected_agents": maxAgents,
-		"pr":                  promptPRFromPR(pr),
 		"agents":              selectionAgentPromptsFromCatalog(catalog),
-		"changed_files":       patchPaths(patches),
-		"threads":             threads,
+		"changed_files":       append([]string(nil), input.ChangedFiles...),
+		"dossier":             input.Dossier,
+		"workbench":           input.Workbench,
+		"threads":             input.Threads,
 	}
 	if instructions := strings.TrimSpace(selectionInstructions); instructions != "" {
 		payload["selection_instructions"] = instructions
@@ -2388,6 +2436,120 @@ func buildSelectionPrompt(pr gitprovider.PR, catalog agents.Catalog, patches []F
 		return "", fmt.Errorf("pipeline: build selection prompt: %w", err)
 	}
 	return string(body), nil
+}
+
+func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovider.InlineThread) (selectionPromptInput, []string, error) {
+	prIntentPath, err := paths.DossierFinalPath("pr-intent.md")
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	changeMapPath, err := paths.DossierFinalPath("change-map.md")
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	repoGuidancePath, err := paths.DossierFinalPath("repo-guidance.md")
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	discussionPath, err := paths.DossierFinalPath("discussion.md")
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	prIntent, err := selectionPromptContentFromPath(prIntentPath)
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	changeMap, err := selectionPromptContentFromPath(changeMapPath)
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	repoGuidance, err := selectionPromptContentFromPath(repoGuidancePath)
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	discussion, err := selectionPromptContentFromPath(discussionPath)
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+
+	indexBytes, err := os.ReadFile(paths.DossierIndexPath()) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
+	if err != nil {
+		return selectionPromptInput{}, nil, fmt.Errorf("pipeline: read dossier artifact %s: %w", filepath.Base(paths.DossierIndexPath()), err)
+	}
+	metaPath := paths.WorkbenchMetadataPath()
+	metaBytes, err := os.ReadFile(metaPath) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
+	if err != nil {
+		return selectionPromptInput{}, nil, fmt.Errorf("pipeline: read workbench metadata: %w", err)
+	}
+	var meta workbenchMetadataArtifact
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		return selectionPromptInput{}, nil, fmt.Errorf("pipeline: decode workbench metadata: %w", err)
+	}
+	summaryPath, err := paths.DossierSummaryPath("discussion.json")
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	var summary dossierDiscussionSummaryArtifact
+	if err := readJSONFile(summaryPath, &summary); err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+
+	input := selectionPromptInput{
+		ChangedFiles: append([]string(nil), meta.FingerprintInputs.ChangedFiles...),
+		Dossier: selectionPromptDossier{
+			PRIntent:     prIntent,
+			ChangeMap:    changeMap,
+			RepoGuidance: repoGuidance,
+			Discussion:   discussion,
+		},
+		Workbench: selectionPromptWorkbench{
+			CheckoutMode: meta.CheckoutMode,
+			PR:           meta.PR,
+			Base:         meta.Base,
+			Head:         meta.Head,
+		},
+		Threads: selectionThreadPrompts(threads, summary),
+	}
+	deps := []string{
+		"dossier_index=" + sha256Hex(indexBytes),
+		"workbench_metadata=" + sha256Hex(metaBytes),
+	}
+	return input, deps, nil
+}
+
+func selectionPromptContentFromPath(path string) (string, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
+	if err != nil {
+		return "", fmt.Errorf("pipeline: read dossier artifact %s: %w", filepath.Base(path), err)
+	}
+	return string(data), nil
+}
+
+func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
+	summaryByAnchor := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
+	for _, thread := range summary.InlineThreads {
+		key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
+		summaryByAnchor[key] = thread
+	}
+	out := make([]selectionThreadPrompt, 0, len(threads))
+	for _, thread := range threads {
+		promptThread := selectionThreadPrompt{
+			ThreadID:   string(thread.ID),
+			Path:       thread.Path,
+			Line:       thread.Line,
+			Side:       string(thread.Side),
+			AnchorKind: string(thread.SubjectType),
+			Resolved:   thread.Resolved,
+		}
+		if summarized, ok := summaryByAnchor[dossierInlineThreadAnchorKey(thread.Path, string(thread.Side), thread.Line, string(thread.SubjectType))]; ok {
+			promptThread.Status = summarized.Status
+			promptThread.Summary = summarized.Summary
+		} else if len(thread.Comments) > 0 {
+			promptThread.Summary = singleLineExcerpt(thread.Comments[0].Body, dossierFinalExcerptRunes)
+		}
+		out = append(out, promptThread)
+	}
+	return out
 }
 
 func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure) (string, error) {
@@ -2466,15 +2628,10 @@ type outputContract struct {
 	Example        any      `json:"example"`
 }
 
-func selectionOutputContract(agents []agents.Agent, patches []FilePatch, threads []gitprovider.InlineThread, maxAgents int) outputContract {
+func selectionOutputContract(agents []agents.Agent, changedFiles []string, threadIDs []string, maxAgents int) outputContract {
 	agentIDs := make([]string, 0, len(agents))
 	for _, agent := range agents {
 		agentIDs = append(agentIDs, agent.ID)
-	}
-	changedFiles := patchPaths(patches)
-	threadIDs := make([]string, 0, len(threads))
-	for _, thread := range threads {
-		threadIDs = append(threadIDs, string(thread.ID))
 	}
 	example := map[string]any{
 		"schema_version":  1,
@@ -2493,12 +2650,13 @@ func selectionOutputContract(agents []agents.Agent, patches []FilePatch, threads
 			"schema_version must be 1.",
 			"selected_agents[].agent_id must be one of the allowed_agent_ids.",
 			"selected_agents[].files must contain only paths from changed_files.",
+			"selected_agents[].allowed_files must contain only paths from changed_files when present.",
 			"selected_agents must contain at most max_selected_agents entries, ordered from highest to lowest review value.",
 			"thread_actions must be an empty array when there are no threads.",
 		},
 		ResponseSchema: map[string]any{
 			"schema_version":  "number, required, must be 1",
-			"selected_agents": "array of {agent_id: string, rationale: string, files: string[]}",
+			"selected_agents": "array of {agent_id: string, rationale: string, files: string[], allowed_files?: string[]}",
 			"thread_actions":  "array of {thread_id: string, decision: string, summary: string, safe_to_resolve_rationale: string}",
 			"reasoning":       "string",
 		},

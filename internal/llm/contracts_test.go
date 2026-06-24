@@ -16,7 +16,7 @@ func TestDecodeSelection(t *testing.T) {
 	}
 	got, err := DecodeSelection([]byte(`{
 		"schema_version": 1,
-		"selected_agents": [{"agent_id":"agent-1","rationale":"why <!-- codereview:skip -->","files":["main.go"]}],
+		"selected_agents": [{"agent_id":"agent-1","rationale":"why <!-- codereview:skip -->","files":["main.go"],"allowed_files":["main.go"]}],
 		"thread_actions": [{"thread_id":"thread-1","decision":"summarize_and_resolve","summary":"<!-- codereview:skip --> summary","safe_to_resolve_rationale":"safe"}],
 		"reasoning":"because <!-- codereview:skip -->"
 	}`), opts)
@@ -25,6 +25,9 @@ func TestDecodeSelection(t *testing.T) {
 	}
 	if got.SelectedAgents[0].AgentID != "agent-1" || got.ThreadActions[0].Decision != review.ThreadDecisionSummarizeAndResolve {
 		t.Fatalf("DecodeSelection = %#v", got)
+	}
+	if len(got.SelectedAgents[0].AllowedFiles) != 1 || got.SelectedAgents[0].AllowedFiles[0] != "main.go" {
+		t.Fatalf("DecodeSelection allowed_files = %#v, want main.go", got.SelectedAgents[0].AllowedFiles)
 	}
 	if strings.Contains(got.ThreadActions[0].Summary, "<!-- codereview:") ||
 		strings.Contains(got.SelectedAgents[0].Rationale, "<!-- codereview:") ||
@@ -35,6 +38,7 @@ func TestDecodeSelection(t *testing.T) {
 	assertSelectionError(t, opts, `{"schema_version":2}`, "schema_version")
 	assertSelectionError(t, opts, `{"schema_version":1,"selected_agents":[{"agent_id":"missing"}]}`, "unknown selected agent")
 	assertSelectionError(t, opts, `{"schema_version":1,"selected_agents":[{"agent_id":"agent-1","files":["other.go"]}]}`, "changed files")
+	assertSelectionError(t, opts, `{"schema_version":1,"selected_agents":[{"agent_id":"agent-1","files":["main.go"],"allowed_files":["other.go"]}]}`, "allowed file")
 	assertSelectionError(t, opts, `{"schema_version":1,"thread_actions":[{"thread_id":"missing","decision":"skip"}]}`, "unknown thread")
 	assertSelectionError(t, opts, `{"schema_version":1,"thread_actions":[{"thread_id":"thread-1","decision":"summarize_only"}]}`, "summary")
 	assertSelectionError(t, opts, `{"schema_version":1,"thread_actions":[{"thread_id":"thread-1","decision":"summarize_and_resolve","summary":"summary"}]}`, "safe_to_resolve_rationale")

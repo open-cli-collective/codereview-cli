@@ -35,9 +35,10 @@ type Selection struct {
 
 // SelectedAgent is one selected reviewer agent.
 type SelectedAgent struct {
-	AgentID   string
-	Rationale string
-	Files     []string
+	AgentID      string
+	Rationale    string
+	Files        []string
+	AllowedFiles []string
 }
 
 // SelectionOptions contains context needed to validate selection output.
@@ -84,9 +85,10 @@ type selectionWire struct {
 }
 
 type selectedAgentWire struct {
-	AgentID   string   `json:"agent_id"`
-	Rationale string   `json:"rationale"`
-	Files     []string `json:"files"`
+	AgentID      string   `json:"agent_id"`
+	Rationale    string   `json:"rationale"`
+	Files        []string `json:"files"`
+	AllowedFiles []string `json:"allowed_files,omitempty"`
 }
 
 type threadActionWire struct {
@@ -155,10 +157,16 @@ func DecodeSelection(data []byte, opts SelectionOptions) (Selection, error) {
 				return Selection{}, fmt.Errorf("llm: selected file %q is not in changed files", file)
 			}
 		}
+		for _, file := range agent.AllowedFiles {
+			if strings.TrimSpace(file) == "" || !opts.ChangedFiles[file] {
+				return Selection{}, fmt.Errorf("llm: allowed file %q is not in changed files", file)
+			}
+		}
 		selection.SelectedAgents = append(selection.SelectedAgents, SelectedAgent{
-			AgentID:   agent.AgentID,
-			Rationale: sanitize(agent.Rationale),
-			Files:     append([]string(nil), agent.Files...),
+			AgentID:      agent.AgentID,
+			Rationale:    sanitize(agent.Rationale),
+			Files:        append([]string(nil), agent.Files...),
+			AllowedFiles: append([]string(nil), agent.AllowedFiles...),
 		})
 	}
 
