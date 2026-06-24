@@ -1276,6 +1276,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 		noopLimiter{},
 		statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		&warnings,
+		nil,
 		RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2, Retention: retention, RetentionManualOnly: true},
 	)
 
@@ -1433,6 +1434,7 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1515,6 +1517,7 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 			noopLimiter{},
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1587,6 +1590,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1656,6 +1660,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1718,6 +1723,7 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 			noopLimiter{},
 			layout,
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1885,6 +1891,7 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 			noopLimiter{},
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
+			nil,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1989,6 +1996,78 @@ func TestProgressAdapterResumeErrorWritesResumeSessionID(t *testing.T) {
 		!strings.Contains(stderr, `resume_session_id="stored-session"`) ||
 		!strings.Contains(stderr, `event=error`) {
 		t.Fatalf("stderr = %q, want resume error breadcrumb", stderr)
+	}
+}
+
+func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
+	var errOut bytes.Buffer
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	provider := &gitprovider.Fake{}
+	ref, pr := reviewCommandPR()
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("comment", nil)))
+	logger := progress.New(&errOut, false, nil)
+	runner := buildReviewRunner(
+		store,
+		provider,
+		adapter,
+		testConfig().Profiles["home"],
+		noopLimiter{},
+		statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		&errOut,
+		logger,
+		RuntimeOptions{},
+	)
+
+	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		RunID:           "run-123",
+		PRKey:           "github_open-cli-collective_codereview-cli_29",
+		PRURL:           pr.URL,
+		Profile:         "home",
+		PostingIdentity: "review-bot",
+		PostMode:        ledger.PostModeLive,
+		SHA:             pr.Head.SHA,
+		BaseSHA:         pr.Base.SHA,
+		StartedAt:       time.Now().UTC(),
+		ArtifactPath:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	_, err = runner.live.Planner.Live(context.Background(), pipeline.Request{
+		PRRef:           ref,
+		PRURL:           pr.URL,
+		ProfileName:     "home",
+		Profile:         testConfig().Profiles["home"],
+		PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+	}, run)
+	if err != nil {
+		t.Fatalf("Planner.Live: %v", err)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="review" op="plan_live_review" target="pr"`) ||
+		!strings.Contains(stderr, `run_id="run-123"`) {
+		t.Fatalf("stderr = %q, want planner breadcrumb", stderr)
 	}
 }
 

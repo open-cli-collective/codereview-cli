@@ -755,7 +755,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		}
 		return withProgressAdapter(logger, adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
 	})
-	runner := buildReviewRunner(ledgerStore, provider, adapter, profile, limiter, layout, opts.Stderr, runtimeOpts)
+	runner := buildReviewRunner(ledgerStore, provider, adapter, profile, limiter, layout, opts.Stderr, logger, runtimeOpts)
 	return Runtime{
 		Runner:          runner,
 		PostingIdentity: postingIdentity,
@@ -856,7 +856,7 @@ func runtimeLayout() (statepaths.Layout, error) {
 	return layout, nil
 }
 
-func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, runtimeOpts RuntimeOptions) reviewRunner {
+func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, runtimeOpts RuntimeOptions) reviewRunner {
 	pipelineOpts := pipeline.Options{
 		Provider:            provider,
 		Adapter:             adapter,
@@ -874,12 +874,12 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 		live: reviewrun.Options{
 			Store:                   ledgerStore,
 			Provider:                provider,
-			Planner:                 livePlanner{opts: pipelineOpts},
+			Planner:                 withProgressPlanner(logger, livePlanner{opts: pipelineOpts}),
 			Limiter:                 limiter,
 			Layout:                  layout,
 			StaleHeartbeatThreshold: 10 * time.Minute,
 			Warnings:                warnings,
-			ApprovalOverride:        buildApprovalOverrideClassifier(profile, adapter, warnings),
+			ApprovalOverride:        withProgressApprovalOverrideClassifier(logger, buildApprovalOverrideClassifier(profile, adapter, warnings)),
 			Retention:               runtimeOpts.Retention,
 			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
 		},
