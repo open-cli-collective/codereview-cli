@@ -96,6 +96,9 @@ Secrets are never written to `config.yml`. Non-secret config lives in the
 `codereview` config directory resolved by the operating system, and durable
 review data lives under the OS data directory for the `cr` binary.
 
+For repo review guidance, reviewer-facing dossier context, and dossier/workbench
+retention conventions, see [docs/review-guidance.md](docs/review-guidance.md).
+
 ## Authentication And Setup
 
 `cr` v1 supports GitHub personal access token authentication for Git-host

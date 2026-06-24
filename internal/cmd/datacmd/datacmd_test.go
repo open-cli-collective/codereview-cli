@@ -300,6 +300,40 @@ func TestDataPruneKeepLastPerPostMode(t *testing.T) {
 	}
 }
 
+func TestDataPruneRemovesDossierAndWorkbenchArtifacts(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := mustLayout(t)
+	store := openLedgerForTest(t, layout)
+	run := allocateRun(t, store, layout, "live-old", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	writeDataCommandFile(t, filepath.Join(run.ArtifactPath, "dossier", "final", "repo-guidance.md"), "guidance")
+	writeDataCommandFile(t, filepath.Join(run.ArtifactPath, "workbench", "repo", "main.go"), "package main\n")
+	writeDataCommandFile(t, filepath.Join(run.ArtifactPath, "workbench", "scratch", "notes.txt"), "scratch")
+
+	var stdout, stderr bytes.Buffer
+	if err := runDataCommand(&stdout, &stderr, "data", "prune", "--older-than", "1h", "--json"); err != nil {
+		t.Fatalf("data prune: %v; stderr = %q", err, stderr.String())
+	}
+	var pruned view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &pruned); err != nil {
+		t.Fatalf("Unmarshal prune: %v; stdout = %q", err, stdout.String())
+	}
+	if len(pruned.DeletedRuns) != 1 || pruned.DeletedRuns[0].RunID != "live-old" {
+		t.Fatalf("deleted runs = %#v, want live-old deletion", pruned.DeletedRuns)
+	}
+	if _, err := os.Stat(filepath.Join(run.ArtifactPath, "dossier")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dossier stat err = %v, want removed", err)
+	}
+	if _, err := os.Stat(filepath.Join(run.ArtifactPath, "workbench")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workbench stat err = %v, want removed", err)
+	}
+	if _, err := os.Stat(run.ArtifactPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("artifact root stat err = %v, want removed", err)
+	}
+}
+
 func TestDataPruneRejectsInvalidFlagCombinations(t *testing.T) {
 	statedirtest.Hermetic(t)
 	tests := []struct {
@@ -368,6 +402,36 @@ func TestDataPurgeDryRunDoesNotRequireConfirmationOrDelete(t *testing.T) {
 	}
 	if _, err := os.Stat(layout.LedgerDB()); err != nil {
 		t.Fatalf("ledger stat: %v", err)
+	}
+}
+
+func TestDataPurgeRemovesDossierAndWorkbenchArtifacts(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := mustLayout(t)
+	store := openLedgerForTest(t, layout)
+	run := allocateRun(t, store, layout, "live-old", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	writeDataCommandFile(t, filepath.Join(run.ArtifactPath, "dossier", "final", "repo-guidance.md"), "guidance")
+	writeDataCommandFile(t, filepath.Join(run.ArtifactPath, "workbench", "repo", "main.go"), "package main\n")
+	writeDataCommandFile(t, filepath.Join(run.ArtifactPath, "workbench", "scratch", "notes.txt"), "scratch")
+
+	var stdout, stderr bytes.Buffer
+	if err := runDataCommand(&stdout, &stderr, "data", "purge", "--yes"); err != nil {
+		t.Fatalf("data purge: %v; stderr = %q", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Purged data root:") {
+		t.Fatalf("stdout = %q, want purge summary", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(run.ArtifactPath, "dossier")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dossier stat err = %v, want removed", err)
+	}
+	if _, err := os.Stat(filepath.Join(run.ArtifactPath, "workbench")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workbench stat err = %v, want removed", err)
+	}
+	if _, err := os.Stat(layout.DataRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("data root stat err = %v, want removed", err)
 	}
 }
 
