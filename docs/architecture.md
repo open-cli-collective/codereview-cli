@@ -3,12 +3,12 @@
 This document records review-pipeline boundaries that are intended to stay
 stable as the implementation evolves.
 
-## LLM Execution Boundary
+## Durable LLM Execution Boundary
 
-Every LLM action must flow through one durable execution boundary. Callers
-should describe the stage, scope, prompt input, structured output contract, and
-model requirements; the runner owns provider invocation, retries, resume checks,
-telemetry, and persistence.
+New resumable LLM actions must flow through one durable execution boundary.
+Callers should describe the stage, scope, prompt input, structured output
+contract, and model requirements; the runner owns provider invocation, retries,
+resume checks, telemetry, and persistence.
 
 The durable runner must do a pre-flight lookup before calling the provider. If
 a completed matching step already exists, it should reuse the stored structured
@@ -20,6 +20,11 @@ token usage, cost, and provider session identifiers when available.
 New LLM-backed pipeline components should not call provider adapters directly.
 They should receive a fakeable runner interface in unit tests and should return
 domain results rather than posting comments or mutating provider state.
+
+The current durable runner is `internal/llmrun`, and the first production
+consumer is thread analysis. Older review stages still use the legacy session
+resume wrapper and session rows; migrating those stages to `llmrun` is required
+before this boundary can be enforced globally.
 
 ## Stage Model Resolution
 
@@ -37,6 +42,11 @@ concrete runtime choice.
 This boundary exists so model catalog data, provider capabilities, token costs,
 and profile-level tier floors can be added without touching individual review
 stages. Runtime hard-coding bypasses user preference and is a bug.
+
+Reviewer `agent.model_id` is an exact provider-specific model override. It must
+still enter runtime execution through `stagemodel.ResolveStageModel` as a model
+override rather than bypassing the resolver, but it intentionally bypasses the
+tier map because the agent author selected a concrete model.
 
 The direct `config.ResolveModelTier` exception is config inspection and the
 resolver implementation itself. The architecture guardrail is enforced by
@@ -60,16 +70,18 @@ data. The intended decomposition is:
 
 - `internal/threadcontext` normalizes `gitprovider.InlineThread`, detects
   codereview-authored finding threads, detects latest human replies, strips
-  shared markers, collapses resolved threads to the latest durable summary, and
-  produces file-scoped reviewer context.
+  shared markers, collapses resolved threads to the latest sanitized comment,
+  and produces file-scoped reviewer context.
 - `internal/threadanalysis` accepts normalized thread context and returns
   reusable domain decisions: thread ID, decision, reply body, summary, resolve
   flag, and rationale.
 
 Resolved inline threads should not be reprocessed as full conversations on
-every review. Their durable context is the latest summary comment. Reviewer
-prompts should receive compact file-scoped summaries so agents avoid re-raising
-issues that have already been discussed and resolved.
+every review. Their durable context is the latest sanitized comment on the
+resolved thread, with marker metadata retained when the comment contains a
+codereview thread-summary marker. Reviewer prompts should receive compact
+file-scoped summaries so agents avoid re-raising issues that have already been
+discussed and resolved.
 
 `cr review` and `cr respond` should share the same normalization, filtering,
 model resolution, LLM execution, and action-planning components. `cr respond`

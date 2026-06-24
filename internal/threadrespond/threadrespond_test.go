@@ -120,6 +120,53 @@ func TestRunLivePostsThroughOutbox(t *testing.T) {
 	}
 }
 
+func TestRunLiveAbortsWhenPRMovesBeforePosting(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionSummarize, "", "Summary for future context.", true))
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
+		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
+	})
+	fixture.provider.beforeGetPR = func(provider *recordingProvider, call int) error {
+		if call == 3 {
+			if err := provider.SetPR(fixture.ref, movedPR(fixture.pr)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	result, err := Run(ctx, fixture.options(), Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+	})
+	if err != nil {
+		t.Fatalf("Run live moved: %v", err)
+	}
+	if !result.Outbox.Aborted || result.Outbox.Outcome != ledger.OutcomeAborted || result.ExitCode != exitUpstream {
+		t.Fatalf("result = %#v, want aborted upstream result", result)
+	}
+	if !strings.Contains(result.Message, "premises moved") {
+		t.Fatalf("message = %q, want premises moved", result.Message)
+	}
+	if replies := fixture.provider.RecordedThreadReplies(fixture.ref); len(replies) != 0 {
+		t.Fatalf("thread replies = %#v, want no stale provider writes", replies)
+	}
+	if resolved := fixture.provider.RecordedResolvedThreads(fixture.ref); len(resolved) != 0 {
+		t.Fatalf("resolved threads = %#v, want no stale provider writes", resolved)
+	}
+	stored, err := fixture.store.GetRun(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("stored outcome = %v, want aborted", stored.Outcome)
+	}
+}
+
 func TestRunNoMatchingThreadsCompletesWithoutLLM(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
@@ -191,6 +238,48 @@ func TestRetryPostsExistingActionsWithoutLLM(t *testing.T) {
 	}
 	if storedActions[0].Status != ledger.PlannedActionPosted || storedActions[0].Error != nil {
 		t.Fatalf("stored action = %#v, want posted with cleared error", storedActions[0])
+	}
+}
+
+func TestRetryAbortsWhenPRMovesBeforePosting(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "retry-run", ledger.PostModeLive)
+	action := responsePlannedAction(t, run.RunID, "reply-1", ledger.PlannedActionThreadReply, "thread-1", outbox.ThreadReplyPayload{Body: "Retry this"})
+	action.Status = ledger.PlannedActionFailedTerminal
+	insertAction(t, fixture.store, action)
+	fixture.provider.beforeGetPR = func(provider *recordingProvider, call int) error {
+		if call == 3 {
+			if err := provider.SetPR(fixture.ref, movedPR(fixture.pr)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	result, err := Run(ctx, fixture.options(), Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		RetryRunID:      run.RunID,
+	})
+	if err != nil {
+		t.Fatalf("Run retry moved: %v", err)
+	}
+	if !result.Outbox.Aborted || result.Outbox.Outcome != ledger.OutcomeAborted || result.ExitCode != exitUpstream {
+		t.Fatalf("result = %#v, want aborted upstream result", result)
+	}
+	if replies := fixture.provider.RecordedThreadReplies(fixture.ref); len(replies) != 0 {
+		t.Fatalf("thread replies = %#v, want no stale provider writes", replies)
+	}
+	stored, err := fixture.store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("stored outcome = %v, want aborted", stored.Outcome)
 	}
 }
 
@@ -390,10 +479,23 @@ func (f *fixture) allocateRun(t *testing.T, runID string, mode ledger.PostMode) 
 
 type recordingProvider struct {
 	*gitprovider.Fake
-	events *eventLog
+	events      *eventLog
+	mu          sync.Mutex
+	getPRCalls  int
+	beforeGetPR func(*recordingProvider, int) error
 }
 
 func (p *recordingProvider) GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.PR, error) {
+	p.mu.Lock()
+	p.getPRCalls++
+	call := p.getPRCalls
+	beforeGetPR := p.beforeGetPR
+	p.mu.Unlock()
+	if beforeGetPR != nil {
+		if err := beforeGetPR(p, call); err != nil {
+			return gitprovider.PR{}, err
+		}
+	}
 	p.events.add("get_pr")
 	return p.Fake.GetPR(ctx, ref)
 }
@@ -588,6 +690,11 @@ func actionSequence() func(reviewplan.ActionKind) (string, error) {
 	}
 }
 
+func movedPR(pr gitprovider.PR) gitprovider.PR {
+	pr.Head.SHA = testMovedHeadSHA
+	return pr
+}
+
 func fixedNow() time.Time {
 	return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 }
@@ -606,6 +713,7 @@ func orderedBefore(events []string, first, second string) bool {
 }
 
 const (
-	testHeadSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	testBaseSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testHeadSHA      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testMovedHeadSHA = "cccccccccccccccccccccccccccccccccccccccc"
+	testBaseSHA      = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )

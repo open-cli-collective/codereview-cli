@@ -36,6 +36,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/sessionreuse"
+	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
 
@@ -5215,27 +5216,46 @@ func hasDryRunStageOverrides(req Request) bool {
 }
 
 func resolveSelectionRuntimeConfig(profile config.Profile, modelOverride, effortOverride string) (llmRuntimeConfig, error) {
-	if strings.TrimSpace(modelOverride) != "" {
-		return applyStageRuntimeOverrides(modelOverride, effortOverride, "", string(modelprefs.EffortMedium)), nil
-	}
-	model, err := resolveModelTier(profile, config.ModelTierMedium)
+	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+		Profile:        profile,
+		Stage:          stagemodel.StageSelection,
+		Tier:           config.ModelTierMedium,
+		ModelOverride:  modelOverride,
+		EffortOverride: effortOverride,
+		DefaultEffort:  string(modelprefs.EffortMedium),
+	})
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return applyStageRuntimeOverrides(modelOverride, effortOverride, model, string(modelprefs.EffortMedium)), nil
+	return llmRuntimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
 }
 
 func resolveSynthesisRuntimeConfig(req Request) (llmRuntimeConfig, error) {
-	model, err := resolveModelTier(req.Profile, config.ModelTierMedium)
+	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+		Profile:       req.Profile,
+		Stage:         stagemodel.StageSynthesis,
+		Tier:          config.ModelTierMedium,
+		DefaultEffort: string(modelprefs.EffortMedium),
+	})
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return llmRuntimeConfig{model: model, effort: string(modelprefs.EffortMedium)}, nil
+	return llmRuntimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
 }
 
 func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeConfig, error) {
 	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
-		return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, "", agent.Effort), nil
+		resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+			Profile:        req.Profile,
+			Stage:          stagemodel.StageReviewer,
+			ModelOverride:  req.ReviewerModelOverride,
+			EffortOverride: req.ReviewerEffortOverride,
+			DefaultEffort:  agent.Effort,
+		})
+		if err != nil {
+			return llmRuntimeConfig{}, err
+		}
+		return llmRuntimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
 	}
 	resolved, err := resolveAgentModel(req.Profile, req.ReviewerModelTierOverride, agent)
 	if err != nil {
@@ -5246,9 +5266,18 @@ func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeCo
 
 func resolveAgentModel(profile config.Profile, baselineOverride string, agent agents.Agent) (reviewerRuntimeResolution, error) {
 	if modelID := strings.TrimSpace(agent.ModelID); modelID != "" {
+		resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+			Profile:       profile,
+			Stage:         stagemodel.StageReviewer,
+			ModelOverride: modelID,
+			DefaultEffort: agent.Effort,
+		})
+		if err != nil {
+			return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
+		}
 		return reviewerRuntimeResolution{
 			Mode:          "exact_model",
-			ResolvedModel: modelID,
+			ResolvedModel: resolved.Model,
 		}, nil
 	}
 	floorTier := config.ModelTier(strings.TrimSpace(agent.ModelTier))
@@ -5259,8 +5288,13 @@ func resolveAgentModel(profile config.Profile, baselineOverride string, agent ag
 	if err != nil {
 		return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
 	}
-	effectiveTier := maxModelTier(baselineTier, floorTier)
-	resolved, err := resolveModelTierResolution(profile, effectiveTier)
+	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+		Profile:       profile,
+		Stage:         stagemodel.StageReviewer,
+		Tier:          baselineTier,
+		FloorTier:     floorTier,
+		DefaultEffort: agent.Effort,
+	})
 	if err != nil {
 		return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
 	}
@@ -5268,27 +5302,10 @@ func resolveAgentModel(profile config.Profile, baselineOverride string, agent ag
 		Mode:           "tier_floor",
 		FloorTier:      string(floorTier),
 		BaselineTier:   string(baselineTier),
-		EffectiveTier:  string(effectiveTier),
+		EffectiveTier:  string(resolved.Tier),
 		ResolvedModel:  resolved.Model,
 		ModelMapSource: resolved.Source,
 	}, nil
-}
-
-func resolveModelTier(profile config.Profile, tier config.ModelTier) (string, error) {
-	resolved, err := resolveModelTierResolution(profile, tier)
-	if err != nil {
-		return "", err
-	}
-	return resolved.Model, nil
-}
-
-func resolveModelTierResolution(profile config.Profile, tier config.ModelTier) (config.ModelMapResolution, error) {
-	resolved, ok := config.ResolveModelTier(profile.LLM, tier)
-	if !ok {
-		llmConfig := profile.LLM
-		return config.ModelMapResolution{}, fmt.Errorf("model_tier %q is not mapped for provider %q adapter %q", tier, llmConfig.Provider, llmConfig.Adapter)
-	}
-	return resolved, nil
 }
 
 func resolveReviewerBaselineTier(profile config.Profile, override string) (config.ModelTier, error) {
@@ -5307,26 +5324,6 @@ func resolveReviewerBaselineTier(profile config.Profile, override string) (confi
 		return "", fmt.Errorf("reviewer baseline model_tier %q is invalid; must be one of small, medium, large", tier)
 	}
 	return tier, nil
-}
-
-func maxModelTier(left, right config.ModelTier) config.ModelTier {
-	if modelTierRank(left) >= modelTierRank(right) {
-		return left
-	}
-	return right
-}
-
-func modelTierRank(tier config.ModelTier) int {
-	switch tier {
-	case config.ModelTierSmall:
-		return 1
-	case config.ModelTierMedium:
-		return 2
-	case config.ModelTierLarge:
-		return 3
-	default:
-		return 0
-	}
 }
 
 func applyStageRuntimeOverrides(modelOverride, effortOverride, model, effort string) llmRuntimeConfig {

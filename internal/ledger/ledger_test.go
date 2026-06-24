@@ -779,6 +779,27 @@ func TestNamedSessionListAndDelete(t *testing.T) {
 	}
 }
 
+func TestInsertPlannedActionsIsAtomic(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+
+	first := validPlannedAction(run.RunID)
+	second := validPlannedAction(run.RunID)
+	second.PayloadJSON = `{"body":"duplicate action id"}`
+
+	err := store.InsertPlannedActions(context.Background(), []PlannedAction{first, second})
+	if err == nil {
+		t.Fatal("InsertPlannedActions duplicate error = nil, want constraint error")
+	}
+	actions, listErr := store.ListPlannedActions(context.Background(), run.RunID)
+	if listErr != nil {
+		t.Fatalf("ListPlannedActions: %v", listErr)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("planned actions = %#v, want rollback with no actions", actions)
+	}
+}
+
 func TestUpdatePlannedActionPersistsMutableFields(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, validAllocateRunParams())

@@ -1176,7 +1176,6 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 			Limiter:     limiter,
 			Layout:      layout,
 			NewActionID: pipelineOpts.NewActionID,
-			NewStepID:   pipelineOpts.NewLLMStepID,
 		},
 	}
 }

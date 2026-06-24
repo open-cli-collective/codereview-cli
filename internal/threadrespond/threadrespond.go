@@ -45,6 +45,7 @@ type Store interface {
 	GetRun(context.Context, string) (ledger.Run, error)
 	AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error)
 	InsertPlannedAction(context.Context, ledger.PlannedAction) error
+	InsertPlannedActions(context.Context, []ledger.PlannedAction) error
 	ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error)
 	UpdatePlannedAction(context.Context, ledger.PlannedAction) error
 	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
@@ -189,16 +190,18 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 		return result, err
 	}
 	result.Plan = plan
+	plannedActions := make([]ledger.PlannedAction, 0, len(plan.Actions))
 	for _, action := range plan.Actions {
 		planned, err := plannedactions.FromReviewPlan(run.RunID, action)
 		if err != nil {
 			return result, err
 		}
-		if err := opts.Store.InsertPlannedAction(ctx, planned); err != nil {
-			return result, err
-		}
-		result.PlannedActions = append(result.PlannedActions, planned)
+		plannedActions = append(plannedActions, planned)
 	}
+	if err := opts.Store.InsertPlannedActions(ctx, plannedActions); err != nil {
+		return result, err
+	}
+	result.PlannedActions = plannedActions
 
 	if req.DryRun {
 		if err := opts.Store.CompleteRun(ctx, run.RunID, ledger.OutcomeDryRun, opts.now()); err != nil {
@@ -221,6 +224,20 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 		}
 		result.Run = run
 		result.Outbox = outbox.Result{Outcome: ledger.OutcomeNothingToReview, ExitCode: exitOK}
+		return result, nil
+	}
+	if moved, message, err := abortIfMoved(ctx, opts, req, run); err != nil {
+		result.ExitCode = exitUpstream
+		return result, err
+	} else if moved {
+		run, err := opts.Store.GetRun(ctx, run.RunID)
+		if err != nil {
+			return result, err
+		}
+		result.Run = run
+		result.Outbox = outbox.Result{Outcome: ledger.OutcomeAborted, ExitCode: exitUpstream, Aborted: true}
+		result.ExitCode = exitUpstream
+		result.Message = message
 		return result, nil
 	}
 	if opts.Limiter == nil {
@@ -291,6 +308,21 @@ func retry(ctx context.Context, opts Options, req Request) (Result, error) {
 		return result, err
 	}
 	result.PlannedActions = actions
+	if moved, message, err := abortIfMoved(ctx, opts, req, run); err != nil {
+		result.ExitCode = exitUpstream
+		return result, err
+	} else if moved {
+		run, err := opts.Store.GetRun(ctx, run.RunID)
+		if err != nil {
+			result.ExitCode = exitFailed
+			return result, err
+		}
+		result.Run = run
+		result.Outbox = outbox.Result{Outcome: ledger.OutcomeAborted, ExitCode: exitUpstream, Aborted: true}
+		result.ExitCode = exitUpstream
+		result.Message = message
+		return result, nil
+	}
 	postResult, err := outbox.Post(ctx, outbox.Options{
 		Store:    opts.Store,
 		Provider: opts.Provider,
@@ -346,6 +378,20 @@ func readPRWithOptionalLock(ctx context.Context, opts Options, req Request, lock
 		lastErr = fmt.Errorf("threadrespond: PR moved before lock stabilized")
 	}
 	return gitprovider.PR{}, nil, lastErr
+}
+
+func abortIfMoved(ctx context.Context, opts Options, req Request, run ledger.Run) (bool, string, error) {
+	pr, err := opts.Provider.GetPR(ctx, req.PRRef)
+	if err != nil {
+		return false, "", err
+	}
+	if pr.Head.SHA == run.SHA && pr.Base.SHA == run.BaseSHA {
+		return false, "", nil
+	}
+	if err := opts.Store.CompleteRun(ctx, run.RunID, ledger.OutcomeAborted, opts.now()); err != nil {
+		return false, "", err
+	}
+	return true, fmt.Sprintf("threadrespond premises moved: head %s -> %s, base %s -> %s", run.SHA, pr.Head.SHA, run.BaseSHA, pr.Base.SHA), nil
 }
 
 func analyzeThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts pipeline.ArtifactPaths, runtime llmRuntime, threads []threadcontext.Thread) ([]threadanalysis.Result, error) {
