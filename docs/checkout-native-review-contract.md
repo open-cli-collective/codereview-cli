@@ -69,6 +69,23 @@ Notes:
 The workbench is run-owned, not cache-owned. Shared clone or fetch caches are a
 possible future optimization but are not part of the correctness contract.
 
+`workbench/metadata.json` is a versioned durable artifact. Schema version `1`
+records:
+
+- `schema_version`
+- `source_repo_root`
+- `checkout_mode`
+- normalized PR identity under `pr`
+- pinned base and head refs
+- `repo_path` and `scratch_path`
+- sorted changed file paths
+- `fingerprint_inputs`, which restates the semantic inputs downstream resumable
+  tasks use to detect stale workbench state
+
+`fingerprint_inputs` is intentionally redundant with the top-level metadata so
+downstream tasks can fingerprint workbench semantics without re-deriving them
+from the checkout tree ad hoc.
+
 `SelectionOnly` and benchmark callers still own their artifact directory choice.
 Checkout-native additions must work with caller-owned artifact roots instead of
 assuming that every selector run is ledger-backed.

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -283,21 +284,22 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 }
 
 type auditHarness struct {
-	t          *testing.T
-	configPath string
-	configRoot string
-	layout     statepaths.Layout
-	agentDir   string
-	githubURL  string
-	graphQLURL string
-	llmURL     string
-	prRef      gitprovider.PRRef
-	prURL      string
-	prKey      string
-	headSHA    string
-	baseSHA    string
-	now        time.Time
-	llmCalls   atomic.Int32
+	t                *testing.T
+	configPath       string
+	configRoot       string
+	layout           statepaths.Layout
+	agentDir         string
+	githubURL        string
+	graphQLURL       string
+	llmURL           string
+	prRef            gitprovider.PRRef
+	prURL            string
+	prKey            string
+	headSHA          string
+	baseSHA          string
+	workbenchRepoDir string
+	now              time.Time
+	llmCalls         atomic.Int32
 
 	gitSecret                     string
 	reviewerSecret                string
@@ -327,14 +329,17 @@ func newAuditHarness(t *testing.T) *auditHarness {
 	if err != nil {
 		t.Fatalf("DefaultLayoutEnsured: %v", err)
 	}
+	workbench := newNoLeakWorkbenchFixture(t)
+	baseSHA, headSHA := workbench.baseSHA, workbench.headSHA
 	h := &auditHarness{ // #nosec G101 -- these are distinctive test canaries, not real credentials.
 		t:                             t,
 		configPath:                    configPath,
 		configRoot:                    filepath.Dir(configPath),
 		layout:                        layout,
 		agentDir:                      filepath.Join(rootDir, "agents"),
-		headSHA:                       strings.Repeat("a", 40),
-		baseSHA:                       strings.Repeat("b", 40),
+		headSHA:                       headSHA,
+		baseSHA:                       baseSHA,
+		workbenchRepoDir:              workbench.repoDir,
 		now:                           time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
 		gitSecret:                     "cr-noleak-git-token-0001",
 		reviewerSecret:                "cr-noleak-reviewer-token-0002",
@@ -374,6 +379,74 @@ func newAuditHarness(t *testing.T) *auditHarness {
 	writeAgent(t, h.agentDir, "harness", "reviewer", "No-leak harness reviewer.", "Review changed Go files without mentioning credentials.\n")
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 	return h
+}
+
+type noLeakWorkbenchFixture struct {
+	repoDir string
+	baseSHA string
+	headSHA string
+}
+
+func newNoLeakWorkbenchFixture(t *testing.T) noLeakWorkbenchFixture {
+	t.Helper()
+	repoDir := t.TempDir()
+	noLeakGitMustSucceed(t, repoDir, "init", "-b", "main")
+	noLeakGitMustSucceed(t, repoDir, "config", "user.name", "NoLeak Test")
+	noLeakGitMustSucceed(t, repoDir, "config", "user.email", "noleak@example.com")
+	noLeakGitMustSucceed(t, repoDir, "remote", "add", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = false\n"), 0o600); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	noLeakGitMustSucceed(t, repoDir, "add", "main.go")
+	noLeakGitMustSucceed(t, repoDir, "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(noLeakGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	noLeakGitMustSucceed(t, repoDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = true\n"), 0o600); err != nil {
+		t.Fatalf("update main.go: %v", err)
+	}
+	noLeakGitMustSucceed(t, repoDir, "commit", "-am", "head")
+	headSHA := strings.TrimSpace(noLeakGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	return noLeakWorkbenchFixture{repoDir: repoDir, baseSHA: baseSHA, headSHA: headSHA}
+}
+
+func noLeakGitMustSucceed(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	return strings.TrimSpace(noLeakGitOutput(t, dir, args...))
+}
+
+func noLeakGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+func noLeakGitCommand(ref gitprovider.PRRef) func(context.Context, string, ...string) ([]byte, error) {
+	return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		if len(args) == 3 && args[0] == "remote" && args[1] == "get-url" && args[2] == "origin" {
+			return []byte(fmt.Sprintf("https://%s/%s/%s.git\n", ref.Host, ref.Owner, ref.Repo)), nil
+		}
+		cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		if strings.TrimSpace(dir) != "" {
+			cmd.Dir = dir
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			message := strings.TrimSpace(string(out))
+			if message == "" {
+				message = err.Error()
+			}
+			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+		}
+		return out, nil
+	}
 }
 
 func (h *auditHarness) run(args []string) (string, string, error) {
@@ -648,17 +721,20 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 		_ = store.Close()
 	}
 	pipelineOpts := pipeline.Options{
-		Provider:            provider,
-		Adapter:             adapter,
-		Store:               ledgerStore,
-		NamedSessions:       ledgerStore,
-		Layout:              h.layout,
-		Warnings:            opts.Stderr,
-		Now:                 func() time.Time { return h.now },
-		Retention:           runtimeOpts.Retention,
-		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
-		MaxAgents:           runtimeOpts.MaxAgents,
-		MaxConcurrency:      runtimeOpts.MaxConcurrency,
+		Provider:                  provider,
+		Adapter:                   adapter,
+		Store:                     ledgerStore,
+		NamedSessions:             ledgerStore,
+		Layout:                    h.layout,
+		Warnings:                  opts.Stderr,
+		Now:                       func() time.Time { return h.now },
+		Retention:                 runtimeOpts.Retention,
+		RetentionManualOnly:       runtimeOpts.RetentionManualOnly,
+		MaxAgents:                 runtimeOpts.MaxAgents,
+		MaxConcurrency:            runtimeOpts.MaxConcurrency,
+		AutoUnlockWorkbenchOnExit: true,
+		GitCommand:                noLeakGitCommand(h.prRef),
+		ResolveRepoRoot:           func(context.Context) (string, error) { return h.workbenchRepoDir, nil },
 	}
 	runner := realReviewRunner{
 		pipeline: pipelineOpts,
@@ -1057,11 +1133,15 @@ func (h *auditHarness) assertOwnedFilesDoNotLeak(t *testing.T) {
 }
 
 func shouldSkipOwnedPath(path string, entry os.DirEntry) bool {
+	clean := filepath.Clean(path)
 	base := filepath.Base(path)
 	if base == "keyring" {
 		return true
 	}
-	if strings.Contains(filepath.Clean(path), string(filepath.Separator)+"keyring"+string(filepath.Separator)) {
+	if strings.Contains(clean, string(filepath.Separator)+"keyring"+string(filepath.Separator)) {
+		return true
+	}
+	if strings.Contains(clean, string(filepath.Separator)+"workbench"+string(filepath.Separator)+"repo") {
 		return true
 	}
 	if entry.Type()&os.ModeSymlink != 0 {
