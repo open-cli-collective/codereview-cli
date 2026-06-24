@@ -1,0 +1,130 @@
+package reviewcmd
+
+import (
+	"context"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
+)
+
+type progressAdapter struct {
+	adapter  llm.Adapter
+	logger   *progress.Logger
+	provider string
+	harness  string
+}
+
+type progressStream struct {
+	stream llm.Stream
+	span   *progress.Span
+	fields []progress.Field
+}
+
+func withProgressAdapter(logger *progress.Logger, adapter llm.Adapter, provider, harness string) llm.Adapter {
+	if adapter == nil || logger == nil {
+		return adapter
+	}
+	return progressAdapter{
+		adapter:  adapter,
+		logger:   logger,
+		provider: strings.TrimSpace(provider),
+		harness:  strings.TrimSpace(harness),
+	}
+}
+
+func (a progressAdapter) Name() string { return a.adapter.Name() }
+
+func (a progressAdapter) SupportsResume() bool { return a.adapter.SupportsResume() }
+
+func (a progressAdapter) SupportsCacheAccounting() bool { return a.adapter.SupportsCacheAccounting() }
+
+func (a progressAdapter) SupportsCostReporting() bool { return a.adapter.SupportsCostReporting() }
+
+func (a progressAdapter) Quota(ctx context.Context) (llm.Quota, bool, error) {
+	return a.adapter.Quota(ctx)
+}
+
+func (a progressAdapter) Start(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return a.start(ctx, "start_llm", req, "")
+}
+
+func (a progressAdapter) Resume(ctx context.Context, sessionID string, req llm.Request) (llm.Stream, error) {
+	return a.start(ctx, "resume_llm", req, sessionID)
+}
+
+func (a progressAdapter) start(ctx context.Context, op string, req llm.Request, resumeSessionID string) (llm.Stream, error) {
+	fields := llmProgressFields(a.provider, a.harness, req, resumeSessionID)
+	span := a.logger.StartFields("review", op, "llm", fields...)
+	var (
+		stream llm.Stream
+		err    error
+	)
+	if strings.TrimSpace(resumeSessionID) != "" {
+		stream, err = a.adapter.Resume(ctx, resumeSessionID, req)
+	} else {
+		stream, err = a.adapter.Start(ctx, req)
+	}
+	if err != nil {
+		span.End(err)
+		return nil, err
+	}
+	endFields := llmResponseFields(stream.SessionID(), llm.Response{})
+	return progressStream{stream: stream, span: span, fields: endFields}, nil
+}
+
+func (s progressStream) SessionID() string {
+	return s.stream.SessionID()
+}
+
+func (s progressStream) Wait(ctx context.Context) (llm.Response, error) {
+	resp, err := s.stream.Wait(ctx)
+	fields := llmResponseFields(s.stream.SessionID(), resp)
+	s.span.EndFields(err, fields...)
+	return resp, err
+}
+
+func llmProgressFields(provider, harness string, req llm.Request, resumeSessionID string) []progress.Field {
+	fields := []progress.Field{}
+	if provider = strings.TrimSpace(provider); provider != "" {
+		fields = append(fields, progress.Field{Key: "provider", Value: provider})
+	}
+	if harness = strings.TrimSpace(harness); harness != "" {
+		fields = append(fields, progress.Field{Key: "harness", Value: harness})
+	}
+	if model := strings.TrimSpace(req.Model); model != "" {
+		fields = append(fields, progress.Field{Key: "model", Value: model})
+	}
+	if effort := strings.TrimSpace(req.Effort); effort != "" {
+		fields = append(fields, progress.Field{Key: "effort", Value: effort})
+	}
+	if logPath := strings.TrimSpace(req.LogPath); logPath != "" {
+		fields = append(fields, progress.Field{Key: "log_file", Value: filepath.Base(logPath)})
+	}
+	if resumeSessionID = strings.TrimSpace(resumeSessionID); resumeSessionID != "" {
+		fields = append(fields, progress.Field{Key: "resume_session_id", Value: resumeSessionID})
+	}
+	return fields
+}
+
+func llmResponseFields(sessionID string, resp llm.Response) []progress.Field {
+	fields := []progress.Field{}
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		fields = append(fields, progress.Field{Key: "session_id", Value: sessionID})
+	}
+	if resp.Usage.TokensIn != nil {
+		fields = append(fields, progress.Field{Key: "tokens_in", Value: strconv.Itoa(*resp.Usage.TokensIn)})
+	}
+	if resp.Usage.TokensOut != nil {
+		fields = append(fields, progress.Field{Key: "tokens_out", Value: strconv.Itoa(*resp.Usage.TokensOut)})
+	}
+	if resp.Usage.CacheRead != nil {
+		fields = append(fields, progress.Field{Key: "cache_read", Value: strconv.Itoa(*resp.Usage.CacheRead)})
+	}
+	if resp.Usage.CacheCreate != nil {
+		fields = append(fields, progress.Field{Key: "cache_create", Value: strconv.Itoa(*resp.Usage.CacheCreate)})
+	}
+	return fields
+}

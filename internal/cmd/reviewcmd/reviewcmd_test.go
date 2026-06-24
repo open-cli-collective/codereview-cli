@@ -1924,6 +1924,74 @@ func TestProgressProviderGetPRErrorWritesErrorBreadcrumb(t *testing.T) {
 	}
 }
 
+func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
+	var errOut bytes.Buffer
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	tokensIn := 11
+	tokensOut := 7
+	adapter.Queue(llm.FakeResult{
+		SessionID: "sess-123",
+		Response: llm.Response{
+			Usage: llm.Usage{
+				TokensIn:  &tokensIn,
+				TokensOut: &tokensOut,
+			},
+		},
+	})
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), adapter, "openai", "codex_cli")
+
+	stream, err := wrapped.Start(context.Background(), llm.Request{
+		Model:   "gpt-5.5",
+		Effort:  "high",
+		LogPath: filepath.Join(t.TempDir(), "selector.jsonl"),
+		Prompt:  "prompt",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	stderr := errOut.String()
+	for _, want := range []string{
+		`command="review" op="start_llm" target="llm"`,
+		`provider="openai"`,
+		`harness="codex_cli"`,
+		`model="gpt-5.5"`,
+		`effort="high"`,
+		`log_file="selector.jsonl"`,
+		`session_id="sess-123"`,
+		`tokens_in="11"`,
+		`tokens_out="7"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
+	}
+}
+
+func TestProgressAdapterResumeErrorWritesResumeSessionID(t *testing.T) {
+	var errOut bytes.Buffer
+	adapter := &llm.FakeAdapter{
+		NameValue:           "fake-llm",
+		SupportsResumeValue: true,
+	}
+	adapter.Queue(llm.FakeResult{StartErr: context.DeadlineExceeded})
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), adapter, "openai", "codex_cli")
+
+	_, err := wrapped.Resume(context.Background(), "stored-session", llm.Request{Model: "gpt-5.5", Prompt: "prompt"})
+	if err == nil {
+		t.Fatal("Resume error = nil, want failure")
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="review" op="resume_llm" target="llm"`) ||
+		!strings.Contains(stderr, `resume_session_id="stored-session"`) ||
+		!strings.Contains(stderr, `event=error`) {
+		t.Fatalf("stderr = %q, want resume error breadcrumb", stderr)
+	}
+}
+
 func TestReviewFailOnReturnsFailureAfterRendering(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(true)}
 	cmd, out := newTestCommand(t, testConfig(), fakeFactory(runner))

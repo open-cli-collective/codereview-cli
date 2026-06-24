@@ -753,7 +753,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		if err != nil {
 			return nil, err
 		}
-		return adapter, nil
+		return withProgressAdapter(logger, adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
 	})
 	runner := buildReviewRunner(ledgerStore, provider, adapter, profile, limiter, layout, opts.Stderr, runtimeOpts)
 	return Runtime{

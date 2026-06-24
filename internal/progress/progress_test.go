@@ -55,6 +55,32 @@ func TestLoggerEndErrorSanitizesSummary(t *testing.T) {
 	}
 }
 
+func TestLoggerFieldsAreRenderedAndSorted(t *testing.T) {
+	var out bytes.Buffer
+	clock := &fixedClock{
+		times: []time.Time{
+			time.Unix(40, 0),
+			time.Unix(40, 15*int64(time.Millisecond)),
+		},
+	}
+	logger := New(&out, false, clock.Now)
+
+	span := logger.StartFields("review", "run_llm", "llm",
+		Field{Key: "session_id", Value: "pending"},
+		Field{Key: "model", Value: "gpt-5.5"},
+		Field{Key: "provider", Value: "openai"},
+	)
+	span.EndFields(nil, Field{Key: "session_id", Value: "sess-123"})
+
+	got := out.String()
+	if !strings.Contains(got, `command="review" op="run_llm" target="llm" model="gpt-5.5" provider="openai" session_id="pending"`) {
+		t.Fatalf("start line = %q", got)
+	}
+	if !strings.Contains(got, `command="review" op="run_llm" target="llm" model="gpt-5.5" provider="openai" session_id="sess-123" duration_ms=15 status=ok`) {
+		t.Fatalf("finish line = %q", got)
+	}
+}
+
 func TestDisabledLoggerWritesNothing(t *testing.T) {
 	var out bytes.Buffer
 	logger := New(&out, true, time.Now)
