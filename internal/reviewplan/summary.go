@@ -49,8 +49,15 @@ type RunSummary struct {
 	Model             string
 	PostingIdentity   string
 	SelectedReviewers []string
+	ReviewerFailures  []ReviewerFailureSummary
 	WallDurationMS    *int64
 	Workstreams       []WorkstreamUsage
+}
+
+// ReviewerFailureSummary is a reviewer task diagnostic rendered in the rollup.
+type ReviewerFailureSummary struct {
+	Name  string
+	Error string
 }
 
 // WorkstreamUsage is adapter-reported usage for one workstream: the reserved
@@ -85,7 +92,8 @@ type AggregateUsage struct {
 func (r RunSummary) hasData() bool {
 	return r.ToolVersion != "" || r.Adapter != "" || r.Model != "" ||
 		r.PostingIdentity != "" || len(r.SelectedReviewers) > 0 ||
-		r.WallDurationMS != nil || len(r.Workstreams) > 0
+		len(r.ReviewerFailures) > 0 || r.WallDurationMS != nil ||
+		len(r.Workstreams) > 0
 }
 
 func (b *builder) deriveSummary(rendered []review.Finding) Summary {
@@ -212,6 +220,19 @@ func writeReviewerTable(out *strings.Builder, reviewers []ReviewerSummary) {
 	out.WriteString("|----------|----------|\n")
 	for _, reviewer := range reviewers {
 		fmt.Fprintf(out, "| %s | %d |\n", escapeCell(reviewer.Name), reviewer.Findings)
+	}
+	out.WriteString("\n")
+}
+
+func writeReviewerFailureDiagnostics(out *strings.Builder, failures []ReviewerFailureSummary) {
+	if len(failures) == 0 {
+		return
+	}
+	out.WriteString("### Reviewer Diagnostics\n\n")
+	out.WriteString("| Reviewer | Status | Diagnostic |\n")
+	out.WriteString("|----------|--------|------------|\n")
+	for _, failure := range failures {
+		fmt.Fprintf(out, "| %s | failed | %s |\n", escapeCell(failure.Name), escapeCell(failure.Error))
 	}
 	out.WriteString("\n")
 }

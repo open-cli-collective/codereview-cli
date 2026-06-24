@@ -921,6 +921,153 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 	}
 }
 
+func TestDryRunReviewerFailureIsolation(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	writeAgent(t, req.Profile.AgentSources[0], "harness", "alpha", "alpha desc", "Review alpha.")
+	writeAgent(t, req.Profile.AgentSources[0], "harness", "beta", "beta desc", "Review beta.")
+	writeAgent(t, req.Profile.AgentSources[0], "harness", "gamma", "gamma desc", "Review gamma.")
+	adapter := &reviewerIsolationAdapter{}
+
+	result, err := DryRun(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-reviewer-isolation" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Findings) != 2 {
+		t.Fatalf("findings len = %d, want 2 successful reviewer findings", len(result.Findings))
+	}
+	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].AgentID != "harness:beta" {
+		t.Fatalf("reviewer failures = %#v findings = %#v, want isolated beta failure", result.ReviewerFailures, result.Findings)
+	}
+	if len(result.Sessions) != 5 {
+		t.Fatalf("sessions len = %d, want selection, alpha, beta retry, gamma, rollup", len(result.Sessions))
+	}
+	betaMeta, ok, err := readLLMTaskMetadata(result.Artifacts, reviewerTaskID("harness:beta"))
+	if err != nil || !ok {
+		t.Fatalf("read beta task metadata = ok %v err %v", ok, err)
+	}
+	if betaMeta.Status != llmTaskStatusFailedIsolated || len(betaMeta.Attempts) != 2 {
+		t.Fatalf("beta metadata = %#v, want failed_isolated with initial and retry attempts", betaMeta)
+	}
+	for _, agentID := range []string{"harness:alpha", "harness:gamma"} {
+		meta, ok, err := readLLMTaskMetadata(result.Artifacts, reviewerTaskID(agentID))
+		if err != nil || !ok {
+			t.Fatalf("read %s task metadata = ok %v err %v", agentID, ok, err)
+		}
+		if meta.Status != llmTaskStatusSucceeded {
+			t.Fatalf("%s metadata status = %q, want succeeded", agentID, meta.Status)
+		}
+	}
+	requests := adapter.Requests()
+	if len(requests) != 6 {
+		t.Fatalf("requests len = %d, want selection, three reviewers, beta retry, rollup", len(requests))
+	}
+	rollupPrompt := requests[len(requests)-1].Prompt
+	if !strings.Contains(rollupPrompt, `"reviewer_failures"`) || !strings.Contains(rollupPrompt, `"agent_id": "harness:beta"`) {
+		t.Fatalf("rollup prompt missing isolated reviewer failure context: %s", rollupPrompt)
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeComment {
+		t.Fatalf("plan outcome = %q, want comment with isolated reviewer failure", result.Plan.Outcome)
+	}
+	if !strings.Contains(result.Plan.RollupMarkdown, "### Reviewer Diagnostics") || !strings.Contains(result.Plan.RollupMarkdown, "harness:beta") {
+		t.Fatalf("rollup markdown missing reviewer diagnostic:\n%s", result.Plan.RollupMarkdown)
+	}
+}
+
+func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	run := allocateLiveRun(t, store, provider, req, "run-rollup-resume")
+	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	firstAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	firstAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
+	firstAdapter.Queue(fakeLLMResult("rollup-retry-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
+	findingID := func() (review.FindingID, error) { return review.FindingID("finding-1"), nil }
+
+	_, err := Live(ctx, Options{
+		Provider:        provider,
+		Adapter:         firstAdapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingID,
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err == nil || !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+		t.Fatalf("first Live error = %v, want invalid rollup after retry", err)
+	}
+	stored, err := store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeIncomplete {
+		t.Fatalf("run outcome = %#v, want incomplete after rollup task failure", stored.Outcome)
+	}
+	selectionMeta, ok, err := readLLMTaskMetadata(ArtifactPathsFromDir(run.ArtifactPath), orchestratorSelectionStage)
+	if err != nil || !ok || selectionMeta.Status != llmTaskStatusSucceeded {
+		t.Fatalf("selection metadata = %#v ok %v err %v, want succeeded", selectionMeta, ok, err)
+	}
+	reviewerMeta, ok, err := readLLMTaskMetadata(ArtifactPathsFromDir(run.ArtifactPath), reviewerTaskID("harness:reviewer"))
+	if err != nil || !ok || reviewerMeta.Status != llmTaskStatusSucceeded {
+		t.Fatalf("reviewer metadata = %#v ok %v err %v, want succeeded", reviewerMeta, ok, err)
+	}
+	rollupMeta, ok, err := readLLMTaskMetadata(ArtifactPathsFromDir(run.ArtifactPath), orchestratorRollupStage)
+	if err != nil || !ok || rollupMeta.Status != llmTaskStatusFailedBlocking {
+		t.Fatalf("rollup metadata = %#v ok %v err %v, want failed_blocking", rollupMeta, ok, err)
+	}
+
+	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	secondAdapter.Queue(fakeLLMResult("rollup-fixed-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	result, err := Live(ctx, Options{
+		Provider:        provider,
+		Adapter:         secondAdapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("resume-session"),
+		NewFindingID:    findingID,
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("second Live: %v", err)
+	}
+	if len(secondAdapter.Requests()) != 0 {
+		t.Fatalf("second adapter starts = %#v, want no fresh selection/reviewer/rollup start", secondAdapter.Requests())
+	}
+	resumes := secondAdapter.Resumes()
+	if len(resumes) != 1 || resumes[0].SessionID != "rollup-retry-session" {
+		t.Fatalf("second adapter resumes = %#v, want only failed rollup retry session", resumes)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
+		t.Fatalf("result findings = %#v, want loaded reviewer finding", result.Findings)
+	}
+	if result.Rollup.ReviewEvent != review.ReviewEventComment {
+		t.Fatalf("rollup = %#v, want rerun rollup result", result.Rollup)
+	}
+	if len(result.PlannedActions) == 0 {
+		t.Fatal("planned actions len = 0, want resumed pipeline to synthesize actions")
+	}
+}
+
 func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -1687,7 +1834,7 @@ func TestLiveNamedSessionNoDiffLeavesCandidateEmpty(t *testing.T) {
 	}
 }
 
-func TestLiveMarksRunFailedAfterPlanningError(t *testing.T) {
+func TestLiveMarksRunIncompleteAfterBlockingLLMTaskError(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -1730,8 +1877,8 @@ func TestLiveMarksRunFailedAfterPlanningError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
 	}
-	if storedRun.Outcome == nil || *storedRun.Outcome != ledger.OutcomeFailed {
-		t.Fatalf("stored outcome = %#v, want failed", storedRun.Outcome)
+	if storedRun.Outcome == nil || *storedRun.Outcome != ledger.OutcomeIncomplete {
+		t.Fatalf("stored outcome = %#v, want incomplete", storedRun.Outcome)
 	}
 }
 
@@ -2324,7 +2471,7 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 			Anchor:   review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 20},
 			Body:     "same issue text",
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
@@ -2599,6 +2746,71 @@ func findingIDsFromPrompt(prompt string) []string {
 }
 
 func (a *promptAwareAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request(nil), a.requests...)
+}
+
+type reviewerIsolationAdapter struct {
+	mu           sync.Mutex
+	requests     []llm.Request
+	betaAttempts int
+}
+
+func (a *reviewerIsolationAdapter) Name() string {
+	return "reviewer-isolation"
+}
+
+func (a *reviewerIsolationAdapter) SupportsResume() bool {
+	return false
+}
+
+func (a *reviewerIsolationAdapter) SupportsCacheAccounting() bool {
+	return false
+}
+
+func (a *reviewerIsolationAdapter) SupportsCostReporting() bool {
+	return false
+}
+
+func (a *reviewerIsolationAdapter) Quota(context.Context) (llm.Quota, bool, error) {
+	return llm.Quota{}, false, nil
+}
+
+func (a *reviewerIsolationAdapter) Resume(context.Context, string, llm.Request) (llm.Stream, error) {
+	return nil, errors.New("resume unsupported")
+}
+
+func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (llm.Stream, error) {
+	a.mu.Lock()
+	a.requests = append(a.requests, req)
+	a.mu.Unlock()
+
+	switch {
+	case strings.Contains(req.Prompt, `"schema": "selection"`):
+		return staticStream{sessionID: "selection-session", output: selectionJSONForAgents("main.go", "harness:alpha", "harness:beta", "harness:gamma")}, nil
+	case strings.Contains(req.Prompt, `"schema": "rollup"`):
+		return staticStream{sessionID: "rollup-session", output: rollupJSON("comment", findingIDsFromPrompt(req.Prompt))}, nil
+	case strings.Contains(req.Prompt, `"id": "harness:alpha"`):
+		return staticStream{sessionID: "alpha-session", output: findingsJSON("harness:alpha", "main.go", "major", 2, "alpha finding")}, nil
+	case strings.Contains(req.Prompt, `"id": "harness:beta"`):
+		a.mu.Lock()
+		a.betaAttempts++
+		attempt := a.betaAttempts
+		a.mu.Unlock()
+		sessionID := "beta-session"
+		if attempt > 1 {
+			sessionID = "beta-retry-session"
+		}
+		return staticStream{sessionID: sessionID, output: `{"schema_version": 1, "agent_id": "harness:beta", "findings": [`}, nil
+	case strings.Contains(req.Prompt, `"id": "harness:gamma"`):
+		return staticStream{sessionID: "gamma-session", output: findingsJSON("harness:gamma", "main.go", "minor", 2, "gamma finding")}, nil
+	default:
+		return nil, fmt.Errorf("unexpected prompt: %s", req.Prompt)
+	}
+}
+
+func (a *reviewerIsolationAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]llm.Request(nil), a.requests...)
@@ -2899,6 +3111,28 @@ func selectionJSON(agentID, file string) string {
 		"thread_actions": [],
 		"reasoning": "select reviewer"
 	}`, agentID, file)
+}
+
+func selectionJSONForAgents(file string, agentIDs ...string) string {
+	selected := make([]map[string]any, 0, len(agentIDs))
+	for _, agentID := range agentIDs {
+		selected = append(selected, map[string]any{
+			"agent_id":  agentID,
+			"rationale": "go file changed",
+			"files":     []string{file},
+		})
+	}
+	payload := map[string]any{
+		"schema_version":  1,
+		"selected_agents": selected,
+		"thread_actions":  []any{},
+		"reasoning":       "select reviewers",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
 }
 
 func findingsJSON(agentID, file, severity string, line int, body string) string {
@@ -3254,6 +3488,10 @@ func (noopStore) AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.
 
 func (noopStore) InsertSession(context.Context, ledger.Session) error {
 	return nil
+}
+
+func (noopStore) GetSession(context.Context, string) (ledger.Session, error) {
+	return ledger.Session{}, ledger.ErrNotFound
 }
 
 func (noopStore) InsertFinding(context.Context, ledger.Finding) error {

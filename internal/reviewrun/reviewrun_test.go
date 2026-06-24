@@ -371,6 +371,44 @@ func TestRunResumePartialPlanningStateFailsWithoutReplayingLLM(t *testing.T) {
 	}
 }
 
+func TestRunResumePartialPlanningStateWithLLMTaskMetadataCallsPlanner(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "partial-task-plan", testBaseSHA)
+	if err := fixture.store.InsertSession(ctx, ledger.Session{
+		SessionRowID:      "session-1",
+		RunID:             run.RunID,
+		ProviderSessionID: "provider-session",
+		Role:              ledger.SessionRoleOrchestrator,
+		Adapter:           "fake",
+		Model:             "model",
+		StartedAt:         testNow(),
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	writeTaskMetadata(t, run.ArtifactPath, "orchestrator-selection", map[string]any{
+		"schema_version":      1,
+		"task_id":             "orchestrator-selection",
+		"phase":               "selection",
+		"input_fingerprint":   "fingerprint",
+		"status":              "succeeded",
+		"session_row_id":      "session-1",
+		"provider_session_id": "provider-session",
+	})
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+
+	result, err := Run(ctx, fixture.opts(planner), Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if planner.calls != 1 || len(planner.runs) != 1 || planner.runs[0].RunID != run.RunID {
+		t.Fatalf("planner calls/runs = %d %#v, want one resume of existing run", planner.calls, planner.runs)
+	}
+	if result.Outbox.Outcome != ledger.OutcomeComment {
+		t.Fatalf("outbox outcome = %q, want comment", result.Outbox.Outcome)
+	}
+}
+
 func TestRunResumeEmptyPlanningStateReplansSameRun(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
@@ -772,6 +810,24 @@ func (f *fixture) insertReviewActions(t *testing.T, runID string, event review.R
 		if err := f.store.InsertPlannedAction(context.Background(), action); err != nil {
 			t.Fatalf("InsertPlannedAction(%s): %v", action.ActionID, err)
 		}
+	}
+}
+
+func writeTaskMetadata(t *testing.T, artifactPath, taskID string, metadata map[string]any) {
+	t.Helper()
+	path, err := pipeline.ArtifactPathsFromDir(artifactPath).LLMTaskMetadata(taskID)
+	if err != nil {
+		t.Fatalf("LLMTaskMetadata: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(path), err)
+	}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal task metadata: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
 	}
 }
 

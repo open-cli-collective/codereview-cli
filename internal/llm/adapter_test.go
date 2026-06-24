@@ -260,6 +260,69 @@ func TestRunStructuredWithSessionResume(t *testing.T) {
 	})
 }
 
+func TestRunStructuredValidationAttempts(t *testing.T) {
+	adapter := &FakeAdapter{SupportsResumeValue: true}
+	adapter.Queue(FakeResult{SessionID: "initial-session", Response: Response{
+		StructuredOutput: []byte(`{"bad":"initial"}`),
+		Usage:            Usage{TokensIn: intPtr(11)},
+	}})
+	adapter.Queue(FakeResult{SessionID: "retry-session", Response: Response{
+		StructuredOutput: []byte(`{"bad":"retry"}`),
+		Usage:            Usage{TokensOut: intPtr(17)},
+	}})
+
+	result, err := RunStructuredWithSessionResume(context.Background(), adapter, "stored-session", Request{Prompt: "prompt"}, func(data []byte) (string, error) {
+		return "", fmt.Errorf("decode failed for %s", data)
+	})
+	if err == nil {
+		t.Fatal("RunStructuredWithSessionResume error = nil, want validation error")
+	}
+	if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+		t.Fatalf("error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
+	}
+	var validationErr *StructuredValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error type = %T, want StructuredValidationError", err)
+	}
+	if result.SessionID != "retry-session" {
+		t.Fatalf("result.SessionID = %q, want retry-session", result.SessionID)
+	}
+	assertValidationAttempts(t, result.ValidationAttempts)
+	assertValidationAttempts(t, validationErr.Attempts)
+
+	resumes := adapter.Resumes()
+	if len(resumes) != 2 {
+		t.Fatalf("resumes = %#v, want initial and retry resumes", resumes)
+	}
+	if resumes[0].SessionID != "stored-session" || resumes[1].SessionID != "initial-session" {
+		t.Fatalf("resume sessions = %#v, want stored-session then initial-session", resumes)
+	}
+}
+
+func assertValidationAttempts(t *testing.T, attempts []StructuredValidationAttempt) {
+	t.Helper()
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %#v, want two attempts", attempts)
+	}
+	want := []struct {
+		attempt string
+		session string
+		raw     string
+	}{
+		{attempt: "initial", session: "initial-session", raw: `{"bad":"initial"}`},
+		{attempt: "retry", session: "retry-session", raw: `{"bad":"retry"}`},
+	}
+	for i, want := range want {
+		got := attempts[i]
+		if got.Attempt != want.attempt || got.SessionID != want.session || string(got.Response.StructuredOutput) != want.raw {
+			t.Fatalf("attempt[%d] = %#v, want %s/%s/%s", i, got, want.attempt, want.session, want.raw)
+		}
+		if got.DecodeError == nil || !strings.Contains(got.DecodeError.Error(), want.raw) {
+			t.Fatalf("attempt[%d].DecodeError = %v, want raw payload in decode error", i, got.DecodeError)
+		}
+	}
+}
+
 func TestRunStructuredProseRecovery(t *testing.T) {
 	type probe struct {
 		OK bool `json:"ok"`

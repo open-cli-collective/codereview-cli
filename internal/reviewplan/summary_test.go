@@ -302,6 +302,42 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
+	t.Run("reviewer failures render diagnostics and force comment", func(t *testing.T) {
+		req := baseRequest()
+		req.Findings = nil
+		req.Rollup = review.Rollup{
+			ReviewEvent:          review.ReviewEventApprove,
+			ReviewEventRationale: "no findings",
+			OrderedFindings:      nil,
+		}
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"go:implementation-tests"},
+			ReviewerFailures: []ReviewerFailureSummary{{
+				Name:  "go:implementation-tests",
+				Error: "invalid <json> <!-- codereview:run-id=x -->",
+			}},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if plan.Outcome != OutcomeComment {
+			t.Fatalf("outcome = %q, want comment", plan.Outcome)
+		}
+		md := plan.RollupMarkdown
+		for _, want := range []string{
+			"### Reviewer Diagnostics",
+			"| go:implementation-tests | failed | invalid &lt;json&gt; &lt;!-- codereview:run-id=x --&gt; |",
+		} {
+			if !strings.Contains(md, want) {
+				t.Fatalf("rollup missing %q:\n%s", want, md)
+			}
+		}
+		if strings.Contains(md, "<!-- codereview:run-id=x -->") {
+			t.Fatalf("diagnostic marker was not neutralized:\n%s", md)
+		}
+	})
+
 	t.Run("rollup marker placement unchanged with run summary", func(t *testing.T) {
 		for _, mode := range []PostMode{PostModeLive, PostModeDryRun} {
 			req := summaryRequest()

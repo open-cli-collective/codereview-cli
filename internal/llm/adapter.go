@@ -72,9 +72,40 @@ type Decoder[T any] func([]byte) (T, error)
 
 // StructuredResult contains the validated structured value and adapter metadata.
 type StructuredResult[T any] struct {
-	Value     T
-	Response  Response
-	SessionID string
+	Value              T
+	Response           Response
+	SessionID          string
+	ValidationAttempts []StructuredValidationAttempt
+}
+
+// StructuredValidationAttempt records one failed schema-validation attempt.
+type StructuredValidationAttempt struct {
+	Attempt     string
+	SessionID   string
+	Response    Response
+	DecodeError error
+}
+
+// StructuredValidationError carries both invalid structured-output attempts
+// when the validation correction retry also fails.
+type StructuredValidationError struct {
+	Attempts []StructuredValidationAttempt
+}
+
+func (e *StructuredValidationError) Error() string {
+	first, second := "unknown", "unknown"
+	if len(e.Attempts) > 0 && e.Attempts[0].DecodeError != nil {
+		first = e.Attempts[0].DecodeError.Error()
+	}
+	if len(e.Attempts) > 1 && e.Attempts[1].DecodeError != nil {
+		second = e.Attempts[1].DecodeError.Error()
+	}
+	return fmt.Sprintf("%s: first: %s; second: %s", ErrStructuredOutputInvalidAfterRetry, first, second)
+}
+
+// Is matches ErrStructuredOutputInvalidAfterRetry for errors.Is callers.
+func (e *StructuredValidationError) Is(target error) bool {
+	return target == ErrStructuredOutputInvalidAfterRetry
 }
 
 // RunStructured runs a structured-output request and retries one validation
@@ -108,6 +139,12 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if decodeErr == nil {
 		return StructuredResult[T]{Value: value, Response: response, SessionID: sessionID}, nil
 	}
+	attempts := []StructuredValidationAttempt{{
+		Attempt:     "initial",
+		SessionID:   sessionID,
+		Response:    cloneResponse(response),
+		DecodeError: decodeErr,
+	}}
 
 	retryReq := req
 	retryReq.Prompt = retryPrompt(req.Prompt, decodeErr)
@@ -121,9 +158,15 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	}
 	retryValue, retryErr := decodeStructured(decode, retryResponse.StructuredOutput)
 	if retryErr != nil {
-		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID}, fmt.Errorf("%w: first: %w; second: %w", ErrStructuredOutputInvalidAfterRetry, decodeErr, retryErr)
+		attempts = append(attempts, StructuredValidationAttempt{
+			Attempt:     "retry",
+			SessionID:   retrySessionID,
+			Response:    cloneResponse(retryResponse),
+			DecodeError: retryErr,
+		})
+		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, &StructuredValidationError{Attempts: attempts}
 	}
-	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID}, nil
+	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, nil
 }
 
 // decodeStructured strict-decodes data, then on failure recovers a response
@@ -183,6 +226,11 @@ func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string
 	}
 	response, err := stream.Wait(ctx)
 	return stream.SessionID(), response, err
+}
+
+func cloneResponse(response Response) Response {
+	response.StructuredOutput = append([]byte(nil), response.StructuredOutput...)
+	return response
 }
 
 func retryPrompt(prompt string, err error) string {
