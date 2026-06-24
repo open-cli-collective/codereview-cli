@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -3908,22 +3909,23 @@ func assertDossierIndexArtifact(t *testing.T, dir, wantPath string) {
 		t.Fatal("dossier index files = 0, want artifacts")
 	}
 	wantHashes := map[string]string{}
-	err = filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot(%s): %v", dir, err)
+	}
+	defer root.Close()
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() || filepath.Base(path) == "index.json" {
 			return nil
 		}
-		fileData, err := os.ReadFile(path) // #nosec G304 -- test reads artifact paths under t.TempDir.
+		fileData, err := root.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-		wantHashes[filepath.ToSlash(rel)] = sha256Hex(fileData)
+		wantHashes[filepath.ToSlash(path)] = sha256Hex(fileData)
 		return nil
 	})
 	if err != nil {

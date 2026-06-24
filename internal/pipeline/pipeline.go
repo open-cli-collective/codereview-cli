@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"io"
 	"os"
 	"path/filepath"
@@ -2921,7 +2922,7 @@ func renderDossierChangeMap(files []dossierChangedFileArtifact) string {
 			out.WriteString(file.OldPath)
 			out.WriteString(")")
 		}
-		out.WriteString(fmt.Sprintf(" [+%d -%d]", file.Additions, file.Deletions))
+		fmt.Fprintf(&out, " [+%d -%d]", file.Additions, file.Deletions)
 		if file.Binary {
 			out.WriteString(" binary")
 		}
@@ -2978,7 +2979,7 @@ func renderDossierDiscussion(discussion dossierDiscussionArtifact) string {
 			out.WriteString("\n")
 		}
 		if len(comments) > dossierFinalMaxTopLevelComments {
-			out.WriteString(fmt.Sprintf("\nAdditional top-level comments omitted: %d\n", len(comments)-dossierFinalMaxTopLevelComments))
+			fmt.Fprintf(&out, "\nAdditional top-level comments omitted: %d\n", len(comments)-dossierFinalMaxTopLevelComments)
 		}
 		out.WriteString("\n")
 	}
@@ -2991,7 +2992,7 @@ func renderDossierDiscussion(discussion dossierDiscussionArtifact) string {
 		out.WriteString("- ")
 		out.WriteString(thread.Path)
 		if thread.Line > 0 {
-			out.WriteString(fmt.Sprintf(":%d", thread.Line))
+			fmt.Fprintf(&out, ":%d", thread.Line)
 		}
 		if thread.Side != "" {
 			out.WriteString(" [")
@@ -3017,18 +3018,23 @@ func renderDossierDiscussion(discussion dossierDiscussionArtifact) string {
 			out.WriteString("\n")
 		}
 		if len(thread.Comments) > dossierFinalMaxThreadComments {
-			out.WriteString(fmt.Sprintf("  Additional thread comments omitted: %d\n", len(thread.Comments)-dossierFinalMaxThreadComments))
+			fmt.Fprintf(&out, "  Additional thread comments omitted: %d\n", len(thread.Comments)-dossierFinalMaxThreadComments)
 		}
 	}
 	if len(discussion.InlineThreads) > dossierFinalMaxInlineThreads {
-		out.WriteString(fmt.Sprintf("\nAdditional inline threads omitted: %d\n", len(discussion.InlineThreads)-dossierFinalMaxInlineThreads))
+		fmt.Fprintf(&out, "\nAdditional inline threads omitted: %d\n", len(discussion.InlineThreads)-dossierFinalMaxInlineThreads)
 	}
 	return out.String()
 }
 
 func buildDossierIndex(dir string) (dossierIndexArtifact, error) {
 	var files []dossierIndexFileArtifact
-	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return dossierIndexArtifact{}, fmt.Errorf("pipeline: open dossier root: %w", err)
+	}
+	defer root.Close()
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -3038,16 +3044,12 @@ func buildDossierIndex(dir string) (dossierIndexArtifact, error) {
 		if filepath.Base(path) == "index.json" {
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(dir, path)
+		data, err := root.ReadFile(path)
 		if err != nil {
 			return err
 		}
 		files = append(files, dossierIndexFileArtifact{
-			Path:   filepath.ToSlash(rel),
+			Path:   filepath.ToSlash(path),
 			SHA256: sha256Hex(data),
 		})
 		return nil
