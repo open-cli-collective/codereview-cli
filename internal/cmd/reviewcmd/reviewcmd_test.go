@@ -1798,6 +1798,50 @@ func TestReviewDryRunJSONHasNoTextQuotaPrefix(t *testing.T) {
 	}
 }
 
+func TestReviewDryRunProgressWritesToStderr(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), fakeFactory(runner), false)
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	stderr := errOut.String()
+	for _, want := range []string{
+		`command="review" op="load_config" target="config"`,
+		`command="review" op="parse_pr" target="pr"`,
+		`command="review" op="resolve_profile" target="profile"`,
+		`command="review" op="build_runtime" target="runtime"`,
+		`command="review" op="execute_dry_run" target="pr"`,
+		`command="review" op="render_result" target="stdout"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
+	}
+	if strings.Contains(out.String(), "cr progress") {
+		t.Fatalf("stdout leaked progress = %q", out.String())
+	}
+}
+
+func TestReviewQuietSuppressesProgressOnly(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), fakeFactory(runner), true)
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want no progress output", errOut.String())
+	}
+	var decoded view.ReviewDryRun
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if decoded.Run.PostMode != "dry_run" {
+		t.Fatalf("decoded post mode = %q, want dry_run", decoded.Run.PostMode)
+	}
+}
+
 func TestReviewFailOnReturnsFailureAfterRendering(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(true)}
 	cmd, out := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -2034,12 +2078,32 @@ func newTestCommand(t *testing.T, cfg config.File, factory RuntimeFactory) (*cob
 	var out bytes.Buffer
 	cmd, opts := root.NewCommandWithOptions(&root.Options{
 		ConfigPath: path,
+		Quiet:      true,
 		Stdin:      strings.NewReader(""),
 		Stdout:     &out,
 		Stderr:     &out,
 	})
 	RegisterWithFactory(cmd, opts, factory)
 	return cmd, &out
+}
+
+func newTestCommandWithStderr(t *testing.T, cfg config.File, factory RuntimeFactory, quiet bool) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd, opts := root.NewCommandWithOptions(&root.Options{
+		ConfigPath: path,
+		Quiet:      quiet,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &out,
+		Stderr:     &errOut,
+	})
+	RegisterWithFactory(cmd, opts, factory)
+	return cmd, &out, &errOut
 }
 
 func testConfig() config.File {

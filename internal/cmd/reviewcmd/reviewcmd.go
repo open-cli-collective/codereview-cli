@@ -32,6 +32,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
@@ -268,29 +269,36 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		failOn = &threshold
 	}
 
+	logger := newProgressLogger(opts)
+	configSpan := logger.Start("review", "load_config", "config")
 	path, err := configPath(opts)
 	if err != nil {
-		return exitcode.AuthConfig(err)
+		return exitcode.AuthConfig(endProgressSpan(configSpan, err))
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
-		return cmderr.Config(err)
+		return cmderr.Config(endProgressSpan(configSpan, err))
 	}
+	configSpan.End(nil)
+	parseSpan := logger.Start("review", "parse_pr", "pr")
 	ref, err := prref.ParseGitHubPullURL(prArg)
 	if err != nil {
-		return exitcode.Usage(err)
+		return exitcode.Usage(endProgressSpan(parseSpan, err))
 	}
+	parseSpan.End(nil)
+	profileSpan := logger.Start("review", "resolve_profile", "profile")
 	profileName, profile, err := config.ResolveProfileForRepository(cfg, opts.Profile, root.ProfileFlagChanged(cmd), config.RepositoryTarget{
 		Host:      ref.Host,
 		Namespace: ref.Owner,
 		Repo:      ref.Repo,
 	})
 	if err != nil {
-		return cmderr.Config(err)
+		return cmderr.Config(endProgressSpan(profileSpan, err))
 	}
 	if !prref.SameHost(ref.Host, profile.Git.Host) {
-		return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
+		return exitcode.Usage(endProgressSpan(profileSpan, fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host)))
 	}
+	profileSpan.End(nil)
 
 	runtimeOpts := RuntimeOptions{
 		MaxAgents:           flags.maxAgents,
@@ -299,10 +307,12 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		Retention:           retentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 	}
+	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
 	runtime, err := factory(cmd, opts, cfg, profile, runtimeOpts)
 	if err != nil {
-		return err
+		return endProgressSpan(runtimeSpan, err)
 	}
+	runtimeSpan.End(nil)
 	if runtime.Cleanup != nil {
 		defer runtime.Cleanup()
 	}
@@ -335,16 +345,19 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		ToolVersion:                 version.Version,
 	}
 	if !flags.dryRun {
-		return runLive(ctx, opts, flags, runtime.Runner, pipelineReq, failOn)
+		return runLive(ctx, logger, opts, flags, runtime.Runner, pipelineReq, failOn)
 	}
 
+	execSpan := logger.Start("review", "execute_dry_run", "pr")
 	result, err := runtime.Runner.DryRun(ctx, pipelineReq)
 	if err != nil {
-		return mapRunError(err)
+		return endProgressSpan(execSpan, mapRunError(err))
 	}
+	execSpan.End(nil)
+	renderSpan := logger.Start("review", "render_result", "stdout")
 	rendered, err := newReviewDryRun(result)
 	if err != nil {
-		return err
+		return endProgressSpan(renderSpan, err)
 	}
 	if flags.jsonOutput {
 		err = view.RenderReviewDryRunJSON(opts.Stdout, rendered)
@@ -352,8 +365,9 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		err = view.RenderReviewDryRunText(opts.Stdout, rendered)
 	}
 	if err != nil {
-		return err
+		return endProgressSpan(renderSpan, err)
 	}
+	renderSpan.End(nil)
 	if result.FailOnTriggered && failOn != nil {
 		return exitcode.With(exitcode.Failure, fmt.Errorf("findings at or above --fail-on %s", failOn.String()))
 	}
@@ -403,11 +417,14 @@ func validateReviewSHAFlag(name, sha string) error {
 	return nil
 }
 
-func runLive(ctx context.Context, opts *root.Options, flags commandFlags, runner Runner, req pipeline.Request, failOn *review.Severity) error {
+func runLive(ctx context.Context, logger *progress.Logger, opts *root.Options, flags commandFlags, runner Runner, req pipeline.Request, failOn *review.Severity) error {
+	execSpan := logger.Start("review", "execute_live", "pr")
 	result, err := runner.Live(ctx, req, reviewrun.Flags{Rerun: flags.rerun, RetryPosts: flags.retryPosts})
 	if err != nil {
-		return mapRunError(err)
+		return endProgressSpan(execSpan, mapRunError(err))
 	}
+	execSpan.End(nil)
+	renderSpan := logger.Start("review", "render_result", "stdout")
 	rendered := newReviewLive(result)
 	if flags.jsonOutput {
 		err = view.RenderReviewLiveJSON(opts.Stdout, rendered)
@@ -415,8 +432,9 @@ func runLive(ctx context.Context, opts *root.Options, flags commandFlags, runner
 		err = view.RenderReviewLiveText(opts.Stdout, rendered)
 	}
 	if err != nil {
-		return err
+		return endProgressSpan(renderSpan, err)
 	}
+	renderSpan.End(nil)
 	if result.ExitCode != exitcode.Success {
 		return exitcode.With(result.ExitCode, liveResultError(result))
 	}
