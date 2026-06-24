@@ -84,7 +84,7 @@ func (s progressStream) Wait(ctx context.Context) (llm.Response, error) {
 	return resp, err
 }
 
-func llmProgressFields(provider, harness string, req llm.Request, resumeSessionID string) []progress.Field {
+func llmProgressFields(provider, harness string, req llm.Request, _ string) []progress.Field {
 	fields := []progress.Field{}
 	if provider = strings.TrimSpace(provider); provider != "" {
 		fields = append(fields, progress.Field{Key: "provider", Value: provider})
