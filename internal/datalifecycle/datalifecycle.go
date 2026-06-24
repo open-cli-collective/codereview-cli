@@ -599,5 +599,49 @@ func (opts Options) removeAll() RemoveAllFunc {
 	if opts.RemoveAll != nil {
 		return opts.RemoveAll
 	}
-	return os.RemoveAll
+	return removeAllWritable
+}
+
+func removeAllWritable(path string) error {
+	if err := makeTreeWritable(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.RemoveAll(path)
+}
+
+func makeTreeWritable(root string) error {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, fs.ErrNotExist) {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm()
+		if entry.IsDir() {
+			mode |= 0o700
+			mode |= 0o055
+		} else {
+			mode |= 0o200
+			mode |= 0o444
+		}
+		if err := os.Chmod(path, mode); err != nil { // #nosec G122 -- artifact paths are validated run-owned trees; symlinks are skipped during the walk.
+			return err
+		}
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("datalifecycle: chmod tree %s writable: %w", root, err)
+	}
+	return nil
 }

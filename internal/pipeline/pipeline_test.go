@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +28,24 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
+
+func dryRunForTest(ctx context.Context, opts Options, req Request) (Result, error) {
+	opts.AutoUnlockWorkbenchOnExit = true
+	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
+	return DryRun(ctx, opts, req)
+}
+
+func selectionOnlyForTest(ctx context.Context, opts Options, req SelectionRequest) (SelectionResult, error) {
+	opts.AutoUnlockWorkbenchOnExit = true
+	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
+	return SelectionOnly(ctx, opts, req)
+}
+
+func liveForTest(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
+	opts.AutoUnlockWorkbenchOnExit = true
+	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
+	return Live(ctx, opts, req, run)
+}
 
 func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	ctx := context.Background()
@@ -79,7 +99,7 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 		}
 	}
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -199,7 +219,7 @@ func TestDryRunNormalizesReviewerFindingsFileAlias(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsFileAliasJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -242,9 +262,9 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	writeAgentFullContent(t, req.Profile.AgentSources[0], "harness", "reviewer")
-	currentBaseSHA := provider.pr.Base.SHA
-	reviewBaseSHA := strings.Repeat("1", 40)
-	reviewHeadSHA := strings.Repeat("2", 40)
+	fixture, reviewBaseSHA, reviewHeadSHA := newPinnedReviewFixtureForRef(t, req.PRRef)
+	provider.pr = fixture.pr
+	provider.fixtureRepoDir = fixture.repoDir
 	req.ReviewBaseSHA = reviewBaseSHA
 	req.ReviewHeadSHA = reviewHeadSHA
 	provider.diffBetween = gitprovider.UnifiedDiff{Raw: smallDiff("main.go")}
@@ -256,7 +276,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -275,7 +295,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	if len(provider.diffBetweenCalls) != 1 || provider.diffBetweenCalls[0].baseSHA != reviewBaseSHA || provider.diffBetweenCalls[0].headSHA != reviewHeadSHA {
 		t.Fatalf("diff between calls = %#v, want pinned base/head", provider.diffBetweenCalls)
 	}
-	if result.CurrentBaseSHA != strings.Repeat("b", 40) || result.CurrentHeadSHA != strings.Repeat("a", 40) ||
+	if result.CurrentBaseSHA != provider.pr.Base.SHA || result.CurrentHeadSHA != provider.pr.Head.SHA ||
 		result.ReviewBaseSHA != reviewBaseSHA || result.ReviewHeadSHA != reviewHeadSHA {
 		t.Fatalf("result SHAs = current %s/%s review %s/%s", result.CurrentBaseSHA, result.CurrentHeadSHA, result.ReviewBaseSHA, result.ReviewHeadSHA)
 	}
@@ -294,7 +314,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	if !strings.Contains(selectionPrompt, reviewBaseSHA) || !strings.Contains(selectionPrompt, reviewHeadSHA) {
 		t.Fatalf("selection prompt missing pinned review SHAs: %s", selectionPrompt)
 	}
-	if strings.Contains(selectionPrompt, currentBaseSHA) || strings.Contains(selectionPrompt, provider.pr.Head.SHA) {
+	if strings.Contains(selectionPrompt, provider.pr.Head.SHA) {
 		t.Fatalf("selection prompt contains current PR SHAs: %s", selectionPrompt)
 	}
 	if provider.threadCalls != 0 {
@@ -303,7 +323,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	if provider.reviewCalls != 0 || provider.issueCommentCalls != 0 {
 		t.Fatalf("review/comment calls = %d/%d, want no live discussion reads for pinned review", provider.reviewCalls, provider.issueCommentCalls)
 	}
-	if !containsFileCall(provider.treeCalls, fileKey{gitRef: currentBaseSHA, path: ".codereview/agents"}) {
+	if !containsFileCall(provider.treeCalls, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}) {
 		t.Fatalf("tree calls = %#v, want repo agents loaded from current base SHA", provider.treeCalls)
 	}
 	if containsFileCall(provider.treeCalls, fileKey{gitRef: reviewBaseSHA, path: ".codereview/agents"}) {
@@ -323,7 +343,7 @@ func TestDryRunWithPinnedReviewSHAsRejectsForkHeads(t *testing.T) {
 	provider.pr.Head.Owner = "fork-owner"
 	provider.pr.Head.Repo = "codereview-cli-fork"
 
-	_, err := DryRun(ctx, Options{
+	_, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
 		Store:           store,
@@ -354,7 +374,7 @@ func TestDryRunSelectionPromptInstructionsStayInsideStructuredPayload(t *testing
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	if _, err := DryRun(ctx, Options{
+	if _, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -401,7 +421,7 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	artifactDir := t.TempDir()
 
-	result, err := SelectionOnly(ctx, Options{
+	result, err := selectionOnlyForTest(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
@@ -504,7 +524,7 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Open thread at main.go:2"}}), 8, 2))
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:alpha", "main.go"), 10, 2))
 
-	if _, err := SelectionOnly(ctx, Options{
+	if _, err := selectionOnlyForTest(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
@@ -590,7 +610,7 @@ func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
 	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Compact concern"}, nil), 8, 2))
 	firstAdapter.Queue(fakeLLMResult("selection-session-1", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	firstProgress := &fakeTaskProgress{}
-	if _, err := SelectionOnly(ctx, Options{
+	if _, err := selectionOnlyForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         firstAdapter,
 		TaskProgress:    firstProgress,
@@ -606,7 +626,7 @@ func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
 	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	secondAdapter.Queue(fakeLLMResult("selection-session-2", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	secondProgress := &fakeTaskProgress{}
-	if _, err := SelectionOnly(ctx, Options{
+	if _, err := selectionOnlyForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         secondAdapter,
 		TaskProgress:    secondProgress,
@@ -631,7 +651,7 @@ func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
 	thirdAdapter.Queue(fakeLLMResult("dossier-summary-session-2", discussionSummaryJSON([]string{"Updated concern"}, nil), 8, 2))
 	thirdAdapter.Queue(fakeLLMResult("selection-session-3", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	thirdProgress := &fakeTaskProgress{}
-	if _, err := SelectionOnly(ctx, Options{
+	if _, err := selectionOnlyForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         thirdAdapter,
 		TaskProgress:    thirdProgress,
@@ -1243,7 +1263,7 @@ func TestSelectionOnlyRejectsInvalidSelection(t *testing.T) {
 	adapter.Queue(fakeLLMResult("selection-session-retry", selectionJSON("missing:agent", "main.go"), 10, 2))
 	artifactDir := t.TempDir()
 
-	result, err := SelectionOnly(ctx, Options{
+	result, err := selectionOnlyForTest(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
@@ -1298,7 +1318,7 @@ func TestSelectionOnlyCapsMaxAgents(t *testing.T) {
 		"reasoning": "too many"
 	}`, 10, 2))
 
-	result, err := SelectionOnly(ctx, Options{
+	result, err := selectionOnlyForTest(ctx, Options{
 		Provider:  provider,
 		Adapter:   adapter,
 		Now:       fixedNow,
@@ -1332,7 +1352,7 @@ func TestSelectionOnlyContextBudgetFailure(t *testing.T) {
 	req.Profile.AgentSources = []string{dir}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 
-	_, err := SelectionOnly(ctx, Options{
+	_, err := selectionOnlyForTest(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
@@ -1353,7 +1373,7 @@ func TestSelectionOnlyNoDiffSkipsLLMAndReturnsPreparedContext(t *testing.T) {
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	artifactDir := t.TempDir()
 
-	result, err := SelectionOnly(ctx, Options{
+	result, err := selectionOnlyForTest(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
@@ -1378,6 +1398,360 @@ func TestSelectionOnlyNoDiffSkipsLLMAndReturnsPreparedContext(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkbenchArtifactsCreatesPinnedReadOnlyCheckoutAndMetadata(t *testing.T) {
+	ctx := context.Background()
+	fixture := newWorkbenchGitFixture(t)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+
+	err := prepareWorkbenchArtifacts(ctx, Options{
+		ResolveRepoRoot: func(context.Context) (string, error) { return fixture.repoDir, nil },
+	}, workbenchPreparationRequest{
+		PRRef:        fixture.pr.Ref,
+		ReviewPR:     fixture.pr,
+		ChangedFiles: []string{"main.go"},
+		Artifacts:    artifacts,
+	})
+	if err != nil {
+		t.Fatalf("prepareWorkbenchArtifacts: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := unlockWorkbenchRepo(artifacts.WorkbenchRepoDir); err != nil {
+			t.Fatalf("unlockWorkbenchRepo: %v", err)
+		}
+	})
+
+	if got := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "rev-parse", "HEAD")); got != fixture.headSHA {
+		t.Fatalf("workbench HEAD = %q, want %q", got, fixture.headSHA)
+	}
+	if got := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "diff", "--name-only", fixture.baseSHA+"...HEAD")); got != "main.go" {
+		t.Fatalf("workbench diff names = %q, want main.go", got)
+	}
+	if err := os.WriteFile(filepath.Join(artifacts.WorkbenchRepoDir, "main.go"), []byte("blocked"), 0o600); err == nil {
+		t.Fatalf("overwrite of read-only workbench file unexpectedly succeeded")
+	}
+	if err := os.WriteFile(filepath.Join(artifacts.WorkbenchRepoDir, "new-file.txt"), []byte("blocked"), 0o600); err == nil {
+		t.Fatalf("new file creation in read-only workbench unexpectedly succeeded")
+	}
+	if err := os.WriteFile(filepath.Join(artifacts.WorkbenchScratch, "note.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatalf("write scratch: %v", err)
+	}
+
+	var meta workbenchMetadataArtifact
+	if err := readJSONFile(artifacts.WorkbenchMetadataPath(), &meta); err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if meta.SchemaVersion != workbenchMetadataSchemaVersion || meta.CheckoutMode != workbenchCheckoutModeArtifactClone {
+		t.Fatalf("metadata = %#v, want schema %d and checkout mode %q", meta, workbenchMetadataSchemaVersion, workbenchCheckoutModeArtifactClone)
+	}
+	if meta.Base.SHA != fixture.baseSHA || meta.Head.SHA != fixture.headSHA {
+		t.Fatalf("metadata refs = %#v/%#v, want base/head fixture SHAs", meta.Base, meta.Head)
+	}
+	if meta.PR != (workbenchPRIdentity{Host: fixture.pr.Ref.Host, Owner: fixture.pr.Ref.Owner, Repo: fixture.pr.Ref.Repo, Number: fixture.pr.Ref.Number}) {
+		t.Fatalf("metadata PR = %#v, want fixture PR identity", meta.PR)
+	}
+	if meta.SourceRepoRoot != fixture.repoDir {
+		t.Fatalf("metadata source repo root = %q, want %q", meta.SourceRepoRoot, fixture.repoDir)
+	}
+	if meta.RepoPath != artifacts.WorkbenchRepoDir || meta.ScratchPath != artifacts.WorkbenchScratch {
+		t.Fatalf("metadata paths = repo %q scratch %q, want artifact workbench paths", meta.RepoPath, meta.ScratchPath)
+	}
+	if !reflect.DeepEqual(meta.ChangedFiles, []string{"main.go"}) {
+		t.Fatalf("metadata changed files = %#v, want main.go", meta.ChangedFiles)
+	}
+	if meta.FingerprintInputs.PR != meta.PR ||
+		meta.FingerprintInputs.BaseSHA != fixture.baseSHA ||
+		meta.FingerprintInputs.HeadSHA != fixture.headSHA ||
+		meta.FingerprintInputs.CheckoutMode != workbenchCheckoutModeArtifactClone ||
+		meta.FingerprintInputs.SourceRepoRoot != fixture.repoDir ||
+		!reflect.DeepEqual(meta.FingerprintInputs.ChangedFiles, []string{"main.go"}) {
+		t.Fatalf("fingerprint inputs = %#v, want deterministic metadata inputs", meta.FingerprintInputs)
+	}
+}
+
+func TestDeriveWorkbenchRemoteURLPreservesRemoteStyle(t *testing.T) {
+	branch := gitprovider.PRBranchRef{Host: "github.com", Owner: "fork-owner", Repo: "codereview-cli"}
+
+	scpURL, err := deriveWorkbenchRemoteURL("git@github.com:open-cli-collective/codereview-cli.git", branch)
+	if err != nil {
+		t.Fatalf("derive scp remote: %v", err)
+	}
+	if scpURL != "git@github.com:fork-owner/codereview-cli.git" {
+		t.Fatalf("scp remote = %q, want fork-style scp URL", scpURL)
+	}
+
+	httpsURL, err := deriveWorkbenchRemoteURL("https://github.com/open-cli-collective/codereview-cli.git", branch)
+	if err != nil {
+		t.Fatalf("derive https remote: %v", err)
+	}
+	if httpsURL != "https://github.com/fork-owner/codereview-cli.git" {
+		t.Fatalf("https remote = %q, want fork-style https URL", httpsURL)
+	}
+}
+
+func TestPrepareWorkbenchArtifactsFetchesForkHeadFromDerivedRemote(t *testing.T) {
+	ctx := context.Background()
+	fixture := newForkWorkbenchFixture(t)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	var fetchedRemotes []string
+	gitRunner := func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		cmdArgs := append([]string(nil), args...)
+		if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" {
+			fetchedRemotes = append(fetchedRemotes, cmdArgs[2])
+			switch cmdArgs[2] {
+			case "git@github.com:open-cli-collective/codereview-cli.git":
+				cmdArgs[2] = fixture.baseRemotePath
+			case "git@github.com:fork-owner/codereview-cli-fork.git":
+				cmdArgs[2] = fixture.forkRemotePath
+			}
+		}
+		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		if strings.TrimSpace(dir) != "" {
+			cmd.Dir = dir
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("git %s: %s", strings.Join(cmdArgs, " "), strings.TrimSpace(string(out)))
+		}
+		return out, nil
+	}
+
+	err := prepareWorkbenchArtifacts(ctx, Options{
+		ResolveRepoRoot: func(context.Context) (string, error) { return fixture.sourceRepoDir, nil },
+		GitCommand:      gitRunner,
+	}, workbenchPreparationRequest{
+		PRRef:        fixture.pr.Ref,
+		ReviewPR:     fixture.pr,
+		ChangedFiles: []string{"main.go"},
+		Artifacts:    artifacts,
+	})
+	if err != nil {
+		t.Fatalf("prepareWorkbenchArtifacts: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := unlockWorkbenchRepo(artifacts.WorkbenchRepoDir); err != nil {
+			t.Fatalf("unlockWorkbenchRepo: %v", err)
+		}
+	})
+
+	if got := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "rev-parse", "HEAD")); got != fixture.pr.Head.SHA {
+		t.Fatalf("workbench HEAD = %q, want fork head %q", got, fixture.pr.Head.SHA)
+	}
+	if got := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "diff", "--name-only", fixture.pr.Base.SHA+"...HEAD")); got != "main.go" {
+		t.Fatalf("workbench diff names = %q, want main.go", got)
+	}
+	if !slices.Contains(fetchedRemotes, "git@github.com:fork-owner/codereview-cli-fork.git") {
+		t.Fatalf("fetched remotes = %#v, want derived fork remote fetch", fetchedRemotes)
+	}
+}
+
+func TestPrepareWorkbenchArtifactsRejectsMismatchedBaseHostEvenWhenCommitsExistLocally(t *testing.T) {
+	ctx := context.Background()
+	fixture := newWorkbenchGitFixture(t)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	pr := fixture.pr
+	pr.Base.Host = "example.com"
+	pr.Ref.Host = "example.com"
+
+	err := prepareWorkbenchArtifacts(ctx, Options{
+		ResolveRepoRoot: func(context.Context) (string, error) { return fixture.repoDir, nil },
+	}, workbenchPreparationRequest{
+		PRRef:        pr.Ref,
+		ReviewPR:     pr,
+		ChangedFiles: []string{"main.go"},
+		Artifacts:    artifacts,
+	})
+	if err == nil {
+		t.Fatal("prepareWorkbenchArtifacts unexpectedly succeeded for mismatched base host")
+	}
+	if !strings.Contains(err.Error(), `source repo origin "git@github.com:open-cli-collective/codereview-cli.git" does not match PR base repo open-cli-collective/codereview-cli on example.com`) {
+		t.Fatalf("prepareWorkbenchArtifacts error = %v, want host mismatch", err)
+	}
+}
+
+func TestPrepareWorkbenchArtifactsRejectsUnsafeFetchRef(t *testing.T) {
+	ctx := context.Background()
+	fixture := newForkWorkbenchFixture(t)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	pr := fixture.pr
+	pr.Head.Ref = "--upload-pack=/tmp/pwn"
+	gitRunner := func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		cmdArgs := append([]string(nil), args...)
+		if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" {
+			switch cmdArgs[2] {
+			case "git@github.com:open-cli-collective/codereview-cli.git":
+				cmdArgs[2] = fixture.baseRemotePath
+			case "git@github.com:fork-owner/codereview-cli-fork.git":
+				cmdArgs[2] = fixture.forkRemotePath
+			}
+		}
+		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		if strings.TrimSpace(dir) != "" {
+			cmd.Dir = dir
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("git %s: %s", strings.Join(cmdArgs, " "), strings.TrimSpace(string(out)))
+		}
+		return out, nil
+	}
+
+	err := prepareWorkbenchArtifacts(ctx, Options{
+		ResolveRepoRoot: func(context.Context) (string, error) { return fixture.sourceRepoDir, nil },
+		GitCommand:      gitRunner,
+	}, workbenchPreparationRequest{
+		PRRef:        pr.Ref,
+		ReviewPR:     pr,
+		ChangedFiles: []string{"main.go"},
+		Artifacts:    artifacts,
+	})
+	if err == nil || !strings.Contains(err.Error(), `reject unsafe fetch ref "--upload-pack=/tmp/pwn"`) {
+		t.Fatalf("prepareWorkbenchArtifacts error = %v, want unsafe ref rejection", err)
+	}
+}
+
+func TestPrepareWorkbenchArtifactsRefreshesExistingArtifactRoot(t *testing.T) {
+	ctx := context.Background()
+	fixture := newWorkbenchGitFixture(t)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	req := workbenchPreparationRequest{
+		PRRef:        fixture.pr.Ref,
+		ReviewPR:     fixture.pr,
+		ChangedFiles: []string{"main.go"},
+		Artifacts:    artifacts,
+	}
+	opts := Options{
+		ResolveRepoRoot: func(context.Context) (string, error) { return fixture.repoDir, nil },
+	}
+
+	if err := prepareWorkbenchArtifacts(ctx, opts, req); err != nil {
+		t.Fatalf("prepareWorkbenchArtifacts first run: %v", err)
+	}
+	if err := unlockWorkbenchRepo(artifacts.WorkbenchRepoDir); err != nil {
+		t.Fatalf("unlockWorkbenchRepo: %v", err)
+	}
+	stalePath := filepath.Join(artifacts.WorkbenchDir, "stale.txt")
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write stale artifact: %v", err)
+	}
+	if err := os.WriteFile(artifacts.WorkbenchMetadataPath(), []byte(`{"schema_version":999}`), 0o600); err != nil {
+		t.Fatalf("overwrite stale metadata: %v", err)
+	}
+
+	if err := prepareWorkbenchArtifacts(ctx, opts, req); err != nil {
+		t.Fatalf("prepareWorkbenchArtifacts second run: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := unlockWorkbenchRepo(artifacts.WorkbenchRepoDir); err != nil {
+			t.Fatalf("unlockWorkbenchRepo cleanup: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(stalePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale artifact stat error = %v, want not exist", err)
+	}
+	var meta workbenchMetadataArtifact
+	if err := readJSONFile(artifacts.WorkbenchMetadataPath(), &meta); err != nil {
+		t.Fatalf("read refreshed metadata: %v", err)
+	}
+	if meta.SchemaVersion != workbenchMetadataSchemaVersion || meta.Head.SHA != fixture.headSHA {
+		t.Fatalf("refreshed metadata = %#v, want current workbench metadata", meta)
+	}
+}
+
+func TestSelectionOnlyPreparesWorkbenchInCallerOwnedArtifacts(t *testing.T) {
+	ctx := context.Background()
+	fixture := newWorkbenchGitFixture(t)
+	provider, req := dryRunHarness(t)
+	provider.pr = fixture.pr
+	provider.diff = gitprovider.UnifiedDiff{Raw: smallDiff("main.go")}
+	req.PRRef = fixture.pr.Ref
+	req.PRURL = fixture.pr.URL
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	artifactDir := t.TempDir()
+
+	result, err := selectionOnlyForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return fixture.repoDir, nil
+		},
+	}, selectionRequestFromReview(req, artifactDir))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+
+	if !reflect.DeepEqual(result.Artifacts, ArtifactPathsFromDir(artifactDir)) {
+		t.Fatalf("artifacts = %#v, want caller-owned dir %q", result.Artifacts, artifactDir)
+	}
+	if got := strings.TrimSpace(gitCommandOutput(t, result.Artifacts.WorkbenchRepoDir, "rev-parse", "HEAD")); got != fixture.headSHA {
+		t.Fatalf("workbench HEAD = %q, want %q", got, fixture.headSHA)
+	}
+	if _, err := os.Stat(result.Artifacts.WorkbenchMetadataPath()); err != nil {
+		t.Fatalf("stat workbench metadata: %v", err)
+	}
+}
+
+func TestDryRunPreparesWorkbenchInAllocatedRunArtifacts(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	fixture := newWorkbenchGitFixture(t)
+	provider, req := dryRunHarness(t)
+	provider.pr = fixture.pr
+	provider.diff = gitprovider.UnifiedDiff{Raw: smallDiff("main.go")}
+	req.PRRef = fixture.pr.Ref
+	req.PRURL = fixture.pr.URL
+	req.Profile.AgentSources = nil
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`, 10, 2))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", nil), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Store:    store,
+		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:      fixedNow,
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return fixture.repoDir, nil
+		},
+		NewRunID:        func() string { return "run-workbench" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := unlockWorkbenchRepo(result.Artifacts.WorkbenchRepoDir); err != nil {
+			t.Fatalf("unlockWorkbenchRepo cleanup: %v", err)
+		}
+	})
+
+	if got := strings.TrimSpace(gitCommandOutput(t, result.Artifacts.WorkbenchRepoDir, "rev-parse", "HEAD")); got != fixture.headSHA {
+		t.Fatalf("workbench HEAD = %q, want %q", got, fixture.headSHA)
+	}
+	if got := strings.TrimSpace(gitCommandOutput(t, result.Artifacts.WorkbenchRepoDir, "diff", "--name-only", fixture.baseSHA+"...HEAD")); got != "main.go" {
+		t.Fatalf("workbench diff names = %q, want main.go", got)
+	}
+	var meta workbenchMetadataArtifact
+	if err := readJSONFile(result.Artifacts.WorkbenchMetadataPath(), &meta); err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if meta.RepoPath != result.Artifacts.WorkbenchRepoDir || meta.ScratchPath != result.Artifacts.WorkbenchScratch {
+		t.Fatalf("metadata paths = %#v, want allocated run workbench paths", meta)
+	}
+}
+
 func TestDryRunNoDiffDoesNotResolveUnmappedModelTier(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -1391,7 +1765,7 @@ func TestDryRunNoDiffDoesNotResolveUnmappedModelTier(t *testing.T) {
 	}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -1425,7 +1799,7 @@ func TestDryRunAgentModelTierUsesProfileModelMapOverride(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -1469,7 +1843,7 @@ func TestDryRunReviewerBaselineTierRaisesReviewerModelFloor(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -1542,7 +1916,7 @@ func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
 			adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 			adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-			result, err := DryRun(ctx, Options{
+			result, err := dryRunForTest(ctx, Options{
 				Provider:        provider,
 				Adapter:         adapter,
 				Store:           store,
@@ -1603,7 +1977,7 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -1648,7 +2022,7 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 	writeAgent(t, req.Profile.AgentSources[0], "harness", "gamma", "gamma desc", "Review gamma.")
 	adapter := &reviewerIsolationAdapter{reviewerBarrier: newReviewerStartBarrier(3)}
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -1725,7 +2099,7 @@ func TestDryRunReviewerProviderFailureIsolation(t *testing.T) {
 	betaErr := errors.New("provider wait failed")
 	adapter := &reviewerIsolationAdapter{betaProviderErr: betaErr, reviewerBarrier: newReviewerStartBarrier(3)}
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -1799,17 +2173,18 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 	firstAdapter.Queue(fakeLLMResult("rollup-retry-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
 	findingID := func() (review.FindingID, error) { return review.FindingID("finding-1"), nil }
 
-	_, err := Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         firstAdapter,
-		Store:           store,
-		NamedSessions:   store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingID,
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	_, err := liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   firstAdapter,
+		Store:                     store,
+		NamedSessions:             store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingID,
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if err == nil || !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
 		t.Fatalf("first Live error = %v, want invalid rollup after retry", err)
@@ -1836,17 +2211,18 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 
 	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	secondAdapter.Queue(fakeLLMResult("rollup-fixed-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
-	result, err := Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         secondAdapter,
-		Store:           store,
-		NamedSessions:   store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:             fixedNow,
-		NewSessionRowID: sequence("resume-session"),
-		NewFindingID:    findingID,
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	result, err := liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   secondAdapter,
+		Store:                     store,
+		NamedSessions:             store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("resume-session"),
+		NewFindingID:              findingID,
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if err != nil {
 		t.Fatalf("second Live: %v", err)
@@ -2185,7 +2561,7 @@ func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -2228,7 +2604,7 @@ func TestDryRunAgentModelIDBypassesModelMapForReviewer(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -2282,7 +2658,7 @@ func TestDryRunReviewerBaselineDoesNotAffectAgentModelID(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -2363,7 +2739,7 @@ func TestDryRunReviewerModelOverrideBypassesAgentModelID(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -2419,7 +2795,7 @@ func TestDryRunPrunesConfiguredRetentionBeforeFetch(t *testing.T) {
 		}
 	}
 
-	if _, err := DryRun(ctx, Options{
+	if _, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -2457,7 +2833,7 @@ func TestDryRunManualOnlySkipsRetentionBeforeFetch(t *testing.T) {
 		}
 	}
 
-	if _, err := DryRun(ctx, Options{
+	if _, err := dryRunForTest(ctx, Options{
 		Provider:            provider,
 		Adapter:             adapter,
 		Store:               store,
@@ -2509,16 +2885,17 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         adapter,
-		Store:           store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	result, err := liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   adapter,
+		Store:                     store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingSequence("finding"),
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if err != nil {
 		t.Fatalf("Live: %v", err)
@@ -2576,16 +2953,17 @@ func TestLiveRejectsStageRuntimeOverrides(t *testing.T) {
 			run := allocateLiveRun(t, store, provider, req, "run-live-override-"+strings.ReplaceAll(tt.name, " ", "-"))
 			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 
-			_, err := Live(ctx, Options{
-				Provider:        provider,
-				Adapter:         adapter,
-				Store:           store,
-				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-				Now:             fixedNow,
-				NewSessionRowID: sequence("session"),
-				NewFindingID:    findingSequence("finding"),
-				NewActionID:     actionSequence(),
-				MaxConcurrency:  1,
+			_, err := liveForTest(ctx, Options{
+				AutoUnlockWorkbenchOnExit: true,
+				Provider:                  provider,
+				Adapter:                   adapter,
+				Store:                     store,
+				Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:                       fixedNow,
+				NewSessionRowID:           sequence("session"),
+				NewFindingID:              findingSequence("finding"),
+				NewActionID:               actionSequence(),
+				MaxConcurrency:            1,
 			}, req, run)
 			if err == nil {
 				t.Fatal("Live error = nil, want stage override rejection")
@@ -2619,17 +2997,18 @@ func TestLiveNamedSessionResumesOrchestratorOnlyAndReturnsCandidate(t *testing.T
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-new", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         adapter,
-		Store:           store,
-		NamedSessions:   store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	result, err := liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   adapter,
+		Store:                     store,
+		NamedSessions:             store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingSequence("finding"),
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if err != nil {
 		t.Fatalf("Live: %v", err)
@@ -2676,17 +3055,18 @@ func TestLiveNamedSessionMissingRowStartsFreshAndReturnsCandidate(t *testing.T) 
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-new", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
-	result, err := Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         adapter,
-		Store:           store,
-		NamedSessions:   store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	result, err := liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   adapter,
+		Store:                     store,
+		NamedSessions:             store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingSequence("finding"),
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if err != nil {
 		t.Fatalf("Live: %v", err)
@@ -2733,17 +3113,18 @@ func TestLiveNamedSessionScopeMismatchRefusesBeforeLLM(t *testing.T) {
 			}
 			adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 
-			_, err := Live(ctx, Options{
-				Provider:        provider,
-				Adapter:         adapter,
-				Store:           store,
-				NamedSessions:   store,
-				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-				Now:             fixedNow,
-				NewSessionRowID: sequence("session"),
-				NewFindingID:    findingSequence("finding"),
-				NewActionID:     actionSequence(),
-				MaxConcurrency:  1,
+			_, err := liveForTest(ctx, Options{
+				AutoUnlockWorkbenchOnExit: true,
+				Provider:                  provider,
+				Adapter:                   adapter,
+				Store:                     store,
+				NamedSessions:             store,
+				Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:                       fixedNow,
+				NewSessionRowID:           sequence("session"),
+				NewFindingID:              findingSequence("finding"),
+				NewActionID:               actionSequence(),
+				MaxConcurrency:            1,
 			}, req, run)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Live error = %v, want %q", err, tt.wantErr)
@@ -2770,17 +3151,18 @@ func TestLiveNamedSessionResumeFailureLeavesStoredSessionUnchanged(t *testing.T)
 	resumeErr := errors.New("resume failed")
 	adapter.Queue(llm.FakeResult{StartErr: resumeErr})
 
-	_, err := Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         adapter,
-		Store:           store,
-		NamedSessions:   store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	_, err := liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   adapter,
+		Store:                     store,
+		NamedSessions:             store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingSequence("finding"),
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if !errors.Is(err, resumeErr) {
 		t.Fatalf("Live error = %v, want resume failure", err)
@@ -2815,18 +3197,19 @@ func TestLiveNamedSessionCrossHostWarnsAndContinues(t *testing.T) {
 	adapter.Queue(fakeLLMResult("rollup-new", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 	var warnings bytes.Buffer
 
-	result, err := Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         adapter,
-		Store:           store,
-		NamedSessions:   store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Warnings:        &warnings,
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	result, err := liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   adapter,
+		Store:                     store,
+		NamedSessions:             store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Warnings:                  &warnings,
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingSequence("finding"),
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if err != nil {
 		t.Fatalf("Live: %v", err)
@@ -2860,18 +3243,19 @@ func TestLiveNamedSessionUnsupportedResumeStartsFreshAndReturnsCandidate(t *test
 	adapter.Queue(fakeLLMResult("rollup-fresh", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 	var warnings bytes.Buffer
 
-	result, err := Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         adapter,
-		Store:           store,
-		NamedSessions:   store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Warnings:        &warnings,
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	result, err := liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   adapter,
+		Store:                     store,
+		NamedSessions:             store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Warnings:                  &warnings,
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingSequence("finding"),
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if err != nil {
 		t.Fatalf("Live: %v", err)
@@ -2905,18 +3289,19 @@ func TestLiveNamedSessionNoDiffLeavesCandidateEmpty(t *testing.T) {
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	var warnings bytes.Buffer
 
-	result, err := Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         adapter,
-		Store:           store,
-		NamedSessions:   store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Warnings:        &warnings,
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	result, err := liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   adapter,
+		Store:                     store,
+		NamedSessions:             store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Warnings:                  &warnings,
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingSequence("finding"),
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if err != nil {
 		t.Fatalf("Live: %v", err)
@@ -2964,16 +3349,17 @@ func TestLiveMarksRunIncompleteAfterBlockingLLMTaskError(t *testing.T) {
 		t.Fatalf("AllocateRun: %v", err)
 	}
 
-	_, err = Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
-		Store:           store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	_, err = liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:                     store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingSequence("finding"),
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if err == nil || !strings.Contains(err.Error(), "no queued result") {
 		t.Fatalf("Live error = %v, want fake LLM planning error", err)
@@ -3013,16 +3399,17 @@ func TestLiveLeavesRunIncompleteAfterContextCancellation(t *testing.T) {
 		t.Fatalf("AllocateRun: %v", err)
 	}
 
-	_, err = Live(ctx, Options{
-		Provider:        provider,
-		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
-		Store:           store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+	_, err = liveForTest(ctx, Options{
+		AutoUnlockWorkbenchOnExit: true,
+		Provider:                  provider,
+		Adapter:                   &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:                     store,
+		Layout:                    statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:                       fixedNow,
+		NewSessionRowID:           sequence("session"),
+		NewFindingID:              findingSequence("finding"),
+		NewActionID:               actionSequence(),
+		MaxConcurrency:            1,
 	}, req, run)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Live error = %v, want context.Canceled", err)
@@ -3067,7 +3454,7 @@ func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	}`, 1, 1))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 1, 1))
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -3113,7 +3500,7 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
 	adapter := &promptAwareAdapter{}
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -3233,7 +3620,7 @@ func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
 	req.ToolVersion = "0.0.0-test"
 	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
 
-	result, err := DryRun(ctx, Options{
+	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         &promptAwareAdapter{},
 		Store:           store,
@@ -3415,7 +3802,7 @@ func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T)
 			provider, req := dryRunHarness(t)
 			req.Profile.AgentSources = []string{tt.source(t)}
 
-			_, err := DryRun(ctx, Options{
+			_, err := dryRunForTest(ctx, Options{
 				Provider: provider,
 				Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
 				Store:    store,
@@ -3445,7 +3832,7 @@ func TestDryRunMarksRunFailedAfterPostAllocationError(t *testing.T) {
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 1, 1))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 1, 1))
 
-	_, err := DryRun(ctx, Options{
+	_, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         adapter,
 		Store:           store,
@@ -3727,7 +4114,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 			if tt.queue != nil {
 				tt.queue(adapter)
 			}
-			_, err := DryRun(ctx, Options{
+			_, err := dryRunForTest(ctx, Options{
 				Provider:        provider,
 				Adapter:         adapter,
 				Store:           store,
@@ -3781,6 +4168,7 @@ type readOnlyProvider struct {
 	issueCommentCalls int
 	caps              gitprovider.ProviderCaps
 	onGetPR           func()
+	fixtureRepoDir    string
 }
 
 type shaPair struct {
@@ -4083,44 +4471,269 @@ func containsFileCall(calls []fileKey, want fileKey) bool {
 	return false
 }
 
+type workbenchGitFixture struct {
+	repoDir string
+	baseSHA string
+	headSHA string
+	pr      gitprovider.PR
+}
+
+type forkWorkbenchFixture struct {
+	sourceRepoDir  string
+	baseRemotePath string
+	forkRemotePath string
+	pr             gitprovider.PR
+}
+
+func newWorkbenchGitFixture(t *testing.T) workbenchGitFixture {
+	t.Helper()
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 370}
+	return newWorkbenchGitFixtureForRef(t, ref)
+}
+
+func newWorkbenchGitFixtureForRef(t *testing.T, ref gitprovider.PRRef) workbenchGitFixture {
+	t.Helper()
+	repoDir := t.TempDir()
+	gitCommandMustSucceed(t, repoDir, "init", "-b", "main")
+	gitCommandMustSucceed(t, repoDir, "config", "user.name", "Workbench Test")
+	gitCommandMustSucceed(t, repoDir, "config", "user.email", "workbench@example.com")
+	gitCommandMustSucceed(t, repoDir, "remote", "add", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = false\n"), 0o600); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	gitCommandMustSucceed(t, repoDir, "add", "main.go")
+	gitCommandMustSucceed(t, repoDir, "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(gitCommandOutput(t, repoDir, "rev-parse", "HEAD"))
+	gitCommandMustSucceed(t, repoDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = true\n"), 0o600); err != nil {
+		t.Fatalf("update main.go: %v", err)
+	}
+	gitCommandMustSucceed(t, repoDir, "commit", "-am", "head")
+	headSHA := strings.TrimSpace(gitCommandOutput(t, repoDir, "rev-parse", "HEAD"))
+
+	return workbenchGitFixture{
+		repoDir: repoDir,
+		baseSHA: baseSHA,
+		headSHA: headSHA,
+		pr: gitprovider.PR{
+			Ref:   ref,
+			Title: "Workbench fixture",
+			URL:   prURL(ref),
+			State: gitprovider.PRStateOpen,
+			Base: gitprovider.PRBranchRef{
+				Host:  ref.Host,
+				Owner: ref.Owner,
+				Repo:  ref.Repo,
+				Name:  "main",
+				Ref:   "refs/heads/main",
+				SHA:   baseSHA,
+			},
+			Head: gitprovider.PRBranchRef{
+				Host:  ref.Host,
+				Owner: ref.Owner,
+				Repo:  ref.Repo,
+				Name:  "feature",
+				Ref:   "refs/heads/feature",
+				SHA:   headSHA,
+			},
+		},
+	}
+}
+
+func newPinnedReviewFixtureForRef(t *testing.T, ref gitprovider.PRRef) (workbenchGitFixture, string, string) {
+	t.Helper()
+	repoDir := t.TempDir()
+	gitCommandMustSucceed(t, repoDir, "init", "-b", "main")
+	gitCommandMustSucceed(t, repoDir, "config", "user.name", "Workbench Test")
+	gitCommandMustSucceed(t, repoDir, "config", "user.email", "workbench@example.com")
+	gitCommandMustSucceed(t, repoDir, "remote", "add", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = false\n"), 0o600); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	gitCommandMustSucceed(t, repoDir, "add", "main.go")
+	gitCommandMustSucceed(t, repoDir, "commit", "-m", "base")
+	reviewBaseSHA := strings.TrimSpace(gitCommandOutput(t, repoDir, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = maybe\n"), 0o600); err != nil {
+		t.Fatalf("update main.go for review head: %v", err)
+	}
+	gitCommandMustSucceed(t, repoDir, "commit", "-am", "review head")
+	reviewHeadSHA := strings.TrimSpace(gitCommandOutput(t, repoDir, "rev-parse", "HEAD"))
+	gitCommandMustSucceed(t, repoDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = true\n"), 0o600); err != nil {
+		t.Fatalf("update main.go for current head: %v", err)
+	}
+	gitCommandMustSucceed(t, repoDir, "commit", "-am", "current head")
+	headSHA := strings.TrimSpace(gitCommandOutput(t, repoDir, "rev-parse", "HEAD"))
+
+	return workbenchGitFixture{
+		repoDir: repoDir,
+		baseSHA: reviewHeadSHA,
+		headSHA: headSHA,
+		pr: gitprovider.PR{
+			Ref:   ref,
+			Title: "Pinned review fixture",
+			URL:   prURL(ref),
+			State: gitprovider.PRStateOpen,
+			Base: gitprovider.PRBranchRef{
+				Host:  ref.Host,
+				Owner: ref.Owner,
+				Repo:  ref.Repo,
+				Name:  "main",
+				Ref:   "refs/heads/main",
+				SHA:   reviewHeadSHA,
+			},
+			Head: gitprovider.PRBranchRef{
+				Host:  ref.Host,
+				Owner: ref.Owner,
+				Repo:  ref.Repo,
+				Name:  "feature",
+				Ref:   "refs/heads/feature",
+				SHA:   headSHA,
+			},
+		},
+	}, reviewBaseSHA, reviewHeadSHA
+}
+
+func newForkWorkbenchFixture(t *testing.T) forkWorkbenchFixture {
+	t.Helper()
+	baseSeedDir := t.TempDir()
+	gitCommandMustSucceed(t, baseSeedDir, "init", "-b", "main")
+	gitCommandMustSucceed(t, baseSeedDir, "config", "user.name", "Workbench Test")
+	gitCommandMustSucceed(t, baseSeedDir, "config", "user.email", "workbench@example.com")
+	if err := os.WriteFile(filepath.Join(baseSeedDir, "main.go"), []byte("package main\n\nvar changed = false\n"), 0o600); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	gitCommandMustSucceed(t, baseSeedDir, "add", "main.go")
+	gitCommandMustSucceed(t, baseSeedDir, "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(gitCommandOutput(t, baseSeedDir, "rev-parse", "HEAD"))
+
+	baseRemotePath := filepath.Join(t.TempDir(), "base-remote.git")
+	gitCommandMustSucceed(t, "", "clone", "--bare", baseSeedDir, baseRemotePath)
+
+	sourceRepoDir := filepath.Join(t.TempDir(), "source")
+	gitCommandMustSucceed(t, "", "clone", baseRemotePath, sourceRepoDir)
+	gitCommandMustSucceed(t, sourceRepoDir, "remote", "set-url", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
+
+	forkRemotePath := filepath.Join(t.TempDir(), "fork-remote.git")
+	gitCommandMustSucceed(t, "", "clone", baseRemotePath, forkRemotePath)
+	gitCommandMustSucceed(t, forkRemotePath, "checkout", "-b", "feature")
+	gitCommandMustSucceed(t, forkRemotePath, "config", "user.name", "Fork Workbench Test")
+	gitCommandMustSucceed(t, forkRemotePath, "config", "user.email", "fork@example.com")
+	if err := os.WriteFile(filepath.Join(forkRemotePath, "main.go"), []byte("package main\n\nvar changed = true\n"), 0o600); err != nil {
+		t.Fatalf("update fork main.go: %v", err)
+	}
+	gitCommandMustSucceed(t, forkRemotePath, "commit", "-am", "fork head")
+	headSHA := strings.TrimSpace(gitCommandOutput(t, forkRemotePath, "rev-parse", "HEAD"))
+
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 371}
+	return forkWorkbenchFixture{
+		sourceRepoDir:  sourceRepoDir,
+		baseRemotePath: baseRemotePath,
+		forkRemotePath: forkRemotePath,
+		pr: gitprovider.PR{
+			Ref:   ref,
+			Title: "Fork workbench fixture",
+			URL:   prURL(ref),
+			State: gitprovider.PRStateOpen,
+			Base: gitprovider.PRBranchRef{
+				Host:  ref.Host,
+				Owner: ref.Owner,
+				Repo:  ref.Repo,
+				Name:  "main",
+				Ref:   "refs/heads/main",
+				SHA:   baseSHA,
+			},
+			Head: gitprovider.PRBranchRef{
+				Host:  ref.Host,
+				Owner: "fork-owner",
+				Repo:  "codereview-cli-fork",
+				Name:  "feature",
+				Ref:   "refs/heads/feature",
+				SHA:   headSHA,
+			},
+		},
+	}
+}
+
+func gitCommandMustSucceed(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	return strings.TrimSpace(gitCommandOutput(t, dir, args...))
+}
+
+func gitCommandOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+func configureWorkbenchFixtureForTest(_ context.Context, opts *Options, ref gitprovider.PRRef) {
+	if opts.ResolveRepoRoot != nil && opts.GitCommand != nil {
+		return
+	}
+	provider, ok := opts.Provider.(*readOnlyProvider)
+	if !ok || strings.TrimSpace(provider.fixtureRepoDir) == "" {
+		return
+	}
+	repoDir := provider.fixtureRepoDir
+	if opts.ResolveRepoRoot == nil {
+		opts.ResolveRepoRoot = func(context.Context) (string, error) {
+			return repoDir, nil
+		}
+	}
+	if opts.GitCommand == nil {
+		opts.GitCommand = workbenchGitCommandForTest(ref)
+	}
+}
+
+func workbenchGitCommandForTest(ref gitprovider.PRRef) func(context.Context, string, ...string) ([]byte, error) {
+	return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		if len(args) == 3 && args[0] == "remote" && args[1] == "get-url" && args[2] == "origin" {
+			return []byte(fmt.Sprintf("https://%s/%s/%s.git\n", ref.Host, ref.Owner, ref.Repo)), nil
+		}
+		cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		if strings.TrimSpace(dir) != "" {
+			cmd.Dir = dir
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			message := strings.TrimSpace(string(out))
+			if message == "" {
+				message = err.Error()
+			}
+			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+		}
+		return out, nil
+	}
+}
+
 func dryRunHarness(t *testing.T) (*readOnlyProvider, Request) {
 	t.Helper()
 	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
-	baseSHA := strings.Repeat("b", 40)
-	headSHA := strings.Repeat("a", 40)
-	pr := gitprovider.PR{
-		Ref:    ref,
-		Title:  "CR-20 dry-run",
-		Body:   "Default PR body.",
-		URL:    prURL(ref),
-		State:  gitprovider.PRStateOpen,
-		Author: gitprovider.Identity{Login: "author", ID: "author-id"},
-		Base: gitprovider.PRBranchRef{
-			Host:  ref.Host,
-			Owner: ref.Owner,
-			Repo:  ref.Repo,
-			Name:  "main",
-			Ref:   "refs/heads/main",
-			SHA:   baseSHA,
-		},
-		Head: gitprovider.PRBranchRef{
-			Host:  ref.Host,
-			Owner: ref.Owner,
-			Repo:  ref.Repo,
-			Name:  "feature",
-			Ref:   "refs/heads/feature",
-			SHA:   headSHA,
-		},
-	}
+	fixture := newWorkbenchGitFixtureForRef(t, ref)
+	pr := fixture.pr
+	pr.Title = "CR-20 dry-run"
+	pr.Body = "Default PR body."
+	pr.Author = gitprovider.Identity{Login: "author", ID: "author-id"}
 	dir := t.TempDir()
 	writeAgent(t, dir, "harness", "reviewer", "reviewer desc", "Review carefully.")
 	trustCurrentTempFixtures(t)
 	provider := &readOnlyProvider{
-		pr:    pr,
-		diff:  gitprovider.UnifiedDiff{Raw: smallDiff("main.go")},
-		files: map[fileKey][]byte{},
-		trees: map[fileKey][]gitprovider.TreeEntry{},
-		caps:  gitprovider.ProviderCaps{NativeFileLevelComments: true, ThreadResolution: true},
+		pr:             pr,
+		diff:           gitprovider.UnifiedDiff{Raw: smallDiff("main.go")},
+		files:          map[fileKey][]byte{},
+		trees:          map[fileKey][]gitprovider.TreeEntry{},
+		caps:           gitprovider.ProviderCaps{NativeFileLevelComments: true, ThreadResolution: true},
+		fixtureRepoDir: fixture.repoDir,
 	}
 	req := Request{
 		PRRef:           ref,

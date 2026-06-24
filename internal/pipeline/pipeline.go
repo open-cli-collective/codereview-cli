@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -138,6 +140,10 @@ type Options struct {
 
 	Retention           datalifecycle.RetentionPolicy
 	RetentionManualOnly bool
+
+	GitCommand                func(context.Context, string, ...string) ([]byte, error)
+	ResolveRepoRoot           func(context.Context) (string, error)
+	AutoUnlockWorkbenchOnExit bool
 }
 
 // Request identifies one dry-run review.
@@ -197,6 +203,9 @@ type ArtifactPaths struct {
 	AgentLogsDir     string `json:"agent_logs_dir"`
 	LLMTasksDir      string `json:"llm_tasks_dir"`
 	DossierDir       string `json:"dossier_dir"`
+	WorkbenchDir     string `json:"workbench_dir"`
+	WorkbenchRepoDir string `json:"workbench_repo_dir"`
+	WorkbenchScratch string `json:"workbench_scratch_dir"`
 }
 
 // SlicePatch returns the artifact path for an agent/file diff slice.
@@ -275,6 +284,11 @@ func (p ArtifactPaths) DossierFinalPath(name string) (string, error) {
 // DossierIndexPath returns the dossier index artifact path.
 func (p ArtifactPaths) DossierIndexPath() string {
 	return filepath.Join(p.DossierDir, "index.json")
+}
+
+// WorkbenchMetadataPath returns the workbench metadata artifact path.
+func (p ArtifactPaths) WorkbenchMetadataPath() string {
+	return filepath.Join(p.WorkbenchDir, "metadata.json")
 }
 
 func dossierChildPath(dir, name string) (string, error) {
@@ -571,6 +585,19 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}
 
 	result := prepared.selectionResult()
+	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+		PRRef:        req.PRRef,
+		ReviewPR:     prepared.reviewPR,
+		ChangedFiles: prepared.changedFiles,
+		Artifacts:    prepared.artifacts,
+	}); err != nil {
+		return SelectionResult{}, err
+	}
+	if shouldAutoUnlockWorkbenchOnExit(opts) {
+		defer func() {
+			_ = unlockWorkbenchRepo(prepared.artifacts.WorkbenchRepoDir)
+		}()
+	}
 	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
 		Profile:                 req.Profile,
 		SelectionModelOverride:  req.SelectionModelOverride,
@@ -678,6 +705,19 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	}
 	result.Run = run
 
+	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+		PRRef:        req.PRRef,
+		ReviewPR:     prepared.reviewPR,
+		ChangedFiles: prepared.changedFiles,
+		Artifacts:    prepared.artifacts,
+	}); err != nil {
+		return Result{}, err
+	}
+	if shouldAutoUnlockWorkbenchOnExit(opts) {
+		defer func() {
+			_ = unlockWorkbenchRepo(prepared.artifacts.WorkbenchRepoDir)
+		}()
+	}
 	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
 		RunID:                   run.RunID,
 		Profile:                 req.Profile,
@@ -2795,6 +2835,51 @@ type dossierPreparationRequest struct {
 	Artifacts               ArtifactPaths
 }
 
+type workbenchPreparationRequest struct {
+	PRRef        gitprovider.PRRef
+	ReviewPR     gitprovider.PR
+	ChangedFiles []string
+	Artifacts    ArtifactPaths
+}
+
+type workbenchMetadataArtifact struct {
+	SchemaVersion     int                        `json:"schema_version"`
+	SourceRepoRoot    string                     `json:"source_repo_root"`
+	CheckoutMode      string                     `json:"checkout_mode"`
+	PR                workbenchPRIdentity        `json:"pr"`
+	Base              workbenchBranchArtifact    `json:"base"`
+	Head              workbenchBranchArtifact    `json:"head"`
+	RepoPath          string                     `json:"repo_path"`
+	ScratchPath       string                     `json:"scratch_path"`
+	ChangedFiles      []string                   `json:"changed_files,omitempty"`
+	FingerprintInputs workbenchFingerprintInputs `json:"fingerprint_inputs"`
+}
+
+type workbenchPRIdentity struct {
+	Host   string `json:"host"`
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+}
+
+type workbenchBranchArtifact struct {
+	Host  string `json:"host,omitempty"`
+	Owner string `json:"owner,omitempty"`
+	Repo  string `json:"repo,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Ref   string `json:"ref,omitempty"`
+	SHA   string `json:"sha"`
+}
+
+type workbenchFingerprintInputs struct {
+	PR             workbenchPRIdentity `json:"pr"`
+	BaseSHA        string              `json:"base_sha"`
+	HeadSHA        string              `json:"head_sha"`
+	CheckoutMode   string              `json:"checkout_mode"`
+	ChangedFiles   []string            `json:"changed_files,omitempty"`
+	SourceRepoRoot string              `json:"source_repo_root"`
+}
+
 type dossierIndexArtifact struct {
 	HashAlgorithm string                     `json:"hash_algorithm"`
 	Files         []dossierIndexFileArtifact `json:"files"`
@@ -2806,16 +2891,18 @@ type dossierIndexFileArtifact struct {
 }
 
 const (
-	dossierFinalMaxTopLevelComments = 20
-	dossierFinalMaxInlineThreads    = 20
-	dossierFinalMaxThreadComments   = 5
-	dossierFinalExcerptRunes        = 240
-	dossierSummarySchemaVersion     = 1
-	dossierSummaryTaskID            = "dossier-discussion-summary"
-	dossierSummaryMaxTopLevel       = 20
-	dossierSummaryMaxInlineThreads  = 20
-	dossierSummaryMaxThreadComments = 5
-	dossierSummaryExcerptRunes      = 480
+	dossierFinalMaxTopLevelComments    = 20
+	dossierFinalMaxInlineThreads       = 20
+	dossierFinalMaxThreadComments      = 5
+	dossierFinalExcerptRunes           = 240
+	dossierSummarySchemaVersion        = 1
+	dossierSummaryTaskID               = "dossier-discussion-summary"
+	dossierSummaryMaxTopLevel          = 20
+	dossierSummaryMaxInlineThreads     = 20
+	dossierSummaryMaxThreadComments    = 5
+	dossierSummaryExcerptRunes         = 480
+	workbenchMetadataSchemaVersion     = 1
+	workbenchCheckoutModeArtifactClone = "artifact-clone"
 )
 
 var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
@@ -2836,6 +2923,340 @@ var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bci status\b`),
 	regexp.MustCompile(`\bbuild failed\b`),
 	regexp.MustCompile(`\bcheck(s)? failed\b`),
+}
+
+func prepareWorkbenchArtifacts(ctx context.Context, opts Options, req workbenchPreparationRequest) error {
+	sourceRepoRoot, err := opts.resolveRepoRoot(ctx)
+	if err != nil {
+		return fmt.Errorf("pipeline: resolve source repo root: %w", err)
+	}
+	sourceRepoRoot = filepath.Clean(sourceRepoRoot)
+
+	_ = unlockWorkbenchRepo(req.Artifacts.WorkbenchRepoDir)
+	if err := os.RemoveAll(req.Artifacts.WorkbenchDir); err != nil {
+		return fmt.Errorf("pipeline: reset workbench dir: %w", err)
+	}
+	for _, dir := range []string{req.Artifacts.WorkbenchDir, req.Artifacts.WorkbenchScratch} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("pipeline: create workbench dir: %w", err)
+		}
+	}
+
+	baseRemoteURL, err := resolveWorkbenchBaseRemoteURL(ctx, opts, sourceRepoRoot, req.ReviewPR.Base)
+	if err != nil {
+		return err
+	}
+	if _, err := opts.gitCommand(ctx, "", "clone", "--no-checkout", "--no-hardlinks", sourceRepoRoot, req.Artifacts.WorkbenchRepoDir); err != nil {
+		return fmt.Errorf("pipeline: clone workbench repo: %w", err)
+	}
+	remoteMatchesBaseHost, err := workbenchRemoteMatchesBaseHost(baseRemoteURL, req.ReviewPR.Base)
+	if err != nil {
+		return err
+	}
+	if !remoteMatchesBaseHost {
+		return fmt.Errorf("pipeline: source repo origin %q does not match PR base repo %s/%s on %s", baseRemoteURL, req.ReviewPR.Base.Owner, req.ReviewPR.Base.Repo, req.ReviewPR.Base.Host)
+	}
+
+	if err := ensureWorkbenchCommit(ctx, opts, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Base, baseRemoteURL); err != nil {
+		return err
+	}
+	headRemoteURL := baseRemoteURL
+	if !sameBranchRepo(req.ReviewPR.Base, req.ReviewPR.Head) {
+		headRemoteURL, err = deriveWorkbenchRemoteURL(baseRemoteURL, req.ReviewPR.Head)
+		if err != nil {
+			return fmt.Errorf("pipeline: derive head remote URL: %w", err)
+		}
+	}
+	if err := ensureWorkbenchCommit(ctx, opts, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head, headRemoteURL); err != nil {
+		return err
+	}
+	if _, err := opts.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "checkout", "--detach", req.ReviewPR.Head.SHA); err != nil {
+		return fmt.Errorf("pipeline: checkout workbench head %s: %w", shortSHA(req.ReviewPR.Head.SHA), err)
+	}
+	if err := makeWorkbenchRepoReadOnly(req.Artifacts.WorkbenchRepoDir); err != nil {
+		return err
+	}
+
+	changedFiles := append([]string(nil), req.ChangedFiles...)
+	sort.Strings(changedFiles)
+	meta := workbenchMetadataArtifact{
+		SchemaVersion:  workbenchMetadataSchemaVersion,
+		SourceRepoRoot: sourceRepoRoot,
+		CheckoutMode:   workbenchCheckoutModeArtifactClone,
+		PR: workbenchPRIdentity{
+			Host:   req.PRRef.Host,
+			Owner:  req.PRRef.Owner,
+			Repo:   req.PRRef.Repo,
+			Number: req.PRRef.Number,
+		},
+		Base:         workbenchBranchArtifactFromRef(req.ReviewPR.Base),
+		Head:         workbenchBranchArtifactFromRef(req.ReviewPR.Head),
+		RepoPath:     req.Artifacts.WorkbenchRepoDir,
+		ScratchPath:  req.Artifacts.WorkbenchScratch,
+		ChangedFiles: changedFiles,
+		FingerprintInputs: workbenchFingerprintInputs{
+			PR: workbenchPRIdentity{
+				Host:   req.PRRef.Host,
+				Owner:  req.PRRef.Owner,
+				Repo:   req.PRRef.Repo,
+				Number: req.PRRef.Number,
+			},
+			BaseSHA:        req.ReviewPR.Base.SHA,
+			HeadSHA:        req.ReviewPR.Head.SHA,
+			CheckoutMode:   workbenchCheckoutModeArtifactClone,
+			ChangedFiles:   changedFiles,
+			SourceRepoRoot: sourceRepoRoot,
+		},
+	}
+	return writeJSONFile(req.Artifacts.WorkbenchMetadataPath(), meta)
+}
+
+func resolveWorkbenchBaseRemoteURL(ctx context.Context, opts Options, sourceRepoRoot string, base gitprovider.PRBranchRef) (string, error) {
+	originOutput, err := opts.gitCommand(ctx, sourceRepoRoot, "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("pipeline: resolve source repo origin: %w", err)
+	}
+	originURL := strings.TrimSpace(string(originOutput))
+	if originURL == "" {
+		return "", fmt.Errorf("pipeline: source repo origin URL is empty")
+	}
+	host, owner, repo, _, err := parseWorkbenchRemoteURL(originURL)
+	if err != nil {
+		return "", fmt.Errorf("pipeline: parse source repo origin URL %q: %w", originURL, err)
+	}
+	if owner != base.Owner || repo != base.Repo {
+		return "", fmt.Errorf("pipeline: source repo origin %q does not match PR base repo %s/%s", originURL, base.Owner, base.Repo)
+	}
+	if host == "" {
+		return "", fmt.Errorf("pipeline: source repo origin %q did not include a host", originURL)
+	}
+	return originURL, nil
+}
+
+func workbenchRemoteMatchesBaseHost(remoteURL string, base gitprovider.PRBranchRef) (bool, error) {
+	host, _, _, _, err := parseWorkbenchRemoteURL(remoteURL)
+	if err != nil {
+		return false, fmt.Errorf("pipeline: parse source repo origin URL %q: %w", remoteURL, err)
+	}
+	return strings.EqualFold(host, base.Host), nil
+}
+
+func ensureWorkbenchCommit(ctx context.Context, opts Options, repoDir string, branch gitprovider.PRBranchRef, remoteURL string) error {
+	ref := strings.TrimSpace(branch.Ref)
+	if err := validateWorkbenchFetchRef(ref); err != nil {
+		return err
+	}
+	if workbenchCommitPresent(ctx, opts, repoDir, branch.SHA) {
+		return nil
+	}
+	if _, err := opts.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, branch.SHA); err == nil && workbenchCommitPresent(ctx, opts, repoDir, branch.SHA) {
+		return nil
+	}
+	if ref != "" {
+		if _, err := opts.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, ref); err == nil && workbenchCommitPresent(ctx, opts, repoDir, branch.SHA) {
+			return nil
+		}
+	}
+	return fmt.Errorf("pipeline: fetch commit %s for %s/%s from %q", shortSHA(branch.SHA), branch.Owner, branch.Repo, remoteURL)
+}
+
+func validateWorkbenchFetchRef(ref string) error {
+	if ref == "" {
+		return nil
+	}
+	if !strings.HasPrefix(ref, "refs/") {
+		return fmt.Errorf("pipeline: reject unsafe fetch ref %q", ref)
+	}
+	return nil
+}
+
+func workbenchCommitPresent(ctx context.Context, opts Options, repoDir, sha string) bool {
+	if strings.TrimSpace(sha) == "" {
+		return false
+	}
+	_, err := opts.gitCommand(ctx, repoDir, "cat-file", "-e", sha+"^{commit}")
+	return err == nil
+}
+
+func makeWorkbenchRepoReadOnly(root string) error {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm() & 0o555
+		if !entry.IsDir() {
+			mode |= 0o444
+		}
+		if err := os.Chmod(path, mode); err != nil { // #nosec G122 -- workbench paths are pipeline-owned artifact files; symlinks are skipped during the walk.
+			return fmt.Errorf("chmod %s: %w", path, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("pipeline: lock workbench repo read-only: %w", err)
+	}
+	return nil
+}
+
+func unlockWorkbenchRepo(root string) error {
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm()
+		if entry.IsDir() {
+			mode |= 0o700
+			mode |= 0o055
+		} else {
+			mode |= 0o200
+			mode |= 0o444
+		}
+		if err := os.Chmod(path, mode); err != nil { // #nosec G122 -- workbench paths are pipeline-owned artifact files; symlinks are skipped during the walk.
+			return fmt.Errorf("chmod %s: %w", path, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("pipeline: unlock workbench repo: %w", err)
+	}
+	return nil
+}
+
+func sameBranchRepo(left, right gitprovider.PRBranchRef) bool {
+	return strings.EqualFold(left.Host, right.Host) && left.Owner == right.Owner && left.Repo == right.Repo
+}
+
+func workbenchBranchArtifactFromRef(ref gitprovider.PRBranchRef) workbenchBranchArtifact {
+	return workbenchBranchArtifact{
+		Host:  ref.Host,
+		Owner: ref.Owner,
+		Repo:  ref.Repo,
+		Name:  ref.Name,
+		Ref:   ref.Ref,
+		SHA:   ref.SHA,
+	}
+}
+
+type workbenchRemoteStyle struct {
+	scheme string
+	user   string
+	host   string
+	scp    bool
+	dotGit bool
+}
+
+func parseWorkbenchRemoteURL(raw string) (host, owner, repo string, style workbenchRemoteStyle, err error) {
+	raw = strings.TrimSpace(raw)
+	switch {
+	case strings.Contains(raw, "://"):
+		parsed, parseErr := url.Parse(raw)
+		if parseErr != nil {
+			return "", "", "", workbenchRemoteStyle{}, parseErr
+		}
+		owner, repo, dotGit, parseErr := parseWorkbenchRepoPath(parsed.Path)
+		if parseErr != nil {
+			return "", "", "", workbenchRemoteStyle{}, parseErr
+		}
+		style = workbenchRemoteStyle{
+			scheme: parsed.Scheme,
+			host:   parsed.Host,
+			dotGit: dotGit,
+		}
+		if parsed.User != nil {
+			style.user = parsed.User.Username()
+		}
+		return parsed.Host, owner, repo, style, nil
+	case strings.Contains(raw, "@") && strings.Contains(raw, ":"):
+		parts := strings.SplitN(raw, ":", 2)
+		if len(parts) != 2 {
+			return "", "", "", workbenchRemoteStyle{}, fmt.Errorf("invalid scp-style remote")
+		}
+		userHost := parts[0]
+		pathPart := parts[1]
+		userHostParts := strings.SplitN(userHost, "@", 2)
+		if len(userHostParts) != 2 {
+			return "", "", "", workbenchRemoteStyle{}, fmt.Errorf("invalid scp-style remote")
+		}
+		owner, repo, dotGit, parseErr := parseWorkbenchRepoPath(pathPart)
+		if parseErr != nil {
+			return "", "", "", workbenchRemoteStyle{}, parseErr
+		}
+		style = workbenchRemoteStyle{
+			user:   userHostParts[0],
+			host:   userHostParts[1],
+			scp:    true,
+			dotGit: dotGit,
+		}
+		return userHostParts[1], owner, repo, style, nil
+	default:
+		return "", "", "", workbenchRemoteStyle{}, fmt.Errorf("unsupported remote URL %q", raw)
+	}
+}
+
+func parseWorkbenchRepoPath(path string) (owner, repo string, dotGit bool, err error) {
+	path = strings.Trim(strings.TrimSpace(path), "/")
+	if strings.HasSuffix(path, ".git") {
+		dotGit = true
+		path = strings.TrimSuffix(path, ".git")
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return "", "", false, fmt.Errorf("unsupported repo path %q", path)
+	}
+	return parts[len(parts)-2], parts[len(parts)-1], dotGit, nil
+}
+
+func deriveWorkbenchRemoteURL(originURL string, branch gitprovider.PRBranchRef) (string, error) {
+	_, _, _, style, err := parseWorkbenchRemoteURL(originURL)
+	if err != nil {
+		return "", err
+	}
+	repoPath := branch.Owner + "/" + branch.Repo
+	if style.dotGit {
+		repoPath += ".git"
+	}
+	if style.scp {
+		return style.user + "@" + branch.Host + ":" + repoPath, nil
+	}
+	u := &url.URL{
+		Scheme: style.scheme,
+		Host:   branch.Host,
+		Path:   "/" + repoPath,
+	}
+	if style.user != "" {
+		u.User = url.User(style.user)
+	}
+	return u.String(), nil
+}
+
+func shortSHA(sha string) string {
+	sha = strings.TrimSpace(sha)
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 func writeRawDossierArtifacts(paths ArtifactPaths, in dossierInputs) error {
@@ -3948,6 +4369,9 @@ func ArtifactPathsForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr git
 		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
 		LLMTasksDir:      filepath.Join(dir, "llm-tasks"),
 		DossierDir:       filepath.Join(dir, "dossier"),
+		WorkbenchDir:     filepath.Join(dir, "workbench"),
+		WorkbenchRepoDir: filepath.Join(dir, "workbench", "repo"),
+		WorkbenchScratch: filepath.Join(dir, "workbench", "scratch"),
 	}, nil
 }
 
@@ -3963,6 +4387,9 @@ func ArtifactPathsFromDir(dir string) ArtifactPaths {
 		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
 		LLMTasksDir:      filepath.Join(dir, "llm-tasks"),
 		DossierDir:       filepath.Join(dir, "dossier"),
+		WorkbenchDir:     filepath.Join(dir, "workbench"),
+		WorkbenchRepoDir: filepath.Join(dir, "workbench", "repo"),
+		WorkbenchScratch: filepath.Join(dir, "workbench", "scratch"),
 	}
 }
 
@@ -4070,6 +4497,48 @@ func (opts Options) maxConcurrency(maxAgents int) int {
 		return defaultMaxConcurrency
 	}
 	return opts.MaxConcurrency
+}
+
+func (opts Options) gitCommand(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if opts.GitCommand != nil {
+		return opts.GitCommand(ctx, dir, args...)
+	}
+	cmdArgs := append([]string{}, args...)
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- pipeline invokes git with fixed command names and structured arguments.
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+	}
+	return output, nil
+}
+
+func (opts Options) resolveRepoRoot(ctx context.Context) (string, error) {
+	if opts.ResolveRepoRoot != nil {
+		return opts.ResolveRepoRoot(ctx)
+	}
+	out, err := opts.gitCommand(ctx, "", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	root := strings.TrimSpace(string(out))
+	if root == "" {
+		return "", fmt.Errorf("git rev-parse --show-toplevel returned empty output")
+	}
+	return root, nil
+}
+
+func shouldAutoUnlockWorkbenchOnExit(opts Options) bool {
+	return opts.AutoUnlockWorkbenchOnExit
 }
 
 func knownAgents(catalog agents.Catalog) map[string]bool {

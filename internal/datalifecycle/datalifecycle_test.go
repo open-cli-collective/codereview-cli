@@ -154,6 +154,35 @@ func TestPruneDeletesRowBeforeBestEffortArtifactRemoval(t *testing.T) {
 	}
 }
 
+func TestDefaultRemoveAllUnlocksReadOnlyArtifactTree(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "artifacts")
+	workbenchRepo := filepath.Join(root, "workbench", "repo")
+	if err := os.MkdirAll(filepath.Join(workbenchRepo, "nested"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeFile(t, filepath.Join(workbenchRepo, "main.go"), "package main\n")
+	writeFile(t, filepath.Join(workbenchRepo, "nested", "file.txt"), "x")
+	if err := os.Chmod(workbenchRepo, 0o555); err != nil { // #nosec G302 -- test fixture intentionally simulates a read-only workbench tree.
+		t.Fatalf("Chmod repo dir: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(workbenchRepo, "nested"), 0o555); err != nil { // #nosec G302 -- test fixture intentionally simulates a read-only workbench tree.
+		t.Fatalf("Chmod nested dir: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(workbenchRepo, "main.go"), 0o444); err != nil { // #nosec G302 -- test fixture intentionally simulates a read-only workbench tree.
+		t.Fatalf("Chmod main.go: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(workbenchRepo, "nested", "file.txt"), 0o444); err != nil { // #nosec G302 -- test fixture intentionally simulates a read-only workbench tree.
+		t.Fatalf("Chmod nested file: %v", err)
+	}
+
+	if err := (Options{}).removeAll()(root); err != nil {
+		t.Fatalf("removeAll writable: %v", err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("artifact root stat error = %v, want not exist", err)
+	}
+}
+
 func TestPruneSkipsUnsafeArtifactPathsAfterDeletingRows(t *testing.T) {
 	layout := testLayout(t)
 	now := testNow()

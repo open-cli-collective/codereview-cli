@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -746,7 +748,7 @@ func TestNewRuntimeLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
 	statedirtest.Hermetic(t)
 	cfg := testConfig()
 	profile := cfg.Profiles["home"]
-	ref, pr := reviewCommandPR()
+	ref, pr := reviewCommandPR(t)
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
@@ -1288,7 +1290,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 		statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		&warnings,
 		nil,
-		RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2, Retention: retention, RetentionManualOnly: true},
+		runtimeOptsWithWorkbench(t, RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2, Retention: retention, RetentionManualOnly: true}),
 	)
 
 	if runner.pipeline.NamedSessions != store {
@@ -1407,7 +1409,7 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		MaxAgeDays:  &maxAgeDays,
 		Enforcement: config.RetentionAtWrite,
 	}
-	ref, pr := reviewCommandPR()
+	ref, pr := reviewCommandPR(t)
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
@@ -1446,7 +1448,7 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			layout,
 			opts.Stderr,
 			nil,
-			runtimeOpts,
+			runtimeOptsWithWorkbench(t, runtimeOpts),
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1470,31 +1472,9 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 	profile.AgentSources = []string{agentDir}
 	cfg.Profiles["home"] = profile
 
-	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
-	baseSHA := strings.Repeat("b", 40)
-	headSHA := strings.Repeat("a", 40)
-	pr := gitprovider.PR{
-		Ref:    ref,
-		URL:    "https://github.com/open-cli-collective/codereview-cli/pull/29",
-		State:  gitprovider.PRStateOpen,
-		Author: gitprovider.Identity{Login: "author", ID: "author-id"},
-		Base: gitprovider.PRBranchRef{
-			Host:  ref.Host,
-			Owner: ref.Owner,
-			Repo:  ref.Repo,
-			Name:  "main",
-			Ref:   "refs/heads/main",
-			SHA:   baseSHA,
-		},
-		Head: gitprovider.PRBranchRef{
-			Host:  ref.Host,
-			Owner: ref.Owner,
-			Repo:  ref.Repo,
-			Name:  "feature",
-			Ref:   "refs/heads/feature",
-			SHA:   headSHA,
-		},
-	}
+	fixture := newReviewCommandWorkbenchFixture(t)
+	reviewCommandFixtures.Store(reviewCommandFixtureKey(fixture.ref), fixture)
+	ref, pr := fixture.ref, fixture.pr
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
@@ -1529,7 +1509,7 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
 			nil,
-			runtimeOpts,
+			runtimeOptsWithWorkbench(t, runtimeOpts),
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1562,7 +1542,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		MaxAgeDays:  &maxAgeDays,
 		Enforcement: config.RetentionAtWrite,
 	}
-	ref, pr := reviewCommandPR()
+	ref, pr := reviewCommandPR(t)
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
@@ -1602,7 +1582,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			layout,
 			opts.Stderr,
 			nil,
-			runtimeOpts,
+			runtimeOptsWithWorkbench(t, runtimeOpts),
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1633,7 +1613,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 		MaxAgeDays:  &maxAgeDays,
 		Enforcement: config.RetentionAtWrite,
 	}
-	ref, pr := reviewCommandPR()
+	ref, pr := reviewCommandPR(t)
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
@@ -1672,7 +1652,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 			layout,
 			opts.Stderr,
 			nil,
-			runtimeOpts,
+			runtimeOptsWithWorkbench(t, runtimeOpts),
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1696,7 +1676,7 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 	profile.AgentSources = []string{agentDir}
 	cfg.Profiles["home"] = profile
 	cfg.Data.Retention = config.RetentionConfig{Enforcement: config.RetentionManualOnly}
-	ref, pr := reviewCommandPR()
+	ref, pr := reviewCommandPR(t)
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
@@ -1735,7 +1715,7 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 			layout,
 			opts.Stderr,
 			nil,
-			runtimeOpts,
+			runtimeOptsWithWorkbench(t, runtimeOpts),
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1886,7 +1866,7 @@ func TestReviewQuietSuppressesProgressOnlyForTextOutput(t *testing.T) {
 
 func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
 	cfg := testConfig()
-	ref, pr := reviewCommandPR()
+	ref, pr := reviewCommandPR(t)
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
@@ -1922,7 +1902,7 @@ func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
 			logger,
-			runtimeOpts,
+			runtimeOptsWithWorkbench(t, runtimeOpts),
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}, true)
@@ -1944,7 +1924,7 @@ func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
 
 func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 	cfg := testConfig()
-	ref, pr := reviewCommandPR()
+	ref, pr := reviewCommandPR(t)
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
@@ -1980,7 +1960,7 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
 			logger,
-			runtimeOpts,
+			runtimeOptsWithWorkbench(t, runtimeOpts),
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}, false)
@@ -2122,7 +2102,7 @@ func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
 		}
 	})
 	provider := &gitprovider.Fake{}
-	ref, pr := reviewCommandPR()
+	ref, pr := reviewCommandPR(t)
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
 	}
@@ -2147,7 +2127,7 @@ func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
 		statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		&errOut,
 		logger,
-		RuntimeOptions{},
+		runtimeOptsWithWorkbench(t, RuntimeOptions{}),
 	)
 
 	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
@@ -2670,32 +2650,130 @@ func approvalOverrideClassifierTestRequest() approvaloverride.Request {
 	}
 }
 
-func reviewCommandPR() (gitprovider.PRRef, gitprovider.PR) {
+type reviewCommandWorkbenchFixture struct {
+	repoDir string
+	ref     gitprovider.PRRef
+	pr      gitprovider.PR
+}
+
+var reviewCommandFixtures sync.Map
+
+func reviewCommandPR(t *testing.T) (gitprovider.PRRef, gitprovider.PR) {
+	t.Helper()
+	fixture := newReviewCommandWorkbenchFixture(t)
+	reviewCommandFixtures.Store(reviewCommandFixtureKey(fixture.ref), fixture)
+	return fixture.ref, fixture.pr
+}
+
+func reviewCommandFixtureKey(ref gitprovider.PRRef) string {
+	return fmt.Sprintf("%s/%s/%s/%d", ref.Host, ref.Owner, ref.Repo, ref.Number)
+}
+
+func newReviewCommandWorkbenchFixture(t *testing.T) reviewCommandWorkbenchFixture {
+	t.Helper()
 	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
-	baseSHA := strings.Repeat("b", 40)
-	headSHA := strings.Repeat("a", 40)
-	return ref, gitprovider.PR{
-		Ref:    ref,
-		URL:    "https://github.com/open-cli-collective/codereview-cli/pull/29",
-		State:  gitprovider.PRStateOpen,
-		Author: gitprovider.Identity{Login: "author", ID: "author-id"},
-		Base: gitprovider.PRBranchRef{
-			Host:  ref.Host,
-			Owner: ref.Owner,
-			Repo:  ref.Repo,
-			Name:  "main",
-			Ref:   "refs/heads/main",
-			SHA:   baseSHA,
-		},
-		Head: gitprovider.PRBranchRef{
-			Host:  ref.Host,
-			Owner: ref.Owner,
-			Repo:  ref.Repo,
-			Name:  "feature",
-			Ref:   "refs/heads/feature",
-			SHA:   headSHA,
+	repoDir := t.TempDir()
+	reviewCommandGitMustSucceed(t, repoDir, "init", "-b", "main")
+	reviewCommandGitMustSucceed(t, repoDir, "config", "user.name", "ReviewCmd Test")
+	reviewCommandGitMustSucceed(t, repoDir, "config", "user.email", "reviewcmd@example.com")
+	reviewCommandGitMustSucceed(t, repoDir, "remote", "add", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
+	writeReviewCommandFile(t, filepath.Join(repoDir, "main.go"), "package main\n\nvar changed = false\n")
+	reviewCommandGitMustSucceed(t, repoDir, "add", "main.go")
+	reviewCommandGitMustSucceed(t, repoDir, "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(reviewCommandGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	reviewCommandGitMustSucceed(t, repoDir, "checkout", "-b", "feature")
+	writeReviewCommandFile(t, filepath.Join(repoDir, "main.go"), "package main\n\nvar changed = true\n")
+	reviewCommandGitMustSucceed(t, repoDir, "commit", "-am", "head")
+	headSHA := strings.TrimSpace(reviewCommandGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	return reviewCommandWorkbenchFixture{
+		repoDir: repoDir,
+		ref:     ref,
+		pr: gitprovider.PR{
+			Ref:    ref,
+			URL:    "https://github.com/open-cli-collective/codereview-cli/pull/29",
+			State:  gitprovider.PRStateOpen,
+			Author: gitprovider.Identity{Login: "author", ID: "author-id"},
+			Base: gitprovider.PRBranchRef{
+				Host:  ref.Host,
+				Owner: ref.Owner,
+				Repo:  ref.Repo,
+				Name:  "main",
+				Ref:   "refs/heads/main",
+				SHA:   baseSHA,
+			},
+			Head: gitprovider.PRBranchRef{
+				Host:  ref.Host,
+				Owner: ref.Owner,
+				Repo:  ref.Repo,
+				Name:  "feature",
+				Ref:   "refs/heads/feature",
+				SHA:   headSHA,
+			},
 		},
 	}
+}
+
+func reviewCommandGitMustSucceed(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	return strings.TrimSpace(reviewCommandGitOutput(t, dir, args...))
+}
+
+func reviewCommandGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+func reviewCommandGitCommand(ref gitprovider.PRRef) func(context.Context, string, ...string) ([]byte, error) {
+	return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		if len(args) == 3 && args[0] == "remote" && args[1] == "get-url" && args[2] == "origin" {
+			return []byte(fmt.Sprintf("https://%s/%s/%s.git\n", ref.Host, ref.Owner, ref.Repo)), nil
+		}
+		cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		if strings.TrimSpace(dir) != "" {
+			cmd.Dir = dir
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			message := strings.TrimSpace(string(out))
+			if message == "" {
+				message = err.Error()
+			}
+			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+		}
+		return out, nil
+	}
+}
+
+func writeReviewCommandFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+}
+
+func runtimeOptsWithWorkbench(t *testing.T, opts RuntimeOptions) RuntimeOptions {
+	t.Helper()
+	opts.AutoUnlockWorkbenchOnExit = true
+	fixture := newReviewCommandWorkbenchFixture(t)
+	if opts.PRRef != (gitprovider.PRRef{}) {
+		if cached, ok := reviewCommandFixtures.Load(reviewCommandFixtureKey(opts.PRRef)); ok {
+			fixture = cached.(reviewCommandWorkbenchFixture)
+		}
+	}
+	opts.ResolveRepoRoot = func(context.Context) (string, error) {
+		return fixture.repoDir, nil
+	}
+	opts.GitCommand = reviewCommandGitCommand(fixture.ref)
+	return opts
 }
 
 func allocateReviewCommandRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID string, mode ledger.PostMode, started time.Time) ledger.Run {
@@ -2706,17 +2784,20 @@ func allocateReviewCommandRun(t *testing.T, store *ledger.Store, layout statepat
 
 func allocateReviewCommandRunForPRKey(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID, prKey string, mode ledger.PostMode, started time.Time) ledger.Run {
 	t.Helper()
+	fixture := newReviewCommandWorkbenchFixture(t)
+	baseSHA := fixture.pr.Base.SHA
+	headSHA := fixture.pr.Head.SHA
 	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
 		PRKey:           prKey,
 		PRURL:           "https://github.com/open-cli-collective/codereview-cli/pull/29",
 		RunID:           runID,
-		SHA:             strings.Repeat("a", 40),
-		BaseSHA:         strings.Repeat("b", 40),
+		SHA:             headSHA,
+		BaseSHA:         baseSHA,
 		Profile:         "home",
 		PostingIdentity: "review-bot",
 		PostMode:        mode,
 		StartedAt:       started,
-		ArtifactPath:    filepath.Join(layout.DataRoot, "runs", prKey, strings.Repeat("a", 40), strings.Repeat("b", 40), "home__review-bot", runID),
+		ArtifactPath:    filepath.Join(layout.DataRoot, "runs", prKey, headSHA, baseSHA, "home__review-bot", runID),
 	})
 	if err != nil {
 		t.Fatalf("AllocateRun: %v", err)

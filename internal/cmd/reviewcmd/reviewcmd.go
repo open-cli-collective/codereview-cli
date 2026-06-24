@@ -78,11 +78,14 @@ type Runtime struct {
 
 // RuntimeOptions carries command flags that affect runtime construction.
 type RuntimeOptions struct {
-	MaxAgents           int
-	MaxConcurrency      int
-	PRRef               gitprovider.PRRef
-	Retention           datalifecycle.RetentionPolicy
-	RetentionManualOnly bool
+	MaxAgents                 int
+	MaxConcurrency            int
+	PRRef                     gitprovider.PRRef
+	Retention                 datalifecycle.RetentionPolicy
+	RetentionManualOnly       bool
+	AutoUnlockWorkbenchOnExit bool
+	ResolveRepoRoot           func(context.Context) (string, error)
+	GitCommand                func(context.Context, string, ...string) ([]byte, error)
 }
 
 // RuntimeFactory builds the concrete runtime used by `cr review`.
@@ -858,17 +861,20 @@ func runtimeLayout() (statepaths.Layout, error) {
 
 func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, runtimeOpts RuntimeOptions) reviewRunner {
 	pipelineOpts := pipeline.Options{
-		Provider:            provider,
-		Adapter:             adapter,
-		Store:               ledgerStore,
-		NamedSessions:       ledgerStore,
-		Layout:              layout,
-		Warnings:            warnings,
-		TaskProgress:        newPipelineTaskProgress(logger),
-		MaxAgents:           runtimeOpts.MaxAgents,
-		MaxConcurrency:      runtimeOpts.MaxConcurrency,
-		Retention:           runtimeOpts.Retention,
-		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
+		Provider:                  provider,
+		Adapter:                   adapter,
+		Store:                     ledgerStore,
+		NamedSessions:             ledgerStore,
+		Layout:                    layout,
+		Warnings:                  warnings,
+		TaskProgress:              newPipelineTaskProgress(logger),
+		MaxAgents:                 runtimeOpts.MaxAgents,
+		MaxConcurrency:            runtimeOpts.MaxConcurrency,
+		Retention:                 runtimeOpts.Retention,
+		RetentionManualOnly:       runtimeOpts.RetentionManualOnly,
+		AutoUnlockWorkbenchOnExit: runtimeOpts.AutoUnlockWorkbenchOnExit,
+		ResolveRepoRoot:           runtimeOpts.ResolveRepoRoot,
+		GitCommand:                runtimeOpts.GitCommand,
 	}
 	return reviewRunner{
 		pipeline: pipelineOpts,
