@@ -26,8 +26,9 @@ trust the final `metadata.json` name, never a temporary metadata file.
 
 ## Schema Version
 
-`schema_version` is currently `1`. Ticket `#369` adds a new dossier-phase task
-without changing the metadata shape, so the schema version stays at `1`.
+`schema_version` is currently `1`. Adding a new task that reuses the existing
+metadata shape does not require a schema bump, so the schema version stays at
+`1` for the dossier-phase addition in this slice.
 
 Bump it when changing any load-bearing field, status value, fingerprint input,
 task identity, or resume rule in a way that could make an in-flight run unsafe

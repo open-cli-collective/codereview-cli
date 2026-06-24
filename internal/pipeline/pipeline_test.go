@@ -1137,7 +1137,7 @@ func TestPrepareDossierArtifactsSummaryPromptCarriesSplitDiscussionShape(t *test
 	if payload.Task == "" || payload.Schema != "discussion_summary" || payload.Provenance.SourceFingerprint == "" {
 		t.Fatalf("prompt payload = %#v, want task/schema/provenance", payload)
 	}
-	if len(payload.Discussion.TopLevelComments) != 1 || payload.Discussion.TopLevelComments[0].Body != "Top-level concern body" {
+	if len(payload.Discussion.TopLevelComments) != 1 || payload.Discussion.TopLevelComments[0].UntrustedBody != "Top-level concern body" {
 		t.Fatalf("top-level prompt payload = %#v, want raw top-level body", payload.Discussion.TopLevelComments)
 	}
 	if len(payload.Discussion.InlineThreads) != 1 {
@@ -1192,7 +1192,10 @@ func TestPrepareDossierArtifactsSummaryPromptBudgetFailure(t *testing.T) {
 }
 
 func TestDecodeDossierDiscussionSummaryRejectsProcessState(t *testing.T) {
-	promptData := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{})
+	promptData, err := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{})
+	if err != nil {
+		t.Fatalf("dossierDiscussionPromptInputFromDiscussion: %v", err)
+	}
 	for _, text := range []string{"CI status is red", "Build failed in CI", "Approved by alice", "run_id=1234"} {
 		_, err := decodeDossierDiscussionSummary([]byte(fmt.Sprintf(`{
 			"schema_version": 1,
@@ -1205,7 +1208,7 @@ func TestDecodeDossierDiscussionSummaryRejectsProcessState(t *testing.T) {
 }
 
 func TestDecodeDossierDiscussionSummaryRejectsUnknownAnchor(t *testing.T) {
-	promptData := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{
+	promptData, err := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{
 		InlineThreads: []dossierInlineThreadArtifact{{
 			Path:       "main.go",
 			Side:       "RIGHT",
@@ -1214,7 +1217,10 @@ func TestDecodeDossierDiscussionSummaryRejectsUnknownAnchor(t *testing.T) {
 			Resolved:   true,
 		}},
 	})
-	_, err := decodeDossierDiscussionSummary([]byte(`{
+	if err != nil {
+		t.Fatalf("dossierDiscussionPromptInputFromDiscussion: %v", err)
+	}
+	_, err = decodeDossierDiscussionSummary([]byte(`{
 		"schema_version": 1,
 		"inline_threads": [{
 			"path": "other.go",
