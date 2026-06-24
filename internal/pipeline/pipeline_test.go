@@ -929,7 +929,7 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 	writeAgent(t, req.Profile.AgentSources[0], "harness", "alpha", "alpha desc", "Review alpha.")
 	writeAgent(t, req.Profile.AgentSources[0], "harness", "beta", "beta desc", "Review beta.")
 	writeAgent(t, req.Profile.AgentSources[0], "harness", "gamma", "gamma desc", "Review gamma.")
-	adapter := &reviewerIsolationAdapter{}
+	adapter := &reviewerIsolationAdapter{reviewerBarrier: newReviewerStartBarrier(3)}
 
 	result, err := DryRun(ctx, Options{
 		Provider:        provider,
@@ -941,7 +941,7 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 		NewSessionRowID: sequence("session"),
 		NewFindingID:    findingSequence("finding"),
 		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+		MaxConcurrency:  3,
 	}, req)
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
@@ -962,6 +962,12 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 	if betaMeta.Status != llmTaskStatusFailedIsolated || len(betaMeta.Attempts) != 2 {
 		t.Fatalf("beta metadata = %#v, want failed_isolated with initial and retry attempts", betaMeta)
 	}
+	for _, attempt := range betaMeta.Attempts {
+		if attempt.DecodeError == "" {
+			t.Fatalf("beta attempt %#v missing decode error", attempt)
+		}
+		assertTaskPayloadContains(t, attempt.RawOutputPath, `"agent_id": "harness:beta"`)
+	}
 	for _, agentID := range []string{"harness:alpha", "harness:gamma"} {
 		meta, ok, err := readLLMTaskMetadata(result.Artifacts, reviewerTaskID(agentID))
 		if err != nil || !ok {
@@ -970,6 +976,10 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 		if meta.Status != llmTaskStatusSucceeded {
 			t.Fatalf("%s metadata status = %q, want succeeded", agentID, meta.Status)
 		}
+		assertTaskPayloadContains(t, meta.ValidatedOutputPath, agentID)
+	}
+	if got := adapter.ReviewerStartedCount(); got != 3 {
+		t.Fatalf("reviewer starts = %d, want all three reviewers to start before release", got)
 	}
 	requests := adapter.Requests()
 	if len(requests) != 6 {
@@ -996,7 +1006,7 @@ func TestDryRunReviewerProviderFailureIsolation(t *testing.T) {
 	writeAgent(t, req.Profile.AgentSources[0], "harness", "beta", "beta desc", "Review beta.")
 	writeAgent(t, req.Profile.AgentSources[0], "harness", "gamma", "gamma desc", "Review gamma.")
 	betaErr := errors.New("provider wait failed")
-	adapter := &reviewerIsolationAdapter{betaProviderErr: betaErr}
+	adapter := &reviewerIsolationAdapter{betaProviderErr: betaErr, reviewerBarrier: newReviewerStartBarrier(3)}
 
 	result, err := DryRun(ctx, Options{
 		Provider:        provider,
@@ -1008,7 +1018,7 @@ func TestDryRunReviewerProviderFailureIsolation(t *testing.T) {
 		NewSessionRowID: sequence("session"),
 		NewFindingID:    findingSequence("finding"),
 		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
+		MaxConcurrency:  3,
 	}, req)
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
@@ -1031,6 +1041,16 @@ func TestDryRunReviewerProviderFailureIsolation(t *testing.T) {
 	}
 	if !strings.Contains(betaMeta.Error, "provider wait failed") {
 		t.Fatalf("beta error = %q, want provider diagnostic", betaMeta.Error)
+	}
+	for _, agentID := range []string{"harness:alpha", "harness:gamma"} {
+		meta, ok, err := readLLMTaskMetadata(result.Artifacts, reviewerTaskID(agentID))
+		if err != nil || !ok {
+			t.Fatalf("read %s task metadata = ok %v err %v", agentID, ok, err)
+		}
+		assertTaskPayloadContains(t, meta.ValidatedOutputPath, agentID)
+	}
+	if got := adapter.ReviewerStartedCount(); got != 3 {
+		t.Fatalf("reviewer starts = %d, want all three reviewers to start before release", got)
 	}
 	requests := adapter.Requests()
 	if len(requests) != 5 {
@@ -1251,6 +1271,20 @@ func TestRunStructuredTaskReviewerStartFailureIsBlocking(t *testing.T) {
 	}
 	if meta.Status != llmTaskStatusFailedBlocking || meta.ProviderSessionID != "" {
 		t.Fatalf("metadata = %#v, want failed_blocking without provider session", meta)
+	}
+}
+
+func assertTaskPayloadContains(t *testing.T, path, want string) {
+	t.Helper()
+	if strings.TrimSpace(path) == "" {
+		t.Fatalf("task payload path is empty, want file containing %q", want)
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- test reads artifact paths produced by the pipeline under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("task payload %s = %s, want %q", path, data, want)
 	}
 }
 
@@ -2942,6 +2976,7 @@ type reviewerIsolationAdapter struct {
 	requests        []llm.Request
 	betaAttempts    int
 	betaProviderErr error
+	reviewerBarrier *reviewerStartBarrier
 }
 
 func (a *reviewerIsolationAdapter) Name() string {
@@ -2979,8 +3014,10 @@ func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (ll
 	case strings.Contains(req.Prompt, `"schema": "rollup"`):
 		return staticStream{sessionID: "rollup-session", output: rollupJSON("comment", findingIDsFromPrompt(req.Prompt))}, nil
 	case strings.Contains(req.Prompt, `"id": "harness:alpha"`):
+		a.waitReviewerStart("harness:alpha")
 		return staticStream{sessionID: "alpha-session", output: findingsJSON("harness:alpha", "main.go", "major", 2, "alpha finding")}, nil
 	case strings.Contains(req.Prompt, `"id": "harness:beta"`):
+		a.waitReviewerStart("harness:beta")
 		if a.betaProviderErr != nil {
 			return staticStream{sessionID: "beta-provider-session", err: a.betaProviderErr}, nil
 		}
@@ -2994,6 +3031,7 @@ func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (ll
 		}
 		return staticStream{sessionID: sessionID, output: `{"schema_version": 1, "agent_id": "harness:beta", "findings": [`}, nil
 	case strings.Contains(req.Prompt, `"id": "harness:gamma"`):
+		a.waitReviewerStart("harness:gamma")
 		return staticStream{sessionID: "gamma-session", output: findingsJSON("harness:gamma", "main.go", "minor", 2, "gamma finding")}, nil
 	default:
 		return nil, fmt.Errorf("unexpected prompt: %s", req.Prompt)
@@ -3004,6 +3042,55 @@ func (a *reviewerIsolationAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]llm.Request(nil), a.requests...)
+}
+
+func (a *reviewerIsolationAdapter) waitReviewerStart(agentID string) {
+	if a.reviewerBarrier != nil {
+		a.reviewerBarrier.wait(agentID)
+	}
+}
+
+func (a *reviewerIsolationAdapter) ReviewerStartedCount() int {
+	if a.reviewerBarrier == nil {
+		return 0
+	}
+	return a.reviewerBarrier.startedCount()
+}
+
+type reviewerStartBarrier struct {
+	mu      sync.Mutex
+	want    int
+	started map[string]bool
+	release chan struct{}
+	closed  bool
+}
+
+func newReviewerStartBarrier(want int) *reviewerStartBarrier {
+	return &reviewerStartBarrier{
+		want:    want,
+		started: map[string]bool{},
+		release: make(chan struct{}),
+	}
+}
+
+func (b *reviewerStartBarrier) wait(agentID string) {
+	b.mu.Lock()
+	if !b.started[agentID] {
+		b.started[agentID] = true
+	}
+	if !b.closed && len(b.started) >= b.want {
+		close(b.release)
+		b.closed = true
+	}
+	release := b.release
+	b.mu.Unlock()
+	<-release
+}
+
+func (b *reviewerStartBarrier) startedCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.started)
 }
 
 type staticStream struct {
