@@ -55,6 +55,11 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 		Body:   "Review body",
 		Author: gitprovider.Identity{Login: "architect"},
 		Event:  review.ReviewEventComment,
+	}, {
+		ID:     "review-2",
+		Body:   "Approved body should stay out of reviewer-facing discussion",
+		Author: gitprovider.Identity{Login: "approver"},
+		Event:  review.ReviewEventApprove,
 	}}
 	adapter := &llm.FakeAdapter{
 		NameValue:      "fake-llm",
@@ -163,7 +168,8 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Top-level concern")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "No dedicated repo review-guidance source is defined yet.")
 	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "final/discussion.md")
-	assertFileOmits(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "provider_session_id", "session_row_id", "mergeability", "approval", "CI status")
+	assertFileOmits(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "provider_session_id", "session_row_id", "mergeability", "approval", "CI status", "Approved body should stay out of reviewer-facing discussion")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "raw", "top-level-comments.json"), "Approved body should stay out of reviewer-facing discussion")
 	slicePath, err := result.Artifacts.SlicePatch("harness:reviewer", "main.go")
 	if err != nil {
 		t.Fatalf("SlicePatch: %v", err)

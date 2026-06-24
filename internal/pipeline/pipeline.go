@@ -281,6 +281,9 @@ func dossierChildPath(dir, name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("pipeline: dossier artifact name is required")
 	}
+	if name == "." || name == ".." {
+		return "", fmt.Errorf("pipeline: dossier artifact name must be a file name")
+	}
 	if strings.Contains(name, "/") || strings.Contains(name, string(filepath.Separator)) {
 		return "", fmt.Errorf("pipeline: dossier artifact name must be a file name")
 	}
@@ -2651,6 +2654,13 @@ type dossierIndexFileArtifact struct {
 	SHA256 string `json:"sha256"`
 }
 
+const (
+	dossierFinalMaxTopLevelComments = 20
+	dossierFinalMaxInlineThreads    = 20
+	dossierFinalMaxThreadComments   = 5
+	dossierFinalExcerptRunes        = 240
+)
+
 func writeDossierArtifacts(paths ArtifactPaths, in dossierInputs) error {
 	rawDir := filepath.Join(paths.DossierDir, "raw")
 	summaryDir := filepath.Join(paths.DossierDir, "summary")
@@ -2805,6 +2815,15 @@ func dossierInlineThreads(threads []gitprovider.InlineThread) []dossierInlineThr
 				UpdatedAt: comment.UpdatedAt,
 			})
 		}
+		sort.SliceStable(comments, func(i, j int) bool {
+			if comments[i].CreatedAt.Equal(comments[j].CreatedAt) {
+				if comments[i].URL == comments[j].URL {
+					return comments[i].Body < comments[j].Body
+				}
+				return comments[i].URL < comments[j].URL
+			}
+			return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+		})
 		out = append(out, dossierInlineThreadArtifact{
 			ID:         string(thread.ID),
 			Path:       thread.Path,
@@ -2816,6 +2835,15 @@ func dossierInlineThreads(threads []gitprovider.InlineThread) []dossierInlineThr
 			Comments:   comments,
 		})
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Path == out[j].Path {
+			if out[i].Line == out[j].Line {
+				return out[i].ID < out[j].ID
+			}
+			return out[i].Line < out[j].Line
+		}
+		return out[i].Path < out[j].Path
+	})
 	return out
 }
 
@@ -2912,10 +2940,11 @@ func renderDossierDiscussion(paths ArtifactPaths, discussion dossierDiscussionAr
 		return out.String()
 	}
 	out.WriteString("## Top-level comments\n\n")
-	if len(discussion.TopLevelComments) == 0 {
+	comments := reviewerFacingTopLevelComments(discussion.TopLevelComments)
+	if len(comments) == 0 {
 		out.WriteString("None.\n\n")
 	} else {
-		for _, comment := range discussion.TopLevelComments {
+		for _, comment := range capTopLevelComments(comments) {
 			out.WriteString("- ")
 			if comment.Kind != "" {
 				out.WriteString(comment.Kind)
@@ -2925,14 +2954,12 @@ func renderDossierDiscussion(paths ArtifactPaths, discussion dossierDiscussionAr
 				out.WriteString("by ")
 				out.WriteString(comment.Author)
 			}
-			if comment.Event != "" {
-				out.WriteString(" (")
-				out.WriteString(comment.Event)
-				out.WriteString(")")
-			}
 			out.WriteString(": ")
-			out.WriteString(singleLine(comment.Body))
+			out.WriteString(singleLineExcerpt(comment.Body, dossierFinalExcerptRunes))
 			out.WriteString("\n")
+		}
+		if len(comments) > dossierFinalMaxTopLevelComments {
+			out.WriteString(fmt.Sprintf("\nAdditional top-level comments omitted: %d\n", len(comments)-dossierFinalMaxTopLevelComments))
 		}
 		out.WriteString("\n")
 	}
@@ -2941,7 +2968,7 @@ func renderDossierDiscussion(paths ArtifactPaths, discussion dossierDiscussionAr
 		out.WriteString("None.\n")
 		return out.String()
 	}
-	for _, thread := range discussion.InlineThreads {
+	for _, thread := range capInlineThreads(discussion.InlineThreads) {
 		out.WriteString("- ")
 		out.WriteString(thread.Path)
 		if thread.Line > 0 {
@@ -2961,15 +2988,21 @@ func renderDossierDiscussion(paths ArtifactPaths, discussion dossierDiscussionAr
 			out.WriteString(" resolved")
 		}
 		out.WriteString("\n")
-		for _, comment := range thread.Comments {
+		for _, comment := range capThreadComments(thread.Comments) {
 			out.WriteString("  ")
 			if comment.Author != "" {
 				out.WriteString(comment.Author)
 				out.WriteString(": ")
 			}
-			out.WriteString(singleLine(comment.Body))
+			out.WriteString(singleLineExcerpt(comment.Body, dossierFinalExcerptRunes))
 			out.WriteString("\n")
 		}
+		if len(thread.Comments) > dossierFinalMaxThreadComments {
+			out.WriteString(fmt.Sprintf("  Additional thread comments omitted: %d\n", len(thread.Comments)-dossierFinalMaxThreadComments))
+		}
+	}
+	if len(discussion.InlineThreads) > dossierFinalMaxInlineThreads {
+		out.WriteString(fmt.Sprintf("\nAdditional inline threads omitted: %d\n", len(discussion.InlineThreads)-dossierFinalMaxInlineThreads))
 	}
 	return out.String()
 }
@@ -3075,6 +3108,50 @@ func singleLine(value string) string {
 		return "(empty)"
 	}
 	return value
+}
+
+func singleLineExcerpt(value string, maxRunes int) string {
+	value = singleLine(value)
+	if maxRunes <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+func reviewerFacingTopLevelComments(all []dossierTopLevelCommentArtifact) []dossierTopLevelCommentArtifact {
+	out := make([]dossierTopLevelCommentArtifact, 0, len(all))
+	for _, comment := range all {
+		if comment.Kind == "review" && comment.Event == string(review.ReviewEventApprove) {
+			continue
+		}
+		out = append(out, comment)
+	}
+	return out
+}
+
+func capTopLevelComments(all []dossierTopLevelCommentArtifact) []dossierTopLevelCommentArtifact {
+	if len(all) <= dossierFinalMaxTopLevelComments {
+		return all
+	}
+	return all[:dossierFinalMaxTopLevelComments]
+}
+
+func capInlineThreads(all []dossierInlineThreadArtifact) []dossierInlineThreadArtifact {
+	if len(all) <= dossierFinalMaxInlineThreads {
+		return all
+	}
+	return all[:dossierFinalMaxInlineThreads]
+}
+
+func capThreadComments(all []dossierThreadCommentArtifact) []dossierThreadCommentArtifact {
+	if len(all) <= dossierFinalMaxThreadComments {
+		return all
+	}
+	return all[:dossierFinalMaxThreadComments]
 }
 
 func sha256Hex(data []byte) string {
