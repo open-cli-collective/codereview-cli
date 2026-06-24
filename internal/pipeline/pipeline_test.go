@@ -783,6 +783,7 @@ func TestPrepareDossierArtifactsInvalidatesSummaryWhenOmittedOrTruncatedDiscussi
 	}); err != nil {
 		t.Fatalf("prepareDossierArtifacts first run: %v", err)
 	}
+	assertFileContains(t, filepath.Join(artifacts.DossierDir, "final", "discussion.md"), "Additional top-level comments omitted: 1")
 
 	bodies[len(bodies)-1] = "Omitted concern v2"
 	writeComments(bodies)
@@ -846,6 +847,69 @@ func TestPrepareDossierArtifactsInvalidatesSummaryWhenOmittedOrTruncatedDiscussi
 		t.Fatalf("truncated-tail progress starts = %#v, want dossier summary rerun", truncatedProgress2.starts)
 	}
 	assertFileContains(t, filepath.Join(artifacts.DossierDir, "final", "discussion.md"), "Summary after truncated tail change")
+}
+
+func TestPrepareDossierArtifactsRendersInlineThreadOmittedCounts(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-dossier-thread-omits", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	threads := make([]gitprovider.InlineThread, 0, dossierSummaryMaxInlineThreads+1)
+	for i := 0; i < dossierSummaryMaxInlineThreads+1; i++ {
+		threads = append(threads, gitprovider.InlineThread{
+			ID:          gitprovider.ThreadID(fmt.Sprintf("thread-%d", i+1)),
+			Path:        "main.go",
+			Side:        review.DiffSideRight,
+			Line:        i + 1,
+			SubjectType: review.AnchorKindLine,
+			Comments: []gitprovider.ThreadComment{
+				{Body: "first", Author: gitprovider.Identity{Login: "reviewer"}},
+				{Body: "second", Author: gitprovider.Identity{Login: "reviewer"}},
+				{Body: "third", Author: gitprovider.Identity{Login: "reviewer"}},
+				{Body: "fourth", Author: gitprovider.Identity{Login: "reviewer"}},
+				{Body: "fifth", Author: gitprovider.Identity{Login: "reviewer"}},
+				{Body: "sixth", Author: gitprovider.Identity{Login: "reviewer"}},
+			},
+		})
+	}
+	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:      provider.pr,
+		ReviewPR:       provider.pr,
+		ChangedFiles:   parseDiffPatchesForTest(t, provider.diff.Raw),
+		Threads:        threads,
+		Catalog:        agents.Catalog{},
+		CurrentBaseSHA: provider.pr.Base.SHA,
+		CurrentHeadSHA: provider.pr.Head.SHA,
+	}); err != nil {
+		t.Fatalf("writeRawDossierArtifacts: %v", err)
+	}
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, []threadSummary{{
+		path:     "main.go",
+		line:     1,
+		status:   "unresolved",
+		summary:  "Thread summary",
+		resolved: false,
+	}}), 8, 2))
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         adapter,
+		Store:           store,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts: %v", err)
+	}
+	discussionPath := filepath.Join(artifacts.DossierDir, "final", "discussion.md")
+	assertFileContains(t, discussionPath, "additional thread comments omitted: 1")
+	assertFileContains(t, discussionPath, "Additional inline threads omitted: 1")
 }
 
 func TestPrepareDossierArtifactsSummaryPromptBudgetFailure(t *testing.T) {

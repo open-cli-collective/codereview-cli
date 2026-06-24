@@ -2717,6 +2717,8 @@ type dossierDiscussionSummaryArtifact struct {
 	SourceFingerprint     string                               `json:"source_fingerprint,omitempty"`
 	PinnedReview          bool                                 `json:"pinned_review"`
 	DiscussionOmittedNote string                               `json:"discussion_omitted_note,omitempty"`
+	TopLevelOmitted       int                                  `json:"top_level_comments_omitted,omitempty"`
+	InlineThreadsOmitted  int                                  `json:"inline_threads_omitted,omitempty"`
 	TopLevelComments      []dossierTopLevelCommentSummary      `json:"top_level_comments,omitempty"`
 	InlineThreads         []dossierInlineThreadSummaryArtifact `json:"inline_threads,omitempty"`
 }
@@ -2729,13 +2731,14 @@ type dossierTopLevelCommentSummary struct {
 }
 
 type dossierInlineThreadSummaryArtifact struct {
-	Path       string `json:"path,omitempty"`
-	Side       string `json:"side,omitempty"`
-	Line       int    `json:"line,omitempty"`
-	AnchorKind string `json:"anchor_kind,omitempty"`
-	Resolved   bool   `json:"resolved"`
-	Status     string `json:"status,omitempty"`
-	Summary    string `json:"summary"`
+	Path            string `json:"path,omitempty"`
+	Side            string `json:"side,omitempty"`
+	Line            int    `json:"line,omitempty"`
+	AnchorKind      string `json:"anchor_kind,omitempty"`
+	Resolved        bool   `json:"resolved"`
+	CommentsOmitted int    `json:"comments_omitted,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Summary         string `json:"summary"`
 }
 
 type dossierDiscussionPromptInput struct {
@@ -2748,7 +2751,12 @@ type dossierDiscussionPromptInput struct {
 type dossierDiscussionPromptData struct {
 	Input             dossierDiscussionPromptInput
 	SourceFingerprint string
-	InlineThreadMap   map[string]dossierInlineThreadArtifact
+	InlineThreadMap   map[string]dossierInlineThreadPromptData
+}
+
+type dossierInlineThreadPromptData struct {
+	Thread          dossierInlineThreadArtifact
+	CommentsOmitted int
 }
 
 type dossierPromptTopLevelComment struct {
@@ -2941,8 +2949,10 @@ func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossier
 	promptData := dossierDiscussionPromptInputFromDiscussion(discussion)
 	if len(promptData.Input.TopLevelComments) == 0 && len(promptData.Input.InlineThreads) == 0 {
 		return dossierDiscussionSummaryArtifact{
-			SchemaVersion:     dossierSummarySchemaVersion,
-			SourceFingerprint: promptData.SourceFingerprint,
+			SchemaVersion:        dossierSummarySchemaVersion,
+			SourceFingerprint:    promptData.SourceFingerprint,
+			TopLevelOmitted:      promptData.Input.TopLevelCommentsOmitted,
+			InlineThreadsOmitted: promptData.Input.InlineThreadsOmitted,
 		}, nil
 	}
 	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
@@ -2986,6 +2996,8 @@ func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossier
 	if strings.TrimSpace(summary.SourceFingerprint) == "" {
 		summary.SourceFingerprint = promptData.SourceFingerprint
 	}
+	summary.TopLevelOmitted = promptData.Input.TopLevelCommentsOmitted
+	summary.InlineThreadsOmitted = promptData.Input.InlineThreadsOmitted
 	return summary, nil
 }
 
@@ -3095,7 +3107,7 @@ func buildDossierDiscussionSummaryPrompt(input dossierDiscussionPromptData) (str
 func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArtifact) dossierDiscussionPromptData {
 	filteredTopLevel := reviewerFacingTopLevelComments(discussion.TopLevelComments)
 	input := dossierDiscussionPromptInput{}
-	inlineThreadMap := make(map[string]dossierInlineThreadArtifact, len(discussion.InlineThreads))
+	inlineThreadMap := make(map[string]dossierInlineThreadPromptData, len(discussion.InlineThreads))
 	for _, comment := range capTopLevelCommentsForSummary(filteredTopLevel) {
 		body := singleLineExcerpt(comment.Body, dossierSummaryExcerptRunes)
 		if shouldExcludeDiscussionSummaryText(body) {
@@ -3132,7 +3144,10 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 			promptThread.CommentsOmitted = len(thread.Comments) - dossierSummaryMaxThreadComments
 		}
 		input.InlineThreads = append(input.InlineThreads, promptThread)
-		inlineThreadMap[dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)] = thread
+		inlineThreadMap[dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)] = dossierInlineThreadPromptData{
+			Thread:          thread,
+			CommentsOmitted: promptThread.CommentsOmitted,
+		}
 	}
 	if len(discussion.InlineThreads) > dossierSummaryMaxInlineThreads {
 		input.InlineThreadsOmitted = len(discussion.InlineThreads) - dossierSummaryMaxInlineThreads
@@ -3199,11 +3214,12 @@ func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPro
 		if !ok {
 			return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d] anchor %q is not present in the source discussion", i, anchorKey)
 		}
-		decoded.InlineThreads[i].Path = expected.Path
-		decoded.InlineThreads[i].Side = expected.Side
-		decoded.InlineThreads[i].Line = expected.Line
-		decoded.InlineThreads[i].AnchorKind = expected.AnchorKind
-		decoded.InlineThreads[i].Resolved = expected.Resolved
+		decoded.InlineThreads[i].Path = expected.Thread.Path
+		decoded.InlineThreads[i].Side = expected.Thread.Side
+		decoded.InlineThreads[i].Line = expected.Thread.Line
+		decoded.InlineThreads[i].AnchorKind = expected.Thread.AnchorKind
+		decoded.InlineThreads[i].Resolved = expected.Thread.Resolved
+		decoded.InlineThreads[i].CommentsOmitted = expected.CommentsOmitted
 		if err := validateDiscussionSummaryText(decoded.InlineThreads[i].Summary); err != nil {
 			return dossierDiscussionSummaryArtifact{}, err
 		}
@@ -3246,11 +3262,17 @@ func renderDossierDiscussionSummaryMarkdown(summary dossierDiscussionSummaryArti
 			out.WriteString(comment.Summary)
 			out.WriteString("\n")
 		}
+		if summary.TopLevelOmitted > 0 {
+			fmt.Fprintf(&out, "\nAdditional top-level comments omitted: %d\n", summary.TopLevelOmitted)
+		}
 		out.WriteString("\n")
 	}
 	out.WriteString("## Inline threads\n\n")
 	if len(summary.InlineThreads) == 0 {
 		out.WriteString("None.\n")
+		if summary.InlineThreadsOmitted > 0 {
+			fmt.Fprintf(&out, "\nAdditional inline threads omitted: %d\n", summary.InlineThreadsOmitted)
+		}
 		return out.String()
 	}
 	for _, thread := range summary.InlineThreads {
@@ -3278,7 +3300,13 @@ func renderDossierDiscussionSummaryMarkdown(summary dossierDiscussionSummaryArti
 			out.WriteString(" ")
 		}
 		out.WriteString(thread.Summary)
+		if thread.CommentsOmitted > 0 {
+			fmt.Fprintf(&out, " (additional thread comments omitted: %d)", thread.CommentsOmitted)
+		}
 		out.WriteString("\n")
+	}
+	if summary.InlineThreadsOmitted > 0 {
+		fmt.Fprintf(&out, "\nAdditional inline threads omitted: %d\n", summary.InlineThreadsOmitted)
 	}
 	return out.String()
 }
