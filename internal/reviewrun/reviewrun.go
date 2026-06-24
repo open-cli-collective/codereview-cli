@@ -308,10 +308,16 @@ func planOrResume(ctx context.Context, opts Options, req Request, result Result)
 			return "", nil, err
 		}
 		if !empty {
-			if completeErr := opts.Store.CompleteRun(ctx, result.Run.RunID, ledger.OutcomeFailed, opts.now()); completeErr != nil {
-				return "", nil, completeErr
+			hasTasks, err := pipeline.HasLLMTaskMetadata(result.Run.ArtifactPath)
+			if err != nil {
+				return "", nil, err
 			}
-			return "", nil, fmt.Errorf("reviewrun: run %s has partial planning state without planned actions; pass --rerun to start a fresh review", result.Run.RunID)
+			if !hasTasks {
+				if completeErr := opts.Store.CompleteRun(ctx, result.Run.RunID, ledger.OutcomeFailed, opts.now()); completeErr != nil {
+					return "", nil, completeErr
+				}
+				return "", nil, fmt.Errorf("reviewrun: run %s has partial planning state without planned actions; pass --rerun to start a fresh review", result.Run.RunID)
+			}
 		}
 	}
 

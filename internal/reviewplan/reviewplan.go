@@ -391,6 +391,9 @@ func (b *builder) buildReview() (Plan, error) {
 		return Plan{}, fmt.Errorf("reviewplan: invalid rollup review event %q", event)
 	}
 	event = applySelfApprovalPolicy(event, b.req.EventOptions)
+	if len(b.req.RunSummary.ReviewerFailures) > 0 && event == review.ReviewEventApprove {
+		event = review.ReviewEventComment
+	}
 	outcome, err := OutcomeFromReviewEvent(event)
 	if err != nil {
 		return Plan{}, err
@@ -745,6 +748,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 	if len(summary.Reviewers) > 0 {
 		writeReviewerTable(&out, summary.Reviewers)
 		b.writeReviewerSections(&out, anchored, summary.Reviewers)
+		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)
 	} else {
 		counts := severityCounts(ordered)
 		out.WriteString("| Severity | Findings |\n")
@@ -766,6 +770,9 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 			}
 			writeFindingBlock(&out, finding)
 		}
+	}
+	if len(summary.Reviewers) == 0 {
+		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)
 	}
 	fmt.Fprintf(&out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", summary.Threads.Considered, summary.Threads.Summarized, summary.Threads.Resolved)
 	if b.req.AgentDefinitionsChanged {
