@@ -471,6 +471,44 @@ func TestFakeAdapterQuotaAndResume(t *testing.T) {
 	}
 }
 
+func TestCheckoutReadonlyCapabilityHelpers(t *testing.T) {
+	unsupported := &FakeAdapter{NameValue: "fake-unsupported"}
+	if SupportsCheckoutReadonly(unsupported) {
+		t.Fatal("SupportsCheckoutReadonly = true, want false")
+	}
+	if err := RequireCheckoutReadonly(unsupported); !errors.Is(err, ErrCheckoutReadonlyUnsupported) || !strings.Contains(err.Error(), "fake-unsupported") {
+		t.Fatalf("RequireCheckoutReadonly unsupported error = %v, want missing capability with adapter name", err)
+	}
+
+	supported := &FakeAdapter{NameValue: "fake-supported", SupportsCheckoutReadonlyValue: true}
+	if !SupportsCheckoutReadonly(supported) {
+		t.Fatal("SupportsCheckoutReadonly = false, want true")
+	}
+	if err := RequireCheckoutReadonly(supported); err != nil {
+		t.Fatalf("RequireCheckoutReadonly supported: %v", err)
+	}
+
+	got, _, err := RunStructured(context.Background(), unsupported, Request{
+		Prompt: "prompt",
+		CheckoutReadonly: &CheckoutReadonlyRequest{
+			RootDir:            "/tmp/repo",
+			ScratchDir:         "/tmp/scratch",
+			MaxToolOutputBytes: 1024,
+		},
+	}, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	if got != "" {
+		t.Fatalf("RunStructured result = %q, want empty on capability failure", got)
+	}
+	if !errors.Is(err, ErrCheckoutReadonlyUnsupported) || !strings.Contains(err.Error(), "fake-unsupported") {
+		t.Fatalf("RunStructured error = %v, want missing capability with adapter name", err)
+	}
+	if len(unsupported.Requests()) != 0 || len(unsupported.Resumes()) != 0 {
+		t.Fatalf("unsupported adapter should not be invoked: starts=%d resumes=%d", len(unsupported.Requests()), len(unsupported.Resumes()))
+	}
+}
+
 func TestRunStructuredRetriesTransientError(t *testing.T) {
 	restore := activeRetryPolicy
 	activeRetryPolicy.Base = 0

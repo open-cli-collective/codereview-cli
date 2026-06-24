@@ -42,8 +42,9 @@ type SubprocessOptions struct {
 type subprocessKind string
 
 const (
-	subprocessClaude subprocessKind = "claude_cli"
-	subprocessCodex  subprocessKind = "codex_cli"
+	subprocessClaude  subprocessKind = "claude_cli"
+	subprocessCodex   subprocessKind = "codex_cli"
+	logBytesUnlimited                = -1
 
 	claudeBGPromptFilename  = "cr-prompt.txt"
 	claudeBGResultFilename  = "cr-result.json"
@@ -117,6 +118,13 @@ func (a *SubprocessAdapter) Name() string { return string(a.kind) }
 // SupportsResume reports whether subprocess session resume is implemented.
 func (a *SubprocessAdapter) SupportsResume() bool { return a.kind == subprocessClaude }
 
+// SupportsCheckoutReadonly reports whether subprocess adapter can safely mount
+// a caller-owned read-only checkout and keep writes inside caller-owned scratch.
+// Codex CLI can do this with a read-only sandbox plus caller-owned scratch; the
+// current Claude background path cannot because it relies on a different launch
+// model and writable result-file handoff.
+func (a *SubprocessAdapter) SupportsCheckoutReadonly() bool { return a.kind == subprocessCodex }
+
 // SupportsCacheAccounting reports whether cache usage metrics are guaranteed.
 func (a *SubprocessAdapter) SupportsCacheAccounting() bool { return false }
 
@@ -140,7 +148,7 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 }
 
 func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Request) (Stream, error) {
-	scratch, cleanup, err := a.scratchDirFactory()
+	scratch, cleanup, err := a.invocationScratchDir(req)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +165,7 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 		_ = cleanup()
 		return nil, err
 	}
-	if err := a.validateArgs(args, scratch); err != nil {
+	if err := a.validateArgs(args, scratch, req); err != nil {
 		_ = cleanup()
 		return nil, err
 	}
@@ -227,6 +235,7 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 		cancel:       cancel,
 		done:         make(chan struct{}),
 		logFile:      logFile,
+		logBytesLeft: checkoutReadonlyLogBytes(req),
 		cleanup:      cleanup,
 		processGroup: procGroup,
 	}
@@ -235,7 +244,7 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 }
 
 func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resumeSessionID string) (Stream, error) {
-	scratch, cleanup, err := a.scratchDirFactory()
+	scratch, cleanup, err := a.invocationScratchDir(req)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +265,7 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 		_ = cleanup()
 		return nil, err
 	}
-	if err := a.validateArgs(args, scratch); err != nil {
+	if err := a.validateArgs(args, scratch, req); err != nil {
 		_ = cleanup()
 		return nil, err
 	}
@@ -330,6 +339,7 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 		cancel:       cancel,
 		done:         make(chan struct{}),
 		logFile:      logFile,
+		logBytesLeft: checkoutReadonlyLogBytes(req),
 		cleanup:      cleanup,
 		processGroup: procGroup,
 	}
@@ -386,6 +396,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 			"--sandbox", "read-only",
 			"--cd", scratch,
 		}
+		if req.CheckoutReadonly != nil {
+			args = append(args, "--add-dir", req.CheckoutReadonly.RootDir)
+		}
 		if req.Model != "" {
 			args = append(args, "--model", req.Model)
 		}
@@ -398,7 +411,7 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 	}
 }
 
-func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
+func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Request) error {
 	checkedArgs := argsBeforePrompt(args)
 	if containsFlag(checkedArgs, "--search") {
 		return fmt.Errorf("%w: unsafe tool-enabling flag present", ErrUnsafeSubprocessConfig)
@@ -440,7 +453,7 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 			return fmt.Errorf("%w: claude_cli must restrict add-dir to scratch dir", ErrUnsafeSubprocessConfig)
 		}
 	case subprocessCodex:
-		if containsFlag(checkedArgs, "--add-dir") {
+		if req.CheckoutReadonly == nil && containsFlag(checkedArgs, "--add-dir") {
 			return fmt.Errorf("%w: unsafe tool-enabling flag present", ErrUnsafeSubprocessConfig)
 		}
 		if len(checkedArgs) == 0 || checkedArgs[0] != "exec" {
@@ -452,6 +465,12 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 		if flagValue(checkedArgs, "--cd") != scratch {
 			return fmt.Errorf("%w: codex_cli must use scratch cwd", ErrUnsafeSubprocessConfig)
 		}
+		if req.CheckoutReadonly != nil {
+			addDir, ok := flagValueOK(checkedArgs, "--add-dir")
+			if !ok || !sameCleanPath(addDir, req.CheckoutReadonly.RootDir) {
+				return fmt.Errorf("%w: codex_cli must add only the checkout-readonly root", ErrUnsafeSubprocessConfig)
+			}
+		}
 		for _, flag := range []string{"--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
 			if !containsFlag(checkedArgs, flag) {
 				return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
@@ -459,6 +478,30 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string) error {
 		}
 	}
 	return nil
+}
+
+func (a *SubprocessAdapter) invocationScratchDir(req Request) (string, func() error, error) {
+	if req.CheckoutReadonly == nil {
+		return a.scratchDirFactory()
+	}
+	if a.kind != subprocessCodex {
+		return "", nil, RequireCheckoutReadonly(a)
+	}
+	root := strings.TrimSpace(req.CheckoutReadonly.ScratchDir)
+	if root == "" {
+		return "", nil, fmt.Errorf("%w: checkout-readonly scratch dir is required", ErrUnsafeSubprocessConfig)
+	}
+	if strings.TrimSpace(req.CheckoutReadonly.RootDir) == "" {
+		return "", nil, fmt.Errorf("%w: checkout-readonly root dir is required", ErrUnsafeSubprocessConfig)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", nil, fmt.Errorf("llm subprocess: create checkout-readonly scratch root: %w", err)
+	}
+	scratch, err := os.MkdirTemp(root, "llm-subprocess-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("llm subprocess: create checkout-readonly scratch dir: %w", err)
+	}
+	return scratch, func() error { return os.RemoveAll(scratch) }, nil
 }
 
 type subprocessStream struct {
@@ -470,6 +513,8 @@ type subprocessStream struct {
 	done         chan struct{}
 	logMu        sync.Mutex
 	logFile      *os.File
+	logBytesLeft int
+	logCapped    bool
 	cleanup      func() error
 	processGroup *processGroup
 }
@@ -663,7 +708,33 @@ func (w subprocessLogWriter) Write(p []byte) (int, error) {
 	if w.stream.logFile == nil {
 		return len(p), nil
 	}
-	return w.stream.logFile.Write(p)
+	if w.stream.logBytesLeft == 0 {
+		if !w.stream.logCapped {
+			if _, err := w.stream.logFile.Write([]byte("warning: checkout-readonly tool output cap reached; further subprocess logs truncated\n")); err != nil {
+				return 0, err
+			}
+			w.stream.logCapped = true
+		}
+		return len(p), nil
+	}
+	writeBytes := p
+	if w.stream.logBytesLeft > 0 && len(writeBytes) > w.stream.logBytesLeft {
+		writeBytes = writeBytes[:w.stream.logBytesLeft]
+	}
+	n, err := w.stream.logFile.Write(writeBytes)
+	if w.stream.logBytesLeft > 0 {
+		w.stream.logBytesLeft -= n
+	}
+	if w.stream.logBytesLeft == 0 && !w.stream.logCapped {
+		if _, writeErr := w.stream.logFile.Write([]byte("warning: checkout-readonly tool output cap reached; further subprocess logs truncated\n")); writeErr != nil && err == nil {
+			err = writeErr
+		}
+		w.stream.logCapped = true
+	}
+	if err != nil {
+		return n, err
+	}
+	return len(p), nil
 }
 
 func (s *subprocessStream) writeLog(p []byte) {
@@ -703,6 +774,19 @@ func (s *subprocessStream) setSessionID(id string) {
 	if s.sessionID == "" {
 		s.sessionID = id
 	}
+}
+
+func checkoutReadonlyLogBytes(req Request) int {
+	if req.CheckoutReadonly == nil {
+		return logBytesUnlimited
+	}
+	if req.CheckoutReadonly.MaxToolOutputBytes == logBytesUnlimited {
+		return logBytesUnlimited
+	}
+	if req.CheckoutReadonly.MaxToolOutputBytes < 0 {
+		return 0
+	}
+	return req.CheckoutReadonly.MaxToolOutputBytes
 }
 
 type subprocessEvent struct {

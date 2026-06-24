@@ -1772,6 +1772,213 @@ func TestDryRunPreparesWorkbenchInAllocatedRunArtifacts(t *testing.T) {
 	}
 }
 
+func TestPrepareCheckoutReadonlyAccessSmokeAllowsReadAndScratchWrite(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	adapter := &checkoutReadonlySmokeAdapter{}
+	opts := Options{Provider: provider, Adapter: adapter}
+	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
+	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
+		PRRef:         req.PRRef,
+		Profile:       req.Profile,
+		AgentDirs:     req.AgentDirs,
+		ReviewBaseSHA: req.ReviewBaseSHA,
+		ReviewHeadSHA: req.ReviewHeadSHA,
+		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
+			return artifacts, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareSelectionContext: %v", err)
+	}
+	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+		PRRef:        req.PRRef,
+		ReviewPR:     prepared.reviewPR,
+		ChangedFiles: prepared.changedFiles,
+		Artifacts:    artifacts,
+	}); err != nil {
+		t.Fatalf("prepareWorkbenchArtifacts: %v", err)
+	}
+	defer func() {
+		if err := unlockWorkbenchRepo(artifacts.WorkbenchRepoDir); err != nil {
+			t.Fatalf("unlockWorkbenchRepo: %v", err)
+		}
+	}()
+	llmReq, err := buildCheckoutReadonlyRequest(Options{Adapter: adapter}, artifacts, "harness:smoke", nil, "gpt-5.5", "medium", "smoke", filepath.Join(t.TempDir(), "smoke.jsonl"))
+	if err != nil {
+		t.Fatalf("buildCheckoutReadonlyRequest: %v", err)
+	}
+	type smokeResult struct {
+		ReadOK               bool `json:"read_ok"`
+		MainContainsChanged  bool `json:"main_contains_changed"`
+		DeniedOutOfScope     bool `json:"denied_out_of_scope"`
+		TrackedWriteDenied   bool `json:"tracked_write_denied"`
+		UntrackedWriteDenied bool `json:"untracked_write_denied"`
+		ScratchWriteOK       bool `json:"scratch_write_ok"`
+		MaxToolOutputBytes   int  `json:"max_tool_output_bytes"`
+	}
+	got, _, err := llm.RunStructured(context.Background(), adapter, llmReq, func(data []byte) (smokeResult, error) {
+		var out smokeResult
+		return out, json.Unmarshal(data, &out)
+	})
+	if err != nil {
+		t.Fatalf("RunStructured: %v", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("adapter requests = %d, want one smoke invocation", len(requests))
+	}
+	if requests[0].CheckoutReadonly == nil || requests[0].CheckoutReadonly.RootDir != artifacts.WorkbenchRepoDir {
+		t.Fatalf("checkout readonly request = %#v, want workbench repo root", requests[0].CheckoutReadonly)
+	}
+	if requests[0].CheckoutReadonly.MaxToolOutputBytes != defaultCheckoutReadonlyToolOutputBytes {
+		t.Fatalf("max tool output bytes = %d, want default %d", requests[0].CheckoutReadonly.MaxToolOutputBytes, defaultCheckoutReadonlyToolOutputBytes)
+	}
+	if !got.ReadOK || !got.MainContainsChanged || !got.TrackedWriteDenied || !got.UntrackedWriteDenied || !got.ScratchWriteOK {
+		t.Fatalf("smoke result = %#v, want read success, repo write denial, and scratch write success", got)
+	}
+}
+
+func TestPrepareCheckoutReadonlyAccessAllowedFilesNarrowsReadScope(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	opts := Options{Provider: provider, Adapter: &checkoutReadonlySmokeAdapter{}}
+	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
+	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
+		PRRef:         req.PRRef,
+		Profile:       req.Profile,
+		AgentDirs:     req.AgentDirs,
+		ReviewBaseSHA: req.ReviewBaseSHA,
+		ReviewHeadSHA: req.ReviewHeadSHA,
+		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
+			return artifacts, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareSelectionContext: %v", err)
+	}
+	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+		PRRef:        req.PRRef,
+		ReviewPR:     prepared.reviewPR,
+		ChangedFiles: prepared.changedFiles,
+		Artifacts:    artifacts,
+	}); err != nil {
+		t.Fatalf("prepareWorkbenchArtifacts: %v", err)
+	}
+	defer func() {
+		if err := unlockWorkbenchRepo(artifacts.WorkbenchRepoDir); err != nil {
+			t.Fatalf("unlockWorkbenchRepo: %v", err)
+		}
+	}()
+	access, err := prepareCheckoutReadonlyAccess(artifacts, "harness:smoke", []string{"main.go"}, 1024)
+	if err != nil {
+		t.Fatalf("prepareCheckoutReadonlyAccess: %v", err)
+	}
+	defer func() {
+		if err := unlockCheckoutReadonlyScope(access.RootDir); err != nil {
+			t.Fatalf("unlockCheckoutReadonlyScope: %v", err)
+		}
+	}()
+	if access.RootDir == artifacts.WorkbenchRepoDir {
+		t.Fatalf("root dir = %q, want narrowed scope dir distinct from workbench repo", access.RootDir)
+	}
+	if _, err := os.ReadFile(filepath.Join(access.RootDir, "main.go")); err != nil { // #nosec G304 -- test reads only caller-produced scope path.
+		t.Fatalf("ReadFile(main.go): %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Join(artifacts.WorkbenchRepoDir, "other.go")); err != nil { // #nosec G304 -- test reads only caller-produced workbench path.
+		t.Fatalf("ReadFile(workbench other.go): %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Join(access.RootDir, "other.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ReadFile(other.go) err = %v, want not exist outside allowed scope", err)
+	}
+}
+
+func TestPrepareCheckoutReadonlyAccessAllowedFilesResetsExistingScope(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	opts := Options{Provider: provider, Adapter: &checkoutReadonlySmokeAdapter{}}
+	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
+	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
+		PRRef:         req.PRRef,
+		Profile:       req.Profile,
+		AgentDirs:     req.AgentDirs,
+		ReviewBaseSHA: req.ReviewBaseSHA,
+		ReviewHeadSHA: req.ReviewHeadSHA,
+		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
+			return artifacts, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareSelectionContext: %v", err)
+	}
+	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+		PRRef:        req.PRRef,
+		ReviewPR:     prepared.reviewPR,
+		ChangedFiles: prepared.changedFiles,
+		Artifacts:    artifacts,
+	}); err != nil {
+		t.Fatalf("prepareWorkbenchArtifacts: %v", err)
+	}
+	defer func() {
+		if err := unlockWorkbenchRepo(artifacts.WorkbenchRepoDir); err != nil {
+			t.Fatalf("unlockWorkbenchRepo: %v", err)
+		}
+	}()
+	access, err := prepareCheckoutReadonlyAccess(artifacts, "harness:scope-reset", []string{"main.go"}, 1024)
+	if err != nil {
+		t.Fatalf("prepareCheckoutReadonlyAccess(first): %v", err)
+	}
+	defer func() {
+		if err := unlockCheckoutReadonlyScope(access.RootDir); err != nil {
+			t.Fatalf("unlockCheckoutReadonlyScope: %v", err)
+		}
+	}()
+	access, err = prepareCheckoutReadonlyAccess(artifacts, "harness:scope-reset", []string{"other.go"}, 1024)
+	if err != nil {
+		t.Fatalf("prepareCheckoutReadonlyAccess(second): %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Join(access.RootDir, "other.go")); err != nil { // #nosec G304 -- test reads only caller-produced scope path.
+		t.Fatalf("ReadFile(other.go): %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Join(access.RootDir, "main.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ReadFile(main.go) err = %v, want not exist after scope reset", err)
+	}
+}
+
+func TestPrepareCheckoutReadonlyAccessRejectsSymlinkTargets(t *testing.T) {
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	if err := os.MkdirAll(artifacts.WorkbenchRepoDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(repo): %v", err)
+	}
+	if err := os.MkdirAll(artifacts.WorkbenchScratch, 0o700); err != nil {
+		t.Fatalf("MkdirAll(scratch): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifacts.WorkbenchRepoDir, "real.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(real.go): %v", err)
+	}
+	if err := os.Symlink(filepath.Join(artifacts.WorkbenchRepoDir, "real.go"), filepath.Join(artifacts.WorkbenchRepoDir, "link.go")); err != nil {
+		t.Fatalf("Symlink(link.go): %v", err)
+	}
+	_, err := prepareCheckoutReadonlyAccess(artifacts, "harness:symlink", []string{"link.go"}, 1024)
+	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("prepareCheckoutReadonlyAccess error = %v, want symlink rejection", err)
+	}
+}
+
+func TestBuildCheckoutReadonlyRequestUnsupportedAdapterFailsWithoutFallback(t *testing.T) {
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	req, err := buildCheckoutReadonlyRequest(Options{Adapter: &promptAwareAdapter{}}, artifacts, "harness:smoke", nil, "gpt-5.5", "medium", "smoke", filepath.Join(t.TempDir(), "smoke.jsonl"))
+	if err == nil || !strings.Contains(err.Error(), "checkout-readonly capability") {
+		t.Fatalf("buildCheckoutReadonlyRequest error = %v, want missing checkout-readonly capability", err)
+	}
+	if (req != llm.Request{}) {
+		t.Fatalf("request = %#v, want zero request on unsupported adapter", req)
+	}
+}
+
 func TestDryRunNoDiffDoesNotResolveUnmappedModelTier(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -4585,6 +4792,56 @@ func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (ll
 	}
 }
 
+type checkoutReadonlySmokeAdapter struct {
+	mu       sync.Mutex
+	requests []llm.Request
+}
+
+func (a *checkoutReadonlySmokeAdapter) Name() string                   { return "checkout-readonly-smoke" }
+func (a *checkoutReadonlySmokeAdapter) SupportsResume() bool           { return false }
+func (a *checkoutReadonlySmokeAdapter) SupportsCheckoutReadonly() bool { return true }
+func (a *checkoutReadonlySmokeAdapter) SupportsCacheAccounting() bool  { return false }
+func (a *checkoutReadonlySmokeAdapter) SupportsCostReporting() bool    { return false }
+func (a *checkoutReadonlySmokeAdapter) Quota(context.Context) (llm.Quota, bool, error) {
+	return llm.Quota{}, false, nil
+}
+func (a *checkoutReadonlySmokeAdapter) Resume(context.Context, string, llm.Request) (llm.Stream, error) {
+	return nil, errors.New("resume unsupported")
+}
+func (a *checkoutReadonlySmokeAdapter) Start(_ context.Context, req llm.Request) (llm.Stream, error) {
+	a.mu.Lock()
+	a.requests = append(a.requests, req)
+	a.mu.Unlock()
+	access := req.CheckoutReadonly
+	if access == nil {
+		return nil, errors.New("missing checkout-readonly request")
+	}
+	mainBytes, err := os.ReadFile(filepath.Join(access.RootDir, "main.go")) // #nosec G304 -- test adapter reads only caller-provided test workbench roots.
+	if err != nil {
+		return nil, err
+	}
+	_, deniedReadErr := os.ReadFile(filepath.Join(access.RootDir, "other.go"))                                  // #nosec G304 -- test adapter probes only caller-provided test workbench roots.
+	trackedWriteErr := os.WriteFile(filepath.Join(access.RootDir, "main.go"), []byte("mutated"), 0o600)         // #nosec G304,G306 -- test adapter intentionally probes read-only workbench writes.
+	untrackedWriteErr := os.WriteFile(filepath.Join(access.RootDir, "untracked.txt"), []byte("mutated"), 0o600) // #nosec G304,G306 -- test adapter intentionally probes read-only workbench writes.
+	scratchPath := filepath.Join(access.ScratchDir, "smoke-output.txt")
+	scratchWriteErr := os.WriteFile(scratchPath, []byte("scratch-ok"), 0o600) // #nosec G306 -- test adapter writes only to caller-owned scratch.
+	output := fmt.Sprintf(`{"read_ok":%t,"main_contains_changed":%t,"denied_out_of_scope":%t,"tracked_write_denied":%t,"untracked_write_denied":%t,"scratch_write_ok":%t,"max_tool_output_bytes":%d}`,
+		true,
+		strings.Contains(string(mainBytes), "var changed = true"),
+		deniedReadErr != nil,
+		trackedWriteErr != nil,
+		untrackedWriteErr != nil,
+		scratchWriteErr == nil,
+		access.MaxToolOutputBytes,
+	)
+	return staticStream{sessionID: "checkout-smoke-session", output: output}, nil
+}
+func (a *checkoutReadonlySmokeAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request(nil), a.requests...)
+}
+
 func (a *reviewerIsolationAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -4767,7 +5024,10 @@ func newWorkbenchGitFixtureForRef(t *testing.T, ref gitprovider.PRRef) workbench
 	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = false\n"), 0o600); err != nil {
 		t.Fatalf("write main.go: %v", err)
 	}
-	gitCommandMustSucceed(t, repoDir, "add", "main.go")
+	if err := os.WriteFile(filepath.Join(repoDir, "other.go"), []byte("package main\n\nvar helper = true\n"), 0o600); err != nil {
+		t.Fatalf("write other.go: %v", err)
+	}
+	gitCommandMustSucceed(t, repoDir, "add", "main.go", "other.go")
 	gitCommandMustSucceed(t, repoDir, "commit", "-m", "base")
 	baseSHA := strings.TrimSpace(gitCommandOutput(t, repoDir, "rev-parse", "HEAD"))
 	gitCommandMustSucceed(t, repoDir, "checkout", "-b", "feature")

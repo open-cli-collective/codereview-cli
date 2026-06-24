@@ -568,6 +568,88 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("checkout readonly adds scoped read root and keeps scratch cwd", func(t *testing.T) {
+		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
+		scratchRoot := filepath.Join(tempDir, "workbench-scratch")
+		if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll(scratchRoot): %v", err)
+		}
+		repoRoot := filepath.Join(tempDir, "workbench-repo")
+		if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll(repoRoot): %v", err)
+		}
+		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+		stream, err := adapter.Start(context.Background(), Request{
+			Model:  "gpt-5.5",
+			Effort: "high",
+			Prompt: "prompt",
+			CheckoutReadonly: &CheckoutReadonlyRequest{
+				RootDir:            repoRoot,
+				ScratchDir:         scratchRoot,
+				MaxToolOutputBytes: 2048,
+			},
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err := stream.Wait(context.Background()); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		record := readHelperRecord(t, recordPath)
+		assertFlagValue(t, record.AdapterArgs, "--add-dir", repoRoot)
+		cwd := strings.TrimPrefix(filepath.Clean(record.Cwd), "/private")
+		wantRoot := strings.TrimPrefix(filepath.Clean(scratchRoot), "/private")
+		if !strings.HasPrefix(cwd, wantRoot+string(filepath.Separator)) {
+			t.Fatalf("cwd = %q, want invocation scratch under %q", record.Cwd, scratchRoot)
+		}
+		if samePath(t, record.Cwd, scratchRoot) {
+			t.Fatalf("cwd = %q, want child scratch dir rather than root", record.Cwd)
+		}
+	})
+
+	t.Run("checkout readonly caps subprocess logs", func(t *testing.T) {
+		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
+		logPath := filepath.Join(tempDir, "events.log")
+		scratchRoot := filepath.Join(tempDir, "workbench-scratch")
+		if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll(scratchRoot): %v", err)
+		}
+		repoRoot := filepath.Join(tempDir, "workbench-repo")
+		if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll(repoRoot): %v", err)
+		}
+		adapter := newCodexHelperAdapter("noisy-success", recordPath, 5*time.Second)
+		stream, err := adapter.Start(context.Background(), Request{
+			Prompt:  "prompt",
+			LogPath: logPath,
+			CheckoutReadonly: &CheckoutReadonlyRequest{
+				RootDir:            repoRoot,
+				ScratchDir:         scratchRoot,
+				MaxToolOutputBytes: 64,
+			},
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err := stream.Wait(context.Background()); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		logged, err := os.ReadFile(logPath) // #nosec G304 -- test reads the log path it created with t.TempDir.
+		if err != nil {
+			t.Fatalf("ReadFile(log): %v", err)
+		}
+		logText := string(logged)
+		warningText := "warning: checkout-readonly tool output cap reached; further subprocess logs truncated\n"
+		if !strings.Contains(logText, warningText) {
+			t.Fatalf("log = %q, want truncation warning", logText)
+		}
+		if len(logged) > 64+len(warningText) {
+			t.Fatalf("log bytes = %d, want capped output at %d plus warning", len(logged), 64+len(warningText))
+		}
+	})
 }
 
 func TestSubprocessCodexToolUseAndProtocolFailures(t *testing.T) {
@@ -650,7 +732,7 @@ func TestSubprocessRejectsUnsafeSpecs(t *testing.T) {
 		{name: "prompt argv", args: append(append([]string(nil), claudeArgs...), "--", "prompt")},
 	} {
 		t.Run("claude "+tt.name, func(t *testing.T) {
-			if err := claude.validateArgs(tt.args, scratch); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+			if err := claude.validateArgs(tt.args, scratch, Request{Prompt: "prompt"}); !errors.Is(err, ErrUnsafeSubprocessConfig) {
 				t.Fatalf("validateArgs error = %v, want ErrUnsafeSubprocessConfig", err)
 			}
 		})
@@ -658,7 +740,7 @@ func TestSubprocessRejectsUnsafeSpecs(t *testing.T) {
 	inlineClaudeArgs := replaceSubprocessFlagPairWithEquals(claudeArgs, "--tools")
 	inlineClaudeArgs = replaceSubprocessFlagPairWithEquals(inlineClaudeArgs, "--permission-mode")
 	inlineClaudeArgs = replaceSubprocessFlagPairWithEquals(inlineClaudeArgs, "--add-dir")
-	if err := claude.validateArgs(inlineClaudeArgs, scratch); err != nil {
+	if err := claude.validateArgs(inlineClaudeArgs, scratch, Request{Prompt: "prompt"}); err != nil {
 		t.Fatalf("validateArgs(claude inline flags): %v", err)
 	}
 
@@ -676,7 +758,7 @@ func TestSubprocessRejectsUnsafeSpecs(t *testing.T) {
 		{name: "add dir", args: append([]string{"--add-dir", t.TempDir()}, codexArgs...)},
 	} {
 		t.Run("codex "+tt.name, func(t *testing.T) {
-			if err := codex.validateArgs(tt.args, codexScratch); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+			if err := codex.validateArgs(tt.args, codexScratch, Request{Prompt: "prompt"}); !errors.Is(err, ErrUnsafeSubprocessConfig) {
 				t.Fatalf("validateArgs error = %v, want ErrUnsafeSubprocessConfig", err)
 			}
 		})
@@ -931,6 +1013,10 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 	case "success":
 		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)
 		fmt.Println(`{"type":"unknown.event","ignored":true}`)
+		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
+	case "noisy-success":
+		fmt.Fprintln(os.Stderr, strings.Repeat("stderr-noise-", 32))
+		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)
 		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
 	case "tool":
 		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)
