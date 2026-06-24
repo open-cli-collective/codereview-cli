@@ -52,8 +52,11 @@ type SelectionOptions struct {
 
 // Findings is validated reviewer findings output.
 type Findings struct {
-	AgentID  string
-	Findings []review.Finding
+	AgentID        string
+	Findings       []review.Finding
+	InspectedFiles []string
+	SkippedFiles   []string
+	Constraints    []string
 }
 
 // FindingIDGenerator assigns harness-owned finding IDs.
@@ -99,9 +102,12 @@ type threadActionWire struct {
 }
 
 type findingsWire struct {
-	SchemaVersion int           `json:"schema_version"`
-	AgentID       string        `json:"agent_id"`
-	Findings      []findingWire `json:"findings"`
+	SchemaVersion  int           `json:"schema_version"`
+	AgentID        string        `json:"agent_id"`
+	InspectedFiles []string      `json:"inspected_files"`
+	SkippedFiles   []string      `json:"skipped_files,omitempty"`
+	Constraints    []string      `json:"constraints,omitempty"`
+	Findings       []findingWire `json:"findings"`
 }
 
 type findingWire struct {
@@ -232,7 +238,28 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 
 	seenIDs := map[review.FindingID]bool{}
 	severityCounts := map[review.Severity]int{}
-	result := Findings{AgentID: wire.AgentID}
+	inspected, err := decodeCoverageFiles("inspected_files", wire.InspectedFiles, opts.ChangedFiles)
+	if err != nil {
+		return Findings{}, err
+	}
+	if len(inspected) == 0 {
+		return Findings{}, fmt.Errorf("llm: inspected_files must contain at least one changed file")
+	}
+	skipped, err := decodeCoverageFiles("skipped_files", wire.SkippedFiles, opts.ChangedFiles)
+	if err != nil {
+		return Findings{}, err
+	}
+	constraints, err := decodeCoverageStrings("constraints", wire.Constraints)
+	if err != nil {
+		return Findings{}, err
+	}
+
+	result := Findings{
+		AgentID:        wire.AgentID,
+		InspectedFiles: inspected,
+		SkippedFiles:   skipped,
+		Constraints:    constraints,
+	}
 	for _, found := range wire.Findings {
 		if len(found.FindingID) > 0 {
 			return Findings{}, fmt.Errorf("llm: model-supplied finding_id is not allowed")
@@ -283,6 +310,40 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 		result.Findings = append(result.Findings, finding)
 	}
 	return result, nil
+}
+
+func decodeCoverageFiles(name string, files []string, changedFiles map[string]bool) ([]string, error) {
+	out := make([]string, 0, len(files))
+	seen := map[string]bool{}
+	for _, file := range files {
+		file = strings.TrimSpace(file)
+		if file == "" || !changedFiles[file] {
+			return nil, fmt.Errorf("llm: %s entry %q is not in changed files", name, file)
+		}
+		if seen[file] {
+			return nil, fmt.Errorf("llm: duplicate %s entry %q", name, file)
+		}
+		seen[file] = true
+		out = append(out, file)
+	}
+	return out, nil
+}
+
+func decodeCoverageStrings(name string, values []string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = sanitize(value)
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("llm: %s entries must be non-empty", name)
+		}
+		if seen[value] {
+			return nil, fmt.Errorf("llm: duplicate %s entry %q", name, value)
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func (wire findingWire) normalizedFilePath() (string, error) {

@@ -462,6 +462,7 @@ func newReviewSummary(summary reviewplan.Summary) view.ReviewSummary {
 			Model:             summary.Run.Model,
 			PostingIdentity:   summary.Run.PostingIdentity,
 			SelectedReviewers: summary.Run.SelectedReviewers,
+			ReviewerCoverage:  []view.ReviewReviewerCoverageSummary{},
 			WallDurationMS:    summary.Run.WallDurationMS,
 			Workstreams:       []view.ReviewWorkstream{},
 		},
@@ -476,6 +477,17 @@ func newReviewSummary(summary reviewplan.Summary) view.ReviewSummary {
 	}
 	for _, reviewer := range summary.Reviewers {
 		out.Reviewers = append(out.Reviewers, view.ReviewReviewerSummary{Name: reviewer.Name, Findings: reviewer.Findings})
+	}
+	for _, coverage := range summary.Run.ReviewerCoverage {
+		out.Run.ReviewerCoverage = append(out.Run.ReviewerCoverage, view.ReviewReviewerCoverageSummary{
+			AgentID:        coverage.AgentID,
+			Status:         coverage.Status,
+			Scope:          coverage.Scope,
+			InspectedFiles: coverage.InspectedFiles,
+			SkippedFiles:   coverage.SkippedFiles,
+			Constraints:    coverage.Constraints,
+			Diagnostic:     coverage.Diagnostic,
+		})
 	}
 	for _, workstream := range summary.Run.Workstreams {
 		out.Run.Workstreams = append(out.Run.Workstreams, view.ReviewWorkstream{

@@ -94,6 +94,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{
 			"schema_version": 1,
 			"agent_id": "agent-1",
+			"inspected_files": ["main.go"],
 			"findings": [{
 				"severity": "major",
 				"file": "main.go",
@@ -128,6 +129,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{
 			"schema_version": 1,
 			"agent_id": "agent-1",
+			"inspected_files": ["main.go"],
 			"findings": [{
 				"severity": "major",
 				"file": "main.go",

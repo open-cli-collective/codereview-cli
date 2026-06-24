@@ -3825,6 +3825,8 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 				t.Fatalf("reviewer prompt missing checkout-native context: %s", request.Prompt)
 			}
 			if !strings.Contains(request.Prompt, `"file_path"`) ||
+				!strings.Contains(request.Prompt, `"inspected_files"`) ||
+				!strings.Contains(request.Prompt, `"skipped_files"`) ||
 				!strings.Contains(request.Prompt, `"anchor"`) ||
 				!strings.Contains(request.Prompt, `"Do not provide finding_id`) {
 				t.Fatalf("reviewer prompt missing output schema fields: %s", request.Prompt)
@@ -4571,19 +4573,30 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 			Anchor:   review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 20},
 			Body:     "same issue text",
 		},
-	}, nil)
+	}, nil, []reviewplan.ReviewerCoverageSummary{{
+		AgentID:        "harness:reviewer",
+		Status:         reviewerCoverageCompleteBroad,
+		Scope:          []string{"main.go"},
+		InspectedFiles: []string{"main.go"},
+	}})
 	if err != nil {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
 
 	var payload struct {
-		Findings []rollupFindingPrompt `json:"findings"`
+		Findings         []rollupFindingPrompt       `json:"findings"`
+		ReviewerCoverage []rollupCoveragePromptEntry `json:"reviewer_coverage"`
 	}
 	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
 		t.Fatalf("unmarshal rollup prompt: %v", err)
 	}
 	if len(payload.Findings) != 2 {
 		t.Fatalf("rollup findings = %d, want 2", len(payload.Findings))
+	}
+	if len(payload.ReviewerCoverage) != 1 ||
+		payload.ReviewerCoverage[0].Status != reviewerCoverageCompleteBroad ||
+		!reflect.DeepEqual(payload.ReviewerCoverage[0].InspectedFiles, []string{"main.go"}) {
+		t.Fatalf("reviewer coverage = %#v, want compact broad coverage", payload.ReviewerCoverage)
 	}
 	if payload.Findings[0].Location.Line != 10 || payload.Findings[1].Location.Line != 20 {
 		t.Fatalf("rollup finding locations = %#v", payload.Findings)
@@ -4593,6 +4606,78 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Rollup prompt body should stay out of prompt payloads.") {
 		t.Fatalf("rollup prompt leaked PR body: %s", prompt)
+	}
+}
+
+func TestBuildReviewerCoverageStatuses(t *testing.T) {
+	selected := []llm.SelectedAgent{
+		{AgentID: "harness:broad", Files: []string{"main.go"}},
+		{AgentID: "harness:scoped", Files: []string{"db.sql"}, AllowedFiles: []string{"db.sql"}},
+		{AgentID: "harness:skipped", Files: []string{"api.go"}},
+		{AgentID: "harness:failed", Files: []string{"worker.go"}},
+	}
+	results := []llm.Findings{
+		{AgentID: "harness:broad", InspectedFiles: []string{"main.go"}},
+		{AgentID: "harness:scoped", InspectedFiles: []string{"db.sql"}, Constraints: []string{"SQL-only review"}},
+		{AgentID: "harness:skipped", InspectedFiles: []string{"api.go"}, SkippedFiles: []string{"api.go"}},
+	}
+	failures := []ReviewerFailure{{AgentID: "harness:failed", Error: "model failed"}}
+
+	got := buildReviewerCoverage(selected, results, failures, []string{"api.go", "db.sql", "main.go", "unassigned.go", "worker.go"})
+	byAgent := map[string]reviewplan.ReviewerCoverageSummary{}
+	for _, entry := range got {
+		byAgent[entry.AgentID] = entry
+	}
+
+	if byAgent["harness:broad"].Status != reviewerCoverageCompleteBroad {
+		t.Fatalf("broad coverage = %#v", byAgent["harness:broad"])
+	}
+	if byAgent["harness:scoped"].Status != reviewerCoverageCompleteConstrained {
+		t.Fatalf("scoped coverage = %#v", byAgent["harness:scoped"])
+	}
+	if byAgent["harness:skipped"].Status != reviewerCoverageIncompleteSkipped {
+		t.Fatalf("skipped coverage = %#v", byAgent["harness:skipped"])
+	}
+	if byAgent["harness:failed"].Status != reviewerCoverageIncompleteFailed || byAgent["harness:failed"].Diagnostic != "model failed" {
+		t.Fatalf("failed coverage = %#v", byAgent["harness:failed"])
+	}
+	if byAgent["unassigned"].Status != reviewerCoverageIncompleteUnassigned ||
+		!reflect.DeepEqual(byAgent["unassigned"].SkippedFiles, []string{"unassigned.go"}) {
+		t.Fatalf("unassigned coverage = %#v", byAgent["unassigned"])
+	}
+}
+
+func TestRollupPromptAndFingerprintChangeWhenReviewerCoverageChanges(t *testing.T) {
+	findings := largeRollupFindings(1, "main.go", "body")
+	baseCoverage := []reviewplan.ReviewerCoverageSummary{{
+		AgentID:        "harness:reviewer",
+		Status:         reviewerCoverageCompleteBroad,
+		Scope:          []string{"main.go"},
+		InspectedFiles: []string{"main.go"},
+	}}
+	skippedCoverage := []reviewplan.ReviewerCoverageSummary{{
+		AgentID:        "harness:reviewer",
+		Status:         reviewerCoverageIncompleteSkipped,
+		Scope:          []string{"main.go"},
+		InspectedFiles: []string{"main.go"},
+		SkippedFiles:   []string{"main.go"},
+	}}
+	basePrompt, err := buildRollupPrompt(gitprovider.PR{}, findings, nil, baseCoverage)
+	if err != nil {
+		t.Fatalf("buildRollupPrompt base: %v", err)
+	}
+	skippedPrompt, err := buildRollupPrompt(gitprovider.PR{}, findings, nil, skippedCoverage)
+	if err != nil {
+		t.Fatalf("buildRollupPrompt skipped: %v", err)
+	}
+	if basePrompt == skippedPrompt {
+		t.Fatal("rollup prompts are equal, want coverage changes to affect prompt")
+	}
+	deps := []string{orchestratorSelectionStage, reviewerTaskID("harness:reviewer")}
+	baseFingerprint := llmTaskFingerprint("fake", orchestratorRollupStage, "rollup", "model", "effort", basePrompt, deps)
+	skippedFingerprint := llmTaskFingerprint("fake", orchestratorRollupStage, "rollup", "model", "effort", skippedPrompt, deps)
+	if baseFingerprint == skippedFingerprint {
+		t.Fatal("rollup fingerprints are equal, want coverage changes to invalidate cached rollup input")
 	}
 }
 
@@ -4761,7 +4846,7 @@ func TestRollupPromptBudgetUsesSynthesisModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSynthesisRuntimeConfig: %v", err)
 	}
-	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil)
+	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil, nil)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
@@ -4778,7 +4863,7 @@ func TestRollupPromptBudgetIgnoresSelectionModelOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSynthesisRuntimeConfig: %v", err)
 	}
-	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil)
+	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil, nil)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
@@ -4876,12 +4961,12 @@ func (a *promptAwareAdapter) Start(_ context.Context, req llm.Request) (llm.Stre
 			"thread_actions": [],
 			"reasoning": "two agents"
 		}`}, nil
+	case strings.Contains(req.Prompt, `"schema": "rollup"`):
+		return staticStream{sessionID: "rollup-session", output: rollupJSON("comment", findingIDsFromPrompt(req.Prompt))}, nil
 	case strings.Contains(req.Prompt, "harness:alpha"):
 		return staticStream{sessionID: "alpha-session", output: findingsJSON("harness:alpha", "main.go", "major", 2, "Alpha finding")}, nil
 	case strings.Contains(req.Prompt, "harness:beta"):
 		return staticStream{sessionID: "beta-session", output: findingsJSON("harness:beta", "other.go", "major", 2, "Beta finding")}, nil
-	case strings.Contains(req.Prompt, `"schema": "rollup"`):
-		return staticStream{sessionID: "rollup-session", output: rollupJSON("comment", findingIDsFromPrompt(req.Prompt))}, nil
 	default:
 		return nil, fmt.Errorf("unexpected prompt: %s", req.Prompt)
 	}
@@ -5650,8 +5735,11 @@ func selectionJSONForAgents(file string, agentIDs ...string) string {
 
 func findingsJSON(agentID, file, severity string, line int, body string) string {
 	payload := map[string]any{
-		"schema_version": 1,
-		"agent_id":       agentID,
+		"schema_version":  1,
+		"agent_id":        agentID,
+		"inspected_files": []string{file},
+		"skipped_files":   []string{},
+		"constraints":     []string{},
 		"findings": []map[string]any{{
 			"severity":  severity,
 			"file_path": file,
@@ -5690,8 +5778,11 @@ func largeRollupFindings(count int, filePath, body string) []review.Finding {
 
 func findingsFileAliasJSON(agentID, file, severity string, line int, body string) string {
 	payload := map[string]any{
-		"schema_version": 1,
-		"agent_id":       agentID,
+		"schema_version":  1,
+		"agent_id":        agentID,
+		"inspected_files": []string{file},
+		"skipped_files":   []string{},
+		"constraints":     []string{},
 		"findings": []map[string]any{{
 			"severity": severity,
 			"file":     file,
