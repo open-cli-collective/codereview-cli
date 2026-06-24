@@ -241,8 +241,8 @@ stuffed diffs or full file bodies.
 Specialist reviewers must return structured output that includes:
 
 - `findings`, each with severity, changed-file path, anchor, and body
-- `inspected_files`, listing changed files the reviewer actually inspected
-- `skipped_files`, listing changed files the reviewer intentionally did not or could not inspect
+- `inspected_files`, listing assigned changed files the reviewer actually inspected
+- `skipped_files`, listing assigned changed files the reviewer intentionally did not or could not inspect
 - `constraints`, listing material scope, context, or tool constraints
 
 Rollup receives compact reviewer coverage summaries derived from those fields.

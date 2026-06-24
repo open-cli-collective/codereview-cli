@@ -4707,6 +4707,24 @@ func TestBuildReviewerCoverageAllowsBroadReviewerSplitAssignments(t *testing.T) 
 	}
 }
 
+func TestBuildReviewerCoverageIgnoresSkippedFilesOutsideAssignmentScope(t *testing.T) {
+	got := buildReviewerCoverage(
+		[]llm.SelectedAgent{{AgentID: "harness:reviewer", Files: []string{"main.go"}}},
+		[]llm.Findings{{AgentID: "harness:reviewer", InspectedFiles: []string{"main.go"}, SkippedFiles: []string{"other.go"}}},
+		nil,
+		[]string{"main.go", "other.go"},
+	)
+	if len(got) != 2 {
+		t.Fatalf("coverage entries = %#v, want reviewer plus unassigned other.go", got)
+	}
+	if got[0].AgentID != "harness:reviewer" || got[0].Status != reviewerCoverageCompleteBroad {
+		t.Fatalf("reviewer coverage = %#v, want complete broad for assigned scope", got[0])
+	}
+	if got[1].AgentID != "unassigned" || got[1].Status != reviewerCoverageIncompleteUnassigned {
+		t.Fatalf("unassigned coverage = %#v, want other.go unassigned", got[1])
+	}
+}
+
 func TestRollupPromptAndFingerprintChangeWhenReviewerCoverageChanges(t *testing.T) {
 	findings := largeRollupFindings(1, "main.go", "body")
 	baseCoverage := []reviewplan.ReviewerCoverageSummary{{

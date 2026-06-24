@@ -245,12 +245,12 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 	if err != nil {
 		return Findings{}, err
 	}
-	if len(inspected) == 0 {
-		return Findings{}, fmt.Errorf("llm: inspected_files must contain at least one changed file")
-	}
 	skipped, err := decodeCoverageFiles("skipped_files", wire.SkippedFiles, opts.ChangedFiles)
 	if err != nil {
 		return Findings{}, err
+	}
+	if len(inspected) == 0 && len(skipped) == 0 {
+		return Findings{}, fmt.Errorf("llm: inspected_files or skipped_files must contain at least one changed file")
 	}
 	if err := validateCoverageFileDisjoint(inspected, skipped); err != nil {
 		return Findings{}, err

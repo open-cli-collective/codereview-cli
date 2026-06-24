@@ -2161,9 +2161,10 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 		entry.InspectedFiles = appendSortedStrings(result.InspectedFiles)
 		entry.SkippedFiles = appendSortedStrings(result.SkippedFiles)
 		entry.Constraints = appendSortedStrings(result.Constraints)
-		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
+		scopedSkipped := intersectSortedStrings(entry.SkippedFiles, scope)
+		missing := coverageMissingFiles(scope, entry.InspectedFiles, scopedSkipped)
 		switch {
-		case len(entry.SkippedFiles) > 0 || len(missing) > 0:
+		case len(scopedSkipped) > 0 || len(missing) > 0:
 			entry.Status = reviewerCoverageIncompleteSkipped
 			if len(missing) > 0 {
 				entry.Diagnostic = "assigned files were neither inspected nor skipped: " + strings.Join(missing, ", ")
@@ -2221,6 +2222,17 @@ func coverageMissingFiles(scope, inspected, skipped []string) []string {
 		}
 	}
 	return appendSortedStrings(missing)
+}
+
+func intersectSortedStrings(values, scope []string) []string {
+	inScope := stringSet(scope)
+	var out []string
+	for _, value := range values {
+		if inScope[value] {
+			out = append(out, value)
+		}
+	}
+	return appendSortedStrings(out)
 }
 
 func stringSet(values []string) map[string]bool {
@@ -2903,8 +2915,9 @@ func findingsOutputContract(agentID string, changedFiles []string) outputContrac
 			"allowed_values is context only; do not include allowed_values keys in the response.",
 			"schema_version must be 1.",
 			"agent_id must match the provided agent id.",
-			"inspected_files must list changed files you actually inspected, even when findings is empty.",
-			"skipped_files must list changed files you intentionally did not inspect or could not inspect.",
+			"inspected_files must list assigned changed files you actually inspected, even when findings is empty.",
+			"skipped_files must list assigned changed files you intentionally did not inspect or could not inspect.",
+			"At least one of inspected_files or skipped_files must be non-empty.",
 			"constraints must list any material review constraints, such as intentionally narrow scope, missing context, or tool limitations.",
 			"findings must be an empty array when there are no actionable findings.",
 			"file_path must be one of changed_files.",
@@ -2913,8 +2926,8 @@ func findingsOutputContract(agentID string, changedFiles []string) outputContrac
 		ResponseSchema: map[string]any{
 			"schema_version":  "number, required, must be 1",
 			"agent_id":        "string, required",
-			"inspected_files": "string[], required, changed files inspected by this reviewer",
-			"skipped_files":   "string[], changed files intentionally not inspected or not inspectable",
+			"inspected_files": "string[], assigned changed files inspected by this reviewer",
+			"skipped_files":   "string[], assigned changed files intentionally not inspected or not inspectable",
 			"constraints":     "string[], material scope/tool/context constraints",
 			"findings":        "array of {severity: string, file_path: string, anchor: {kind: 'file'} or {kind: 'line', side: 'RIGHT'|'LEFT', line: positive number}, body: string}",
 		},

@@ -128,8 +128,27 @@ func TestDecodeFindings(t *testing.T) {
 		t.Fatalf("matching alias file path = %q, want main.go", matchingAliasGot.Findings[0].FilePath)
 	}
 
+	allSkipped, err := DecodeFindings([]byte(`{
+		"schema_version": 1,
+		"agent_id": "agent-1",
+		"inspected_files": [],
+		"skipped_files": ["main.go"],
+		"constraints": ["could not inspect generated file"],
+		"findings": []
+	}`), FindingsOptions{
+		KnownAgents:  opts.KnownAgents,
+		ChangedFiles: opts.ChangedFiles,
+		NewFindingID: newIDQueue("f-skipped").next,
+	})
+	if err != nil {
+		t.Fatalf("DecodeFindings all skipped: %v", err)
+	}
+	if len(allSkipped.InspectedFiles) != 0 || len(allSkipped.SkippedFiles) != 1 || allSkipped.SkippedFiles[0] != "main.go" {
+		t.Fatalf("all skipped coverage = %#v", allSkipped)
+	}
+
 	baseOpts := FindingsOptions{KnownAgents: map[string]bool{"agent-1": true}, ChangedFiles: map[string]bool{"main.go": true}, NewFindingID: newIDQueue("f-1", "f-2").next}
-	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":[],"findings":[]}`, "inspected_files")
+	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":[],"findings":[]}`, "inspected_files or skipped_files")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["other.go"],"findings":[]}`, "inspected_files entry")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go","main.go"],"findings":[]}`, "duplicate inspected_files")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"skipped_files":["other.go"],"findings":[]}`, "skipped_files entry")
