@@ -76,6 +76,38 @@ type NamedSessionStore interface {
 	GetNamedSession(context.Context, string) (ledger.NamedSession, error)
 }
 
+// LLMTaskProgress records task-aware LLM pipeline breadcrumbs without owning
+// command IO details.
+type LLMTaskProgress interface {
+	StartLLMTask(LLMTaskProgressEvent) LLMTaskProgressSpan
+	LoadLLMTask(LLMTaskProgressEvent, LLMTaskProgressResult)
+}
+
+// LLMTaskProgressSpan is one active LLM task breadcrumb.
+type LLMTaskProgressSpan interface {
+	End(error, LLMTaskProgressResult)
+}
+
+// LLMTaskProgressEvent describes one LLM task execution or reload.
+type LLMTaskProgressEvent struct {
+	TaskID          string
+	Phase           string
+	AgentID         string
+	Model           string
+	Effort          string
+	LogPath         string
+	ResumeSessionID string
+	Source          string
+}
+
+// LLMTaskProgressResult describes the outcome of one task execution or reload.
+type LLMTaskProgressResult struct {
+	ProviderSessionID  string
+	Status             string
+	ValidationAttempts int
+	Cached             bool
+}
+
 // ContextBudget limits prompt size. A negative MaxPromptBytes disables checks.
 type ContextBudget struct {
 	MaxPromptBytes int
@@ -89,6 +121,7 @@ type Options struct {
 	NamedSessions NamedSessionStore
 	Layout        statepaths.Layout
 	Warnings      io.Writer
+	TaskProgress  LLMTaskProgress
 
 	Now             func() time.Time
 	NewRunID        func() string
@@ -1227,6 +1260,8 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 			resumeSessionID = taskSessionID
 		}
 	}
+	progressEvent := newLLMTaskProgressEvent(spec, resumeSessionID)
+	progressSpan := startLLMTaskProgress(opts, progressEvent)
 
 	started := opts.now()
 	result, err := llm.RunStructuredWithSessionResume(ctx, opts.Adapter, resumeSessionID, llm.Request{
@@ -1272,8 +1307,10 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 		meta.ProviderSessionID = session.ProviderSessionID
 		if writeErr := writeLLMTaskSuccess(spec.artifacts, &meta, result.Response.StructuredOutput); writeErr != nil {
 			var zero T
+			endLLMTaskProgress(progressSpan, writeErr, llmTaskProgressResult(meta, result, false))
 			return zero, sessionDraft{}, ledger.Session{}, writeErr
 		}
+		endLLMTaskProgress(progressSpan, nil, llmTaskProgressResult(meta, result, false))
 		return result.Value, draft, session, nil
 	}
 
@@ -1283,9 +1320,11 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 	meta.ProviderSessionID = session.ProviderSessionID
 	if writeErr := writeLLMTaskFailure(spec.artifacts, &meta, result.ValidationAttempts); writeErr != nil {
 		var zero T
+		endLLMTaskProgress(progressSpan, writeErr, llmTaskProgressResult(meta, result, false))
 		return zero, draft, session, writeErr
 	}
 	var zero T
+	endLLMTaskProgress(progressSpan, err, llmTaskProgressResult(meta, result, false))
 	return zero, draft, session, &llmTaskError{status: meta.Status, err: err}
 }
 
@@ -1332,6 +1371,7 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 		if err != nil {
 			return zero, sessionDraft{}, ledger.Session{}, true, err
 		}
+		loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
 		return value, sessionDraftFromLedger(session), session, true, nil
 	case llmTaskStatusFailedIsolated:
 		if spec.llmFailureStatus != llmTaskStatusFailedIsolated {
@@ -1341,6 +1381,7 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 		if err != nil {
 			return zero, sessionDraft{}, ledger.Session{}, true, err
 		}
+		loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
 		return zero, draft, session, true, &llmTaskError{status: llmTaskStatusFailedIsolated, err: errors.New(taskErrorText(meta))}
 	case llmTaskStatusFailedBlocking:
 		return zero, sessionDraft{}, ledger.Session{}, false, nil
@@ -1494,6 +1535,73 @@ func taskErrorText(meta llmTaskMetadata) string {
 		return meta.Error
 	}
 	return fmt.Sprintf("LLM task %q failed", meta.TaskID)
+}
+
+func newLLMTaskProgressEvent(spec llmTaskSpec, resumeSessionID string) LLMTaskProgressEvent {
+	agentID := ""
+	if spec.agentID != nil {
+		agentID = *spec.agentID
+	}
+	source := "execute"
+	if strings.TrimSpace(resumeSessionID) != "" {
+		source = "resume"
+	}
+	return LLMTaskProgressEvent{
+		TaskID:          spec.taskID,
+		Phase:           spec.phase,
+		AgentID:         agentID,
+		Model:           spec.model,
+		Effort:          spec.effort,
+		LogPath:         spec.logPath,
+		ResumeSessionID: resumeSessionID,
+		Source:          source,
+	}
+}
+
+func llmTaskProgressResult(meta llmTaskMetadata, result any, cached bool) LLMTaskProgressResult {
+	out := LLMTaskProgressResult{
+		ProviderSessionID: meta.ProviderSessionID,
+		Status:            string(meta.Status),
+		Cached:            cached,
+	}
+	switch value := result.(type) {
+	case llm.StructuredResult[llm.Selection]:
+		out.ValidationAttempts = len(value.ValidationAttempts)
+		if out.ProviderSessionID == "" {
+			out.ProviderSessionID = value.SessionID
+		}
+	case llm.StructuredResult[llm.Findings]:
+		out.ValidationAttempts = len(value.ValidationAttempts)
+		if out.ProviderSessionID == "" {
+			out.ProviderSessionID = value.SessionID
+		}
+	case llm.StructuredResult[review.Rollup]:
+		out.ValidationAttempts = len(value.ValidationAttempts)
+		if out.ProviderSessionID == "" {
+			out.ProviderSessionID = value.SessionID
+		}
+	}
+	return out
+}
+
+func startLLMTaskProgress(opts Options, event LLMTaskProgressEvent) LLMTaskProgressSpan {
+	if opts.TaskProgress == nil {
+		return nil
+	}
+	return opts.TaskProgress.StartLLMTask(event)
+}
+
+func endLLMTaskProgress(span LLMTaskProgressSpan, err error, result LLMTaskProgressResult) {
+	if span != nil {
+		span.End(err, result)
+	}
+}
+
+func loadLLMTaskProgress(opts Options, event LLMTaskProgressEvent, result LLMTaskProgressResult) {
+	if opts.TaskProgress == nil {
+		return
+	}
+	opts.TaskProgress.LoadLLMTask(event, result)
 }
 
 func baseLLMTaskMetadata(opts Options, spec llmTaskSpec, draft sessionDraft) llmTaskMetadata {

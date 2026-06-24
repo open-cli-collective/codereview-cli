@@ -1883,15 +1883,16 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 		}
 	})
 	cmd, out, errOut := newTestCommandWithStderr(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		logger := newProgressLogger(opts)
 		runner := buildReviewRunner(
 			store,
-			withProgressProvider(newProgressLogger(opts), provider),
+			withProgressProvider(logger, provider),
 			adapter,
 			profile,
 			noopLimiter{},
 			statepaths.NewLayout(t.TempDir(), t.TempDir()),
 			opts.Stderr,
-			nil,
+			logger,
 			runtimeOpts,
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
@@ -1905,6 +1906,11 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 		`command="review" op="fetch_pr" target="pr"`,
 		`command="review" op="fetch_diff" target="pr"`,
 		`command="review" op="list_threads" target="threads"`,
+		`command="review" op="run_llm_task" target="llm_task"`,
+		`task_id="orchestrator-selection"`,
+		`phase="selection"`,
+		`task_id="orchestrator-rollup"`,
+		`phase="rollup"`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want substring %q", stderr, want)

@@ -1274,6 +1274,123 @@ func TestRunStructuredTaskReviewerStartFailureIsBlocking(t *testing.T) {
 	}
 }
 
+func TestRunStructuredTaskReportsProgressOnExecution(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	allocatePipelineRun(t, store, layout, "run-progress", ledger.PostModeDryRun, fixedNow())
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("task-session", `"ok"`, 5, 3))
+	progress := &fakeTaskProgress{}
+	spec := llmTaskSpec{
+		runID:            "run-progress",
+		taskID:           orchestratorRollupStage,
+		phase:            "rollup",
+		inputFingerprint: "fingerprint",
+		artifacts:        artifacts,
+		role:             ledger.SessionRoleOrchestrator,
+		model:            "gpt-5.5",
+		effort:           "high",
+		logPath:          filepath.Join(t.TempDir(), "rollup.jsonl"),
+		prompt:           "prompt",
+	}
+
+	value, _, _, err := runStructuredTask[string](ctx, Options{
+		Adapter:         adapter,
+		Store:           store,
+		TaskProgress:    progress,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+	}, spec, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	if err != nil {
+		t.Fatalf("runStructuredTask: %v", err)
+	}
+	if value != `"ok"` {
+		t.Fatalf("value = %q, want ok payload", value)
+	}
+	if len(progress.starts) != 1 || len(progress.ends) != 1 {
+		t.Fatalf("progress starts=%d ends=%d, want 1/1", len(progress.starts), len(progress.ends))
+	}
+	if progress.starts[0].TaskID != orchestratorRollupStage || progress.starts[0].Phase != "rollup" || progress.starts[0].Source != "execute" {
+		t.Fatalf("start = %#v, want rollup execute event", progress.starts[0])
+	}
+	if progress.ends[0].result.Status != string(llmTaskStatusSucceeded) || progress.ends[0].result.ProviderSessionID != "task-session" || progress.ends[0].result.Cached {
+		t.Fatalf("end result = %#v, want succeeded uncached task-session", progress.ends[0].result)
+	}
+}
+
+func TestLoadStructuredTaskReportsCachedProgress(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	allocatePipelineRun(t, store, layout, "run-cached-progress", ledger.PostModeDryRun, fixedNow())
+	spec := llmTaskSpec{
+		runID:            "run-cached-progress",
+		taskID:           orchestratorSelectionStage,
+		phase:            "selection",
+		inputFingerprint: "fingerprint",
+		artifacts:        artifacts,
+		role:             ledger.SessionRoleOrchestrator,
+		model:            "gpt-5.4-mini",
+		effort:           "low",
+		logPath:          filepath.Join(t.TempDir(), "selection.jsonl"),
+		prompt:           "prompt",
+	}
+	session := ledger.Session{
+		SessionRowID:      "session-row",
+		RunID:             spec.runID,
+		ProviderSessionID: "cached-session",
+		Role:              ledger.SessionRoleOrchestrator,
+		Adapter:           "fake-llm",
+		Model:             spec.model,
+		StartedAt:         fixedNow(),
+	}
+	if err := store.InsertSession(ctx, session); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	meta := llmTaskMetadata{
+		SchemaVersion:       llmTaskSchemaVersion,
+		TaskID:              spec.taskID,
+		Phase:               spec.phase,
+		InputFingerprint:    spec.inputFingerprint,
+		Adapter:             "fake-llm",
+		Status:              llmTaskStatusSucceeded,
+		SessionRowID:        session.SessionRowID,
+		ProviderSessionID:   session.ProviderSessionID,
+		ValidatedOutputPath: "",
+	}
+	if err := writeLLMTaskSuccess(artifacts, &meta, []byte(`"cached"`)); err != nil {
+		t.Fatalf("writeLLMTaskSuccess: %v", err)
+	}
+	progress := &fakeTaskProgress{}
+
+	value, _, _, ok, err := loadStructuredTask[string](ctx, Options{
+		Adapter:      &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:        store,
+		TaskProgress: progress,
+	}, spec, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	if err != nil {
+		t.Fatalf("loadStructuredTask: %v", err)
+	}
+	if !ok || strings.TrimSpace(value) != `"cached"` {
+		t.Fatalf("ok=%v value=%q, want cached task load", ok, value)
+	}
+	if len(progress.loads) != 1 {
+		t.Fatalf("progress loads=%d, want 1", len(progress.loads))
+	}
+	if progress.loads[0].event.TaskID != orchestratorSelectionStage || !progress.loads[0].result.Cached || progress.loads[0].result.Status != string(llmTaskStatusSucceeded) {
+		t.Fatalf("load = %#v, want cached succeeded selection task", progress.loads[0])
+	}
+}
+
 func assertTaskPayloadContains(t *testing.T, path, want string) {
 	t.Helper()
 	if strings.TrimSpace(path) == "" {
@@ -1286,6 +1403,48 @@ func assertTaskPayloadContains(t *testing.T, path, want string) {
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("task payload %s = %s, want %q", path, data, want)
 	}
+}
+
+type fakeTaskProgress struct {
+	mu     sync.Mutex
+	starts []LLMTaskProgressEvent
+	ends   []fakeTaskProgressEnd
+	loads  []fakeTaskProgressLoad
+}
+
+type fakeTaskProgressSpan struct {
+	parent *fakeTaskProgress
+	event  LLMTaskProgressEvent
+}
+
+type fakeTaskProgressEnd struct {
+	event  LLMTaskProgressEvent
+	err    error
+	result LLMTaskProgressResult
+}
+
+type fakeTaskProgressLoad struct {
+	event  LLMTaskProgressEvent
+	result LLMTaskProgressResult
+}
+
+func (f *fakeTaskProgress) StartLLMTask(event LLMTaskProgressEvent) LLMTaskProgressSpan {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.starts = append(f.starts, event)
+	return fakeTaskProgressSpan{parent: f, event: event}
+}
+
+func (f *fakeTaskProgress) LoadLLMTask(event LLMTaskProgressEvent, result LLMTaskProgressResult) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loads = append(f.loads, fakeTaskProgressLoad{event: event, result: result})
+}
+
+func (s fakeTaskProgressSpan) End(err error, result LLMTaskProgressResult) {
+	s.parent.mu.Lock()
+	defer s.parent.mu.Unlock()
+	s.parent.ends = append(s.parent.ends, fakeTaskProgressEnd{event: s.event, err: err, result: result})
 }
 
 func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {

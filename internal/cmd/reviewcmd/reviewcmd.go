@@ -864,6 +864,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 		NamedSessions:       ledgerStore,
 		Layout:              layout,
 		Warnings:            warnings,
+		TaskProgress:        newPipelineTaskProgress(logger),
 		MaxAgents:           runtimeOpts.MaxAgents,
 		MaxConcurrency:      runtimeOpts.MaxConcurrency,
 		Retention:           runtimeOpts.Retention,
