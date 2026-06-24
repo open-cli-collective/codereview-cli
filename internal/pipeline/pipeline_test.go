@@ -209,6 +209,47 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	}
 }
 
+func TestDryRunIncompleteReviewerCoverageForcesCommentOutcome(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 1, 1))
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+	adapter.Queue(fakeLLMResult("reviewer-session", coverageOnlyJSON("harness:reviewer", nil, []string{"main.go"}, "could not inspect assigned file"), 1, 1))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 1, 1))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-incomplete-coverage" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeComment {
+		t.Fatalf("outcome = %q, want comment despite approve rollup", result.Plan.Outcome)
+	}
+	coverage := result.Plan.Summary.Run.ReviewerCoverage
+	if len(coverage) != 1 ||
+		coverage[0].AgentID != "harness:reviewer" ||
+		coverage[0].Status != reviewerCoverageIncompleteSkipped ||
+		!reflect.DeepEqual(coverage[0].SkippedFiles, []string{"main.go"}) {
+		t.Fatalf("coverage = %#v, want incomplete skipped reviewer coverage", coverage)
+	}
+	if !strings.Contains(result.Plan.RollupMarkdown, "### Reviewer Coverage") {
+		t.Fatalf("rollup markdown missing reviewer coverage:\n%s", result.Plan.RollupMarkdown)
+	}
+}
+
 func TestDryRunNormalizesReviewerFindingsFileAlias(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -4607,6 +4648,11 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	if strings.Contains(prompt, "Rollup prompt body should stay out of prompt payloads.") {
 		t.Fatalf("rollup prompt leaked PR body: %s", prompt)
 	}
+	for _, forbidden := range []string{`"diff"`, `"base_content"`, `"head_content"`, "@@", "+changed implementation body"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("rollup prompt leaked stuffed code context %q: %s", forbidden, prompt)
+		}
+	}
 }
 
 func TestBuildReviewerCoverageStatuses(t *testing.T) {
@@ -5831,6 +5877,22 @@ func findingsJSON(agentID, file, severity string, line int, body string) string 
 			},
 			"body": body,
 		}},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func coverageOnlyJSON(agentID string, inspected, skipped []string, constraints ...string) string {
+	payload := map[string]any{
+		"schema_version":  1,
+		"agent_id":        agentID,
+		"inspected_files": inspected,
+		"skipped_files":   skipped,
+		"constraints":     constraints,
+		"findings":        []map[string]any{},
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
