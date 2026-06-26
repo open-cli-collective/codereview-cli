@@ -8283,7 +8283,7 @@ func loadConfigForInit(path string) (config.File, bool, error) {
 	if errors.Is(err, config.ErrNotConfigured) {
 		return config.File{Profiles: map[string]config.Profile{}}, false, nil
 	}
-	if err != nil && errors.Is(err, config.ErrSecretsProfileNotFound) {
+	if err != nil && (errors.Is(err, config.ErrSecretsProfileNotFound) || errors.Is(err, config.ErrInvalid)) {
 		recovered, recoverErr := loadConfigForInteractiveInitRecovery(path)
 		if recoverErr != nil {
 			return config.File{}, true, recoverErr
@@ -8314,10 +8314,48 @@ func loadConfigForInteractiveInitRecovery(path string) (config.File, error) {
 		return config.File{}, fmt.Errorf("config: multiple YAML documents are not supported")
 	}
 	cfg = config.Normalize(cfg)
+	cfg = sanitizeLegacyInteractiveInitRecovery(cfg)
 	if err := validateInteractiveInitConfig(cfg); err != nil {
 		return config.File{}, err
 	}
 	return cfg, nil
+}
+
+func sanitizeLegacyInteractiveInitRecovery(cfg config.File) config.File {
+	if len(cfg.ReviewerEntities) == 0 && len(cfg.Profiles) == 0 {
+		return cfg
+	}
+
+	removedEntities := map[string]struct{}{}
+	if len(cfg.ReviewerEntities) > 0 {
+		for name, entity := range cfg.ReviewerEntities {
+			if entity.AuthMode != config.GitAuthModeGitHubApp {
+				continue
+			}
+			delete(cfg.ReviewerEntities, name)
+			removedEntities[name] = struct{}{}
+		}
+	}
+
+	for name, profile := range cfg.Profiles {
+		changed := false
+		if profile.ReviewerCredentials != nil && profile.ReviewerCredentials.AuthMode == config.GitAuthModeGitHubApp {
+			profile.ReviewerCredentials = nil
+			profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindGitIdentity}
+			changed = true
+		}
+		if profile.Reviewer.Kind == config.ProfileReviewerKindEntity {
+			if _, removed := removedEntities[profile.Reviewer.Entity]; removed {
+				profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindGitIdentity}
+				changed = true
+			}
+		}
+		if changed {
+			cfg.Profiles[name] = profile
+		}
+	}
+
+	return config.Normalize(cfg)
 }
 
 func configPath(opts *root.Options) (string, error) {

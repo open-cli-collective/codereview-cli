@@ -7265,6 +7265,122 @@ func TestValidateInteractiveInitConfigDoesNotMaskUnrelatedInvalidState(t *testin
 	}
 }
 
+func TestLoadConfigForInitRecoversLegacyGitHubAppReviewerEntities(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, `repository_access:
+  github-rianjs:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential:
+        store: local-os
+        name: codereview/github-rianjs
+llm_runtimes:
+  codex-cli:
+    provider: openai
+    auth: subscription
+    adapter: codex_cli
+reviewer_entities:
+  reviewer-github-app:
+    host: github.com
+    auth_mode: github_app
+    credential:
+      store: local-os
+      name: codereview/rianjs-bot-reviewer
+    github_app:
+      app_id: "4021133"
+profiles:
+  codex-rianjs-bot:
+    repository_access: github-rianjs
+    reviewer:
+      kind: entity
+      entity: reviewer-github-app
+      github_app_installation:
+        mode: discover_from_repository
+    llm_runtime: codex-cli
+    review_policy:
+      major_event: request_changes
+      resolve_threads: auto
+`)
+
+	cfg, found, err := loadConfigForInit(path)
+	if err != nil {
+		t.Fatalf("loadConfigForInit: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want existing config")
+	}
+	if len(cfg.ReviewerEntities) != 0 {
+		t.Fatalf("reviewer entities = %#v, want legacy github_app entities removed", cfg.ReviewerEntities)
+	}
+	profile := cfg.Profiles["codex-rianjs-bot"]
+	if profile.Reviewer.Kind != config.ProfileReviewerKindGitIdentity {
+		t.Fatalf("reviewer kind = %q, want git_identity fallback", profile.Reviewer.Kind)
+	}
+	if strings.TrimSpace(profile.Reviewer.Entity) != "" {
+		t.Fatalf("reviewer.entity = %q, want cleared", profile.Reviewer.Entity)
+	}
+	if profile.Reviewer.GitHubAppInstallation != nil {
+		t.Fatalf("reviewer.github_app_installation = %#v, want cleared", profile.Reviewer.GitHubAppInstallation)
+	}
+}
+
+func TestRunInitWithLegacyGitHubAppReviewerEntitiesBootstrapsInteractiveSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawCredentialTestConfig(t, path, `repository_access:
+  github-rianjs:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential:
+        store: local-os
+        name: codereview/github-rianjs
+llm_runtimes:
+  codex-cli:
+    provider: openai
+    auth: subscription
+    adapter: codex_cli
+reviewer_entities:
+  reviewer-github-app:
+    host: github.com
+    auth_mode: github_app
+    credential:
+      store: local-os
+      name: codereview/rianjs-bot-reviewer
+    github_app:
+      app_id: "4021133"
+profiles:
+  codex-rianjs-bot:
+    repository_access: github-rianjs
+    reviewer:
+      kind: entity
+      entity: reviewer-github-app
+      github_app_installation:
+        mode: discover_from_repository
+    llm_runtime: codex-cli
+`)
+
+	opts := &root.Options{
+		ConfigPath: path,
+		Profile:    "codex-rianjs-bot",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+	}
+	cmd := newInitCommand(opts)
+	deps := initDeps{
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{initMenuActionExit},
+		},
+	}
+
+	if err := runInitWithDeps(cmd, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+}
+
 func TestHuhInitSecretPrompterAccessibleNamesSelectedSecretsProfile(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
