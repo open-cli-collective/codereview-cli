@@ -135,6 +135,7 @@ type commandFlags struct {
 type respondFlags struct {
 	dryRun           bool
 	noPost           bool
+	rerun            bool
 	retryPosts       string
 	jsonOutput       bool
 	noResolveThreads bool
@@ -205,6 +206,7 @@ func newRespondCommand(opts *root.Options, factory RuntimeFactory) *cobra.Comman
 	}
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Plan thread responses without posting")
 	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Alias for --dry-run")
+	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass incomplete response-run resume and start a fresh response attempt")
 	cmd.Flags().StringVar(&flags.retryPosts, "retry-posts", "", "Retry missing or failed required posts for the given response run ID")
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
 	cmd.Flags().BoolVar(&flags.noResolveThreads, "no-resolve-threads", false, "Do not plan thread-resolution actions")
@@ -429,6 +431,9 @@ func runRespond(ctx context.Context, cmd *cobra.Command, opts *root.Options, fac
 	if retryRunID != "" && flags.dryRun {
 		return exitcode.Usage(fmt.Errorf("--retry-posts cannot be used with --dry-run or --no-post"))
 	}
+	if retryRunID != "" && flags.rerun {
+		return exitcode.Usage(fmt.Errorf("--retry-posts cannot be used with --rerun"))
+	}
 	path, err := configPath(opts)
 	if err != nil {
 		return exitcode.AuthConfig(err)
@@ -475,6 +480,7 @@ func runRespond(ctx context.Context, cmd *cobra.Command, opts *root.Options, fac
 		PostingIdentity:  runtime.PostingIdentity,
 		DryRun:           flags.dryRun,
 		NoResolveThreads: noResolve,
+		Rerun:            flags.rerun,
 		RetryRunID:       retryRunID,
 	})
 	if err != nil {

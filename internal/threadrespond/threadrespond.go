@@ -4,8 +4,10 @@ package threadrespond
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -37,12 +39,15 @@ const (
 
 	freshRunIDAttempts = 3
 	lockPRAttempts     = 3
+
+	responseRunMarkerSchema = 1
 )
 
 // Store is the durable state required by response planning and posting.
 type Store interface {
 	llmlifecycle.Store
 	GetRun(context.Context, string) (ledger.Run, error)
+	ListRunsForHeadScope(context.Context, ledger.ListRunsForHeadScopeParams) ([]ledger.Run, error)
 	AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error)
 	InsertPlannedAction(context.Context, ledger.PlannedAction) error
 	InsertPlannedActions(context.Context, []ledger.PlannedAction) error
@@ -86,6 +91,7 @@ type Request struct {
 	PostingIdentity  gitprovider.Identity
 	DryRun           bool
 	NoResolveThreads bool
+	Rerun            bool
 	RetryRunID       string
 }
 
@@ -143,12 +149,8 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 	}
 	eligible := eligibleThreads(threads)
 
-	runID := opts.newRunID()
-	artifacts, err := pipeline.ArtifactPathsForRun(opts.Layout, req.PRRef, pr, req.ProfileName, postingKey(req.PostingIdentity), runID)
-	if err != nil {
-		return Result{PR: pr, PRKey: prKey, Threads: threads, EligibleThreads: eligible, ExitCode: exitFailed}, err
-	}
-	run, err := allocateRun(ctx, opts, req, pr, prKey, runID, artifacts.Dir, postMode(req))
+	mode := postMode(req)
+	run, artifacts, err := allocateOrResumeRun(ctx, opts, req, pr, prKey, mode)
 	if err != nil {
 		return Result{PR: pr, PRKey: prKey, Artifacts: artifacts, Threads: threads, EligibleThreads: eligible, ExitCode: exitFailed}, err
 	}
@@ -163,45 +165,56 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 	}
 	defer completeFailedOnError(ctx, opts, &result, &err)
 
-	if len(eligible) > 0 {
-		if opts.Adapter == nil {
-			return result, fmt.Errorf("threadrespond: adapter is required")
-		}
-		runtime, err := resolveRuntime(opts, req)
-		if err != nil {
-			return result, err
-		}
-		analyses, err := analyzeThreads(ctx, opts, run, artifacts, runtime, eligible)
-		if err != nil {
-			return result, err
-		}
-		result.Analyses = analyses
-		result.Responses = responsesFromAnalyses(analyses)
-	}
-
-	plan, err := reviewplan.BuildThreadResponses(reviewplan.ThreadResponseRequest{
-		PostMode:     planPostMode(req),
-		ProviderCaps: effectiveCaps(opts.Provider.Capabilities(), req),
-		Responses:    result.Responses,
-		Now:          opts.now,
-		NewActionID:  opts.newActionID,
-	})
+	existingActions, err := opts.Store.ListPlannedActions(ctx, run.RunID)
 	if err != nil {
 		return result, err
 	}
-	result.Plan = plan
-	plannedActions := make([]ledger.PlannedAction, 0, len(plan.Actions))
-	for _, action := range plan.Actions {
-		planned, err := plannedactions.FromReviewPlan(run.RunID, action)
+	if len(existingActions) > 0 {
+		if err := validateResponseActions(existingActions); err != nil {
+			return result, err
+		}
+		result.PlannedActions = existingActions
+	} else {
+		if len(eligible) > 0 {
+			if opts.Adapter == nil {
+				return result, fmt.Errorf("threadrespond: adapter is required")
+			}
+			runtime, err := resolveRuntime(opts, req)
+			if err != nil {
+				return result, err
+			}
+			analyses, err := analyzeThreads(ctx, opts, run, artifacts, runtime, eligible)
+			if err != nil {
+				return result, err
+			}
+			result.Analyses = analyses
+			result.Responses = responsesFromAnalyses(analyses)
+		}
+
+		plan, err := reviewplan.BuildThreadResponses(reviewplan.ThreadResponseRequest{
+			PostMode:     planPostMode(req),
+			ProviderCaps: effectiveCaps(opts.Provider.Capabilities(), req),
+			Responses:    result.Responses,
+			Now:          opts.now,
+			NewActionID:  opts.newActionID,
+		})
 		if err != nil {
 			return result, err
 		}
-		plannedActions = append(plannedActions, planned)
+		result.Plan = plan
+		plannedActions := make([]ledger.PlannedAction, 0, len(plan.Actions))
+		for _, action := range plan.Actions {
+			planned, err := plannedactions.FromReviewPlan(run.RunID, action)
+			if err != nil {
+				return result, err
+			}
+			plannedActions = append(plannedActions, planned)
+		}
+		if err := opts.Store.InsertPlannedActions(ctx, plannedActions); err != nil {
+			return result, err
+		}
+		result.PlannedActions = plannedActions
 	}
-	if err := opts.Store.InsertPlannedActions(ctx, plannedActions); err != nil {
-		return result, err
-	}
-	result.PlannedActions = plannedActions
 
 	if req.DryRun {
 		if err := opts.Store.CompleteRun(ctx, run.RunID, ledger.OutcomeDryRun, opts.now()); err != nil {
@@ -253,7 +266,7 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 		Run:             run,
 		PRRef:           req.PRRef,
 		PostingIdentity: req.PostingIdentity,
-		DesiredOutcome:  ledger.OutcomeComment,
+		DesiredOutcome:  desiredOutcomeForRetry(result.PlannedActions),
 	})
 	result.Outbox = postResult
 	result.ExitCode = postResult.ExitCode
@@ -492,6 +505,99 @@ func combineReplyAndSummary(reply, summary string) string {
 		return reply
 	}
 	return reply + "\n\nSummary:\n" + summary
+}
+
+func allocateOrResumeRun(ctx context.Context, opts Options, req Request, pr gitprovider.PR, prKey string, mode ledger.PostMode) (ledger.Run, pipeline.ArtifactPaths, error) {
+	if !req.Rerun {
+		run, ok, err := findIncompleteRun(ctx, opts.Store, req, prKey, pr, mode)
+		if err != nil {
+			return ledger.Run{}, pipeline.ArtifactPaths{}, err
+		}
+		if ok {
+			return run, pipeline.ArtifactPathsFromDir(run.ArtifactPath), nil
+		}
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < freshRunIDAttempts; attempt++ {
+		runID := opts.newRunID()
+		artifacts, err := pipeline.ArtifactPathsForRun(opts.Layout, req.PRRef, pr, req.ProfileName, postingKey(req.PostingIdentity), runID)
+		if err != nil {
+			return ledger.Run{}, artifacts, err
+		}
+		run, err := allocateRun(ctx, opts, req, pr, prKey, runID, artifacts.Dir, mode)
+		if err == nil {
+			if err := writeResponseRunMarker(artifacts.Dir, run.RunID); err != nil {
+				return ledger.Run{}, artifacts, err
+			}
+			return run, artifacts, nil
+		}
+		if !errors.Is(err, ledger.ErrRunExists) {
+			return ledger.Run{}, artifacts, err
+		}
+		lastErr = err
+	}
+	return ledger.Run{}, pipeline.ArtifactPaths{}, fmt.Errorf("threadrespond: allocate fresh run ID after %d attempts: %w", freshRunIDAttempts, lastErr)
+}
+
+func findIncompleteRun(ctx context.Context, store Store, req Request, prKey string, pr gitprovider.PR, mode ledger.PostMode) (ledger.Run, bool, error) {
+	runs, err := store.ListRunsForHeadScope(ctx, ledger.ListRunsForHeadScopeParams{
+		PRKey:           prKey,
+		SHA:             pr.Head.SHA,
+		Profile:         req.ProfileName,
+		PostingIdentity: postingKey(req.PostingIdentity),
+	})
+	if err != nil {
+		return ledger.Run{}, false, err
+	}
+	var best ledger.Run
+	found := false
+	for _, run := range runs {
+		if run.BaseSHA != pr.Base.SHA || run.PostMode != mode {
+			continue
+		}
+		if run.Outcome != nil && *run.Outcome != ledger.OutcomeIncomplete {
+			continue
+		}
+		if strings.TrimSpace(run.ArtifactPath) == "" {
+			continue
+		}
+		if !hasResponseRunMarker(run.ArtifactPath) {
+			continue
+		}
+		if !found || run.Attempt > best.Attempt || (run.Attempt == best.Attempt && run.StartedAt.After(best.StartedAt)) {
+			best = run
+			found = true
+		}
+	}
+	return best, found, nil
+}
+
+type responseRunMarker struct {
+	SchemaVersion int    `json:"schema_version"`
+	Kind          string `json:"kind"`
+	RunID         string `json:"run_id"`
+}
+
+func writeResponseRunMarker(artifactPath, runID string) error {
+	data, err := json.MarshalIndent(responseRunMarker{
+		SchemaVersion: responseRunMarkerSchema,
+		Kind:          "thread_response",
+		RunID:         runID,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return llmlifecycle.WriteFileAtomic(responseRunMarkerPath(artifactPath), append(data, '\n'))
+}
+
+func hasResponseRunMarker(artifactPath string) bool {
+	info, err := os.Stat(responseRunMarkerPath(artifactPath))
+	return err == nil && !info.IsDir()
+}
+
+func responseRunMarkerPath(artifactPath string) string {
+	return filepath.Join(artifactPath, "thread-response-run.json")
 }
 
 func allocateRun(ctx context.Context, opts Options, req Request, pr gitprovider.PR, prKey, runID, artifactPath string, mode ledger.PostMode) (ledger.Run, error) {

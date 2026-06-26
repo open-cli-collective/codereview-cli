@@ -3,6 +3,7 @@ package threadrespond
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -196,6 +197,236 @@ func TestRunNoMatchingThreadsCompletesWithoutLLM(t *testing.T) {
 	}
 	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeNothingToReview {
 		t.Fatalf("stored outcome = %v, want nothing_to_review", stored.Outcome)
+	}
+}
+
+func TestRunResumesIncompleteAnalysisWithoutRecomputing(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionClarify, "Please clarify the intended behavior.", "", false))
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
+		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
+	})
+	firstOpts := fixture.options()
+	firstOpts.NewActionID = func(reviewplan.ActionKind) (string, error) {
+		return "", context.Canceled
+	}
+
+	first, err := Run(ctx, firstOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		DryRun:          true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run interrupted error = %v, want context.Canceled", err)
+	}
+	if len(fixture.adapter.Requests()) != 1 {
+		t.Fatalf("first adapter requests = %d, want one analysis call", len(fixture.adapter.Requests()))
+	}
+	storedFirst, getErr := fixture.store.GetRun(ctx, first.Run.RunID)
+	if getErr != nil {
+		t.Fatalf("GetRun first: %v", getErr)
+	}
+	if storedFirst.Outcome != nil {
+		t.Fatalf("first run outcome = %v, want incomplete after cancellation", storedFirst.Outcome)
+	}
+	if actions, listErr := fixture.store.ListPlannedActions(ctx, first.Run.RunID); listErr != nil || len(actions) != 0 {
+		t.Fatalf("first planned actions = %#v err=%v, want none before planning", actions, listErr)
+	}
+
+	fixture.adapter = &llm.FakeAdapter{NameValue: "fake-llm"}
+	secondOpts := fixture.options()
+	secondOpts.NewRunID = sequence("fresh")
+	second, err := Run(ctx, secondOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		DryRun:          true,
+	})
+	if err != nil {
+		t.Fatalf("Run resumed: %v", err)
+	}
+	if second.Run.RunID != first.Run.RunID {
+		t.Fatalf("resumed run = %q, want original %q", second.Run.RunID, first.Run.RunID)
+	}
+	if second.Artifacts.Dir != first.Artifacts.Dir {
+		t.Fatalf("resumed artifact dir = %q, want %q", second.Artifacts.Dir, first.Artifacts.Dir)
+	}
+	if len(fixture.adapter.Requests()) != 0 {
+		t.Fatalf("resumed adapter requests = %d, want cached analysis", len(fixture.adapter.Requests()))
+	}
+	if len(second.PlannedActions) != 1 {
+		t.Fatalf("resumed planned actions = %d, want one reply", len(second.PlannedActions))
+	}
+	if _, err := fixture.store.GetRun(ctx, "fresh-1"); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetRun fresh-1 error = %v, want ErrNotFound", err)
+	}
+	storedSecond, err := fixture.store.GetRun(ctx, first.Run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun second: %v", err)
+	}
+	if storedSecond.Outcome == nil || *storedSecond.Outcome != ledger.OutcomeDryRun {
+		t.Fatalf("resumed outcome = %v, want dry_run", storedSecond.Outcome)
+	}
+}
+
+func TestRunResumesExistingActionsWithoutReplanning(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionSummarize, "", "Summary for future context.", true))
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
+		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
+	})
+	firstOpts := fixture.options()
+	firstOpts.Limiter = cancelLimiter{}
+
+	first, err := Run(ctx, firstOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run interrupted post error = %v, want context.Canceled", err)
+	}
+	if len(fixture.adapter.Requests()) != 1 {
+		t.Fatalf("first adapter requests = %d, want one analysis call", len(fixture.adapter.Requests()))
+	}
+	storedFirst, getErr := fixture.store.GetRun(ctx, first.Run.RunID)
+	if getErr != nil {
+		t.Fatalf("GetRun first: %v", getErr)
+	}
+	if storedFirst.Outcome != nil {
+		t.Fatalf("first run outcome = %v, want incomplete after post cancellation", storedFirst.Outcome)
+	}
+	if len(first.PlannedActions) != 2 {
+		t.Fatalf("first planned actions = %d, want reply and resolve", len(first.PlannedActions))
+	}
+
+	fixture.adapter = &llm.FakeAdapter{NameValue: "fake-llm"}
+	secondOpts := fixture.options()
+	secondOpts.NewRunID = sequence("fresh")
+	second, err := Run(ctx, secondOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+	})
+	if err != nil {
+		t.Fatalf("Run resumed post: %v", err)
+	}
+	if second.Run.RunID != first.Run.RunID {
+		t.Fatalf("resumed run = %q, want original %q", second.Run.RunID, first.Run.RunID)
+	}
+	if len(fixture.adapter.Requests()) != 0 {
+		t.Fatalf("resumed adapter requests = %d, want no replanning LLM call", len(fixture.adapter.Requests()))
+	}
+	if _, err := fixture.store.GetRun(ctx, "fresh-1"); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetRun fresh-1 error = %v, want ErrNotFound", err)
+	}
+	if second.Outbox.Outcome != ledger.OutcomeComment || second.Outbox.Posted != 2 {
+		t.Fatalf("resumed outbox = %#v, want comment with two posted actions", second.Outbox)
+	}
+	if replies := fixture.provider.RecordedThreadReplies(fixture.ref); len(replies) != 1 || replies[0].ThreadID != "thread-1" {
+		t.Fatalf("thread replies = %#v, want resumed thread reply", replies)
+	}
+	if resolved := fixture.provider.RecordedResolvedThreads(fixture.ref); !reflect.DeepEqual(resolved, []gitprovider.ThreadID{"thread-1"}) {
+		t.Fatalf("resolved threads = %#v, want thread-1", resolved)
+	}
+}
+
+func TestRunRerunBypassesIncompleteResponseRun(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionClarify, "Please clarify.", "", false))
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
+		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
+	})
+	firstOpts := fixture.options()
+	firstOpts.NewActionID = func(reviewplan.ActionKind) (string, error) {
+		return "", context.Canceled
+	}
+	first, err := Run(ctx, firstOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		DryRun:          true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run interrupted error = %v, want context.Canceled", err)
+	}
+
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionReplyOnly, "Fresh reply.", "", false))
+	secondOpts := fixture.options()
+	secondOpts.NewStepID = sequence("rerun-step")
+	second, err := Run(ctx, secondOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		DryRun:          true,
+		Rerun:           true,
+	})
+	if err != nil {
+		t.Fatalf("Run rerun: %v", err)
+	}
+	if second.Run.RunID == first.Run.RunID {
+		t.Fatalf("rerun reused %q, want fresh run", second.Run.RunID)
+	}
+	storedFirst, err := fixture.store.GetRun(ctx, first.Run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun first: %v", err)
+	}
+	if storedFirst.Outcome != nil {
+		t.Fatalf("bypassed run outcome = %v, want still incomplete", storedFirst.Outcome)
+	}
+	if len(fixture.adapter.Requests()) != 2 {
+		t.Fatalf("adapter requests = %d, want original plus rerun analysis", len(fixture.adapter.Requests()))
+	}
+}
+
+func TestRunDoesNotResumeIncompleteUnmarkedRun(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	unmarked := fixture.allocateRun(t, "unmarked-review-run", ledger.PostModeDryRun)
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionReplyOnly, "Fresh reply.", "", false))
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
+		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
+	})
+
+	result, err := Run(ctx, fixture.options(), Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		DryRun:          true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Run.RunID == unmarked.RunID {
+		t.Fatalf("result run = %q, want fresh response run instead of unmarked run", result.Run.RunID)
+	}
+	if len(fixture.adapter.Requests()) != 1 {
+		t.Fatalf("adapter requests = %d, want fresh analysis for response run", len(fixture.adapter.Requests()))
+	}
+	storedUnmarked, err := fixture.store.GetRun(ctx, unmarked.RunID)
+	if err != nil {
+		t.Fatalf("GetRun unmarked: %v", err)
+	}
+	if storedUnmarked.Outcome != nil {
+		t.Fatalf("unmarked run outcome = %v, want untouched incomplete", storedUnmarked.Outcome)
 	}
 }
 
@@ -525,6 +756,10 @@ func (l *eventLog) all() []string {
 type noopLimiter struct{}
 
 func (noopLimiter) Wait(context.Context, string) error { return nil }
+
+type cancelLimiter struct{}
+
+func (cancelLimiter) Wait(context.Context, string) error { return context.Canceled }
 
 type noopLock struct{}
 

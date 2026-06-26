@@ -137,9 +137,15 @@ thread and return a reusable decision, reply body, summary, resolve flag, and
 rationale.
 
 For `cr respond`, these tasks are run-owned. Successful analyses persist normal
-ledger-backed sessions and are reused on retry. If the normalized thread input
-changes under the same task directory, the lifecycle runner fails closed with
-rerun guidance instead of overwriting the prior task.
+ledger-backed sessions and are reused on retry. A normal `cr respond` invocation
+resumes the latest incomplete response run for the same PR head, base, profile,
+posting identity, and post mode. If analysis completed but planning or posting
+was interrupted, rerun loads the persisted thread-analysis task instead of
+calling the LLM again; if planned actions already exist, rerun continues through
+the ledger/outbox post phase instead of replanning. Use `cr respond --rerun` to
+start a fresh response attempt and leave the incomplete attempt untouched. If
+the normalized thread input changes under the same task directory, the lifecycle
+runner fails closed with rerun guidance instead of overwriting the prior task.
 
 ## Approval Override Task
 

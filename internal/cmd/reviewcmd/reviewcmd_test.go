@@ -128,7 +128,7 @@ func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 	if req.PRRef.Number != 29 || req.ProfileName != "home" || req.PostingIdentity.Login != "review-bot" {
 		t.Fatalf("respond request identity/ref = %#v", req)
 	}
-	if !req.DryRun || !req.NoResolveThreads {
+	if !req.DryRun || !req.NoResolveThreads || req.Rerun {
 		t.Fatalf("respond request flags = %#v, want dry-run no-resolve", req)
 	}
 	if req.RetryRunID != "" {
@@ -140,6 +140,26 @@ func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 	text := out.String()
 	if !strings.Contains(text, "Threads: considered 1, responded 1, resolved 1") || !strings.Contains(text, "Planned actions: 2") {
 		t.Fatalf("stdout = %q, want respond summary", text)
+	}
+}
+
+func TestRespondRerunFlagCallsResponder(t *testing.T) {
+	runner := &fakeRunner{respondResult: testThreadRespondResult(ledger.OutcomeDryRun)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--rerun",
+	})
+	if err != nil {
+		t.Fatalf("Execute respond rerun: %v", err)
+	}
+	if len(runner.respondRequests) != 1 {
+		t.Fatalf("respond calls = %d, want 1", len(runner.respondRequests))
+	}
+	if !runner.respondRequests[0].Rerun || !runner.respondRequests[0].DryRun {
+		t.Fatalf("respond request = %#v, want rerun dry-run", runner.respondRequests[0])
 	}
 }
 

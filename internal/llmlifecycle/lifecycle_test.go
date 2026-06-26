@@ -241,6 +241,45 @@ func TestRunStructuredRerunsFailedBlockingTaskWithStoredProviderSession(t *testi
 	}
 }
 
+func TestRunStructuredRerunsFailedBlockingTaskWithLatestAttemptSession(t *testing.T) {
+	ctx := context.Background()
+	store := newLifecycleStore()
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(llm.FakeResult{
+		SessionID: "provider-session-3",
+		Response:  llm.Response{StructuredOutput: []byte(`{"ok":true}`)},
+	})
+	req := lifecycleRequest(t, store, adapter)
+	failedMeta := BaseMetadata(req, SessionDraft{
+		RowID:   "failed-row",
+		Adapter: "fake-llm",
+		Model:   req.Model,
+		Effort:  req.Effort,
+	})
+	failedMeta.Status = StatusFailedBlocking
+	failedMeta.Error = "previous failure"
+	failedMeta.ProviderSessionID = ""
+	failedMeta.Attempts = []AttemptMetadata{
+		{Attempt: "initial", ProviderSessionID: "provider-session-1", DecodeError: "invalid"},
+		{Attempt: "retry", ProviderSessionID: "provider-session-2", DecodeError: "still invalid"},
+	}
+	if err := WriteMetadata(req.Paths, failedMeta); err != nil {
+		t.Fatalf("WriteMetadata: %v", err)
+	}
+
+	got, err := RunStructured(ctx, req, decodeLifecyclePayload)
+	if err != nil {
+		t.Fatalf("RunStructured retry: %v", err)
+	}
+	if !got.Value.OK {
+		t.Fatalf("retry value = %#v, want ok", got.Value)
+	}
+	resumes := adapter.Resumes()
+	if len(resumes) != 1 || resumes[0].SessionID != "provider-session-2" {
+		t.Fatalf("resumes = %#v, want resume from latest failed attempt session", resumes)
+	}
+}
+
 func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	ctx := context.Background()
 	store := newLifecycleStore()
