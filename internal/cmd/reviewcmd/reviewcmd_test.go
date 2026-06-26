@@ -32,6 +32,7 @@ import (
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
@@ -187,6 +188,98 @@ func TestRespondRetryPostsFlagCallsResponder(t *testing.T) {
 	}
 	if text := out.String(); !strings.Contains(text, "responded 1, resolved 1") || !strings.Contains(text, "Planned actions: 2") {
 		t.Fatalf("stdout = %q, want retry counts from planned actions", text)
+	}
+}
+
+func TestRespondRealRunnerResumesInterruptedRunThroughCLI(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig()
+	ref, pr := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	provider.SetCapabilities(gitprovider.ProviderCaps{ThreadResolution: true})
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{
+		reviewCommandMarkedThread(t, pr, "thread-1", "main.go", 2),
+	}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
+	store, err := ledger.Open(ctx, filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(reviewCommandThreadAnalysisResult("thread-1", "thread-session-1"))
+
+	factory := func(limiter outbox.Limiter) RuntimeFactory {
+		return func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+			runner := buildReviewRunner(
+				store,
+				provider,
+				adapter,
+				profile,
+				limiter,
+				layout,
+				opts.Stderr,
+				nil,
+				runtimeOptsWithWorkbench(t, runtimeOpts),
+			)
+			return Runtime{Responder: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+		}
+	}
+
+	firstCmd, _ := newTestCommand(t, cfg, factory(cancelLimiter{}))
+	firstErr := root.Execute(firstCmd, []string{"respond", pr.URL})
+	if !errors.Is(firstErr, context.Canceled) {
+		t.Fatalf("first Execute error = %v, want context.Canceled", firstErr)
+	}
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("first adapter requests = %d, want one thread-analysis call", len(adapter.Requests()))
+	}
+	runs, err := store.ListRuns(ctx)
+	if err != nil {
+		t.Fatalf("ListRuns first: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Outcome != nil {
+		t.Fatalf("first runs = %#v, want one incomplete response run", runs)
+	}
+	actions, err := store.ListPlannedActions(ctx, runs[0].RunID)
+	if err != nil {
+		t.Fatalf("ListPlannedActions first: %v", err)
+	}
+	if len(actions) != 2 {
+		t.Fatalf("first planned actions = %d, want reply and resolve", len(actions))
+	}
+
+	secondCmd, out := newTestCommand(t, cfg, factory(noopLimiter{}))
+	if err := root.Execute(secondCmd, []string{"respond", pr.URL}); err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("second adapter requests = %d, want persisted analysis reused", len(adapter.Requests()))
+	}
+	runs, err = store.ListRuns(ctx)
+	if err != nil {
+		t.Fatalf("ListRuns second: %v", err)
+	}
+	if len(runs) != 1 || runs[0].RunID == "" || runs[0].Outcome == nil || *runs[0].Outcome != ledger.OutcomeComment {
+		t.Fatalf("second runs = %#v, want same run completed as comment", runs)
+	}
+	if replies := provider.RecordedThreadReplies(ref); len(replies) != 1 || replies[0].ThreadID != "thread-1" {
+		t.Fatalf("thread replies = %#v, want resumed reply post", replies)
+	}
+	if resolved := provider.RecordedResolvedThreads(ref); len(resolved) != 1 || resolved[0] != "thread-1" {
+		t.Fatalf("resolved threads = %#v, want resumed resolve post", resolved)
+	}
+	if text := out.String(); !strings.Contains(text, "responded 1, resolved 1") {
+		t.Fatalf("stdout = %q, want resumed response summary", text)
 	}
 }
 
@@ -2536,6 +2629,10 @@ type noopLimiter struct{}
 
 func (noopLimiter) Wait(context.Context, string) error { return nil }
 
+type cancelLimiter struct{}
+
+func (cancelLimiter) Wait(context.Context, string) error { return context.Canceled }
+
 func (r *fakeRunner) DryRun(_ context.Context, req pipeline.Request) (pipeline.Result, error) {
 	r.requests = append(r.requests, req)
 	if r.err != nil {
@@ -2879,6 +2976,63 @@ func reviewCommandPR(t *testing.T) (gitprovider.PRRef, gitprovider.PR) {
 	fixture := newReviewCommandWorkbenchFixture(t)
 	reviewCommandFixtures.Store(reviewCommandFixtureKey(fixture.ref), fixture)
 	return fixture.ref, fixture.pr
+}
+
+func reviewCommandMarkedThread(t *testing.T, pr gitprovider.PR, id, path string, line int) gitprovider.InlineThread {
+	t.Helper()
+	action, err := marker.RenderAction(marker.ActionMarker{
+		RunID:    "old-run",
+		ActionID: "old-action",
+		Kind:     marker.ActionKindInlineComment,
+		SHA:      pr.Head.SHA,
+		BaseSHA:  pr.Base.SHA,
+	})
+	if err != nil {
+		t.Fatalf("RenderAction: %v", err)
+	}
+	threadID := gitprovider.ThreadID(id)
+	created := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	return gitprovider.InlineThread{
+		ID:          threadID,
+		Path:        path,
+		Side:        review.DiffSideRight,
+		Line:        line,
+		SubjectType: review.AnchorKindLine,
+		CommitSHA:   pr.Head.SHA,
+		Comments: []gitprovider.ThreadComment{
+			{
+				ID:          gitprovider.CommentID(id + "-cr"),
+				ThreadID:    threadID,
+				Body:        action + "\nOriginal finding.",
+				Author:      gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+				CommitSHA:   pr.Head.SHA,
+				Path:        path,
+				Side:        review.DiffSideRight,
+				Line:        line,
+				SubjectType: review.AnchorKindLine,
+				CreatedAt:   created,
+				UpdatedAt:   created,
+			},
+			{
+				ID:          gitprovider.CommentID(id + "-human"),
+				ThreadID:    threadID,
+				Body:        "Human confirmed this should be summarized.",
+				Author:      gitprovider.Identity{Login: "human", ID: "human-id"},
+				CommitSHA:   pr.Head.SHA,
+				Path:        path,
+				Side:        review.DiffSideRight,
+				Line:        line,
+				SubjectType: review.AnchorKindLine,
+				CreatedAt:   created.Add(time.Minute),
+				UpdatedAt:   created.Add(time.Minute),
+			},
+		},
+	}
+}
+
+func reviewCommandThreadAnalysisResult(threadID, sessionID string) llm.FakeResult {
+	structured := fmt.Sprintf(`{"schema_version":1,"thread_id":%q,"decision":"summarize","summary":"Summary for future context.","resolve":true,"rationale":"human reply resolved the discussion"}`, threadID)
+	return fakeReviewLLMResult(sessionID, structured)
 }
 
 func reviewCommandFixtureKey(ref gitprovider.PRRef) string {

@@ -104,6 +104,31 @@ func TestRunStructuredFailsClosedWhenCachedSessionIsMissing(t *testing.T) {
 	}
 }
 
+func TestRunStructuredRejectsCachedSessionForDifferentRun(t *testing.T) {
+	ctx := context.Background()
+	store := newLifecycleStore()
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(llm.FakeResult{
+		SessionID: "provider-session-1",
+		Response:  llm.Response{StructuredOutput: []byte(`{"ok":true}`)},
+	})
+	req := lifecycleRequest(t, store, adapter)
+	if _, err := RunStructured(ctx, req, decodeLifecyclePayload); err != nil {
+		t.Fatalf("RunStructured seed: %v", err)
+	}
+
+	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	req.Adapter = cachedAdapter
+	req.RunID = "other-run"
+	_, err := RunStructured(ctx, req, decodeLifecyclePayload)
+	if err == nil || !strings.Contains(err.Error(), "belongs to run") {
+		t.Fatalf("RunStructured mismatched run error = %v, want session run mismatch", err)
+	}
+	if len(cachedAdapter.Requests()) != 0 {
+		t.Fatalf("adapter requests = %d, want no provider call for mismatched cache", len(cachedAdapter.Requests()))
+	}
+}
+
 func TestRunStructuredIgnoresPayloadWithoutMetadata(t *testing.T) {
 	ctx := context.Background()
 	store := newLifecycleStore()
