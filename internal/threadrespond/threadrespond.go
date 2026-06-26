@@ -66,13 +66,14 @@ type AcquireFunc func(string) (Lock, error)
 
 // Options contains response-run dependencies.
 type Options struct {
-	Store    Store
-	Provider gitprovider.GitProvider
-	Adapter  llm.Adapter
-	Limiter  outbox.Limiter
-	Layout   statepaths.Layout
-	Acquire  AcquireFunc
-	Now      func() time.Time
+	Store        Store
+	Provider     gitprovider.GitProvider
+	Adapter      llm.Adapter
+	Limiter      outbox.Limiter
+	Layout       statepaths.Layout
+	Acquire      AcquireFunc
+	TaskProgress llmlifecycle.Progress
+	Now          func() time.Time
 
 	NewRunID       func() string
 	NewActionID    func(reviewplan.ActionKind) (string, error)
@@ -418,6 +419,7 @@ func analyzeThreads(ctx context.Context, opts Options, run ledger.Run, artifacts
 			Effort:         runtime.effort,
 			LogPath:        threadLogPath(artifacts, thread.ID),
 			LifecyclePaths: llmlifecycle.Paths{LLMTasksDir: artifacts.LLMTasksDir},
+			Progress:       opts.TaskProgress,
 			Now:            opts.now,
 			NewStepID:      opts.newStepID,
 		}, thread)

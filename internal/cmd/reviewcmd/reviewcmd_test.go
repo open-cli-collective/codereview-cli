@@ -246,6 +246,7 @@ func TestRespondRealRunnerResumesInterruptedRunThroughCLI(t *testing.T) {
 				opts.Stderr,
 				nil,
 				runtimeOptsWithWorkbench(t, runtimeOpts),
+				"respond",
 			)
 			return Runtime{Responder: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 		}
@@ -697,6 +698,9 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	}
 	if runner.pipeline.TaskProgress == nil {
 		t.Fatal("pipeline TaskProgress = nil, want review progress wiring")
+	}
+	if runner.respond.TaskProgress == nil {
+		t.Fatal("respond TaskProgress = nil, want response progress wiring")
 	}
 }
 
@@ -1707,6 +1711,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 		&warnings,
 		nil,
 		runtimeOptsWithWorkbench(t, RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2, Retention: retention, RetentionManualOnly: true}),
+		"review",
 	)
 
 	if runner.pipeline.NamedSessions != store {
@@ -1865,6 +1870,7 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1926,6 +1932,7 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -2016,6 +2023,7 @@ func TestReviewRealRunnerResumesIncompleteRunThroughCLI(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -2091,6 +2099,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -2161,6 +2170,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -2224,6 +2234,7 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -2403,7 +2414,7 @@ func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
 		logger := newProgressLogger(opts)
 		runner := buildReviewRunner(
 			store,
-			withProgressProvider(logger, provider),
+			withProgressProvider(logger, "review", provider),
 			adapter,
 			profile,
 			noopLimiter{},
@@ -2411,6 +2422,7 @@ func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
 			opts.Stderr,
 			logger,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}, true)
@@ -2461,7 +2473,7 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 		logger := newProgressLogger(opts)
 		runner := buildReviewRunner(
 			store,
-			withProgressProvider(logger, provider),
+			withProgressProvider(logger, "review", provider),
 			adapter,
 			profile,
 			noopLimiter{},
@@ -2469,6 +2481,7 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 			opts.Stderr,
 			logger,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}, false)
@@ -2504,7 +2517,7 @@ func TestProgressProviderGetPRErrorWritesErrorBreadcrumb(t *testing.T) {
 	var errOut bytes.Buffer
 	provider := &gitprovider.Fake{}
 	provider.SetError(gitprovider.OperationGetPR, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, context.DeadlineExceeded))
-	wrapped := withProgressProvider(progress.New(&errOut, false, nil), provider)
+	wrapped := withProgressProvider(progress.New(&errOut, false, nil), "review", provider)
 
 	_, err := wrapped.GetPR(context.Background(), gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29})
 	if err == nil {
@@ -2513,6 +2526,24 @@ func TestProgressProviderGetPRErrorWritesErrorBreadcrumb(t *testing.T) {
 	stderr := errOut.String()
 	if !strings.Contains(stderr, `event=error`) || !strings.Contains(stderr, `command="review" op="fetch_pr" target="pr"`) {
 		t.Fatalf("stderr = %q, want error breadcrumb for fetch_pr", stderr)
+	}
+}
+
+func TestProgressProviderUsesRespondCommandLabel(t *testing.T) {
+	var errOut bytes.Buffer
+	provider := &gitprovider.Fake{}
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
+	wrapped := withProgressProvider(progress.New(&errOut, false, nil), "respond", provider)
+
+	if _, err := wrapped.ListInlineThreads(context.Background(), ref); err != nil {
+		t.Fatalf("ListInlineThreads: %v", err)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="respond" op="list_threads" target="threads"`) {
+		t.Fatalf("stderr = %q, want respond breadcrumb for list_threads", stderr)
 	}
 }
 
@@ -2530,7 +2561,7 @@ func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
 			},
 		},
 	})
-	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), adapter, "openai", "codex_cli")
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), "review", adapter, "openai", "codex_cli")
 
 	stream, err := wrapped.Start(context.Background(), llm.Request{
 		Model:   "gpt-5.5",
@@ -2562,6 +2593,44 @@ func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
 	}
 }
 
+func TestProgressAdapterUsesRespondCommandLabel(t *testing.T) {
+	var errOut bytes.Buffer
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(llm.FakeResult{SessionID: "sess-respond"})
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), "respond", adapter, "openai", "codex_cli")
+
+	stream, err := wrapped.Start(context.Background(), llm.Request{Model: "gpt-5.5", Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="respond" op="start_llm" target="llm"`) {
+		t.Fatalf("stderr = %q, want respond breadcrumb for start_llm", stderr)
+	}
+}
+
+func TestPipelineTaskProgressUsesRespondCommandLabel(t *testing.T) {
+	var errOut bytes.Buffer
+	progressSink := newPipelineTaskProgress(progress.New(&errOut, false, nil), "respond")
+	if progressSink == nil {
+		t.Fatal("newPipelineTaskProgress = nil, want progress sink")
+	}
+	span := progressSink.StartLLMTask(pipeline.LLMTaskProgressEvent{
+		TaskID: "thread-analysis-thread-1",
+		Phase:  "thread_response",
+		Source: "execute",
+		Model:  "gpt-5.5",
+	})
+	span.End(nil, pipeline.LLMTaskProgressResult{Cached: false, Status: "succeeded", ProviderSessionID: "sess-respond"})
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="respond" op="run_llm_task" target="llm_task"`) {
+		t.Fatalf("stderr = %q, want respond breadcrumb for run_llm_task", stderr)
+	}
+}
+
 func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
 	var errOut bytes.Buffer
 	adapter := &llm.FakeAdapter{
@@ -2569,7 +2638,7 @@ func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
 		SupportsResumeValue: true,
 	}
 	adapter.Queue(llm.FakeResult{StartErr: context.DeadlineExceeded})
-	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), adapter, "openai", "codex_cli")
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), "review", adapter, "openai", "codex_cli")
 
 	_, err := wrapped.Resume(context.Background(), "stored-session", llm.Request{Model: "gpt-5.5", Prompt: "prompt"})
 	if err == nil {
@@ -2588,7 +2657,7 @@ func TestProgressAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
 		SupportsCheckoutReadonlySet:   true,
 		SupportsCheckoutReadonlyValue: true,
 	}
-	wrapped := withProgressAdapter(progress.New(io.Discard, false, nil), adapter, "openai", "codex_cli")
+	wrapped := withProgressAdapter(progress.New(io.Discard, false, nil), "review", adapter, "openai", "codex_cli")
 
 	if !llm.SupportsCheckoutReadonly(wrapped) {
 		t.Fatal("SupportsCheckoutReadonly(wrapped) = false, want true")
@@ -2610,7 +2679,7 @@ func TestLazyAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
 }
 
 func TestWithProgressProviderPreservesOptionalRangeDiffCapability(t *testing.T) {
-	wrapped := withProgressProvider(progress.New(io.Discard, false, nil), &gitprovider.Fake{})
+	wrapped := withProgressProvider(progress.New(io.Discard, false, nil), "review", &gitprovider.Fake{})
 	if _, ok := wrapped.(interface {
 		GetDiffBetweenRefs(context.Context, gitprovider.PRRef, string, string) (gitprovider.UnifiedDiff, error)
 	}); ok {
@@ -2663,6 +2732,7 @@ func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
 		&errOut,
 		logger,
 		runtimeOptsWithWorkbench(t, RuntimeOptions{PRRef: ref}),
+		"review",
 	)
 
 	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{

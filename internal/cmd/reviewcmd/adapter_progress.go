@@ -13,6 +13,7 @@ import (
 type progressAdapter struct {
 	adapter  llm.Adapter
 	logger   *progress.Logger
+	command  string
 	provider string
 	harness  string
 }
@@ -22,13 +23,18 @@ type progressStream struct {
 	span   *progress.Span
 }
 
-func withProgressAdapter(logger *progress.Logger, adapter llm.Adapter, provider, harness string) llm.Adapter {
+func withProgressAdapter(logger *progress.Logger, command string, adapter llm.Adapter, provider, harness string) llm.Adapter {
 	if adapter == nil || logger == nil {
 		return adapter
+	}
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = "review"
 	}
 	return progressAdapter{
 		adapter:  adapter,
 		logger:   logger,
+		command:  command,
 		provider: strings.TrimSpace(provider),
 		harness:  strings.TrimSpace(harness),
 	}
@@ -60,7 +66,7 @@ func (a progressAdapter) Resume(ctx context.Context, sessionID string, req llm.R
 
 func (a progressAdapter) start(ctx context.Context, op string, req llm.Request, resumeSessionID string) (llm.Stream, error) {
 	fields := llmProgressFields(a.provider, a.harness, req, resumeSessionID)
-	span := a.logger.StartFields("review", op, "llm", fields...)
+	span := a.logger.StartFields(a.command, op, "llm", fields...)
 	var (
 		stream llm.Stream
 		err    error

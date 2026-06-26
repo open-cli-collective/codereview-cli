@@ -1006,7 +1006,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	provider = withProgressProvider(logger, provider)
+	provider = withProgressProvider(logger, commandName(cmd), provider)
 	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), provider, credential, providerStore, profile)
 	if err != nil {
 		cleanup()
@@ -1048,9 +1048,9 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		if err != nil {
 			return nil, err
 		}
-		return withProgressAdapter(logger, adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
+		return withProgressAdapter(logger, commandName(cmd), adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
 	})
-	runner := buildReviewRunner(ledgerStore, provider, adapter, profile, limiter, layout, opts.Stderr, logger, runtimeOpts)
+	runner := buildReviewRunner(ledgerStore, provider, adapter, profile, limiter, layout, opts.Stderr, logger, runtimeOpts, commandName(cmd))
 	return Runtime{
 		Runner:          runner,
 		Responder:       runner,
@@ -1083,6 +1083,17 @@ func requireOpinionatedReviewAuthority(ctx context.Context, provider gitprovider
 		gitprovider.OperationReviewAuthority,
 		fmt.Errorf("posting identity %q cannot create opinionated GitHub reviews for %s; GitHub would not count APPROVE/REQUEST_CHANGES toward PR state (%s)", postingIdentity.Login, repo, detail),
 	)
+}
+
+func commandName(cmd *cobra.Command) string {
+	if cmd == nil {
+		return "review"
+	}
+	name := strings.TrimSpace(cmd.Name())
+	if name == "" {
+		return "review"
+	}
+	return name
 }
 
 func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
@@ -1178,7 +1189,8 @@ func runtimeLayout() (statepaths.Layout, error) {
 	return layout, nil
 }
 
-func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, runtimeOpts RuntimeOptions) reviewRunner {
+func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, runtimeOpts RuntimeOptions, command string) reviewRunner {
+	taskProgress := newPipelineTaskProgress(logger, command)
 	pipelineOpts := pipeline.Options{
 		Provider:                  provider,
 		Adapter:                   adapter,
@@ -1186,7 +1198,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 		NamedSessions:             ledgerStore,
 		Layout:                    layout,
 		Warnings:                  warnings,
-		TaskProgress:              newPipelineTaskProgress(logger),
+		TaskProgress:              taskProgress,
 		MaxAgents:                 runtimeOpts.MaxAgents,
 		MaxConcurrency:            runtimeOpts.MaxConcurrency,
 		Retention:                 runtimeOpts.Retention,
@@ -1210,12 +1222,13 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
 		},
 		respond: threadrespond.Options{
-			Store:       ledgerStore,
-			Provider:    provider,
-			Adapter:     adapter,
-			Limiter:     limiter,
-			Layout:      layout,
-			NewActionID: pipelineOpts.NewActionID,
+			Store:        ledgerStore,
+			Provider:     provider,
+			Adapter:      adapter,
+			Limiter:      limiter,
+			Layout:       layout,
+			TaskProgress: taskProgress,
+			NewActionID:  pipelineOpts.NewActionID,
 		},
 	}
 }
