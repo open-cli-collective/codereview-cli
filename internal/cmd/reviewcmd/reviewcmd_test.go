@@ -757,6 +757,123 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	}
 }
 
+func TestNewRuntimeFailsBeforeLedgerWhenOpinionatedReviewAuthorityIsIneligible(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	if err := provider.SetReviewAuthority(ref, identity.Login, gitprovider.ReviewAuthority{Eligible: false, Permission: "none"}); err != nil {
+		t.Fatalf("SetReviewAuthority: %v", err)
+	}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			t.Fatal("LLM adapter should not be initialized when authority is ineligible")
+			return nil, nil
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	opts := &root.Options{Stderr: io.Discard}
+	_, err = newRuntime(cmd, opts, testConfig(), testConfig().Profiles["home"], RuntimeOptions{
+		PRRef:                             ref,
+		RequireOpinionatedReviewAuthority: true,
+	})
+	if !errors.Is(err, gitprovider.ErrIneligibleReviewAuthority) {
+		t.Fatalf("newRuntime error = %v, want ErrIneligibleReviewAuthority", err)
+	}
+	if _, statErr := os.Stat(layout.LedgerDB()); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("ledger stat error = %v, want not exist", statErr)
+	}
+	runsDir := filepath.Join(layout.DataRoot, "runs")
+	if _, statErr := os.Stat(runsDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("runs dir stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestNewRuntimeSkipsOpinionatedReviewAuthorityCheckWhenNotRequired(t *testing.T) {
+	statedirtest.Hermetic(t)
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	provider.SetError(gitprovider.OperationReviewAuthority, gitprovider.WrapError(gitprovider.ErrPermission, gitprovider.OperationReviewAuthority, errors.New("should not be called")))
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	opts := &root.Options{Stderr: io.Discard}
+	runtime, err := newRuntime(cmd, opts, testConfig(), testConfig().Profiles["home"], RuntimeOptions{PRRef: ref})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+}
+
+func TestLiveReviewFailsFastWithoutCreatingArtifactsWhenAuthorityIsIneligible(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	cfg := testConfig()
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	if err := provider.SetReviewAuthority(ref, identity.Login, gitprovider.ReviewAuthority{Eligible: false, Permission: "none"}); err != nil {
+		t.Fatalf("SetReviewAuthority: %v", err)
+	}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			t.Fatal("LLM adapter should not be initialized when live review authority is ineligible")
+			return nil, nil
+		},
+	)
+
+	cmd, _ := newTestCommand(t, cfg, newRuntime)
+	err = root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
+	if !errors.Is(err, gitprovider.ErrIneligibleReviewAuthority) {
+		t.Fatalf("Execute error = %v, want ErrIneligibleReviewAuthority", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want auth-config", got)
+	}
+	if _, statErr := os.Stat(layout.LedgerDB()); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("ledger stat error = %v, want not exist", statErr)
+	}
+	runsDir := filepath.Join(layout.DataRoot, "runs")
+	if _, statErr := os.Stat(runsDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("runs dir stat error = %v, want not exist", statErr)
+	}
+}
+
 func TestNewRuntimePassesPRRefForGitHubAppInstallationLookup(t *testing.T) {
 	statedirtest.Hermetic(t)
 	cfg := testConfig()

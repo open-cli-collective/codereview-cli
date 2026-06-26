@@ -8,6 +8,7 @@ type Operation string
 // GitProvider operation names.
 const (
 	OperationWhoAmI             Operation = "WhoAmI"
+	OperationReviewAuthority    Operation = "ReviewAuthority"
 	OperationGetPR              Operation = "GetPR"
 	OperationGetDiff            Operation = "GetDiff"
 	OperationGetDiffBetweenRefs Operation = "GetDiffBetweenRefs"

@@ -41,6 +41,12 @@ func (p progressProvider) WhoAmI(ctx context.Context, creds gitprovider.Credenti
 	return identity, endProgressSpan(span, err)
 }
 
+func (p progressProvider) ReviewAuthority(ctx context.Context, ref gitprovider.PRRef, identity gitprovider.Identity) (gitprovider.ReviewAuthority, error) {
+	span := p.logger.Start("review", "check_review_authority", "runtime")
+	authority, err := p.provider.ReviewAuthority(ctx, ref, identity)
+	return authority, endProgressSpan(span, err)
+}
+
 func (p progressProvider) GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.PR, error) {
 	span := p.logger.Start("review", "fetch_pr", "pr")
 	pr, err := p.provider.GetPR(ctx, ref)

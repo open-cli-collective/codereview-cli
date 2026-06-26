@@ -151,6 +151,94 @@ func TestWhoAmIRejectsInvalidCredentialBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestReviewAuthorityMapsEligiblePermissionAndEscapesLogin(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		writeJSON(t, w, map[string]any{"permission": "write", "role_name": "write"})
+	}))
+	defer server.Close()
+
+	client := mustClient(t, Options{
+		Token:      "client-token",
+		BaseURL:    server.URL,
+		GraphQLURL: server.URL + "/graphql",
+	})
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 359}
+	authority, err := client.ReviewAuthority(context.Background(), ref, gitprovider.Identity{Login: "rianjs-bot[bot]"})
+	if err != nil {
+		t.Fatalf("ReviewAuthority: %v", err)
+	}
+	if !authority.Eligible || authority.Permission != "write" || authority.RoleName != "write" {
+		t.Fatalf("authority = %#v, want eligible write", authority)
+	}
+	if gotPath != "/repos/open-cli-collective/codereview-cli/collaborators/rianjs-bot%5Bbot%5D/permission" {
+		t.Fatalf("path = %q, want escaped collaborator-permission path", gotPath)
+	}
+}
+
+func TestReviewAuthorityFallsBackToRoleNameAndTreatsNotFoundAsIneligible(t *testing.T) {
+	t.Run("role fallback", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, map[string]any{"permission": "", "role_name": "maintain"})
+		}))
+		defer server.Close()
+
+		client := mustClient(t, Options{
+			Token:      "client-token",
+			BaseURL:    server.URL,
+			GraphQLURL: server.URL + "/graphql",
+		})
+		ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 359}
+		authority, err := client.ReviewAuthority(context.Background(), ref, gitprovider.Identity{Login: "reviewer"})
+		if err != nil {
+			t.Fatalf("ReviewAuthority: %v", err)
+		}
+		if !authority.Eligible || authority.RoleName != "maintain" {
+			t.Fatalf("authority = %#v, want eligible maintain fallback", authority)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "not found", http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		client := mustClient(t, Options{
+			Token:      "client-token",
+			BaseURL:    server.URL,
+			GraphQLURL: server.URL + "/graphql",
+		})
+		ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 359}
+		authority, err := client.ReviewAuthority(context.Background(), ref, gitprovider.Identity{Login: "missing-bot"})
+		if err != nil {
+			t.Fatalf("ReviewAuthority: %v", err)
+		}
+		if authority.Eligible || authority.Permission != "" || authority.RoleName != "" {
+			t.Fatalf("authority = %#v, want zero-value ineligible authority", authority)
+		}
+	})
+}
+
+func TestReviewAuthorityPreservesProviderFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	client := mustClient(t, Options{
+		Token:      "client-token",
+		BaseURL:    server.URL,
+		GraphQLURL: server.URL + "/graphql",
+	})
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 359}
+	_, err := client.ReviewAuthority(context.Background(), ref, gitprovider.Identity{Login: "reviewer"})
+	if !errors.Is(err, gitprovider.ErrPermission) {
+		t.Fatalf("ReviewAuthority error = %v, want ErrPermission", err)
+	}
+}
+
 func TestCredentialValidationUsesCallingOperation(t *testing.T) {
 	_, err := New(Options{Host: "github.com", Token: " "})
 	var constructorErr *gitprovider.ProviderError

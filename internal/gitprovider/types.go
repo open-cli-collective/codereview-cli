@@ -51,6 +51,14 @@ type Identity struct {
 	DisplayName string
 }
 
+// ReviewAuthority describes whether the resolved posting identity can create a
+// GitHub review that counts as APPROVE/REQUEST_CHANGES for a specific repo.
+type ReviewAuthority struct {
+	Eligible   bool
+	Permission string
+	RoleName   string
+}
+
 // PRBranchRef identifies a base or head ref. Host/Owner/Repo are explicit
 // because a pull request head may live in a fork.
 type PRBranchRef struct {

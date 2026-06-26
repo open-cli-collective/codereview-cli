@@ -3,6 +3,7 @@ package gitprovider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -10,6 +11,11 @@ type fileSelector struct {
 	Ref    PRRef
 	GitRef string
 	Path   string
+}
+
+type reviewAuthoritySelector struct {
+	Ref   PRRef
+	Login string
 }
 
 // ThreadReply records one ReplyToThread write.
@@ -33,6 +39,7 @@ type Fake struct {
 	threads       map[PRRef][]InlineThread
 	reviews       map[PRRef][]Review
 	issueComments map[PRRef][]IssueComment
+	reviewAuth    map[reviewAuthoritySelector]ReviewAuthority
 
 	inlineCommentWrites map[PRRef][]InlineComment
 	threadReplyWrites   map[PRRef][]ThreadReply
@@ -156,6 +163,21 @@ func (f *Fake) SetIssueComments(ref PRRef, comments []IssueComment) error {
 	return nil
 }
 
+// SetReviewAuthority configures the authority lookup for ref/login.
+func (f *Fake) SetReviewAuthority(ref PRRef, login string, authority ReviewAuthority) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(login) == "" {
+		return fmt.Errorf("login is required")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureLocked()
+	f.reviewAuth[reviewAuthoritySelector{Ref: ref, Login: strings.TrimSpace(login)}] = authority
+	return nil
+}
+
 // WhoAmI returns the configured fake identity or an injected error.
 func (f *Fake) WhoAmI(_ context.Context, _ Credential) (Identity, error) {
 	f.mu.Lock()
@@ -165,6 +187,24 @@ func (f *Fake) WhoAmI(_ context.Context, _ Credential) (Identity, error) {
 		return Identity{}, err
 	}
 	return f.identity, nil
+}
+
+// ReviewAuthority returns the configured authority for ref/login.
+func (f *Fake) ReviewAuthority(_ context.Context, ref PRRef, identity Identity) (ReviewAuthority, error) {
+	if err := ref.Validate(); err != nil {
+		return ReviewAuthority{}, err
+	}
+	login := strings.TrimSpace(identity.Login)
+	if login == "" {
+		return ReviewAuthority{}, fmt.Errorf("identity login is required")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureLocked()
+	if err := f.errorLocked(OperationReviewAuthority); err != nil {
+		return ReviewAuthority{}, err
+	}
+	return f.reviewAuth[reviewAuthoritySelector{Ref: ref, Login: login}], nil
 }
 
 // GetPR returns the canned PR snapshot for ref.
@@ -442,6 +482,9 @@ func (f *Fake) ensureLocked() {
 	}
 	if f.issueComments == nil {
 		f.issueComments = make(map[PRRef][]IssueComment)
+	}
+	if f.reviewAuth == nil {
+		f.reviewAuth = make(map[reviewAuthoritySelector]ReviewAuthority)
 	}
 	if f.inlineCommentWrites == nil {
 		f.inlineCommentWrites = make(map[PRRef][]InlineComment)

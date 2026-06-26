@@ -86,14 +86,15 @@ type Runtime struct {
 
 // RuntimeOptions carries command flags that affect runtime construction.
 type RuntimeOptions struct {
-	MaxAgents                 int
-	MaxConcurrency            int
-	PRRef                     gitprovider.PRRef
-	Retention                 datalifecycle.RetentionPolicy
-	RetentionManualOnly       bool
-	AutoUnlockWorkbenchOnExit bool
-	ResolveRepoRoot           func(context.Context) (string, error)
-	GitCommand                func(context.Context, string, ...string) ([]byte, error)
+	MaxAgents                         int
+	MaxConcurrency                    int
+	PRRef                             gitprovider.PRRef
+	RequireOpinionatedReviewAuthority bool
+	Retention                         datalifecycle.RetentionPolicy
+	RetentionManualOnly               bool
+	AutoUnlockWorkbenchOnExit         bool
+	ResolveRepoRoot                   func(context.Context) (string, error)
+	GitCommand                        func(context.Context, string, ...string) ([]byte, error)
 }
 
 // RuntimeFactory builds the concrete runtime used by `cr review`.
@@ -346,11 +347,12 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	profileSpan.End(nil)
 
 	runtimeOpts := RuntimeOptions{
-		MaxAgents:           flags.maxAgents,
-		MaxConcurrency:      flags.maxConcurrency,
-		PRRef:               ref,
-		Retention:           retentionPolicyFromConfig(cfg.Data.Retention),
-		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
+		MaxAgents:                         flags.maxAgents,
+		MaxConcurrency:                    flags.maxConcurrency,
+		PRRef:                             ref,
+		RequireOpinionatedReviewAuthority: !flags.dryRun,
+		Retention:                         retentionPolicyFromConfig(cfg.Data.Retention),
+		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 	}
 	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
 	runtime, err := factory(cmd, opts, cfg, profile, runtimeOpts)
@@ -964,6 +966,7 @@ func mapRunError(err error) error {
 		return exitcode.Usage(err)
 	case errors.Is(err, gitprovider.ErrAuth),
 		errors.Is(err, gitprovider.ErrPermission),
+		errors.Is(err, gitprovider.ErrIneligibleReviewAuthority),
 		errors.Is(err, gitprovider.ErrRetryable),
 		errors.Is(err, gitprovider.ErrNotFound),
 		errors.Is(err, gitprovider.ErrConflict),
@@ -1009,6 +1012,10 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
+	if err := requireOpinionatedReviewAuthority(cmd.Context(), provider, runtimeOpts, postingIdentity); err != nil {
+		cleanup()
+		return Runtime{}, mapRunError(err)
+	}
 	layout, err := runtimeLayout()
 	if err != nil {
 		cleanup()
@@ -1050,6 +1057,32 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		PostingIdentity: postingIdentity,
 		Cleanup:         cleanup,
 	}, nil
+}
+
+func requireOpinionatedReviewAuthority(ctx context.Context, provider gitprovider.GitProvider, runtimeOpts RuntimeOptions, postingIdentity gitprovider.Identity) error {
+	if !runtimeOpts.RequireOpinionatedReviewAuthority {
+		return nil
+	}
+	authority, err := provider.ReviewAuthority(ctx, runtimeOpts.PRRef, postingIdentity)
+	if err != nil {
+		return err
+	}
+	if authority.Eligible {
+		return nil
+	}
+	repo := fmt.Sprintf("%s/%s", runtimeOpts.PRRef.Owner, runtimeOpts.PRRef.Repo)
+	detail := "permission unavailable"
+	switch {
+	case strings.TrimSpace(authority.Permission) != "":
+		detail = "permission=" + authority.Permission
+	case strings.TrimSpace(authority.RoleName) != "":
+		detail = "role=" + authority.RoleName
+	}
+	return gitprovider.WrapError(
+		gitprovider.ErrIneligibleReviewAuthority,
+		gitprovider.OperationReviewAuthority,
+		fmt.Errorf("posting identity %q cannot create opinionated GitHub reviews for %s; GitHub would not count APPROVE/REQUEST_CHANGES toward PR state (%s)", postingIdentity.Login, repo, detail),
+	)
 }
 
 func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {

@@ -10,10 +10,14 @@ import (
 var (
 	ErrAuth       = errors.New("gitprovider: authentication failed")
 	ErrPermission = errors.New("gitprovider: permission denied")
-	ErrNotFound   = errors.New("gitprovider: target not found")
-	ErrRetryable  = errors.New("gitprovider: retryable upstream error")
-	ErrConflict   = errors.New("gitprovider: already exists")
-	ErrStaleSHA   = errors.New("gitprovider: pinned SHA is no longer current")
+	// ErrIneligibleReviewAuthority indicates the credential can talk to the
+	// host, but the resolved posting identity is not eligible for GitHub to
+	// count APPROVE/REQUEST_CHANGES toward PR state on the target repository.
+	ErrIneligibleReviewAuthority = errors.New("gitprovider: posting identity cannot create opinionated reviews for this repository")
+	ErrNotFound                  = errors.New("gitprovider: target not found")
+	ErrRetryable                 = errors.New("gitprovider: retryable upstream error")
+	ErrConflict                  = errors.New("gitprovider: already exists")
+	ErrStaleSHA                  = errors.New("gitprovider: pinned SHA is no longer current")
 	// ErrDiffTooLarge indicates the host declined to return a diff because it
 	// exceeds the host API's size limit. GitHub, for example, responds with
 	// HTTP 406 for pull request diffs beyond its line cap instead of returning
