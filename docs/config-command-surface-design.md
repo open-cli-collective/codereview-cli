@@ -46,7 +46,7 @@ The codebase already supports:
 - `repository_profiles` in config schema
 - repository-aware profile resolution in runtime paths used by `cr review` and
   `cr agents`
-- GitHub App reviewer auth
+- PAT-backed reviewer auth only for counted GitHub reviews
 
 The missing piece is command coverage. Today `cr config` exposes `show`,
 `clear`, and `llm models`, but path/route/route-preview/agent-source

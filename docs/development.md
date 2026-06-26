@@ -91,12 +91,11 @@ make clean   # remove build artifacts
 ## Interactive Init Notes
 
 `cr init` interactive mode keeps all writes draft-local until the user commits
-staged changes. Reviewer setup may collect PAT or GitHub App reviewer secrets
-inside the reviewer-entity flow, but those values are only written to the
-credential store during **Commit staged changes and exit**. When the selected
-LLM auth mode is `api_key`, the wizard saves the non-secret profile shape and
-prints a follow-up `cr set-credential` command instead of collecting the API key
-inline.
+staged changes. Reviewer setup may collect PAT reviewer secrets inside the
+reviewer-entity flow, but those values are only written to the credential store
+during **Commit staged changes and exit**. When the selected LLM auth mode is
+`api_key`, the wizard saves the non-secret profile shape and prints a follow-up
+`cr set-credential` command instead of collecting the API key inline.
 
 Interactive `git.host` edits now route through the repository-route stage when
 the target profile already participates in `repository_profiles` routing. The

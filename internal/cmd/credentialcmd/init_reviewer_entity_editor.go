@@ -426,10 +426,7 @@ func initReviewerEntityOptionsForContext(ctx initPromptContext) []huh.Option[str
 		entity := ctx.ReviewerEntities[name]
 		options = append(options, huh.NewOption(initReviewerEntityLabel(entity), name))
 	}
-	options = append(options,
-		huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)),
-		huh.NewOption(reviewerEntityTemplateGitHubAppLabel(), string(initReviewerEntityKindGitHubApp)),
-	)
+	options = append(options, huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)))
 	return dedupeInitStringOptions(options)
 }
 

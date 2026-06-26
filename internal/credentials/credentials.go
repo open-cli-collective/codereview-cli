@@ -487,7 +487,7 @@ type KeySpec struct {
 // KeySpecsForPurpose returns the exact keyring keys expected for a configured credential location.
 func KeySpecsForPurpose(ref config.CredentialRef) ([]KeySpec, error) {
 	switch ref.Purpose {
-	case "git", "reviewer_credentials":
+	case "git":
 		mode := config.GitAuthMode(ref.Mode)
 		if !mode.Valid() {
 			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrInvalid, ref.Purpose, mode)
@@ -499,6 +499,21 @@ func KeySpecsForPurpose(ref config.CredentialRef) ([]KeySpec, error) {
 			return []KeySpec{
 				{Key: GitHubAppPrivateKeyKey, Required: true},
 			}, nil
+		case config.GitAuthModeOAuthDevice:
+			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrUnsupported, ref.Purpose, mode)
+		default:
+			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrUnsupported, ref.Purpose, mode)
+		}
+	case "reviewer_credentials":
+		mode := config.GitAuthMode(ref.Mode)
+		if !mode.Valid() {
+			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrInvalid, ref.Purpose, mode)
+		}
+		switch mode {
+		case config.GitAuthModePAT:
+			return []KeySpec{{Key: GitTokenKey, Required: true}}, nil
+		case config.GitAuthModeGitHubApp:
+			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrInvalid, ref.Purpose, mode)
 		case config.GitAuthModeOAuthDevice:
 			return nil, fmt.Errorf("%w: %s auth_mode %q", config.ErrUnsupported, ref.Purpose, mode)
 		default:

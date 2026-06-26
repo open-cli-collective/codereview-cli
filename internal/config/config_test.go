@@ -843,24 +843,19 @@ func TestCredentialRefs(t *testing.T) {
 	}
 }
 
-func TestCredentialRefsIncludesGitHubAppModes(t *testing.T) {
+func TestCredentialRefsRejectsGitHubAppReviewerModes(t *testing.T) {
 	profile := validFile().normalized().Profiles["work"]
 	profile.Git.AuthMode = GitAuthModeGitHubApp
 	profile.Git.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 	profile.ReviewerCredentials.AuthMode = GitAuthModeGitHubApp
 	profile.ReviewerCredentials.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 
-	refs, err := CredentialRefs(profile)
-	if err != nil {
-		t.Fatalf("CredentialRefs: %v", err)
+	_, err := CredentialRefs(profile)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("CredentialRefs error = %v, want ErrInvalid", err)
 	}
-	want := []CredentialRef{
-		{Purpose: "git", Store: LocalOSCredentialStoreID, Ref: "codereview/work", Mode: "github_app"},
-		{Purpose: "reviewer_credentials", Store: LocalOSCredentialStoreID, Ref: "codereview/work-reviewer", Mode: "github_app"},
-		{Purpose: "llm", Store: LocalOSCredentialStoreID, Ref: "codereview/work-llm", Mode: "api_key", Provider: "anthropic"},
-	}
-	if !reflect.DeepEqual(refs, want) {
-		t.Fatalf("CredentialRefs = %#v, want %#v", refs, want)
+	if !strings.Contains(err.Error(), `reviewer_credentials.auth_mode "github_app"`) {
+		t.Fatalf("CredentialRefs error = %v, want reviewer auth guidance", err)
 	}
 }
 
@@ -1665,27 +1660,36 @@ func TestValidateRejectsReservedGitAuthModes(t *testing.T) {
 	}
 }
 
-func TestValidateAcceptsGitHubAppAuthModes(t *testing.T) {
+func TestValidateGitHubAppAuthModes(t *testing.T) {
 	tests := []struct {
-		name   string
-		mutate func(*File)
+		name    string
+		mutate  func(*File)
+		wantErr error
+		wantMsg string
 	}{
-		{name: "git github_app", mutate: func(cfg *File) {
+		{name: "git github_app rejected for git identity reviewer", mutate: func(cfg *File) {
 			profile := cfg.Profiles["home"]
 			profile.Git.AuthMode = GitAuthModeGitHubApp
 			profile.Git.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 			cfg.Profiles["home"] = profile
-		}},
-		{name: "reviewer github_app", mutate: func(cfg *File) {
+		}, wantErr: ErrInvalid, wantMsg: `profiles.home.reviewer.kind "git_identity" cannot use git auth_mode "github_app"`},
+		{name: "reviewer github_app rejected", mutate: func(cfg *File) {
 			entity := cfg.ReviewerEntities["work-reviewer"]
 			entity.AuthMode = GitAuthModeGitHubApp
 			entity.GitHubApp = &GitHubAppConfig{AppID: "12345"}
 			cfg.ReviewerEntities["work-reviewer"] = entity
-			profile := cfg.Profiles["work"]
-			profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
-				Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
-			}
-			cfg.Profiles["work"] = profile
+		}, wantErr: ErrInvalid, wantMsg: `reviewer_entities.work-reviewer.auth_mode "github_app" is not supported for reviewer entities`},
+		{name: "repository access github_app accepted", mutate: func(cfg *File) {
+			*cfg = cfg.normalized()
+			access := cfg.RepositoryAccess["home-git"]
+			access.Git.AuthMode = GitAuthModeGitHubApp
+			access.Git.GitHubApp = &GitHubAppConfig{AppID: "12345"}
+			cfg.RepositoryAccess["home-git"] = access
+			profile := cfg.Profiles["home"]
+			profile.RepositoryAccess = "home-git"
+			profile.Git = access.Git
+			profile.Reviewer = ProfileReviewer{Kind: ProfileReviewerKindEntity, Entity: "work-reviewer"}
+			cfg.Profiles["home"] = profile
 		}},
 	}
 
@@ -1693,20 +1697,24 @@ func TestValidateAcceptsGitHubAppAuthModes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validFile()
 			tt.mutate(&cfg)
-			if err := Validate(cfg); err != nil {
-				t.Fatalf("Validate error = %v, want nil", err)
+			err := Validate(cfg)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("Validate error = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Fatalf("Validate error = %v, want message containing %q", err, tt.wantMsg)
 			}
 		})
 	}
 }
 
 func TestValidateProfileReviewerGitHubAppInstallation(t *testing.T) {
-	githubAppReviewer := func(cfg *File) {
-		entity := cfg.ReviewerEntities["work-reviewer"]
-		entity.AuthMode = GitAuthModeGitHubApp
-		entity.GitHubApp = &GitHubAppConfig{AppID: "12345"}
-		cfg.ReviewerEntities["work-reviewer"] = entity
-	}
 	tests := []struct {
 		name    string
 		mutate  func(*File)
@@ -1714,62 +1722,15 @@ func TestValidateProfileReviewerGitHubAppInstallation(t *testing.T) {
 		wantMsg string
 	}{
 		{
-			name: "discover from repository",
+			name: "github app reviewer rejected before installation validation",
 			mutate: func(cfg *File) {
-				githubAppReviewer(cfg)
-				profile := cfg.Profiles["work"]
-				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
-					Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
-				}
-				cfg.Profiles["work"] = profile
-			},
-		},
-		{
-			name: "pinned installation",
-			mutate: func(cfg *File) {
-				githubAppReviewer(cfg)
-				profile := cfg.Profiles["work"]
-				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
-					Mode:           ProfileReviewerGitHubAppInstallationPinned,
-					InstallationID: "123456",
-				}
-				cfg.Profiles["work"] = profile
-			},
-		},
-		{
-			name: "missing for github app reviewer",
-			mutate: func(cfg *File) {
-				githubAppReviewer(cfg)
+				entity := cfg.ReviewerEntities["work-reviewer"]
+				entity.AuthMode = GitAuthModeGitHubApp
+				entity.GitHubApp = &GitHubAppConfig{AppID: "12345"}
+				cfg.ReviewerEntities["work-reviewer"] = entity
 			},
 			wantErr: ErrInvalid,
-			wantMsg: "profiles.work.reviewer.github_app_installation.mode is required",
-		},
-		{
-			name: "pinned without id",
-			mutate: func(cfg *File) {
-				githubAppReviewer(cfg)
-				profile := cfg.Profiles["work"]
-				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
-					Mode: ProfileReviewerGitHubAppInstallationPinned,
-				}
-				cfg.Profiles["work"] = profile
-			},
-			wantErr: ErrInvalid,
-			wantMsg: "installation_id is required",
-		},
-		{
-			name: "discover with id",
-			mutate: func(cfg *File) {
-				githubAppReviewer(cfg)
-				profile := cfg.Profiles["work"]
-				profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
-					Mode:           ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
-					InstallationID: "123456",
-				}
-				cfg.Profiles["work"] = profile
-			},
-			wantErr: ErrInvalid,
-			wantMsg: "installation_id must be empty",
+			wantMsg: `reviewer_entities.work-reviewer.auth_mode "github_app" is not supported for reviewer entities`,
 		},
 		{
 			name: "pat reviewer with installation config",
@@ -1911,7 +1872,7 @@ profiles:
 	}
 }
 
-func TestLoadAcceptsGitHubAppAuthMode(t *testing.T) {
+func TestLoadRejectsGitHubAppReviewerAuthMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	writeFile(t, path, `llm_runtimes:
   claude-local:
@@ -1944,13 +1905,12 @@ profiles:
         mode: discover_from_repository
     llm_runtime: claude-local
 `)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	_, err := Load(path)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Load error = %v, want ErrInvalid", err)
 	}
-	profile := cfg.Profiles["work"]
-	if profile.Git.AuthMode != GitAuthModeGitHubApp || profile.ReviewerCredentials.AuthMode != GitAuthModeGitHubApp {
-		t.Fatalf("auth modes = git:%s reviewer:%s, want github_app", profile.Git.AuthMode, profile.ReviewerCredentials.AuthMode)
+	if !strings.Contains(err.Error(), `reviewer_entities.work-reviewer.auth_mode "github_app"`) {
+		t.Fatalf("Load error = %v, want reviewer auth guidance", err)
 	}
 }
 
@@ -1964,12 +1924,10 @@ func TestLoadRejectsMultilineReviewerDisplayName(t *testing.T) {
 reviewer_entities:
   work-reviewer:
     host: github.com
-    auth_mode: github_app
+    auth_mode: pat
     credential:
       store: local-os
       name: codereview/work-reviewer
-    github_app:
-      app_id: "12345"
     display_name: |
       line one
       line two
