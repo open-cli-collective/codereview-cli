@@ -38,6 +38,10 @@ func (a progressAdapter) Name() string { return a.adapter.Name() }
 
 func (a progressAdapter) SupportsResume() bool { return a.adapter.SupportsResume() }
 
+func (a progressAdapter) SupportsCheckoutReadonly() bool {
+	return llm.SupportsCheckoutReadonly(a.adapter)
+}
+
 func (a progressAdapter) SupportsCacheAccounting() bool { return a.adapter.SupportsCacheAccounting() }
 
 func (a progressAdapter) SupportsCostReporting() bool { return a.adapter.SupportsCostReporting() }

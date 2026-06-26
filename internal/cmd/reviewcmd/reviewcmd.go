@@ -1293,6 +1293,14 @@ func (a *lazyAdapter) SupportsResume() bool {
 	return adapter.SupportsResume()
 }
 
+func (a *lazyAdapter) SupportsCheckoutReadonly() bool {
+	adapter, err := a.get()
+	if err != nil {
+		return false
+	}
+	return llm.SupportsCheckoutReadonly(adapter)
+}
+
 func (a *lazyAdapter) SupportsCacheAccounting() bool {
 	adapter, err := a.get()
 	if err != nil {

@@ -681,6 +681,9 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	if runner.pipeline.Adapter == nil || runner.pipeline.Adapter.Name() != "codex_cli" {
 		t.Fatalf("pipeline adapter = %#v, want codex_cli", runner.pipeline.Adapter)
 	}
+	if !llm.SupportsCheckoutReadonly(runner.pipeline.Adapter) {
+		t.Fatalf("pipeline adapter checkout-readonly = false, want true")
+	}
 	loadedAdapter, err := runner.pipeline.Adapter.(*lazyAdapter).get()
 	if err != nil {
 		t.Fatalf("lazy adapter get: %v", err)
@@ -688,6 +691,9 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	progressAdapter, ok := loadedAdapter.(progressAdapter)
 	if !ok || progressAdapter.adapter == nil || progressAdapter.adapter.Name() != "codex_cli" {
 		t.Fatalf("loaded pipeline adapter = %#v, want wrapped codex_cli adapter", loadedAdapter)
+	}
+	if !llm.SupportsCheckoutReadonly(loadedAdapter) {
+		t.Fatalf("loaded pipeline adapter checkout-readonly = false, want true")
 	}
 	if runner.pipeline.TaskProgress == nil {
 		t.Fatal("pipeline TaskProgress = nil, want review progress wiring")
@@ -2456,6 +2462,33 @@ func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
 	if !strings.Contains(stderr, `command="review" op="resume_llm" target="llm"`) ||
 		!strings.Contains(stderr, `event=error`) {
 		t.Fatalf("stderr = %q, want resume error breadcrumb", stderr)
+	}
+}
+
+func TestProgressAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
+	adapter := &llm.FakeAdapter{
+		NameValue:                     "fake-llm",
+		SupportsCheckoutReadonlySet:   true,
+		SupportsCheckoutReadonlyValue: true,
+	}
+	wrapped := withProgressAdapter(progress.New(io.Discard, false, nil), adapter, "openai", "codex_cli")
+
+	if !llm.SupportsCheckoutReadonly(wrapped) {
+		t.Fatal("SupportsCheckoutReadonly(wrapped) = false, want true")
+	}
+}
+
+func TestLazyAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
+	lazy := newLazyAdapter(func() (llm.Adapter, error) {
+		return &llm.FakeAdapter{
+			NameValue:                     "fake-llm",
+			SupportsCheckoutReadonlySet:   true,
+			SupportsCheckoutReadonlyValue: true,
+		}, nil
+	})
+
+	if !llm.SupportsCheckoutReadonly(lazy) {
+		t.Fatal("SupportsCheckoutReadonly(lazy) = false, want true")
 	}
 }
 
