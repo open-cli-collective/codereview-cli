@@ -144,6 +144,22 @@ func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 	}
 }
 
+func TestRespondProfileResolveThreadsNeverDisablesThreadResolution(t *testing.T) {
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.ReviewPolicy.ResolveThreads = config.ResolveThreadsNever
+	cfg.Profiles["home"] = profile
+	runner := &fakeRunner{respondResult: testThreadRespondResult(ledger.OutcomeDryRun)}
+	cmd, _ := newTestCommand(t, cfg, fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.respondRequests) != 1 || !runner.respondRequests[0].NoResolveThreads {
+		t.Fatalf("respond request NoResolveThreads = %#v, want true from profile", runner.respondRequests)
+	}
+}
+
 func TestRespondRerunFlagCallsResponder(t *testing.T) {
 	runner := &fakeRunner{respondResult: testThreadRespondResult(ledger.OutcomeDryRun)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -297,18 +313,46 @@ func TestRespondJSONRendersStableShape(t *testing.T) {
 	}
 	var decoded struct {
 		Run struct {
-			RunID   string `json:"run_id"`
-			Outcome string `json:"outcome"`
+			RunID        string `json:"run_id"`
+			PRURL        string `json:"pr_url"`
+			PRKey        string `json:"pr_key"`
+			PostMode     string `json:"post_mode"`
+			Outcome      string `json:"outcome"`
+			ArtifactPath string `json:"artifact_path"`
+			BaseSHA      string `json:"base_sha"`
+			HeadSHA      string `json:"head_sha"`
 		} `json:"run"`
 		Counts respondCounts `json:"counts"`
 		Outbox struct {
-			Posted int `json:"posted"`
+			Outcome        string `json:"outcome"`
+			ExitCode       int    `json:"exit_code"`
+			Posted         int    `json:"posted"`
+			Pending        int    `json:"pending"`
+			FailedTerminal int    `json:"failed_terminal"`
+			Aborted        bool   `json:"aborted"`
 		} `json:"outbox"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
 		t.Fatalf("Unmarshal stdout: %v\n%s", err, out.String())
 	}
-	if decoded.Run.RunID != "respond-run-1" || decoded.Run.Outcome != "comment" || decoded.Counts.Responded != 1 || decoded.Outbox.Posted != 2 {
+	if decoded.Run.RunID != "respond-run-1" ||
+		decoded.Run.PRURL != "https://github.com/open-cli-collective/codereview-cli/pull/29" ||
+		decoded.Run.PRKey != "github.com_open-cli-collective_codereview-cli_29" ||
+		decoded.Run.PostMode != "live" ||
+		decoded.Run.Outcome != "comment" ||
+		decoded.Run.ArtifactPath != "/tmp/respond-run-1" ||
+		decoded.Run.BaseSHA != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ||
+		decoded.Run.HeadSHA != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
+		decoded.Counts.Considered != 1 ||
+		decoded.Counts.Responded != 1 ||
+		decoded.Counts.Resolved != 1 ||
+		decoded.Counts.Planned != 2 ||
+		decoded.Outbox.Outcome != "comment" ||
+		decoded.Outbox.ExitCode != 0 ||
+		decoded.Outbox.Posted != 2 ||
+		decoded.Outbox.Pending != 0 ||
+		decoded.Outbox.FailedTerminal != 0 ||
+		decoded.Outbox.Aborted {
 		t.Fatalf("decoded json = %#v, want response summary", decoded)
 	}
 }

@@ -166,6 +166,42 @@ func TestNormalizeDetectsLatestHumanReplyAfterLatestCR(t *testing.T) {
 	}
 }
 
+func TestPendingCRAuthoredFindingThreadsRequiresHumanReplyAfterCR(t *testing.T) {
+	threads, err := Normalize([]gitprovider.InlineThread{
+		{
+			ID:   "thread-pending",
+			Path: "main.go",
+			Comments: []gitprovider.ThreadComment{
+				comment("pending-cr", bot(), "finding\n"+actionMarker(t, marker.ActionKindInlineComment), at(1)),
+				comment("pending-human", human(), "reply", at(2)),
+			},
+		},
+		{
+			ID:   "thread-no-human",
+			Path: "main.go",
+			Comments: []gitprovider.ThreadComment{
+				comment("no-human-cr", bot(), "finding\n"+actionMarker(t, marker.ActionKindInlineComment), at(3)),
+			},
+		},
+		{
+			ID:   "thread-human-before",
+			Path: "main.go",
+			Comments: []gitprovider.ThreadComment{
+				comment("human-before", human(), "before", at(4)),
+				comment("after-cr", bot(), "finding\n"+actionMarker(t, marker.ActionKindInlineComment), at(5)),
+			},
+		},
+	}, Options{PostingIdentity: bot()})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	got := PendingCRAuthoredFindingThreads(threads)
+	if len(got) != 1 || got[0].ID != "thread-pending" {
+		t.Fatalf("eligible threads = %#v, want only thread-pending", got)
+	}
+}
+
 func TestNormalizeThreadSummaryResetsPendingHumanReplyDetection(t *testing.T) {
 	threads, err := Normalize([]gitprovider.InlineThread{{
 		ID:       "thread-1",

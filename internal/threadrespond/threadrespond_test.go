@@ -110,6 +110,37 @@ func TestRunLivePostsThroughOutbox(t *testing.T) {
 	if summaries := marker.FindThreadSummaries(replies[0].Body); len(summaries) != 1 {
 		t.Fatalf("reply body summaries = %#v, want one summary marker", summaries)
 	}
+	postedActions, err := fixture.store.ListPlannedActions(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListPlannedActions posted: %v", err)
+	}
+	if len(postedActions) != 2 {
+		t.Fatalf("posted actions = %#v, want reply and resolve", postedActions)
+	}
+	var sawPostedReply, sawPostedResolve bool
+	for _, action := range postedActions {
+		if action.Status != ledger.PlannedActionPosted || action.PostedAt == nil || action.UpstreamID == nil {
+			t.Fatalf("posted action = %#v, want posted status/upstream metadata", action)
+		}
+		switch action.Kind {
+		case ledger.PlannedActionThreadReply:
+			sawPostedReply = true
+			summaries := marker.FindThreadSummaries(replies[0].Body)
+			if len(summaries) != 1 || summaries[0].ActionID != action.ActionID || summaries[0].RunID != result.Run.RunID {
+				t.Fatalf("reply summary markers = %#v, want persisted action %s for run %s", summaries, action.ActionID, result.Run.RunID)
+			}
+		case ledger.PlannedActionResolveThread:
+			sawPostedResolve = true
+			if action.ThreadID == nil || *action.ThreadID != "thread-1" {
+				t.Fatalf("resolve action = %#v, want thread-1", action)
+			}
+		case ledger.PlannedActionInlineComment, ledger.PlannedActionRollupComment, ledger.PlannedActionSubmitReview:
+			t.Fatalf("posted action kind = %s, want thread reply/resolve", action.Kind)
+		}
+	}
+	if !sawPostedReply || !sawPostedResolve {
+		t.Fatalf("posted actions = %#v, want reply and resolve", postedActions)
+	}
 	resolved := fixture.provider.RecordedResolvedThreads(fixture.ref)
 	if !reflect.DeepEqual(resolved, []gitprovider.ThreadID{"thread-1"}) {
 		t.Fatalf("resolved threads = %#v, want thread-1", resolved)
