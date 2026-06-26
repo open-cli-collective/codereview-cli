@@ -250,6 +250,96 @@ func TestDryRunResumesIncompleteRunAttempt(t *testing.T) {
 	}
 }
 
+func TestDryRunResumeLoadsCompletedTasksAndRerunsFailedTaskOnly(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocateDryRunForProvider(t, store, layout, provider, req, "run-task-resume", fixedNow().Add(-time.Minute))
+
+	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
+	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	firstAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	firstAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
+	firstAdapter.Queue(fakeLLMResult("rollup-retry-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
+	_, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         firstAdapter,
+		Store:           store,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewRunID:        func() string { return "unexpected-fresh-run" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err == nil || !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+		t.Fatalf("first DryRun error = %v, want invalid rollup after retry", err)
+	}
+	stored, err := store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun first: %v", err)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeIncomplete {
+		t.Fatalf("first run outcome = %#v, want incomplete", stored.Outcome)
+	}
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	for _, taskID := range []string{orchestratorSelectionStage, reviewerTaskID("harness:reviewer")} {
+		meta, ok, err := readLLMTaskMetadata(artifacts, taskID)
+		if err != nil || !ok || meta.Status != llmTaskStatusSucceeded {
+			t.Fatalf("task %s metadata = %#v ok %v err %v, want succeeded", taskID, meta, ok, err)
+		}
+	}
+	rollupMeta, ok, err := readLLMTaskMetadata(artifacts, orchestratorRollupStage)
+	if err != nil || !ok || rollupMeta.Status != llmTaskStatusFailedBlocking {
+		t.Fatalf("rollup metadata = %#v ok %v err %v, want failed_blocking", rollupMeta, ok, err)
+	}
+
+	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	secondAdapter.Queue(fakeLLMResult("rollup-fixed-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	result, err := dryRunForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  secondAdapter,
+		Store:    store,
+		Layout:   layout,
+		Now:      fixedNow,
+		NewRunID: func() string {
+			t.Fatal("NewRunID called despite resumable dry-run")
+			return "unexpected"
+		},
+		NewSessionRowID: sequence("resume-session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("second DryRun: %v", err)
+	}
+	if result.Run.RunID != run.RunID || result.Artifacts.Dir != run.ArtifactPath {
+		t.Fatalf("result run/artifacts = %q %q, want %q %q", result.Run.RunID, result.Artifacts.Dir, run.RunID, run.ArtifactPath)
+	}
+	if len(secondAdapter.Requests()) != 0 {
+		t.Fatalf("second adapter starts = %#v, want cached completed tasks and resumed rollup only", secondAdapter.Requests())
+	}
+	resumes := secondAdapter.Resumes()
+	if len(resumes) != 1 || resumes[0].SessionID != "rollup-retry-session" {
+		t.Fatalf("second adapter resumes = %#v, want only failed rollup retry session", resumes)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
+		t.Fatalf("result findings = %#v, want cached reviewer finding", result.Findings)
+	}
+	stored, err = store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun second: %v", err)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeDryRun {
+		t.Fatalf("second run outcome = %#v, want dry_run", stored.Outcome)
+	}
+}
+
 func TestDryRunRerunBypassesIncompleteRunAttempt(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)

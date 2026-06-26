@@ -1051,6 +1051,24 @@ func TestReviewNoPostIsDryRunAlias(t *testing.T) {
 	}
 }
 
+func TestReviewDryRunRerunFlagCallsDryRunner(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--rerun"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("dry runner calls = %d, want 1", len(runner.requests))
+	}
+	if len(runner.liveRequests) != 0 {
+		t.Fatalf("live runner calls = %d, want 0", len(runner.liveRequests))
+	}
+	if !runner.requests[0].Rerun {
+		t.Fatalf("dry-run request = %#v, want rerun propagated", runner.requests[0])
+	}
+}
+
 func TestReviewDryRunPassesStageOverrides(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
