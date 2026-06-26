@@ -24,8 +24,10 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
 
@@ -3922,29 +3924,29 @@ func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
-	provider.threads = []gitprovider.InlineThread{{
-		ID:          "thread-1",
-		Resolved:    false,
-		Path:        "main.go",
-		Side:        review.DiffSideRight,
-		Line:        2,
-		SubjectType: review.AnchorKindLine,
-	}}
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	provider.threads = []gitprovider.InlineThread{
+		markedReviewThread(t, "thread-1", "main.go", 2, req.PostingIdentity, human),
+	}
 	provider.caps.ThreadResolution = true
 	req.NoResolveThreads = true
 	req.Profile.AgentSources = nil
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, []threadSummary{{path: "main.go", line: 2, status: "noted", summary: "Thread summary"}}), 1, 1))
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 1, 1))
 	adapter.Queue(fakeLLMResult("selection-session", `{
 		"schema_version": 1,
 		"selected_agents": [],
-		"thread_actions": [{
-			"thread_id": "thread-1",
-			"decision": "summarize_and_resolve",
-			"summary": "Summary only",
-			"safe_to_resolve_rationale": "safe"
-		}],
+		"thread_actions": [],
 		"reasoning": "thread cleanup"
+	}`, 1, 1))
+	adapter.Queue(fakeLLMResult("thread-analysis-session", `{
+		"schema_version": 1,
+		"thread_id": "thread-1",
+		"decision": "summarize",
+		"reply_body": "",
+		"summary": "Summary only",
+		"resolve": true,
+		"rationale": "safe"
 	}`, 1, 1))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 1, 1))
 
@@ -3965,6 +3967,20 @@ func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	}
 	if result.EffectiveCaps.ThreadResolution {
 		t.Fatal("EffectiveCaps.ThreadResolution = true, want disabled by request")
+	}
+	requests := adapter.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("adapter requests = %d, want dossier/selection/thread-analysis/rollup", len(requests))
+	}
+	if !strings.Contains(requests[1].Prompt, `"status": "pending_human_reply"`) || strings.Contains(requests[1].Prompt, "<!-- codereview:") {
+		t.Fatalf("selection prompt did not use sanitized normalized thread context:\n%s", requests[1].Prompt)
+	}
+	meta, ok, err := readLLMTaskMetadata(result.Artifacts, "thread-analysis-thread-1")
+	if err != nil || !ok {
+		t.Fatalf("read thread analysis metadata ok=%t err=%v", ok, err)
+	}
+	if meta.Status != llmTaskStatusSucceeded || meta.Phase != string(stagemodel.StageThreadAnalysis) {
+		t.Fatalf("thread analysis metadata = %#v, want succeeded thread_analysis", meta)
 	}
 	var sawReply, sawResolve bool
 	for _, action := range result.Plan.Actions {
@@ -5857,6 +5873,7 @@ func selectionRequestFromReview(req Request, artifactDir string) SelectionReques
 		PRRef:                       req.PRRef,
 		ProfileName:                 req.ProfileName,
 		Profile:                     req.Profile,
+		PostingIdentity:             req.PostingIdentity,
 		AgentDirs:                   append([]string(nil), req.AgentDirs...),
 		ArtifactDir:                 artifactDir,
 		ReviewBaseSHA:               req.ReviewBaseSHA,
@@ -6019,6 +6036,59 @@ func actionSequence() func(reviewplan.ActionKind) (string, error) {
 	return func(kind reviewplan.ActionKind) (string, error) {
 		counters[kind]++
 		return fmt.Sprintf("%s-%d", kind, counters[kind]), nil
+	}
+}
+
+func markedReviewThread(t *testing.T, id, path string, line int, bot, human gitprovider.Identity) gitprovider.InlineThread {
+	t.Helper()
+	action, err := marker.RenderAction(marker.ActionMarker{
+		RunID:    "old-run",
+		ActionID: "old-action",
+		Kind:     marker.ActionKindInlineComment,
+		SHA:      strings.Repeat("a", 40),
+		BaseSHA:  strings.Repeat("b", 40),
+	})
+	if err != nil {
+		t.Fatalf("RenderAction: %v", err)
+	}
+	threadID := gitprovider.ThreadID(id)
+	created := fixedNow()
+	return gitprovider.InlineThread{
+		ID:          threadID,
+		Resolved:    false,
+		Path:        path,
+		Side:        review.DiffSideRight,
+		Line:        line,
+		SubjectType: review.AnchorKindLine,
+		CommitSHA:   strings.Repeat("a", 40),
+		Comments: []gitprovider.ThreadComment{
+			{
+				ID:          gitprovider.CommentID(id + "-cr"),
+				ThreadID:    threadID,
+				Body:        action + "\nOriginal finding.",
+				Author:      bot,
+				CommitSHA:   strings.Repeat("a", 40),
+				Path:        path,
+				Side:        review.DiffSideRight,
+				Line:        line,
+				SubjectType: review.AnchorKindLine,
+				CreatedAt:   created,
+				UpdatedAt:   created,
+			},
+			{
+				ID:          gitprovider.CommentID(id + "-human"),
+				ThreadID:    threadID,
+				Body:        "Human reply",
+				Author:      human,
+				CommitSHA:   strings.Repeat("a", 40),
+				Path:        path,
+				Side:        review.DiffSideRight,
+				Line:        line,
+				SubjectType: review.AnchorKindLine,
+				CreatedAt:   created.Add(time.Minute),
+				UpdatedAt:   created.Add(time.Minute),
+			},
+		},
 	}
 }
 

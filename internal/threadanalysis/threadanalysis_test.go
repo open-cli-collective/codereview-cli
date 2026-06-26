@@ -137,6 +137,28 @@ func TestAnalyzeThreadRejectsStaleLifecycleContextBeforeProviderCall(t *testing.
 	}
 }
 
+func TestAnalyzeThreadRejectsChangedModelBeforeProviderCall(t *testing.T) {
+	store := newFakeStore()
+	adapter := &llm.FakeAdapter{NameValue: "fake"}
+	adapter.Queue(llm.FakeResult{SessionID: "session-1", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
+	opts := testOptions(t, store, adapter)
+
+	thread := promptThread("reply")
+	if _, err := AnalyzeThread(context.Background(), opts, thread); err != nil {
+		t.Fatalf("AnalyzeThread first: %v", err)
+	}
+	staleAdapter := &llm.FakeAdapter{NameValue: "fake"}
+	opts.Adapter = staleAdapter
+	opts.Model = "gpt-5.5"
+	_, err := AnalyzeThread(context.Background(), opts, thread)
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("AnalyzeThread changed model error = %v, want fingerprint error", err)
+	}
+	if len(staleAdapter.Requests()) != 0 {
+		t.Fatalf("stale adapter requests = %#v, want no provider call", staleAdapter.Requests())
+	}
+}
+
 func TestAnalyzeThreadsPreservesOrderAndFailsFast(t *testing.T) {
 	store := newFakeStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake"}
@@ -322,6 +344,7 @@ func TestProductionImportsStayDomainOnly(t *testing.T) {
 	allowedInternal := map[string]bool{
 		"github.com/open-cli-collective/codereview-cli/internal/llm":           true,
 		"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle":  true,
+		"github.com/open-cli-collective/codereview-cli/internal/review":        true,
 		"github.com/open-cli-collective/codereview-cli/internal/stagemodel":    true,
 		"github.com/open-cli-collective/codereview-cli/internal/threadcontext": true,
 	}

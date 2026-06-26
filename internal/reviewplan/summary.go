@@ -112,8 +112,10 @@ func (r RunSummary) hasData() bool {
 
 func (b *builder) deriveSummary(rendered []review.Finding) Summary {
 	run := b.req.RunSummary
+	threads := threadSummaryCounts(b.req.ThreadActions, b.req.ProviderCaps)
+	threads = addThreadCounts(threads, threadResponseSummaryCounts(b.req.ThreadResponses, b.req.ProviderCaps))
 	summary := Summary{
-		Threads: threadSummaryCounts(b.req.ThreadActions, b.req.ProviderCaps),
+		Threads: threads,
 		Run:     run,
 		Totals:  aggregateUsage(run.Workstreams),
 	}
@@ -123,6 +125,14 @@ func (b *builder) deriveSummary(rendered []review.Finding) Summary {
 		summary.Reviewers = b.reviewerSummaries(rendered)
 	}
 	return summary
+}
+
+func addThreadCounts(left, right ThreadCounts) ThreadCounts {
+	return ThreadCounts{
+		Considered: left.Considered + right.Considered,
+		Summarized: left.Summarized + right.Summarized,
+		Resolved:   left.Resolved + right.Resolved,
+	}
 }
 
 // reviewerSummaries lists every selected reviewer in selection order with its

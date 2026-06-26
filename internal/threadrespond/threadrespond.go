@@ -430,81 +430,11 @@ func analyzeThreads(ctx context.Context, opts Options, run ledger.Run, artifacts
 }
 
 func eligibleThreads(threads []threadcontext.Thread) []threadcontext.Thread {
-	out := make([]threadcontext.Thread, 0, len(threads))
-	for _, thread := range threads {
-		if thread.Resolved {
-			continue
-		}
-		if !thread.Status.CRAuthoredFinding || !thread.Status.PendingHumanReply {
-			continue
-		}
-		out = append(out, thread)
-	}
-	return out
+	return threadcontext.PendingCRAuthoredFindingThreads(threads)
 }
 
 func responsesFromAnalyses(analyses []threadanalysis.Result) []review.ThreadResponseAction {
-	responses := make([]review.ThreadResponseAction, 0, len(analyses))
-	for _, analysis := range analyses {
-		response, ok := responseFromAnalysis(analysis)
-		if ok {
-			responses = append(responses, response)
-		}
-	}
-	return responses
-}
-
-func responseFromAnalysis(result threadanalysis.Result) (review.ThreadResponseAction, bool) {
-	threadID := strings.TrimSpace(result.ThreadID)
-	switch result.Decision {
-	case threadanalysis.DecisionSkip:
-		return review.ThreadResponseAction{}, false
-	case threadanalysis.DecisionReplyOnly, threadanalysis.DecisionClarify:
-		return review.ThreadResponseAction{
-			Kind:      review.ThreadResponseReply,
-			ThreadID:  threadID,
-			Body:      result.ReplyBody,
-			Rationale: result.Rationale,
-		}, true
-	case threadanalysis.DecisionAcknowledge, threadanalysis.DecisionConcede:
-		if strings.TrimSpace(result.Summary) == "" {
-			return review.ThreadResponseAction{
-				Kind:      review.ThreadResponseReply,
-				ThreadID:  threadID,
-				Body:      result.ReplyBody,
-				Rationale: result.Rationale,
-			}, true
-		}
-		return review.ThreadResponseAction{
-			Kind:      review.ThreadResponseSummaryReply,
-			ThreadID:  threadID,
-			Body:      combineReplyAndSummary(result.ReplyBody, result.Summary),
-			Resolve:   result.Resolve,
-			Rationale: result.Rationale,
-		}, true
-	case threadanalysis.DecisionSummarize:
-		return review.ThreadResponseAction{
-			Kind:      review.ThreadResponseSummaryReply,
-			ThreadID:  threadID,
-			Body:      result.Summary,
-			Resolve:   true,
-			Rationale: result.Rationale,
-		}, true
-	default:
-		return review.ThreadResponseAction{}, false
-	}
-}
-
-func combineReplyAndSummary(reply, summary string) string {
-	reply = threadcontext.SanitizeBody(reply)
-	summary = threadcontext.SanitizeBody(summary)
-	if reply == "" {
-		return summary
-	}
-	if summary == "" {
-		return reply
-	}
-	return reply + "\n\nSummary:\n" + summary
+	return threadanalysis.ResponseActions(analyses)
 }
 
 func allocateOrResumeRun(ctx context.Context, opts Options, req Request, pr gitprovider.PR, prKey string, mode ledger.PostMode) (ledger.Run, pipeline.ArtifactPaths, error) {

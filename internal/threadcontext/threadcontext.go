@@ -155,6 +155,22 @@ func FileScopedResolvedSummaries(threads []Thread) []FileContext {
 	return out
 }
 
+// PendingCRAuthoredFindingThreads filters to unresolved CR-authored finding
+// threads that have a human reply after the latest CR-authored comment.
+func PendingCRAuthoredFindingThreads(threads []Thread) []Thread {
+	out := make([]Thread, 0, len(threads))
+	for _, thread := range threads {
+		if thread.Resolved {
+			continue
+		}
+		if !thread.Status.CRAuthoredFinding || !thread.Status.PendingHumanReply {
+			continue
+		}
+		out = append(out, thread)
+	}
+	return out
+}
+
 // SanitizeBody removes closed codereview marker comments and escapes any
 // remaining marker opening so prompt-facing text cannot carry live markers.
 func SanitizeBody(body string) string {

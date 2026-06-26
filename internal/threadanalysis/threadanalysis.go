@@ -5,8 +5,6 @@ package threadanalysis
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +13,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
@@ -67,6 +66,7 @@ type Options struct {
 	LogPath         string
 	LifecyclePaths  llmlifecycle.Paths
 	ResumeSessionID string
+	Progress        llmlifecycle.Progress
 	Now             func() time.Time
 	NewStepID       func() string
 }
@@ -82,29 +82,26 @@ func AnalyzeThread(ctx context.Context, opts Options, thread threadcontext.Threa
 		return zero, fmt.Errorf("threadanalysis: thread ID is required")
 	}
 	input := analysisInputForThread(threadID, thread)
-	inputHash, err := hashInput(input)
-	if err != nil {
-		return zero, err
-	}
 	prompt, err := promptForInput(input)
 	if err != nil {
 		return zero, err
 	}
+	taskID := "thread-analysis-" + threadID
 	result, err := llmlifecycle.RunStructured(ctx, llmlifecycle.Request{
-		Store:            opts.Store,
-		Adapter:          opts.Adapter,
-		RunID:            opts.RunID,
-		TaskID:           "thread-analysis-" + threadID,
-		Phase:            string(stagemodel.StageThreadAnalysis),
-		InputFingerprint: inputHash,
-		Paths:            opts.LifecyclePaths,
-		Model:            opts.Model,
-		Effort:           opts.Effort,
-		LogPath:          opts.LogPath,
-		Prompt:           prompt,
-		ResumeSessionID:  opts.ResumeSessionID,
-		Now:              opts.Now,
-		NewSessionRowID:  opts.NewStepID,
+		Store:           opts.Store,
+		Adapter:         opts.Adapter,
+		RunID:           opts.RunID,
+		TaskID:          taskID,
+		Phase:           string(stagemodel.StageThreadAnalysis),
+		Paths:           opts.LifecyclePaths,
+		Model:           opts.Model,
+		Effort:          opts.Effort,
+		LogPath:         opts.LogPath,
+		Prompt:          prompt,
+		ResumeSessionID: opts.ResumeSessionID,
+		Progress:        opts.Progress,
+		Now:             opts.Now,
+		NewSessionRowID: opts.NewStepID,
 	}, decodeResultForThread(threadID))
 	if err != nil {
 		return zero, err
@@ -123,6 +120,73 @@ func AnalyzeThreads(ctx context.Context, opts Options, threads []threadcontext.T
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+// ResponseActions converts thread-analysis decisions into concrete thread
+// responses that can be planned through reviewplan/ledger/outbox.
+func ResponseActions(results []Result) []review.ThreadResponseAction {
+	responses := make([]review.ThreadResponseAction, 0, len(results))
+	for _, result := range results {
+		response, ok := ResponseAction(result)
+		if ok {
+			responses = append(responses, response)
+		}
+	}
+	return responses
+}
+
+// ResponseAction converts one thread-analysis decision into a concrete response.
+func ResponseAction(result Result) (review.ThreadResponseAction, bool) {
+	threadID := strings.TrimSpace(result.ThreadID)
+	switch result.Decision {
+	case DecisionSkip:
+		return review.ThreadResponseAction{}, false
+	case DecisionReplyOnly, DecisionClarify:
+		return review.ThreadResponseAction{
+			Kind:      review.ThreadResponseReply,
+			ThreadID:  threadID,
+			Body:      result.ReplyBody,
+			Rationale: result.Rationale,
+		}, true
+	case DecisionAcknowledge, DecisionConcede:
+		if strings.TrimSpace(result.Summary) == "" {
+			return review.ThreadResponseAction{
+				Kind:      review.ThreadResponseReply,
+				ThreadID:  threadID,
+				Body:      result.ReplyBody,
+				Rationale: result.Rationale,
+			}, true
+		}
+		return review.ThreadResponseAction{
+			Kind:      review.ThreadResponseSummaryReply,
+			ThreadID:  threadID,
+			Body:      combineReplyAndSummary(result.ReplyBody, result.Summary),
+			Resolve:   result.Resolve,
+			Rationale: result.Rationale,
+		}, true
+	case DecisionSummarize:
+		return review.ThreadResponseAction{
+			Kind:      review.ThreadResponseSummaryReply,
+			ThreadID:  threadID,
+			Body:      result.Summary,
+			Resolve:   true,
+			Rationale: result.Rationale,
+		}, true
+	default:
+		return review.ThreadResponseAction{}, false
+	}
+}
+
+func combineReplyAndSummary(reply, summary string) string {
+	reply = threadcontext.SanitizeBody(reply)
+	summary = threadcontext.SanitizeBody(summary)
+	if reply == "" {
+		return summary
+	}
+	if summary == "" {
+		return reply
+	}
+	return reply + "\n\nSummary:\n" + summary
 }
 
 func validateOptions(opts Options) error {
@@ -294,15 +358,6 @@ func promptForInput(input analysisInput) (string, error) {
 		return "", fmt.Errorf("threadanalysis: prompt contains live codereview marker")
 	}
 	return prompt, nil
-}
-
-func hashInput(input analysisInput) (string, error) {
-	data, err := json.Marshal(input)
-	if err != nil {
-		return "", fmt.Errorf("threadanalysis: encode input hash: %w", err)
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
 }
 
 func analysisAnchorFor(anchor threadcontext.Anchor) analysisAnchor {

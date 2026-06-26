@@ -106,7 +106,10 @@ type Request struct {
 	Findings      []review.Finding
 	Rollup        review.Rollup
 	ThreadActions []review.ThreadAction
-	EventOptions  EventOptions
+	// ThreadResponses are lifecycle-domain replies/resolutions for existing
+	// inline discussion threads.
+	ThreadResponses []review.ThreadResponseAction
+	EventOptions    EventOptions
 
 	NoDiff                  bool
 	Profile                 string
@@ -463,6 +466,11 @@ func (b *builder) buildReview() (Plan, error) {
 	}
 	actions = append(actions, threadReplies...)
 	actions = append(actions, resolves...)
+	responseActions, err := b.threadResponseActions(b.req.ThreadResponses)
+	if err != nil {
+		return Plan{}, err
+	}
+	actions = append(actions, responseActions...)
 
 	commentActions, err := b.commentActions(ordered)
 	if err != nil {
@@ -976,6 +984,23 @@ func threadSummaryCounts(actions []review.ThreadAction, caps ProviderCaps) Threa
 		counts.Considered++
 		counts.Summarized++
 		if action.Decision == review.ThreadDecisionSummarizeAndResolve && caps.ThreadResolution {
+			counts.Resolved++
+		}
+	}
+	return counts
+}
+
+func threadResponseSummaryCounts(responses []review.ThreadResponseAction, caps ProviderCaps) ThreadCounts {
+	var counts ThreadCounts
+	for _, response := range responses {
+		if strings.TrimSpace(response.ThreadID) == "" {
+			continue
+		}
+		counts.Considered++
+		if response.Kind == review.ThreadResponseSummaryReply {
+			counts.Summarized++
+		}
+		if response.Resolve && caps.ThreadResolution {
 			counts.Resolved++
 		}
 	}

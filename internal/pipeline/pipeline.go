@@ -39,6 +39,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/sessionreuse"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/threadanalysis"
+	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
 
 const (
@@ -166,13 +168,14 @@ type Request struct {
 
 // SelectionRequest runs only the selection phase without review persistence or posting.
 type SelectionRequest struct {
-	PRRef         gitprovider.PRRef
-	ProfileName   string
-	Profile       config.Profile
-	AgentDirs     []string
-	ArtifactDir   string
-	ReviewBaseSHA string
-	ReviewHeadSHA string
+	PRRef           gitprovider.PRRef
+	ProfileName     string
+	Profile         config.Profile
+	PostingIdentity gitprovider.Identity
+	AgentDirs       []string
+	ArtifactDir     string
+	ReviewBaseSHA   string
+	ReviewHeadSHA   string
 
 	SelectionModelOverride      string
 	SelectionEffortOverride     string
@@ -443,6 +446,7 @@ type namedSessionState struct {
 type selectionSetupRequest struct {
 	PRRef            gitprovider.PRRef
 	Profile          config.Profile
+	PostingIdentity  gitprovider.Identity
 	AgentDirs        []string
 	ReviewBaseSHA    string
 	ReviewHeadSHA    string
@@ -463,6 +467,7 @@ type preparedSelectionContext struct {
 	parsed           ParsedDiff
 	changedFiles     []string
 	threads          []gitprovider.InlineThread
+	threadContext    []threadcontext.Thread
 	reviews          []gitprovider.Review
 	issueComments    []gitprovider.IssueComment
 	catalog          agents.Catalog
@@ -484,6 +489,7 @@ type selectionPhaseRequest struct {
 	Catalog                     agents.Catalog
 	ParsedDiff                  ParsedDiff
 	Threads                     []gitprovider.InlineThread
+	ThreadContext               []threadcontext.Thread
 	Artifacts                   ArtifactPaths
 	ResumeSessionID             string
 	MaxAgents                   int
@@ -547,6 +553,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
 		PRRef:            req.PRRef,
 		Profile:          req.Profile,
+		PostingIdentity:  req.PostingIdentity,
 		AgentDirs:        req.AgentDirs,
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
@@ -594,6 +601,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		Catalog:                     prepared.catalog,
 		ParsedDiff:                  prepared.parsed,
 		Threads:                     prepared.threads,
+		ThreadContext:               prepared.threadContext,
 		Artifacts:                   prepared.artifacts,
 		MaxAgents:                   opts.maxAgents(),
 	})
@@ -652,6 +660,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
 		PRRef:            req.PRRef,
 		Profile:          req.Profile,
+		PostingIdentity:  req.PostingIdentity,
 		AgentDirs:        req.AgentDirs,
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
@@ -759,6 +768,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			Catalog:                     prepared.catalog,
 			ParsedDiff:                  prepared.parsed,
 			Threads:                     prepared.threads,
+			ThreadContext:               prepared.threadContext,
 			Artifacts:                   prepared.artifacts,
 			ResumeSessionID:             namedSession.resumeID(),
 			MaxAgents:                   maxAgents,
@@ -774,6 +784,13 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		namedSession.recordSessionID(selectionSession)
 
 		selectionTaskIDs := []string{orchestratorSelectionStage}
+		threadResponses, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext)
+		if err != nil {
+			if errors.Is(err, errLLMTaskFailedBlocking) {
+				failureOutcome = ledger.OutcomeIncomplete
+			}
+			return Result{}, err
+		}
 		findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, reviewerFindingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency)
 		if err != nil {
 			if errors.Is(err, errLLMTaskFailedBlocking) {
@@ -843,6 +860,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 
 		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
+			threadResponses:  threadResponses,
 			hasRun:           true,
 			selection:        selectionSession,
 			reviewers:        reviewerSessions,
@@ -1023,12 +1041,19 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		return preparedSelectionContext{}, err
 	}
 	var threads []gitprovider.InlineThread
+	var threadContext []threadcontext.Thread
 	var reviews []gitprovider.Review
 	var issueComments []gitprovider.IssueComment
 	if !reviewCtx.pinnedReview {
 		threads, err = opts.Provider.ListInlineThreads(ctx, req.PRRef)
 		if err != nil {
 			return preparedSelectionContext{}, err
+		}
+		if strings.TrimSpace(req.PostingIdentity.ID) != "" || strings.TrimSpace(req.PostingIdentity.Login) != "" {
+			threadContext, err = threadcontext.Normalize(threads, threadcontext.Options{PostingIdentity: req.PostingIdentity})
+			if err != nil {
+				return preparedSelectionContext{}, err
+			}
 		}
 		reviews, err = opts.Provider.ListReviews(ctx, req.PRRef)
 		if err != nil {
@@ -1061,6 +1086,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		parsed:           parsed,
 		changedFiles:     patchPaths(parsed.Patches),
 		threads:          threads,
+		threadContext:    threadContext,
 		reviews:          reviews,
 		issueComments:    issueComments,
 		catalog:          catalog,
@@ -1124,6 +1150,11 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 
 	promptInput, promptDeps, err := selectionPromptInputFromArtifacts(req.Artifacts, req.Threads)
+	knownThreadIDs := knownThreads(req.Threads)
+	if len(req.ThreadContext) > 0 {
+		promptInput, promptDeps, err = selectionPromptInputFromThreadContext(req.Artifacts, req.ThreadContext)
+		knownThreadIDs = map[string]bool{}
+	}
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
 	}
@@ -1144,7 +1175,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 		return llm.DecodeSelection(data, llm.SelectionOptions{
 			KnownAgents:  knownAgents(req.Catalog),
 			ChangedFiles: changedFiles(req.ParsedDiff.Patches),
-			KnownThreads: knownThreads(req.Threads),
+			KnownThreads: knownThreadIDs,
 		})
 	}
 	if strings.TrimSpace(req.RunID) != "" {
@@ -1191,6 +1222,41 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	}
 	selection = opts.capSelectionAgents(selection, req.MaxAgents)
 	return selection, selectionSession, ledger.Session{}, nil
+}
+
+func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts ArtifactPaths, threads []threadcontext.Thread) ([]review.ThreadResponseAction, error) {
+	eligible := threadcontext.PendingCRAuthoredFindingThreads(threads)
+	if len(eligible) == 0 {
+		return nil, nil
+	}
+	runtimeConfig, err := resolveThreadAnalysisRuntimeConfig(req.Profile)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]threadanalysis.Result, 0, len(eligible))
+	for _, thread := range eligible {
+		logPath, err := artifacts.AgentLog("thread-analysis-" + string(thread.ID))
+		if err != nil {
+			return nil, err
+		}
+		result, err := threadanalysis.AnalyzeThread(ctx, threadanalysis.Options{
+			Store:          opts.Store,
+			RunID:          run.RunID,
+			Adapter:        opts.Adapter,
+			Model:          runtimeConfig.model,
+			Effort:         runtimeConfig.effort,
+			LogPath:        logPath,
+			LifecyclePaths: lifecyclePaths(artifacts),
+			Progress:       opts.TaskProgress,
+			Now:            opts.now,
+			NewStepID:      opts.newSessionRowID,
+		}, thread)
+		if err != nil {
+			return nil, pipelineTaskError(err)
+		}
+		results = append(results, result)
+	}
+	return threadanalysis.ResponseActions(results), nil
 }
 
 func (opts Options) capSelectionAgents(selection llm.Selection, maxAgents int) llm.Selection {
@@ -1937,6 +2003,7 @@ type planRunInputs struct {
 	reviewers        []sessionDraft
 	rollup           sessionDraft
 	selectedAgents   []llm.SelectedAgent
+	threadResponses  []review.ThreadResponseAction
 	findingSessions  map[review.FindingID]string
 	reviewerFailures []ReviewerFailure
 	reviewerCoverage []reviewplan.ReviewerCoverageSummary
@@ -2213,12 +2280,13 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewplan.PostMode, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool, runInputs planRunInputs) (reviewplan.Plan, error) {
 	runSummary, findingReviewers := opts.buildRunSummary(req, runInputs)
 	return reviewplan.Build(reviewplan.Request{
-		PostMode:      postMode,
-		ProviderCaps:  caps,
-		Diff:          diff,
-		Findings:      findings,
-		Rollup:        rollup,
-		ThreadActions: threadActions,
+		PostMode:        postMode,
+		ProviderCaps:    caps,
+		Diff:            diff,
+		Findings:        findings,
+		Rollup:          rollup,
+		ThreadActions:   threadActions,
+		ThreadResponses: append([]review.ThreadResponseAction(nil), runInputs.threadResponses...),
 		EventOptions: reviewplan.EventOptions{
 			MajorEventRequestsChanges: req.MajorRequestChanges,
 			PostingIdentityIsPRAuthor: sameIdentity(pr.Author, req.PostingIdentity),
@@ -2415,7 +2483,7 @@ type reviewerPromptInput struct {
 	Assignment reviewerPromptAssignment `json:"assignment"`
 }
 
-const defaultSelectionTask = "select reviewer agents and thread actions from dossier/workbench context; return selection JSON only"
+const defaultSelectionTask = "select reviewer agents from dossier/workbench context; return selection JSON only"
 
 func buildSelectionPrompt(catalog agents.Catalog, input selectionPromptInput, maxAgents int, selectionInstructions string) (string, error) {
 	threadIDs := make([]string, 0, len(input.Threads))
@@ -2519,6 +2587,23 @@ func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovide
 		"dossier_index=" + sha256Hex(indexBytes),
 		"workbench_metadata=" + sha256Hex(metaBytes),
 	}
+	return input, deps, nil
+}
+
+func selectionPromptInputFromThreadContext(paths ArtifactPaths, threads []threadcontext.Thread) (selectionPromptInput, []string, error) {
+	input, deps, err := selectionPromptInputFromArtifacts(paths, nil)
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	summaryPath, err := paths.DossierSummaryPath("discussion.json")
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	var summary dossierDiscussionSummaryArtifact
+	if err := readJSONFile(summaryPath, &summary); err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	input.Threads = selectionThreadPromptsFromContext(threads, summary)
 	return input, deps, nil
 }
 
@@ -2629,6 +2714,52 @@ func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierD
 		out = append(out, promptThread)
 	}
 	return out
+}
+
+func selectionThreadPromptsFromContext(threads []threadcontext.Thread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
+	summaryByAnchor := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
+	for _, thread := range summary.InlineThreads {
+		key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
+		summaryByAnchor[key] = thread
+	}
+	out := make([]selectionThreadPrompt, 0, len(threads))
+	for _, thread := range threads {
+		promptThread := selectionThreadPrompt{
+			ThreadID:   string(thread.ID),
+			Path:       thread.Anchor.Path,
+			Line:       thread.Anchor.Line,
+			Side:       string(thread.Anchor.Side),
+			AnchorKind: string(thread.Anchor.SubjectType),
+			Resolved:   thread.Resolved,
+		}
+		if thread.ResolvedSummary != nil {
+			promptThread.Status = "settled"
+			promptThread.Summary = singleLineExcerpt(thread.ResolvedSummary.Body, dossierFinalExcerptRunes)
+		} else if summarized, ok := summaryByAnchor[dossierInlineThreadAnchorKey(thread.Anchor.Path, string(thread.Anchor.Side), thread.Anchor.Line, string(thread.Anchor.SubjectType))]; ok {
+			promptThread.Status = summarized.Status
+			promptThread.Summary = summarized.Summary
+		} else {
+			promptThread.Status = selectionThreadStatus(thread)
+			if len(thread.Comments) > 0 {
+				promptThread.Summary = singleLineExcerpt(thread.Comments[0].Body, dossierFinalExcerptRunes)
+			}
+		}
+		out = append(out, promptThread)
+	}
+	return out
+}
+
+func selectionThreadStatus(thread threadcontext.Thread) string {
+	switch {
+	case thread.Resolved:
+		return "settled"
+	case thread.Status.PendingHumanReply:
+		return "pending_human_reply"
+	case thread.Status.CRAuthoredFinding:
+		return "cr_authored"
+	default:
+		return "unresolved"
+	}
 }
 
 func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure, reviewerCoverage []reviewplan.ReviewerCoverageSummary) (string, error) {
@@ -2758,12 +2889,12 @@ func selectionOutputContract(agents []agents.Agent, changedFiles []string, threa
 			"selected_agents[].files must contain only paths from changed_files.",
 			"selected_agents[].allowed_files must contain only paths from changed_files when present.",
 			"selected_agents must contain at most max_selected_agents entries, ordered from highest to lowest review value.",
-			"thread_actions must be an empty array when there are no threads.",
+			"thread_actions must always be an empty array. Thread lifecycle replies and resolution are handled by the thread_analysis stage.",
 		},
 		ResponseSchema: map[string]any{
 			"schema_version":  "number, required, must be 1",
 			"selected_agents": "array of {agent_id: string, rationale: string, files: string[], allowed_files?: string[]}",
-			"thread_actions":  "array of {thread_id: string, decision: string, summary: string, safe_to_resolve_rationale: string}",
+			"thread_actions":  "empty array, required",
 			"reasoning":       "string",
 		},
 		AllowedValues: map[string]any{
@@ -2771,7 +2902,6 @@ func selectionOutputContract(agents []agents.Agent, changedFiles []string, threa
 			"changed_files":       changedFiles,
 			"known_thread_ids":    threadIDs,
 			"max_selected_agents": maxAgents,
-			"thread_decisions":    []string{"skip", "summarize_only", "summarize_and_resolve"},
 		},
 		Example: example,
 	}
@@ -5006,6 +5136,19 @@ func resolveSelectionRuntimeConfig(profile config.Profile, modelOverride, effort
 		ModelOverride:  modelOverride,
 		EffortOverride: effortOverride,
 		DefaultEffort:  string(modelprefs.EffortMedium),
+	})
+	if err != nil {
+		return llmRuntimeConfig{}, err
+	}
+	return llmRuntimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
+}
+
+func resolveThreadAnalysisRuntimeConfig(profile config.Profile) (llmRuntimeConfig, error) {
+	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+		Profile:       profile,
+		Stage:         stagemodel.StageThreadAnalysis,
+		Tier:          config.ModelTierMedium,
+		DefaultEffort: string(modelprefs.EffortMedium),
 	})
 	if err != nil {
 		return llmRuntimeConfig{}, err
