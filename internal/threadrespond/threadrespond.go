@@ -622,7 +622,12 @@ func completeFailedOnError(ctx context.Context, opts Options, result *Result, er
 	if errors.Is(*errp, context.Canceled) || errors.Is(*errp, context.DeadlineExceeded) {
 		return
 	}
-	_ = opts.Store.CompleteRun(ctx, result.Run.RunID, ledger.OutcomeFailed, opts.now())
+	outcome := ledger.OutcomeFailed
+	var taskErr *llmlifecycle.TaskError
+	if errors.As(*errp, &taskErr) && taskErr.Status() == llmlifecycle.StatusFailedBlocking {
+		outcome = ledger.OutcomeIncomplete
+	}
+	_ = opts.Store.CompleteRun(ctx, result.Run.RunID, outcome, opts.now())
 	if run, err := opts.Store.GetRun(ctx, result.Run.RunID); err == nil {
 		result.Run = run
 	}

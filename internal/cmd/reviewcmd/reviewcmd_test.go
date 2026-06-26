@@ -250,6 +250,8 @@ func TestRespondRealRunnerResumesInterruptedRunThroughCLI(t *testing.T) {
 	if len(runs) != 1 || runs[0].Outcome != nil {
 		t.Fatalf("first runs = %#v, want one incomplete response run", runs)
 	}
+	firstRunID := runs[0].RunID
+	firstArtifactPath := runs[0].ArtifactPath
 	actions, err := store.ListPlannedActions(ctx, runs[0].RunID)
 	if err != nil {
 		t.Fatalf("ListPlannedActions first: %v", err)
@@ -271,6 +273,9 @@ func TestRespondRealRunnerResumesInterruptedRunThroughCLI(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].RunID == "" || runs[0].Outcome == nil || *runs[0].Outcome != ledger.OutcomeComment {
 		t.Fatalf("second runs = %#v, want same run completed as comment", runs)
+	}
+	if runs[0].RunID != firstRunID || runs[0].ArtifactPath != firstArtifactPath {
+		t.Fatalf("second run = %q artifact %q, want resumed %q artifact %q", runs[0].RunID, runs[0].ArtifactPath, firstRunID, firstArtifactPath)
 	}
 	if replies := provider.RecordedThreadReplies(ref); len(replies) != 1 || replies[0].ThreadID != "thread-1" {
 		t.Fatalf("thread replies = %#v, want resumed reply post", replies)

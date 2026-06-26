@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
@@ -569,7 +571,7 @@ func TestRetryRejectsProfileMismatch(t *testing.T) {
 	}
 }
 
-func TestRunFailedAnalysisCompletesRunFailed(t *testing.T) {
+func TestRunFailedAnalysisCompletesRunIncomplete(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
 	setInlineThreads(t, fixture, []gitprovider.InlineThread{
@@ -591,8 +593,100 @@ func TestRunFailedAnalysisCompletesRunFailed(t *testing.T) {
 	if getErr != nil {
 		t.Fatalf("GetRun: %v", getErr)
 	}
-	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeFailed {
-		t.Fatalf("stored outcome = %v, want failed", stored.Outcome)
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeIncomplete {
+		t.Fatalf("stored outcome = %v, want incomplete", stored.Outcome)
+	}
+}
+
+func TestRunFailedStructuredAnalysisPersistsAttemptsAndResumes(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.adapter = &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	fixture.adapter.Queue(llm.FakeResult{
+		SessionID: "failed-initial",
+		Response:  llm.Response{StructuredOutput: []byte(`{"schema_version":1,"thread_id":"thread-1","decision":"bogus","resolve":false}`)},
+	})
+	fixture.adapter.Queue(llm.FakeResult{
+		SessionID: "failed-retry",
+		Response:  llm.Response{StructuredOutput: []byte(`{"schema_version":1,"thread_id":"thread-1","decision":"still_bogus","resolve":false}`)},
+	})
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
+		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
+	})
+
+	first, err := Run(ctx, fixture.options(), Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		DryRun:          true,
+	})
+	if err == nil {
+		t.Fatal("Run invalid structured output error = nil, want validation failure")
+	}
+	storedFirst, getErr := fixture.store.GetRun(ctx, first.Run.RunID)
+	if getErr != nil {
+		t.Fatalf("GetRun first: %v", getErr)
+	}
+	if storedFirst.Outcome == nil || *storedFirst.Outcome != ledger.OutcomeIncomplete {
+		t.Fatalf("first outcome = %v, want incomplete", storedFirst.Outcome)
+	}
+	paths := llmlifecycle.Paths{LLMTasksDir: first.Artifacts.LLMTasksDir}
+	meta, ok, err := llmlifecycle.ReadMetadata(paths, "thread-analysis-thread-1")
+	if err != nil || !ok {
+		t.Fatalf("ReadMetadata failed task = %#v ok=%t err=%v, want metadata", meta, ok, err)
+	}
+	if meta.Status != llmlifecycle.StatusFailedBlocking || meta.ProviderSessionID != "failed-retry" || len(meta.Attempts) != 2 {
+		t.Fatalf("failed metadata = %#v, want blocking failure with attempts", meta)
+	}
+	for _, attempt := range meta.Attempts {
+		if attempt.RawOutputPath == "" {
+			t.Fatalf("attempt = %#v, want raw output path", attempt)
+		}
+		if _, err := os.Stat(attempt.RawOutputPath); err != nil {
+			t.Fatalf("raw attempt %s stat: %v", attempt.RawOutputPath, err)
+		}
+	}
+
+	fixture.adapter = &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionSummarize, "", "Summary for future context.", true))
+	secondOpts := fixture.options()
+	secondOpts.NewStepID = sequence("resume-step")
+	second, err := Run(ctx, secondOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		DryRun:          true,
+	})
+	if err != nil {
+		t.Fatalf("Run resumed analysis: %v", err)
+	}
+	if second.Run.RunID != first.Run.RunID || second.Artifacts.Dir != first.Artifacts.Dir {
+		t.Fatalf("resumed run/artifacts = %q %q, want %q %q", second.Run.RunID, second.Artifacts.Dir, first.Run.RunID, first.Artifacts.Dir)
+	}
+	if len(fixture.adapter.Requests()) != 0 {
+		t.Fatalf("resumed adapter starts = %d, want resume call only", len(fixture.adapter.Requests()))
+	}
+	resumes := fixture.adapter.Resumes()
+	if len(resumes) != 1 || resumes[0].SessionID != "failed-retry" {
+		t.Fatalf("resumes = %#v, want failed-retry", resumes)
+	}
+	storedSecond, err := fixture.store.GetRun(ctx, first.Run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun second: %v", err)
+	}
+	if storedSecond.Outcome == nil || *storedSecond.Outcome != ledger.OutcomeDryRun {
+		t.Fatalf("second outcome = %v, want dry_run", storedSecond.Outcome)
+	}
+	meta, ok, err = llmlifecycle.ReadMetadata(paths, "thread-analysis-thread-1")
+	if err != nil || !ok {
+		t.Fatalf("ReadMetadata resumed task = %#v ok=%t err=%v, want metadata", meta, ok, err)
+	}
+	if meta.Status != llmlifecycle.StatusSucceeded || meta.ProviderSessionID != "session-thread-1" || meta.ValidatedOutputPath == "" {
+		t.Fatalf("resumed metadata = %#v, want succeeded resumed task", meta)
 	}
 }
 
