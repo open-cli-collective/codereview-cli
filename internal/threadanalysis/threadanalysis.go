@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
-	"github.com/open-cli-collective/codereview-cli/internal/llmrun"
+	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
@@ -59,19 +59,19 @@ type Result struct {
 
 // Options are explicit call-site supplied dependencies for one analysis run.
 type Options struct {
-	Store           llmrun.Store
+	Store           llmlifecycle.Store
 	RunID           string
-	Provider        string
 	Adapter         llm.Adapter
 	Model           string
 	Effort          string
 	LogPath         string
+	LifecyclePaths  llmlifecycle.Paths
 	ResumeSessionID string
 	Now             func() time.Time
 	NewStepID       func() string
 }
 
-// AnalyzeThread analyzes one normalized inline thread through llmrun.
+// AnalyzeThread analyzes one normalized inline thread through the durable LLM lifecycle.
 func AnalyzeThread(ctx context.Context, opts Options, thread threadcontext.Thread) (Result, error) {
 	var zero Result
 	if err := validateOptions(opts); err != nil {
@@ -90,20 +90,21 @@ func AnalyzeThread(ctx context.Context, opts Options, thread threadcontext.Threa
 	if err != nil {
 		return zero, err
 	}
-	result, err := llmrun.RunStructuredStep(ctx, opts.Store, llmrun.Request{
-		RunID:           opts.RunID,
-		Stage:           stagemodel.StageThreadAnalysis,
-		ScopeKey:        "thread:" + threadID,
-		InputHash:       inputHash,
-		Provider:        opts.Provider,
-		Adapter:         opts.Adapter,
-		Model:           opts.Model,
-		Effort:          opts.Effort,
-		Prompt:          prompt,
-		LogPath:         opts.LogPath,
-		ResumeSessionID: opts.ResumeSessionID,
-		Now:             opts.Now,
-		NewStepID:       opts.NewStepID,
+	result, err := llmlifecycle.RunStructured(ctx, llmlifecycle.Request{
+		Store:            opts.Store,
+		Adapter:          opts.Adapter,
+		RunID:            opts.RunID,
+		TaskID:           "thread-analysis-" + threadID,
+		Phase:            string(stagemodel.StageThreadAnalysis),
+		InputFingerprint: inputHash,
+		Paths:            opts.LifecyclePaths,
+		Model:            opts.Model,
+		Effort:           opts.Effort,
+		LogPath:          opts.LogPath,
+		Prompt:           prompt,
+		ResumeSessionID:  opts.ResumeSessionID,
+		Now:              opts.Now,
+		NewSessionRowID:  opts.NewStepID,
 	}, decodeResultForThread(threadID))
 	if err != nil {
 		return zero, err
@@ -131,8 +132,8 @@ func validateOptions(opts Options) error {
 	if strings.TrimSpace(opts.RunID) == "" {
 		return fmt.Errorf("threadanalysis: run ID is required")
 	}
-	if strings.TrimSpace(opts.Provider) == "" {
-		return fmt.Errorf("threadanalysis: provider is required")
+	if strings.TrimSpace(opts.LifecyclePaths.LLMTasksDir) == "" {
+		return fmt.Errorf("threadanalysis: llm task artifact directory is required")
 	}
 	if opts.Adapter == nil {
 		return fmt.Errorf("threadanalysis: adapter is required")

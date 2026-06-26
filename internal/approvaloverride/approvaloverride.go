@@ -14,8 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 )
 
 const schemaVersion = 1
@@ -39,6 +43,9 @@ type Request struct {
 	LatestMarkerAt  time.Time
 	Candidates      []Candidate
 	LogPath         string
+	LLMTasksDir     string
+	Now             func() time.Time
+	NewSessionRowID func() string
 }
 
 // Result is the classifier's decision.
@@ -78,16 +85,27 @@ func (c *LLMClassifier) ClassifyApprovalOverride(ctx context.Context, req Reques
 	if err := ensureLogDir(req.LogPath); err != nil {
 		return Result{}, err
 	}
-	value, _, err := llm.RunStructured(ctx, c.adapter, llm.Request{
-		Model:   c.model,
-		Effort:  c.effort,
-		Prompt:  BuildPrompt(req),
-		LogPath: req.LogPath,
+	if strings.TrimSpace(req.LLMTasksDir) == "" {
+		return Result{}, fmt.Errorf("approvaloverride: llm task artifact directory is required")
+	}
+	result, err := llmlifecycle.RunStructured(ctx, llmlifecycle.Request{
+		Adapter:         c.adapter,
+		TaskID:          "approval-override",
+		Phase:           string(stagemodel.StageApprovalOverride),
+		AllowNoRunCache: true,
+		Paths:           llmlifecycle.Paths{LLMTasksDir: req.LLMTasksDir},
+		Model:           c.model,
+		Effort:          c.effort,
+		LogPath:         req.LogPath,
+		Prompt:          BuildPrompt(req),
+		FailureStatus:   llmlifecycle.StatusFailedIsolated,
+		Now:             requestClock(req),
+		NewSessionRowID: requestSessionRowID(req),
 	}, DecodeResponse)
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Approve: value.ApprovalOverrideRequested}, nil
+	return Result{Approve: result.Value.ApprovalOverrideRequested}, nil
 }
 
 // Response is the strict classifier schema.
@@ -175,4 +193,18 @@ func ensureLogDir(path string) error {
 		return nil
 	}
 	return os.MkdirAll(dir, 0o750)
+}
+
+func requestClock(req Request) func() time.Time {
+	if req.Now != nil {
+		return func() time.Time { return req.Now().UTC() }
+	}
+	return func() time.Time { return time.Now().UTC() }
+}
+
+func requestSessionRowID(req Request) func() string {
+	if req.NewSessionRowID != nil {
+		return req.NewSessionRowID
+	}
+	return uuid.NewString
 }

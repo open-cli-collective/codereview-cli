@@ -16,7 +16,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
-	"github.com/open-cli-collective/codereview-cli/internal/llmrun"
+	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
@@ -41,7 +41,7 @@ const (
 
 // Store is the durable state required by response planning and posting.
 type Store interface {
-	llmrun.Store
+	llmlifecycle.Store
 	GetRun(context.Context, string) (ledger.Run, error)
 	AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error)
 	InsertPlannedAction(context.Context, ledger.PlannedAction) error
@@ -171,7 +171,7 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 		if err != nil {
 			return result, err
 		}
-		analyses, err := analyzeThreads(ctx, opts, req, run, artifacts, runtime, eligible)
+		analyses, err := analyzeThreads(ctx, opts, run, artifacts, runtime, eligible)
 		if err != nil {
 			return result, err
 		}
@@ -394,19 +394,19 @@ func abortIfMoved(ctx context.Context, opts Options, req Request, run ledger.Run
 	return true, fmt.Sprintf("threadrespond premises moved: head %s -> %s, base %s -> %s", run.SHA, pr.Head.SHA, run.BaseSHA, pr.Base.SHA), nil
 }
 
-func analyzeThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts pipeline.ArtifactPaths, runtime llmRuntime, threads []threadcontext.Thread) ([]threadanalysis.Result, error) {
+func analyzeThreads(ctx context.Context, opts Options, run ledger.Run, artifacts pipeline.ArtifactPaths, runtime llmRuntime, threads []threadcontext.Thread) ([]threadanalysis.Result, error) {
 	results := make([]threadanalysis.Result, 0, len(threads))
 	for _, thread := range threads {
 		result, err := threadanalysis.AnalyzeThread(ctx, threadanalysis.Options{
-			Store:     opts.Store,
-			RunID:     run.RunID,
-			Provider:  string(req.Profile.LLM.Provider),
-			Adapter:   opts.Adapter,
-			Model:     runtime.model,
-			Effort:    runtime.effort,
-			LogPath:   threadLogPath(artifacts, thread.ID),
-			Now:       opts.now,
-			NewStepID: opts.newStepID,
+			Store:          opts.Store,
+			RunID:          run.RunID,
+			Adapter:        opts.Adapter,
+			Model:          runtime.model,
+			Effort:         runtime.effort,
+			LogPath:        threadLogPath(artifacts, thread.ID),
+			LifecyclePaths: llmlifecycle.Paths{LLMTasksDir: artifacts.LLMTasksDir},
+			Now:            opts.now,
+			NewStepID:      opts.newStepID,
 		}, thread)
 		if err != nil {
 			return nil, err

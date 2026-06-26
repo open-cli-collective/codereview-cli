@@ -211,6 +211,82 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	}
 }
 
+func TestDryRunResumesIncompleteRunAttempt(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff = gitprovider.UnifiedDiff{}
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	resume := allocateDryRunForProvider(t, store, layout, provider, req, "run-resume", fixedNow().Add(-time.Minute))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:    store,
+		Layout:   layout,
+		Now:      fixedNow,
+		NewRunID: func() string {
+			t.Fatal("NewRunID called despite resumable dry-run")
+			return "unexpected"
+		},
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if result.Run.RunID != resume.RunID || result.Artifacts.Dir != resume.ArtifactPath {
+		t.Fatalf("result run = %q artifacts %q, want resumed %q artifacts %q", result.Run.RunID, result.Artifacts.Dir, resume.RunID, resume.ArtifactPath)
+	}
+	stored, err := store.GetRun(ctx, resume.RunID)
+	if err != nil {
+		t.Fatalf("GetRun resume: %v", err)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeDryRun {
+		t.Fatalf("resumed run outcome = %v, want dry_run", stored.Outcome)
+	}
+}
+
+func TestDryRunRerunBypassesIncompleteRunAttempt(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff = gitprovider.UnifiedDiff{}
+	req.Rerun = true
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	resume := allocateDryRunForProvider(t, store, layout, provider, req, "run-resume", fixedNow().Add(-time.Minute))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-fresh" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if result.Run.RunID != "run-fresh" {
+		t.Fatalf("result run = %q, want fresh run", result.Run.RunID)
+	}
+	storedResume, err := store.GetRun(ctx, resume.RunID)
+	if err != nil {
+		t.Fatalf("GetRun resume: %v", err)
+	}
+	if storedResume.Outcome != nil {
+		t.Fatalf("bypassed run outcome = %v, want still incomplete", storedResume.Outcome)
+	}
+}
+
 func TestDryRunIncompleteReviewerCoverageForcesCommentOutcome(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -689,12 +765,13 @@ func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
 	}, selectionRequestFromReview(req, artifactDir)); err != nil {
 		t.Fatalf("SelectionOnly first run: %v", err)
 	}
-	if len(firstProgress.starts) != 1 || firstProgress.starts[0].TaskID != dossierSummaryTaskID || firstProgress.starts[0].Phase != "dossier" {
-		t.Fatalf("first progress starts = %#v, want dossier summary execute", firstProgress.starts)
+	if len(firstProgress.starts) != 2 ||
+		firstProgress.starts[0].TaskID != dossierSummaryTaskID || firstProgress.starts[0].Phase != "dossier" ||
+		firstProgress.starts[1].TaskID != orchestratorSelectionStage || firstProgress.starts[1].Phase != "selection" {
+		t.Fatalf("first progress starts = %#v, want dossier summary and selection execute", firstProgress.starts)
 	}
 
 	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	secondAdapter.Queue(fakeLLMResult("selection-session-2", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	secondProgress := &fakeTaskProgress{}
 	if _, err := selectionOnlyForTest(ctx, Options{
 		Provider:        provider,
@@ -705,11 +782,13 @@ func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
 	}, selectionRequestFromReview(req, artifactDir)); err != nil {
 		t.Fatalf("SelectionOnly second run: %v", err)
 	}
-	if len(secondProgress.loads) != 1 || secondProgress.loads[0].event.TaskID != dossierSummaryTaskID || secondProgress.loads[0].event.Phase != "dossier" {
-		t.Fatalf("second progress loads = %#v, want cached dossier summary load", secondProgress.loads)
+	if len(secondProgress.loads) != 2 ||
+		secondProgress.loads[0].event.TaskID != dossierSummaryTaskID || secondProgress.loads[0].event.Phase != "dossier" ||
+		secondProgress.loads[1].event.TaskID != orchestratorSelectionStage || secondProgress.loads[1].event.Phase != "selection" {
+		t.Fatalf("second progress loads = %#v, want cached dossier summary and selection loads", secondProgress.loads)
 	}
-	if len(secondAdapter.Requests()) != 1 {
-		t.Fatalf("second adapter requests = %d, want selection only after cached dossier summary load", len(secondAdapter.Requests()))
+	if len(secondAdapter.Requests()) != 0 {
+		t.Fatalf("second adapter requests = %d, want cached dossier summary and selection loads", len(secondAdapter.Requests()))
 	}
 
 	provider.issueComments = []gitprovider.IssueComment{{
@@ -730,8 +809,10 @@ func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
 	}, selectionRequestFromReview(req, artifactDir)); err != nil {
 		t.Fatalf("SelectionOnly third run: %v", err)
 	}
-	if len(thirdProgress.starts) != 1 || thirdProgress.starts[0].TaskID != dossierSummaryTaskID || thirdProgress.starts[0].Phase != "dossier" {
-		t.Fatalf("third progress starts = %#v, want dossier summary rerun after caller-owned artifact change", thirdProgress.starts)
+	if len(thirdProgress.starts) != 2 ||
+		thirdProgress.starts[0].TaskID != dossierSummaryTaskID || thirdProgress.starts[0].Phase != "dossier" ||
+		thirdProgress.starts[1].TaskID != orchestratorSelectionStage || thirdProgress.starts[1].Phase != "selection" {
+		t.Fatalf("third progress starts = %#v, want dossier summary and selection rerun after caller-owned artifact change", thirdProgress.starts)
 	}
 	if len(thirdAdapter.Requests()) != 2 {
 		t.Fatalf("third adapter requests = %d, want dossier summary rerun plus selection", len(thirdAdapter.Requests()))
@@ -5326,6 +5407,13 @@ func (s *failingStore) InsertPlannedAction(ctx context.Context, action ledger.Pl
 	return s.Store.InsertPlannedAction(ctx, action)
 }
 
+func (s *failingStore) InsertPlanningResult(ctx context.Context, findings []ledger.Finding, actions []ledger.PlannedAction) error {
+	if s.insertPlannedActionErr != nil {
+		return s.insertPlannedActionErr
+	}
+	return s.Store.InsertPlanningResult(ctx, findings, actions)
+}
+
 type fileKey struct {
 	gitRef string
 	path   string
@@ -5777,6 +5865,31 @@ func allocatePipelineRun(t *testing.T, store *ledger.Store, layout statepaths.La
 		Profile:         "home",
 		PostingIdentity: "review-bot",
 		PostMode:        mode,
+		StartedAt:       started,
+		ArtifactPath:    artifactPath,
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	return run
+}
+
+func allocateDryRunForProvider(t *testing.T, store *ledger.Store, layout statepaths.Layout, provider *readOnlyProvider, req Request, runID string, started time.Time) ledger.Run {
+	t.Helper()
+	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	artifactPath := filepath.Join(layout.DataRoot, "runs", prKey, provider.pr.Head.SHA, provider.pr.Base.SHA, statepaths.Encode(req.ProfileName)+"__"+statepaths.Encode(postingKey(req.PostingIdentity)), runID)
+	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           req.PRURL,
+		RunID:           runID,
+		SHA:             provider.pr.Head.SHA,
+		BaseSHA:         provider.pr.Base.SHA,
+		Profile:         req.ProfileName,
+		PostingIdentity: postingKey(req.PostingIdentity),
+		PostMode:        ledger.PostModeDryRun,
 		StartedAt:       started,
 		ArtifactPath:    artifactPath,
 	})
@@ -6411,6 +6524,10 @@ func (noopStore) InsertFinding(context.Context, ledger.Finding) error {
 }
 
 func (noopStore) InsertPlannedAction(context.Context, ledger.PlannedAction) error {
+	return nil
+}
+
+func (noopStore) InsertPlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error {
 	return nil
 }
 

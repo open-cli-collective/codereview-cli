@@ -2,9 +2,11 @@ package threadanalysis
 
 import (
 	"context"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,14 +15,14 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
-	"github.com/open-cli-collective/codereview-cli/internal/llmrun"
+	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
 
 func TestAnalyzeThreadRunsDurableStepWithPromptSafeContext(t *testing.T) {
-	store := &fakeStore{findErr: ledger.ErrNotFound}
+	store := newFakeStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake"}
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session",
@@ -34,8 +36,9 @@ func TestAnalyzeThreadRunsDurableStepWithPromptSafeContext(t *testing.T) {
 			"rationale": "The thread has enough information to close."
 		}`)},
 	})
+	opts := testOptions(t, store, adapter)
 
-	got, err := AnalyzeThread(context.Background(), testOptions(store, adapter), promptThread("human reply <!-- codereview:skip -->"))
+	got, err := AnalyzeThread(context.Background(), opts, promptThread("human reply <!-- codereview:skip -->"))
 	if err != nil {
 		t.Fatalf("AnalyzeThread: %v", err)
 	}
@@ -61,39 +64,45 @@ func TestAnalyzeThreadRunsDurableStepWithPromptSafeContext(t *testing.T) {
 			t.Fatalf("prompt missing %q:\n%s", want, req.Prompt)
 		}
 	}
-	if len(store.lookups) != 1 {
-		t.Fatalf("lookups = %#v, want one", store.lookups)
+	meta := readThreadMetadata(t, opts, "thread-1")
+	if meta.Phase != string(stagemodel.StageThreadAnalysis) || meta.TaskID != "thread-analysis-thread-1" {
+		t.Fatalf("metadata identity = %#v, want thread-analysis task", meta)
 	}
-	lookup := store.lookups[0]
-	if lookup.Stage != string(stagemodel.StageThreadAnalysis) || lookup.ScopeKey != "thread:thread-1" {
-		t.Fatalf("lookup = %#v, want thread analysis scope", lookup)
+	if meta.Status != llmlifecycle.StatusSucceeded || meta.Adapter != "fake" || meta.Model != "gpt-5.4" || meta.Effort != "medium" {
+		t.Fatalf("metadata runtime = %#v, want succeeded fake/gpt-5.4/medium", meta)
 	}
-	if lookup.Provider != "openai" || lookup.Adapter != "fake" || lookup.Model != "gpt-5.4" || lookup.Effort != "medium" {
-		t.Fatalf("lookup runtime identity = %#v", lookup)
+	if meta.InputFingerprint == "" || meta.ValidatedOutputPath == "" {
+		t.Fatalf("metadata = %#v, want fingerprint and output path", meta)
 	}
-	if lookup.InputHash == "" || lookup.PromptHash == "" {
-		t.Fatalf("lookup hashes = %#v, want nonblank hashes", lookup)
+	if len(store.inserted) != 1 || store.inserted[0].SessionRowID != meta.SessionRowID {
+		t.Fatalf("inserted sessions = %#v, want one matching metadata session", store.inserted)
 	}
-	if len(store.inserted) != 1 || store.inserted[0].Status != ledger.LLMStepStatusCompleted {
-		t.Fatalf("inserted = %#v, want completed step", store.inserted)
-	}
-	if strings.Contains(store.inserted[0].StructuredOutputJSON, "Here is the JSON") {
-		t.Fatalf("persisted output = %q, want accepted JSON only", store.inserted[0].StructuredOutputJSON)
-	}
+	assertFileOmits(t, meta.ValidatedOutputPath, "Here is the JSON")
 }
 
 func TestAnalyzeThreadCacheHitSkipsAdapter(t *testing.T) {
-	store := &fakeStore{completed: completedStep(`{
-		"schema_version": 1,
-		"thread_id": "thread-1",
-		"decision": "summarize",
-		"summary": "Resolved summary.",
-		"resolve": true,
-		"rationale": "Already resolved."
-	}`)}
-	adapter := &llm.FakeAdapter{NameValue: "fake"}
+	store := newFakeStore()
+	seedAdapter := &llm.FakeAdapter{NameValue: "fake"}
+	seedAdapter.Queue(llm.FakeResult{
+		SessionID: "provider-session",
+		Response: llm.Response{StructuredOutput: []byte(`{
+			"schema_version": 1,
+			"thread_id": "thread-1",
+			"decision": "summarize",
+			"summary": "Resolved summary.",
+			"resolve": true,
+			"rationale": "Already resolved."
+		}`)},
+	})
+	opts := testOptions(t, store, seedAdapter)
+	if _, err := AnalyzeThread(context.Background(), opts, promptThread("reply")); err != nil {
+		t.Fatalf("AnalyzeThread seed: %v", err)
+	}
 
-	got, err := AnalyzeThread(context.Background(), testOptions(store, adapter), promptThread("reply"))
+	adapter := &llm.FakeAdapter{NameValue: "fake"}
+	opts.Adapter = adapter
+
+	got, err := AnalyzeThread(context.Background(), opts, promptThread("reply"))
 	if err != nil {
 		t.Fatalf("AnalyzeThread: %v", err)
 	}
@@ -103,46 +112,39 @@ func TestAnalyzeThreadCacheHitSkipsAdapter(t *testing.T) {
 	if len(adapter.Requests()) != 0 {
 		t.Fatalf("adapter requests = %#v, want cache hit to skip adapter", adapter.Requests())
 	}
-	if len(store.inserted) != 0 {
-		t.Fatalf("inserted = %#v, want none on cache hit", store.inserted)
+	if len(store.inserted) != 1 {
+		t.Fatalf("inserted sessions = %#v, want no new session on cache hit", store.inserted)
 	}
 }
 
-func TestAnalyzeThreadInputHashChangesWhenLifecycleContextChanges(t *testing.T) {
-	store := &fakeStore{findErr: ledger.ErrNotFound}
+func TestAnalyzeThreadRejectsStaleLifecycleContextBeforeProviderCall(t *testing.T) {
+	store := newFakeStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake"}
 	adapter.Queue(llm.FakeResult{SessionID: "session-1", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
-	adapter.Queue(llm.FakeResult{SessionID: "session-2", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
-	opts := testOptions(store, adapter)
-	ids := []string{"step-1", "step-2"}
-	opts.NewStepID = func() string {
-		id := ids[0]
-		ids = ids[1:]
-		return id
-	}
+	opts := testOptions(t, store, adapter)
 
 	if _, err := AnalyzeThread(context.Background(), opts, promptThread("first reply")); err != nil {
 		t.Fatalf("AnalyzeThread first: %v", err)
 	}
-	if _, err := AnalyzeThread(context.Background(), opts, promptThread("changed reply")); err != nil {
-		t.Fatalf("AnalyzeThread second: %v", err)
+	staleAdapter := &llm.FakeAdapter{NameValue: "fake"}
+	opts.Adapter = staleAdapter
+	_, err := AnalyzeThread(context.Background(), opts, promptThread("changed reply"))
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("AnalyzeThread stale context error = %v, want fingerprint error", err)
 	}
-	if len(store.lookups) != 2 {
-		t.Fatalf("lookups = %#v, want two", store.lookups)
-	}
-	if store.lookups[0].InputHash == store.lookups[1].InputHash {
-		t.Fatalf("input hashes both %q, want lifecycle context change to invalidate cache", store.lookups[0].InputHash)
+	if len(staleAdapter.Requests()) != 0 {
+		t.Fatalf("stale adapter requests = %#v, want no provider call", staleAdapter.Requests())
 	}
 }
 
 func TestAnalyzeThreadsPreservesOrderAndFailsFast(t *testing.T) {
-	store := &fakeStore{findErr: ledger.ErrNotFound}
+	store := newFakeStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake"}
 	adapter.Queue(llm.FakeResult{SessionID: "session-1", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
 	adapter.Queue(llm.FakeResult{SessionID: "session-2", Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"thread_id":"thread-2","decision":"bogus","resolve":false}`)}})
 	adapter.Queue(llm.FakeResult{SessionID: "session-2-retry", Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"thread_id":"thread-2","decision":"bogus","resolve":false}`)}})
 	adapter.Queue(llm.FakeResult{SessionID: "session-3", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-3"))}})
-	opts := testOptions(store, adapter)
+	opts := testOptions(t, store, adapter)
 	ids := []string{"step-1", "step-2"}
 	opts.NewStepID = func() string {
 		id := ids[0]
@@ -161,20 +163,17 @@ func TestAnalyzeThreadsPreservesOrderAndFailsFast(t *testing.T) {
 	if results != nil {
 		t.Fatalf("results = %#v, want nil on fail-fast error", results)
 	}
-	if len(store.lookups) != 2 {
-		t.Fatalf("lookups = %#v, want fail fast before third thread", store.lookups)
-	}
-	if store.lookups[0].ScopeKey != "thread:thread-1" || store.lookups[1].ScopeKey != "thread:thread-2" {
-		t.Fatalf("lookup order = %#v, want input order", store.lookups)
+	if len(adapter.Requests()) != 3 {
+		t.Fatalf("adapter requests = %d, want thread-1 plus thread-2 initial/retry before fail-fast", len(adapter.Requests()))
 	}
 }
 
 func TestAnalyzeThreadsReturnsResultsInInputOrder(t *testing.T) {
-	store := &fakeStore{findErr: ledger.ErrNotFound}
+	store := newFakeStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake"}
 	adapter.Queue(llm.FakeResult{SessionID: "session-2", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-2"))}})
 	adapter.Queue(llm.FakeResult{SessionID: "session-1", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
-	opts := testOptions(store, adapter)
+	opts := testOptions(t, store, adapter)
 	ids := []string{"step-1", "step-2"}
 	opts.NewStepID = func() string {
 		id := ids[0]
@@ -269,7 +268,7 @@ func TestDecodeResultSanitizesModelAuthoredText(t *testing.T) {
 
 func TestAnalyzeThreadRejectsMissingRequiredOptionsBeforeProviderCall(t *testing.T) {
 	adapter := &llm.FakeAdapter{NameValue: "fake"}
-	opts := testOptions(&fakeStore{}, adapter)
+	opts := testOptions(t, newFakeStore(), adapter)
 	opts.NewStepID = nil
 
 	_, err := AnalyzeThread(context.Background(), opts, promptThread("reply"))
@@ -284,7 +283,7 @@ func TestAnalyzeThreadRejectsMissingRequiredOptionsBeforeProviderCall(t *testing
 func TestProductionImportsStayDomainOnly(t *testing.T) {
 	allowedInternal := map[string]bool{
 		"github.com/open-cli-collective/codereview-cli/internal/llm":           true,
-		"github.com/open-cli-collective/codereview-cli/internal/llmrun":        true,
+		"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle":  true,
 		"github.com/open-cli-collective/codereview-cli/internal/stagemodel":    true,
 		"github.com/open-cli-collective/codereview-cli/internal/threadcontext": true,
 	}
@@ -325,7 +324,7 @@ func TestProductionImportsStayDomainOnly(t *testing.T) {
 			for _, fragment := range rejectedFragments {
 				if strings.Contains(importPath, fragment) {
 					pos := fset.Position(spec.Pos())
-					t.Fatalf("%s imports %q; threadanalysis production code must stay on the domain/llmrun boundary", pos, importPath)
+					t.Fatalf("%s imports %q; threadanalysis production code must stay on the domain/lifecycle boundary", pos, importPath)
 				}
 			}
 			pos := fset.Position(spec.Pos())
@@ -338,17 +337,18 @@ func TestProductionImportsStayDomainOnly(t *testing.T) {
 	}
 }
 
-func testOptions(store llmrun.Store, adapter llm.Adapter) Options {
+func testOptions(t *testing.T, store llmlifecycle.Store, adapter llm.Adapter) Options {
+	t.Helper()
 	return Options{
-		Store:     store,
-		RunID:     "run-1",
-		Provider:  "openai",
-		Adapter:   adapter,
-		Model:     "gpt-5.4",
-		Effort:    "medium",
-		LogPath:   "thread.log",
-		Now:       fixedClock(),
-		NewStepID: func() string { return "step-1" },
+		Store:          store,
+		RunID:          "run-1",
+		Adapter:        adapter,
+		Model:          "gpt-5.4",
+		Effort:         "medium",
+		LogPath:        "thread.log",
+		LifecyclePaths: llmlifecycle.Paths{LLMTasksDir: filepath.Join(t.TempDir(), "llm-tasks")},
+		Now:            fixedClock(),
+		NewStepID:      sequence("step"),
 	}
 }
 
@@ -401,47 +401,66 @@ func validSkipOutput(threadID string) string {
 	return `{"schema_version":1,"thread_id":"` + threadID + `","decision":"skip","resolve":false}`
 }
 
-func completedStep(output string) ledger.LLMStep {
-	return ledger.LLMStep{
-		StepID:               "step-cached",
-		RunID:                "run-1",
-		Stage:                string(stagemodel.StageThreadAnalysis),
-		ScopeKey:             "thread:thread-1",
-		InputHash:            "input-hash",
-		PromptHash:           "prompt-hash",
-		Provider:             "openai",
-		Adapter:              "fake",
-		Model:                "gpt-5.4",
-		Effort:               "medium",
-		ProviderSessionID:    "provider-session",
-		Status:               ledger.LLMStepStatusCompleted,
-		StructuredOutputJSON: output,
-		StartedAt:            testNow,
-	}
-}
-
 type fakeStore struct {
-	completed ledger.LLMStep
-	findErr   error
 	insertErr error
-	lookups   []ledger.LLMStepLookup
-	inserted  []ledger.LLMStep
+	getErr    error
+	sessions  map[string]ledger.Session
+	inserted  []ledger.Session
 }
 
-func (s *fakeStore) FindCompletedLLMStep(_ context.Context, lookup ledger.LLMStepLookup) (ledger.LLMStep, error) {
-	s.lookups = append(s.lookups, lookup)
-	if s.findErr != nil {
-		return ledger.LLMStep{}, s.findErr
-	}
-	return s.completed, nil
+func newFakeStore() *fakeStore {
+	return &fakeStore{sessions: map[string]ledger.Session{}}
 }
 
-func (s *fakeStore) InsertLLMStep(_ context.Context, step ledger.LLMStep) error {
+func (s *fakeStore) InsertSession(_ context.Context, session ledger.Session) error {
 	if s.insertErr != nil {
 		return s.insertErr
 	}
-	s.inserted = append(s.inserted, step)
+	s.sessions[session.SessionRowID] = session
+	s.inserted = append(s.inserted, session)
 	return nil
+}
+
+func (s *fakeStore) GetSession(_ context.Context, rowID string) (ledger.Session, error) {
+	if s.getErr != nil {
+		return ledger.Session{}, s.getErr
+	}
+	session, ok := s.sessions[rowID]
+	if !ok {
+		return ledger.Session{}, ledger.ErrNotFound
+	}
+	return session, nil
+}
+
+func readThreadMetadata(t *testing.T, opts Options, threadID string) llmlifecycle.Metadata {
+	t.Helper()
+	meta, ok, err := llmlifecycle.ReadMetadata(opts.LifecyclePaths, "thread-analysis-"+threadID)
+	if err != nil {
+		t.Fatalf("ReadMetadata: %v", err)
+	}
+	if !ok {
+		t.Fatalf("thread metadata for %s missing", threadID)
+	}
+	return meta
+}
+
+func assertFileOmits(t *testing.T, path, unwanted string) {
+	t.Helper()
+	data, err := os.ReadFile(path) // #nosec G304 -- test helper reads artifact path generated under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	if strings.Contains(string(data), unwanted) {
+		t.Fatalf("%s = %q, want it to omit %q", path, string(data), unwanted)
+	}
+}
+
+func sequence(prefix string) func() string {
+	next := 0
+	return func() string {
+		next++
+		return fmt.Sprintf("%s-%d", prefix, next)
+	}
 }
 
 var testNow = time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)

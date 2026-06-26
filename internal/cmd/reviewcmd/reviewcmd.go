@@ -385,6 +385,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		ReviewerEffortOverride:      reviewerEffort,
 		ReviewBaseSHA:               reviewBaseSHA,
 		ReviewHeadSHA:               reviewHeadSHA,
+		Rerun:                       flags.rerun,
 		ToolVersion:                 version.Version,
 	}
 	if !flags.dryRun {

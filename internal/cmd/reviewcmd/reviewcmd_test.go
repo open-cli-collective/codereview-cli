@@ -1488,7 +1488,7 @@ func TestBuildApprovalOverrideClassifierModelResolution(t *testing.T) {
 			if warnings.Len() != 0 {
 				t.Fatalf("warnings after build = %q, want deferred warnings", warnings.String())
 			}
-			result, err := classifier.ClassifyApprovalOverride(context.Background(), approvalOverrideClassifierTestRequest())
+			result, err := classifier.ClassifyApprovalOverride(context.Background(), approvalOverrideClassifierTestRequest(t))
 			if err != nil {
 				t.Fatalf("ClassifyApprovalOverride: %v", err)
 			}
@@ -2826,7 +2826,8 @@ func assertReviewTestFile(t *testing.T, path, want string) {
 	}
 }
 
-func approvalOverrideClassifierTestRequest() approvaloverride.Request {
+func approvalOverrideClassifierTestRequest(t *testing.T) approvaloverride.Request {
+	t.Helper()
 	return approvaloverride.Request{
 		PR: gitprovider.PR{
 			Title:  "Override",
@@ -2841,6 +2842,7 @@ func approvalOverrideClassifierTestRequest() approvaloverride.Request {
 			Body:        "please approve",
 			EffectiveAt: time.Date(2026, 6, 10, 12, 1, 0, 0, time.UTC),
 		}},
+		LLMTasksDir: filepath.Join(t.TempDir(), "llm-tasks"),
 	}
 }
 

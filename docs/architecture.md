@@ -5,26 +5,31 @@ stable as the implementation evolves.
 
 ## Durable LLM Execution Boundary
 
-New resumable LLM actions must flow through one durable execution boundary.
-Callers should describe the stage, scope, prompt input, structured output
-contract, and model requirements; the runner owns provider invocation, retries,
-resume checks, telemetry, and persistence.
+All production structured LLM actions must flow through
+`internal/llmlifecycle`. Callers describe the task ID, phase, prompt input,
+structured output contract, model/effort, artifact paths, and run/session
+scope. The lifecycle runner owns provider invocation, structured-output retry,
+provider-session resume, pre-flight reuse, task metadata, accepted-output
+artifacts, session persistence, progress breadcrumbs, and failure
+classification.
 
-The durable runner must do a pre-flight lookup before calling the provider. If
-a completed matching step already exists, it should reuse the stored structured
-result. After a provider call succeeds, the runner must persist the structured
-result and metadata before returning it to downstream code. Metadata includes at
-least provider, adapter, model, effort, started/completed timestamps, duration,
-token usage, cost, and provider session identifiers when available.
+The final commit marker for a task is `llm-tasks/<task>/metadata.json`. Writers
+must publish validated output or failed-attempt payloads first, persist the
+ledger session row when the task is run-owned, and write metadata last. Resume
+code must trust only the final metadata path, never temporary files or partial
+payloads.
 
-New LLM-backed pipeline components should not call provider adapters directly.
-They should receive a fakeable runner interface in unit tests and should return
-domain results rather than posting comments or mutating provider state.
+New LLM-backed components must not call provider adapters or `internal/llm`
+structured helpers directly. They should call `llmlifecycle` through explicit,
+fakeable dependencies in unit tests and should return domain results rather
+than posting comments or mutating provider state. This guardrail is enforced by
+`internal/architecture/llm_lifecycle_test.go`.
 
-The current durable runner is `internal/llmrun`, and the first production
-consumer is thread analysis. Older review stages still use the legacy session
-resume wrapper and session rows; migrating those stages to `llmrun` is required
-before this boundary can be enforced globally.
+Most lifecycle tasks are run-owned and must have a matching ledger session row
+when a provider session is available. Caller-owned no-run tasks are allowed only
+where no review run exists yet, such as `SelectionOnly` and the pre-run approval
+override classifier. Those tasks may reuse artifact metadata without a ledger
+session row, but they still use the same metadata schema and lifecycle runner.
 
 ## Stage Model Resolution
 
@@ -90,12 +95,17 @@ pipeline, not a separate posting system.
 
 ## Retention And Cleanup
 
-Durable LLM steps, thread-analysis results, and artifacts must be owned by a
-run and must be safe to delete through the existing data lifecycle commands.
-Database rows should reference `runs(run_id)` with cascade delete semantics, and
-large artifacts should live under the run artifact directory.
+Durable run-owned LLM tasks, thread-analysis results, and artifacts must be
+owned by a run and must be safe to delete through the existing data lifecycle
+commands. Database rows should reference `runs(run_id)` with cascade delete
+semantics, and large artifacts should live under the run artifact directory.
 
 When the retention window elapses, normal prune/GC commands should remove these
 results along with the rest of the run. If a user deletes retained state, a
 future review may need to spend time and tokens recreating it; that is the
 expected tradeoff for user-controlled local data retention.
+
+Caller-owned no-run task artifacts must live under the configured data root or
+an explicit caller artifact root. If no run is eventually allocated for that
+artifact root, the directory is treated as orphaned local data and must be safe
+for `cr data purge` to remove.

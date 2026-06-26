@@ -32,21 +32,18 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 		t.Fatalf("PRAGMA busy_timeout = %d, want %d", got, DefaultBusyTimeout.Milliseconds())
 	}
 
-	for _, table := range []string{"prs", "runs", "sessions", "findings", "planned_actions", "named_sessions", "llm_steps"} {
+	for _, table := range []string{"prs", "runs", "sessions", "findings", "planned_actions", "named_sessions"} {
 		if !tableExists(t, store.db, table) {
 			t.Fatalf("table %s does not exist", table)
 		}
 	}
-	for _, index := range []string{"runs_pr_sha", "runs_resume", "runs_started_at", "sessions_run", "sessions_provider", "findings_run", "planned_actions_run", "planned_actions_status", "llm_steps_run", "llm_steps_completed_lookup"} {
+	for _, index := range []string{"runs_pr_sha", "runs_resume", "runs_started_at", "sessions_run", "sessions_provider", "findings_run", "planned_actions_run", "planned_actions_status"} {
 		if !indexExists(t, store.db, index) {
 			t.Fatalf("index %s does not exist", index)
 		}
 	}
 	if !columnExists(t, store.db, "planned_actions", "failure_class") {
 		t.Fatal("planned_actions.failure_class column does not exist")
-	}
-	if !tableExists(t, store.db, "llm_steps") {
-		t.Fatal("llm_steps table does not exist")
 	}
 	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
 	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
@@ -105,7 +102,6 @@ func TestForeignKeyCascadeDeletesRunChildren(t *testing.T) {
 	run := allocateRun(t, store, validAllocateRunParams())
 	session := validSession(run.RunID)
 	insertSession(t, store, session)
-	insertLLMStep(t, store, validLLMStep(run.RunID))
 	insertFinding(t, store, validFinding(run.RunID, session.SessionRowID))
 	insertPlannedAction(t, store, validPlannedAction(run.RunID))
 
@@ -119,78 +115,11 @@ func TestForeignKeyCascadeDeletesRunChildren(t *testing.T) {
 	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM sessions"); count != 0 {
 		t.Fatalf("sessions count = %d, want 0", count)
 	}
-	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM llm_steps"); count != 0 {
-		t.Fatalf("llm_steps count = %d, want 0", count)
-	}
 	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM findings"); count != 0 {
 		t.Fatalf("findings count = %d, want 0", count)
 	}
 	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM planned_actions"); count != 0 {
 		t.Fatalf("planned_actions count = %d, want 0", count)
-	}
-}
-
-func TestInsertAndFindCompletedLLMStep(t *testing.T) {
-	store := openStore(t)
-	run := allocateRun(t, store, validAllocateRunParams())
-	step := validLLMStep(run.RunID)
-	insertLLMStep(t, store, step)
-
-	got, err := store.FindCompletedLLMStep(context.Background(), LLMStepLookup{
-		RunID:      run.RunID,
-		Stage:      step.Stage,
-		ScopeKey:   step.ScopeKey,
-		InputHash:  step.InputHash,
-		PromptHash: step.PromptHash,
-		Provider:   step.Provider,
-		Adapter:    step.Adapter,
-		Model:      step.Model,
-		Effort:     step.Effort,
-	})
-	if err != nil {
-		t.Fatalf("FindCompletedLLMStep: %v", err)
-	}
-	if !reflect.DeepEqual(got, step) {
-		t.Fatalf("FindCompletedLLMStep = %#v, want %#v", got, step)
-	}
-
-	failed := step
-	failed.StepID = "llm-step-failed"
-	failed.Status = LLMStepStatusFailed
-	failed.Error = strPtr("provider failed")
-	insertLLMStep(t, store, failed)
-	if _, err := store.FindCompletedLLMStep(context.Background(), LLMStepLookup{
-		RunID:      run.RunID,
-		Stage:      failed.Stage,
-		ScopeKey:   failed.ScopeKey,
-		InputHash:  failed.InputHash,
-		PromptHash: failed.PromptHash,
-		Provider:   failed.Provider,
-		Adapter:    failed.Adapter,
-		Model:      failed.Model,
-		Effort:     failed.Effort,
-	}); err != nil {
-		t.Fatalf("FindCompletedLLMStep should ignore failed rows and find completed row: %v", err)
-	}
-}
-
-func TestInsertLLMStepValidatesAuditFields(t *testing.T) {
-	store := openStore(t)
-	run := allocateRun(t, store, validAllocateRunParams())
-
-	completedMissingCompletedAt := validLLMStep(run.RunID)
-	completedMissingCompletedAt.CompletedAt = nil
-	if err := store.InsertLLMStep(context.Background(), completedMissingCompletedAt); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("InsertLLMStep completed without completed_at error = %v, want ErrInvalidInput", err)
-	}
-
-	failedMissingError := validLLMStep(run.RunID)
-	failedMissingError.StepID = "failed-missing-error"
-	failedMissingError.Status = LLMStepStatusFailed
-	failedMissingError.StructuredOutputJSON = ""
-	failedMissingError.Error = nil
-	if err := store.InsertLLMStep(context.Background(), failedMissingError); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("InsertLLMStep failed without error text error = %v, want ErrInvalidInput", err)
 	}
 }
 
@@ -794,6 +723,37 @@ func TestInsertPlannedActionsIsAtomic(t *testing.T) {
 	actions, listErr := store.ListPlannedActions(context.Background(), run.RunID)
 	if listErr != nil {
 		t.Fatalf("ListPlannedActions: %v", listErr)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("planned actions = %#v, want rollback with no actions", actions)
+	}
+}
+
+func TestInsertPlanningResultIsAtomic(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	session := validSession(run.RunID)
+	insertSession(t, store, session)
+
+	finding := validFinding(run.RunID, session.SessionRowID)
+	first := validPlannedAction(run.RunID)
+	second := validPlannedAction(run.RunID)
+	second.PayloadJSON = `{"body":"duplicate action id"}`
+
+	err := store.InsertPlanningResult(context.Background(), []Finding{finding}, []PlannedAction{first, second})
+	if err == nil {
+		t.Fatal("InsertPlanningResult duplicate action error = nil, want constraint error")
+	}
+	findings, listFindingsErr := store.ListFindings(context.Background(), run.RunID)
+	if listFindingsErr != nil {
+		t.Fatalf("ListFindings: %v", listFindingsErr)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings = %#v, want rollback with no findings", findings)
+	}
+	actions, listActionsErr := store.ListPlannedActions(context.Background(), run.RunID)
+	if listActionsErr != nil {
+		t.Fatalf("ListPlannedActions: %v", listActionsErr)
 	}
 	if len(actions) != 0 {
 		t.Fatalf("planned actions = %#v, want rollback with no actions", actions)
@@ -1407,47 +1367,6 @@ func insertSession(t *testing.T, store *Store, session Session) {
 	t.Helper()
 	if err := store.InsertSession(context.Background(), session); err != nil {
 		t.Fatalf("InsertSession: %v", err)
-	}
-}
-
-func validLLMStep(runID string) LLMStep {
-	completed := time.Date(2026, 5, 30, 12, 3, 0, 0, time.UTC)
-	duration := int64(1200)
-	tokensIn := int64(100)
-	tokensOut := int64(20)
-	cacheRead := int64(5)
-	cacheCreate := int64(7)
-	cost := 0.42
-
-	return LLMStep{
-		StepID:               "llm-step-1",
-		RunID:                runID,
-		Stage:                "thread_analysis",
-		ScopeKey:             "thread:thread-1",
-		InputHash:            "input-hash",
-		PromptHash:           "prompt-hash",
-		Provider:             "openai",
-		Adapter:              "codex_cli",
-		Model:                "gpt-5.5",
-		Effort:               "medium",
-		ProviderSessionID:    "provider-session-1",
-		Status:               LLMStepStatusCompleted,
-		StructuredOutputJSON: `{"ok":true}`,
-		StartedAt:            time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC),
-		CompletedAt:          &completed,
-		DurationMS:           &duration,
-		TokensIn:             &tokensIn,
-		TokensOut:            &tokensOut,
-		CacheRead:            &cacheRead,
-		CacheCreate:          &cacheCreate,
-		CostUSD:              &cost,
-	}
-}
-
-func insertLLMStep(t *testing.T, store *Store, step LLMStep) {
-	t.Helper()
-	if err := store.InsertLLMStep(context.Background(), step); err != nil {
-		t.Fatalf("InsertLLMStep: %v", err)
 	}
 }
 
