@@ -277,6 +277,57 @@ func TestRunResumesIncompleteAnalysisWithoutRecomputing(t *testing.T) {
 	}
 }
 
+func TestRunResumeRejectsChangedThreadInputBeforeLLM(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionClarify, "Please clarify the intended behavior.", "", false))
+	original := markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human)
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{original})
+	firstOpts := fixture.options()
+	firstOpts.NewActionID = func(reviewplan.ActionKind) (string, error) {
+		return "", context.Canceled
+	}
+
+	first, err := Run(ctx, firstOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		DryRun:          true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run interrupted error = %v, want context.Canceled", err)
+	}
+
+	changed := original
+	changed.Comments = append([]gitprovider.ThreadComment(nil), original.Comments...)
+	changed.Comments[1].Body = "Human reply changed after the interrupted run"
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{changed})
+	fixture.adapter = &llm.FakeAdapter{NameValue: "fake-llm"}
+	_, err = Run(ctx, fixture.options(), Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+		DryRun:          true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("Run changed thread error = %v, want stale lifecycle input error", err)
+	}
+	if len(fixture.adapter.Requests()) != 0 || len(fixture.adapter.Resumes()) != 0 {
+		t.Fatalf("adapter starts=%#v resumes=%#v, want no provider call for stale cached analysis", fixture.adapter.Requests(), fixture.adapter.Resumes())
+	}
+	stored, getErr := fixture.store.GetRun(ctx, first.Run.RunID)
+	if getErr != nil {
+		t.Fatalf("GetRun first: %v", getErr)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("stale resume outcome = %v, want failed", stored.Outcome)
+	}
+}
+
 func TestRunResumesExistingActionsWithoutReplanning(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)

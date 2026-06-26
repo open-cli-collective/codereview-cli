@@ -168,6 +168,44 @@ func TestAnalyzeThreadsPreservesOrderAndFailsFast(t *testing.T) {
 	}
 }
 
+func TestAnalyzeThreadsPersistsCompletedResultsBeforeLaterFailure(t *testing.T) {
+	store := newFakeStore()
+	adapter := &llm.FakeAdapter{NameValue: "fake"}
+	adapter.Queue(llm.FakeResult{SessionID: "session-1", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
+	adapter.Queue(llm.FakeResult{SessionID: "session-2", Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"thread_id":"thread-2","decision":"bogus","resolve":false}`)}})
+	adapter.Queue(llm.FakeResult{SessionID: "session-2-retry", Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"thread_id":"thread-2","decision":"bogus","resolve":false}`)}})
+	opts := testOptions(t, store, adapter)
+	ids := []string{"step-1", "step-2"}
+	opts.NewStepID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+
+	results, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{
+		promptThreadWithID("thread-1", "first"),
+		promptThreadWithID("thread-2", "second"),
+	})
+	if err == nil {
+		t.Fatal("AnalyzeThreads error = nil, want second thread validation failure")
+	}
+	if results != nil {
+		t.Fatalf("results = %#v, want nil on fail-fast error", results)
+	}
+	thread1 := readThreadMetadata(t, opts, "thread-1")
+	if thread1.Status != llmlifecycle.StatusSucceeded || thread1.ValidatedOutputPath == "" || thread1.ProviderSessionID != "session-1" {
+		t.Fatalf("thread-1 metadata = %#v, want persisted success before later failure", thread1)
+	}
+	assertFileOmits(t, thread1.ValidatedOutputPath, "Here is JSON")
+	thread2 := readThreadMetadata(t, opts, "thread-2")
+	if thread2.Status != llmlifecycle.StatusFailedBlocking || len(thread2.Attempts) != 2 || thread2.ProviderSessionID != "session-2-retry" {
+		t.Fatalf("thread-2 metadata = %#v, want persisted blocking failure attempts", thread2)
+	}
+	if len(store.inserted) != 2 {
+		t.Fatalf("inserted sessions = %#v, want persisted sessions for success and failed thread", store.inserted)
+	}
+}
+
 func TestAnalyzeThreadsReturnsResultsInInputOrder(t *testing.T) {
 	store := newFakeStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake"}
