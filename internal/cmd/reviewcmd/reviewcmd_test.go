@@ -239,6 +239,7 @@ func TestRespondRealRunnerResumesInterruptedRunThroughCLI(t *testing.T) {
 			runner := buildReviewRunner(
 				store,
 				provider,
+				provider,
 				adapter,
 				profile,
 				limiter,
@@ -708,21 +709,25 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	statedirtest.Hermetic(t)
 	cfg := testConfig()
 	cfg.Keyring.Backend = "memory"
-	profile := cfg.Profiles["work"]
+	profile := cfg.Profiles["home"]
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
-		Credential:    config.CredentialLocation{Store: "test-memory"},
-		CredentialRef: "codereview/work-reviewer",
+		Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home-reviewer"},
+		CredentialRef: "codereview/home-reviewer",
 	}
-	cfg.Profiles["work"] = profile
+	cfg.Profiles["home"] = profile
 
 	var providerCalls []config.GitConfig
+	repoProvider := &gitprovider.Fake{}
 	reviewerProvider := &gitprovider.Fake{}
 	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
 	withReviewRuntimeSeams(t,
 		func(git config.GitConfig, _ githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			providerCalls = append(providerCalls, git)
-			return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
+			if git.CredentialRef == "codereview/home-reviewer" {
+				return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
+			}
+			return repoProvider, gitprovider.Credential{Type: "pat", Token: "repo-token"}, nil
 		},
 		func(_ context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ githubprovider.TokenStore, _ config.Profile) (gitprovider.Identity, error) {
 			wrapped, ok := provider.(progressProvider)
@@ -744,20 +749,30 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	if runtime.Cleanup != nil {
 		runtime.Cleanup()
 	}
-	if len(providerCalls) != 1 || providerCalls[0].CredentialRef != "codereview/work-reviewer" {
-		t.Fatalf("provider calls = %#v, want reviewer credential ref only", providerCalls)
+	if len(providerCalls) != 2 ||
+		providerCalls[0].CredentialRef != "codereview/home" ||
+		providerCalls[1].CredentialRef != "codereview/home-reviewer" {
+		t.Fatalf("provider calls = %#v, want git read then reviewer posting providers", providerCalls)
 	}
 	runner, ok := runtime.Runner.(reviewRunner)
 	if !ok {
 		t.Fatalf("Runner type = %T, want reviewRunner", runtime.Runner)
 	}
 	pipelineProvider, ok := runner.pipeline.Provider.(progressProvider)
-	if !ok || pipelineProvider.provider != reviewerProvider {
-		t.Fatalf("pipeline provider = %#v, want wrapped reviewer provider", runner.pipeline.Provider)
+	if !ok || pipelineProvider.provider != repoProvider {
+		t.Fatalf("pipeline provider = %#v, want wrapped repository provider distinct from reviewer provider", runner.pipeline.Provider)
 	}
-	liveProvider, ok := runner.live.Provider.(progressProvider)
-	if !ok || liveProvider.provider != reviewerProvider {
-		t.Fatalf("live provider = %#v, want wrapped reviewer provider", runner.live.Provider)
+	liveProvider, ok := runner.live.Provider.(runtimeProvider)
+	if !ok {
+		t.Fatalf("live provider = %#v, want split runtime provider", runner.live.Provider)
+	}
+	readProvider, ok := liveProvider.read.(progressProvider)
+	if !ok || readProvider.provider != repoProvider {
+		t.Fatalf("live read provider = %#v, want wrapped repository provider distinct from reviewer provider", liveProvider.read)
+	}
+	writeProvider, ok := liveProvider.write.(progressProvider)
+	if !ok || writeProvider.provider != reviewerProvider {
+		t.Fatalf("live write provider = %#v, want wrapped reviewer provider", liveProvider.write)
 	}
 }
 
@@ -1704,6 +1719,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 	runner := buildReviewRunner(
 		store,
 		provider,
+		provider,
 		adapter,
 		testConfig().Profiles["home"],
 		noopLimiter{},
@@ -1863,6 +1879,7 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			provider,
+			provider,
 			adapter,
 			profile,
 			noopLimiter{},
@@ -1924,6 +1941,7 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
+			provider,
 			provider,
 			adapter,
 			profile,
@@ -2016,6 +2034,7 @@ func TestReviewRealRunnerResumesIncompleteRunThroughCLI(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			provider,
+			provider,
 			adapter,
 			profile,
 			noopLimiter{},
@@ -2092,6 +2111,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			provider,
+			provider,
 			adapter,
 			profile,
 			noopLimiter{},
@@ -2163,6 +2183,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			provider,
+			provider,
 			adapter,
 			profile,
 			noopLimiter{},
@@ -2226,6 +2247,7 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 		runner := buildReviewRunner(
 			store,
+			provider,
 			provider,
 			adapter,
 			profile,
@@ -2415,6 +2437,7 @@ func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			withProgressProvider(logger, "review", provider),
+			withProgressProvider(logger, "review", provider),
 			adapter,
 			profile,
 			noopLimiter{},
@@ -2473,6 +2496,7 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 		logger := newProgressLogger(opts)
 		runner := buildReviewRunner(
 			store,
+			withProgressProvider(logger, "review", provider),
 			withProgressProvider(logger, "review", provider),
 			adapter,
 			profile,
@@ -2724,6 +2748,7 @@ func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
 	logger := progress.New(&errOut, false, nil)
 	runner := buildReviewRunner(
 		store,
+		provider,
 		provider,
 		adapter,
 		testConfig().Profiles["home"],

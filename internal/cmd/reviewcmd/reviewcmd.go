@@ -995,24 +995,35 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 	stores := newRuntimeCredentialStores(cfg, opts.Backend, cmderr.BackendFlagChanged(cmd))
 	cleanup := stores.Close
 	logger := newProgressLogger(opts)
-	providerGit := gitConfigForReviewerAuth(profile)
-	providerStore, err := stores.Open(providerGit.Credential)
+	repoProviderStore, err := stores.Open(profile.Git.Credential)
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	provider, credential, err := newGitProvider(providerGit, providerStore, gitProviderOptions(profile, providerGit, runtimeOpts.PRRef))
+	repoProvider, _, err := newGitProvider(profile.Git, repoProviderStore, gitProviderOptions(profile, profile.Git, runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	provider = withProgressProvider(logger, commandName(cmd), provider)
-	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), provider, credential, providerStore, profile)
+	repoProvider = withProgressProvider(logger, commandName(cmd), repoProvider)
+	postingGit := gitConfigForReviewerAuth(profile)
+	postingProviderStore, err := stores.Open(postingGit.Credential)
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	if err := requireOpinionatedReviewAuthority(cmd.Context(), provider, runtimeOpts, postingIdentity); err != nil {
+	postingProvider, credential, err := newGitProvider(postingGit, postingProviderStore, gitProviderOptions(profile, postingGit, runtimeOpts.PRRef))
+	if err != nil {
+		cleanup()
+		return Runtime{}, mapRunError(err)
+	}
+	postingProvider = withProgressProvider(logger, commandName(cmd), postingProvider)
+	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), postingProvider, credential, postingProviderStore, profile)
+	if err != nil {
+		cleanup()
+		return Runtime{}, mapRunError(err)
+	}
+	if err := requireOpinionatedReviewAuthority(cmd.Context(), postingProvider, runtimeOpts, postingIdentity); err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
@@ -1036,7 +1047,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		return Runtime{}, err
 	}
 	adapter := newLazyAdapter(func() (llm.Adapter, error) {
-		adapterStore := providerStore
+		adapterStore := repoProviderStore
 		if profile.LLM.Auth == config.LLMAuthAPIKey {
 			var err error
 			adapterStore, err = stores.Open(profile.LLM.Credential)
@@ -1050,7 +1061,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		}
 		return withProgressAdapter(logger, commandName(cmd), adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
 	})
-	runner := buildReviewRunner(ledgerStore, provider, adapter, profile, limiter, layout, opts.Stderr, logger, runtimeOpts, commandName(cmd))
+	runner := buildReviewRunner(ledgerStore, repoProvider, postingProvider, adapter, profile, limiter, layout, opts.Stderr, logger, runtimeOpts, commandName(cmd))
 	return Runtime{
 		Runner:          runner,
 		Responder:       runner,
@@ -1189,10 +1200,11 @@ func runtimeLayout() (statepaths.Layout, error) {
 	return layout, nil
 }
 
-func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, runtimeOpts RuntimeOptions, command string) reviewRunner {
+func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitProvider, postingProvider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, runtimeOpts RuntimeOptions, command string) reviewRunner {
 	taskProgress := newPipelineTaskProgress(logger, command)
+	liveProvider := runtimeProvider{read: repoProvider, write: postingProvider}
 	pipelineOpts := pipeline.Options{
-		Provider:                  provider,
+		Provider:                  repoProvider,
 		Adapter:                   adapter,
 		Store:                     ledgerStore,
 		NamedSessions:             ledgerStore,
@@ -1211,7 +1223,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 		pipeline: pipelineOpts,
 		live: reviewrun.Options{
 			Store:                   ledgerStore,
-			Provider:                provider,
+			Provider:                liveProvider,
 			Planner:                 withProgressPlanner(logger, livePlanner{opts: pipelineOpts}),
 			Limiter:                 limiter,
 			Layout:                  layout,
@@ -1223,7 +1235,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 		},
 		respond: threadrespond.Options{
 			Store:        ledgerStore,
-			Provider:     provider,
+			Provider:     liveProvider,
 			Adapter:      adapter,
 			Limiter:      limiter,
 			Layout:       layout,

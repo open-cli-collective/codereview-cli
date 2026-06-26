@@ -199,8 +199,8 @@ follow-up credential work without leaking values.
 
 All credential-bearing init flows should show equivalent non-secret destination
 context before collecting secret values. This includes repository-access Git
-credentials, reviewer PAT/GitHub App credentials, and LLM API keys handled by
-the shared credential collector.
+credentials, reviewer PAT credentials, and LLM API keys handled by the shared
+credential collector.
 
 Destination summaries should include:
 
@@ -251,7 +251,7 @@ When the UI has additional profile context, it may render equivalent
 contextual variants of the same fallback choice, such as:
 
 - **Post as rianjs (GitHub PAT)**
-- **Post as acme-review-bot (GitHub App)**
+- **Post as acme-review-bot (GitHub PAT)**
 - **Post using this profile's Git account (GitHub PAT)**
 
 This means:
@@ -279,7 +279,7 @@ When no explicit display name exists, the chooser should fall back to stable,
 deterministic identity text derived from the credential name or equivalent
 profile context, for example:
 
-- **open-cli-collective-rianjs-bot (GitHub App reviewer)**
+- **open-cli-collective-rianjs-bot (PAT reviewer)**
 - **reviewer-pat (PAT reviewer)**
 
 The profile-Git-account fallback is not a separately named reviewer entity and
