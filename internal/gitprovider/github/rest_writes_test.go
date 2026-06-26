@@ -51,10 +51,24 @@ func TestRESTWriteMethodsMapRequests(t *testing.T) {
 			writeJSON(t, w, map[string]any{"id": 201})
 		case "/repos/open%20cli/repo+name/pulls/42/reviews":
 			body := readJSONMap(t, r)
-			requireJSONExact(t, body, map[string]any{
+			requireJSONExact(t, mapWithoutKey(body, "comments"), map[string]any{
 				"commit_id": "head-sha",
 				"event":     "REQUEST_CHANGES",
 				"body":      "review body",
+			})
+			comments, ok := body["comments"].([]any)
+			if !ok || len(comments) != 1 {
+				t.Fatalf("review comments = %#v, want one comment", body["comments"])
+			}
+			comment, ok := comments[0].(map[string]any)
+			if !ok {
+				t.Fatalf("review comment[0] = %#v, want object", comments[0])
+			}
+			requireJSONExact(t, comment, map[string]any{
+				"body":      "line body",
+				"path":      "dir/file.go",
+				"side":      "RIGHT",
+				"line":      float64(9),
 			})
 			writeJSON(t, w, map[string]any{"id": 301})
 		default:
@@ -104,6 +118,14 @@ func TestRESTWriteMethodsMapRequests(t *testing.T) {
 		CommitSHA: "head-sha",
 		Event:     review.ReviewEventRequestChanges,
 		Body:      "review body",
+		Comments: []gitprovider.InlineComment{{
+			CommitSHA:   "head-sha",
+			Body:        "line body",
+			Path:        "dir/file.go",
+			Side:        review.DiffSideRight,
+			Line:        9,
+			SubjectType: review.AnchorKindLine,
+		}},
 	})
 	if err != nil {
 		t.Fatalf("SubmitReview: %v", err)
@@ -137,6 +159,20 @@ func TestRESTWritesValidateBeforeRequest(t *testing.T) {
 	invalidReview := gitprovider.ReviewRequest{CommitSHA: "head-sha", Event: "bad", Body: "body"}
 	if _, err := client.SubmitReview(context.Background(), ref, invalidReview); err == nil {
 		t.Fatal("SubmitReview invalid payload error = nil")
+	}
+	badBundledReview := gitprovider.ReviewRequest{
+		CommitSHA: "head-sha",
+		Event:     review.ReviewEventComment,
+		Body:      "body",
+		Comments: []gitprovider.InlineComment{{
+			CommitSHA:   "head-sha",
+			Body:        "file body",
+			Path:        "dir/file.go",
+			SubjectType: review.AnchorKindFile,
+		}},
+	}
+	if _, err := client.SubmitReview(context.Background(), ref, badBundledReview); !errors.Is(err, ErrValidation) {
+		t.Fatalf("SubmitReview bundled file-level error = %v, want ErrValidation", err)
 	}
 	if requests != 0 {
 		t.Fatalf("requests = %d, want no requests for invalid inputs", requests)
@@ -348,6 +384,17 @@ func readJSONMap(t *testing.T, r *http.Request) map[string]any {
 		t.Fatalf("Decode request body: %v", err)
 	}
 	return body
+}
+
+func mapWithoutKey(input map[string]any, key string) map[string]any {
+	out := make(map[string]any, len(input))
+	for k, v := range input {
+		if k == key {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func requireJSONExact(t *testing.T, got map[string]any, want map[string]any) {

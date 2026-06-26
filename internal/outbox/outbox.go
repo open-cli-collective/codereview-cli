@@ -120,6 +120,12 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{ExitCode: exitFailed}, err
 	}
 	actions = sortActions(actions)
+	if opts.Provider.Capabilities().BundleInlineOnSubmit {
+		now := opts.Now().UTC()
+		if err := reconcilePostedBundledInline(ctx, opts.Store, actions, now); err != nil {
+			return Result{ExitCode: exitFailed}, err
+		}
+	}
 
 	if !hasRelevantPending(actions) {
 		outcome, exitCode := finalOutcome(req.DesiredOutcome, actions)
@@ -141,6 +147,9 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		if irrelevant(actions[i]) {
 			continue
 		}
+		if actions[i].Kind == ledger.PlannedActionInlineComment && opts.Provider.Capabilities().BundleInlineOnSubmit {
+			continue
+		}
 		match, err := reconcileAction(req, actions, actions[i], state)
 		if err != nil {
 			// Reconciliation is best-effort; dispatch planning below performs the
@@ -159,6 +168,11 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		if err := opts.Store.UpdatePlannedAction(ctx, actions[i]); err != nil {
 			return Result{ExitCode: exitFailed}, err
 		}
+		if actions[i].Kind == ledger.PlannedActionSubmitReview && opts.Provider.Capabilities().BundleInlineOnSubmit {
+			if err := markBundledInlinePosted(ctx, opts.Store, actions, actions[i].UpstreamID, now); err != nil {
+				return Result{ExitCode: exitFailed}, err
+			}
+		}
 	}
 
 	for i := range actions {
@@ -168,7 +182,10 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		if irrelevant(actions[i]) {
 			continue
 		}
-		plan, err := buildActionPlan(req, actions[i])
+		if actions[i].Kind == ledger.PlannedActionInlineComment && opts.Provider.Capabilities().BundleInlineOnSubmit {
+			continue
+		}
+		plan, bundledInlineIDs, err := buildActionPlan(opts.Provider, req, actions, actions[i])
 		if err != nil {
 			if updateErr := markFailedTerminal(ctx, opts.Store, &actions[i], err, failureTerminal); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
@@ -204,6 +221,9 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 			if err := opts.Store.UpdatePlannedAction(ctx, actions[i]); err != nil {
 				return Result{ExitCode: exitFailed}, err
 			}
+			if err := markBundledActionIDsPosted(ctx, opts.Store, actions, bundledInlineIDs, upstreamID, now); err != nil {
+				return Result{ExitCode: exitFailed}, err
+			}
 			continue
 		}
 
@@ -236,6 +256,11 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 				actions[i].FailureClass = nil
 				if updateErr := opts.Store.UpdatePlannedAction(ctx, actions[i]); updateErr != nil {
 					return Result{ExitCode: exitFailed}, updateErr
+				}
+				if actions[i].Kind == ledger.PlannedActionSubmitReview && opts.Provider.Capabilities().BundleInlineOnSubmit {
+					if err := markBundledInlinePosted(ctx, opts.Store, actions, actions[i].UpstreamID, now); err != nil {
+						return Result{ExitCode: exitFailed}, err
+					}
 				}
 				continue
 			}
@@ -476,16 +501,20 @@ func actionMarkerMatches(req Request, action ledger.PlannedAction, kind string, 
 	return false
 }
 
-func buildActionPlan(req Request, action ledger.PlannedAction) (actionPlan, error) {
+func buildActionPlan(provider gitprovider.GitProvider, req Request, actions []ledger.PlannedAction, action ledger.PlannedAction) (actionPlan, map[string]bool, error) {
+	bundledInlineIDs := map[string]bool{}
 	switch action.Kind {
 	case ledger.PlannedActionInlineComment:
+		if provider.Capabilities().BundleInlineOnSubmit {
+			return actionPlan{}, bundledInlineIDs, fmt.Errorf("outbox: inline comment %s should be bundled into submit review", action.ActionID)
+		}
 		payload, err := decodePayload[InlineCommentPayload](action)
 		if err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
 		body, err := bodyWithActionMarker(req, action, marker.ActionKindInlineComment, "", payload.Body)
 		if err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
 		comment := gitprovider.InlineComment{
 			CommitSHA:    req.Run.SHA,
@@ -497,16 +526,16 @@ func buildActionPlan(req Request, action ledger.PlannedAction) (actionPlan, erro
 			DiffPosition: payload.DiffPosition,
 		}
 		if err := comment.Validate(); err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
-		return actionPlan{action: action, inlineComment: &comment}, nil
+		return actionPlan{action: action, inlineComment: &comment}, bundledInlineIDs, nil
 	case ledger.PlannedActionThreadReply:
 		payload, err := decodePayload[ThreadReplyPayload](action)
 		if err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
 		if action.ThreadID == nil || strings.TrimSpace(*action.ThreadID) == "" {
-			return actionPlan{}, fmt.Errorf("outbox: thread reply target is required")
+			return actionPlan{}, bundledInlineIDs, fmt.Errorf("outbox: thread reply target is required")
 		}
 		var body string
 		if payload.Summary {
@@ -515,44 +544,143 @@ func buildActionPlan(req Request, action ledger.PlannedAction) (actionPlan, erro
 			body, err = bodyWithActionMarker(req, action, marker.ActionKindThreadReply, "", payload.Body)
 		}
 		if err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
-		return actionPlan{action: action, body: body, threadID: gitprovider.ThreadID(*action.ThreadID)}, nil
+		return actionPlan{action: action, body: body, threadID: gitprovider.ThreadID(*action.ThreadID)}, bundledInlineIDs, nil
 	case ledger.PlannedActionResolveThread:
 		if _, err := decodePayload[ResolveThreadPayload](action); err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
 		if action.ThreadID == nil || strings.TrimSpace(*action.ThreadID) == "" {
-			return actionPlan{}, fmt.Errorf("outbox: resolve thread target is required")
+			return actionPlan{}, bundledInlineIDs, fmt.Errorf("outbox: resolve thread target is required")
 		}
-		return actionPlan{action: action, resolveThread: gitprovider.ThreadID(*action.ThreadID)}, nil
+		return actionPlan{action: action, resolveThread: gitprovider.ThreadID(*action.ThreadID)}, bundledInlineIDs, nil
 	case ledger.PlannedActionRollupComment:
 		payload, err := decodePayload[RollupCommentPayload](action)
 		if err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
 		body, err := bodyWithActionMarker(req, action, marker.ActionKindRollupComment, string(req.DesiredOutcome), payload.Body)
 		if err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
-		return actionPlan{action: action, body: body}, nil
+		return actionPlan{action: action, body: body}, bundledInlineIDs, nil
 	case ledger.PlannedActionSubmitReview:
 		payload, err := decodePayload[SubmitReviewPayload](action)
 		if err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
 		body, err := bodyWithActionMarker(req, action, marker.ActionKindSubmitReview, "", payload.Body)
 		if err != nil {
-			return actionPlan{}, err
+			return actionPlan{}, bundledInlineIDs, err
 		}
 		request := gitprovider.ReviewRequest{CommitSHA: req.Run.SHA, Event: payload.Event, Body: body}
-		if err := request.Validate(); err != nil {
-			return actionPlan{}, err
+		if provider.Capabilities().BundleInlineOnSubmit {
+			comments, ids, err := bundledInlineComments(req, actions)
+			if err != nil {
+				return actionPlan{}, bundledInlineIDs, err
+			}
+			request.Comments = comments
+			bundledInlineIDs = ids
 		}
-		return actionPlan{action: action, reviewRequest: &request}, nil
+		if err := request.Validate(); err != nil {
+			return actionPlan{}, bundledInlineIDs, err
+		}
+		return actionPlan{action: action, reviewRequest: &request}, bundledInlineIDs, nil
 	default:
-		return actionPlan{}, fmt.Errorf("outbox: unsupported action kind %q", action.Kind)
+		return actionPlan{}, bundledInlineIDs, fmt.Errorf("outbox: unsupported action kind %q", action.Kind)
 	}
+}
+
+func bundledInlineComments(req Request, actions []ledger.PlannedAction) ([]gitprovider.InlineComment, map[string]bool, error) {
+	comments := make([]gitprovider.InlineComment, 0, len(actions))
+	ids := map[string]bool{}
+	for _, action := range actions {
+		if action.Kind != ledger.PlannedActionInlineComment || action.Status != ledger.PlannedActionPending {
+			continue
+		}
+		payload, err := decodePayload[InlineCommentPayload](action)
+		if err != nil {
+			return nil, nil, err
+		}
+		body, err := bodyWithActionMarker(req, action, marker.ActionKindInlineComment, "", payload.Body)
+		if err != nil {
+			return nil, nil, err
+		}
+		comment := gitprovider.InlineComment{
+			CommitSHA:    req.Run.SHA,
+			Body:         body,
+			Path:         payload.Path,
+			Side:         payload.Side,
+			Line:         payload.Line,
+			SubjectType:  payload.SubjectType,
+			DiffPosition: payload.DiffPosition,
+		}
+		if comment.SubjectType != review.AnchorKindLine {
+			return nil, nil, fmt.Errorf("outbox: bundled inline comment %s must be line-scoped", action.ActionID)
+		}
+		if err := comment.Validate(); err != nil {
+			return nil, nil, err
+		}
+		comments = append(comments, comment)
+		ids[action.ActionID] = true
+	}
+	return comments, ids, nil
+}
+
+func markBundledInlinePosted(ctx context.Context, store Store, actions []ledger.PlannedAction, upstreamID *string, postedAt time.Time) error {
+	if upstreamID == nil || strings.TrimSpace(*upstreamID) == "" {
+		return nil
+	}
+	ids := map[string]bool{}
+	for _, action := range actions {
+		if action.Kind == ledger.PlannedActionInlineComment && action.Status == ledger.PlannedActionPending {
+			ids[action.ActionID] = true
+		}
+	}
+	return markBundledActionIDsPosted(ctx, store, actions, ids, *upstreamID, postedAt)
+}
+
+func markBundledActionIDsPosted(ctx context.Context, store Store, actions []ledger.PlannedAction, actionIDs map[string]bool, upstreamID string, postedAt time.Time) error {
+	if len(actionIDs) == 0 {
+		return nil
+	}
+	for i := range actions {
+		if actions[i].Status != ledger.PlannedActionPending {
+			continue
+		}
+		if !actionIDs[actions[i].ActionID] {
+			continue
+		}
+		actions[i].Status = ledger.PlannedActionPosted
+		actions[i].PostedAt = &postedAt
+		actions[i].UpstreamID = strPtr(upstreamID)
+		actions[i].Error = nil
+		actions[i].FailureClass = nil
+		if err := store.UpdatePlannedAction(ctx, actions[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reconcilePostedBundledInline(ctx context.Context, store Store, actions []ledger.PlannedAction, now time.Time) error {
+	var submit *ledger.PlannedAction
+	for i := range actions {
+		if actions[i].Kind != ledger.PlannedActionSubmitReview || actions[i].Status != ledger.PlannedActionPosted {
+			continue
+		}
+		submit = &actions[i]
+		break
+	}
+	if submit == nil || submit.UpstreamID == nil || strings.TrimSpace(*submit.UpstreamID) == "" {
+		return nil
+	}
+	postedAt := now
+	if submit.PostedAt != nil && !submit.PostedAt.IsZero() {
+		postedAt = *submit.PostedAt
+	}
+	return markBundledInlinePosted(ctx, store, actions, submit.UpstreamID, postedAt)
 }
 
 func decodePayload[T any](action ledger.PlannedAction) (T, error) {

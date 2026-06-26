@@ -16,7 +16,7 @@ func TestFakeImplementsGitProvider(_ *testing.T) {
 
 func TestFakeCapabilities(t *testing.T) {
 	var fake Fake
-	caps := ProviderCaps{NativeFileLevelComments: true, ThreadResolution: true}
+	caps := ProviderCaps{ThreadResolution: true, BundleInlineOnSubmit: true}
 	fake.SetCapabilities(caps)
 	if got := fake.Capabilities(); got != caps {
 		t.Fatalf("Capabilities() = %#v, want %#v", got, caps)

@@ -24,8 +24,8 @@ func TestClientImplementsGitProvider(_ *testing.T) {
 func TestCapabilities(t *testing.T) {
 	client := mustClient(t, Options{Token: "token"})
 	caps := client.Capabilities()
-	if !caps.NativeFileLevelComments || !caps.ThreadResolution {
-		t.Fatalf("Capabilities() = %#v, want native file comments and thread resolution", caps)
+	if caps.NativeFileLevelComments || !caps.ThreadResolution || !caps.BundleInlineOnSubmit {
+		t.Fatalf("Capabilities() = %#v, want bundled review comments with thread resolution and no native file comments", caps)
 	}
 }
 

@@ -84,6 +84,263 @@ func TestPostEmbedsMarkersAndPostsInCanonicalOrder(t *testing.T) {
 	}
 }
 
+func TestPostBundlesInlineCommentsIntoSubmitReviewWhenProviderSupportsIt(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	provider.SetCapabilities(gitprovider.ProviderCaps{BundleInlineOnSubmit: true})
+	ref := testPRRef()
+
+	insertAction(t, store, plannedAction(run.RunID, "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{
+		Body:  "review body",
+		Event: review.ReviewEventRequestChanges,
+	}))
+	insertAction(t, store, plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup body"}))
+	insertAction(t, store, plannedAction(run.RunID, "inline-1", ledger.PlannedActionInlineComment, false, "", InlineCommentPayload{
+		Body:        "inline body",
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        12,
+		SubjectType: review.AnchorKindLine,
+	}))
+
+	result, err := Post(context.Background(), Options{
+		Store:    store,
+		Provider: provider,
+		Limiter:  noopLimiter{},
+		Now:      fixedClock(),
+	}, Request{
+		Run:             run,
+		PRRef:           ref,
+		PostingIdentity: botIdentity(),
+		DesiredOutcome:  ledger.OutcomeRequestChanges,
+	})
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.Outcome != ledger.OutcomeRequestChanges || result.ExitCode != exitOK {
+		t.Fatalf("Post result = %#v, want request_changes exit 0", result)
+	}
+	if !reflect.DeepEqual(provider.writes, []string{"PostIssueComment", "SubmitReview"}) {
+		t.Fatalf("provider write order = %#v, want rollup then submit only", provider.writes)
+	}
+	if got := provider.RecordedInlineComments(ref); len(got) != 0 {
+		t.Fatalf("RecordedInlineComments = %#v, want none when bundled", got)
+	}
+	reviews := provider.RecordedReviews(ref)
+	if len(reviews) != 1 {
+		t.Fatalf("RecordedReviews len = %d, want 1", len(reviews))
+	}
+	if len(reviews[0].Comments) != 1 {
+		t.Fatalf("bundled review comments = %#v, want one", reviews[0].Comments)
+	}
+	assertActionBody(t, reviews[0].Comments[0].Body, run, "inline-1", marker.ActionKindInlineComment, "")
+	for _, id := range []string{"inline-1", "rollup-1", "submit-1"} {
+		action := actionByID(t, store, run.RunID, id)
+		if action.Status != ledger.PlannedActionPosted {
+			t.Fatalf("action %s status = %s, want posted", action.ActionID, action.Status)
+		}
+	}
+}
+
+func TestPostReconcilesBundledInlineCommentsFromSubmitReview(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	provider.SetCapabilities(gitprovider.ProviderCaps{BundleInlineOnSubmit: true})
+	ref := testPRRef()
+
+	insertAction(t, store, plannedAction(run.RunID, "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{
+		Body:  "review body",
+		Event: review.ReviewEventRequestChanges,
+	}))
+	insertAction(t, store, plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup body"}))
+	insertAction(t, store, plannedAction(run.RunID, "inline-1", ledger.PlannedActionInlineComment, false, "", InlineCommentPayload{
+		Body:        "inline body",
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        12,
+		SubjectType: review.AnchorKindLine,
+	}))
+
+	if err := provider.SetIssueComments(ref, []gitprovider.IssueComment{{
+		ID:     gitprovider.CommentID("issue-rollup"),
+		Author: botIdentity(),
+		Body: mustRenderAction(t, marker.ActionMarker{
+			RunID:    run.RunID,
+			ActionID: "rollup-1",
+			Kind:     marker.ActionKindRollupComment,
+			SHA:      run.SHA,
+			BaseSHA:  run.BaseSHA,
+			Outcome:  string(ledger.OutcomeRequestChanges),
+		}),
+	}}); err != nil {
+		t.Fatalf("SetIssueComments: %v", err)
+	}
+	if err := provider.SetReviews(ref, []gitprovider.Review{{
+		ID:     gitprovider.ReviewID("review-submit"),
+		Author: botIdentity(),
+		Body: mustRenderAction(t, marker.ActionMarker{
+			RunID:    run.RunID,
+			ActionID: "submit-1",
+			Kind:     marker.ActionKindSubmitReview,
+			SHA:      run.SHA,
+			BaseSHA:  run.BaseSHA,
+		}),
+	}}); err != nil {
+		t.Fatalf("SetReviews: %v", err)
+	}
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, Request{
+		Run:             run,
+		PRRef:           ref,
+		PostingIdentity: botIdentity(),
+		DesiredOutcome:  ledger.OutcomeRequestChanges,
+	})
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.ExitCode != exitOK {
+		t.Fatalf("Post exit = %d, want 0", result.ExitCode)
+	}
+	if len(provider.writes) != 0 {
+		t.Fatalf("provider writes = %#v, want reconciliation only", provider.writes)
+	}
+	for _, tc := range []struct {
+		id       string
+		upstream string
+	}{
+		{id: "submit-1", upstream: "review-submit"},
+		{id: "rollup-1", upstream: "issue-rollup"},
+		{id: "inline-1", upstream: "review-submit"},
+	} {
+		action := actionByID(t, store, run.RunID, tc.id)
+		if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != tc.upstream {
+			t.Fatalf("%s after reconciliation = %#v, want posted upstream %s", tc.id, action, tc.upstream)
+		}
+	}
+}
+
+func TestPostConflictReconcilesBundledInlineCommentsFromSubmitReview(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	provider.SetCapabilities(gitprovider.ProviderCaps{BundleInlineOnSubmit: true})
+	ref := testPRRef()
+
+	insertAction(t, store, plannedAction(run.RunID, "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{
+		Body:  "review body",
+		Event: review.ReviewEventRequestChanges,
+	}))
+	insertAction(t, store, plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup body"}))
+	insertAction(t, store, plannedAction(run.RunID, "inline-1", ledger.PlannedActionInlineComment, false, "", InlineCommentPayload{
+		Body:        "inline body",
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        12,
+		SubjectType: review.AnchorKindLine,
+	}))
+
+	provider.SetError(gitprovider.OperationSubmitReview, gitprovider.WrapError(gitprovider.ErrConflict, gitprovider.OperationSubmitReview, nil))
+	if err := provider.SetIssueComments(ref, []gitprovider.IssueComment{{
+		ID:     gitprovider.CommentID("issue-rollup"),
+		Author: botIdentity(),
+		Body: mustRenderAction(t, marker.ActionMarker{
+			RunID:    run.RunID,
+			ActionID: "rollup-1",
+			Kind:     marker.ActionKindRollupComment,
+			SHA:      run.SHA,
+			BaseSHA:  run.BaseSHA,
+			Outcome:  string(ledger.OutcomeRequestChanges),
+		}),
+	}}); err != nil {
+		t.Fatalf("SetIssueComments: %v", err)
+	}
+	if err := provider.SetReviews(ref, []gitprovider.Review{{
+		ID:     gitprovider.ReviewID("review-submit"),
+		Author: botIdentity(),
+		Body: mustRenderAction(t, marker.ActionMarker{
+			RunID:    run.RunID,
+			ActionID: "submit-1",
+			Kind:     marker.ActionKindSubmitReview,
+			SHA:      run.SHA,
+			BaseSHA:  run.BaseSHA,
+		}),
+	}}); err != nil {
+		t.Fatalf("SetReviews: %v", err)
+	}
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, Request{
+		Run:             run,
+		PRRef:           ref,
+		PostingIdentity: botIdentity(),
+		DesiredOutcome:  ledger.OutcomeRequestChanges,
+	})
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.ExitCode != exitOK {
+		t.Fatalf("Post exit = %d, want 0", result.ExitCode)
+	}
+	for _, tc := range []struct {
+		id       string
+		upstream string
+	}{
+		{id: "submit-1", upstream: "review-submit"},
+		{id: "rollup-1", upstream: "issue-rollup"},
+		{id: "inline-1", upstream: "review-submit"},
+	} {
+		action := actionByID(t, store, run.RunID, tc.id)
+		if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != tc.upstream {
+			t.Fatalf("%s after conflict reconciliation = %#v, want posted upstream %s", tc.id, action, tc.upstream)
+		}
+	}
+}
+
+func TestPostRepairsBundledInlineCommentsWhenSubmitReviewAlreadyPosted(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	provider.SetCapabilities(gitprovider.ProviderCaps{BundleInlineOnSubmit: true})
+	ref := testPRRef()
+
+	submit := plannedAction(run.RunID, "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{
+		Body:  "review body",
+		Event: review.ReviewEventRequestChanges,
+	})
+	submit.Status = ledger.PlannedActionPosted
+	submit.PostedAt = strPtrTime(testTime())
+	submit.UpstreamID = strPtr("review-submit")
+	insertAction(t, store, submit)
+	insertAction(t, store, plannedAction(run.RunID, "inline-1", ledger.PlannedActionInlineComment, false, "", InlineCommentPayload{
+		Body:        "inline body",
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        12,
+		SubjectType: review.AnchorKindLine,
+	}))
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, Request{
+		Run:             run,
+		PRRef:           ref,
+		PostingIdentity: botIdentity(),
+		DesiredOutcome:  ledger.OutcomeRequestChanges,
+	})
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.ExitCode != exitOK || result.Pending != 0 {
+		t.Fatalf("Post result = %#v, want successful repaired completion", result)
+	}
+	action := actionByID(t, store, run.RunID, "inline-1")
+	if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != "review-submit" {
+		t.Fatalf("inline after repair = %#v, want posted with review-submit", action)
+	}
+	if len(provider.writes) != 0 {
+		t.Fatalf("provider writes = %#v, want no additional writes", provider.writes)
+	}
+}
+
 func TestPostThreadSummaryReplyUsesSummaryMarker(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, ledger.PostModeLive)

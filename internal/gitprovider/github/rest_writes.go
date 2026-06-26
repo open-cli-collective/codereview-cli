@@ -27,6 +27,14 @@ type reviewRequest struct {
 	CommitID string `json:"commit_id"`
 	Event    string `json:"event"`
 	Body     string `json:"body"`
+	Comments []reviewCommentRequest `json:"comments,omitempty"`
+}
+
+type reviewCommentRequest struct {
+	Body string `json:"body"`
+	Path string `json:"path"`
+	Side string `json:"side,omitempty"`
+	Line int    `json:"line,omitempty"`
 }
 
 type commentWriteResponse struct {
@@ -106,6 +114,23 @@ func (c *Client) SubmitReview(ctx context.Context, ref gitprovider.PRRef, reques
 	var response reviewWriteResponse
 	endpoint := restURL(c.baseURL, "repos", ref.Owner, ref.Repo, "pulls", fmt.Sprint(ref.Number), "reviews")
 	payload := reviewRequest{CommitID: request.CommitSHA, Event: event, Body: request.Body}
+	if len(request.Comments) > 0 {
+		payload.Comments = make([]reviewCommentRequest, 0, len(request.Comments))
+		for _, comment := range request.Comments {
+			entry := reviewCommentRequest{
+				Body: comment.Body,
+				Path: comment.Path,
+			}
+			switch comment.SubjectType {
+			case review.AnchorKindLine:
+				entry.Side = string(comment.Side)
+				entry.Line = comment.Line
+			default:
+				return "", fmt.Errorf("%w: unsupported bundled review comment subject type %q", ErrValidation, comment.SubjectType)
+			}
+			payload.Comments = append(payload.Comments, entry)
+		}
+	}
 	if err := c.doRESTJSON(ctx, gitprovider.OperationSubmitReview, http.MethodPost, endpoint, payload, &response); err != nil {
 		return "", err
 	}
