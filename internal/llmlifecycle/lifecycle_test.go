@@ -264,6 +264,18 @@ func TestRunStructuredRerunsFailedBlockingTaskWithStoredProviderSession(t *testi
 	if len(resumes) != 1 || resumes[0].SessionID != "provider-session-1" {
 		t.Fatalf("resumes = %#v, want resume from failed metadata session", resumes)
 	}
+	session := store.session(t, "session-row-1")
+	if session.RunID != req.RunID || session.ProviderSessionID != "provider-session-2" {
+		t.Fatalf("persisted session = %#v, want resumed success session for run", session)
+	}
+	meta, ok, err := ReadMetadata(req.Paths, req.TaskID)
+	if err != nil || !ok {
+		t.Fatalf("ReadMetadata = %#v ok=%t err=%v, want metadata", meta, ok, err)
+	}
+	if meta.Status != StatusSucceeded || meta.SessionRowID != "session-row-1" || meta.ProviderSessionID != "provider-session-2" {
+		t.Fatalf("metadata after resume = %#v, want succeeded resumed session", meta)
+	}
+	assertFileContains(t, meta.ValidatedOutputPath, `"ok":true`)
 }
 
 func TestRunStructuredRerunsFailedBlockingTaskWithLatestAttemptSession(t *testing.T) {
@@ -303,6 +315,18 @@ func TestRunStructuredRerunsFailedBlockingTaskWithLatestAttemptSession(t *testin
 	if len(resumes) != 1 || resumes[0].SessionID != "provider-session-2" {
 		t.Fatalf("resumes = %#v, want resume from latest failed attempt session", resumes)
 	}
+	session := store.session(t, "session-row-1")
+	if session.RunID != req.RunID || session.ProviderSessionID != "provider-session-3" {
+		t.Fatalf("persisted session = %#v, want resumed success session for run", session)
+	}
+	meta, ok, err := ReadMetadata(req.Paths, req.TaskID)
+	if err != nil || !ok {
+		t.Fatalf("ReadMetadata = %#v ok=%t err=%v, want metadata", meta, ok, err)
+	}
+	if meta.Status != StatusSucceeded || meta.SessionRowID != "session-row-1" || meta.ProviderSessionID != "provider-session-3" {
+		t.Fatalf("metadata after attempt resume = %#v, want succeeded resumed session", meta)
+	}
+	assertFileContains(t, meta.ValidatedOutputPath, `"ok":true`)
 }
 
 func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {

@@ -383,6 +383,9 @@ func TestRunRerunBypassesIncompleteResponseRun(t *testing.T) {
 	if second.Run.RunID == first.Run.RunID {
 		t.Fatalf("rerun reused %q, want fresh run", second.Run.RunID)
 	}
+	if second.Artifacts.Dir == first.Artifacts.Dir {
+		t.Fatalf("rerun artifacts dir = %q, want fresh artifact root", second.Artifacts.Dir)
+	}
 	storedFirst, err := fixture.store.GetRun(ctx, first.Run.RunID)
 	if err != nil {
 		t.Fatalf("GetRun first: %v", err)

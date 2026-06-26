@@ -278,6 +278,9 @@ func TestDryRunRerunBypassesIncompleteRunAttempt(t *testing.T) {
 	if result.Run.RunID != "run-fresh" {
 		t.Fatalf("result run = %q, want fresh run", result.Run.RunID)
 	}
+	if result.Artifacts.Dir == resume.ArtifactPath {
+		t.Fatalf("result artifacts dir = %q, want fresh artifact root", result.Artifacts.Dir)
+	}
 	storedResume, err := store.GetRun(ctx, resume.RunID)
 	if err != nil {
 		t.Fatalf("GetRun resume: %v", err)
