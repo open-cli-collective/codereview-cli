@@ -1779,6 +1779,98 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 	}
 }
 
+func TestReviewRealRunnerResumesIncompleteRunThroughCLI(t *testing.T) {
+	cfg := testConfig()
+	agentDir := t.TempDir()
+	writeReviewAgent(t, agentDir)
+	profile := cfg.Profiles["home"]
+	profile.AgentSources = []string{agentDir}
+	cfg.Profiles["home"] = profile
+
+	fixture := newReviewCommandWorkbenchFixture(t)
+	reviewCommandFixtures.Store(reviewCommandFixtureKey(fixture.ref), fixture)
+	ref, pr := fixture.ref, fixture.pr
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	artifacts, err := pipeline.ArtifactPathsForRun(layout, ref, pr, "home", "review-bot", "resume-live")
+	if err != nil {
+		t.Fatalf("ArtifactPathsForRun: %v", err)
+	}
+	prKey, err := statepaths.PRKey(ref.Host, ref.Owner, ref.Repo, ref.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           pr.URL,
+		RunID:           "resume-live",
+		SHA:             pr.Head.SHA,
+		BaseSHA:         pr.Base.SHA,
+		Profile:         "home",
+		PostingIdentity: "review-bot",
+		PostMode:        ledger.PostModeLive,
+		StartedAt:       time.Now().Add(-time.Minute),
+		ArtifactPath:    artifacts.Dir,
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("approve", nil)))
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		runner := buildReviewRunner(
+			store,
+			provider,
+			adapter,
+			profile,
+			noopLimiter{},
+			layout,
+			opts.Stderr,
+			nil,
+			runtimeOptsWithWorkbench(t, runtimeOpts),
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", pr.URL}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	runs, err := store.ListRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 1 || runs[0].RunID != run.RunID || runs[0].ArtifactPath != run.ArtifactPath {
+		t.Fatalf("runs = %#v, want resumed run %q artifact %q", runs, run.RunID, run.ArtifactPath)
+	}
+	if runs[0].Outcome == nil || *runs[0].Outcome != ledger.OutcomeApproved {
+		t.Fatalf("resumed run outcome = %v, want approved", runs[0].Outcome)
+	}
+	if len(adapter.Requests()) != 2 {
+		t.Fatalf("adapter requests = %d, want selection/rollup planning", len(adapter.Requests()))
+	}
+}
+
 func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 	cfg := testConfig()
 	agentDir := t.TempDir()

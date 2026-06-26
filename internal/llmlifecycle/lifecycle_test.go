@@ -78,6 +78,75 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	}
 }
 
+func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+	store, err := ledger.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	runID := "run-real-ledger-cache"
+	if _, err := store.AllocateRun(ctx, ledger.AllocateRunParams{
+		PRKey:           "github_open-cli-collective_codereview-cli_29",
+		PRURL:           "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		RunID:           runID,
+		SHA:             strings.Repeat("a", 40),
+		BaseSHA:         strings.Repeat("b", 40),
+		Profile:         "home",
+		PostingIdentity: "review-bot",
+		PostMode:        ledger.PostModeDryRun,
+		StartedAt:       lifecycleTestNow,
+		ArtifactPath:    filepath.Join(t.TempDir(), "run"),
+	}); err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(llm.FakeResult{
+		SessionID: "provider-session-1",
+		Response:  llm.Response{StructuredOutput: []byte(`{"ok":true}`)},
+	})
+	req := lifecycleRequest(t, store, adapter)
+	req.RunID = runID
+	req.Paths = Paths{LLMTasksDir: filepath.Join(t.TempDir(), "llm-tasks")}
+	if _, err := RunStructured(ctx, req, decodeLifecyclePayload); err != nil {
+		t.Fatalf("RunStructured first: %v", err)
+	}
+	meta, ok, err := ReadMetadata(req.Paths, req.TaskID)
+	if err != nil || !ok {
+		t.Fatalf("ReadMetadata first = %#v ok=%t err=%v, want metadata", meta, ok, err)
+	}
+	assertFileContains(t, meta.ValidatedOutputPath, `"ok":true`)
+	if err := store.Close(); err != nil {
+		t.Fatalf("store.Close first: %v", err)
+	}
+
+	reopened, err := ledger.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("ledger.Open reopened: %v", err)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("store.Close reopened: %v", err)
+		}
+	}()
+	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	req.Store = reopened
+	req.Adapter = cachedAdapter
+	cached, err := RunStructured(ctx, req, decodeLifecyclePayload)
+	if err != nil {
+		t.Fatalf("RunStructured cached after reopen: %v", err)
+	}
+	if !cached.Cached || !cached.Value.OK {
+		t.Fatalf("cached result = %#v, want cached ok", cached)
+	}
+	if len(cachedAdapter.Requests()) != 0 || len(cachedAdapter.Resumes()) != 0 {
+		t.Fatalf("cached adapter starts=%#v resumes=%#v, want no provider call", cachedAdapter.Requests(), cachedAdapter.Resumes())
+	}
+	if cached.Session.RunID != runID || cached.Session.ProviderSessionID != "provider-session-1" {
+		t.Fatalf("cached session = %#v, want reloaded ledger session", cached.Session)
+	}
+}
+
 func TestRunStructuredFailsClosedWhenCachedSessionIsMissing(t *testing.T) {
 	ctx := context.Background()
 	store := newLifecycleStore()
