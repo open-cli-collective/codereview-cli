@@ -153,10 +153,13 @@ type renderedResult struct {
 }
 
 type counts struct {
-	Considered int `json:"considered"`
-	Responded  int `json:"responded"`
-	Resolved   int `json:"resolved"`
-	Planned    int `json:"planned"`
+	Considered       int `json:"considered"`
+	Responded        int `json:"responded"`
+	Resolved         int `json:"resolved"`
+	ResolvePlanned   int `json:"resolve_planned"`
+	ResolveFailed    int `json:"resolve_failed"`
+	ProviderResolved int `json:"provider_resolved"`
+	Planned          int `json:"planned"`
 }
 
 func newResult(result threadrespond.Result) renderedResult {
@@ -169,11 +172,13 @@ func newResult(result threadrespond.Result) renderedResult {
 		outboxExitCode = result.ExitCode
 	}
 	responded := countThreadReplies(result.Plan.Actions)
-	resolved := countThreadResolves(result.Plan.Actions)
-	if responded == 0 && resolved == 0 && len(result.PlannedActions) > 0 {
+	resolvePlanned := countThreadResolves(result.Plan.Actions)
+	if responded == 0 && resolvePlanned == 0 && len(result.PlannedActions) > 0 {
 		responded = countPlannedThreadReplies(result.PlannedActions)
-		resolved = countPlannedThreadResolves(result.PlannedActions)
+		resolvePlanned = countPlannedThreadResolves(result.PlannedActions)
 	}
+	providerResolved := countPostedThreadResolves(result.PlannedActions)
+	resolveFailed := countFailedThreadResolves(result.PlannedActions)
 	return renderedResult{
 		Run: view.ReviewRun{
 			RunID:        result.Run.RunID,
@@ -186,10 +191,13 @@ func newResult(result threadrespond.Result) renderedResult {
 			HeadSHA:      result.Run.SHA,
 		},
 		Counts: counts{
-			Considered: len(result.EligibleThreads),
-			Responded:  responded,
-			Resolved:   resolved,
-			Planned:    len(result.PlannedActions),
+			Considered:       len(result.EligibleThreads),
+			Responded:        responded,
+			Resolved:         providerResolved,
+			ResolvePlanned:   resolvePlanned,
+			ResolveFailed:    resolveFailed,
+			ProviderResolved: providerResolved,
+			Planned:          len(result.PlannedActions),
 		},
 		Outbox: view.ReviewOutbox{
 			Outcome:        outcome,
@@ -221,7 +229,7 @@ func renderText(w io.Writer, rendered renderedResult) error {
 	if _, err := fmt.Fprintf(w, "Outcome: %s\n", rendered.Run.Outcome); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "Threads: considered %d, responded %d, resolved %d\n", rendered.Counts.Considered, rendered.Counts.Responded, rendered.Counts.Resolved); err != nil {
+	if _, err := fmt.Fprintf(w, "Threads: considered %d, responded %d, provider resolved %d (resolve planned %d, failed %d)\n", rendered.Counts.Considered, rendered.Counts.Responded, rendered.Counts.ProviderResolved, rendered.Counts.ResolvePlanned, rendered.Counts.ResolveFailed); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "Planned actions: %d\n", rendered.Counts.Planned); err != nil {
@@ -277,6 +285,26 @@ func countPlannedThreadResolves(actions []ledger.PlannedAction) int {
 	var count int
 	for _, action := range actions {
 		if action.Kind == ledger.PlannedActionResolveThread {
+			count++
+		}
+	}
+	return count
+}
+
+func countPostedThreadResolves(actions []ledger.PlannedAction) int {
+	var count int
+	for _, action := range actions {
+		if action.Kind == ledger.PlannedActionResolveThread && action.Status == ledger.PlannedActionPosted {
+			count++
+		}
+	}
+	return count
+}
+
+func countFailedThreadResolves(actions []ledger.PlannedAction) int {
+	var count int
+	for _, action := range actions {
+		if action.Kind == ledger.PlannedActionResolveThread && action.Status == ledger.PlannedActionFailedTerminal {
 			count++
 		}
 	}

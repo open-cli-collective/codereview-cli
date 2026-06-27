@@ -30,6 +30,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
 
 func dryRunForTest(ctx context.Context, opts Options, req Request) (Result, error) {
@@ -877,6 +878,46 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "raw/pr-context.json")
 }
 
+func TestSelectionOnlyAllowsThreadActionsWithThreadContext(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	provider.threads = []gitprovider.InlineThread{
+		crSettledReviewThread(t, "thread-1", "main.go", 2, req.PostingIdentity, human, "Cached settled summary"),
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [{
+			"agent_id": "harness:reviewer",
+			"rationale": "go file changed",
+			"files": ["main.go"]
+		}],
+		"thread_actions": [{
+			"thread_id": "thread-1",
+			"decision": "summarize_only",
+			"summary": "Thread remains settled"
+		}],
+		"reasoning": "select reviewer and keep cached thread context"
+	}`, 10, 2))
+
+	result, err := selectionOnlyForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+	}, selectionRequestFromReview(req, t.TempDir()))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+	if len(result.Selection.ThreadActions) != 1 {
+		t.Fatalf("thread actions = %#v, want one", result.Selection.ThreadActions)
+	}
+	got := result.Selection.ThreadActions[0]
+	if got.ThreadID != "thread-1" || got.Decision != review.ThreadDecisionSummarizeOnly || got.Summary != "Thread remains settled" {
+		t.Fatalf("thread action = %#v, want decoded action for normalized thread context", got)
+	}
+}
+
 func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
@@ -1573,6 +1614,281 @@ func TestPrepareDossierArtifactsSummaryPromptCarriesSplitDiscussionShape(t *test
 	}
 }
 
+func TestPrepareDossierArtifactsReusesCRSettledThreadSummaryWithoutLLM(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-dossier-cr-settled", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	bot := req.PostingIdentity
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	threads := []gitprovider.InlineThread{
+		crSettledReviewThread(t, "thread-1", "main.go", 2, bot, human, "Cached settled summary"),
+	}
+	threadContext, err := threadcontext.Normalize(threads, threadcontext.Options{PostingIdentity: bot})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:      provider.pr,
+		ReviewPR:       provider.pr,
+		ChangedFiles:   parseDiffPatchesForTest(t, provider.diff.Raw),
+		Threads:        threads,
+		ThreadContext:  threadContext,
+		Catalog:        agents.Catalog{},
+		CurrentBaseSHA: provider.pr.Base.SHA,
+		CurrentHeadSHA: provider.pr.Head.SHA,
+	}); err != nil {
+		t.Fatalf("writeRawDossierArtifacts: %v", err)
+	}
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         adapter,
+		Store:           store,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts: %v", err)
+	}
+	if len(adapter.Requests()) != 0 {
+		t.Fatalf("adapter requests = %d, want cached dossier summary without LLM", len(adapter.Requests()))
+	}
+	var summary dossierDiscussionSummaryArtifact
+	if err := readJSONFile(filepath.Join(artifacts.DossierDir, "summary", "discussion.json"), &summary); err != nil {
+		t.Fatalf("read summary discussion: %v", err)
+	}
+	if len(summary.InlineThreads) != 1 {
+		t.Fatalf("summary inline threads = %#v, want one cached entry", summary.InlineThreads)
+	}
+	got := summary.InlineThreads[0]
+	if got.ThreadID != "thread-1" || got.Resolved || got.Status != "settled" || got.Summary != "Cached settled summary" {
+		t.Fatalf("cached summary = %#v, want thread-1 unresolved settled cached summary", got)
+	}
+	discussionPath := filepath.Join(artifacts.DossierDir, "final", "discussion.md")
+	assertFileContains(t, discussionPath, "main.go:2 [RIGHT] {line} Settled: Cached settled summary")
+	assertFileOmits(t, discussionPath, "Original finding")
+}
+
+func TestWriteRawDossierArtifactsMarksCachedSummarySource(t *testing.T) {
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-dossier-cached-summary-source", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	bot := req.PostingIdentity
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	providerResolved := crSettledReviewThread(t, "thread-provider", "main.go", 2, bot, human, "Provider summary")
+	providerResolved.Resolved = true
+	threads := []gitprovider.InlineThread{
+		providerResolved,
+		crSettledReviewThread(t, "thread-cr-settled", "main.go", 4, bot, human, "CR-settled summary"),
+	}
+	threadContext, err := threadcontext.Normalize(threads, threadcontext.Options{PostingIdentity: bot})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:      provider.pr,
+		ReviewPR:       provider.pr,
+		ChangedFiles:   parseDiffPatchesForTest(t, provider.diff.Raw),
+		Threads:        threads,
+		ThreadContext:  threadContext,
+		Catalog:        agents.Catalog{},
+		CurrentBaseSHA: provider.pr.Base.SHA,
+		CurrentHeadSHA: provider.pr.Head.SHA,
+	}); err != nil {
+		t.Fatalf("writeRawDossierArtifacts: %v", err)
+	}
+
+	var rawThreads []dossierInlineThreadArtifact
+	if err := readJSONFile(mustDossierRawPath(artifacts, "inline-threads.json"), &rawThreads); err != nil {
+		t.Fatalf("read raw inline threads: %v", err)
+	}
+	got := map[string]string{}
+	for _, thread := range rawThreads {
+		if thread.CachedSummary != nil {
+			got[thread.ID] = thread.CachedSummary.Source
+		}
+	}
+	want := map[string]string{
+		"thread-provider":   dossierCachedSummaryProviderSource,
+		"thread-cr-settled": dossierCachedSummaryCRSource,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cached summary sources = %#v, want %#v", got, want)
+	}
+}
+
+func TestPrepareDossierArtifactsKeepsSameAnchorCachedSummariesByThreadID(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-dossier-cr-settled-same-anchor", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	bot := req.PostingIdentity
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	threads := []gitprovider.InlineThread{
+		crSettledReviewThread(t, "thread-a", "main.go", 2, bot, human, "First cached summary"),
+		crSettledReviewThread(t, "thread-b", "main.go", 2, bot, human, "Second cached summary"),
+	}
+	threadContext, err := threadcontext.Normalize(threads, threadcontext.Options{PostingIdentity: bot})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:      provider.pr,
+		ReviewPR:       provider.pr,
+		ChangedFiles:   parseDiffPatchesForTest(t, provider.diff.Raw),
+		Threads:        threads,
+		ThreadContext:  threadContext,
+		Catalog:        agents.Catalog{},
+		CurrentBaseSHA: provider.pr.Base.SHA,
+		CurrentHeadSHA: provider.pr.Head.SHA,
+	}); err != nil {
+		t.Fatalf("writeRawDossierArtifacts: %v", err)
+	}
+
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts: %v", err)
+	}
+	var summary dossierDiscussionSummaryArtifact
+	if err := readJSONFile(filepath.Join(artifacts.DossierDir, "summary", "discussion.json"), &summary); err != nil {
+		t.Fatalf("read summary discussion: %v", err)
+	}
+	if len(summary.InlineThreads) != 2 {
+		t.Fatalf("summary inline threads = %#v, want both same-anchor cached entries", summary.InlineThreads)
+	}
+	got := map[string]string{}
+	for _, thread := range summary.InlineThreads {
+		got[thread.ThreadID] = thread.Summary
+	}
+	want := map[string]string{"thread-a": "First cached summary", "thread-b": "Second cached summary"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cached summaries = %#v, want %#v", got, want)
+	}
+}
+
+func TestPrepareDossierArtifactsIncludesCachedSummaryBeyondInlineThreadCap(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-dossier-cr-settled-beyond-cap", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	bot := req.PostingIdentity
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	threads := make([]gitprovider.InlineThread, 0, dossierSummaryMaxInlineThreads+1)
+	for i := 0; i < dossierSummaryMaxInlineThreads; i++ {
+		threads = append(threads, gitprovider.InlineThread{
+			ID:          gitprovider.ThreadID(fmt.Sprintf("thread-open-%02d", i)),
+			Path:        "a.go",
+			Side:        review.DiffSideRight,
+			Line:        i + 1,
+			SubjectType: review.AnchorKindLine,
+			Comments: []gitprovider.ThreadComment{{
+				Body:      fmt.Sprintf("open thread %02d", i),
+				Author:    human,
+				Path:      "a.go",
+				Side:      review.DiffSideRight,
+				Line:      i + 1,
+				CreatedAt: fixedNow(),
+				UpdatedAt: fixedNow(),
+			}},
+		})
+	}
+	threads = append(threads, crSettledReviewThread(t, "thread-cached", "z.go", 99, bot, human, "Cached beyond cap"))
+	threadContext, err := threadcontext.Normalize(threads, threadcontext.Options{PostingIdentity: bot})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:      provider.pr,
+		ReviewPR:       provider.pr,
+		ChangedFiles:   parseDiffPatchesForTest(t, provider.diff.Raw),
+		Threads:        threads,
+		ThreadContext:  threadContext,
+		Catalog:        agents.Catalog{},
+		CurrentBaseSHA: provider.pr.Base.SHA,
+		CurrentHeadSHA: provider.pr.Head.SHA,
+	}); err != nil {
+		t.Fatalf("writeRawDossierArtifacts: %v", err)
+	}
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, []threadSummary{{
+		path:     "a.go",
+		line:     1,
+		status:   "unresolved",
+		summary:  "Open thread summary",
+		resolved: false,
+	}}), 8, 2))
+	if err := prepareDossierArtifacts(ctx, Options{
+		Adapter:         adapter,
+		Store:           store,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+	}, dossierPreparationRequest{
+		RunID:     run.RunID,
+		Profile:   req.Profile,
+		Artifacts: artifacts,
+	}); err != nil {
+		t.Fatalf("prepareDossierArtifacts: %v", err)
+	}
+	var summary dossierDiscussionSummaryArtifact
+	if err := readJSONFile(filepath.Join(artifacts.DossierDir, "summary", "discussion.json"), &summary); err != nil {
+		t.Fatalf("read summary discussion: %v", err)
+	}
+	var found bool
+	for _, thread := range summary.InlineThreads {
+		if thread.ThreadID == "thread-cached" && thread.Summary == "Cached beyond cap" && thread.Status == "settled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("summary inline threads = %#v, want cached thread beyond cap", summary.InlineThreads)
+	}
+}
+
+func TestSelectionThreadPromptsFromContextUsesCRSettledSummary(t *testing.T) {
+	bot := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	threads, err := threadcontext.Normalize([]gitprovider.InlineThread{
+		crSettledReviewThread(t, "thread-1", "main.go", 2, bot, human, "Cached settled summary"),
+	}, threadcontext.Options{PostingIdentity: bot})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	prompts := selectionThreadPromptsFromContext(threads, dossierDiscussionSummaryArtifact{})
+	if len(prompts) != 1 {
+		t.Fatalf("selection thread prompts = %#v, want one prompt", prompts)
+	}
+	got := prompts[0]
+	if got.ThreadID != "thread-1" || got.Resolved || got.Status != "settled" || got.Summary != "Cached settled summary" {
+		t.Fatalf("selection thread prompt = %#v, want unresolved settled cached summary", got)
+	}
+}
+
 func TestPrepareDossierArtifactsSummaryPromptBudgetFailure(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -1653,6 +1969,48 @@ func TestDecodeDossierDiscussionSummaryRejectsUnknownAnchor(t *testing.T) {
 	}`), promptData)
 	if err == nil || !strings.Contains(err.Error(), "is not present in the source discussion") {
 		t.Fatalf("decodeDossierDiscussionSummary error = %v, want source anchor rejection", err)
+	}
+}
+
+func TestDecodeDossierDiscussionSummaryThreadIDWinsOverMismatchedAnchor(t *testing.T) {
+	promptData, err := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{
+		InlineThreads: []dossierInlineThreadArtifact{{
+			ID:         "thread-1",
+			Path:       "main.go",
+			Side:       "RIGHT",
+			Line:       2,
+			AnchorKind: "line",
+			Resolved:   false,
+			Comments: []dossierThreadCommentArtifact{{
+				Author: "review-bot",
+				Body:   "Original thread body",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("dossierDiscussionPromptInputFromDiscussion: %v", err)
+	}
+	got, err := decodeDossierDiscussionSummary([]byte(`{
+		"schema_version": 1,
+		"inline_threads": [{
+			"thread_id": "thread-1",
+			"path": "other.go",
+			"side": "LEFT",
+			"line": 99,
+			"anchor_kind": "file",
+			"status": "unresolved",
+			"summary": "Thread summary"
+		}]
+	}`), promptData)
+	if err != nil {
+		t.Fatalf("decodeDossierDiscussionSummary: %v", err)
+	}
+	if len(got.InlineThreads) != 1 {
+		t.Fatalf("inline threads = %#v, want one", got.InlineThreads)
+	}
+	thread := got.InlineThreads[0]
+	if thread.ThreadID != "thread-1" || thread.Path != "main.go" || thread.Side != "RIGHT" || thread.Line != 2 || thread.AnchorKind != "line" || thread.Resolved {
+		t.Fatalf("decoded thread = %#v, want source thread fields selected by thread_id", thread)
 	}
 }
 
@@ -6292,6 +6650,33 @@ func markedReviewThread(t *testing.T, id, path string, line int, bot, human gitp
 			},
 		},
 	}
+}
+
+func crSettledReviewThread(t *testing.T, id, path string, line int, bot, human gitprovider.Identity, summary string) gitprovider.InlineThread {
+	t.Helper()
+	thread := markedReviewThread(t, id, path, line, bot, human)
+	summaryMarker, err := marker.RenderThreadSummary(marker.ThreadSummaryMarker{
+		RunID:    "response-run",
+		ActionID: "summary-" + id,
+	})
+	if err != nil {
+		t.Fatalf("RenderThreadSummary: %v", err)
+	}
+	created := fixedNow().Add(2 * time.Minute)
+	thread.Comments = append(thread.Comments, gitprovider.ThreadComment{
+		ID:          gitprovider.CommentID(id + "-summary"),
+		ThreadID:    thread.ID,
+		Body:        summaryMarker + "\n\n" + summary,
+		Author:      bot,
+		CommitSHA:   strings.Repeat("a", 40),
+		Path:        path,
+		Side:        review.DiffSideRight,
+		Line:        line,
+		SubjectType: review.AnchorKindLine,
+		CreatedAt:   created,
+		UpdatedAt:   created,
+	})
+	return thread
 }
 
 func fakeLLMResult(sessionID, structured string, tokensIn, tokensOut int) llm.FakeResult {

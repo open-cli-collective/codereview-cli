@@ -20,12 +20,13 @@ type Options struct {
 
 // Thread is one normalized inline review thread.
 type Thread struct {
-	ID              gitprovider.ThreadID
-	Resolved        bool
-	Anchor          Anchor
-	Comments        []Comment
-	Status          Status
-	ResolvedSummary *ThreadSummary
+	ID               gitprovider.ThreadID
+	Resolved         bool
+	Anchor           Anchor
+	Comments         []Comment
+	Status           Status
+	ResolvedSummary  *ThreadSummary
+	CRSettledSummary *ThreadSummary
 }
 
 // Anchor identifies the review-thread location.
@@ -63,7 +64,8 @@ type Status struct {
 	PendingHumanReply       bool
 }
 
-// ThreadSummary is compact context for a resolved thread.
+// ThreadSummary is compact reviewer context for a provider-resolved or
+// CR-settled inline thread.
 type ThreadSummary struct {
 	ThreadID                             gitprovider.ThreadID
 	Anchor                               Anchor
@@ -75,7 +77,7 @@ type ThreadSummary struct {
 	LastCommentHasThreadSummaryMarker    bool
 }
 
-// FileContext groups resolved summaries by file path.
+// FileContext groups compact thread summaries by file path.
 type FileContext struct {
 	Path      string
 	Summaries []ThreadSummary
@@ -104,15 +106,12 @@ func Normalize(threads []gitprovider.InlineThread, opts Options) ([]Thread, erro
 		normalized.Status = statusForComments(normalized.Comments)
 		if normalized.Resolved && len(normalized.Comments) > 0 {
 			last := normalized.Comments[len(normalized.Comments)-1]
-			normalized.ResolvedSummary = &ThreadSummary{
-				ThreadID:                             normalized.ID,
-				Anchor:                               firstNonZeroAnchor(last.Anchor, normalized.Anchor),
-				URL:                                  last.URL,
-				Body:                                 last.Body,
-				LastCommentID:                        last.ID,
-				LastCommentAuthor:                    last.Author,
-				LastCommentAuthoredByPostingIdentity: last.AuthoredByPostingIdentity,
-				LastCommentHasThreadSummaryMarker:    last.HasThreadSummaryMarker,
+			normalized.ResolvedSummary = threadSummaryFromComment(normalized.ID, normalized.Anchor, last)
+		}
+		if !normalized.Resolved && len(normalized.Comments) > 0 {
+			last := normalized.Comments[len(normalized.Comments)-1]
+			if last.AuthoredByPostingIdentity && last.HasThreadSummaryMarker && strings.TrimSpace(last.Body) != "" {
+				normalized.CRSettledSummary = threadSummaryFromComment(normalized.ID, normalized.Anchor, last)
 			}
 		}
 		out = append(out, normalized)
@@ -123,7 +122,19 @@ func Normalize(threads []gitprovider.InlineThread, opts Options) ([]Thread, erro
 	return out, nil
 }
 
-// FileScopedResolvedSummaries returns compact resolved thread summaries grouped
+// EffectiveSettledSummary returns the compact settled context that reviewer
+// prompts should use, preserving provider resolution as the preferred source.
+func (thread Thread) EffectiveSettledSummary() (*ThreadSummary, bool) {
+	if thread.ResolvedSummary != nil {
+		return thread.ResolvedSummary, true
+	}
+	if thread.CRSettledSummary != nil {
+		return thread.CRSettledSummary, true
+	}
+	return nil, false
+}
+
+// FileScopedResolvedSummaries returns provider-resolved thread summaries grouped
 // by file path.
 func FileScopedResolvedSummaries(threads []Thread) []FileContext {
 	byPath := map[string][]ThreadSummary{}
@@ -138,6 +149,39 @@ func FileScopedResolvedSummaries(threads []Thread) []FileContext {
 			summary.Anchor.Path = path
 		}
 		byPath[path] = append(byPath[path], summary)
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	out := make([]FileContext, 0, len(paths))
+	for _, path := range paths {
+		summaries := byPath[path]
+		sort.SliceStable(summaries, func(i, j int) bool {
+			return summaryLess(summaries[i], summaries[j])
+		})
+		out = append(out, FileContext{Path: path, Summaries: summaries})
+	}
+	return out
+}
+
+// FileScopedSettledSummaries returns compact provider-resolved and CR-settled
+// thread summaries grouped by file path.
+func FileScopedSettledSummaries(threads []Thread) []FileContext {
+	byPath := map[string][]ThreadSummary{}
+	for _, thread := range threads {
+		summary, ok := thread.EffectiveSettledSummary()
+		if !ok {
+			continue
+		}
+		copied := *summary
+		path := copied.Anchor.Path
+		if strings.TrimSpace(path) == "" {
+			path = thread.Anchor.Path
+			copied.Anchor.Path = path
+		}
+		byPath[path] = append(byPath[path], copied)
 	}
 	paths := make([]string, 0, len(byPath))
 	for path := range byPath {
@@ -304,6 +348,19 @@ func firstNonZeroAnchor(primary, fallback Anchor) Anchor {
 		primary.CommitSHA = fallback.CommitSHA
 	}
 	return primary
+}
+
+func threadSummaryFromComment(threadID gitprovider.ThreadID, threadAnchor Anchor, comment Comment) *ThreadSummary {
+	return &ThreadSummary{
+		ThreadID:                             threadID,
+		Anchor:                               firstNonZeroAnchor(comment.Anchor, threadAnchor),
+		URL:                                  comment.URL,
+		Body:                                 comment.Body,
+		LastCommentID:                        comment.ID,
+		LastCommentAuthor:                    comment.Author,
+		LastCommentAuthoredByPostingIdentity: comment.AuthoredByPostingIdentity,
+		LastCommentHasThreadSummaryMarker:    comment.HasThreadSummaryMarker,
+	}
 }
 
 func anchorPresent(anchor Anchor) bool {

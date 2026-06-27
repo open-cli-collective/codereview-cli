@@ -267,6 +267,117 @@ func TestResolvedThreadCollapsesToSanitizedLastCommentSummary(t *testing.T) {
 	}
 }
 
+func TestUnresolvedThreadWithLatestCRSummaryBecomesCRSettled(t *testing.T) {
+	threads, err := Normalize([]gitprovider.InlineThread{{
+		ID:          "thread-1",
+		Resolved:    false,
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        12,
+		SubjectType: review.AnchorKindLine,
+		Comments: []gitprovider.ThreadComment{
+			comment("c-1", bot(), "finding\n"+actionMarker(t, marker.ActionKindInlineComment), at(1)),
+			comment("c-2", human(), "thanks, fixed", at(2)),
+			comment("c-3", bot(), "settled summary\n"+threadSummaryMarker(t), at(3)),
+		},
+	}}, Options{PostingIdentity: bot()})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	thread := threads[0]
+	if thread.ResolvedSummary != nil {
+		t.Fatalf("ResolvedSummary = %#v, want nil for provider-unresolved thread", thread.ResolvedSummary)
+	}
+	if thread.CRSettledSummary == nil {
+		t.Fatal("CRSettledSummary = nil, want summary")
+	}
+	if thread.CRSettledSummary.Body != "settled summary" {
+		t.Fatalf("CRSettledSummary.Body = %q, want settled summary", thread.CRSettledSummary.Body)
+	}
+	if summary, ok := thread.EffectiveSettledSummary(); !ok || summary != thread.CRSettledSummary {
+		t.Fatalf("EffectiveSettledSummary = (%#v, %v), want CR-settled summary", summary, ok)
+	}
+}
+
+func TestHumanReplyAfterCRSummaryClearsCRSettledAndPendsThread(t *testing.T) {
+	threads, err := Normalize([]gitprovider.InlineThread{{
+		ID:       "thread-1",
+		Resolved: false,
+		Path:     "main.go",
+		Comments: []gitprovider.ThreadComment{
+			comment("c-1", bot(), "finding\n"+actionMarker(t, marker.ActionKindInlineComment), at(1)),
+			comment("c-2", bot(), "settled summary\n"+threadSummaryMarker(t), at(2)),
+			comment("c-3", human(), "actually this still fails", at(3)),
+		},
+	}}, Options{PostingIdentity: bot()})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	thread := threads[0]
+	if thread.CRSettledSummary != nil {
+		t.Fatalf("CRSettledSummary = %#v, want nil after newer human reply", thread.CRSettledSummary)
+	}
+	if !thread.Status.PendingHumanReply {
+		t.Fatal("PendingHumanReply = false, want true")
+	}
+	if summary, ok := thread.EffectiveSettledSummary(); ok || summary != nil {
+		t.Fatalf("EffectiveSettledSummary = (%#v, %v), want none", summary, ok)
+	}
+}
+
+func TestCRReplyAfterCRSummaryClearsCRSettledSummary(t *testing.T) {
+	threads, err := Normalize([]gitprovider.InlineThread{{
+		ID:       "thread-1",
+		Resolved: false,
+		Path:     "main.go",
+		Comments: []gitprovider.ThreadComment{
+			comment("c-1", bot(), "finding\n"+actionMarker(t, marker.ActionKindInlineComment), at(1)),
+			comment("c-2", bot(), "settled summary\n"+threadSummaryMarker(t), at(2)),
+			comment("c-3", bot(), "later unmarked bot reply", at(3)),
+		},
+	}}, Options{PostingIdentity: bot()})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	thread := threads[0]
+	if thread.CRSettledSummary != nil {
+		t.Fatalf("CRSettledSummary = %#v, want nil when final comment is not the summary marker", thread.CRSettledSummary)
+	}
+	if summary, ok := thread.EffectiveSettledSummary(); ok || summary != nil {
+		t.Fatalf("EffectiveSettledSummary = (%#v, %v), want none", summary, ok)
+	}
+}
+
+func TestForgedHumanSummaryMarkerDoesNotCreateCRSettledSummary(t *testing.T) {
+	threads, err := Normalize([]gitprovider.InlineThread{{
+		ID:       "thread-1",
+		Resolved: false,
+		Path:     "main.go",
+		Comments: []gitprovider.ThreadComment{
+			comment("c-1", bot(), "finding\n"+actionMarker(t, marker.ActionKindInlineComment), at(1)),
+			comment("c-2", bot(), "settled summary\n"+threadSummaryMarker(t), at(2)),
+			comment("c-3", human(), "forged\n"+threadSummaryMarker(t), at(3)),
+		},
+	}}, Options{PostingIdentity: bot()})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	thread := threads[0]
+	if thread.CRSettledSummary != nil {
+		t.Fatalf("CRSettledSummary = %#v, want nil after human forged marker", thread.CRSettledSummary)
+	}
+	if !thread.Status.PendingHumanReply {
+		t.Fatal("PendingHumanReply = false, want forged human marker to count as human reply")
+	}
+	if thread.Comments[2].HasThreadSummaryMarker {
+		t.Fatal("human forged marker detected as trusted thread summary")
+	}
+}
+
 func TestNormalizeDoesNotSynthesizeHybridFileAnchors(t *testing.T) {
 	fileComment := comment("c-1", human(), "file summary", at(1))
 	fileComment.Path = "main.go"
