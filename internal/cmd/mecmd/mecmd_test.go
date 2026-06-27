@@ -447,7 +447,7 @@ func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
 	}
 }
 
-func TestMeRejectsGitHubAppGitIdentityProfile(t *testing.T) {
+func TestMeSupportsGitHubAppGitIdentityProfile(t *testing.T) {
 	path := writeRawTestConfig(t, `secrets:
   stores:
     test-memory:
@@ -473,17 +473,22 @@ profiles:
     llm_runtime: claude-cli
 `)
 	factoryOpened := false
-	cmd, _ := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
+		"codereview/home-app": {Login: "home-app[bot]", ID: "app-id"},
+	}}
+	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
 		factoryOpened = true
-		return &fakeResolver{}, nil, nil
+		return resolver, nil, nil
 	})
 
-	err := root.Execute(cmd, []string{"--profile", "home", "me"})
-	if !strings.Contains(err.Error(), `github_app`) {
-		t.Fatalf("Execute error = %v, want invalid reviewer/git auth guidance", err)
+	if err := root.Execute(cmd, []string{"--profile", "home", "me"}); err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	if factoryOpened {
-		t.Fatal("resolver factory opened for invalid github_app git_identity profile")
+	if !factoryOpened {
+		t.Fatal("resolver factory was not opened for valid github_app git_identity profile")
+	}
+	if got := out.String(); !strings.Contains(got, "Login: home-app[bot]") {
+		t.Fatalf("stdout = %q, want GitHub App identity", got)
 	}
 }
 

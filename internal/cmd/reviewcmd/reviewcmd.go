@@ -1017,16 +1017,14 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
+	rawPostingProvider := postingProvider
 	postingProvider = withProgressProvider(logger, commandName(cmd), postingProvider)
 	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), postingProvider, credential, postingProviderStore, profile)
 	if err != nil {
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	if err := requireOpinionatedReviewAuthority(cmd.Context(), postingProvider, runtimeOpts, postingIdentity); err != nil {
-		cleanup()
-		return Runtime{}, mapRunError(err)
-	}
+	warnOpinionatedReviewAuthority(cmd.Context(), rawPostingProvider, runtimeOpts, postingIdentity, opts.Stderr)
 	layout, err := runtimeLayout()
 	if err != nil {
 		cleanup()
@@ -1070,18 +1068,18 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 	}, nil
 }
 
-func requireOpinionatedReviewAuthority(ctx context.Context, provider gitprovider.GitProvider, runtimeOpts RuntimeOptions, postingIdentity gitprovider.Identity) error {
+func warnOpinionatedReviewAuthority(ctx context.Context, provider gitprovider.GitProvider, runtimeOpts RuntimeOptions, postingIdentity gitprovider.Identity, warnings io.Writer) {
 	if !runtimeOpts.RequireOpinionatedReviewAuthority {
-		return nil
+		return
 	}
 	authority, err := provider.ReviewAuthority(ctx, runtimeOpts.PRRef, postingIdentity)
 	if err != nil {
-		return err
+		writeReviewAuthorityWarning(warnings, postingIdentity, runtimeOpts.PRRef, "probe failed: "+err.Error())
+		return
 	}
 	if authority.Eligible {
-		return nil
+		return
 	}
-	repo := fmt.Sprintf("%s/%s", runtimeOpts.PRRef.Owner, runtimeOpts.PRRef.Repo)
 	detail := "permission unavailable"
 	switch {
 	case strings.TrimSpace(authority.Permission) != "":
@@ -1089,11 +1087,15 @@ func requireOpinionatedReviewAuthority(ctx context.Context, provider gitprovider
 	case strings.TrimSpace(authority.RoleName) != "":
 		detail = "role=" + authority.RoleName
 	}
-	return gitprovider.WrapError(
-		gitprovider.ErrIneligibleReviewAuthority,
-		gitprovider.OperationReviewAuthority,
-		fmt.Errorf("posting identity %q cannot create opinionated GitHub reviews for %s; GitHub would not count APPROVE/REQUEST_CHANGES toward PR state (%s)", postingIdentity.Login, repo, detail),
-	)
+	writeReviewAuthorityWarning(warnings, postingIdentity, runtimeOpts.PRRef, detail)
+}
+
+func writeReviewAuthorityWarning(warnings io.Writer, postingIdentity gitprovider.Identity, ref gitprovider.PRRef, detail string) {
+	if warnings == nil {
+		return
+	}
+	repo := fmt.Sprintf("%s/%s", ref.Owner, ref.Repo)
+	_, _ = fmt.Fprintf(warnings, "warning: posting identity %q may not create GitHub reviews that count toward PR approval state for %s (%s); continuing because the review can still be posted\n", postingIdentity.Login, repo, detail)
 }
 
 func commandName(cmd *cobra.Command) string {

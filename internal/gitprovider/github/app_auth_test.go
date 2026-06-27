@@ -249,66 +249,6 @@ func TestGitHubAppClientUsesInstallationTokenForRESTWritesAndGraphQL(t *testing.
 	}
 }
 
-func TestGitHubAppReviewAuthorityUsesInstallationPullRequestPermission(t *testing.T) {
-	tests := []struct {
-		name         string
-		permissions  map[string]any
-		wantEligible bool
-		wantDetail   string
-	}{
-		{
-			name:         "pull requests write",
-			permissions:  map[string]any{"pull_requests": "write", "contents": "read"},
-			wantEligible: false,
-			wantDetail:   "pull_requests=write",
-		},
-		{
-			name:         "pull requests read",
-			permissions:  map[string]any{"pull_requests": "read"},
-			wantEligible: false,
-			wantDetail:   "pull_requests=read",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.EscapedPath() {
-				case "/app/installations/42":
-					assertJWTAuth(t, r, "12345")
-					writeJSON(t, w, map[string]any{"id": 42, "app_id": 12345, "app_slug": "cr-reviewer"})
-				case "/app/installations/42/access_tokens":
-					assertJWTAuth(t, r, "12345")
-					writeJSON(t, w, map[string]any{
-						"token":       "installation-token",
-						"expires_at":  time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-						"permissions": tt.permissions,
-					})
-				default:
-					t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
-				}
-			}))
-			defer server.Close()
-
-			client, credential, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t)), Options{
-				BaseURL:        server.URL,
-				GraphQLURL:     server.URL + "/graphql",
-				InstallationID: "42",
-			})
-			if err != nil {
-				t.Fatalf("NewFromGitConfig: %v", err)
-			}
-			ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli", Repo: "codereview-cli", Number: 76}
-			authority, err := client.ReviewAuthority(context.Background(), ref, gitprovider.Identity{Login: credential.Login})
-			if err != nil {
-				t.Fatalf("ReviewAuthority: %v", err)
-			}
-			if authority.Eligible != tt.wantEligible || authority.Permission != tt.wantDetail || authority.RoleName != "github_app_installation" {
-				t.Fatalf("authority = %#v, want eligible=%v detail=%q github_app_installation", authority, tt.wantEligible, tt.wantDetail)
-			}
-		})
-	}
-}
-
 func TestNewFromGitConfigRequiresInstallationIDWithoutLookup(t *testing.T) {
 	_, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", testPrivateKeyPEM(t)), Options{})
 	if !errors.Is(err, gitprovider.ErrAuth) {

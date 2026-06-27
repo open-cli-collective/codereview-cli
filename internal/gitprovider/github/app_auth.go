@@ -43,7 +43,6 @@ type githubAppAuth struct {
 	tokenValue     string
 	expiresAt      time.Time
 	identity       gitprovider.Identity
-	permissions    map[string]string
 }
 
 type githubAppInstallation struct {
@@ -53,9 +52,8 @@ type githubAppInstallation struct {
 }
 
 type installationTokenResponse struct {
-	Token       string            `json:"token"`
-	ExpiresAt   time.Time         `json:"expires_at"`
-	Permissions map[string]string `json:"permissions"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 func newGitHubAppFromConfig(ctx context.Context, profile string, store TokenStore, opts Options) (*Client, gitprovider.Credential, error) {
@@ -153,7 +151,7 @@ func (a *githubAppAuth) refreshLocked(ctx context.Context, op gitprovider.Operat
 	if err != nil {
 		return "", gitprovider.Identity{}, err
 	}
-	token, expiresAt, permissions, err := a.createInstallationToken(ctx, op, jwt, installation.ID)
+	token, expiresAt, err := a.createInstallationToken(ctx, op, jwt, installation.ID)
 	if err != nil {
 		return "", gitprovider.Identity{}, err
 	}
@@ -162,7 +160,6 @@ func (a *githubAppAuth) refreshLocked(ctx context.Context, op gitprovider.Operat
 	a.tokenValue = token
 	a.expiresAt = expiresAt
 	a.identity = identity
-	a.permissions = normalizeInstallationPermissions(permissions)
 	return token, identity, nil
 }
 
@@ -183,54 +180,19 @@ func (a *githubAppAuth) resolveInstallation(ctx context.Context, op gitprovider.
 	return installation, nil
 }
 
-func (a *githubAppAuth) createInstallationToken(ctx context.Context, op gitprovider.Operation, jwt string, installationID int64) (string, time.Time, map[string]string, error) {
+func (a *githubAppAuth) createInstallationToken(ctx context.Context, op gitprovider.Operation, jwt string, installationID int64) (string, time.Time, error) {
 	endpoint := restURL(a.baseURL, "app", "installations", strconv.FormatInt(installationID, 10), "access_tokens")
 	var response installationTokenResponse
 	if err := a.doAppREST(ctx, op, http.MethodPost, endpoint, jwt, map[string]any{}, &response); err != nil {
-		return "", time.Time{}, nil, mapCreateInstallationTokenError(op, strconv.FormatInt(installationID, 10), err)
+		return "", time.Time{}, mapCreateInstallationTokenError(op, strconv.FormatInt(installationID, 10), err)
 	}
 	if strings.TrimSpace(response.Token) == "" {
-		return "", time.Time{}, nil, gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("github app installation token is empty"))
+		return "", time.Time{}, gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("github app installation token is empty"))
 	}
 	if response.ExpiresAt.IsZero() {
-		return "", time.Time{}, nil, gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("github app installation token expiry is empty"))
+		return "", time.Time{}, gitprovider.WrapError(gitprovider.ErrAuth, op, fmt.Errorf("github app installation token expiry is empty"))
 	}
-	return response.Token, response.ExpiresAt, response.Permissions, nil
-}
-
-func (a *githubAppAuth) installationPermissions(ctx context.Context, op gitprovider.Operation) (map[string]string, error) {
-	if _, err := a.token(ctx, op); err != nil {
-		return nil, err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.permissions) == 0 {
-		return map[string]string{}, nil
-	}
-	out := make(map[string]string, len(a.permissions))
-	for key, value := range a.permissions {
-		out[key] = value
-	}
-	return out, nil
-}
-
-func normalizeInstallationPermissions(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		key = strings.ToLower(strings.TrimSpace(key))
-		value = strings.ToLower(strings.TrimSpace(value))
-		if key == "" || value == "" {
-			continue
-		}
-		out[key] = value
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return response.Token, response.ExpiresAt, nil
 }
 
 func mapPinnedInstallationLookupError(op gitprovider.Operation, installationID string, err error) error {

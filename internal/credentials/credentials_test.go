@@ -114,10 +114,9 @@ func TestAllowedKeysExactCredentialMatrix(t *testing.T) {
 
 func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 	tests := []struct {
-		name    string
-		ref     config.CredentialRef
-		want    []KeySpec
-		wantErr error
+		name string
+		ref  config.CredentialRef
+		want []KeySpec
 	}{
 		{
 			name: "user git pat",
@@ -137,9 +136,11 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 			},
 		},
 		{
-			name:    "reviewer github app",
-			ref:     config.CredentialRef{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "github_app"},
-			wantErr: config.ErrInvalid,
+			name: "reviewer github app",
+			ref:  config.CredentialRef{Purpose: "reviewer_credentials", Ref: "codereview/work-reviewer", Mode: "github_app"},
+			want: []KeySpec{
+				{Key: GitHubAppPrivateKeyKey, Required: true},
+			},
 		},
 		{
 			name: "anthropic api key",
@@ -156,12 +157,6 @@ func TestKeySpecsForPurposeCredentialMatrix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := KeySpecsForPurpose(tt.ref)
-			if tt.wantErr != nil {
-				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("KeySpecsForPurpose error = %v, want %v", err, tt.wantErr)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("KeySpecsForPurpose: %v", err)
 			}
@@ -241,10 +236,6 @@ func githubAppMatrixProfile(ref string) config.Profile {
 	p := matrixProfile(ref, "codereview/app-llm", config.LLMProviderAnthropic)
 	p.Git.AuthMode = config.GitAuthModeGitHubApp
 	p.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
-	p.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/app-reviewer",
-	}
 	p.LLM.Auth = config.LLMAuthSubscription
 	p.LLM.Adapter = config.LLMAdapterClaudeCLI
 	p.LLM.CredentialRef = ""
@@ -551,7 +542,7 @@ func TestCredentialStatuses(t *testing.T) {
 	}
 	refs := []config.CredentialRef{
 		{Purpose: "git", Ref: "codereview/git", Mode: "pat"},
-		{Purpose: "git", Ref: "codereview/app", Mode: "github_app"},
+		{Purpose: "reviewer_credentials", Ref: "codereview/app", Mode: "github_app"},
 		{Purpose: "llm", Ref: "codereview/llm", Mode: "api_key", Provider: "openai"},
 	}
 
@@ -570,7 +561,7 @@ func TestCredentialStatuses(t *testing.T) {
 			},
 		},
 		{
-			Purpose: "git",
+			Purpose: "reviewer_credentials",
 			Ref:     "codereview/app",
 			Mode:    "github_app",
 			Keys: []KeyStatus{
@@ -665,7 +656,7 @@ func TestCredentialStatusesPartialRequiredBundle(t *testing.T) {
 		},
 	}
 	ref := config.CredentialRef{
-		Purpose: "git",
+		Purpose: "reviewer_credentials",
 		Ref:     "codereview/app",
 		Mode:    "github_app",
 	}
@@ -675,7 +666,7 @@ func TestCredentialStatusesPartialRequiredBundle(t *testing.T) {
 		t.Fatalf("CredentialRefStatus: %v", err)
 	}
 	want := CredentialStatus{
-		Purpose: "git",
+		Purpose: "reviewer_credentials",
 		Ref:     "codereview/app",
 		Mode:    "github_app",
 		Keys: []KeyStatus{

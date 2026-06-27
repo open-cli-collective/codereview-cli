@@ -1087,9 +1087,6 @@ func validateProfile(cfg File, name string, profile Profile) error {
 		if profile.Reviewer.GitHubAppInstallation != nil {
 			return invalid("profiles.%s.reviewer.github_app_installation must be empty for git_identity reviewer", name)
 		}
-		if profile.Git.AuthMode == GitAuthModeGitHubApp {
-			return invalid("profiles.%s.reviewer.kind %q cannot use git auth_mode %q for opinionated reviews; configure a pat reviewer entity", name, profile.Reviewer.Kind, profile.Git.AuthMode)
-		}
 	case ProfileReviewerKindEntity:
 		if strings.TrimSpace(profile.Reviewer.Entity) == "" {
 			return invalid("profiles.%s.reviewer.entity is required", name)
@@ -1173,18 +1170,12 @@ func validateEffectiveProfile(name string, profile Profile) error {
 	if err := validateGitConfig(name+".git", profile.Git); err != nil {
 		return err
 	}
-	if profile.ReviewerCredentials == nil && profile.Git.AuthMode == GitAuthModeGitHubApp {
-		return invalid("%s.reviewer.kind %q cannot use git auth_mode %q for opinionated reviews; configure a pat reviewer entity", name, ProfileReviewerKindGitIdentity, profile.Git.AuthMode)
-	}
 	if profile.ReviewerCredentials != nil {
 		if !profile.ReviewerCredentials.AuthMode.Valid() {
 			return invalid("%s.reviewer_credentials.auth_mode %q is invalid", name, profile.ReviewerCredentials.AuthMode)
 		}
 		if !profile.ReviewerCredentials.AuthMode.Supported() {
 			return fmt.Errorf("%w: %s.reviewer_credentials.auth_mode %q", ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
-		}
-		if profile.ReviewerCredentials.AuthMode == GitAuthModeGitHubApp {
-			return invalid("%s.reviewer_credentials.auth_mode %q is not supported for reviewer identities; use pat", name, profile.ReviewerCredentials.AuthMode)
 		}
 		if err := validateCredentialLocation(name+".reviewer_credentials.credential", profile.ReviewerCredentials.Credential); err != nil {
 			return err
@@ -1259,9 +1250,6 @@ func validateReviewerEntity(secrets SecretsConfig, name string, entity ReviewerE
 	}
 	if !entity.AuthMode.Supported() {
 		return fmt.Errorf("%w: reviewer_entities.%s.auth_mode %q", ErrUnsupported, name, entity.AuthMode)
-	}
-	if entity.AuthMode == GitAuthModeGitHubApp {
-		return invalid("reviewer_entities.%s.auth_mode %q is not supported for reviewer entities; use pat", name, entity.AuthMode)
 	}
 	if err := validateCredentialLocation(fmt.Sprintf("reviewer_entities.%s.credential", name), entity.Credential); err != nil {
 		return err

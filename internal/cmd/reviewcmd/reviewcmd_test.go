@@ -776,7 +776,7 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	}
 }
 
-func TestNewRuntimeFailsBeforeLedgerWhenOpinionatedReviewAuthorityIsIneligible(t *testing.T) {
+func TestNewRuntimeWarnsAndContinuesWhenOpinionatedReviewAuthorityIsIneligible(t *testing.T) {
 	statedirtest.Hermetic(t)
 	layout, err := statepaths.DefaultLayoutEnsured()
 	if err != nil {
@@ -796,27 +796,69 @@ func TestNewRuntimeFailsBeforeLedgerWhenOpinionatedReviewAuthorityIsIneligible(t
 			return identity, nil
 		},
 		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
-			t.Fatal("LLM adapter should not be initialized when authority is ineligible")
-			return nil, nil
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 		},
 	)
 
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
-	opts := &root.Options{Stderr: io.Discard}
-	_, err = newRuntime(cmd, opts, testConfig(), testConfig().Profiles["home"], RuntimeOptions{
+	var stderr bytes.Buffer
+	opts := &root.Options{Stderr: &stderr}
+	runtime, err := newRuntime(cmd, opts, testConfig(), testConfig().Profiles["home"], RuntimeOptions{
 		PRRef:                             ref,
 		RequireOpinionatedReviewAuthority: true,
 	})
-	if !errors.Is(err, gitprovider.ErrIneligibleReviewAuthority) {
-		t.Fatalf("newRuntime error = %v, want ErrIneligibleReviewAuthority", err)
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
 	}
-	if _, statErr := os.Stat(layout.LedgerDB()); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("ledger stat error = %v, want not exist", statErr)
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+	if !strings.Contains(stderr.String(), `warning: posting identity "review-bot" may not create GitHub reviews that count toward PR approval state`) {
+		t.Fatalf("stderr = %q, want advisory review authority warning", stderr.String())
+	}
+	if _, statErr := os.Stat(layout.LedgerDB()); statErr != nil {
+		t.Fatalf("ledger stat error = %v, want ledger created after advisory warning", statErr)
 	}
 	runsDir := filepath.Join(layout.DataRoot, "runs")
 	if _, statErr := os.Stat(runsDir); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("runs dir stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestNewRuntimeWarnsAndContinuesWhenOpinionatedReviewAuthorityProbeFails(t *testing.T) {
+	statedirtest.Hermetic(t)
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	provider.SetError(gitprovider.OperationReviewAuthority, gitprovider.WrapError(gitprovider.ErrPermission, gitprovider.OperationReviewAuthority, errors.New("permission probe failed")))
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stderr bytes.Buffer
+	runtime, err := newRuntime(cmd, &root.Options{Stderr: &stderr}, testConfig(), testConfig().Profiles["home"], RuntimeOptions{
+		PRRef:                             ref,
+		RequireOpinionatedReviewAuthority: true,
+	})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+	if !strings.Contains(stderr.String(), "probe failed: ReviewAuthority: gitprovider: permission denied: permission probe failed") {
+		t.Fatalf("stderr = %q, want advisory probe failure warning", stderr.String())
 	}
 }
 
@@ -850,7 +892,7 @@ func TestNewRuntimeSkipsOpinionatedReviewAuthorityCheckWhenNotRequired(t *testin
 	}
 }
 
-func TestLiveReviewFailsFastWithoutCreatingArtifactsWhenAuthorityIsIneligible(t *testing.T) {
+func TestLiveReviewWarnsAndContinuesWhenAuthorityIsIneligible(t *testing.T) {
 	statedirtest.Hermetic(t)
 	layout, err := statepaths.DefaultLayoutEnsured()
 	if err != nil {
@@ -871,21 +913,20 @@ func TestLiveReviewFailsFastWithoutCreatingArtifactsWhenAuthorityIsIneligible(t 
 			return identity, nil
 		},
 		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
-			t.Fatal("LLM adapter should not be initialized when live review authority is ineligible")
-			return nil, nil
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 		},
 	)
 
-	cmd, _ := newTestCommand(t, cfg, newRuntime)
+	cmd, _, stderr := newTestCommandWithStderr(t, cfg, newRuntime, true)
 	err = root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
-	if !errors.Is(err, gitprovider.ErrIneligibleReviewAuthority) {
-		t.Fatalf("Execute error = %v, want ErrIneligibleReviewAuthority", err)
+	if !errors.Is(err, gitprovider.ErrNotFound) {
+		t.Fatalf("Execute error = %v, want provider not found after advisory authority check", err)
 	}
-	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
-		t.Fatalf("exit code = %d, want auth-config", got)
+	if !strings.Contains(stderr.String(), `warning: posting identity "review-bot" may not create GitHub reviews that count toward PR approval state`) {
+		t.Fatalf("stderr = %q, want advisory review authority warning", stderr.String())
 	}
-	if _, statErr := os.Stat(layout.LedgerDB()); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("ledger stat error = %v, want not exist", statErr)
+	if _, statErr := os.Stat(layout.LedgerDB()); statErr != nil {
+		t.Fatalf("ledger stat error = %v, want ledger created after advisory warning", statErr)
 	}
 	runsDir := filepath.Join(layout.DataRoot, "runs")
 	if _, statErr := os.Stat(runsDir); !errors.Is(statErr, os.ErrNotExist) {

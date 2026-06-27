@@ -846,7 +846,6 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 	cmd.Flags().StringVar(&flags.reviewerRef, "reviewer-credential-ref", "", "Reviewer credential name")
 	cmd.Flags().StringVar(&flags.reviewerAuth, "reviewer-auth-mode", flags.reviewerAuth, "Reviewer credential auth mode")
 	cmd.Flags().StringVar(&flags.reviewerGitHubAppID, "reviewer-github-app-id", "", "GitHub App ID for reviewer github_app auth")
-	_ = cmd.Flags().MarkHidden("reviewer-github-app-id")
 	cmd.Flags().BoolVar(&flags.disableReviewer, "disable-reviewer", false, "Disable separate reviewer credentials")
 	cmd.Flags().StringVar(&flags.llmProvider, "llm-provider", flags.llmProvider, "LLM provider")
 	cmd.Flags().StringVar(&flags.llmAuth, "llm-auth", flags.llmAuth, "LLM auth mode")
@@ -2479,6 +2478,13 @@ func initReviewerEntityInventoryRows(ctx initPromptContext) []initInventoryRow {
 			Selectable:    true,
 		},
 		initInventoryRow{
+			ID:            string(initReviewerEntityKindGitHubApp),
+			Title:         reviewerEntityTemplateGitHubAppLabel(),
+			Kind:          initInventoryRowKindCommand,
+			PrimaryAction: initInventoryActionCommand,
+			Selectable:    true,
+		},
+		initInventoryRow{
 			ID:            initBackSelection,
 			Title:         "Back to main menu",
 			Kind:          initInventoryRowKindCommand,
@@ -3063,15 +3069,16 @@ func applyGitScopeSelection(draft *initDraft, selection string, scopes map[strin
 func initReviewerEntityOptions(entities map[string]initReviewerEntityDraft, fallbackLabel string) []huh.Option[string] {
 	names := configuredInitReviewerEntityNames(entities)
 	sort.Strings(names)
-	options := make([]huh.Option[string], 0, len(names)+2)
+	options := make([]huh.Option[string], 0, len(names)+3)
 	for _, name := range names {
 		entity := entities[name]
 		options = append(options, huh.NewOption(initReviewerEntityLabel(entity), name))
 	}
-	if strings.TrimSpace(fallbackLabel) != "" {
-		options = append(options, huh.NewOption(fallbackLabel, string(initReviewerEntityKindUseGitIdentity)))
-	}
-	options = append(options, huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)))
+	options = append(options,
+		huh.NewOption(fallbackLabel, string(initReviewerEntityKindUseGitIdentity)),
+		huh.NewOption(reviewerEntityTemplatePATLabel(), string(initReviewerEntityKindPAT)),
+		huh.NewOption(reviewerEntityTemplateGitHubAppLabel(), string(initReviewerEntityKindGitHubApp)),
+	)
 	return dedupeInitStringOptions(options)
 }
 
@@ -3083,16 +3090,14 @@ func initReviewerEntitySelectionOptions(entities map[string]initReviewerEntityDr
 		entity := entities[name]
 		options = append(options, huh.NewOption(initReviewerEntityLabel(entity), name))
 	}
-	if strings.TrimSpace(fallbackLabel) != "" {
-		options = append(options, huh.NewOption(fallbackLabel, string(initReviewerEntityKindUseGitIdentity)))
-	}
+	options = append(options, huh.NewOption(fallbackLabel, string(initReviewerEntityKindUseGitIdentity)))
 	return dedupeInitStringOptions(options)
 }
 
 func configuredInitReviewerEntityNames(entities map[string]initReviewerEntityDraft) []string {
 	names := make([]string, 0, len(entities))
 	for name, entity := range entities {
-		if entity.Kind == initReviewerEntityKindUseGitIdentity || entity.Kind == initReviewerEntityKindGitHubApp {
+		if entity.Kind == initReviewerEntityKindUseGitIdentity {
 			continue
 		}
 		names = append(names, name)
@@ -3412,18 +3417,12 @@ func profileEditorReviewerEntityFallbackLabel(git initGitScopeDraft, existingPro
 	if strings.TrimSpace(git.Host) == "" && git.AuthMode == "" {
 		return reviewerEntityTemplateFallbackLabel()
 	}
-	if git.AuthMode == config.GitAuthModeGitHubApp {
-		return ""
-	}
 	return reviewerEntityGitAccountFallbackLabel(git.AuthMode, matchingGitIdentityCache(git, existingProfile))
 }
 
 func focusedReviewerEntityFallbackLabel(existingProfile *config.Profile) string {
 	if existingProfile == nil {
 		return reviewerEntityTemplateFallbackLabel()
-	}
-	if existingProfile.Git.AuthMode == config.GitAuthModeGitHubApp {
-		return ""
 	}
 	return reviewerEntityGitAccountFallbackLabel(existingProfile.Git.AuthMode, existingProfile.Git.IdentityCache)
 }
@@ -4461,9 +4460,6 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		if !reviewerMode.Supported() {
 			return initPlan{}, exitcode.Usage(fmt.Errorf("--reviewer-auth-mode %s is not supported in v1", flags.reviewerAuth))
 		}
-		if reviewerMode == config.GitAuthModeGitHubApp {
-			return initPlan{}, exitcode.Usage(fmt.Errorf("--reviewer-auth-mode %s is not supported for reviewer identities; use %s", reviewerMode, config.GitAuthModePAT))
-		}
 		if reviewerMode != config.GitAuthModePAT && (flags.reviewerTokenStdin || flags.reviewerTokenEnv != "") {
 			return initPlan{}, exitcode.Usage(fmt.Errorf("reviewer token ingress requires --reviewer-auth-mode %s", config.GitAuthModePAT))
 		}
@@ -4515,8 +4511,17 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			return initPlan{}, exitcode.Usage(fmt.Errorf("--git-github-app-id is required when --git-auth-mode is %s", config.GitAuthModeGitHubApp))
 		}
 	}
-	if strings.TrimSpace(flags.reviewerGitHubAppID) != "" {
-		return initPlan{}, exitcode.Usage(fmt.Errorf("--reviewer-github-app-id is not supported for reviewer identities; use a PAT reviewer"))
+	if reviewerMode != config.GitAuthModeGitHubApp && strings.TrimSpace(flags.reviewerGitHubAppID) != "" {
+		return initPlan{}, exitcode.Usage(fmt.Errorf("--reviewer-github-app-id requires --reviewer-auth-mode %s", config.GitAuthModeGitHubApp))
+	}
+	reviewerGitHubAppID := strings.TrimSpace(flags.reviewerGitHubAppID)
+	if reviewerRequested && reviewerMode == config.GitAuthModeGitHubApp {
+		if reviewerGitHubAppID == "" && previousProfile != nil && previousProfile.ReviewerCredentials != nil && previousProfile.ReviewerCredentials.GitHubApp != nil {
+			reviewerGitHubAppID = strings.TrimSpace(previousProfile.ReviewerCredentials.GitHubApp.AppID)
+		}
+		if reviewerGitHubAppID == "" {
+			return initPlan{}, exitcode.Usage(fmt.Errorf("--reviewer-github-app-id is required when --reviewer-auth-mode is %s", config.GitAuthModeGitHubApp))
+		}
 	}
 	gitSecret, hasGitSecret, err := readInitSecret(deps, opts.Stdin, flags.gitTokenStdin, flags.gitTokenEnv, "--git-token-stdin", "--git-token-from-env")
 	if err != nil {
@@ -4586,7 +4591,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		profile.ReviewerCredentials = &config.ReviewerCredentials{
 			AuthMode:      reviewerMode,
 			Credential:    initCredentialLocation(reviewerStore, reviewerRef),
-			GitHubApp:     initGitHubAppConfigForAuth(reviewerMode, ""),
+			GitHubApp:     initGitHubAppConfigForAuth(reviewerMode, reviewerGitHubAppID),
 			CredentialRef: reviewerRef,
 		}
 	}
@@ -8283,7 +8288,7 @@ func loadConfigForInit(path string) (config.File, bool, error) {
 	if errors.Is(err, config.ErrNotConfigured) {
 		return config.File{Profiles: map[string]config.Profile{}}, false, nil
 	}
-	if err != nil && (errors.Is(err, config.ErrSecretsProfileNotFound) || errors.Is(err, config.ErrInvalid)) {
+	if err != nil && errors.Is(err, config.ErrSecretsProfileNotFound) {
 		recovered, recoverErr := loadConfigForInteractiveInitRecovery(path)
 		if recoverErr != nil {
 			return config.File{}, true, recoverErr
@@ -8314,48 +8319,10 @@ func loadConfigForInteractiveInitRecovery(path string) (config.File, error) {
 		return config.File{}, fmt.Errorf("config: multiple YAML documents are not supported")
 	}
 	cfg = config.Normalize(cfg)
-	cfg = sanitizeLegacyInteractiveInitRecovery(cfg)
 	if err := validateInteractiveInitConfig(cfg); err != nil {
 		return config.File{}, err
 	}
 	return cfg, nil
-}
-
-func sanitizeLegacyInteractiveInitRecovery(cfg config.File) config.File {
-	if len(cfg.ReviewerEntities) == 0 && len(cfg.Profiles) == 0 {
-		return cfg
-	}
-
-	removedEntities := map[string]struct{}{}
-	if len(cfg.ReviewerEntities) > 0 {
-		for name, entity := range cfg.ReviewerEntities {
-			if entity.AuthMode != config.GitAuthModeGitHubApp {
-				continue
-			}
-			delete(cfg.ReviewerEntities, name)
-			removedEntities[name] = struct{}{}
-		}
-	}
-
-	for name, profile := range cfg.Profiles {
-		changed := false
-		if profile.ReviewerCredentials != nil && profile.ReviewerCredentials.AuthMode == config.GitAuthModeGitHubApp {
-			profile.ReviewerCredentials = nil
-			profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindGitIdentity}
-			changed = true
-		}
-		if profile.Reviewer.Kind == config.ProfileReviewerKindEntity {
-			if _, removed := removedEntities[profile.Reviewer.Entity]; removed {
-				profile.Reviewer = config.ProfileReviewer{Kind: config.ProfileReviewerKindGitIdentity}
-				changed = true
-			}
-		}
-		if changed {
-			cfg.Profiles[name] = profile
-		}
-	}
-
-	return config.Normalize(cfg)
 }
 
 func configPath(opts *root.Options) (string, error) {

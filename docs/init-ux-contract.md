@@ -158,10 +158,10 @@ Interactive `init` must offer both:
 
 Credential values may be collected inside the relevant subflow once the user has
 enough local context to understand why each secret is needed. Reviewer-entity
-setup collects the required PAT reviewer secret inline on the reviewer details
-page before a new reviewer can be staged. Those values remain draft-local until
-commit; final commit still handles untouched or deferred Git and LLM credential
-locations.
+setup collects the required PAT or GitHub App reviewer secrets inline on the
+reviewer details page before a new reviewer can be staged. Those values remain
+draft-local until commit; final commit still handles untouched or deferred Git
+and LLM credential locations.
 
 If the user cancels during credential collection, whether from a subflow or after
 choosing **Commit staged changes and exit**, any pending secret values remain
@@ -173,6 +173,9 @@ entity setup should show non-secret, per-key credential readiness for the
 selected reviewer credential location:
 
 - PAT reviewers show `git_token`.
+- GitHub App reviewers show non-secret GitHub App ID as config plus required
+  `github_app_private_key` readiness. Installation routing is review-profile
+  config, not a reviewer credential key.
 - Each key may be shown as `missing`, `existing`, `staged`, `skipped optional`,
   `deferred`, `optional`, or `status unavailable`.
 - `missing` means the backend was consulted and no staged or existing value was
@@ -263,16 +266,17 @@ This means:
 Interactive `init` may also offer separate reviewer entities such as:
 
 - a personal access token (PAT) reviewer
+- a GitHub App reviewer
 
-For GitHub organizations, the UX should explain that reviewer identities must
-use PAT auth when the review needs GitHub to count `APPROVE` or
-`REQUEST_CHANGES` toward PR state.
+For GitHub organizations, the UX should explain that a GitHub App is often the
+preferred team/shared reviewer path.
 
 Separate reviewer entities should also support an optional human-friendly
 display name. When present, the configured reviewer-entity chooser should
 prefer that display name and keep the technical reviewer type as supporting
 text, for example:
 
+- **OC Collective bot (GitHub App reviewer)**
 - **Release reviewer (PAT reviewer)**
 
 When no explicit display name exists, the chooser should fall back to stable,

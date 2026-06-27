@@ -21,18 +21,6 @@ func (c *Client) ReviewAuthority(ctx context.Context, ref gitprovider.PRRef, ide
 	if err := c.validatePRRef(ref); err != nil {
 		return gitprovider.ReviewAuthority{}, err
 	}
-	if c.appAuth != nil {
-		permissions, err := c.appAuth.installationPermissions(ctx, gitprovider.OperationReviewAuthority)
-		if err != nil {
-			return gitprovider.ReviewAuthority{}, err
-		}
-		permission := strings.TrimSpace(permissions["pull_requests"])
-		return gitprovider.ReviewAuthority{
-			Eligible:   false,
-			Permission: "pull_requests=" + permission,
-			RoleName:   "github_app_installation",
-		}, nil
-	}
 	login := strings.TrimSpace(identity.Login)
 	if login == "" {
 		return gitprovider.ReviewAuthority{}, fmt.Errorf("%w: identity login is required", ErrValidation)
