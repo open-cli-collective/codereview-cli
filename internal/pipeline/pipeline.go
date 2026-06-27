@@ -74,6 +74,7 @@ type rangeDiffProvider interface {
 // Store is the ledger behavior required by the dry-run pipeline.
 type Store interface {
 	ListRuns(context.Context) ([]ledger.Run, error)
+	ListRunsForHeadScope(context.Context, ledger.ListRunsForHeadScopeParams) ([]ledger.Run, error)
 	DeleteRun(context.Context, string) error
 	AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error)
 	InsertSession(context.Context, ledger.Session) error
@@ -813,20 +814,20 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 	if err != nil {
 		return ledger.Run{}, false, err
 	}
-	runs, err := store.ListRuns(ctx)
+	postingIdentity := postingKey(req.PostingIdentity)
+	runs, err := store.ListRunsForHeadScope(ctx, ledger.ListRunsForHeadScopeParams{
+		PRKey:           prKey,
+		SHA:             pr.Head.SHA,
+		Profile:         req.ProfileName,
+		PostingIdentity: postingIdentity,
+	})
 	if err != nil {
 		return ledger.Run{}, false, err
 	}
-	postingIdentity := postingKey(req.PostingIdentity)
 	var best ledger.Run
 	found := false
 	for _, run := range runs {
-		if run.PRKey != prKey ||
-			run.SHA != pr.Head.SHA ||
-			run.BaseSHA != pr.Base.SHA ||
-			run.Profile != req.ProfileName ||
-			run.PostingIdentity != postingIdentity ||
-			run.PostMode != ledger.PostModeDryRun {
+		if run.BaseSHA != pr.Base.SHA || run.PostMode != ledger.PostModeDryRun {
 			continue
 		}
 		if run.Outcome != nil && *run.Outcome != ledger.OutcomeIncomplete {

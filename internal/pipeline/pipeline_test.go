@@ -6868,6 +6868,10 @@ func (noopStore) ListRuns(context.Context) ([]ledger.Run, error) {
 	return nil, nil
 }
 
+func (noopStore) ListRunsForHeadScope(context.Context, ledger.ListRunsForHeadScopeParams) ([]ledger.Run, error) {
+	return nil, nil
+}
+
 func (noopStore) DeleteRun(context.Context, string) error {
 	return nil
 }
