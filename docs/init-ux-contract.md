@@ -31,8 +31,8 @@ Interactive `init` should use these primary user-facing terms:
   `REQUEST_CHANGES` on pull requests.
   On GitHub, a reviewer entity must resolve to a repository-authorized
   identity for `APPROVE` or `REQUEST_CHANGES` to count toward PR state. Live
-  review stops before LLM or posting work when the selected reviewer can write
-  a review object but GitHub would not treat it as an opinionated review.
+  review warns and continues when the selected reviewer can write a review
+  object but GitHub may not treat it as an opinionated review.
 - **LLM runtime**: the way reviewer agents run and authenticate, such as Claude
   CLI subscription auth, Codex CLI subscription auth, Pi local runtime, or a
   direct API-key-backed provider path.
@@ -202,8 +202,8 @@ follow-up credential work without leaking values.
 
 All credential-bearing init flows should show equivalent non-secret destination
 context before collecting secret values. This includes repository-access Git
-credentials, reviewer PAT credentials, and LLM API keys handled by the shared
-credential collector.
+credentials, reviewer PAT credentials, reviewer GitHub App private keys, and
+LLM API keys handled by the shared credential collector.
 
 Destination summaries should include:
 
@@ -254,8 +254,8 @@ When the UI has additional profile context, it may render equivalent
 contextual variants of the same fallback choice, such as:
 
 - **Post as rianjs (GitHub PAT)**
-- **Post as acme-review-bot (GitHub PAT)**
-- **Post using this profile's Git account (GitHub PAT)**
+- **Post as acme-review-bot (GitHub App)**
+- **Post using this profile's Git account (GitHub PAT or GitHub App)**
 
 This means:
 
