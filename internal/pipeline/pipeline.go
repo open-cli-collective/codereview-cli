@@ -1075,7 +1075,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	knownThreadIDs := knownThreads(req.Threads)
 	if len(req.ThreadContext) > 0 {
 		promptInput, promptDeps, err = selectionPromptInputFromThreadContext(req.Artifacts, req.ThreadContext)
-		knownThreadIDs = map[string]bool{}
+		knownThreadIDs = knownThreadContext(req.ThreadContext)
 	}
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
@@ -5128,6 +5128,14 @@ func changedFiles(patches []FilePatch) map[string]bool {
 }
 
 func knownThreads(threads []gitprovider.InlineThread) map[string]bool {
+	out := make(map[string]bool, len(threads))
+	for _, thread := range threads {
+		out[string(thread.ID)] = true
+	}
+	return out
+}
+
+func knownThreadContext(threads []threadcontext.Thread) map[string]bool {
 	out := make(map[string]bool, len(threads))
 	for _, thread := range threads {
 		out[string(thread.ID)] = true

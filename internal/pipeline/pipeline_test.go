@@ -878,6 +878,46 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "raw/pr-context.json")
 }
 
+func TestSelectionOnlyAllowsThreadActionsWithThreadContext(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	provider.threads = []gitprovider.InlineThread{
+		crSettledReviewThread(t, "thread-1", "main.go", 2, req.PostingIdentity, human, "Cached settled summary"),
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [{
+			"agent_id": "harness:reviewer",
+			"rationale": "go file changed",
+			"files": ["main.go"]
+		}],
+		"thread_actions": [{
+			"thread_id": "thread-1",
+			"decision": "summarize_only",
+			"summary": "Thread remains settled"
+		}],
+		"reasoning": "select reviewer and keep cached thread context"
+	}`, 10, 2))
+
+	result, err := selectionOnlyForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+	}, selectionRequestFromReview(req, t.TempDir()))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+	if len(result.Selection.ThreadActions) != 1 {
+		t.Fatalf("thread actions = %#v, want one", result.Selection.ThreadActions)
+	}
+	got := result.Selection.ThreadActions[0]
+	if got.ThreadID != "thread-1" || got.Decision != review.ThreadDecisionSummarizeOnly || got.Summary != "Thread remains settled" {
+		t.Fatalf("thread action = %#v, want decoded action for normalized thread context", got)
+	}
+}
+
 func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
