@@ -36,6 +36,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/pricing"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/sessionreuse"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -48,7 +49,6 @@ const (
 	defaultMaxConcurrency                  = 5
 	defaultMaxPromptBytes                  = 512 * 1024
 	defaultCheckoutReadonlyToolOutputBytes = 32 * 1024
-	reviewRunMarkerSchema                  = 1
 )
 
 // ErrStructuredOutputInvalidAfterRetry marks a selector or rollup response that
@@ -184,120 +184,7 @@ type SelectionRequest struct {
 }
 
 // ArtifactPaths contains per-run artifact paths.
-// The pipeline constructs these from caller-owned artifact roots plus fixed
-// child names, so methods on this type return pipeline-owned paths rather than
-// arbitrary user input.
-type ArtifactPaths struct {
-	Dir              string `json:"dir"`
-	DiffPatch        string `json:"diff_patch"`
-	SlicesDir        string `json:"slices_dir"`
-	FindingsJSON     string `json:"findings_json"`
-	RollupMarkdown   string `json:"rollup_markdown"`
-	AgentSourcesJSON string `json:"agent_sources_json"`
-	AgentLogsDir     string `json:"agent_logs_dir"`
-	LLMTasksDir      string `json:"llm_tasks_dir"`
-	DossierDir       string `json:"dossier_dir"`
-	WorkbenchDir     string `json:"workbench_dir"`
-	WorkbenchRepoDir string `json:"workbench_repo_dir"`
-	WorkbenchScratch string `json:"workbench_scratch_dir"`
-}
-
-// SlicePatch returns the artifact path for an agent/file diff slice.
-func (p ArtifactPaths) SlicePatch(agentID, filePath string) (string, error) {
-	if strings.TrimSpace(agentID) == "" {
-		return "", fmt.Errorf("pipeline: agent ID is required")
-	}
-	if strings.TrimSpace(filePath) == "" {
-		return "", fmt.Errorf("pipeline: file path is required")
-	}
-	return filepath.Join(p.SlicesDir, statepaths.Encode(agentID), statepaths.Encode(filePath)+".patch"), nil
-}
-
-// AgentLog returns the tailable LLM log path for an agent.
-func (p ArtifactPaths) AgentLog(agentID string) (string, error) {
-	if strings.TrimSpace(agentID) == "" {
-		return "", fmt.Errorf("pipeline: agent ID is required")
-	}
-	return filepath.Join(p.AgentLogsDir, statepaths.Encode(agentID)+".jsonl"), nil
-}
-
-// LLMTaskDir returns the artifact directory for one durable LLM task.
-func (p ArtifactPaths) LLMTaskDir(taskID string) (string, error) {
-	if strings.TrimSpace(taskID) == "" {
-		return "", fmt.Errorf("pipeline: LLM task ID is required")
-	}
-	return filepath.Join(p.LLMTasksDir, statepaths.Encode(taskID)), nil
-}
-
-// LLMTaskMetadata returns the metadata artifact path for one durable LLM task.
-func (p ArtifactPaths) LLMTaskMetadata(taskID string) (string, error) {
-	dir, err := p.LLMTaskDir(taskID)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "metadata.json"), nil
-}
-
-// LLMTaskValidatedOutput returns the validated structured output path for one task.
-func (p ArtifactPaths) LLMTaskValidatedOutput(taskID string) (string, error) {
-	dir, err := p.LLMTaskDir(taskID)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "validated-output.json"), nil
-}
-
-// LLMTaskRawAttempt returns the raw structured output path for a failed attempt.
-func (p ArtifactPaths) LLMTaskRawAttempt(taskID, attempt string) (string, error) {
-	dir, err := p.LLMTaskDir(taskID)
-	if err != nil {
-		return "", err
-	}
-	attempt = strings.TrimSpace(attempt)
-	if attempt == "" {
-		return "", fmt.Errorf("pipeline: LLM task attempt is required")
-	}
-	return filepath.Join(dir, statepaths.Encode(attempt)+".json"), nil
-}
-
-// DossierRawPath returns a raw dossier artifact path by file name.
-func (p ArtifactPaths) DossierRawPath(name string) (string, error) {
-	return dossierChildPath(filepath.Join(p.DossierDir, "raw"), name)
-}
-
-// DossierSummaryPath returns a summary dossier artifact path by file name.
-func (p ArtifactPaths) DossierSummaryPath(name string) (string, error) {
-	return dossierChildPath(filepath.Join(p.DossierDir, "summary"), name)
-}
-
-// DossierFinalPath returns a reviewer-facing dossier artifact path by file name.
-func (p ArtifactPaths) DossierFinalPath(name string) (string, error) {
-	return dossierChildPath(filepath.Join(p.DossierDir, "final"), name)
-}
-
-// DossierIndexPath returns the dossier index artifact path.
-func (p ArtifactPaths) DossierIndexPath() string {
-	return filepath.Join(p.DossierDir, "index.json")
-}
-
-// WorkbenchMetadataPath returns the workbench metadata artifact path.
-func (p ArtifactPaths) WorkbenchMetadataPath() string {
-	return filepath.Join(p.WorkbenchDir, "metadata.json")
-}
-
-func dossierChildPath(dir, name string) (string, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", fmt.Errorf("pipeline: dossier artifact name is required")
-	}
-	if name == "." || name == ".." {
-		return "", fmt.Errorf("pipeline: dossier artifact name must be a file name")
-	}
-	if strings.Contains(name, "/") || strings.Contains(name, string(filepath.Separator)) {
-		return "", fmt.Errorf("pipeline: dossier artifact name must be a file name")
-	}
-	return filepath.Join(dir, name), nil
-}
+type ArtifactPaths = runartifact.Paths
 
 const llmTaskSchemaVersion = llmlifecycle.SchemaVersion
 
@@ -702,7 +589,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			if err != nil {
 				return Result{}, err
 			}
-			if err := writeReviewRunMarker(prepared.artifacts.Dir, run.RunID); err != nil {
+			if err := runartifact.WriteMarker(prepared.artifacts.Dir, runartifact.KindReview, run.RunID); err != nil {
 				return Result{}, err
 			}
 		}
@@ -940,7 +827,7 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 		if strings.TrimSpace(run.ArtifactPath) == "" {
 			continue
 		}
-		if !hasReviewRunMarker(run.ArtifactPath) {
+		if !runartifact.HasMarker(run.ArtifactPath, runartifact.KindReview) {
 			continue
 		}
 		if !found || run.Attempt > best.Attempt || (run.Attempt == best.Attempt && run.StartedAt.After(best.StartedAt)) {
@@ -949,33 +836,6 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 		}
 	}
 	return best, found, nil
-}
-
-type reviewRunMarker struct {
-	SchemaVersion int    `json:"schema_version"`
-	Kind          string `json:"kind"`
-	RunID         string `json:"run_id"`
-}
-
-func writeReviewRunMarker(artifactPath, runID string) error {
-	data, err := json.MarshalIndent(reviewRunMarker{
-		SchemaVersion: reviewRunMarkerSchema,
-		Kind:          "review",
-		RunID:         runID,
-	}, "", "  ")
-	if err != nil {
-		return err
-	}
-	return llmlifecycle.WriteFileAtomic(reviewRunMarkerPath(artifactPath), append(data, '\n'))
-}
-
-func hasReviewRunMarker(artifactPath string) bool {
-	info, err := os.Stat(reviewRunMarkerPath(artifactPath))
-	return err == nil && !info.IsDir()
-}
-
-func reviewRunMarkerPath(artifactPath string) string {
-	return filepath.Join(artifactPath, "review-run.json")
 }
 
 func (c preparedSelectionContext) reviewResult() Result {
@@ -4884,47 +4744,12 @@ func validateReviewSHAs(baseSHA, headSHA string) error {
 
 // ArtifactPathsForRun returns the artifact paths for a generated run ID.
 func ArtifactPathsForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovider.PR, profile, postingIdentity, runID string) (ArtifactPaths, error) {
-	prKey, err := statepaths.PRKey(ref.Host, ref.Owner, ref.Repo, ref.Number)
-	if err != nil {
-		return ArtifactPaths{}, err
-	}
-	scope, err := statepaths.ResumeScope(profile, postingIdentity)
-	if err != nil {
-		return ArtifactPaths{}, err
-	}
-	dir := filepath.Join(layout.DataRoot, "runs", prKey, pr.Head.SHA, pr.Base.SHA, scope, "run-"+statepaths.Encode(runID))
-	return ArtifactPaths{
-		Dir:              dir,
-		DiffPatch:        filepath.Join(dir, "diff.patch"),
-		SlicesDir:        filepath.Join(dir, "slices"),
-		FindingsJSON:     filepath.Join(dir, "findings.json"),
-		RollupMarkdown:   filepath.Join(dir, "rollup.md"),
-		AgentSourcesJSON: filepath.Join(dir, "agent-sources.json"),
-		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
-		LLMTasksDir:      filepath.Join(dir, "llm-tasks"),
-		DossierDir:       filepath.Join(dir, "dossier"),
-		WorkbenchDir:     filepath.Join(dir, "workbench"),
-		WorkbenchRepoDir: filepath.Join(dir, "workbench", "repo"),
-		WorkbenchScratch: filepath.Join(dir, "workbench", "scratch"),
-	}, nil
+	return runartifact.ForRun(layout, ref, pr, profile, postingIdentity, runID)
 }
 
 // ArtifactPathsFromDir returns the artifact path set rooted at dir.
 func ArtifactPathsFromDir(dir string) ArtifactPaths {
-	return ArtifactPaths{
-		Dir:              dir,
-		DiffPatch:        filepath.Join(dir, "diff.patch"),
-		SlicesDir:        filepath.Join(dir, "slices"),
-		FindingsJSON:     filepath.Join(dir, "findings.json"),
-		RollupMarkdown:   filepath.Join(dir, "rollup.md"),
-		AgentSourcesJSON: filepath.Join(dir, "agent-sources.json"),
-		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
-		LLMTasksDir:      filepath.Join(dir, "llm-tasks"),
-		DossierDir:       filepath.Join(dir, "dossier"),
-		WorkbenchDir:     filepath.Join(dir, "workbench"),
-		WorkbenchRepoDir: filepath.Join(dir, "workbench", "repo"),
-		WorkbenchScratch: filepath.Join(dir, "workbench", "scratch"),
-	}
+	return runartifact.FromDir(dir)
 }
 
 // HasLLMTaskMetadata reports whether an artifact directory contains at least

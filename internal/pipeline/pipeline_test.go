@@ -27,6 +27,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -6108,27 +6109,23 @@ func allocateDryRunForSHAs(t *testing.T, store *ledger.Store, layout statepaths.
 	if err != nil {
 		t.Fatalf("AllocateRun: %v", err)
 	}
-	if err := writeReviewRunMarker(run.ArtifactPath, run.RunID); err != nil {
-		t.Fatalf("writeReviewRunMarker: %v", err)
+	if err := runartifact.WriteMarker(run.ArtifactPath, runartifact.KindReview, run.RunID); err != nil {
+		t.Fatalf("WriteMarker review: %v", err)
 	}
 	return run
 }
 
 func removeReviewRunMarkerForTest(t *testing.T, artifactPath string) {
 	t.Helper()
-	if err := os.Remove(reviewRunMarkerPath(artifactPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(runartifact.MarkerPath(artifactPath, runartifact.KindReview)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Remove review marker: %v", err)
 	}
 }
 
 func writeResponseRunMarkerForTest(t *testing.T, artifactPath, runID string) {
 	t.Helper()
-	if err := os.MkdirAll(artifactPath, 0o700); err != nil {
-		t.Fatalf("MkdirAll response marker dir: %v", err)
-	}
-	data := []byte(fmt.Sprintf("{\n  \"schema_version\": 1,\n  \"kind\": \"thread_response\",\n  \"run_id\": %q\n}\n", runID))
-	if err := os.WriteFile(filepath.Join(artifactPath, "thread-response-run.json"), data, 0o600); err != nil {
-		t.Fatalf("WriteFile response marker: %v", err)
+	if err := runartifact.WriteMarker(artifactPath, runartifact.KindThreadResponse, runID); err != nil {
+		t.Fatalf("WriteMarker response: %v", err)
 	}
 }
 

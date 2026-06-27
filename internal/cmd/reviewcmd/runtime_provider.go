@@ -71,11 +71,5 @@ func (p runtimeProvider) SubmitReview(ctx context.Context, ref gitprovider.PRRef
 }
 
 func (p runtimeProvider) Capabilities() gitprovider.ProviderCaps {
-	readCaps := p.read.Capabilities()
-	writeCaps := p.write.Capabilities()
-	return gitprovider.ProviderCaps{
-		NativeFileLevelComments: readCaps.NativeFileLevelComments || writeCaps.NativeFileLevelComments,
-		ThreadResolution:        readCaps.ThreadResolution || writeCaps.ThreadResolution,
-		BundleInlineOnSubmit:    readCaps.BundleInlineOnSubmit || writeCaps.BundleInlineOnSubmit,
-	}
+	return p.write.Capabilities()
 }

@@ -120,12 +120,6 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{ExitCode: exitFailed}, err
 	}
 	actions = sortActions(actions)
-	if opts.Provider.Capabilities().BundleInlineOnSubmit {
-		now := opts.Now().UTC()
-		if err := reconcilePostedBundledInline(ctx, opts.Store, actions, now); err != nil {
-			return Result{ExitCode: exitFailed}, err
-		}
-	}
 
 	if !hasRelevantPending(actions) {
 		outcome, exitCode := finalOutcome(req.DesiredOutcome, actions)
@@ -147,9 +141,6 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		if irrelevant(actions[i]) {
 			continue
 		}
-		if actions[i].Kind == ledger.PlannedActionInlineComment && opts.Provider.Capabilities().BundleInlineOnSubmit {
-			continue
-		}
 		match, err := reconcileAction(req, actions, actions[i], state)
 		if err != nil {
 			// Reconciliation is best-effort; dispatch planning below performs the
@@ -169,7 +160,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 			return Result{ExitCode: exitFailed}, err
 		}
 		if actions[i].Kind == ledger.PlannedActionSubmitReview && opts.Provider.Capabilities().BundleInlineOnSubmit {
-			if err := markBundledInlinePosted(ctx, opts.Store, actions, actions[i].UpstreamID, now); err != nil {
+			if err := markReconciledBundledInlinePosted(ctx, opts.Store, req, actions, state, actions[i].UpstreamID, now); err != nil {
 				return Result{ExitCode: exitFailed}, err
 			}
 		}
@@ -258,7 +249,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 					return Result{ExitCode: exitFailed}, updateErr
 				}
 				if actions[i].Kind == ledger.PlannedActionSubmitReview && opts.Provider.Capabilities().BundleInlineOnSubmit {
-					if err := markBundledInlinePosted(ctx, opts.Store, actions, actions[i].UpstreamID, now); err != nil {
+					if err := markReconciledBundledInlinePosted(ctx, opts.Store, req, actions, refetched, actions[i].UpstreamID, now); err != nil {
 						return Result{ExitCode: exitFailed}, err
 					}
 				}
@@ -628,13 +619,16 @@ func bundledInlineComments(req Request, actions []ledger.PlannedAction) ([]gitpr
 	return comments, ids, nil
 }
 
-func markBundledInlinePosted(ctx context.Context, store Store, actions []ledger.PlannedAction, upstreamID *string, postedAt time.Time) error {
+func markReconciledBundledInlinePosted(ctx context.Context, store Store, req Request, actions []ledger.PlannedAction, state hostState, upstreamID *string, postedAt time.Time) error {
 	if upstreamID == nil || strings.TrimSpace(*upstreamID) == "" {
 		return nil
 	}
 	ids := map[string]bool{}
 	for _, action := range actions {
-		if action.Kind == ledger.PlannedActionInlineComment && action.Status == ledger.PlannedActionPending {
+		if action.Kind != ledger.PlannedActionInlineComment || action.Status != ledger.PlannedActionPending {
+			continue
+		}
+		if reconcileInline(req, action, state).ok {
 			ids[action.ActionID] = true
 		}
 	}
@@ -662,25 +656,6 @@ func markBundledActionIDsPosted(ctx context.Context, store Store, actions []ledg
 		}
 	}
 	return nil
-}
-
-func reconcilePostedBundledInline(ctx context.Context, store Store, actions []ledger.PlannedAction, now time.Time) error {
-	var submit *ledger.PlannedAction
-	for i := range actions {
-		if actions[i].Kind != ledger.PlannedActionSubmitReview || actions[i].Status != ledger.PlannedActionPosted {
-			continue
-		}
-		submit = &actions[i]
-		break
-	}
-	if submit == nil || submit.UpstreamID == nil || strings.TrimSpace(*submit.UpstreamID) == "" {
-		return nil
-	}
-	postedAt := now
-	if submit.PostedAt != nil && !submit.PostedAt.IsZero() {
-		postedAt = *submit.PostedAt
-	}
-	return markBundledInlinePosted(ctx, store, actions, submit.UpstreamID, postedAt)
 }
 
 func decodePayload[T any](action ledger.PlannedAction) (T, error) {

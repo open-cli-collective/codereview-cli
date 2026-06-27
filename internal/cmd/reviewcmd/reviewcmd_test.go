@@ -720,6 +720,8 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	var providerCalls []config.GitConfig
 	repoProvider := &gitprovider.Fake{}
 	reviewerProvider := &gitprovider.Fake{}
+	repoProvider.SetCapabilities(gitprovider.ProviderCaps{ThreadResolution: true, BundleInlineOnSubmit: true})
+	reviewerProvider.SetCapabilities(gitprovider.ProviderCaps{NativeFileLevelComments: true})
 	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
 	withReviewRuntimeSeams(t,
 		func(git config.GitConfig, _ githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
@@ -796,6 +798,9 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	}
 	if got := reviewerProvider.RecordedReviews(prRef); len(got) != 1 || got[0].Body != "review body" {
 		t.Fatalf("reviewer provider review writes = %#v, want review body", got)
+	}
+	if got := liveProvider.Capabilities(); got.ThreadResolution || got.BundleInlineOnSubmit || !got.NativeFileLevelComments {
+		t.Fatalf("live provider capabilities = %#v, want write-provider capabilities only", got)
 	}
 }
 

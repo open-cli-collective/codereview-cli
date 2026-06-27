@@ -190,6 +190,9 @@ func TestPostReconcilesBundledInlineCommentsFromSubmitReview(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SetReviews: %v", err)
 	}
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{inlineThreadWithAction(t, run, "inline-1")}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
 
 	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, Request{
 		Run:             run,
@@ -212,7 +215,7 @@ func TestPostReconcilesBundledInlineCommentsFromSubmitReview(t *testing.T) {
 	}{
 		{id: "submit-1", upstream: "review-submit"},
 		{id: "rollup-1", upstream: "issue-rollup"},
-		{id: "inline-1", upstream: "review-submit"},
+		{id: "inline-1", upstream: "comment-inline-1"},
 	} {
 		action := actionByID(t, store, run.RunID, tc.id)
 		if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != tc.upstream {
@@ -269,6 +272,9 @@ func TestPostConflictReconcilesBundledInlineCommentsFromSubmitReview(t *testing.
 	}}); err != nil {
 		t.Fatalf("SetReviews: %v", err)
 	}
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{inlineThreadWithAction(t, run, "inline-1")}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
 
 	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, Request{
 		Run:             run,
@@ -288,7 +294,7 @@ func TestPostConflictReconcilesBundledInlineCommentsFromSubmitReview(t *testing.
 	}{
 		{id: "submit-1", upstream: "review-submit"},
 		{id: "rollup-1", upstream: "issue-rollup"},
-		{id: "inline-1", upstream: "review-submit"},
+		{id: "inline-1", upstream: "comment-inline-1"},
 	} {
 		action := actionByID(t, store, run.RunID, tc.id)
 		if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != tc.upstream {
@@ -298,6 +304,53 @@ func TestPostConflictReconcilesBundledInlineCommentsFromSubmitReview(t *testing.
 }
 
 func TestPostRepairsBundledInlineCommentsWhenSubmitReviewAlreadyPosted(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	provider.SetCapabilities(gitprovider.ProviderCaps{BundleInlineOnSubmit: true})
+	ref := testPRRef()
+
+	submit := plannedAction(run.RunID, "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{
+		Body:  "review body",
+		Event: review.ReviewEventRequestChanges,
+	})
+	submit.Status = ledger.PlannedActionPosted
+	submit.PostedAt = strPtrTime(testTime())
+	submit.UpstreamID = strPtr("review-submit")
+	insertAction(t, store, submit)
+	insertAction(t, store, plannedAction(run.RunID, "inline-1", ledger.PlannedActionInlineComment, false, "", InlineCommentPayload{
+		Body:        "inline body",
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        12,
+		SubjectType: review.AnchorKindLine,
+	}))
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{inlineThreadWithAction(t, run, "inline-1")}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, Request{
+		Run:             run,
+		PRRef:           ref,
+		PostingIdentity: botIdentity(),
+		DesiredOutcome:  ledger.OutcomeRequestChanges,
+	})
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.ExitCode != exitOK || result.Pending != 0 {
+		t.Fatalf("Post result = %#v, want successful repaired completion", result)
+	}
+	action := actionByID(t, store, run.RunID, "inline-1")
+	if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != "comment-inline-1" {
+		t.Fatalf("inline after repair = %#v, want posted with comment-inline-1", action)
+	}
+	if len(provider.writes) != 0 {
+		t.Fatalf("provider writes = %#v, want no additional writes", provider.writes)
+	}
+}
+
+func TestPostDoesNotRepairBundledInlineWithoutThreadComment(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, ledger.PostModeLive)
 	provider := newRecordingProvider()
@@ -329,12 +382,12 @@ func TestPostRepairsBundledInlineCommentsWhenSubmitReviewAlreadyPosted(t *testin
 	if err != nil {
 		t.Fatalf("Post: %v", err)
 	}
-	if result.ExitCode != exitOK || result.Pending != 0 {
-		t.Fatalf("Post result = %#v, want successful repaired completion", result)
+	if result.ExitCode != exitOK || result.Pending != 1 {
+		t.Fatalf("Post result = %#v, want one pending bundled inline action", result)
 	}
 	action := actionByID(t, store, run.RunID, "inline-1")
-	if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != "review-submit" {
-		t.Fatalf("inline after repair = %#v, want posted with review-submit", action)
+	if action.Status != ledger.PlannedActionPending || action.UpstreamID != nil {
+		t.Fatalf("inline after repair = %#v, want still pending without thread comment", action)
 	}
 	if len(provider.writes) != 0 {
 		t.Fatalf("provider writes = %#v, want no additional writes", provider.writes)
@@ -1442,6 +1495,35 @@ func testPRRef() gitprovider.PRRef {
 
 func botIdentity() gitprovider.Identity {
 	return gitprovider.Identity{Login: "codereview-bot", ID: "bot-id"}
+}
+
+func inlineThreadWithAction(t *testing.T, run ledger.Run, actionID string) gitprovider.InlineThread {
+	t.Helper()
+	return gitprovider.InlineThread{
+		ID:          gitprovider.ThreadID("thread-" + actionID),
+		Path:        "main.go",
+		Side:        review.DiffSideRight,
+		Line:        12,
+		SubjectType: review.AnchorKindLine,
+		CommitSHA:   run.SHA,
+		Comments: []gitprovider.ThreadComment{{
+			ID:          gitprovider.CommentID("comment-" + actionID),
+			ThreadID:    gitprovider.ThreadID("thread-" + actionID),
+			Author:      botIdentity(),
+			CommitSHA:   run.SHA,
+			Path:        "main.go",
+			Side:        review.DiffSideRight,
+			Line:        12,
+			SubjectType: review.AnchorKindLine,
+			Body: mustRenderAction(t, marker.ActionMarker{
+				RunID:    run.RunID,
+				ActionID: actionID,
+				Kind:     marker.ActionKindInlineComment,
+				SHA:      run.SHA,
+				BaseSHA:  run.BaseSHA,
+			}),
+		}},
+	}
 }
 
 func testTime() time.Time {

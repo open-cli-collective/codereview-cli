@@ -4,10 +4,8 @@ package threadrespond
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,10 +19,10 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
-	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -39,8 +37,6 @@ const (
 
 	freshRunIDAttempts = 3
 	lockPRAttempts     = 3
-
-	responseRunMarkerSchema = 1
 )
 
 // Store is the durable state required by response planning and posting.
@@ -101,7 +97,7 @@ type Result struct {
 	Run             ledger.Run
 	PR              gitprovider.PR
 	PRKey           string
-	Artifacts       pipeline.ArtifactPaths
+	Artifacts       runartifact.Paths
 	Threads         []threadcontext.Thread
 	EligibleThreads []threadcontext.Thread
 	Analyses        []threadanalysis.Result
@@ -299,7 +295,7 @@ func retry(ctx context.Context, opts Options, req Request) (Result, error) {
 	if err != nil {
 		return Result{PR: pr, PRKey: prKey, ExitCode: exitFailed}, err
 	}
-	result := Result{Run: run, PR: pr, PRKey: prKey, Artifacts: pipeline.ArtifactPathsFromDir(run.ArtifactPath), ExitCode: exitOK}
+	result := Result{Run: run, PR: pr, PRKey: prKey, Artifacts: runartifact.FromDir(run.ArtifactPath), ExitCode: exitOK}
 	if err := validateRetryRun(req, pr, prKey, run); err != nil {
 		result.ExitCode = exitFailed
 		return result, err
@@ -408,7 +404,7 @@ func abortIfMoved(ctx context.Context, opts Options, req Request, run ledger.Run
 	return true, fmt.Sprintf("threadrespond premises moved: head %s -> %s, base %s -> %s", run.SHA, pr.Head.SHA, run.BaseSHA, pr.Base.SHA), nil
 }
 
-func analyzeThreads(ctx context.Context, opts Options, run ledger.Run, artifacts pipeline.ArtifactPaths, runtime llmRuntime, threads []threadcontext.Thread) ([]threadanalysis.Result, error) {
+func analyzeThreads(ctx context.Context, opts Options, run ledger.Run, artifacts runartifact.Paths, runtime llmRuntime, threads []threadcontext.Thread) ([]threadanalysis.Result, error) {
 	results := make([]threadanalysis.Result, 0, len(threads))
 	for _, thread := range threads {
 		result, err := threadanalysis.AnalyzeThread(ctx, threadanalysis.Options{
@@ -439,27 +435,27 @@ func responsesFromAnalyses(analyses []threadanalysis.Result) []review.ThreadResp
 	return threadanalysis.ResponseActions(analyses)
 }
 
-func allocateOrResumeRun(ctx context.Context, opts Options, req Request, pr gitprovider.PR, prKey string, mode ledger.PostMode) (ledger.Run, pipeline.ArtifactPaths, error) {
+func allocateOrResumeRun(ctx context.Context, opts Options, req Request, pr gitprovider.PR, prKey string, mode ledger.PostMode) (ledger.Run, runartifact.Paths, error) {
 	if !req.Rerun {
 		run, ok, err := findIncompleteRun(ctx, opts.Store, req, prKey, pr, mode)
 		if err != nil {
-			return ledger.Run{}, pipeline.ArtifactPaths{}, err
+			return ledger.Run{}, runartifact.Paths{}, err
 		}
 		if ok {
-			return run, pipeline.ArtifactPathsFromDir(run.ArtifactPath), nil
+			return run, runartifact.FromDir(run.ArtifactPath), nil
 		}
 	}
 
 	var lastErr error
 	for attempt := 0; attempt < freshRunIDAttempts; attempt++ {
 		runID := opts.newRunID()
-		artifacts, err := pipeline.ArtifactPathsForRun(opts.Layout, req.PRRef, pr, req.ProfileName, postingKey(req.PostingIdentity), runID)
+		artifacts, err := runartifact.ForRun(opts.Layout, req.PRRef, pr, req.ProfileName, postingKey(req.PostingIdentity), runID)
 		if err != nil {
 			return ledger.Run{}, artifacts, err
 		}
 		run, err := allocateRun(ctx, opts, req, pr, prKey, runID, artifacts.Dir, mode)
 		if err == nil {
-			if err := writeResponseRunMarker(artifacts.Dir, run.RunID); err != nil {
+			if err := runartifact.WriteMarker(artifacts.Dir, runartifact.KindThreadResponse, run.RunID); err != nil {
 				return ledger.Run{}, artifacts, err
 			}
 			return run, artifacts, nil
@@ -469,7 +465,7 @@ func allocateOrResumeRun(ctx context.Context, opts Options, req Request, pr gitp
 		}
 		lastErr = err
 	}
-	return ledger.Run{}, pipeline.ArtifactPaths{}, fmt.Errorf("threadrespond: allocate fresh run ID after %d attempts: %w", freshRunIDAttempts, lastErr)
+	return ledger.Run{}, runartifact.Paths{}, fmt.Errorf("threadrespond: allocate fresh run ID after %d attempts: %w", freshRunIDAttempts, lastErr)
 }
 
 func findIncompleteRun(ctx context.Context, store Store, req Request, prKey string, pr gitprovider.PR, mode ledger.PostMode) (ledger.Run, bool, error) {
@@ -494,7 +490,7 @@ func findIncompleteRun(ctx context.Context, store Store, req Request, prKey stri
 		if strings.TrimSpace(run.ArtifactPath) == "" {
 			continue
 		}
-		if !hasResponseRunMarker(run.ArtifactPath) {
+		if !runartifact.HasMarker(run.ArtifactPath, runartifact.KindThreadResponse) {
 			continue
 		}
 		if !found || run.Attempt > best.Attempt || (run.Attempt == best.Attempt && run.StartedAt.After(best.StartedAt)) {
@@ -503,33 +499,6 @@ func findIncompleteRun(ctx context.Context, store Store, req Request, prKey stri
 		}
 	}
 	return best, found, nil
-}
-
-type responseRunMarker struct {
-	SchemaVersion int    `json:"schema_version"`
-	Kind          string `json:"kind"`
-	RunID         string `json:"run_id"`
-}
-
-func writeResponseRunMarker(artifactPath, runID string) error {
-	data, err := json.MarshalIndent(responseRunMarker{
-		SchemaVersion: responseRunMarkerSchema,
-		Kind:          "thread_response",
-		RunID:         runID,
-	}, "", "  ")
-	if err != nil {
-		return err
-	}
-	return llmlifecycle.WriteFileAtomic(responseRunMarkerPath(artifactPath), append(data, '\n'))
-}
-
-func hasResponseRunMarker(artifactPath string) bool {
-	info, err := os.Stat(responseRunMarkerPath(artifactPath))
-	return err == nil && !info.IsDir()
-}
-
-func responseRunMarkerPath(artifactPath string) string {
-	return filepath.Join(artifactPath, "thread-response-run.json")
 }
 
 func allocateRun(ctx context.Context, opts Options, req Request, pr gitprovider.PR, prKey, runID, artifactPath string, mode ledger.PostMode) (ledger.Run, error) {
@@ -672,7 +641,7 @@ func lockPath(layout statepaths.Layout, req Request, pr gitprovider.PR) (string,
 	})
 }
 
-func threadLogPath(artifacts pipeline.ArtifactPaths, threadID gitprovider.ThreadID) string {
+func threadLogPath(artifacts runartifact.Paths, threadID gitprovider.ThreadID) string {
 	if strings.TrimSpace(artifacts.AgentLogsDir) == "" {
 		return ""
 	}
