@@ -774,6 +774,29 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	if !ok || writeProvider.provider != reviewerProvider {
 		t.Fatalf("live write provider = %#v, want wrapped reviewer provider", liveProvider.write)
 	}
+	prRef := gitprovider.PRRef{Host: "github.com", Owner: "open-cli", Repo: "codereview-cli", Number: 29}
+	if _, err := liveProvider.PostIssueComment(context.Background(), prRef, "rollup body"); err != nil {
+		t.Fatalf("PostIssueComment: %v", err)
+	}
+	if _, err := liveProvider.SubmitReview(context.Background(), prRef, gitprovider.ReviewRequest{
+		CommitSHA: "abc123",
+		Event:     review.ReviewEventComment,
+		Body:      "review body",
+	}); err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	if got := repoProvider.RecordedIssueComments(prRef); len(got) != 0 {
+		t.Fatalf("repo provider issue comment writes = %#v, want none", got)
+	}
+	if got := repoProvider.RecordedReviews(prRef); len(got) != 0 {
+		t.Fatalf("repo provider review writes = %#v, want none", got)
+	}
+	if got := reviewerProvider.RecordedIssueComments(prRef); len(got) != 1 || got[0] != "rollup body" {
+		t.Fatalf("reviewer provider issue comment writes = %#v, want rollup body", got)
+	}
+	if got := reviewerProvider.RecordedReviews(prRef); len(got) != 1 || got[0].Body != "review body" {
+		t.Fatalf("reviewer provider review writes = %#v, want review body", got)
+	}
 }
 
 func TestNewRuntimeWarnsAndContinuesWhenOpinionatedReviewAuthorityIsIneligible(t *testing.T) {
