@@ -490,7 +490,7 @@ func findIncompleteRun(ctx context.Context, store Store, req Request, prKey stri
 		if strings.TrimSpace(run.ArtifactPath) == "" {
 			continue
 		}
-		if !runartifact.HasMarker(run.ArtifactPath, runartifact.KindThreadResponse) {
+		if !runartifact.MarkerMatches(run.ArtifactPath, runartifact.KindThreadResponse, run.RunID) {
 			continue
 		}
 		if !found || run.Attempt > best.Attempt || (run.Attempt == best.Attempt && run.StartedAt.After(best.StartedAt)) {

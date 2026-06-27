@@ -133,18 +133,13 @@ type commandFlags struct {
 	noResolveThreads  bool
 }
 
-type respondFlags struct {
-	dryRun           bool
-	noPost           bool
-	rerun            bool
-	retryPosts       string
-	jsonOutput       bool
-	noResolveThreads bool
-}
-
 // Register attaches the review command to rootCmd.
 func Register(rootCmd *cobra.Command, opts *root.Options) {
 	RegisterWithFactory(rootCmd, opts, newRuntime)
+}
+
+func NewRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	return newRuntime(cmd, opts, cfg, profile, runtimeOpts)
 }
 
 // RegisterWithFactory attaches the review command with an injected runtime factory.
@@ -187,31 +182,6 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.allowSelfApprove, "allow-self-approve", false, "Allow approval when posting identity is the PR author")
 	cmd.Flags().BoolVar(&flags.noResolveThreads, "no-resolve-threads", false, "Do not plan thread-resolution actions")
 	rootCmd.AddCommand(cmd)
-	rootCmd.AddCommand(newRespondCommand(opts, factory))
-}
-
-func newRespondCommand(opts *root.Options, factory RuntimeFactory) *cobra.Command {
-	var flags respondFlags
-	cmd := &cobra.Command{
-		Use:   "respond <PR>",
-		Short: "Respond to unresolved codereview inline discussion threads",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("respond requires one PR URL"))
-			}
-			return nil
-		},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRespond(cmd.Context(), cmd, opts, factory, flags, args[0])
-		},
-	}
-	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Plan thread responses without posting")
-	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Alias for --dry-run")
-	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass incomplete response-run resume and start a fresh response attempt")
-	cmd.Flags().StringVar(&flags.retryPosts, "retry-posts", "", "Retry missing or failed required posts for the given response run ID")
-	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
-	cmd.Flags().BoolVar(&flags.noResolveThreads, "no-resolve-threads", false, "Do not plan thread-resolution actions")
-	return cmd
 }
 
 func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory RuntimeFactory, flags commandFlags, prArg string) error {
@@ -418,88 +388,6 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	renderSpan.End(nil)
 	if result.FailOnTriggered && failOn != nil {
 		return exitcode.With(exitcode.Failure, fmt.Errorf("findings at or above --fail-on %s", failOn.String()))
-	}
-	return nil
-}
-
-func runRespond(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory RuntimeFactory, flags respondFlags, prArg string) error {
-	if flags.noPost {
-		flags.dryRun = true
-	}
-	retryRunID := strings.TrimSpace(flags.retryPosts)
-	if cmd.Flags().Changed("retry-posts") && retryRunID == "" {
-		return exitcode.Usage(fmt.Errorf("--retry-posts must be a non-empty run ID"))
-	}
-	if retryRunID != "" && flags.dryRun {
-		return exitcode.Usage(fmt.Errorf("--retry-posts cannot be used with --dry-run or --no-post"))
-	}
-	if retryRunID != "" && flags.rerun {
-		return exitcode.Usage(fmt.Errorf("--retry-posts cannot be used with --rerun"))
-	}
-	path, err := configPath(opts)
-	if err != nil {
-		return exitcode.AuthConfig(err)
-	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		return cmderr.Config(err)
-	}
-	ref, err := prref.ParseGitHubPullURL(prArg)
-	if err != nil {
-		return exitcode.Usage(err)
-	}
-	profileName, profile, err := config.ResolveProfileForRepository(cfg, opts.Profile, root.ProfileFlagChanged(cmd), config.RepositoryTarget{
-		Host:      ref.Host,
-		Namespace: ref.Owner,
-		Repo:      ref.Repo,
-	})
-	if err != nil {
-		return cmderr.Config(err)
-	}
-	if !prref.SameHost(ref.Host, profile.Git.Host) {
-		return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
-	}
-	runtime, err := factory(cmd, opts, cfg, profile, RuntimeOptions{
-		PRRef:               ref,
-		Retention:           retentionPolicyFromConfig(cfg.Data.Retention),
-		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
-	})
-	if err != nil {
-		return err
-	}
-	if runtime.Cleanup != nil {
-		defer runtime.Cleanup()
-	}
-	if runtime.Responder == nil {
-		return fmt.Errorf("respond: runtime responder is required")
-	}
-	noResolve := flags.noResolveThreads || profile.ReviewPolicy.ResolveThreads == config.ResolveThreadsNever
-	result, err := runtime.Responder.Respond(ctx, threadrespond.Request{
-		PRRef:            ref,
-		PRURL:            prArg,
-		ProfileName:      profileName,
-		Profile:          profile,
-		PostingIdentity:  runtime.PostingIdentity,
-		DryRun:           flags.dryRun,
-		NoResolveThreads: noResolve,
-		Rerun:            flags.rerun,
-		RetryRunID:       retryRunID,
-	})
-	if err != nil {
-		return mapRunError(err)
-	}
-	rendered := newRespondResult(result)
-	if flags.jsonOutput {
-		if err := renderRespondJSON(opts.Stdout, rendered); err != nil {
-			return err
-		}
-	} else {
-		if err := renderRespondText(opts.Stdout, rendered); err != nil {
-			return err
-		}
-	}
-	if result.ExitCode != exitcode.Success {
-		return exitcode.With(result.ExitCode, respondResultError(result))
 	}
 	return nil
 }
@@ -741,144 +629,6 @@ func newReviewLive(result reviewrun.Result) view.ReviewLive {
 	return rendered
 }
 
-type respondRendered struct {
-	Run     view.ReviewRun    `json:"run"`
-	Counts  respondCounts     `json:"counts"`
-	Outbox  view.ReviewOutbox `json:"outbox"`
-	Message string            `json:"message,omitempty"`
-}
-
-type respondCounts struct {
-	Considered int `json:"considered"`
-	Responded  int `json:"responded"`
-	Resolved   int `json:"resolved"`
-	Planned    int `json:"planned"`
-}
-
-func newRespondResult(result threadrespond.Result) respondRendered {
-	outcome := result.Outbox.Outcome.String()
-	if outcome == "" && result.Run.Outcome != nil {
-		outcome = result.Run.Outcome.String()
-	}
-	outboxExitCode := result.Outbox.ExitCode
-	if outboxExitCode == 0 && result.ExitCode != 0 {
-		outboxExitCode = result.ExitCode
-	}
-	responded := countThreadReplies(result.Plan.Actions)
-	resolved := countThreadResolves(result.Plan.Actions)
-	if responded == 0 && resolved == 0 && len(result.PlannedActions) > 0 {
-		responded = countPlannedThreadReplies(result.PlannedActions)
-		resolved = countPlannedThreadResolves(result.PlannedActions)
-	}
-	return respondRendered{
-		Run: view.ReviewRun{
-			RunID:        result.Run.RunID,
-			PRURL:        result.PR.URL,
-			PRKey:        result.PRKey,
-			PostMode:     result.Run.PostMode.String(),
-			Outcome:      outcome,
-			ArtifactPath: result.Run.ArtifactPath,
-			BaseSHA:      result.Run.BaseSHA,
-			HeadSHA:      result.Run.SHA,
-		},
-		Counts: respondCounts{
-			Considered: len(result.EligibleThreads),
-			Responded:  responded,
-			Resolved:   resolved,
-			Planned:    len(result.PlannedActions),
-		},
-		Outbox: view.ReviewOutbox{
-			Outcome:        outcome,
-			ExitCode:       outboxExitCode,
-			Posted:         result.Outbox.Posted,
-			Pending:        result.Outbox.Pending,
-			FailedTerminal: result.Outbox.FailedTerminal,
-			Aborted:        result.Outbox.Aborted,
-		},
-		Message: result.Message,
-	}
-}
-
-func renderRespondJSON(w io.Writer, rendered respondRendered) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(rendered)
-}
-
-func renderRespondText(w io.Writer, rendered respondRendered) error {
-	if _, err := fmt.Fprintf(w, "Run: %s\n", rendered.Run.RunID); err != nil {
-		return err
-	}
-	if rendered.Run.PRURL != "" {
-		if _, err := fmt.Fprintf(w, "PR: %s\n", rendered.Run.PRURL); err != nil {
-			return err
-		}
-	}
-	if _, err := fmt.Fprintf(w, "Outcome: %s\n", rendered.Run.Outcome); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "Threads: considered %d, responded %d, resolved %d\n", rendered.Counts.Considered, rendered.Counts.Responded, rendered.Counts.Resolved); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "Planned actions: %d\n", rendered.Counts.Planned); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "Outbox: posted %d, pending %d, failed %d\n", rendered.Outbox.Posted, rendered.Outbox.Pending, rendered.Outbox.FailedTerminal); err != nil {
-		return err
-	}
-	if rendered.Run.ArtifactPath != "" {
-		if _, err := fmt.Fprintf(w, "Artifacts: %s\n", rendered.Run.ArtifactPath); err != nil {
-			return err
-		}
-	}
-	if strings.TrimSpace(rendered.Message) != "" {
-		if _, err := fmt.Fprintf(w, "Message: %s\n", rendered.Message); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func countThreadReplies(actions []reviewplan.Action) int {
-	var count int
-	for _, action := range actions {
-		if action.Kind == reviewplan.ActionKindThreadReply {
-			count++
-		}
-	}
-	return count
-}
-
-func countThreadResolves(actions []reviewplan.Action) int {
-	var count int
-	for _, action := range actions {
-		if action.Kind == reviewplan.ActionKindResolveThread {
-			count++
-		}
-	}
-	return count
-}
-
-func countPlannedThreadReplies(actions []ledger.PlannedAction) int {
-	var count int
-	for _, action := range actions {
-		if action.Kind == ledger.PlannedActionThreadReply {
-			count++
-		}
-	}
-	return count
-}
-
-func countPlannedThreadResolves(actions []ledger.PlannedAction) int {
-	var count int
-	for _, action := range actions {
-		if action.Kind == ledger.PlannedActionResolveThread {
-			count++
-		}
-	}
-	return count
-}
-
 func liveResultError(result reviewrun.Result) error {
 	if strings.TrimSpace(result.Message) != "" {
 		return errors.New(result.Message)
@@ -887,16 +637,6 @@ func liveResultError(result reviewrun.Result) error {
 		return fmt.Errorf("live review completed with outcome %s", result.Outbox.Outcome)
 	}
 	return fmt.Errorf("live review did not complete")
-}
-
-func respondResultError(result threadrespond.Result) error {
-	if strings.TrimSpace(result.Message) != "" {
-		return errors.New(result.Message)
-	}
-	if result.Outbox.Outcome != "" {
-		return fmt.Errorf("respond completed with outcome %s", result.Outbox.Outcome)
-	}
-	return fmt.Errorf("respond did not complete")
 }
 
 func viewFinding(finding reviewplan.AnchoredFinding) view.ReviewFinding {
@@ -954,6 +694,10 @@ func configPath(opts *root.Options) (string, error) {
 	return config.Path()
 }
 
+func ConfigPath(opts *root.Options) (string, error) {
+	return configPath(opts)
+}
+
 func mapRunError(err error) error {
 	switch {
 	case errors.Is(err, config.ErrInvalid),
@@ -988,6 +732,10 @@ func mapRunError(err error) error {
 	default:
 		return err
 	}
+}
+
+func MapRunError(err error) error {
+	return mapRunError(err)
 }
 
 func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
@@ -1417,6 +1165,10 @@ func retentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.R
 		return datalifecycle.RetentionPolicy{LiveForever: true}
 	}
 	return datalifecycle.RetentionPolicy{LiveMaxAge: time.Duration(maxAgeDays) * 24 * time.Hour}
+}
+
+func RetentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.RetentionPolicy {
+	return retentionPolicyFromConfig(retention)
 }
 
 type reviewRunner struct {

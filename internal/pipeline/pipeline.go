@@ -81,6 +81,8 @@ type Store interface {
 	InsertFinding(context.Context, ledger.Finding) error
 	InsertPlannedAction(context.Context, ledger.PlannedAction) error
 	InsertPlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error
+	ListFindings(context.Context, string) ([]ledger.Finding, error)
+	ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error)
 	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
 }
 
@@ -783,7 +785,14 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		plannedActions = append(plannedActions, planned)
 	}
-	if err := opts.Store.InsertPlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
+	existingFindings, existingActions, hasPersistedPlanning, err := persistedPlanning(ctx, opts.Store, run.RunID)
+	if err != nil {
+		return Result{}, err
+	}
+	if hasPersistedPlanning {
+		ledgerFindings = existingFindings
+		plannedActions = existingActions
+	} else if err := opts.Store.InsertPlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
 		return Result{}, err
 	}
 	result.PlannedActions = plannedActions
@@ -827,7 +836,7 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 		if strings.TrimSpace(run.ArtifactPath) == "" {
 			continue
 		}
-		if !runartifact.HasMarker(run.ArtifactPath, runartifact.KindReview) {
+		if !runartifact.MarkerMatches(run.ArtifactPath, runartifact.KindReview, run.RunID) {
 			continue
 		}
 		if !found || run.Attempt > best.Attempt || (run.Attempt == best.Attempt && run.StartedAt.After(best.StartedAt)) {
@@ -836,6 +845,24 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 		}
 	}
 	return best, found, nil
+}
+
+func persistedPlanning(ctx context.Context, store Store, runID string) ([]ledger.Finding, []ledger.PlannedAction, bool, error) {
+	findings, err := store.ListFindings(ctx, runID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	actions, err := store.ListPlannedActions(ctx, runID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if len(findings) == 0 && len(actions) == 0 {
+		return nil, nil, false, nil
+	}
+	if len(actions) == 0 {
+		return nil, nil, false, fmt.Errorf("pipeline: persisted planning for run %s has findings but no planned actions", runID)
+	}
+	return findings, actions, true, nil
 }
 
 func (c preparedSelectionContext) reviewResult() Result {

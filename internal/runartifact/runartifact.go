@@ -4,6 +4,7 @@ package runartifact
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,8 @@ var markerFileByKind = map[string]string{
 	KindReview:         "review-run.json",
 	KindThreadResponse: "thread-response-run.json",
 }
+
+var ErrMarkerInvalid = errors.New("runartifact: marker invalid")
 
 // Paths contains per-run artifact paths.
 // The artifact root owns these fixed child names, so methods on this type return
@@ -173,7 +176,8 @@ func dossierChildPath(dir, name string) (string, error) {
 	return filepath.Join(dir, name), nil
 }
 
-type marker struct {
+// Marker identifies the lifecycle kind attached to one run artifact root.
+type Marker struct {
 	SchemaVersion int    `json:"schema_version"`
 	Kind          string `json:"kind"`
 	RunID         string `json:"run_id"`
@@ -184,7 +188,7 @@ func WriteMarker(artifactPath, kind, runID string) error {
 	if _, err := markerFile(kind); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(marker{
+	data, err := json.MarshalIndent(Marker{
 		SchemaVersion: markerSchema,
 		Kind:          kind,
 		RunID:         runID,
@@ -195,11 +199,34 @@ func WriteMarker(artifactPath, kind, runID string) error {
 	return llmlifecycle.WriteFileAtomic(MarkerPath(artifactPath, kind), append(data, '\n'))
 }
 
-// HasMarker reports whether an artifact root carries the requested run-kind
-// marker.
-func HasMarker(artifactPath, kind string) bool {
-	info, err := os.Stat(MarkerPath(artifactPath, kind))
-	return err == nil && !info.IsDir()
+// MarkerMatches reports whether an artifact root carries a valid marker for
+// the expected run kind and run ID.
+func MarkerMatches(artifactPath, kind, runID string) bool {
+	found, err := ReadMarker(artifactPath, kind)
+	return err == nil && found.Kind == kind && found.RunID == runID
+}
+
+// ReadMarker reads and validates the marker for the requested run kind.
+func ReadMarker(artifactPath, kind string) (Marker, error) {
+	path := MarkerPath(artifactPath, kind)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Marker{}, err
+	}
+	var found Marker
+	if err := json.Unmarshal(data, &found); err != nil {
+		return Marker{}, fmt.Errorf("%w: %s: %w", ErrMarkerInvalid, path, err)
+	}
+	if found.SchemaVersion != markerSchema {
+		return Marker{}, fmt.Errorf("%w: %s schema_version %d", ErrMarkerInvalid, path, found.SchemaVersion)
+	}
+	if found.Kind != kind {
+		return Marker{}, fmt.Errorf("%w: %s kind %q", ErrMarkerInvalid, path, found.Kind)
+	}
+	if strings.TrimSpace(found.RunID) == "" {
+		return Marker{}, fmt.Errorf("%w: %s run_id is required", ErrMarkerInvalid, path)
+	}
+	return found, nil
 }
 
 // MarkerPath returns the marker path for an artifact root and run kind.

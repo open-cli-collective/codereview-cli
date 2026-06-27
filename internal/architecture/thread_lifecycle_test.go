@@ -14,8 +14,11 @@ func TestProviderWritesGoThroughPostingBoundary(t *testing.T) {
 	repoRoot := repoRootFromTest(t)
 	allowedDirs := []string{
 		"internal/outbox",
-		"internal/cmd/reviewcmd",
 		"internal/gitprovider",
+	}
+	allowedFiles := map[string]bool{
+		"internal/cmd/reviewcmd/provider_progress.go": true,
+		"internal/cmd/reviewcmd/runtime_provider.go":  true,
 	}
 	writeMethods := map[string]bool{
 		"PostInlineComment": true,
@@ -42,7 +45,7 @@ func TestProviderWritesGoThroughPostingBoundary(t *testing.T) {
 			return nil
 		}
 		rel := filepath.ToSlash(mustRel(t, repoRoot, path))
-		if pathInAllowedDirs(rel, allowedDirs) {
+		if pathInAllowedDirs(rel, allowedDirs) || allowedFiles[rel] {
 			return nil
 		}
 

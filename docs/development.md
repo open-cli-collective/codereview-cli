@@ -7,8 +7,9 @@ Collective standards and automation remain canonical in their own repositories.
 
 codereview-cli is the Open CLI Collective code-review CLI and ships the `cr`
 binary. It provides configuration and credential commands, trusted-agent
-inspection, dry-run and live pull-request review orchestration, named LLM
-session management, and local data lifecycle commands.
+inspection, dry-run and live pull-request review orchestration, inline thread
+response handling through `cr respond`, named LLM session management, and local
+data lifecycle commands.
 
 The current Go code is a Cobra command tree in `internal/cmd/*` with a thin
 `cmd/cr` entrypoint, shared exit-code mapping in `internal/cmd/exitcode`, and

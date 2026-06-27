@@ -424,6 +424,79 @@ func TestDryRunResumeLoadsCompletedTasksAndRerunsFailedTaskOnly(t *testing.T) {
 	}
 }
 
+func TestDryRunResumeReusesPersistedPlanningRows(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+
+	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
+	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	firstAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	firstAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	failingComplete := &completeFailingStore{Store: store, err: errors.New("complete failed after planning")}
+	_, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         firstAdapter,
+		Store:           failingComplete,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-planning-resume" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err == nil || !strings.Contains(err.Error(), "complete failed after planning") {
+		t.Fatalf("first DryRun error = %v, want complete failure", err)
+	}
+	actions, err := store.ListPlannedActions(ctx, "run-planning-resume")
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	if len(actions) == 0 {
+		t.Fatal("planned actions len = 0, want persisted planning rows")
+	}
+
+	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	result, err := dryRunForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  secondAdapter,
+		Store:    store,
+		Layout:   layout,
+		Now:      fixedNow,
+		NewRunID: func() string {
+			t.Fatal("NewRunID called despite resumable post-planning dry-run")
+			return "unexpected"
+		},
+		NewSessionRowID: sequence("resume-session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("second DryRun: %v", err)
+	}
+	if result.Run.RunID != "run-planning-resume" {
+		t.Fatalf("second result run = %#v, want resumed dry-run", result.Run)
+	}
+	stored, err := store.GetRun(ctx, "run-planning-resume")
+	if err != nil {
+		t.Fatalf("GetRun second: %v", err)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeDryRun {
+		t.Fatalf("stored second run outcome = %#v, want dry_run", stored.Outcome)
+	}
+	if len(secondAdapter.Requests()) != 0 {
+		t.Fatalf("second adapter starts = %#v, want cached LLM tasks", secondAdapter.Requests())
+	}
+	if len(result.PlannedActions) != len(actions) {
+		t.Fatalf("result planned actions len = %d, want persisted %d", len(result.PlannedActions), len(actions))
+	}
+}
+
 func TestDryRunRerunBypassesIncompleteRunAttempt(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -5621,6 +5694,15 @@ func (s *failingStore) InsertPlanningResult(ctx context.Context, findings []ledg
 	return s.Store.InsertPlanningResult(ctx, findings, actions)
 }
 
+type completeFailingStore struct {
+	*ledger.Store
+	err error
+}
+
+func (s *completeFailingStore) CompleteRun(context.Context, string, ledger.Outcome, time.Time) error {
+	return s.err
+}
+
 type fileKey struct {
 	gitRef string
 	path   string
@@ -6812,6 +6894,14 @@ func (noopStore) InsertPlannedAction(context.Context, ledger.PlannedAction) erro
 
 func (noopStore) InsertPlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error {
 	return nil
+}
+
+func (noopStore) ListFindings(context.Context, string) ([]ledger.Finding, error) {
+	return nil, nil
+}
+
+func (noopStore) ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error) {
+	return nil, nil
 }
 
 func (noopStore) CompleteRun(context.Context, string, ledger.Outcome, time.Time) error {
