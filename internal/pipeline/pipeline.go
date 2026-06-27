@@ -1024,6 +1024,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		PinnedReview:          reviewCtx.pinnedReview,
 		ChangedFiles:          parsed.Patches,
 		Threads:               threads,
+		ThreadContext:         threadContext,
 		Reviews:               reviews,
 		IssueComments:         issueComments,
 		Catalog:               catalog,
@@ -2612,9 +2613,14 @@ func reviewerPromptInputFromArtifacts(paths ArtifactPaths, pr gitprovider.PR, se
 
 func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
 	summaryByAnchor := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
+	summaryByThreadID := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
 	for _, thread := range summary.InlineThreads {
-		key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
-		summaryByAnchor[key] = thread
+		if strings.TrimSpace(thread.ThreadID) != "" {
+			summaryByThreadID[strings.TrimSpace(thread.ThreadID)] = thread
+		} else {
+			key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
+			summaryByAnchor[key] = thread
+		}
 	}
 	out := make([]selectionThreadPrompt, 0, len(threads))
 	for _, thread := range threads {
@@ -2626,7 +2632,10 @@ func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierD
 			AnchorKind: string(thread.SubjectType),
 			Resolved:   thread.Resolved,
 		}
-		if summarized, ok := summaryByAnchor[dossierInlineThreadAnchorKey(thread.Path, string(thread.Side), thread.Line, string(thread.SubjectType))]; ok {
+		if summarized, ok := summaryByThreadID[string(thread.ID)]; ok {
+			promptThread.Status = summarized.Status
+			promptThread.Summary = summarized.Summary
+		} else if summarized, ok := summaryByAnchor[dossierInlineThreadAnchorKey(thread.Path, string(thread.Side), thread.Line, string(thread.SubjectType))]; ok {
 			promptThread.Status = summarized.Status
 			promptThread.Summary = summarized.Summary
 		} else if len(thread.Comments) > 0 {
@@ -2639,9 +2648,14 @@ func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierD
 
 func selectionThreadPromptsFromContext(threads []threadcontext.Thread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
 	summaryByAnchor := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
+	summaryByThreadID := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
 	for _, thread := range summary.InlineThreads {
-		key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
-		summaryByAnchor[key] = thread
+		if strings.TrimSpace(thread.ThreadID) != "" {
+			summaryByThreadID[strings.TrimSpace(thread.ThreadID)] = thread
+		} else {
+			key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
+			summaryByAnchor[key] = thread
+		}
 	}
 	out := make([]selectionThreadPrompt, 0, len(threads))
 	for _, thread := range threads {
@@ -2653,9 +2667,12 @@ func selectionThreadPromptsFromContext(threads []threadcontext.Thread, summary d
 			AnchorKind: string(thread.Anchor.SubjectType),
 			Resolved:   thread.Resolved,
 		}
-		if thread.ResolvedSummary != nil {
+		if settled, ok := thread.EffectiveSettledSummary(); ok {
 			promptThread.Status = "settled"
-			promptThread.Summary = singleLineExcerpt(thread.ResolvedSummary.Body, dossierFinalExcerptRunes)
+			promptThread.Summary = singleLineExcerpt(settled.Body, dossierFinalExcerptRunes)
+		} else if summarized, ok := summaryByThreadID[string(thread.ID)]; ok {
+			promptThread.Status = summarized.Status
+			promptThread.Summary = summarized.Summary
 		} else if summarized, ok := summaryByAnchor[dossierInlineThreadAnchorKey(thread.Anchor.Path, string(thread.Anchor.Side), thread.Anchor.Line, string(thread.Anchor.SubjectType))]; ok {
 			promptThread.Status = summarized.Status
 			promptThread.Summary = summarized.Summary
@@ -2992,6 +3009,7 @@ type dossierInputs struct {
 	PinnedReview          bool
 	ChangedFiles          []FilePatch
 	Threads               []gitprovider.InlineThread
+	ThreadContext         []threadcontext.Thread
 	Reviews               []gitprovider.Review
 	IssueComments         []gitprovider.IssueComment
 	Catalog               agents.Catalog
@@ -3030,15 +3048,23 @@ type dossierThreadCommentArtifact struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
+type dossierCachedThreadSummaryArtifact struct {
+	Source        string `json:"source,omitempty"`
+	ThreadID      string `json:"thread_id,omitempty"`
+	Body          string `json:"body,omitempty"`
+	LastCommentID string `json:"last_comment_id,omitempty"`
+}
+
 type dossierInlineThreadArtifact struct {
-	ID         string                         `json:"id"`
-	Path       string                         `json:"path,omitempty"`
-	Side       string                         `json:"side,omitempty"`
-	Line       int                            `json:"line,omitempty"`
-	AnchorKind string                         `json:"anchor_kind,omitempty"`
-	Resolved   bool                           `json:"resolved"`
-	CommitSHA  string                         `json:"commit_sha,omitempty"`
-	Comments   []dossierThreadCommentArtifact `json:"comments,omitempty"`
+	ID            string                              `json:"id"`
+	Path          string                              `json:"path,omitempty"`
+	Side          string                              `json:"side,omitempty"`
+	Line          int                                 `json:"line,omitempty"`
+	AnchorKind    string                              `json:"anchor_kind,omitempty"`
+	Resolved      bool                                `json:"resolved"`
+	CommitSHA     string                              `json:"commit_sha,omitempty"`
+	CachedSummary *dossierCachedThreadSummaryArtifact `json:"cached_summary,omitempty"`
+	Comments      []dossierThreadCommentArtifact      `json:"comments,omitempty"`
 }
 
 type dossierRepoContextArtifact struct {
@@ -3088,6 +3114,7 @@ type dossierTopLevelCommentSummary struct {
 }
 
 type dossierInlineThreadSummaryArtifact struct {
+	ThreadID        string `json:"thread_id,omitempty"`
 	Path            string `json:"path,omitempty"`
 	Side            string `json:"side,omitempty"`
 	Line            int    `json:"line,omitempty"`
@@ -3106,9 +3133,11 @@ type dossierDiscussionPromptInput struct {
 }
 
 type dossierDiscussionPromptData struct {
-	Input             dossierDiscussionPromptInput
-	SourceFingerprint string
-	InlineThreadMap   map[string]dossierInlineThreadPromptData
+	Input                 dossierDiscussionPromptInput
+	SourceFingerprint     string
+	InlineThreadMap       map[string]dossierInlineThreadPromptData
+	InlineThreadIDMap     map[string]dossierInlineThreadPromptData
+	CachedInlineSummaries []dossierInlineThreadSummaryArtifact
 }
 
 type dossierInlineThreadPromptData struct {
@@ -3123,6 +3152,7 @@ type dossierPromptTopLevelComment struct {
 }
 
 type dossierPromptInlineThread struct {
+	ThreadID        string                       `json:"thread_id,omitempty"`
 	Path            string                       `json:"path,omitempty"`
 	Side            string                       `json:"side,omitempty"`
 	Line            int                          `json:"line,omitempty"`
@@ -3218,6 +3248,8 @@ const (
 	dossierSummaryMaxInlineThreads     = 20
 	dossierSummaryMaxThreadComments    = 5
 	dossierSummaryExcerptRunes         = 480
+	dossierCachedSummaryProviderSource = "provider_resolved"
+	dossierCachedSummaryCRSource       = "cr_settled"
 	workbenchMetadataSchemaVersion     = 1
 	workbenchCheckoutModeArtifactClone = "artifact-clone"
 )
@@ -3761,6 +3793,9 @@ func writeRawDossierArtifacts(paths ArtifactPaths, in dossierInputs) error {
 	changedFiles := dossierChangedFiles(in.ChangedFiles)
 	topLevelComments := dossierTopLevelComments(in.IssueComments, in.Reviews)
 	inlineThreads := dossierInlineThreads(in.Threads)
+	if len(in.ThreadContext) > 0 {
+		inlineThreads = dossierInlineThreadsFromContext(in.ThreadContext)
+	}
 	repoContext := dossierRepoContextArtifact{
 		RepoInfo:               in.Catalog.Repo,
 		Sources:                append([]agents.SourceInfo(nil), in.Catalog.Sources...),
@@ -3852,6 +3887,7 @@ func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossier
 			SourceFingerprint:    promptData.SourceFingerprint,
 			TopLevelOmitted:      promptData.Input.TopLevelCommentsOmitted,
 			InlineThreadsOmitted: promptData.Input.InlineThreadsOmitted,
+			InlineThreads:        append([]dossierInlineThreadSummaryArtifact(nil), promptData.CachedInlineSummaries...),
 		}, nil
 	}
 	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
@@ -3897,6 +3933,7 @@ func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossier
 	}
 	summary.TopLevelOmitted = promptData.Input.TopLevelCommentsOmitted
 	summary.InlineThreadsOmitted = promptData.Input.InlineThreadsOmitted
+	summary.InlineThreads = mergeDossierInlineThreadSummaries(summary.InlineThreads, promptData.CachedInlineSummaries)
 	return summary, nil
 }
 
@@ -3992,7 +4029,7 @@ func buildDossierDiscussionSummaryPrompt(input dossierDiscussionPromptData) (str
 				"Preserve file/line/side/anchor context for inline threads.",
 			},
 			"top_level_comments_fields": []string{"kind", "author", "summary"},
-			"inline_thread_fields":      []string{"path", "line", "side", "anchor_kind", "resolved", "status", "summary"},
+			"inline_thread_fields":      []string{"thread_id", "path", "line", "side", "anchor_kind", "resolved", "status", "summary"},
 			"inline_thread_statuses":    []string{"settled", "unresolved", "noted"},
 		},
 		"discussion": input.Input,
@@ -4008,6 +4045,17 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 	filteredTopLevel := reviewerFacingTopLevelComments(discussion.TopLevelComments)
 	input := dossierDiscussionPromptInput{}
 	inlineThreadMap := make(map[string]dossierInlineThreadPromptData, len(discussion.InlineThreads))
+	inlineThreadIDMap := make(map[string]dossierInlineThreadPromptData, len(discussion.InlineThreads))
+	cachedSummaries := make([]dossierInlineThreadSummaryArtifact, 0)
+	uncachedThreads := make([]dossierInlineThreadArtifact, 0, len(discussion.InlineThreads))
+	for _, thread := range discussion.InlineThreads {
+		if cached, ok := cachedDossierInlineThreadSummary(thread); ok {
+			cachedSummaries = append(cachedSummaries, cached)
+			inlineThreadIDMap[thread.ID] = dossierInlineThreadPromptData{Thread: thread}
+			continue
+		}
+		uncachedThreads = append(uncachedThreads, thread)
+	}
 	for _, comment := range capTopLevelCommentsForSummary(filteredTopLevel) {
 		body := singleLineExcerpt(comment.Body, dossierSummaryExcerptRunes)
 		if shouldExcludeDiscussionSummaryText(body) {
@@ -4022,8 +4070,9 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 	if len(filteredTopLevel) > dossierSummaryMaxTopLevel {
 		input.TopLevelCommentsOmitted = len(filteredTopLevel) - dossierSummaryMaxTopLevel
 	}
-	for _, thread := range capInlineThreadsForSummary(discussion.InlineThreads) {
+	for _, thread := range capInlineThreadsForSummary(uncachedThreads) {
 		promptThread := dossierPromptInlineThread{
+			ThreadID:   thread.ID,
 			Path:       thread.Path,
 			Side:       thread.Side,
 			Line:       thread.Line,
@@ -4044,13 +4093,19 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 			promptThread.CommentsOmitted = len(thread.Comments) - dossierSummaryMaxThreadComments
 		}
 		input.InlineThreads = append(input.InlineThreads, promptThread)
+		if strings.TrimSpace(thread.ID) != "" {
+			inlineThreadIDMap[thread.ID] = dossierInlineThreadPromptData{
+				Thread:          thread,
+				CommentsOmitted: promptThread.CommentsOmitted,
+			}
+		}
 		inlineThreadMap[dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)] = dossierInlineThreadPromptData{
 			Thread:          thread,
 			CommentsOmitted: promptThread.CommentsOmitted,
 		}
 	}
-	if len(discussion.InlineThreads) > dossierSummaryMaxInlineThreads {
-		input.InlineThreadsOmitted = len(discussion.InlineThreads) - dossierSummaryMaxInlineThreads
+	if len(uncachedThreads) > dossierSummaryMaxInlineThreads {
+		input.InlineThreadsOmitted = len(uncachedThreads) - dossierSummaryMaxInlineThreads
 	}
 	// Intentionally fingerprint the full reviewer-facing discussion, not the
 	// capped prompt projection, so omitted content changes still invalidate the
@@ -4071,10 +4126,70 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 		return dossierDiscussionPromptData{}, fmt.Errorf("pipeline: marshal dossier discussion source fingerprint: %w", err)
 	}
 	return dossierDiscussionPromptData{
-		Input:             input,
-		SourceFingerprint: sha256Hex(data),
-		InlineThreadMap:   inlineThreadMap,
+		Input:                 input,
+		SourceFingerprint:     sha256Hex(data),
+		InlineThreadMap:       inlineThreadMap,
+		InlineThreadIDMap:     inlineThreadIDMap,
+		CachedInlineSummaries: cachedSummaries,
 	}, nil
+}
+
+func cachedDossierInlineThreadSummary(thread dossierInlineThreadArtifact) (dossierInlineThreadSummaryArtifact, bool) {
+	if thread.CachedSummary == nil {
+		return dossierInlineThreadSummaryArtifact{}, false
+	}
+	body := strings.TrimSpace(thread.CachedSummary.Body)
+	if body == "" || shouldExcludeDiscussionSummaryText(body) {
+		return dossierInlineThreadSummaryArtifact{}, false
+	}
+	threadID := strings.TrimSpace(thread.CachedSummary.ThreadID)
+	if threadID == "" {
+		threadID = strings.TrimSpace(thread.ID)
+	}
+	return dossierInlineThreadSummaryArtifact{
+		ThreadID:   threadID,
+		Path:       thread.Path,
+		Side:       thread.Side,
+		Line:       thread.Line,
+		AnchorKind: thread.AnchorKind,
+		Resolved:   thread.Resolved,
+		Status:     "settled",
+		Summary:    body,
+	}, true
+}
+
+func mergeDossierInlineThreadSummaries(generated, cached []dossierInlineThreadSummaryArtifact) []dossierInlineThreadSummaryArtifact {
+	if len(cached) == 0 {
+		return generated
+	}
+	out := append([]dossierInlineThreadSummaryArtifact(nil), generated...)
+	indexByThreadID := make(map[string]int, len(out)+len(cached))
+	for i, summary := range out {
+		if strings.TrimSpace(summary.ThreadID) != "" {
+			indexByThreadID[strings.TrimSpace(summary.ThreadID)] = i
+		}
+	}
+	for _, summary := range cached {
+		threadID := strings.TrimSpace(summary.ThreadID)
+		if threadID != "" {
+			if i, ok := indexByThreadID[threadID]; ok {
+				out[i] = summary
+				continue
+			}
+			indexByThreadID[threadID] = len(out)
+		}
+		out = append(out, summary)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Path == out[j].Path {
+			if out[i].Line == out[j].Line {
+				return out[i].ThreadID < out[j].ThreadID
+			}
+			return out[i].Line < out[j].Line
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out
 }
 
 func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPromptData) (dossierDiscussionSummaryArtifact, error) {
@@ -4099,6 +4214,7 @@ func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPro
 		}
 	}
 	for i := range decoded.InlineThreads {
+		decoded.InlineThreads[i].ThreadID = strings.TrimSpace(decoded.InlineThreads[i].ThreadID)
 		decoded.InlineThreads[i].Path = strings.TrimSpace(decoded.InlineThreads[i].Path)
 		decoded.InlineThreads[i].Side = strings.TrimSpace(decoded.InlineThreads[i].Side)
 		decoded.InlineThreads[i].AnchorKind = strings.TrimSpace(decoded.InlineThreads[i].AnchorKind)
@@ -4115,11 +4231,15 @@ func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPro
 		default:
 			return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d].status = %q, want settled|unresolved|noted", i, decoded.InlineThreads[i].Status)
 		}
-		anchorKey := dossierInlineThreadAnchorKey(decoded.InlineThreads[i].Path, decoded.InlineThreads[i].Side, decoded.InlineThreads[i].Line, decoded.InlineThreads[i].AnchorKind)
-		expected, ok := promptData.InlineThreadMap[anchorKey]
+		expected, ok := promptData.InlineThreadIDMap[decoded.InlineThreads[i].ThreadID]
 		if !ok {
-			return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d] anchor %q is not present in the source discussion", i, anchorKey)
+			anchorKey := dossierInlineThreadAnchorKey(decoded.InlineThreads[i].Path, decoded.InlineThreads[i].Side, decoded.InlineThreads[i].Line, decoded.InlineThreads[i].AnchorKind)
+			expected, ok = promptData.InlineThreadMap[anchorKey]
+			if !ok {
+				return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d] anchor %q is not present in the source discussion", i, anchorKey)
+			}
 		}
+		decoded.InlineThreads[i].ThreadID = expected.Thread.ID
 		decoded.InlineThreads[i].Path = expected.Thread.Path
 		decoded.InlineThreads[i].Side = expected.Thread.Side
 		decoded.InlineThreads[i].Line = expected.Thread.Line
@@ -4351,6 +4471,65 @@ func dossierInlineThreads(threads []gitprovider.InlineThread) []dossierInlineThr
 			CommitSHA:  thread.CommitSHA,
 			Comments:   comments,
 		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Path == out[j].Path {
+			if out[i].Line == out[j].Line {
+				return out[i].ID < out[j].ID
+			}
+			return out[i].Line < out[j].Line
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out
+}
+
+func dossierInlineThreadsFromContext(threads []threadcontext.Thread) []dossierInlineThreadArtifact {
+	out := make([]dossierInlineThreadArtifact, 0, len(threads))
+	for _, thread := range threads {
+		comments := make([]dossierThreadCommentArtifact, 0, len(thread.Comments))
+		for _, comment := range thread.Comments {
+			comments = append(comments, dossierThreadCommentArtifact{
+				URL:       comment.URL,
+				Author:    comment.Author.Login,
+				Body:      strings.TrimSpace(comment.Body),
+				CommitSHA: comment.Anchor.CommitSHA,
+				CreatedAt: comment.CreatedAt,
+				UpdatedAt: comment.UpdatedAt,
+			})
+		}
+		sort.SliceStable(comments, func(i, j int) bool {
+			if comments[i].CreatedAt.Equal(comments[j].CreatedAt) {
+				if comments[i].URL == comments[j].URL {
+					return comments[i].Body < comments[j].Body
+				}
+				return comments[i].URL < comments[j].URL
+			}
+			return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+		})
+		artifact := dossierInlineThreadArtifact{
+			ID:         string(thread.ID),
+			Path:       thread.Anchor.Path,
+			Side:       string(thread.Anchor.Side),
+			Line:       thread.Anchor.Line,
+			AnchorKind: string(thread.Anchor.SubjectType),
+			Resolved:   thread.Resolved,
+			CommitSHA:  thread.Anchor.CommitSHA,
+			Comments:   comments,
+		}
+		if summary, ok := thread.EffectiveSettledSummary(); ok {
+			source := dossierCachedSummaryCRSource
+			if thread.ResolvedSummary != nil && summary == thread.ResolvedSummary {
+				source = dossierCachedSummaryProviderSource
+			}
+			artifact.CachedSummary = &dossierCachedThreadSummaryArtifact{
+				Source:        source,
+				ThreadID:      string(summary.ThreadID),
+				Body:          strings.TrimSpace(summary.Body),
+				LastCommentID: string(summary.LastCommentID),
+			}
+		}
+		out = append(out, artifact)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Path == out[j].Path {

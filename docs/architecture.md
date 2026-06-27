@@ -82,18 +82,22 @@ data. The intended decomposition is:
 
 - `internal/threadcontext` normalizes `gitprovider.InlineThread`, detects
   codereview-authored finding threads, detects latest human replies, strips
-  shared markers, collapses resolved threads to the latest sanitized comment,
-  and produces file-scoped reviewer context.
+  shared markers, collapses provider-resolved threads to the latest sanitized
+  comment, recognizes CR-authored settled summary replies when provider
+  resolution is unavailable, and produces file-scoped reviewer context.
 - `internal/threadanalysis` accepts normalized thread context and returns
   reusable domain decisions: thread ID, decision, reply body, summary, resolve
   flag, and rationale.
 
-Resolved inline threads should not be reprocessed as full conversations on
-every review. Their durable context is the latest sanitized comment on the
-resolved thread, with marker metadata retained when the comment contains a
-codereview thread-summary marker. Reviewer prompts should receive compact
-file-scoped summaries so agents avoid re-raising issues that have already been
-discussed and resolved.
+Settled inline threads should not be reprocessed as full conversations on every
+review. Provider-resolved context is the latest sanitized comment on a thread
+whose provider state is resolved. CR-settled context is the latest CR-authored
+inline reply carrying a valid `codereview:thread-summary` marker when no newer
+human reply follows it, even if the provider still reports the thread as
+unresolved. Reviewer prompts should receive compact file-scoped summaries for
+both sources so agents avoid re-raising issues that have already been discussed
+and settled, while command output keeps provider resolution distinct from
+CR-settled cache metadata.
 
 `cr review` and `cr respond` should share the same normalization, filtering,
 model resolution, LLM execution, and action-planning components. `cr respond`

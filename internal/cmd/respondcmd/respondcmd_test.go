@@ -55,7 +55,7 @@ func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 		t.Fatal("runtime cleanup was not called")
 	}
 	text := out.String()
-	if !strings.Contains(text, "Threads: considered 1, responded 1, resolved 1") || !strings.Contains(text, "Planned actions: 2") {
+	if !strings.Contains(text, "Threads: considered 1, responded 1, provider resolved 0 (resolve planned 1, failed 0)") || !strings.Contains(text, "Planned actions: 2") {
 		t.Fatalf("stdout = %q, want respond summary", text)
 	}
 }
@@ -82,7 +82,7 @@ func TestRespondRetryPostsFlagCallsResponder(t *testing.T) {
 	if responder.requests[0].DryRun {
 		t.Fatalf("respond retry request = %#v, want live retry", responder.requests[0])
 	}
-	if text := out.String(); !strings.Contains(text, "responded 1, resolved 1") || !strings.Contains(text, "Planned actions: 2") {
+	if text := out.String(); !strings.Contains(text, "responded 1, provider resolved 0 (resolve planned 1, failed 0)") || !strings.Contains(text, "Planned actions: 2") {
 		t.Fatalf("stdout = %q, want retry counts from planned actions", text)
 	}
 }
@@ -128,7 +128,10 @@ func TestRespondJSONRendersStableShape(t *testing.T) {
 		decoded.Run.HeadSHA != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
 		decoded.Counts.Considered != 1 ||
 		decoded.Counts.Responded != 1 ||
-		decoded.Counts.Resolved != 1 ||
+		decoded.Counts.Resolved != 0 ||
+		decoded.Counts.ProviderResolved != 0 ||
+		decoded.Counts.ResolvePlanned != 1 ||
+		decoded.Counts.ResolveFailed != 0 ||
 		decoded.Counts.Planned != 2 ||
 		decoded.Outbox.Outcome != "comment" ||
 		decoded.Outbox.ExitCode != 0 ||
@@ -137,6 +140,28 @@ func TestRespondJSONRendersStableShape(t *testing.T) {
 		decoded.Outbox.FailedTerminal != 0 ||
 		decoded.Outbox.Aborted {
 		t.Fatalf("decoded json = %#v, want response summary", decoded)
+	}
+}
+
+func TestRespondRendersFailedProviderResolveSeparately(t *testing.T) {
+	result := testThreadRespondResult(ledger.OutcomeComment)
+	result.PlannedActions[0].Status = ledger.PlannedActionPosted
+	result.PlannedActions[1].Status = ledger.PlannedActionFailedTerminal
+	result.Outbox = outbox.Result{Outcome: ledger.OutcomeComment, ExitCode: 1, Posted: 1, FailedTerminal: 1}
+	result.ExitCode = 1
+	result.Message = "resolveReviewThread permission denied"
+	responder := &fakeResponder{result: result}
+	cmd, out := newTestCommand(t, testConfig(), fakeFactory(responder))
+
+	err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
+	if err == nil {
+		t.Fatal("Execute respond error = nil, want non-zero result error")
+	}
+	text := out.String()
+	if !strings.Contains(text, "provider resolved 0 (resolve planned 1, failed 1)") ||
+		!strings.Contains(text, "Outbox: posted 1, pending 0, failed 1") ||
+		!strings.Contains(text, "Message: resolveReviewThread permission denied") {
+		t.Fatalf("stdout = %q, want provider resolve failure called out", text)
 	}
 }
 
