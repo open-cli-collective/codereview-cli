@@ -17,14 +17,13 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
-	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
-	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -66,39 +65,19 @@ comments ask for override approval.
 an existing run and does not check existing approvals or approval overrides.`
 
 // Runner executes the configured review pipeline.
-type Runner interface {
-	DryRun(context.Context, pipeline.Request) (pipeline.Result, error)
-	Live(context.Context, pipeline.Request, reviewrun.Flags) (reviewrun.Result, error)
-}
+type Runner = cmdruntime.Runner
 
 // ResponseRunner executes response-only thread lifecycle runs.
-type ResponseRunner interface {
-	Respond(context.Context, threadrespond.Request) (threadrespond.Result, error)
-}
+type ResponseRunner = cmdruntime.ResponseRunner
 
 // Runtime contains per-command dependencies that need cleanup after a run.
-type Runtime struct {
-	Runner          Runner
-	Responder       ResponseRunner
-	PostingIdentity gitprovider.Identity
-	Cleanup         func()
-}
+type Runtime = cmdruntime.Runtime
 
 // RuntimeOptions carries command flags that affect runtime construction.
-type RuntimeOptions struct {
-	MaxAgents                         int
-	MaxConcurrency                    int
-	PRRef                             gitprovider.PRRef
-	RequireOpinionatedReviewAuthority bool
-	Retention                         datalifecycle.RetentionPolicy
-	RetentionManualOnly               bool
-	AutoUnlockWorkbenchOnExit         bool
-	ResolveRepoRoot                   func(context.Context) (string, error)
-	GitCommand                        func(context.Context, string, ...string) ([]byte, error)
-}
+type RuntimeOptions = cmdruntime.Options
 
-// RuntimeFactory builds the concrete runtime used by `cr review`.
-type RuntimeFactory func(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error)
+// RuntimeFactory builds the concrete runtime used by review lifecycle commands.
+type RuntimeFactory = cmdruntime.Factory
 
 var (
 	newGitProvider = func(git config.GitConfig, store githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
@@ -138,6 +117,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	RegisterWithFactory(rootCmd, opts, newRuntime)
 }
 
+// NewRuntime builds the concrete runtime used by review lifecycle commands.
 func NewRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 	return newRuntime(cmd, opts, cfg, profile, runtimeOpts)
 }
@@ -287,7 +267,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 
 	logger := newProgressLogger(opts)
 	configSpan := logger.Start("review", "load_config", "config")
-	path, err := configPath(opts)
+	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
 		return exitcode.AuthConfig(endProgressSpan(configSpan, err))
 	}
@@ -321,7 +301,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		MaxConcurrency:                    flags.maxConcurrency,
 		PRRef:                             ref,
 		RequireOpinionatedReviewAuthority: !flags.dryRun,
-		Retention:                         retentionPolicyFromConfig(cfg.Data.Retention),
+		Retention:                         cmdruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 	}
 	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
@@ -369,7 +349,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	execSpan := logger.Start("review", "execute_dry_run", "pr")
 	result, err := runtime.Runner.DryRun(ctx, pipelineReq)
 	if err != nil {
-		return endProgressSpan(execSpan, mapRunError(err))
+		return endProgressSpan(execSpan, cmdruntime.MapRunError(err))
 	}
 	execSpan.End(nil)
 	renderSpan := logger.Start("review", "render_result", "stdout")
@@ -439,7 +419,7 @@ func runLive(ctx context.Context, logger *progress.Logger, opts *root.Options, f
 	execSpan := logger.Start("review", "execute_live", "pr")
 	result, err := runner.Live(ctx, req, reviewrun.Flags{Rerun: flags.rerun, RetryPosts: flags.retryPosts})
 	if err != nil {
-		return endProgressSpan(execSpan, mapRunError(err))
+		return endProgressSpan(execSpan, cmdruntime.MapRunError(err))
 	}
 	execSpan.End(nil)
 	renderSpan := logger.Start("review", "render_result", "stdout")
@@ -687,57 +667,6 @@ func viewAction(action reviewplan.Action, planned ledger.PlannedAction) (view.Re
 	return out, nil
 }
 
-func configPath(opts *root.Options) (string, error) {
-	if opts != nil && opts.ConfigPath != "" {
-		return opts.ConfigPath, nil
-	}
-	return config.Path()
-}
-
-func ConfigPath(opts *root.Options) (string, error) {
-	return configPath(opts)
-}
-
-func mapRunError(err error) error {
-	switch {
-	case errors.Is(err, config.ErrInvalid),
-		errors.Is(err, config.ErrNotConfigured),
-		errors.Is(err, config.ErrProfileNotFound),
-		errors.Is(err, config.ErrSecretsProfileNotFound),
-		errors.Is(err, config.ErrUnsupported):
-		return cmderr.Config(err)
-	case errors.Is(err, agents.ErrUnsafeSource):
-		return exitcode.Usage(err)
-	case errors.Is(err, gitprovider.ErrAuth),
-		errors.Is(err, gitprovider.ErrPermission),
-		errors.Is(err, gitprovider.ErrIneligibleReviewAuthority),
-		errors.Is(err, gitprovider.ErrRetryable),
-		errors.Is(err, gitprovider.ErrNotFound),
-		errors.Is(err, gitprovider.ErrConflict),
-		errors.Is(err, gitprovider.ErrStaleSHA),
-		errors.Is(err, gitprovider.ErrDiffTooLarge):
-		return cmderr.Provider(err)
-	case errors.Is(err, credentials.ErrInvalidBackendSelection),
-		errors.Is(err, credentials.ErrWrongService),
-		errors.Is(err, credstore.ErrRefEmpty),
-		errors.Is(err, credstore.ErrRefSegmentCount),
-		errors.Is(err, credstore.ErrRefInvalidChar),
-		errors.Is(err, credstore.ErrKeyNotAllowed),
-		errors.Is(err, credstore.ErrExists),
-		errors.Is(err, credstore.ErrFilePassphraseRequired),
-		errors.Is(err, credstore.ErrSecretServiceFailClosed),
-		errors.Is(err, credstore.ErrStoreClosed),
-		errors.Is(err, credstore.ErrBackendNotImplemented):
-		return cmderr.Credential(err)
-	default:
-		return err
-	}
-}
-
-func MapRunError(err error) error {
-	return mapRunError(err)
-}
-
 func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 	profile = normalizeRuntimeProfile(profile)
 	stores := newRuntimeCredentialStores(cfg, opts.Backend, cmderr.BackendFlagChanged(cmd))
@@ -746,31 +675,31 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 	repoProviderStore, err := stores.Open(profile.Git.Credential)
 	if err != nil {
 		cleanup()
-		return Runtime{}, mapRunError(err)
+		return Runtime{}, cmdruntime.MapRunError(err)
 	}
 	repoProvider, _, err := newGitProvider(profile.Git, repoProviderStore, gitProviderOptions(profile, profile.Git, runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
-		return Runtime{}, mapRunError(err)
+		return Runtime{}, cmdruntime.MapRunError(err)
 	}
 	repoProvider = withProgressProvider(logger, commandName(cmd), repoProvider)
 	postingGit := gitConfigForReviewerAuth(profile)
 	postingProviderStore, err := stores.Open(postingGit.Credential)
 	if err != nil {
 		cleanup()
-		return Runtime{}, mapRunError(err)
+		return Runtime{}, cmdruntime.MapRunError(err)
 	}
 	postingProvider, credential, err := newGitProvider(postingGit, postingProviderStore, gitProviderOptions(profile, postingGit, runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
-		return Runtime{}, mapRunError(err)
+		return Runtime{}, cmdruntime.MapRunError(err)
 	}
 	rawPostingProvider := postingProvider
 	postingProvider = withProgressProvider(logger, commandName(cmd), postingProvider)
 	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), postingProvider, credential, postingProviderStore, profile)
 	if err != nil {
 		cleanup()
-		return Runtime{}, mapRunError(err)
+		return Runtime{}, cmdruntime.MapRunError(err)
 	}
 	if err := warnOpinionatedReviewAuthority(cmd.Context(), rawPostingProvider, runtimeOpts, postingIdentity, opts.Stderr); err != nil {
 		cleanup()
@@ -801,7 +730,7 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 			var err error
 			adapterStore, err = stores.Open(profile.LLM.Credential)
 			if err != nil {
-				return nil, mapRunError(err)
+				return nil, cmdruntime.MapRunError(err)
 			}
 		}
 		adapter, err := newAdapterForRuntime(profile.LLM, adapterStore)
@@ -1154,21 +1083,6 @@ func (a *lazyAdapter) Resume(ctx context.Context, sessionID string, req llm.Requ
 		return nil, err
 	}
 	return adapter.Resume(ctx, sessionID, req)
-}
-
-func retentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.RetentionPolicy {
-	if retention.MaxAgeDays == nil {
-		return datalifecycle.RetentionPolicy{}
-	}
-	maxAgeDays := *retention.MaxAgeDays
-	if maxAgeDays == 0 {
-		return datalifecycle.RetentionPolicy{LiveForever: true}
-	}
-	return datalifecycle.RetentionPolicy{LiveMaxAge: time.Duration(maxAgeDays) * 24 * time.Hour}
-}
-
-func RetentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.RetentionPolicy {
-	return retentionPolicyFromConfig(retention)
 }
 
 type reviewRunner struct {

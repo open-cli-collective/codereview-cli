@@ -22,6 +22,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -32,7 +33,6 @@ import (
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
-	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
@@ -40,7 +40,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
-	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 	"github.com/open-cli-collective/codereview-cli/internal/threadrespond"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -1490,7 +1489,7 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 }
 
 func TestRetentionPolicyFromConfigDefaultsWhenMaxAgeOmitted(t *testing.T) {
-	got := retentionPolicyFromConfig(config.RetentionConfig{})
+	got := cmdruntime.RetentionPolicyFromConfig(config.RetentionConfig{})
 	if got.LiveForever || got.LiveMaxAge != 0 || got.DryRunMaxAge != 0 {
 		t.Fatalf("retention policy = %#v, want zero-value default policy", got)
 	}
@@ -2861,10 +2860,6 @@ type noopLimiter struct{}
 
 func (noopLimiter) Wait(context.Context, string) error { return nil }
 
-type cancelLimiter struct{}
-
-func (cancelLimiter) Wait(context.Context, string) error { return context.Canceled }
-
 func (r *fakeRunner) DryRun(_ context.Context, req pipeline.Request) (pipeline.Result, error) {
 	r.requests = append(r.requests, req)
 	if r.err != nil {
@@ -3062,63 +3057,6 @@ func testPipelineResult(failOnTriggered bool) pipeline.Result {
 	}
 }
 
-func testThreadRespondResult(outcome ledger.Outcome) threadrespond.Result {
-	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	return threadrespond.Result{
-		Run: ledger.Run{
-			RunID:           "respond-run-1",
-			PRKey:           "github.com_open-cli-collective_codereview-cli_29",
-			SHA:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			BaseSHA:         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			PostMode:        ledger.PostModeLive,
-			PostingIdentity: "review-bot",
-			ArtifactPath:    "/tmp/respond-run-1",
-			Outcome:         &outcome,
-		},
-		PR: gitprovider.PR{
-			Ref:   ref,
-			Title: "CR respond",
-			URL:   "https://github.com/open-cli-collective/codereview-cli/pull/29",
-		},
-		PRKey: "github.com_open-cli-collective_codereview-cli_29",
-		EligibleThreads: []threadcontext.Thread{{
-			ID: "thread-1",
-		}},
-		Plan: reviewplan.Plan{
-			Outcome: reviewplan.OutcomeComment,
-			Actions: []reviewplan.Action{
-				{
-					ActionID:  "thread_reply-1",
-					Kind:      reviewplan.ActionKindThreadReply,
-					ThreadID:  "thread-1",
-					PlannedAt: now,
-					Status:    reviewplan.ActionStatusPending,
-					Required:  true,
-					ThreadReply: &reviewplan.ThreadReplyPayload{
-						Body:    "Summary",
-						Summary: true,
-					},
-				},
-				{
-					ActionID:      "resolve_thread-1",
-					Kind:          reviewplan.ActionKindResolveThread,
-					ThreadID:      "thread-1",
-					PlannedAt:     now,
-					Status:        reviewplan.ActionStatusPending,
-					Required:      true,
-					ResolveThread: &reviewplan.ResolveThreadPayload{},
-				},
-			},
-		},
-		PlannedActions: []ledger.PlannedAction{
-			{ActionID: "thread_reply-1", RunID: "respond-run-1", Kind: ledger.PlannedActionThreadReply, Status: ledger.PlannedActionPending, Required: true},
-			{ActionID: "resolve_thread-1", RunID: "respond-run-1", Kind: ledger.PlannedActionResolveThread, Status: ledger.PlannedActionPending, Required: true},
-		},
-		Outbox: outbox.Result{Outcome: outcome, ExitCode: 0, Posted: 2},
-	}
-}
-
 func testLiveResult(failOnTriggered bool) reviewrun.Result {
 	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
 	return reviewrun.Result{
@@ -3208,63 +3146,6 @@ func reviewCommandPR(t *testing.T) (gitprovider.PRRef, gitprovider.PR) {
 	fixture := newReviewCommandWorkbenchFixture(t)
 	reviewCommandFixtures.Store(reviewCommandFixtureKey(fixture.ref), fixture)
 	return fixture.ref, fixture.pr
-}
-
-func reviewCommandMarkedThread(t *testing.T, pr gitprovider.PR, id, path string, line int) gitprovider.InlineThread {
-	t.Helper()
-	action, err := marker.RenderAction(marker.ActionMarker{
-		RunID:    "old-run",
-		ActionID: "old-action",
-		Kind:     marker.ActionKindInlineComment,
-		SHA:      pr.Head.SHA,
-		BaseSHA:  pr.Base.SHA,
-	})
-	if err != nil {
-		t.Fatalf("RenderAction: %v", err)
-	}
-	threadID := gitprovider.ThreadID(id)
-	created := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	return gitprovider.InlineThread{
-		ID:          threadID,
-		Path:        path,
-		Side:        review.DiffSideRight,
-		Line:        line,
-		SubjectType: review.AnchorKindLine,
-		CommitSHA:   pr.Head.SHA,
-		Comments: []gitprovider.ThreadComment{
-			{
-				ID:          gitprovider.CommentID(id + "-cr"),
-				ThreadID:    threadID,
-				Body:        action + "\nOriginal finding.",
-				Author:      gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
-				CommitSHA:   pr.Head.SHA,
-				Path:        path,
-				Side:        review.DiffSideRight,
-				Line:        line,
-				SubjectType: review.AnchorKindLine,
-				CreatedAt:   created,
-				UpdatedAt:   created,
-			},
-			{
-				ID:          gitprovider.CommentID(id + "-human"),
-				ThreadID:    threadID,
-				Body:        "Human confirmed this should be summarized.",
-				Author:      gitprovider.Identity{Login: "human", ID: "human-id"},
-				CommitSHA:   pr.Head.SHA,
-				Path:        path,
-				Side:        review.DiffSideRight,
-				Line:        line,
-				SubjectType: review.AnchorKindLine,
-				CreatedAt:   created.Add(time.Minute),
-				UpdatedAt:   created.Add(time.Minute),
-			},
-		},
-	}
-}
-
-func reviewCommandThreadAnalysisResult(threadID, sessionID string) llm.FakeResult {
-	structured := fmt.Sprintf(`{"schema_version":1,"thread_id":%q,"decision":"summarize","summary":"Summary for future context.","resolve":true,"rationale":"human reply resolved the discussion"}`, threadID)
-	return fakeReviewLLMResult(sessionID, structured)
 }
 
 func reviewCommandFixtureKey(ref gitprovider.PRRef) string {

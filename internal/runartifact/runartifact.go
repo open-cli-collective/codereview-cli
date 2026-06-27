@@ -18,7 +18,9 @@ import (
 const (
 	markerSchema = 1
 
-	KindReview         = "review"
+	// KindReview marks artifacts for a full review run.
+	KindReview = "review"
+	// KindThreadResponse marks artifacts for a response-only thread lifecycle run.
 	KindThreadResponse = "thread_response"
 )
 
@@ -27,6 +29,7 @@ var markerFileByKind = map[string]string{
 	KindThreadResponse: "thread-response-run.json",
 }
 
+// ErrMarkerInvalid reports that an artifact marker is missing or malformed.
 var ErrMarkerInvalid = errors.New("runartifact: marker invalid")
 
 // Paths contains per-run artifact paths.
@@ -209,6 +212,7 @@ func MarkerMatches(artifactPath, kind, runID string) bool {
 // ReadMarker reads and validates the marker for the requested run kind.
 func ReadMarker(artifactPath, kind string) (Marker, error) {
 	path := MarkerPath(artifactPath, kind)
+	// #nosec G304 -- marker paths are derived from artifact roots owned by cr.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Marker{}, err

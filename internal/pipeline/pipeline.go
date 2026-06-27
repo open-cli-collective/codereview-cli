@@ -785,12 +785,11 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		plannedActions = append(plannedActions, planned)
 	}
-	existingFindings, existingActions, hasPersistedPlanning, err := persistedPlanning(ctx, opts.Store, run.RunID)
+	_, existingActions, hasPersistedPlanning, err := persistedPlanning(ctx, opts.Store, run.RunID)
 	if err != nil {
 		return Result{}, err
 	}
 	if hasPersistedPlanning {
-		ledgerFindings = existingFindings
 		plannedActions = existingActions
 	} else if err := opts.Store.InsertPlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
 		return Result{}, err

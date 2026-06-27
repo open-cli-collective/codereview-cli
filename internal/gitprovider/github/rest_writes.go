@@ -24,9 +24,9 @@ type issueCommentRequest struct {
 }
 
 type reviewRequest struct {
-	CommitID string `json:"commit_id"`
-	Event    string `json:"event"`
-	Body     string `json:"body"`
+	CommitID string                 `json:"commit_id"`
+	Event    string                 `json:"event"`
+	Body     string                 `json:"body"`
 	Comments []reviewCommentRequest `json:"comments,omitempty"`
 }
 
@@ -125,6 +125,8 @@ func (c *Client) SubmitReview(ctx context.Context, ref gitprovider.PRRef, reques
 			case review.AnchorKindLine:
 				entry.Side = string(comment.Side)
 				entry.Line = comment.Line
+			case review.AnchorKindFile:
+				return "", fmt.Errorf("%w: bundled review comments do not support file-level anchors", ErrValidation)
 			default:
 				return "", fmt.Errorf("%w: unsupported bundled review comment subject type %q", ErrValidation, comment.SubjectType)
 			}

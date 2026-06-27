@@ -13,17 +13,21 @@ provider-session resume, pre-flight reuse, task metadata, accepted-output
 artifacts, session persistence, progress breadcrumbs, and failure
 classification.
 
-The final commit marker for a task is `llm-tasks/<task>/metadata.json`. Writers
-must publish validated output or failed-attempt payloads first, persist the
-ledger session row when the task is run-owned, and write metadata last. Resume
-code must trust only the final metadata path, never temporary files or partial
-payloads.
+The final commit marker for a task is
+`llm-tasks/<encoded-task-id>/metadata.json`. Writers must publish validated
+output or failed-attempt payloads first, persist the ledger session row when
+the task is run-owned, and write metadata last. Resume code must trust only the
+final metadata path, never temporary files or partial payloads.
 
-New LLM-backed components must not call provider adapters or `internal/llm`
-structured helpers directly. They should call `llmlifecycle` through explicit,
-fakeable dependencies in unit tests and should return domain results rather
-than posting comments or mutating provider state. This guardrail is enforced by
-`internal/architecture/llm_lifecycle_test.go`.
+New LLM-backed components must not call `internal/llm` structured helpers
+directly. They should call `llmlifecycle` through explicit, fakeable
+dependencies in unit tests and should return domain results rather than
+posting comments or mutating provider state.
+`internal/architecture/llm_lifecycle_test.go` enforces that direct structured
+helper calls stay inside `internal/llm` and `internal/llmlifecycle`. Direct
+provider-adapter calls should also stay behind `llmlifecycle` for production
+structured tasks; code review owns that broader boundary until a stronger
+static guardrail exists.
 
 Most lifecycle tasks are run-owned and must have a matching ledger session row
 when a provider session is available. Caller-owned no-run tasks are allowed only
@@ -54,8 +58,11 @@ override rather than bypassing the resolver, but it intentionally bypasses the
 tier map because the agent author selected a concrete model.
 
 The direct `config.ResolveModelTier` exception is config inspection and the
-resolver implementation itself. The architecture guardrail is enforced by
-`internal/architecture/model_resolution_test.go`.
+resolver implementation itself.
+`internal/architecture/model_resolution_test.go` enforces that direct
+`config.ResolveModelTier` calls stay inside approved packages. Hard-coded
+runtime model IDs remain a code-review concern until model-catalog guardrails
+exist.
 
 ## Git Provider Writes
 

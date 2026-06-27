@@ -426,6 +426,62 @@ func TestRunResumesExistingActionsWithoutReplanning(t *testing.T) {
 	}
 }
 
+func TestRunResumeRejectsChangedThreadInputAfterActionsPersisted(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionSummarize, "", "Summary for future context.", true))
+	original := markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human)
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{original})
+	firstOpts := fixture.options()
+	firstOpts.Limiter = cancelLimiter{}
+
+	first, err := Run(ctx, firstOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run interrupted post error = %v, want context.Canceled", err)
+	}
+	if len(first.PlannedActions) != 2 {
+		t.Fatalf("first planned actions = %d, want reply and resolve", len(first.PlannedActions))
+	}
+
+	changed := original
+	changed.Comments = append([]gitprovider.ThreadComment(nil), original.Comments...)
+	changed.Comments[1].Body = "Human reply changed after response actions were planned"
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{changed})
+	fixture.adapter = &llm.FakeAdapter{NameValue: "fake-llm"}
+	_, err = Run(ctx, fixture.options(), Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+	})
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("Run changed thread error = %v, want stale lifecycle input error", err)
+	}
+	if len(fixture.adapter.Requests()) != 0 || len(fixture.adapter.Resumes()) != 0 {
+		t.Fatalf("adapter starts=%#v resumes=%#v, want no provider call for stale cached actions", fixture.adapter.Requests(), fixture.adapter.Resumes())
+	}
+	if replies := fixture.provider.RecordedThreadReplies(fixture.ref); len(replies) != 0 {
+		t.Fatalf("thread replies = %#v, want no stale provider writes", replies)
+	}
+	if resolved := fixture.provider.RecordedResolvedThreads(fixture.ref); len(resolved) != 0 {
+		t.Fatalf("resolved threads = %#v, want no stale provider writes", resolved)
+	}
+	stored, getErr := fixture.store.GetRun(ctx, first.Run.RunID)
+	if getErr != nil {
+		t.Fatalf("GetRun first: %v", getErr)
+	}
+	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("stale resume outcome = %v, want failed", stored.Outcome)
+	}
+}
+
 func TestRunRerunBypassesIncompleteResponseRun(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)

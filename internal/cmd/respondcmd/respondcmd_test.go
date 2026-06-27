@@ -10,7 +10,7 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -25,8 +25,8 @@ import (
 func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 	responder := &fakeResponder{result: testThreadRespondResult(ledger.OutcomeDryRun)}
 	var cleanupCalled bool
-	cmd, out := newTestCommand(t, testConfig(), func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ reviewcmd.RuntimeOptions) (reviewcmd.Runtime, error) {
-		return reviewcmd.Runtime{
+	cmd, out := newTestCommand(t, testConfig(), func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ cmdruntime.Options) (cmdruntime.Runtime, error) {
+		return cmdruntime.Runtime{
 			Responder:       responder,
 			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 			Cleanup:         func() { cleanupCalled = true },
@@ -171,16 +171,16 @@ func (r *fakeResponder) Respond(_ context.Context, req threadrespond.Request) (t
 	return r.result, nil
 }
 
-func fakeFactory(responder *fakeResponder) reviewcmd.RuntimeFactory {
-	return func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ reviewcmd.RuntimeOptions) (reviewcmd.Runtime, error) {
-		return reviewcmd.Runtime{
+func fakeFactory(responder *fakeResponder) cmdruntime.Factory {
+	return func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ cmdruntime.Options) (cmdruntime.Runtime, error) {
+		return cmdruntime.Runtime{
 			Responder:       responder,
 			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 		}, nil
 	}
 }
 
-func newTestCommand(t *testing.T, cfg config.File, factory reviewcmd.RuntimeFactory) (*cobra.Command, *bytes.Buffer) {
+func newTestCommand(t *testing.T, cfg config.File, factory cmdruntime.Factory) (*cobra.Command, *bytes.Buffer) {
 	t.Helper()
 	path := t.TempDir() + "/config.yml"
 	if err := config.Save(path, cfg); err != nil {
@@ -283,4 +283,4 @@ func testThreadRespondResult(outcome ledger.Outcome) threadrespond.Result {
 	}
 }
 
-var _ reviewcmd.ResponseRunner = (*fakeResponder)(nil)
+var _ cmdruntime.ResponseRunner = (*fakeResponder)(nil)

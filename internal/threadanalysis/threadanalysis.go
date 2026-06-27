@@ -81,32 +81,39 @@ func AnalyzeThread(ctx context.Context, opts Options, thread threadcontext.Threa
 	if threadID == "" {
 		return zero, fmt.Errorf("threadanalysis: thread ID is required")
 	}
-	input := analysisInputForThread(threadID, thread)
-	prompt, err := promptForInput(input)
+	request, err := lifecycleRequestForThread(opts, threadID, thread)
 	if err != nil {
 		return zero, err
 	}
-	taskID := "thread-analysis-" + threadID
-	result, err := llmlifecycle.RunStructured(ctx, llmlifecycle.Request{
-		Store:           opts.Store,
-		Adapter:         opts.Adapter,
-		RunID:           opts.RunID,
-		TaskID:          taskID,
-		Phase:           string(stagemodel.StageThreadAnalysis),
-		Paths:           opts.LifecyclePaths,
-		Model:           opts.Model,
-		Effort:          opts.Effort,
-		LogPath:         opts.LogPath,
-		Prompt:          prompt,
-		ResumeSessionID: opts.ResumeSessionID,
-		Progress:        opts.Progress,
-		Now:             opts.Now,
-		NewSessionRowID: opts.NewStepID,
-	}, decodeResultForThread(threadID))
+	result, err := llmlifecycle.RunStructured(ctx, request, decodeResultForThread(threadID))
 	if err != nil {
 		return zero, err
 	}
 	return result.Value, nil
+}
+
+// ValidateCachedThread verifies that a cached analysis task still matches the
+// current normalized thread input without invoking the provider.
+func ValidateCachedThread(opts Options, thread threadcontext.Thread) error {
+	if err := validateOptions(opts); err != nil {
+		return err
+	}
+	threadID := strings.TrimSpace(string(thread.ID))
+	if threadID == "" {
+		return fmt.Errorf("threadanalysis: thread ID is required")
+	}
+	request, err := lifecycleRequestForThread(opts, threadID, thread)
+	if err != nil {
+		return err
+	}
+	meta, ok, err := llmlifecycle.ReadMetadata(opts.LifecyclePaths, request.TaskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("threadanalysis: cached metadata for thread %s is required", threadID)
+	}
+	return llmlifecycle.ValidateMetadata(meta, request, opts.Adapter.Name())
 }
 
 // AnalyzeThreads analyzes threads serially, preserving input order.
@@ -120,6 +127,30 @@ func AnalyzeThreads(ctx context.Context, opts Options, threads []threadcontext.T
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func lifecycleRequestForThread(opts Options, threadID string, thread threadcontext.Thread) (llmlifecycle.Request, error) {
+	input := analysisInputForThread(threadID, thread)
+	prompt, err := promptForInput(input)
+	if err != nil {
+		return llmlifecycle.Request{}, err
+	}
+	return llmlifecycle.Request{
+		Store:           opts.Store,
+		Adapter:         opts.Adapter,
+		RunID:           opts.RunID,
+		TaskID:          "thread-analysis-" + threadID,
+		Phase:           string(stagemodel.StageThreadAnalysis),
+		Paths:           opts.LifecyclePaths,
+		Model:           opts.Model,
+		Effort:          opts.Effort,
+		LogPath:         opts.LogPath,
+		Prompt:          prompt,
+		ResumeSessionID: opts.ResumeSessionID,
+		Progress:        opts.Progress,
+		Now:             opts.Now,
+		NewSessionRowID: opts.NewStepID,
+	}, nil
 }
 
 // ResponseActions converts thread-analysis decisions into concrete thread

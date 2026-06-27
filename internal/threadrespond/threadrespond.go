@@ -170,6 +170,9 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 		if err := validateResponseActions(existingActions); err != nil {
 			return result, err
 		}
+		if err := validateCachedResponseActionThreads(opts, req, run, artifacts, eligible, existingActions); err != nil {
+			return result, err
+		}
 		result.PlannedActions = existingActions
 	} else {
 		if len(eligible) > 0 {
@@ -425,6 +428,68 @@ func analyzeThreads(ctx context.Context, opts Options, run ledger.Run, artifacts
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func validateCachedResponseActionThreads(opts Options, req Request, run ledger.Run, artifacts runartifact.Paths, eligible []threadcontext.Thread, actions []ledger.PlannedAction) error {
+	threadIDs := responseActionThreadIDs(actions)
+	if len(threadIDs) == 0 {
+		return nil
+	}
+	if opts.Adapter == nil {
+		return fmt.Errorf("threadrespond: adapter is required")
+	}
+	runtime, err := resolveRuntime(opts, req)
+	if err != nil {
+		return err
+	}
+	threadsByID := make(map[string]threadcontext.Thread, len(eligible))
+	for _, thread := range eligible {
+		threadsByID[string(thread.ID)] = thread
+	}
+	for _, threadID := range threadIDs {
+		thread, ok := threadsByID[threadID]
+		if !ok {
+			return fmt.Errorf("threadrespond: thread %s is no longer eligible for cached response actions; pass --rerun to start fresh", threadID)
+		}
+		if err := threadanalysis.ValidateCachedThread(threadanalysis.Options{
+			Store:          opts.Store,
+			RunID:          run.RunID,
+			Adapter:        opts.Adapter,
+			Model:          runtime.model,
+			Effort:         runtime.effort,
+			LogPath:        threadLogPath(artifacts, thread.ID),
+			LifecyclePaths: llmlifecycle.Paths{LLMTasksDir: artifacts.LLMTasksDir},
+			Progress:       opts.TaskProgress,
+			Now:            opts.now,
+			NewStepID:      opts.newStepID,
+		}, thread); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func responseActionThreadIDs(actions []ledger.PlannedAction) []string {
+	seen := make(map[string]struct{})
+	ids := make([]string, 0, len(actions))
+	for _, action := range actions {
+		if action.Status == ledger.PlannedActionSuperseded || action.Status == ledger.PlannedActionPlannedOnly {
+			continue
+		}
+		if !isResponseAction(action.Kind) || action.ThreadID == nil {
+			continue
+		}
+		threadID := strings.TrimSpace(*action.ThreadID)
+		if threadID == "" {
+			continue
+		}
+		if _, ok := seen[threadID]; ok {
+			continue
+		}
+		seen[threadID] = struct{}{}
+		ids = append(ids, threadID)
+	}
+	return ids
 }
 
 func eligibleThreads(threads []threadcontext.Thread) []threadcontext.Thread {

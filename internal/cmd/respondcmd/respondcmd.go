@@ -12,8 +12,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -32,13 +32,8 @@ type flags struct {
 	noResolveThreads bool
 }
 
-// Register attaches the respond command to rootCmd.
-func Register(rootCmd *cobra.Command, opts *root.Options) {
-	RegisterWithFactory(rootCmd, opts, reviewcmd.NewRuntime)
-}
-
 // RegisterWithFactory attaches the respond command with an injected runtime factory.
-func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory reviewcmd.RuntimeFactory) {
+func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory cmdruntime.Factory) {
 	var flags flags
 	cmd := &cobra.Command{
 		Use:   "respond <PR>",
@@ -62,7 +57,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory rev
 	rootCmd.AddCommand(cmd)
 }
 
-func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory reviewcmd.RuntimeFactory, flags flags, prArg string) error {
+func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory cmdruntime.Factory, flags flags, prArg string) error {
 	if flags.noPost {
 		flags.dryRun = true
 	}
@@ -76,7 +71,7 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory re
 	if retryRunID != "" && flags.rerun {
 		return exitcode.Usage(fmt.Errorf("--retry-posts cannot be used with --rerun"))
 	}
-	path, err := reviewcmd.ConfigPath(opts)
+	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
 		return exitcode.AuthConfig(err)
 	}
@@ -99,9 +94,9 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory re
 	if !prref.SameHost(ref.Host, profile.Git.Host) {
 		return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
 	}
-	runtime, err := factory(cmd, opts, cfg, profile, reviewcmd.RuntimeOptions{
+	runtime, err := factory(cmd, opts, cfg, profile, cmdruntime.Options{
 		PRRef:               ref,
-		Retention:           reviewcmd.RetentionPolicyFromConfig(cfg.Data.Retention),
+		Retention:           cmdruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 	})
 	if err != nil {
@@ -111,7 +106,7 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory re
 		defer runtime.Cleanup()
 	}
 	if runtime.Responder == nil {
-		return fmt.Errorf("respond: runtime responder is required")
+		return cmdruntime.MissingResponderError()
 	}
 	noResolve := flags.noResolveThreads || profile.ReviewPolicy.ResolveThreads == config.ResolveThreadsNever
 	result, err := runtime.Responder.Respond(ctx, threadrespond.Request{
@@ -126,7 +121,7 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory re
 		RetryRunID:       retryRunID,
 	})
 	if err != nil {
-		return reviewcmd.MapRunError(err)
+		return cmdruntime.MapRunError(err)
 	}
 	rendered := newResult(result)
 	if flags.jsonOutput {

@@ -48,6 +48,18 @@ func buildRootCommand(stdin io.Reader, stdout, stderr io.Writer) (*cobra.Command
 		Stdout: stdout,
 		Stderr: stderr,
 	})
-	root.RegisterAll(cmd, opts, configcmd.Register, credentialcmd.Register, mecmd.Register, agentscmd.Register, reviewcmd.Register, respondcmd.Register, sessionscmd.Register, datacmd.Register, benchmarkcmd.Register)
+	root.RegisterAll(cmd, opts,
+		configcmd.Register,
+		credentialcmd.Register,
+		mecmd.Register,
+		agentscmd.Register,
+		reviewcmd.Register,
+		func(cmd *cobra.Command, opts *root.Options) {
+			respondcmd.RegisterWithFactory(cmd, opts, reviewcmd.NewRuntime)
+		},
+		sessionscmd.Register,
+		datacmd.Register,
+		benchmarkcmd.Register,
+	)
 	return cmd, opts
 }
