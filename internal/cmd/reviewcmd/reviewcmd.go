@@ -1024,7 +1024,10 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		cleanup()
 		return Runtime{}, mapRunError(err)
 	}
-	warnOpinionatedReviewAuthority(cmd.Context(), rawPostingProvider, runtimeOpts, postingIdentity, opts.Stderr)
+	if err := warnOpinionatedReviewAuthority(cmd.Context(), rawPostingProvider, runtimeOpts, postingIdentity, opts.Stderr); err != nil {
+		cleanup()
+		return Runtime{}, err
+	}
 	layout, err := runtimeLayout()
 	if err != nil {
 		cleanup()
@@ -1068,17 +1071,20 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 	}, nil
 }
 
-func warnOpinionatedReviewAuthority(ctx context.Context, provider gitprovider.GitProvider, runtimeOpts RuntimeOptions, postingIdentity gitprovider.Identity, warnings io.Writer) {
+func warnOpinionatedReviewAuthority(ctx context.Context, provider gitprovider.GitProvider, runtimeOpts RuntimeOptions, postingIdentity gitprovider.Identity, warnings io.Writer) error {
 	if !runtimeOpts.RequireOpinionatedReviewAuthority {
-		return
+		return nil
 	}
 	authority, err := provider.ReviewAuthority(ctx, runtimeOpts.PRRef, postingIdentity)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		writeReviewAuthorityWarning(warnings, postingIdentity, runtimeOpts.PRRef, "probe failed: "+err.Error())
-		return
+		return nil
 	}
 	if authority.Eligible {
-		return
+		return nil
 	}
 	detail := "permission unavailable"
 	switch {
@@ -1088,6 +1094,7 @@ func warnOpinionatedReviewAuthority(ctx context.Context, provider gitprovider.Gi
 		detail = "role=" + authority.RoleName
 	}
 	writeReviewAuthorityWarning(warnings, postingIdentity, runtimeOpts.PRRef, detail)
+	return nil
 }
 
 func writeReviewAuthorityWarning(warnings io.Writer, postingIdentity gitprovider.Identity, ref gitprovider.PRRef, detail string) {

@@ -862,6 +862,39 @@ func TestNewRuntimeWarnsAndContinuesWhenOpinionatedReviewAuthorityProbeFails(t *
 	}
 }
 
+func TestNewRuntimeAbortsWhenOpinionatedReviewAuthorityProbeIsCanceled(t *testing.T) {
+	statedirtest.Hermetic(t)
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	provider.SetError(gitprovider.OperationReviewAuthority, context.Canceled)
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stderr bytes.Buffer
+	_, err := newRuntime(cmd, &root.Options{Stderr: &stderr}, testConfig(), testConfig().Profiles["home"], RuntimeOptions{
+		PRRef:                             ref,
+		RequireOpinionatedReviewAuthority: true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("newRuntime error = %v, want context.Canceled", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no advisory warning for cancellation", stderr.String())
+	}
+}
+
 func TestNewRuntimeSkipsOpinionatedReviewAuthorityCheckWhenNotRequired(t *testing.T) {
 	statedirtest.Hermetic(t)
 	ref, _ := reviewCommandPR(t)

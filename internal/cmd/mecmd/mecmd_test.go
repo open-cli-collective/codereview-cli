@@ -492,6 +492,57 @@ profiles:
 	}
 }
 
+func TestMePreservesCachedGitHubAppDiscoverIdentityWithoutPRContext(t *testing.T) {
+	path := writeRawTestConfig(t, `secrets:
+  stores:
+    test-memory:
+      backend:
+        kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: github_app
+      github_app:
+        app_id: "12345"
+      credential:
+        store: test-memory
+        name: codereview/home-app
+      identity_cache: home-app[bot]
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
+`)
+	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
+		return &githubResolver{
+			cfg:      cfg,
+			warnings: opts.Stderr,
+			NewClient: func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error) {
+				t.Fatal("GitHub client should not be opened for discovery-mode app identity without PR context")
+				return nil, gitprovider.Credential{}, nil
+			},
+		}, nil, nil
+	})
+
+	if err := root.Execute(cmd, []string{"--profile", "home", "me"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "Login: home-app[bot]") ||
+		!strings.Contains(got, "Identity cache updated: false") ||
+		!strings.Contains(got, "cannot be refreshed by cr me without PR context; preserving cached identity") {
+		t.Fatalf("output = %q, want cached identity and warning", got)
+	}
+	cfg := loadTestConfig(t, path)
+	if got := cfg.Profiles["home"].Git.IdentityCache; got != "home-app[bot]" {
+		t.Fatalf("identity cache = %q, want preserved cache", got)
+	}
+}
+
 func TestMeReservedAuthModeExitCode(t *testing.T) {
 	path := writeRawTestConfig(t, `secrets:
   stores:
