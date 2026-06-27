@@ -143,6 +143,44 @@ func TestRespondJSONRendersStableShape(t *testing.T) {
 	}
 }
 
+func TestRespondJSONRendersPostedProviderResolve(t *testing.T) {
+	result := testThreadRespondResult(ledger.OutcomeComment)
+	result.PlannedActions[1].Status = ledger.PlannedActionPosted
+	responder := &fakeResponder{result: result}
+	cmd, out := newTestCommand(t, testConfig(), fakeFactory(responder))
+
+	if err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--json"}); err != nil {
+		t.Fatalf("Execute respond json: %v", err)
+	}
+	var decoded struct {
+		Counts counts `json:"counts"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal stdout: %v\n%s", err, out.String())
+	}
+	if decoded.Counts.Resolved != 1 ||
+		decoded.Counts.ProviderResolved != 1 ||
+		decoded.Counts.ResolvePlanned != 1 ||
+		decoded.Counts.ResolveFailed != 0 {
+		t.Fatalf("counts = %#v, want posted provider resolve plus planned resolve", decoded.Counts)
+	}
+}
+
+func TestRespondTextRendersPostedProviderResolve(t *testing.T) {
+	result := testThreadRespondResult(ledger.OutcomeComment)
+	result.PlannedActions[1].Status = ledger.PlannedActionPosted
+	responder := &fakeResponder{result: result}
+	cmd, out := newTestCommand(t, testConfig(), fakeFactory(responder))
+
+	if err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29"}); err != nil {
+		t.Fatalf("Execute respond: %v", err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "provider resolved 1 (resolve planned 1, failed 0)") {
+		t.Fatalf("stdout = %q, want posted provider resolve count", text)
+	}
+}
+
 func TestRespondRendersFailedProviderResolveSeparately(t *testing.T) {
 	result := testThreadRespondResult(ledger.OutcomeComment)
 	result.PlannedActions[0].Status = ledger.PlannedActionPosted

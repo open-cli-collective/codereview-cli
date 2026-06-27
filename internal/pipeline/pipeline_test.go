@@ -1636,6 +1636,57 @@ func TestPrepareDossierArtifactsReusesCRSettledThreadSummaryWithoutLLM(t *testin
 	assertFileOmits(t, discussionPath, "Original finding")
 }
 
+func TestWriteRawDossierArtifactsMarksCachedSummarySource(t *testing.T) {
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	run := allocatePipelineRun(t, store, layout, "run-dossier-cached-summary-source", ledger.PostModeDryRun, fixedNow())
+	provider, req := dryRunHarness(t)
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	bot := req.PostingIdentity
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	providerResolved := crSettledReviewThread(t, "thread-provider", "main.go", 2, bot, human, "Provider summary")
+	providerResolved.Resolved = true
+	threads := []gitprovider.InlineThread{
+		providerResolved,
+		crSettledReviewThread(t, "thread-cr-settled", "main.go", 4, bot, human, "CR-settled summary"),
+	}
+	threadContext, err := threadcontext.Normalize(threads, threadcontext.Options{PostingIdentity: bot})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+		CurrentPR:      provider.pr,
+		ReviewPR:       provider.pr,
+		ChangedFiles:   parseDiffPatchesForTest(t, provider.diff.Raw),
+		Threads:        threads,
+		ThreadContext:  threadContext,
+		Catalog:        agents.Catalog{},
+		CurrentBaseSHA: provider.pr.Base.SHA,
+		CurrentHeadSHA: provider.pr.Head.SHA,
+	}); err != nil {
+		t.Fatalf("writeRawDossierArtifacts: %v", err)
+	}
+
+	var rawThreads []dossierInlineThreadArtifact
+	if err := readJSONFile(mustDossierRawPath(artifacts, "inline-threads.json"), &rawThreads); err != nil {
+		t.Fatalf("read raw inline threads: %v", err)
+	}
+	got := map[string]string{}
+	for _, thread := range rawThreads {
+		if thread.CachedSummary != nil {
+			got[thread.ID] = thread.CachedSummary.Source
+		}
+	}
+	want := map[string]string{
+		"thread-provider":   dossierCachedSummaryProviderSource,
+		"thread-cr-settled": dossierCachedSummaryCRSource,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cached summary sources = %#v, want %#v", got, want)
+	}
+}
+
 func TestPrepareDossierArtifactsKeepsSameAnchorCachedSummariesByThreadID(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -1878,6 +1929,48 @@ func TestDecodeDossierDiscussionSummaryRejectsUnknownAnchor(t *testing.T) {
 	}`), promptData)
 	if err == nil || !strings.Contains(err.Error(), "is not present in the source discussion") {
 		t.Fatalf("decodeDossierDiscussionSummary error = %v, want source anchor rejection", err)
+	}
+}
+
+func TestDecodeDossierDiscussionSummaryThreadIDWinsOverMismatchedAnchor(t *testing.T) {
+	promptData, err := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{
+		InlineThreads: []dossierInlineThreadArtifact{{
+			ID:         "thread-1",
+			Path:       "main.go",
+			Side:       "RIGHT",
+			Line:       2,
+			AnchorKind: "line",
+			Resolved:   false,
+			Comments: []dossierThreadCommentArtifact{{
+				Author: "review-bot",
+				Body:   "Original thread body",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("dossierDiscussionPromptInputFromDiscussion: %v", err)
+	}
+	got, err := decodeDossierDiscussionSummary([]byte(`{
+		"schema_version": 1,
+		"inline_threads": [{
+			"thread_id": "thread-1",
+			"path": "other.go",
+			"side": "LEFT",
+			"line": 99,
+			"anchor_kind": "file",
+			"status": "unresolved",
+			"summary": "Thread summary"
+		}]
+	}`), promptData)
+	if err != nil {
+		t.Fatalf("decodeDossierDiscussionSummary: %v", err)
+	}
+	if len(got.InlineThreads) != 1 {
+		t.Fatalf("inline threads = %#v, want one", got.InlineThreads)
+	}
+	thread := got.InlineThreads[0]
+	if thread.ThreadID != "thread-1" || thread.Path != "main.go" || thread.Side != "RIGHT" || thread.Line != 2 || thread.AnchorKind != "line" || thread.Resolved {
+		t.Fatalf("decoded thread = %#v, want source thread fields selected by thread_id", thread)
 	}
 }
 
