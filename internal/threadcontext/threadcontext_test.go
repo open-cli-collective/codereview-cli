@@ -327,6 +327,30 @@ func TestHumanReplyAfterCRSummaryClearsCRSettledAndPendsThread(t *testing.T) {
 	}
 }
 
+func TestCRReplyAfterCRSummaryClearsCRSettledSummary(t *testing.T) {
+	threads, err := Normalize([]gitprovider.InlineThread{{
+		ID:       "thread-1",
+		Resolved: false,
+		Path:     "main.go",
+		Comments: []gitprovider.ThreadComment{
+			comment("c-1", bot(), "finding\n"+actionMarker(t, marker.ActionKindInlineComment), at(1)),
+			comment("c-2", bot(), "settled summary\n"+threadSummaryMarker(t), at(2)),
+			comment("c-3", bot(), "later unmarked bot reply", at(3)),
+		},
+	}}, Options{PostingIdentity: bot()})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	thread := threads[0]
+	if thread.CRSettledSummary != nil {
+		t.Fatalf("CRSettledSummary = %#v, want nil when final comment is not the summary marker", thread.CRSettledSummary)
+	}
+	if summary, ok := thread.EffectiveSettledSummary(); ok || summary != nil {
+		t.Fatalf("EffectiveSettledSummary = (%#v, %v), want none", summary, ok)
+	}
+}
+
 func TestForgedHumanSummaryMarkerDoesNotCreateCRSettledSummary(t *testing.T) {
 	threads, err := Normalize([]gitprovider.InlineThread{{
 		ID:       "thread-1",

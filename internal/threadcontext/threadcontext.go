@@ -108,8 +108,11 @@ func Normalize(threads []gitprovider.InlineThread, opts Options) ([]Thread, erro
 			last := normalized.Comments[len(normalized.Comments)-1]
 			normalized.ResolvedSummary = threadSummaryFromComment(normalized.ID, normalized.Anchor, last)
 		}
-		if !normalized.Resolved && normalized.Status.LatestCRComment != nil && normalized.Status.LatestCRComment.HasThreadSummaryMarker && !normalized.Status.PendingHumanReply && strings.TrimSpace(normalized.Status.LatestCRComment.Body) != "" {
-			normalized.CRSettledSummary = threadSummaryFromComment(normalized.ID, normalized.Anchor, *normalized.Status.LatestCRComment)
+		if !normalized.Resolved && len(normalized.Comments) > 0 {
+			last := normalized.Comments[len(normalized.Comments)-1]
+			if last.AuthoredByPostingIdentity && last.HasThreadSummaryMarker && strings.TrimSpace(last.Body) != "" {
+				normalized.CRSettledSummary = threadSummaryFromComment(normalized.ID, normalized.Anchor, last)
+			}
 		}
 		out = append(out, normalized)
 	}
