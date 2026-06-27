@@ -98,6 +98,12 @@ func TestNormalizeIdentityMatchingUsesIDBeforeLogin(t *testing.T) {
 			commentAuthor:   gitprovider.Identity{Login: "review-bot"},
 			wantCRAuthored:  true,
 		},
+		{
+			name:            "github app runtime bot suffix matches thread author login",
+			postingIdentity: gitprovider.Identity{Login: "review-bot[bot]"},
+			commentAuthor:   gitprovider.Identity{Login: "review-bot"},
+			wantCRAuthored:  true,
+		},
 	}
 
 	for _, tt := range tests {

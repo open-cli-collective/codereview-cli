@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -149,6 +150,9 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 	mode := postMode(req)
 	run, artifacts, err := allocateOrResumeRun(ctx, opts, req, pr, prKey, mode)
 	if err != nil {
+		return Result{PR: pr, PRKey: prKey, Artifacts: artifacts, Threads: threads, EligibleThreads: eligible, ExitCode: exitFailed}, err
+	}
+	if err := ensureArtifactDirs(artifacts); err != nil {
 		return Result{PR: pr, PRKey: prKey, Artifacts: artifacts, Threads: threads, EligibleThreads: eligible, ExitCode: exitFailed}, err
 	}
 	result := Result{
@@ -376,6 +380,22 @@ func retry(ctx context.Context, opts Options, req Request) (Result, error) {
 	result.Run = run
 	result.PlannedActions = actions
 	return result, nil
+}
+
+func ensureArtifactDirs(artifacts runartifact.Paths) error {
+	for _, dir := range []string{
+		artifacts.AgentLogsDir,
+		filepath.Join(artifacts.AgentLogsDir, "thread-analysis"),
+		artifacts.LLMTasksDir,
+	} {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func readPRWithOptionalLock(ctx context.Context, opts Options, req Request, locked bool) (gitprovider.PR, Lock, error) {

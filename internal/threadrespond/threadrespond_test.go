@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -53,6 +54,9 @@ func TestRunDryRunFiltersAndPlansThreadResponses(t *testing.T) {
 	}
 	if len(fixture.adapter.Requests()) != 2 {
 		t.Fatalf("adapter requests = %d, want 2", len(fixture.adapter.Requests()))
+	}
+	if info, err := os.Stat(filepath.Join(result.Artifacts.AgentLogsDir, "thread-analysis")); err != nil || !info.IsDir() {
+		t.Fatalf("thread-analysis log dir stat = %v info=%#v, want directory", err, info)
 	}
 	if len(result.PlannedActions) != 3 {
 		t.Fatalf("planned actions = %d, want reply, summary reply, resolve", len(result.PlannedActions))

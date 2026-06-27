@@ -357,8 +357,27 @@ func commentThreadID(commentID gitprovider.ThreadID, threadID gitprovider.Thread
 }
 
 func sameIdentity(author gitprovider.Identity, target gitprovider.Identity) bool {
+	if githubBotLoginEquivalent(author.Login, target.Login) {
+		return true
+	}
 	if strings.TrimSpace(author.ID) != "" && strings.TrimSpace(target.ID) != "" {
 		return author.ID == target.ID
 	}
 	return strings.TrimSpace(author.Login) != "" && author.Login == target.Login
+}
+
+func githubBotLoginEquivalent(left, right string) bool {
+	trimmedLeft := strings.TrimSpace(left)
+	trimmedRight := strings.TrimSpace(right)
+	if !strings.HasSuffix(trimmedLeft, "[bot]") && !strings.HasSuffix(trimmedRight, "[bot]") {
+		return false
+	}
+	left = normalizedGitHubBotLogin(trimmedLeft)
+	right = normalizedGitHubBotLogin(trimmedRight)
+	return left != "" && left == right
+}
+
+func normalizedGitHubBotLogin(login string) string {
+	login = strings.TrimSpace(login)
+	return strings.TrimSuffix(login, "[bot]")
 }
