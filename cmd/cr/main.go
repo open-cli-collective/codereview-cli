@@ -54,9 +54,7 @@ func buildRootCommand(stdin io.Reader, stdout, stderr io.Writer) (*cobra.Command
 		mecmd.Register,
 		agentscmd.Register,
 		reviewcmd.Register,
-		func(cmd *cobra.Command, opts *root.Options) {
-			respondcmd.RegisterWithFactory(cmd, opts, reviewcmd.NewRuntime)
-		},
+		respondcmd.Register,
 		sessionscmd.Register,
 		datacmd.Register,
 		benchmarkcmd.Register,

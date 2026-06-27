@@ -14,6 +14,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -30,6 +31,11 @@ type flags struct {
 	retryPosts       string
 	jsonOutput       bool
 	noResolveThreads bool
+}
+
+// Register attaches the respond command to rootCmd.
+func Register(rootCmd *cobra.Command, opts *root.Options) {
+	RegisterWithFactory(rootCmd, opts, reviewcmd.NewRuntime)
 }
 
 // RegisterWithFactory attaches the respond command with an injected runtime factory.

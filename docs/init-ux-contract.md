@@ -283,7 +283,7 @@ When no explicit display name exists, the chooser should fall back to stable,
 deterministic identity text derived from the credential name or equivalent
 profile context, for example:
 
-- **open-cli-collective-rianjs-bot (PAT reviewer)**
+- **open-cli-collective-rianjs-bot (GitHub App reviewer)**
 - **reviewer-pat (PAT reviewer)**
 
 The profile-Git-account fallback is not a separately named reviewer entity and

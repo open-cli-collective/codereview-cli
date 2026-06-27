@@ -117,6 +117,9 @@ func TestRunLivePostsThroughOutbox(t *testing.T) {
 	if len(postedActions) != 2 {
 		t.Fatalf("posted actions = %#v, want reply and resolve", postedActions)
 	}
+	if !reflect.DeepEqual(result.PlannedActions, postedActions) {
+		t.Fatalf("result planned actions = %#v, want refreshed posted actions %#v", result.PlannedActions, postedActions)
+	}
 	var sawPostedReply, sawPostedResolve bool
 	for _, action := range postedActions {
 		if action.Status != ledger.PlannedActionPosted || action.PostedAt == nil || action.UpstreamID == nil {
@@ -482,6 +485,49 @@ func TestRunResumeRejectsChangedThreadInputAfterActionsPersisted(t *testing.T) {
 	}
 }
 
+func TestRunResumeRejectsCachedResolveWhenResolutionDisabled(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionSummarize, "", "Summary for future context.", true))
+	setInlineThreads(t, fixture, []gitprovider.InlineThread{
+		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
+	})
+	firstOpts := fixture.options()
+	firstOpts.Limiter = cancelLimiter{}
+
+	first, err := Run(ctx, firstOpts, Request{
+		PRRef:           fixture.ref,
+		PRURL:           fixture.pr.URL,
+		ProfileName:     "default",
+		Profile:         testProfile(),
+		PostingIdentity: fixture.bot,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run interrupted post error = %v, want context.Canceled", err)
+	}
+	if len(first.PlannedActions) != 2 {
+		t.Fatalf("first planned actions = %d, want reply and resolve", len(first.PlannedActions))
+	}
+
+	_, err = Run(ctx, fixture.options(), Request{
+		PRRef:            fixture.ref,
+		PRURL:            fixture.pr.URL,
+		ProfileName:      "default",
+		Profile:          testProfile(),
+		PostingIdentity:  fixture.bot,
+		NoResolveThreads: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "current options do not allow thread resolution") {
+		t.Fatalf("Run no-resolve cached action error = %v, want resolution capability error", err)
+	}
+	if replies := fixture.provider.RecordedThreadReplies(fixture.ref); len(replies) != 0 {
+		t.Fatalf("thread replies = %#v, want no stale provider writes", replies)
+	}
+	if resolved := fixture.provider.RecordedResolvedThreads(fixture.ref); len(resolved) != 0 {
+		t.Fatalf("resolved threads = %#v, want no stale provider writes", resolved)
+	}
+}
+
 func TestRunRerunBypassesIncompleteResponseRun(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
@@ -612,6 +658,9 @@ func TestRetryPostsExistingActionsWithoutLLM(t *testing.T) {
 	}
 	if storedActions[0].Status != ledger.PlannedActionPosted || storedActions[0].Error != nil {
 		t.Fatalf("stored action = %#v, want posted with cleared error", storedActions[0])
+	}
+	if !reflect.DeepEqual(result.PlannedActions, storedActions) {
+		t.Fatalf("result planned actions = %#v, want refreshed posted actions %#v", result.PlannedActions, storedActions)
 	}
 }
 

@@ -170,6 +170,9 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 		if err := validateResponseActions(existingActions); err != nil {
 			return result, err
 		}
+		if err := validateCachedResponseActionCapabilities(existingActions, effectiveCaps(opts.Provider.Capabilities(), req)); err != nil {
+			return result, err
+		}
 		if err := validateCachedResponseActionThreads(opts, req, run, artifacts, eligible, existingActions); err != nil {
 			return result, err
 		}
@@ -277,7 +280,12 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 	if err != nil {
 		return result, err
 	}
+	plannedActions, err := opts.Store.ListPlannedActions(ctx, run.RunID)
+	if err != nil {
+		return result, err
+	}
 	result.Run = run
+	result.PlannedActions = plannedActions
 	return result, nil
 }
 
@@ -320,6 +328,11 @@ func retry(ctx context.Context, opts Options, req Request) (Result, error) {
 		result.ExitCode = exitFailed
 		return result, err
 	}
+	actions, err = opts.Store.ListPlannedActions(ctx, run.RunID)
+	if err != nil {
+		result.ExitCode = exitFailed
+		return result, err
+	}
 	result.PlannedActions = actions
 	if moved, message, err := abortIfMoved(ctx, opts, req, run); err != nil {
 		result.ExitCode = exitUpstream
@@ -356,7 +369,12 @@ func retry(ctx context.Context, opts Options, req Request) (Result, error) {
 	if err != nil {
 		return result, err
 	}
+	actions, err = opts.Store.ListPlannedActions(ctx, run.RunID)
+	if err != nil {
+		return result, err
+	}
 	result.Run = run
+	result.PlannedActions = actions
 	return result, nil
 }
 
@@ -627,6 +645,18 @@ func validateResponseActions(actions []ledger.PlannedAction) error {
 		}
 		if !isResponseAction(action.Kind) {
 			return fmt.Errorf("threadrespond: retry run contains non-response action %q", action.Kind)
+		}
+	}
+	return nil
+}
+
+func validateCachedResponseActionCapabilities(actions []ledger.PlannedAction, caps reviewplan.ProviderCaps) error {
+	for _, action := range actions {
+		if action.Status == ledger.PlannedActionSuperseded {
+			continue
+		}
+		if action.Kind == ledger.PlannedActionResolveThread && !caps.ThreadResolution {
+			return fmt.Errorf("threadrespond: cached response action %s resolves a thread, but current options do not allow thread resolution; pass --rerun to start fresh", action.ActionID)
 		}
 	}
 	return nil
