@@ -1133,6 +1133,7 @@ func testConfig() config.File {
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
 					CredentialRef: "codereview/home",
+					IdentityCache: "review-bot",
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,

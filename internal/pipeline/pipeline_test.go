@@ -252,6 +252,87 @@ func TestDryRunResumesIncompleteRunAttempt(t *testing.T) {
 	}
 }
 
+func TestDryRunDoesNotResumeThreadResponseRun(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff = gitprovider.UnifiedDiff{}
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	responseRun := allocateDryRunForProvider(t, store, layout, provider, req, "run-response", fixedNow().Add(-time.Minute))
+	removeReviewRunMarkerForTest(t, responseRun.ArtifactPath)
+	writeResponseRunMarkerForTest(t, responseRun.ArtifactPath, responseRun.RunID)
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-review" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if result.Run.RunID != "run-review" {
+		t.Fatalf("result run = %q, want fresh review run", result.Run.RunID)
+	}
+	if result.Artifacts.Dir == responseRun.ArtifactPath {
+		t.Fatalf("result artifacts dir = %q, want not response artifact root", result.Artifacts.Dir)
+	}
+	storedResponse, err := store.GetRun(ctx, responseRun.RunID)
+	if err != nil {
+		t.Fatalf("GetRun response: %v", err)
+	}
+	if storedResponse.Outcome != nil {
+		t.Fatalf("response run outcome = %#v, want still incomplete", storedResponse.Outcome)
+	}
+}
+
+func TestDryRunResumesPinnedReviewRunByPinnedSHAs(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	fixture, reviewBaseSHA, reviewHeadSHA := newPinnedReviewFixtureForRef(t, req.PRRef)
+	provider.pr = fixture.pr
+	provider.fixtureRepoDir = fixture.repoDir
+	provider.diffBetween = gitprovider.UnifiedDiff{}
+	req.ReviewBaseSHA = reviewBaseSHA
+	req.ReviewHeadSHA = reviewHeadSHA
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	resume := allocateDryRunForSHAs(t, store, layout, req, "run-pinned-resume", reviewHeadSHA, reviewBaseSHA, fixedNow().Add(-time.Minute))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:    store,
+		Layout:   layout,
+		Now:      fixedNow,
+		NewRunID: func() string {
+			t.Fatal("NewRunID called despite resumable pinned dry-run")
+			return "unexpected"
+		},
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if result.Run.RunID != resume.RunID || result.Artifacts.Dir != resume.ArtifactPath {
+		t.Fatalf("result run/artifacts = %q %q, want %q %q", result.Run.RunID, result.Artifacts.Dir, resume.RunID, resume.ArtifactPath)
+	}
+	if len(provider.diffBetweenCalls) != 1 || provider.diffBetweenCalls[0].baseSHA != reviewBaseSHA || provider.diffBetweenCalls[0].headSHA != reviewHeadSHA {
+		t.Fatalf("diff between calls = %#v, want pinned base/head", provider.diffBetweenCalls)
+	}
+}
+
 func TestDryRunResumeLoadsCompletedTasksAndRerunsFailedTaskOnly(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -1541,6 +1622,22 @@ func TestSelectionOnlyRejectsInvalidSelection(t *testing.T) {
 	}
 	if len(adapter.Resumes()) != 0 {
 		t.Fatalf("adapter resumes = %#v, want none", adapter.Resumes())
+	}
+}
+
+func TestSelectionOnlyRequiresPostingIdentity(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	selectionReq := selectionRequestFromReview(req, t.TempDir())
+	selectionReq.PostingIdentity = gitprovider.Identity{}
+
+	_, err := selectionOnlyForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		Now:      fixedNow,
+	}, selectionReq)
+	if err == nil || !strings.Contains(err.Error(), "selection posting identity is required") {
+		t.Fatalf("SelectionOnly error = %v, want posting identity required", err)
 	}
 }
 
@@ -5986,17 +6083,22 @@ func allocatePipelineRun(t *testing.T, store *ledger.Store, layout statepaths.La
 
 func allocateDryRunForProvider(t *testing.T, store *ledger.Store, layout statepaths.Layout, provider *readOnlyProvider, req Request, runID string, started time.Time) ledger.Run {
 	t.Helper()
+	return allocateDryRunForSHAs(t, store, layout, req, runID, provider.pr.Head.SHA, provider.pr.Base.SHA, started)
+}
+
+func allocateDryRunForSHAs(t *testing.T, store *ledger.Store, layout statepaths.Layout, req Request, runID, headSHA, baseSHA string, started time.Time) ledger.Run {
+	t.Helper()
 	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
 	if err != nil {
 		t.Fatalf("PRKey: %v", err)
 	}
-	artifactPath := filepath.Join(layout.DataRoot, "runs", prKey, provider.pr.Head.SHA, provider.pr.Base.SHA, statepaths.Encode(req.ProfileName)+"__"+statepaths.Encode(postingKey(req.PostingIdentity)), runID)
+	artifactPath := filepath.Join(layout.DataRoot, "runs", prKey, headSHA, baseSHA, statepaths.Encode(req.ProfileName)+"__"+statepaths.Encode(postingKey(req.PostingIdentity)), runID)
 	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
 		PRKey:           prKey,
 		PRURL:           req.PRURL,
 		RunID:           runID,
-		SHA:             provider.pr.Head.SHA,
-		BaseSHA:         provider.pr.Base.SHA,
+		SHA:             headSHA,
+		BaseSHA:         baseSHA,
 		Profile:         req.ProfileName,
 		PostingIdentity: postingKey(req.PostingIdentity),
 		PostMode:        ledger.PostModeDryRun,
@@ -6006,7 +6108,28 @@ func allocateDryRunForProvider(t *testing.T, store *ledger.Store, layout statepa
 	if err != nil {
 		t.Fatalf("AllocateRun: %v", err)
 	}
+	if err := writeReviewRunMarker(run.ArtifactPath, run.RunID); err != nil {
+		t.Fatalf("writeReviewRunMarker: %v", err)
+	}
 	return run
+}
+
+func removeReviewRunMarkerForTest(t *testing.T, artifactPath string) {
+	t.Helper()
+	if err := os.Remove(reviewRunMarkerPath(artifactPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove review marker: %v", err)
+	}
+}
+
+func writeResponseRunMarkerForTest(t *testing.T, artifactPath, runID string) {
+	t.Helper()
+	if err := os.MkdirAll(artifactPath, 0o700); err != nil {
+		t.Fatalf("MkdirAll response marker dir: %v", err)
+	}
+	data := []byte(fmt.Sprintf("{\n  \"schema_version\": 1,\n  \"kind\": \"thread_response\",\n  \"run_id\": %q\n}\n", runID))
+	if err := os.WriteFile(filepath.Join(artifactPath, "thread-response-run.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile response marker: %v", err)
+	}
 }
 
 func fixedNow() time.Time {

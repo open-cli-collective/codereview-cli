@@ -43,6 +43,10 @@ func TestRuntimeModelResolutionGoesThroughStageResolver(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		configAliases := importedAliases(parsed, "github.com/open-cli-collective/codereview-cli/internal/config")
+		if len(configAliases) == 0 {
+			return nil
+		}
 		ast.Inspect(parsed, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
@@ -53,7 +57,7 @@ func TestRuntimeModelResolutionGoesThroughStageResolver(t *testing.T) {
 				return true
 			}
 			ident, ok := selector.X.(*ast.Ident)
-			if !ok || ident.Name != "config" {
+			if !ok || !configAliases[ident.Name] {
 				return true
 			}
 			pos := fset.Position(selector.Pos())

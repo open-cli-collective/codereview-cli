@@ -48,6 +48,7 @@ const (
 	defaultMaxConcurrency                  = 5
 	defaultMaxPromptBytes                  = 512 * 1024
 	defaultCheckoutReadonlyToolOutputBytes = 32 * 1024
+	reviewRunMarkerSchema                  = 1
 )
 
 // ErrStructuredOutputInvalidAfterRetry marks a selector or rollup response that
@@ -642,7 +643,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	}
 	var resumedDryRun *ledger.Run
 	if !mode.live && !req.Rerun {
-		run, ok, err := findIncompleteDryRun(ctx, opts.Store, req, reviewCtx.pr)
+		run, ok, err := findIncompleteDryRun(ctx, opts.Store, req, reviewCtx.reviewPR)
 		if err != nil {
 			return Result{}, err
 		}
@@ -699,6 +700,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 				ArtifactPath:    prepared.artifacts.Dir,
 			})
 			if err != nil {
+				return Result{}, err
+			}
+			if err := writeReviewRunMarker(prepared.artifacts.Dir, run.RunID); err != nil {
 				return Result{}, err
 			}
 		}
@@ -936,12 +940,42 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 		if strings.TrimSpace(run.ArtifactPath) == "" {
 			continue
 		}
+		if !hasReviewRunMarker(run.ArtifactPath) {
+			continue
+		}
 		if !found || run.Attempt > best.Attempt || (run.Attempt == best.Attempt && run.StartedAt.After(best.StartedAt)) {
 			best = run
 			found = true
 		}
 	}
 	return best, found, nil
+}
+
+type reviewRunMarker struct {
+	SchemaVersion int    `json:"schema_version"`
+	Kind          string `json:"kind"`
+	RunID         string `json:"run_id"`
+}
+
+func writeReviewRunMarker(artifactPath, runID string) error {
+	data, err := json.MarshalIndent(reviewRunMarker{
+		SchemaVersion: reviewRunMarkerSchema,
+		Kind:          "review",
+		RunID:         runID,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return llmlifecycle.WriteFileAtomic(reviewRunMarkerPath(artifactPath), append(data, '\n'))
+}
+
+func hasReviewRunMarker(artifactPath string) bool {
+	info, err := os.Stat(reviewRunMarkerPath(artifactPath))
+	return err == nil && !info.IsDir()
+}
+
+func reviewRunMarkerPath(artifactPath string) string {
+	return filepath.Join(artifactPath, "review-run.json")
 }
 
 func (c preparedSelectionContext) reviewResult() Result {
@@ -4798,6 +4832,9 @@ func validateSelectionOnly(opts Options, req SelectionRequest) error {
 	}
 	if strings.TrimSpace(req.ArtifactDir) == "" {
 		return fmt.Errorf("pipeline: selection artifact dir is required")
+	}
+	if strings.TrimSpace(postingKey(req.PostingIdentity)) == "" {
+		return fmt.Errorf("pipeline: selection posting identity is required")
 	}
 	return nil
 }
