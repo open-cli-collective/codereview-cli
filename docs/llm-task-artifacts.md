@@ -5,7 +5,7 @@ reviewer, and rollup calls must be isolated from each other so one failed task
 does not erase successful upstream work or force unrelated LLM sessions to run
 again.
 
-Task artifacts live under a run artifact directory:
+Task artifacts usually live under a run artifact directory:
 
 ```text
 llm-tasks/<encoded-task-id>/
@@ -18,6 +18,8 @@ llm-tasks/<encoded-task-id>/
 Raw failed-attempt files are named `<label>.json` in the task directory. The
 current structured adapter labels are `initial` and `retry`, which produce
 `initial.json` and `retry.json` when raw invalid output is available.
+`validated-output.json` stores the accepted structured JSON after prose
+recovery, not necessarily the provider's raw structured-output bytes.
 
 `metadata.json` is the commit marker. Writers must publish it last, after any
 validated output or raw failed-attempt payloads are written and after the ledger
@@ -37,8 +39,9 @@ to resume.
 Load-bearing metadata fields are:
 
 - `task_id`: stable task identity. Current values are `orchestrator-selection`,
-  `reviewer-<encoded-agent-id>`, `orchestrator-rollup`, and
-  `dossier-discussion-summary`.
+  `reviewer-<encoded-agent-id>`, `orchestrator-rollup`,
+  `dossier-discussion-summary`, `thread-analysis-<thread-id>`, and
+  `approval-override`.
 - `phase`: task phase, such as `selection`, `reviewer`, `rollup`, or
   `dossier`.
 - `dependency_task_ids`: task IDs whose completed state was included in this
@@ -49,8 +52,8 @@ Load-bearing metadata fields are:
 - `status`: one of `succeeded`, `failed_isolated`, or `failed_blocking`.
 - `session_row_id` and `provider_session_id`: ledger/provider session handles
   used for run summaries and provider-level resume. `session_row_id` may be
-  empty only for caller-owned `SelectionOnly` artifact roots that reuse a
-  cached task without allocating a review run.
+  empty only for caller-owned no-run artifact roots such as `SelectionOnly` or
+  the pre-run approval override classifier.
 - `adapter`, `model`, `effort`, and `log_path`: execution context.
 - `validated_output_path`: structured output to decode when reusing a succeeded
   task.
@@ -126,3 +129,31 @@ allocated. In that scoped mode:
 
 This no-run behavior is intentionally limited to caller-owned artifact roots;
 the normal run-backed durable task model remains unchanged for full reviews.
+
+## Thread Analysis Tasks
+
+`thread-analysis-<thread-id>` tasks classify one normalized inline discussion
+thread and return a reusable decision, reply body, summary, resolve flag, and
+rationale.
+
+For `cr respond`, these tasks are run-owned. Successful analyses persist normal
+ledger-backed sessions and are reused on retry. A normal `cr respond` invocation
+resumes the latest incomplete response run for the same PR head, base, profile,
+posting identity, and post mode. If analysis completed but planning or posting
+was interrupted, rerun loads the persisted thread-analysis task instead of
+calling the LLM again; if planned actions already exist, rerun continues through
+the ledger/outbox post phase instead of replanning. Use `cr respond --rerun` to
+start a fresh response attempt and leave the incomplete attempt untouched. If
+the normalized thread input changes under the same task directory, the lifecycle
+runner fails closed with rerun guidance instead of overwriting the prior task.
+
+## Approval Override Task
+
+`approval-override` is a pre-run classifier that detects explicit author
+requests to approve without another full review pass.
+
+The gate runs this before a review run may exist, so it uses the caller-owned
+no-run lifecycle mode. Classifier failures are non-blocking: the gate warns and
+continues with normal review. Successful and failed classifier task metadata
+still lives under the prospective run artifact root so provider-session resume
+and local artifact inspection use the same lifecycle shape.

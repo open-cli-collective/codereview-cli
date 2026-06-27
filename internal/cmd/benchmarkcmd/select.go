@@ -18,6 +18,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
@@ -243,6 +244,12 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 		finalized, err := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
 		return finalized, endProgressSpan(runSpan, err)
 	}
+	postingIdentity, err := benchmarkSelectionPostingIdentity(state.profile)
+	if err != nil {
+		recordSelectionRunFailure(&runSummary, &stderrBody, err)
+		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
+		return finalized, endProgressSpan(runSpan, ferr)
+	}
 
 	promptSpan := logger.Start("benchmark.select", "load_prompt", runID)
 	selectionPromptInstructions, err := loadSelectionPromptInstructions(suiteDir, candidate.Stages.Selection.Prompt)
@@ -273,6 +280,7 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 		PRRef:                       ref,
 		ProfileName:                 state.profileName,
 		Profile:                     state.profile,
+		PostingIdentity:             postingIdentity,
 		AgentDirs:                   append([]string(nil), candidate.Stages.Reviewers.AgentDirs...),
 		ArtifactDir:                 runDir,
 		ReviewBaseSHA:               benchCase.ReviewBaseSHA,
@@ -331,6 +339,21 @@ func finalizeSelectionRun(runSummary benchmarkRun, started time.Time, rawSelecti
 		return benchmarkRun{}, err
 	}
 	return runSummary, nil
+}
+
+func benchmarkSelectionPostingIdentity(profile config.Profile) (gitprovider.Identity, error) {
+	if profile.ReviewerCredentials != nil {
+		login := strings.TrimSpace(profile.ReviewerCredentials.IdentityCache)
+		if login == "" {
+			return gitprovider.Identity{}, fmt.Errorf("benchmark: reviewer identity cache is required for selection; run `cr me` for this profile before benchmark select")
+		}
+		return gitprovider.Identity{Login: login}, nil
+	}
+	login := strings.TrimSpace(profile.Git.IdentityCache)
+	if login == "" {
+		return gitprovider.Identity{}, fmt.Errorf("benchmark: git identity cache is required for selection; run `cr me` for this profile before benchmark select")
+	}
+	return gitprovider.Identity{Login: login}, nil
 }
 
 func recordSelectionRunFailure(runSummary *benchmarkRun, stderrBody *[]byte, err error) {

@@ -823,18 +823,26 @@ func (s *Store) InsertFinding(ctx context.Context, finding Finding) error {
 		return err
 	}
 	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
-		_, err := db.ExecContext(ctx, `
-INSERT INTO findings (
-	finding_id, run_id, session_row_id, severity, file_path, side, line, diff_position, anchoring, body
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			finding.FindingID.String(), finding.RunID, finding.SessionRowID, finding.Severity.String(), finding.FilePath,
-			finding.Side, finding.Line, finding.DiffPosition, finding.Anchoring.String(), finding.Body,
-		)
-		if err != nil {
+		if err := insertFindingRow(ctx, db, finding); err != nil {
 			return fmt.Errorf("ledger: insert finding: %w", err)
 		}
 		return nil
 	})
+}
+
+type findingInserter interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func insertFindingRow(ctx context.Context, db findingInserter, finding Finding) error {
+	_, err := db.ExecContext(ctx, `
+INSERT INTO findings (
+	finding_id, run_id, session_row_id, severity, file_path, side, line, diff_position, anchoring, body
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		finding.FindingID.String(), finding.RunID, finding.SessionRowID, finding.Severity.String(), finding.FilePath,
+		finding.Side, finding.Line, finding.DiffPosition, finding.Anchoring.String(), finding.Body,
+	)
+	return err
 }
 
 // ListFindings lists findings for a run in stable order.
@@ -873,24 +881,98 @@ func (s *Store) InsertPlannedAction(ctx context.Context, action PlannedAction) e
 		return err
 	}
 	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
-		required := 0
-		if action.Required {
-			required = 1
-		}
-		_, err := db.ExecContext(ctx, `
-INSERT INTO planned_actions (
-	action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,
-	required, attempts, attempted_at, posted_at, upstream_id, error, failure_class
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			action.ActionID, action.RunID, action.Kind.String(), action.FindingID, action.ThreadID, encodeTime(action.PlannedAt),
-			action.PayloadJSON, action.Status.String(), required, action.Attempts, encodeOptionalTime(action.AttemptedAt),
-			encodeOptionalTime(action.PostedAt), action.UpstreamID, action.Error, action.FailureClass,
-		)
-		if err != nil {
+		if err := insertPlannedActionRow(ctx, db, action); err != nil {
 			return fmt.Errorf("ledger: insert planned action: %w", err)
 		}
 		return nil
 	})
+}
+
+// InsertPlannedActions inserts multiple outbox planned-action rows atomically.
+func (s *Store) InsertPlannedActions(ctx context.Context, actions []PlannedAction) error {
+	for _, action := range actions {
+		if err := validatePlannedAction(action); err != nil {
+			return err
+		}
+	}
+	if len(actions) == 0 {
+		return nil
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("ledger: begin insert planned actions: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		for _, action := range actions {
+			if err := insertPlannedActionRow(ctx, tx, action); err != nil {
+				return fmt.Errorf("ledger: insert planned actions: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("ledger: commit insert planned actions: %w", err)
+		}
+		return nil
+	})
+}
+
+// InsertPlanningResult inserts findings and planned actions atomically.
+func (s *Store) InsertPlanningResult(ctx context.Context, findings []Finding, actions []PlannedAction) error {
+	for _, finding := range findings {
+		if err := validateFinding(finding); err != nil {
+			return err
+		}
+	}
+	for _, action := range actions {
+		if err := validatePlannedAction(action); err != nil {
+			return err
+		}
+	}
+	if len(findings) == 0 && len(actions) == 0 {
+		return nil
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("ledger: begin insert planning result: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		for _, finding := range findings {
+			if err := insertFindingRow(ctx, tx, finding); err != nil {
+				return fmt.Errorf("ledger: insert planning result finding: %w", err)
+			}
+		}
+		for _, action := range actions {
+			if err := insertPlannedActionRow(ctx, tx, action); err != nil {
+				return fmt.Errorf("ledger: insert planning result action: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("ledger: commit insert planning result: %w", err)
+		}
+		return nil
+	})
+}
+
+type plannedActionInserter interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func insertPlannedActionRow(ctx context.Context, db plannedActionInserter, action PlannedAction) error {
+	required := 0
+	if action.Required {
+		required = 1
+	}
+	_, err := db.ExecContext(ctx, `
+INSERT INTO planned_actions (
+	action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,
+	required, attempts, attempted_at, posted_at, upstream_id, error, failure_class
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		action.ActionID, action.RunID, action.Kind.String(), action.FindingID, action.ThreadID, encodeTime(action.PlannedAt),
+		action.PayloadJSON, action.Status.String(), required, action.Attempts, encodeOptionalTime(action.AttemptedAt),
+		encodeOptionalTime(action.PostedAt), action.UpstreamID, action.Error, action.FailureClass,
+	)
+	return err
 }
 
 // ListPlannedActions lists planned actions for a run in stable order.

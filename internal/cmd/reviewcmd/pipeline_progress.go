@@ -10,28 +10,33 @@ import (
 )
 
 type pipelineTaskProgress struct {
-	logger *progress.Logger
+	logger  *progress.Logger
+	command string
 }
 
 type pipelineTaskSpan struct {
 	span *progress.Span
 }
 
-func newPipelineTaskProgress(logger *progress.Logger) pipeline.LLMTaskProgress {
+func newPipelineTaskProgress(logger *progress.Logger, command string) pipeline.LLMTaskProgress {
 	if logger == nil {
 		return nil
 	}
-	return pipelineTaskProgress{logger: logger}
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = "review"
+	}
+	return pipelineTaskProgress{logger: logger, command: command}
 }
 
 func (p pipelineTaskProgress) StartLLMTask(event pipeline.LLMTaskProgressEvent) pipeline.LLMTaskProgressSpan {
 	return pipelineTaskSpan{
-		span: p.logger.StartFields("review", "run_llm_task", "llm_task", pipelineTaskProgressFields(event)...),
+		span: p.logger.StartFields(p.command, "run_llm_task", "llm_task", pipelineTaskProgressFields(event)...),
 	}
 }
 
 func (p pipelineTaskProgress) LoadLLMTask(event pipeline.LLMTaskProgressEvent, result pipeline.LLMTaskProgressResult) {
-	span := p.logger.StartFields("review", "load_llm_task", "llm_task", pipelineTaskProgressFields(event)...)
+	span := p.logger.StartFields(p.command, "load_llm_task", "llm_task", pipelineTaskProgressFields(event)...)
 	span.EndFields(nil, pipelineTaskProgressResultFields(result)...)
 }
 

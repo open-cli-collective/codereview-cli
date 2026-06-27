@@ -210,6 +210,15 @@ func TestAllEnumConstantsParseAndValidate(t *testing.T) {
 			valid: func(s string) bool { return ThreadDecision(s).Valid() },
 		},
 		{
+			name:   "thread response kind",
+			values: []interface{ String() string }{ThreadResponseReply, ThreadResponseSummaryReply},
+			parse: func(s string) (string, bool) {
+				kind := ThreadResponseKind(normalizeLower(s))
+				return kind.String(), kind.Valid()
+			},
+			valid: func(s string) bool { return ThreadResponseKind(s).Valid() },
+		},
+		{
 			name:   "anchor kind",
 			values: []interface{ String() string }{AnchorKindLine, AnchorKindFile},
 			parse: func(s string) (string, bool) {
@@ -254,6 +263,57 @@ func TestAllEnumConstantsParseAndValidate(t *testing.T) {
 						t.Fatalf("Valid(%q) = false, want true", value)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestThreadResponseActionValidate(t *testing.T) {
+	tests := []struct {
+		name string
+		in   ThreadResponseAction
+		err  string
+	}{
+		{
+			name: "reply",
+			in:   ThreadResponseAction{Kind: ThreadResponseReply, ThreadID: "thread-1", Body: "Thanks."},
+		},
+		{
+			name: "summary reply resolves",
+			in:   ThreadResponseAction{Kind: ThreadResponseSummaryReply, ThreadID: "thread-1", Body: "Summary.", Resolve: true},
+		},
+		{
+			name: "invalid kind",
+			in:   ThreadResponseAction{Kind: ThreadResponseKind("other"), ThreadID: "thread-1", Body: "Body."},
+			err:  "invalid",
+		},
+		{
+			name: "missing thread",
+			in:   ThreadResponseAction{Kind: ThreadResponseReply, Body: "Body."},
+			err:  "ID",
+		},
+		{
+			name: "missing body",
+			in:   ThreadResponseAction{Kind: ThreadResponseReply, ThreadID: "thread-1"},
+			err:  "body",
+		},
+		{
+			name: "resolve requires summary reply",
+			in:   ThreadResponseAction{Kind: ThreadResponseReply, ThreadID: "thread-1", Body: "Body.", Resolve: true},
+			err:  "summary_reply",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.in.Validate()
+			if tt.err == "" {
+				if err != nil {
+					t.Fatalf("Validate: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.err) {
+				t.Fatalf("Validate error = %v, want containing %q", err, tt.err)
 			}
 		})
 	}

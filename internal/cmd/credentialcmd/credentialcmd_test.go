@@ -574,21 +574,33 @@ func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
 
 func TestInitNonInteractiveWritesGitHubAppReviewerConfigOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	cmd, out, errOut := newTestCommand(path, strings.NewReader(""))
-
-	err := root.Execute(cmd, []string{
-		"--backend", "memory",
-		"init",
-		"--non-interactive",
-		"--reviewer-auth-mode", string(config.GitAuthModeGitHubApp),
-		"--reviewer-github-app-id", "12345",
-	})
+	flags := defaultNonInteractiveInitOptionsForTest()
+	flags.reviewerAuth = string(config.GitAuthModeGitHubApp)
+	flags.reviewerGitHubAppID = "12345"
+	store := newFakeInitStore(nil)
+	out, errOut, err := runNonInteractiveInitWithFakeStore(t, path, "", strings.NewReader(""), flags, store)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
+	}
+	profile := cfg.Profiles["default"]
+	if profile.Reviewer.Kind != config.ProfileReviewerKindEntity || profile.Reviewer.Entity != "default-reviewer" {
+		t.Fatalf("profile reviewer = %#v, want default-reviewer entity", profile.Reviewer)
+	}
+	if profile.Reviewer.GitHubAppInstallation == nil ||
+		profile.Reviewer.GitHubAppInstallation.Mode != config.ProfileReviewerGitHubAppInstallationDiscoverFromRepository ||
+		profile.Reviewer.GitHubAppInstallation.InstallationID != "" {
+		t.Fatalf("profile reviewer github_app_installation = %#v, want discover_from_repository", profile.Reviewer.GitHubAppInstallation)
+	}
+	entity := cfg.ReviewerEntities["default-reviewer"]
+	if entity.AuthMode != config.GitAuthModeGitHubApp || entity.CredentialRef != "codereview/default-reviewer" {
+		t.Fatalf("reviewer entity = %#v, want github_app codereview/default-reviewer", entity)
+	}
+	if entity.GitHubApp == nil || entity.GitHubApp.AppID != "12345" {
+		t.Fatalf("reviewer entity github_app = %#v, want app_id 12345", entity.GitHubApp)
 	}
 	reviewer := cfg.Profiles["default"].ReviewerCredentials
 	if reviewer == nil || reviewer.AuthMode != config.GitAuthModeGitHubApp || reviewer.CredentialRef != "codereview/default-reviewer" {
@@ -608,8 +620,9 @@ func TestInitNonInteractiveWritesGitHubAppReviewerConfigOnly(t *testing.T) {
 	if strings.Contains(errOut.String(), "--key "+credentials.GitHubAppInstallationIDKey+" --stdin") {
 		t.Fatalf("stderr = %q, want optional installation id omitted from required setup hints", errOut.String())
 	}
-	if strings.Contains(out.String()+errOut.String(), "private-key-value") {
-		t.Fatalf("command output leaked secret: stdout=%q stderr=%q", out.String(), errOut.String())
+	assertFakeBundleKeys(t, store, "default-reviewer", []string{})
+	if strings.Contains(out.String()+errOut.String(), "github_app_private_key:") || strings.Contains(out.String()+errOut.String(), "12345\n") {
+		t.Fatalf("command output leaked app secret/config value: stdout=%q stderr=%q", out.String(), errOut.String())
 	}
 }
 

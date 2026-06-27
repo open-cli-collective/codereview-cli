@@ -60,7 +60,9 @@ func Provider(err error) error {
 
 func providerKind(err error, kind error) error {
 	switch {
-	case errors.Is(kind, gitprovider.ErrAuth), errors.Is(kind, gitprovider.ErrPermission):
+	case errors.Is(kind, gitprovider.ErrAuth),
+		errors.Is(kind, gitprovider.ErrPermission),
+		errors.Is(kind, gitprovider.ErrIneligibleReviewAuthority):
 		return exitcode.AuthConfig(err)
 	case errors.Is(kind, gitprovider.ErrRetryable):
 		return exitcode.Upstream(err)

@@ -93,7 +93,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			name:    "set github app private key json",
 			prepare: saveGitHubAppReviewerConfigOnly,
 			args: func(*auditHarness) []string {
-				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default-reviewer-app", "--key", credentials.GitHubAppPrivateKeyKey, "--from-env", "CR_NOLEAK_APP_PRIVATE_KEY", "--overwrite", "--json"}
+				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default-app", "--key", credentials.GitHubAppPrivateKeyKey, "--from-env", "CR_NOLEAK_APP_PRIVATE_KEY", "--overwrite", "--json"}
 			},
 			env: secretEnv,
 		},
@@ -101,7 +101,7 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			name:    "set github app installation id text",
 			prepare: saveGitHubAppReviewerConfigOnly,
 			args: func(*auditHarness) []string {
-				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default-reviewer-app", "--key", credentials.GitHubAppInstallationIDKey, "--from-env", "CR_NOLEAK_APP_INSTALLATION_ID", "--overwrite"}
+				return []string{"set-credential", "--store", auditCredentialStoreID, "--name", "codereview/default-app", "--key", credentials.GitHubAppInstallationIDKey, "--from-env", "CR_NOLEAK_APP_INSTALLATION_ID", "--overwrite"}
 			},
 			env:     secretEnv,
 			wantErr: true,
@@ -564,19 +564,6 @@ func (h *auditHarness) config() config.File {
 	}
 }
 
-func (h *auditHarness) githubAppReviewerConfig() config.File {
-	cfg := h.config()
-	profile := cfg.Profiles["default"]
-	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: h.githubAppIDSecret},
-		Credential:    config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-reviewer-app"},
-		CredentialRef: "codereview/default-reviewer-app",
-	}
-	cfg.Profiles["default"] = profile
-	return cfg
-}
-
 func (h *auditHarness) githubAppGitConfig() config.File {
 	cfg := h.config()
 	profile := cfg.Profiles["default"]
@@ -584,7 +571,6 @@ func (h *auditHarness) githubAppGitConfig() config.File {
 	profile.Git.GitHubApp = &config.GitHubAppConfig{AppID: h.githubAppIDSecret}
 	profile.Git.Credential = config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-app"}
 	profile.Git.CredentialRef = "codereview/default-app"
-	profile.ReviewerCredentials = nil
 	cfg.Profiles["default"] = profile
 	return cfg
 }
@@ -607,6 +593,77 @@ type credentialSeed struct {
 	secret string
 }
 
+type noLeakRuntimeProvider struct {
+	read  gitprovider.GitProvider
+	write gitprovider.GitProvider
+}
+
+func (p noLeakRuntimeProvider) WhoAmI(ctx context.Context, creds gitprovider.Credential) (gitprovider.Identity, error) {
+	return p.write.WhoAmI(ctx, creds)
+}
+
+func (p noLeakRuntimeProvider) ReviewAuthority(ctx context.Context, ref gitprovider.PRRef, identity gitprovider.Identity) (gitprovider.ReviewAuthority, error) {
+	return p.write.ReviewAuthority(ctx, ref, identity)
+}
+
+func (p noLeakRuntimeProvider) GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.PR, error) {
+	return p.read.GetPR(ctx, ref)
+}
+
+func (p noLeakRuntimeProvider) GetDiff(ctx context.Context, ref gitprovider.PRRef) (gitprovider.UnifiedDiff, error) {
+	return p.read.GetDiff(ctx, ref)
+}
+
+func (p noLeakRuntimeProvider) GetFileAtRef(ctx context.Context, ref gitprovider.PRRef, gitRef string, path string) ([]byte, error) {
+	return p.read.GetFileAtRef(ctx, ref, gitRef, path)
+}
+
+func (p noLeakRuntimeProvider) ListTreeAtRef(ctx context.Context, ref gitprovider.PRRef, gitRef string, path string) ([]gitprovider.TreeEntry, error) {
+	return p.read.ListTreeAtRef(ctx, ref, gitRef, path)
+}
+
+func (p noLeakRuntimeProvider) ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.InlineThread, error) {
+	return p.read.ListInlineThreads(ctx, ref)
+}
+
+func (p noLeakRuntimeProvider) ListReviews(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.Review, error) {
+	return p.read.ListReviews(ctx, ref)
+}
+
+func (p noLeakRuntimeProvider) ListIssueComments(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.IssueComment, error) {
+	return p.read.ListIssueComments(ctx, ref)
+}
+
+func (p noLeakRuntimeProvider) PostInlineComment(ctx context.Context, ref gitprovider.PRRef, c gitprovider.InlineComment) (gitprovider.CommentID, error) {
+	return p.write.PostInlineComment(ctx, ref, c)
+}
+
+func (p noLeakRuntimeProvider) ReplyToThread(ctx context.Context, ref gitprovider.PRRef, threadID gitprovider.ThreadID, body string) (gitprovider.CommentID, error) {
+	return p.write.ReplyToThread(ctx, ref, threadID, body)
+}
+
+func (p noLeakRuntimeProvider) ResolveThread(ctx context.Context, ref gitprovider.PRRef, threadID gitprovider.ThreadID) error {
+	return p.write.ResolveThread(ctx, ref, threadID)
+}
+
+func (p noLeakRuntimeProvider) PostIssueComment(ctx context.Context, ref gitprovider.PRRef, body string) (gitprovider.CommentID, error) {
+	return p.write.PostIssueComment(ctx, ref, body)
+}
+
+func (p noLeakRuntimeProvider) SubmitReview(ctx context.Context, ref gitprovider.PRRef, r gitprovider.ReviewRequest) (gitprovider.ReviewID, error) {
+	return p.write.SubmitReview(ctx, ref, r)
+}
+
+func (p noLeakRuntimeProvider) Capabilities() gitprovider.ProviderCaps {
+	readCaps := p.read.Capabilities()
+	writeCaps := p.write.Capabilities()
+	return gitprovider.ProviderCaps{
+		NativeFileLevelComments: readCaps.NativeFileLevelComments || writeCaps.NativeFileLevelComments,
+		ThreadResolution:        readCaps.ThreadResolution || writeCaps.ThreadResolution,
+		BundleInlineOnSubmit:    readCaps.BundleInlineOnSubmit || writeCaps.BundleInlineOnSubmit,
+	}
+}
+
 func (h *auditHarness) seedCredentials(t *testing.T) {
 	t.Helper()
 	cfg := h.config()
@@ -619,10 +676,10 @@ func (h *auditHarness) seedCredentials(t *testing.T) {
 
 func (h *auditHarness) seedGitHubAppConfigShowCredentials(t *testing.T) {
 	t.Helper()
-	cfg := h.githubAppReviewerConfig()
+	cfg := h.githubAppGitConfig()
 	h.seedCredentialWrites(t, cfg, []credentialSeed{
-		{ref: "codereview/default", key: credentials.GitTokenKey, secret: h.gitSecret},
-		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-reviewer", key: credentials.GitTokenKey, secret: h.reviewerSecret},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
 }
@@ -632,6 +689,7 @@ func (h *auditHarness) seedGitHubAppGitCredentials(t *testing.T) {
 	cfg := h.githubAppGitConfig()
 	h.seedCredentialWrites(t, cfg, []credentialSeed{
 		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-reviewer", key: credentials.GitTokenKey, secret: h.reviewerSecret},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
 }
@@ -641,16 +699,17 @@ func (h *auditHarness) seedGitHubAppGitLookupCredentials(t *testing.T) {
 	cfg := h.githubAppGitConfig()
 	h.seedCredentialWrites(t, cfg, []credentialSeed{
 		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-reviewer", key: credentials.GitTokenKey, secret: h.reviewerSecret},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
 }
 
 func (h *auditHarness) seedGitHubAppReviewerCredentials(t *testing.T) {
 	t.Helper()
-	cfg := h.githubAppReviewerConfig()
+	cfg := h.githubAppGitConfig()
 	h.seedCredentialWrites(t, cfg, []credentialSeed{
-		{ref: "codereview/default", key: credentials.GitTokenKey, secret: h.gitSecret},
-		{ref: "codereview/default-reviewer-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-app", key: credentials.GitHubAppPrivateKeyKey, secret: h.githubAppPrivateKey},
+		{ref: "codereview/default-reviewer", key: credentials.GitTokenKey, secret: h.reviewerSecret},
 		{ref: "codereview/default-llm", key: credentials.AnthropicAPIKeyKey, secret: h.llmSecret},
 	})
 }
@@ -701,13 +760,18 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 		return reviewcmd.Runtime{}, err
 	}
 	cleanup := func() { _ = store.Close() }
-	providerGit := gitConfigForReviewerAuth(profile)
-	provider, credential, err := h.newGitHubProvider(providerGit, store, installationLookup(runtimeOpts.PRRef))
+	readProvider, _, err := h.newGitHubProvider(profile.Git, store, installationLookup(runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
 		return reviewcmd.Runtime{}, err
 	}
-	postingIdentity, err := provider.WhoAmI(cmd.Context(), credential)
+	postingGit := gitConfigForReviewerAuth(profile)
+	postingProvider, credential, err := h.newGitHubProvider(postingGit, store, installationLookup(runtimeOpts.PRRef))
+	if err != nil {
+		cleanup()
+		return reviewcmd.Runtime{}, err
+	}
+	postingIdentity, err := postingProvider.WhoAmI(cmd.Context(), credential)
 	if err != nil {
 		cleanup()
 		return reviewcmd.Runtime{}, err
@@ -727,7 +791,7 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 		_ = store.Close()
 	}
 	pipelineOpts := pipeline.Options{
-		Provider:                  provider,
+		Provider:                  readProvider,
 		Adapter:                   adapter,
 		Store:                     ledgerStore,
 		NamedSessions:             ledgerStore,
@@ -742,11 +806,12 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 		GitCommand:                noLeakGitCommand(h.prRef),
 		ResolveRepoRoot:           func(context.Context) (string, error) { return h.workbenchRepoDir, nil },
 	}
+	liveProvider := noLeakRuntimeProvider{read: readProvider, write: postingProvider}
 	runner := realReviewRunner{
 		pipeline: pipelineOpts,
 		live: reviewrun.Options{
 			Store:                   ledgerStore,
-			Provider:                provider,
+			Provider:                liveProvider,
 			Planner:                 livePlanner{opts: pipelineOpts},
 			Limiter:                 noLeakLimiter{},
 			Layout:                  h.layout,
@@ -1208,7 +1273,7 @@ func saveConfigOnly(t *testing.T, h *auditHarness) {
 
 func saveGitHubAppReviewerConfigOnly(t *testing.T, h *auditHarness) {
 	t.Helper()
-	h.saveConfigFile(t, h.githubAppReviewerConfig())
+	h.saveConfigFile(t, h.githubAppGitConfig())
 }
 
 func seedConfiguredCredentials(t *testing.T, h *auditHarness) {

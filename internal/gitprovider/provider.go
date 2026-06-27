@@ -5,6 +5,7 @@ import "context"
 // GitProvider is the host-agnostic seam for pull-request reads and writes.
 type GitProvider interface {
 	WhoAmI(ctx context.Context, creds Credential) (Identity, error)
+	ReviewAuthority(ctx context.Context, ref PRRef, identity Identity) (ReviewAuthority, error)
 
 	GetPR(ctx context.Context, ref PRRef) (PR, error)
 	GetDiff(ctx context.Context, ref PRRef) (UnifiedDiff, error)

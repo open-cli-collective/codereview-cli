@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -161,13 +160,18 @@ func TestMeProfileUsesReviewerCredentials(t *testing.T) {
 	}
 }
 
-func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
-	const installationToken = "me-reviewer-github-app-installation-token" // #nosec G101 -- distinctive test canary, not a real token.
+func TestMeReviewerCredentialsTakePrecedenceOverGitHubAppRepositoryAccess(t *testing.T) {
+	const reviewerToken = "me-reviewer-pat-token" // #nosec G101 -- distinctive test canary, not a real token.
 	store := openFileStore(t)
 	defer store.Close()
 	privateKey := testPrivateKeyPEM(t)
-	if _, err := store.SetBundle("work-reviewer", map[string]string{
+	if _, err := store.SetBundle("work-app", map[string]string{
 		credentials.GitHubAppPrivateKeyKey: privateKey,
+	}, credstore.WithOverwrite()); err != nil {
+		t.Fatalf("SetBundle git app: %v", err)
+	}
+	if _, err := store.SetBundle("work-reviewer", map[string]string{
+		credentials.GitTokenKey: reviewerToken,
 	}, credstore.WithOverwrite()); err != nil {
 		t.Fatalf("SetBundle reviewer: %v", err)
 	}
@@ -178,36 +182,17 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	}
 	cfg = withCredentialStore(cfg, testFileCredentialStoreID)
 	work := cfg.Profiles["work"]
-	work.ReviewerCredentials.AuthMode = config.GitAuthModeGitHubApp
-	work.ReviewerCredentials.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
-	cfg.Profiles["work"] = work
-	cfg = config.Normalize(cfg)
-	work = cfg.Profiles["work"]
-	work.Reviewer.GitHubAppInstallation = &config.ProfileReviewerGitHubAppInstallation{
-		Mode:           config.ProfileReviewerGitHubAppInstallationPinned,
-		InstallationID: "42",
-	}
+	work.Git.AuthMode = config.GitAuthModeGitHubApp
+	work.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
+	work.Git.CredentialRef = "codereview/work-app"
+	work.Git.Credential.Name = "codereview/work-app"
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
 
-	var appJWTs []string
+	var auths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.EscapedPath() {
-		case "/app/installations/42":
-			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
-			writeJSON(t, w, map[string]any{"id": 42, "app_id": 12345, "app_slug": "reviewer-app"})
-		case "/app/installations/42/access_tokens":
-			if r.Method != http.MethodPost {
-				t.Fatalf("method = %s, want POST", r.Method)
-			}
-			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
-			writeJSON(t, w, map[string]any{
-				"token":      installationToken,
-				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-			})
-		default:
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
-		}
+		auths = append(auths, r.Header.Get("Authorization"))
+		writeJSON(t, w, map[string]any{"login": "reviewer-bot", "id": 1})
 	}))
 	defer server.Close()
 	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
@@ -223,10 +208,10 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	if err := root.Execute(cmd, []string{"--profile", "work", "me", "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(appJWTs) != 2 || !strings.HasPrefix(appJWTs[0], "Bearer ") || !strings.HasPrefix(appJWTs[1], "Bearer ") {
-		t.Fatalf("app JWT auths = %#v, want app JWTs for installation and token requests", appJWTs)
+	if len(auths) != 1 || auths[0] != "Bearer "+reviewerToken {
+		t.Fatalf("auths = %#v, want reviewer PAT auth", auths)
 	}
-	for _, secret := range []string{privateKey, installationToken, "12345", "42"} {
+	for _, secret := range []string{privateKey, reviewerToken, "12345"} {
 		if strings.Contains(out.String(), secret) {
 			t.Fatalf("stdout leaked %q: %q", secret, out.String())
 		}
@@ -235,8 +220,8 @@ func TestMeReviewerGitHubAppAuthJSONUsesReviewerCredentialFlow(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
 	}
-	if len(got.Profiles) != 1 || got.Profiles[0].CredentialSource != "reviewer_credentials" || got.Profiles[0].Login != "reviewer-app[bot]" {
-		t.Fatalf("JSON = %#v, want reviewer app identity", got)
+	if len(got.Profiles) != 1 || got.Profiles[0].CredentialSource != "reviewer_credentials" || got.Profiles[0].Login != "reviewer-bot" {
+		t.Fatalf("JSON = %#v, want reviewer credential identity", got)
 	}
 }
 
@@ -462,108 +447,99 @@ func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
 	}
 }
 
-func TestMeGitHubAppRequiresInstallationIDWithoutRepositoryContext(t *testing.T) {
-	store := openFileStore(t)
-	defer store.Close()
-	privateKey := testPrivateKeyPEM(t)
-	if _, err := store.SetBundle("home", map[string]string{
-		credentials.GitHubAppPrivateKeyKey: privateKey,
-	}, credstore.WithOverwrite()); err != nil {
-		t.Fatalf("SetBundle home: %v", err)
-	}
-	cfg := fileBackendConfig(t)
-	home := cfg.Profiles["home"]
-	home.Git.AuthMode = config.GitAuthModeGitHubApp
-	home.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
-	cfg.Profiles["home"] = home
-	path := saveTestConfig(t, cfg)
-	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
-		ConfigPath: path,
-		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &out,
+func TestMeSupportsGitHubAppGitIdentityProfile(t *testing.T) {
+	path := writeRawTestConfig(t, `secrets:
+  stores:
+    test-memory:
+      backend:
+        kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: github_app
+      github_app:
+        app_id: "12345"
+      credential:
+        store: test-memory
+        name: codereview/home-app
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
+`)
+	factoryOpened := false
+	resolver := &fakeResolver{identities: map[string]gitprovider.Identity{
+		"codereview/home-app": {Login: "home-app[bot]", ID: "app-id"},
+	}}
+	cmd, out := newTestCommandWithFactory(path, func(*cobra.Command, *root.Options, config.File) (identity.Resolver, func(), error) {
+		factoryOpened = true
+		return resolver, nil, nil
 	})
-	Register(cmd, opts)
 
-	err := root.Execute(cmd, []string{"--profile", "home", "me"})
-	if !errors.Is(err, gitprovider.ErrAuth) {
-		t.Fatalf("Execute error = %v, want ErrAuth", err)
+	if err := root.Execute(cmd, []string{"--profile", "home", "me"}); err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(err.Error(), "installation discovery requires repository context") {
-		t.Fatalf("Execute error = %v, want missing repository context detail", err)
+	if !factoryOpened {
+		t.Fatal("resolver factory was not opened for valid github_app git_identity profile")
 	}
-	if strings.Contains(err.Error()+out.String(), privateKey) {
-		t.Fatalf("output leaked private key: err=%v out=%q", err, out.String())
+	if got := out.String(); !strings.Contains(got, "Login: home-app[bot]") {
+		t.Fatalf("stdout = %q, want GitHub App identity", got)
 	}
 }
 
-func TestMeGitHubAppGitAuthJSONWithoutReviewerCredentials(t *testing.T) {
-	const installationToken = "me-github-app-installation-token" // #nosec G101 -- distinctive test canary, not a real token.
-	store := openFileStore(t)
-	defer store.Close()
-	privateKey := testPrivateKeyPEM(t)
-	if _, err := store.SetBundle("home", map[string]string{
-		credentials.GitHubAppPrivateKeyKey: privateKey,
-	}, credstore.WithOverwrite()); err != nil {
-		t.Fatalf("SetBundle home: %v", err)
-	}
-	cfg := fileBackendConfig(t)
-	home := cfg.Profiles["home"]
-	home.Git.AuthMode = config.GitAuthModeGitHubApp
-	home.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
-	home.ReviewerCredentials = nil
-	cfg.Profiles["home"] = home
-	path := saveTestConfig(t, cfg)
-
-	var appJWTs []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.EscapedPath() {
-		case "/app/installations/42":
-			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
-			writeJSON(t, w, map[string]any{"id": 42, "app_id": 12345, "app_slug": "cr-reviewer"})
-		case "/app/installations/42/access_tokens":
-			if r.Method != http.MethodPost {
-				t.Fatalf("method = %s, want POST", r.Method)
-			}
-			appJWTs = append(appJWTs, r.Header.Get("Authorization"))
-			writeJSON(t, w, map[string]any{
-				"token":      installationToken,
-				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-			})
-		default:
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
-		}
-	}))
-	defer server.Close()
-	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
+func TestMePreservesCachedGitHubAppDiscoverIdentityWithoutPRContext(t *testing.T) {
+	path := writeRawTestConfig(t, `secrets:
+  stores:
+    test-memory:
+      backend:
+        kind: memory
+llm_runtimes:
+  claude-cli:
+    provider: anthropic
+    auth: subscription
+    adapter: claude_cli
+profiles:
+  home:
+    git:
+      host: github.com
+      auth_mode: github_app
+      github_app:
+        app_id: "12345"
+      credential:
+        store: test-memory
+        name: codereview/home-app
+      identity_cache: home-app[bot]
+    reviewer:
+      kind: git_identity
+    llm_runtime: claude-cli
+`)
+	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
 		return &githubResolver{
-			cfg: cfg,
-			options: githubprovider.Options{
-				BaseURL:        server.URL,
-				GraphQLURL:     server.URL + "/graphql",
-				InstallationID: "42",
+			cfg:      cfg,
+			warnings: opts.Stderr,
+			NewClient: func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error) {
+				t.Fatal("GitHub client should not be opened for discovery-mode app identity without PR context")
+				return nil, gitprovider.Credential{}, nil
 			},
 		}, nil, nil
 	})
 
-	if err := root.Execute(cmd, []string{"--profile", "home", "me", "--json"}); err != nil {
+	if err := root.Execute(cmd, []string{"--profile", "home", "me"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(appJWTs) != 2 || !strings.HasPrefix(appJWTs[0], "Bearer ") || !strings.HasPrefix(appJWTs[1], "Bearer ") {
-		t.Fatalf("app JWT auths = %#v, want app JWTs for installation and token requests", appJWTs)
+	if got := out.String(); !strings.Contains(got, "Login: home-app[bot]") ||
+		!strings.Contains(got, "Identity cache updated: false") ||
+		!strings.Contains(got, "cannot be refreshed by cr me without PR context; preserving cached identity") {
+		t.Fatalf("output = %q, want cached identity and warning", got)
 	}
-	for _, secret := range []string{privateKey, installationToken, "12345", "42"} {
-		if strings.Contains(out.String(), secret) {
-			t.Fatalf("stdout leaked %q: %q", secret, out.String())
-		}
-	}
-	var got view.MeResult
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
-	}
-	if len(got.Profiles) != 1 || got.Profiles[0].CredentialSource != "git" || got.Profiles[0].Login != "cr-reviewer[bot]" {
-		t.Fatalf("JSON = %#v, want app-backed git identity", got)
+	cfg := loadTestConfig(t, path)
+	if got := cfg.Profiles["home"].Git.IdentityCache; got != "home-app[bot]" {
+		t.Fatalf("identity cache = %q, want preserved cache", got)
 	}
 }
 
@@ -608,7 +584,7 @@ profiles:
 	}
 }
 
-func TestMeReviewerGitHubAppAuthModeUsesResolver(t *testing.T) {
+func TestMeReviewerPATAuthModeUsesResolver(t *testing.T) {
 	path := writeRawTestConfig(t, `secrets:
   stores:
     test-memory:
@@ -622,9 +598,7 @@ llm_runtimes:
 reviewer_entities:
   work-reviewer:
     host: github.com
-    auth_mode: github_app
-    github_app:
-      app_id: "12345"
+    auth_mode: pat
     credential:
       store: test-memory
       name: codereview/work-reviewer
@@ -639,8 +613,6 @@ profiles:
     reviewer:
       kind: entity
       entity: work-reviewer
-      github_app_installation:
-        mode: discover_from_repository
     llm_runtime: claude-cli
 `)
 	resolver := &fakeResolver{
@@ -656,9 +628,9 @@ profiles:
 		t.Fatalf("Execute: %v", err)
 	}
 	if len(resolver.calls) != 1 ||
-		resolver.calls[0].AuthMode != config.GitAuthModeGitHubApp ||
+		resolver.calls[0].AuthMode != config.GitAuthModePAT ||
 		resolver.calls[0].CredentialRef != "codereview/work-reviewer" {
-		t.Fatalf("resolver calls = %#v, want reviewer github_app config", resolver.calls)
+		t.Fatalf("resolver calls = %#v, want reviewer PAT config", resolver.calls)
 	}
 }
 

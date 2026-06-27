@@ -708,6 +708,58 @@ func TestNamedSessionListAndDelete(t *testing.T) {
 	}
 }
 
+func TestInsertPlannedActionsIsAtomic(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+
+	first := validPlannedAction(run.RunID)
+	second := validPlannedAction(run.RunID)
+	second.PayloadJSON = `{"body":"duplicate action id"}`
+
+	err := store.InsertPlannedActions(context.Background(), []PlannedAction{first, second})
+	if err == nil {
+		t.Fatal("InsertPlannedActions duplicate error = nil, want constraint error")
+	}
+	actions, listErr := store.ListPlannedActions(context.Background(), run.RunID)
+	if listErr != nil {
+		t.Fatalf("ListPlannedActions: %v", listErr)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("planned actions = %#v, want rollback with no actions", actions)
+	}
+}
+
+func TestInsertPlanningResultIsAtomic(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	session := validSession(run.RunID)
+	insertSession(t, store, session)
+
+	finding := validFinding(run.RunID, session.SessionRowID)
+	first := validPlannedAction(run.RunID)
+	second := validPlannedAction(run.RunID)
+	second.PayloadJSON = `{"body":"duplicate action id"}`
+
+	err := store.InsertPlanningResult(context.Background(), []Finding{finding}, []PlannedAction{first, second})
+	if err == nil {
+		t.Fatal("InsertPlanningResult duplicate action error = nil, want constraint error")
+	}
+	findings, listFindingsErr := store.ListFindings(context.Background(), run.RunID)
+	if listFindingsErr != nil {
+		t.Fatalf("ListFindings: %v", listFindingsErr)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings = %#v, want rollback with no findings", findings)
+	}
+	actions, listActionsErr := store.ListPlannedActions(context.Background(), run.RunID)
+	if listActionsErr != nil {
+		t.Fatalf("ListPlannedActions: %v", listActionsErr)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("planned actions = %#v, want rollback with no actions", actions)
+	}
+}
+
 func TestUpdatePlannedActionPersistsMutableFields(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, validAllocateRunParams())

@@ -135,7 +135,7 @@ func TestBenchmarkCompareProgressWritesToStderr(t *testing.T) {
 		SelectedCandidates: []benchmarkCandidate{{
 			ID:      "first",
 			Profile: "home",
-			Stages: benchmarkCandidateStages{Selection: benchmarkSelectionStage{Model: "kimi"}},
+			Stages:  benchmarkCandidateStages{Selection: benchmarkSelectionStage{Model: "kimi"}},
 		}},
 		SelectedCases: []benchmarkCase{{ID: "case_one", PR: "https://github.com/open-cli-collective/codereview-cli/pull/1"}},
 		Runs: []benchmarkRun{
@@ -1133,6 +1133,7 @@ func testConfig() config.File {
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
 					CredentialRef: "codereview/home",
+					IdentityCache: "review-bot",
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,

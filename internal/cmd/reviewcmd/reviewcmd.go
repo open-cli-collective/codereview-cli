@@ -17,14 +17,13 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
-	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
-	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -37,7 +36,9 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
+	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/threadrespond"
 	"github.com/open-cli-collective/codereview-cli/internal/version"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -64,32 +65,19 @@ comments ask for override approval.
 an existing run and does not check existing approvals or approval overrides.`
 
 // Runner executes the configured review pipeline.
-type Runner interface {
-	DryRun(context.Context, pipeline.Request) (pipeline.Result, error)
-	Live(context.Context, pipeline.Request, reviewrun.Flags) (reviewrun.Result, error)
-}
+type Runner = cmdruntime.Runner
+
+// ResponseRunner executes response-only thread lifecycle runs.
+type ResponseRunner = cmdruntime.ResponseRunner
 
 // Runtime contains per-command dependencies that need cleanup after a run.
-type Runtime struct {
-	Runner          Runner
-	PostingIdentity gitprovider.Identity
-	Cleanup         func()
-}
+type Runtime = cmdruntime.Runtime
 
 // RuntimeOptions carries command flags that affect runtime construction.
-type RuntimeOptions struct {
-	MaxAgents                 int
-	MaxConcurrency            int
-	PRRef                     gitprovider.PRRef
-	Retention                 datalifecycle.RetentionPolicy
-	RetentionManualOnly       bool
-	AutoUnlockWorkbenchOnExit bool
-	ResolveRepoRoot           func(context.Context) (string, error)
-	GitCommand                func(context.Context, string, ...string) ([]byte, error)
-}
+type RuntimeOptions = cmdruntime.Options
 
-// RuntimeFactory builds the concrete runtime used by `cr review`.
-type RuntimeFactory func(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error)
+// RuntimeFactory builds the concrete runtime used by review lifecycle commands.
+type RuntimeFactory = cmdruntime.Factory
 
 var (
 	newGitProvider = func(git config.GitConfig, store githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
@@ -127,6 +115,11 @@ type commandFlags struct {
 // Register attaches the review command to rootCmd.
 func Register(rootCmd *cobra.Command, opts *root.Options) {
 	RegisterWithFactory(rootCmd, opts, newRuntime)
+}
+
+// NewRuntime builds the concrete runtime used by review lifecycle commands.
+func NewRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+	return newRuntime(cmd, opts, cfg, profile, runtimeOpts)
 }
 
 // RegisterWithFactory attaches the review command with an injected runtime factory.
@@ -274,7 +267,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 
 	logger := newProgressLogger(opts)
 	configSpan := logger.Start("review", "load_config", "config")
-	path, err := configPath(opts)
+	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
 		return exitcode.AuthConfig(endProgressSpan(configSpan, err))
 	}
@@ -304,11 +297,12 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	profileSpan.End(nil)
 
 	runtimeOpts := RuntimeOptions{
-		MaxAgents:           flags.maxAgents,
-		MaxConcurrency:      flags.maxConcurrency,
-		PRRef:               ref,
-		Retention:           retentionPolicyFromConfig(cfg.Data.Retention),
-		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
+		MaxAgents:                         flags.maxAgents,
+		MaxConcurrency:                    flags.maxConcurrency,
+		PRRef:                             ref,
+		RequireOpinionatedReviewAuthority: !flags.dryRun,
+		Retention:                         cmdruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
+		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 	}
 	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
 	runtime, err := factory(cmd, opts, cfg, profile, runtimeOpts)
@@ -345,6 +339,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		ReviewerEffortOverride:      reviewerEffort,
 		ReviewBaseSHA:               reviewBaseSHA,
 		ReviewHeadSHA:               reviewHeadSHA,
+		Rerun:                       flags.rerun,
 		ToolVersion:                 version.Version,
 	}
 	if !flags.dryRun {
@@ -354,7 +349,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	execSpan := logger.Start("review", "execute_dry_run", "pr")
 	result, err := runtime.Runner.DryRun(ctx, pipelineReq)
 	if err != nil {
-		return endProgressSpan(execSpan, mapRunError(err))
+		return endProgressSpan(execSpan, cmdruntime.MapRunError(err))
 	}
 	execSpan.End(nil)
 	renderSpan := logger.Start("review", "render_result", "stdout")
@@ -424,7 +419,7 @@ func runLive(ctx context.Context, logger *progress.Logger, opts *root.Options, f
 	execSpan := logger.Start("review", "execute_live", "pr")
 	result, err := runner.Live(ctx, req, reviewrun.Flags{Rerun: flags.rerun, RetryPosts: flags.retryPosts})
 	if err != nil {
-		return endProgressSpan(execSpan, mapRunError(err))
+		return endProgressSpan(execSpan, cmdruntime.MapRunError(err))
 	}
 	execSpan.End(nil)
 	renderSpan := logger.Start("review", "render_result", "stdout")
@@ -672,69 +667,43 @@ func viewAction(action reviewplan.Action, planned ledger.PlannedAction) (view.Re
 	return out, nil
 }
 
-func configPath(opts *root.Options) (string, error) {
-	if opts != nil && opts.ConfigPath != "" {
-		return opts.ConfigPath, nil
-	}
-	return config.Path()
-}
-
-func mapRunError(err error) error {
-	switch {
-	case errors.Is(err, config.ErrInvalid),
-		errors.Is(err, config.ErrNotConfigured),
-		errors.Is(err, config.ErrProfileNotFound),
-		errors.Is(err, config.ErrSecretsProfileNotFound),
-		errors.Is(err, config.ErrUnsupported):
-		return cmderr.Config(err)
-	case errors.Is(err, agents.ErrUnsafeSource):
-		return exitcode.Usage(err)
-	case errors.Is(err, gitprovider.ErrAuth),
-		errors.Is(err, gitprovider.ErrPermission),
-		errors.Is(err, gitprovider.ErrRetryable),
-		errors.Is(err, gitprovider.ErrNotFound),
-		errors.Is(err, gitprovider.ErrConflict),
-		errors.Is(err, gitprovider.ErrStaleSHA),
-		errors.Is(err, gitprovider.ErrDiffTooLarge):
-		return cmderr.Provider(err)
-	case errors.Is(err, credentials.ErrInvalidBackendSelection),
-		errors.Is(err, credentials.ErrWrongService),
-		errors.Is(err, credstore.ErrRefEmpty),
-		errors.Is(err, credstore.ErrRefSegmentCount),
-		errors.Is(err, credstore.ErrRefInvalidChar),
-		errors.Is(err, credstore.ErrKeyNotAllowed),
-		errors.Is(err, credstore.ErrExists),
-		errors.Is(err, credstore.ErrFilePassphraseRequired),
-		errors.Is(err, credstore.ErrSecretServiceFailClosed),
-		errors.Is(err, credstore.ErrStoreClosed),
-		errors.Is(err, credstore.ErrBackendNotImplemented):
-		return cmderr.Credential(err)
-	default:
-		return err
-	}
-}
-
 func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
 	profile = normalizeRuntimeProfile(profile)
 	stores := newRuntimeCredentialStores(cfg, opts.Backend, cmderr.BackendFlagChanged(cmd))
 	cleanup := stores.Close
 	logger := newProgressLogger(opts)
-	providerGit := gitConfigForReviewerAuth(profile)
-	providerStore, err := stores.Open(providerGit.Credential)
+	repoProviderStore, err := stores.Open(profile.Git.Credential)
 	if err != nil {
 		cleanup()
-		return Runtime{}, mapRunError(err)
+		return Runtime{}, cmdruntime.MapRunError(err)
 	}
-	provider, credential, err := newGitProvider(providerGit, providerStore, gitProviderOptions(profile, providerGit, runtimeOpts.PRRef))
+	repoProvider, _, err := newGitProvider(profile.Git, repoProviderStore, gitProviderOptions(profile, profile.Git, runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
-		return Runtime{}, mapRunError(err)
+		return Runtime{}, cmdruntime.MapRunError(err)
 	}
-	provider = withProgressProvider(logger, provider)
-	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), provider, credential, providerStore, profile)
+	repoProvider = withProgressProvider(logger, commandName(cmd), repoProvider)
+	postingGit := gitConfigForReviewerAuth(profile)
+	postingProviderStore, err := stores.Open(postingGit.Credential)
 	if err != nil {
 		cleanup()
-		return Runtime{}, mapRunError(err)
+		return Runtime{}, cmdruntime.MapRunError(err)
+	}
+	postingProvider, credential, err := newGitProvider(postingGit, postingProviderStore, gitProviderOptions(profile, postingGit, runtimeOpts.PRRef))
+	if err != nil {
+		cleanup()
+		return Runtime{}, cmdruntime.MapRunError(err)
+	}
+	rawPostingProvider := postingProvider
+	postingProvider = withProgressProvider(logger, commandName(cmd), postingProvider)
+	postingIdentity, err := resolvePostingIdentityForRuntime(cmd.Context(), postingProvider, credential, postingProviderStore, profile)
+	if err != nil {
+		cleanup()
+		return Runtime{}, cmdruntime.MapRunError(err)
+	}
+	if err := warnOpinionatedReviewAuthority(cmd.Context(), rawPostingProvider, runtimeOpts, postingIdentity, opts.Stderr); err != nil {
+		cleanup()
+		return Runtime{}, err
 	}
 	layout, err := runtimeLayout()
 	if err != nil {
@@ -756,26 +725,72 @@ func newRuntime(cmd *cobra.Command, opts *root.Options, cfg config.File, profile
 		return Runtime{}, err
 	}
 	adapter := newLazyAdapter(func() (llm.Adapter, error) {
-		adapterStore := providerStore
+		adapterStore := repoProviderStore
 		if profile.LLM.Auth == config.LLMAuthAPIKey {
 			var err error
 			adapterStore, err = stores.Open(profile.LLM.Credential)
 			if err != nil {
-				return nil, mapRunError(err)
+				return nil, cmdruntime.MapRunError(err)
 			}
 		}
 		adapter, err := newAdapterForRuntime(profile.LLM, adapterStore)
 		if err != nil {
 			return nil, err
 		}
-		return withProgressAdapter(logger, adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
+		return withProgressAdapter(logger, commandName(cmd), adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
 	})
-	runner := buildReviewRunner(ledgerStore, provider, adapter, profile, limiter, layout, opts.Stderr, logger, runtimeOpts)
+	runner := buildReviewRunner(ledgerStore, repoProvider, postingProvider, adapter, profile, limiter, layout, opts.Stderr, logger, runtimeOpts, commandName(cmd))
 	return Runtime{
 		Runner:          runner,
+		Responder:       runner,
 		PostingIdentity: postingIdentity,
 		Cleanup:         cleanup,
 	}, nil
+}
+
+func warnOpinionatedReviewAuthority(ctx context.Context, provider gitprovider.GitProvider, runtimeOpts RuntimeOptions, postingIdentity gitprovider.Identity, warnings io.Writer) error {
+	if !runtimeOpts.RequireOpinionatedReviewAuthority {
+		return nil
+	}
+	authority, err := provider.ReviewAuthority(ctx, runtimeOpts.PRRef, postingIdentity)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		writeReviewAuthorityWarning(warnings, postingIdentity, runtimeOpts.PRRef, "probe failed: "+err.Error())
+		return nil
+	}
+	if authority.Eligible {
+		return nil
+	}
+	detail := "permission unavailable"
+	switch {
+	case strings.TrimSpace(authority.Permission) != "":
+		detail = "permission=" + authority.Permission
+	case strings.TrimSpace(authority.RoleName) != "":
+		detail = "role=" + authority.RoleName
+	}
+	writeReviewAuthorityWarning(warnings, postingIdentity, runtimeOpts.PRRef, detail)
+	return nil
+}
+
+func writeReviewAuthorityWarning(warnings io.Writer, postingIdentity gitprovider.Identity, ref gitprovider.PRRef, detail string) {
+	if warnings == nil {
+		return
+	}
+	repo := fmt.Sprintf("%s/%s", ref.Owner, ref.Repo)
+	_, _ = fmt.Fprintf(warnings, "warning: posting identity %q may not create GitHub reviews that count toward PR approval state for %s (%s); continuing because the review can still be posted\n", postingIdentity.Login, repo, detail)
+}
+
+func commandName(cmd *cobra.Command) string {
+	if cmd == nil {
+		return "review"
+	}
+	name := strings.TrimSpace(cmd.Name())
+	if name == "" {
+		return "review"
+	}
+	return name
 }
 
 func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
@@ -871,15 +886,17 @@ func runtimeLayout() (statepaths.Layout, error) {
 	return layout, nil
 }
 
-func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, runtimeOpts RuntimeOptions) reviewRunner {
+func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitProvider, postingProvider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, runtimeOpts RuntimeOptions, command string) reviewRunner {
+	taskProgress := newPipelineTaskProgress(logger, command)
+	liveProvider := runtimeProvider{read: repoProvider, write: postingProvider}
 	pipelineOpts := pipeline.Options{
-		Provider:                  provider,
+		Provider:                  repoProvider,
 		Adapter:                   adapter,
 		Store:                     ledgerStore,
 		NamedSessions:             ledgerStore,
 		Layout:                    layout,
 		Warnings:                  warnings,
-		TaskProgress:              newPipelineTaskProgress(logger),
+		TaskProgress:              taskProgress,
 		MaxAgents:                 runtimeOpts.MaxAgents,
 		MaxConcurrency:            runtimeOpts.MaxConcurrency,
 		Retention:                 runtimeOpts.Retention,
@@ -892,7 +909,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 		pipeline: pipelineOpts,
 		live: reviewrun.Options{
 			Store:                   ledgerStore,
-			Provider:                provider,
+			Provider:                liveProvider,
 			Planner:                 withProgressPlanner(logger, livePlanner{opts: pipelineOpts}),
 			Limiter:                 limiter,
 			Layout:                  layout,
@@ -901,6 +918,15 @@ func buildReviewRunner(ledgerStore *ledger.Store, provider gitprovider.GitProvid
 			ApprovalOverride:        withProgressApprovalOverrideClassifier(logger, buildApprovalOverrideClassifier(profile, adapter, warnings)),
 			Retention:               runtimeOpts.Retention,
 			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
+		},
+		respond: threadrespond.Options{
+			Store:        ledgerStore,
+			Provider:     liveProvider,
+			Adapter:      adapter,
+			Limiter:      limiter,
+			Layout:       layout,
+			TaskProgress: taskProgress,
+			NewActionID:  pipelineOpts.NewActionID,
 		},
 	}
 }
@@ -944,15 +970,18 @@ func (c *lazyApprovalOverrideClassifier) get() (approvaloverride.Classifier, boo
 		c.disabled = true
 		return nil, false
 	}
-	if resolved, ok := config.ResolveModelTier(c.profile.LLM, config.ModelTierSmall); ok {
-		c.classifier = approvaloverride.NewLLMClassifier(c.adapter, resolved.Model, "low")
-		return c.classifier, true
-	}
-	if resolved, ok := config.ResolveModelTier(c.profile.LLM, config.ModelTierMedium); ok {
+	resolved, ok := stagemodel.ResolveFirstAvailable(stagemodel.Request{
+		Profile:       c.profile,
+		Stage:         stagemodel.StageApprovalOverride,
+		DefaultEffort: "low",
+	}, config.ModelTierSmall, config.ModelTierMedium)
+	if ok {
 		if c.warnings != nil {
-			_, _ = fmt.Fprintf(c.warnings, "warning: approval override classifier small model is not configured; falling back to medium tier model %s\n", resolved.Model)
+			if resolved.Tier == config.ModelTierMedium {
+				_, _ = fmt.Fprintf(c.warnings, "warning: approval override classifier small model is not configured; falling back to medium tier model %s\n", resolved.Model)
+			}
 		}
-		c.classifier = approvaloverride.NewLLMClassifier(c.adapter, resolved.Model, "low")
+		c.classifier = approvaloverride.NewLLMClassifier(c.adapter, resolved.Model, resolved.Effort)
 		return c.classifier, true
 	}
 	if c.warnings != nil {
@@ -1008,6 +1037,14 @@ func (a *lazyAdapter) SupportsResume() bool {
 	return adapter.SupportsResume()
 }
 
+func (a *lazyAdapter) SupportsCheckoutReadonly() bool {
+	adapter, err := a.get()
+	if err != nil {
+		return false
+	}
+	return llm.SupportsCheckoutReadonly(adapter)
+}
+
 func (a *lazyAdapter) SupportsCacheAccounting() bool {
 	adapter, err := a.get()
 	if err != nil {
@@ -1048,20 +1085,10 @@ func (a *lazyAdapter) Resume(ctx context.Context, sessionID string, req llm.Requ
 	return adapter.Resume(ctx, sessionID, req)
 }
 
-func retentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.RetentionPolicy {
-	if retention.MaxAgeDays == nil {
-		return datalifecycle.RetentionPolicy{}
-	}
-	maxAgeDays := *retention.MaxAgeDays
-	if maxAgeDays == 0 {
-		return datalifecycle.RetentionPolicy{LiveForever: true}
-	}
-	return datalifecycle.RetentionPolicy{LiveMaxAge: time.Duration(maxAgeDays) * 24 * time.Hour}
-}
-
 type reviewRunner struct {
 	pipeline pipeline.Options
 	live     reviewrun.Options
+	respond  threadrespond.Options
 }
 
 func (r reviewRunner) DryRun(ctx context.Context, req pipeline.Request) (pipeline.Result, error) {
@@ -1070,6 +1097,22 @@ func (r reviewRunner) DryRun(ctx context.Context, req pipeline.Request) (pipelin
 
 func (r reviewRunner) Live(ctx context.Context, req pipeline.Request, flags reviewrun.Flags) (reviewrun.Result, error) {
 	return reviewrun.Run(ctx, r.live, reviewrun.Request{Pipeline: req, Flags: flags})
+}
+
+func (r reviewRunner) Respond(ctx context.Context, req threadrespond.Request) (threadrespond.Result, error) {
+	opts := r.respond
+	if opts.Acquire == nil && r.live.Acquire != nil {
+		opts.Acquire = func(path string) (threadrespond.Lock, error) {
+			return r.live.Acquire(path)
+		}
+	}
+	if opts.Now == nil {
+		opts.Now = r.live.Now
+	}
+	if opts.NewRunID == nil {
+		opts.NewRunID = r.live.NewRunID
+	}
+	return threadrespond.Run(ctx, opts, req)
 }
 
 type livePlanner struct {

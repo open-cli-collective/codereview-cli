@@ -139,6 +139,57 @@ func (d ThreadDecision) Valid() bool {
 	}
 }
 
+// ThreadResponseKind identifies the type of response to post to an existing
+// inline discussion thread.
+type ThreadResponseKind string
+
+// ThreadResponseKind values.
+const (
+	ThreadResponseReply        ThreadResponseKind = "reply"
+	ThreadResponseSummaryReply ThreadResponseKind = "summary_reply"
+)
+
+// String returns the wire/domain representation.
+func (k ThreadResponseKind) String() string {
+	return string(k)
+}
+
+// Valid reports whether k is one of the known thread response kind values.
+func (k ThreadResponseKind) Valid() bool {
+	switch k {
+	case ThreadResponseReply, ThreadResponseSummaryReply:
+		return true
+	default:
+		return false
+	}
+}
+
+// ThreadResponseAction is a concrete response to an existing PR thread.
+type ThreadResponseAction struct {
+	Kind      ThreadResponseKind `json:"kind"`
+	ThreadID  string             `json:"thread_id"`
+	Body      string             `json:"body"`
+	Resolve   bool               `json:"resolve,omitempty"`
+	Rationale string             `json:"rationale,omitempty"`
+}
+
+// Validate checks the response action can be planned safely.
+func (a ThreadResponseAction) Validate() error {
+	if !a.Kind.Valid() {
+		return invalidValue("thread response kind", a.Kind.String())
+	}
+	if strings.TrimSpace(a.ThreadID) == "" {
+		return fmt.Errorf("thread response ID is required")
+	}
+	if strings.TrimSpace(a.Body) == "" {
+		return fmt.Errorf("thread response body is required")
+	}
+	if a.Resolve && a.Kind != ThreadResponseSummaryReply {
+		return fmt.Errorf("thread response resolve requires summary_reply")
+	}
+	return nil
+}
+
 // AnchorKind identifies whether a finding is line- or file-scoped.
 type AnchorKind string
 

@@ -29,6 +29,10 @@ Interactive `init` should use these primary user-facing terms:
   and GitHub Enterprise hosts such as `github.mycompany.com`.
 - **Reviewer entity**: the actor that posts `COMMENT`, `APPROVE`, or
   `REQUEST_CHANGES` on pull requests.
+  On GitHub, a reviewer entity must resolve to a repository-authorized
+  identity for `APPROVE` or `REQUEST_CHANGES` to count toward PR state. Live
+  review warns and continues when the selected reviewer can write a review
+  object but GitHub may not treat it as an opinionated review.
 - **LLM runtime**: the way reviewer agents run and authenticate, such as Claude
   CLI subscription auth, Codex CLI subscription auth, Pi local runtime, or a
   direct API-key-backed provider path.
@@ -198,8 +202,8 @@ follow-up credential work without leaking values.
 
 All credential-bearing init flows should show equivalent non-secret destination
 context before collecting secret values. This includes repository-access Git
-credentials, reviewer PAT/GitHub App credentials, and LLM API keys handled by
-the shared credential collector.
+credentials, reviewer PAT credentials, reviewer GitHub App private keys, and
+LLM API keys handled by the shared credential collector.
 
 Destination summaries should include:
 
@@ -251,7 +255,7 @@ contextual variants of the same fallback choice, such as:
 
 - **Post as rianjs (GitHub PAT)**
 - **Post as acme-review-bot (GitHub App)**
-- **Post using this profile's Git account (GitHub PAT)**
+- **Post using this profile's Git account (GitHub PAT or GitHub App)**
 
 This means:
 
@@ -310,6 +314,9 @@ and saved config must stay stable:
   profile selects it with `profiles.<profile>.reviewer.kind: entity` and
   `profiles.<profile>.reviewer.entity`. The Git-account fallback maps to
   `profiles.<profile>.reviewer.kind: git_identity`.
+  A GitHub reviewer entity is not just posting credentials: the resolved
+  identity must also have repository authority for GitHub to count blocking or
+  approving reviews toward the PR decision.
 - **Review profile** maps to one saved entry under `profiles.<name>`.
 
 This section is intentionally high level. The detailed field inventory and

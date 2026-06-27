@@ -75,7 +75,8 @@ func TestLLMClassifierReturnsBoolean(t *testing.T) {
 			URL:    "https://example.test/pr/1",
 			Author: gitprovider.Identity{Login: "author"},
 		},
-		Candidates: []Candidate{{ID: "1", Source: "issue_comment", Body: "please approve", EffectiveAt: time.Now().UTC()}},
+		Candidates:  []Candidate{{ID: "1", Source: "issue_comment", Body: "please approve", EffectiveAt: time.Now().UTC()}},
+		LLMTasksDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("ClassifyApprovalOverride: %v", err)
@@ -89,5 +90,36 @@ func TestLLMClassifierReturnsBoolean(t *testing.T) {
 	}
 	if requests[0].Model != "small-model" || requests[0].Effort != "low" {
 		t.Fatalf("request = %#v, want configured model/effort", requests[0])
+	}
+}
+
+func TestLLMClassifierReusesLifecycleCache(t *testing.T) {
+	taskDir := t.TempDir()
+	req := Request{
+		PR: gitprovider.PR{
+			Title:  "Fast path approval",
+			URL:    "https://example.test/pr/1",
+			Author: gitprovider.Identity{Login: "author"},
+		},
+		Candidates:  []Candidate{{ID: "1", Source: "issue_comment", Body: "please approve", EffectiveAt: time.Now().UTC()}},
+		LLMTasksDir: taskDir,
+	}
+	firstAdapter := &llm.FakeAdapter{}
+	firstAdapter.Queue(llm.FakeResult{
+		SessionID: "session-1",
+		Response:  llm.Response{StructuredOutput: []byte(`{"schema_version":1,"approval_override_requested":true}`)},
+	})
+	first := NewLLMClassifier(firstAdapter, "small-model", "low")
+	if result, err := first.ClassifyApprovalOverride(context.Background(), req); err != nil || !result.Approve {
+		t.Fatalf("first ClassifyApprovalOverride = %#v err=%v, want approve", result, err)
+	}
+
+	secondAdapter := &llm.FakeAdapter{}
+	second := NewLLMClassifier(secondAdapter, "small-model", "low")
+	if result, err := second.ClassifyApprovalOverride(context.Background(), req); err != nil || !result.Approve {
+		t.Fatalf("second ClassifyApprovalOverride = %#v err=%v, want cached approve", result, err)
+	}
+	if len(secondAdapter.Requests()) != 0 {
+		t.Fatalf("second adapter requests = %#v, want cache hit", secondAdapter.Requests())
 	}
 }

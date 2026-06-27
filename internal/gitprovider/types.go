@@ -51,6 +51,14 @@ type Identity struct {
 	DisplayName string
 }
 
+// ReviewAuthority describes whether the resolved posting identity can create a
+// GitHub review that counts as APPROVE/REQUEST_CHANGES for a specific repo.
+type ReviewAuthority struct {
+	Eligible   bool
+	Permission string
+	RoleName   string
+}
+
 // PRBranchRef identifies a base or head ref. Host/Owner/Repo are explicit
 // because a pull request head may live in a fork.
 type PRBranchRef struct {
@@ -104,6 +112,7 @@ type UnifiedDiff struct {
 type ProviderCaps struct {
 	NativeFileLevelComments bool
 	ThreadResolution        bool
+	BundleInlineOnSubmit    bool
 }
 
 type (
@@ -166,6 +175,7 @@ type ReviewRequest struct {
 	CommitSHA string
 	Event     review.ReviewEvent
 	Body      string
+	Comments  []InlineComment
 }
 
 // Validate checks provider-seam invariants for a review submission.
@@ -176,7 +186,15 @@ func (r ReviewRequest) Validate() error {
 	if !r.Event.Valid() {
 		return fmt.Errorf("invalid review event %q", r.Event)
 	}
-	return requireNonEmpty("body", r.Body)
+	if err := requireNonEmpty("body", r.Body); err != nil {
+		return err
+	}
+	for i, comment := range r.Comments {
+		if err := comment.Validate(); err != nil {
+			return fmt.Errorf("review comment %d: %w", i+1, err)
+		}
+	}
+	return nil
 }
 
 // TreeEntry is one git tree entry at a ref.

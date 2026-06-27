@@ -103,11 +103,13 @@ func TestReviewRequestValidate(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid", request: valid},
+		{name: "valid with comments", request: mutateReview(valid, func(r *ReviewRequest) { r.Comments = []InlineComment{testInlineComment()} })},
 		{name: "missing commit", request: mutateReview(valid, func(r *ReviewRequest) { r.CommitSHA = "" }), wantErr: "commit SHA"},
 		{name: "blank commit", request: mutateReview(valid, func(r *ReviewRequest) { r.CommitSHA = "  " }), wantErr: "commit SHA"},
 		{name: "bad event", request: mutateReview(valid, func(r *ReviewRequest) { r.Event = "changes_requested" }), wantErr: "review event"},
 		{name: "missing body", request: mutateReview(valid, func(r *ReviewRequest) { r.Body = "" }), wantErr: "body"},
 		{name: "blank body", request: mutateReview(valid, func(r *ReviewRequest) { r.Body = "  " }), wantErr: "body"},
+		{name: "bad review comment", request: mutateReview(valid, func(r *ReviewRequest) { r.Comments = []InlineComment{{Body: "x"}} }), wantErr: "review comment 1"},
 	}
 
 	for _, tt := range tests {

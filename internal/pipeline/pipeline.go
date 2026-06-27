@@ -30,13 +30,18 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
-	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/pricing"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/sessionreuse"
+	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/threadanalysis"
+	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
 
 const (
@@ -69,12 +74,16 @@ type rangeDiffProvider interface {
 // Store is the ledger behavior required by the dry-run pipeline.
 type Store interface {
 	ListRuns(context.Context) ([]ledger.Run, error)
+	ListRunsForHeadScope(context.Context, ledger.ListRunsForHeadScopeParams) ([]ledger.Run, error)
 	DeleteRun(context.Context, string) error
 	AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error)
 	InsertSession(context.Context, ledger.Session) error
 	GetSession(context.Context, string) (ledger.Session, error)
 	InsertFinding(context.Context, ledger.Finding) error
 	InsertPlannedAction(context.Context, ledger.PlannedAction) error
+	InsertPlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error
+	ListFindings(context.Context, string) ([]ledger.Finding, error)
+	ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error)
 	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
 }
 
@@ -85,35 +94,16 @@ type NamedSessionStore interface {
 
 // LLMTaskProgress records task-aware LLM pipeline breadcrumbs without owning
 // command IO details.
-type LLMTaskProgress interface {
-	StartLLMTask(LLMTaskProgressEvent) LLMTaskProgressSpan
-	LoadLLMTask(LLMTaskProgressEvent, LLMTaskProgressResult)
-}
+type LLMTaskProgress = llmlifecycle.Progress
 
 // LLMTaskProgressSpan is one active LLM task breadcrumb.
-type LLMTaskProgressSpan interface {
-	End(error, LLMTaskProgressResult)
-}
+type LLMTaskProgressSpan = llmlifecycle.ProgressSpan
 
 // LLMTaskProgressEvent describes one LLM task execution or reload.
-type LLMTaskProgressEvent struct {
-	TaskID          string
-	Phase           string
-	AgentID         string
-	Model           string
-	Effort          string
-	LogPath         string
-	ResumeSessionID string
-	Source          string
-}
+type LLMTaskProgressEvent = llmlifecycle.ProgressEvent
 
 // LLMTaskProgressResult describes the outcome of one task execution or reload.
-type LLMTaskProgressResult struct {
-	ProviderSessionID  string
-	Status             string
-	ValidationAttempts int
-	Cached             bool
-}
+type LLMTaskProgressResult = llmlifecycle.ProgressResult
 
 // ContextBudget limits prompt size. A negative MaxPromptBytes disables checks.
 type ContextBudget struct {
@@ -166,6 +156,7 @@ type Request struct {
 	ReviewerEffortOverride      string
 	ReviewBaseSHA               string
 	ReviewHeadSHA               string
+	Rerun                       bool
 
 	FailOn              *review.Severity
 	IncludeNits         bool
@@ -181,13 +172,14 @@ type Request struct {
 
 // SelectionRequest runs only the selection phase without review persistence or posting.
 type SelectionRequest struct {
-	PRRef         gitprovider.PRRef
-	ProfileName   string
-	Profile       config.Profile
-	AgentDirs     []string
-	ArtifactDir   string
-	ReviewBaseSHA string
-	ReviewHeadSHA string
+	PRRef           gitprovider.PRRef
+	ProfileName     string
+	Profile         config.Profile
+	PostingIdentity gitprovider.Identity
+	AgentDirs       []string
+	ArtifactDir     string
+	ReviewBaseSHA   string
+	ReviewHeadSHA   string
 
 	SelectionModelOverride      string
 	SelectionEffortOverride     string
@@ -195,156 +187,19 @@ type SelectionRequest struct {
 }
 
 // ArtifactPaths contains per-run artifact paths.
-// The pipeline constructs these from caller-owned artifact roots plus fixed
-// child names, so methods on this type return pipeline-owned paths rather than
-// arbitrary user input.
-type ArtifactPaths struct {
-	Dir              string `json:"dir"`
-	DiffPatch        string `json:"diff_patch"`
-	SlicesDir        string `json:"slices_dir"`
-	FindingsJSON     string `json:"findings_json"`
-	RollupMarkdown   string `json:"rollup_markdown"`
-	AgentSourcesJSON string `json:"agent_sources_json"`
-	AgentLogsDir     string `json:"agent_logs_dir"`
-	LLMTasksDir      string `json:"llm_tasks_dir"`
-	DossierDir       string `json:"dossier_dir"`
-	WorkbenchDir     string `json:"workbench_dir"`
-	WorkbenchRepoDir string `json:"workbench_repo_dir"`
-	WorkbenchScratch string `json:"workbench_scratch_dir"`
-}
+type ArtifactPaths = runartifact.Paths
 
-// SlicePatch returns the artifact path for an agent/file diff slice.
-func (p ArtifactPaths) SlicePatch(agentID, filePath string) (string, error) {
-	if strings.TrimSpace(agentID) == "" {
-		return "", fmt.Errorf("pipeline: agent ID is required")
-	}
-	if strings.TrimSpace(filePath) == "" {
-		return "", fmt.Errorf("pipeline: file path is required")
-	}
-	return filepath.Join(p.SlicesDir, statepaths.Encode(agentID), statepaths.Encode(filePath)+".patch"), nil
-}
+const llmTaskSchemaVersion = llmlifecycle.SchemaVersion
 
-// AgentLog returns the tailable LLM log path for an agent.
-func (p ArtifactPaths) AgentLog(agentID string) (string, error) {
-	if strings.TrimSpace(agentID) == "" {
-		return "", fmt.Errorf("pipeline: agent ID is required")
-	}
-	return filepath.Join(p.AgentLogsDir, statepaths.Encode(agentID)+".jsonl"), nil
-}
-
-// LLMTaskDir returns the artifact directory for one durable LLM task.
-func (p ArtifactPaths) LLMTaskDir(taskID string) (string, error) {
-	if strings.TrimSpace(taskID) == "" {
-		return "", fmt.Errorf("pipeline: LLM task ID is required")
-	}
-	return filepath.Join(p.LLMTasksDir, statepaths.Encode(taskID)), nil
-}
-
-// LLMTaskMetadata returns the metadata artifact path for one durable LLM task.
-func (p ArtifactPaths) LLMTaskMetadata(taskID string) (string, error) {
-	dir, err := p.LLMTaskDir(taskID)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "metadata.json"), nil
-}
-
-// LLMTaskValidatedOutput returns the validated structured output path for one task.
-func (p ArtifactPaths) LLMTaskValidatedOutput(taskID string) (string, error) {
-	dir, err := p.LLMTaskDir(taskID)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "validated-output.json"), nil
-}
-
-// LLMTaskRawAttempt returns the raw structured output path for a failed attempt.
-func (p ArtifactPaths) LLMTaskRawAttempt(taskID, attempt string) (string, error) {
-	dir, err := p.LLMTaskDir(taskID)
-	if err != nil {
-		return "", err
-	}
-	attempt = strings.TrimSpace(attempt)
-	if attempt == "" {
-		return "", fmt.Errorf("pipeline: LLM task attempt is required")
-	}
-	return filepath.Join(dir, statepaths.Encode(attempt)+".json"), nil
-}
-
-// DossierRawPath returns a raw dossier artifact path by file name.
-func (p ArtifactPaths) DossierRawPath(name string) (string, error) {
-	return dossierChildPath(filepath.Join(p.DossierDir, "raw"), name)
-}
-
-// DossierSummaryPath returns a summary dossier artifact path by file name.
-func (p ArtifactPaths) DossierSummaryPath(name string) (string, error) {
-	return dossierChildPath(filepath.Join(p.DossierDir, "summary"), name)
-}
-
-// DossierFinalPath returns a reviewer-facing dossier artifact path by file name.
-func (p ArtifactPaths) DossierFinalPath(name string) (string, error) {
-	return dossierChildPath(filepath.Join(p.DossierDir, "final"), name)
-}
-
-// DossierIndexPath returns the dossier index artifact path.
-func (p ArtifactPaths) DossierIndexPath() string {
-	return filepath.Join(p.DossierDir, "index.json")
-}
-
-// WorkbenchMetadataPath returns the workbench metadata artifact path.
-func (p ArtifactPaths) WorkbenchMetadataPath() string {
-	return filepath.Join(p.WorkbenchDir, "metadata.json")
-}
-
-func dossierChildPath(dir, name string) (string, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", fmt.Errorf("pipeline: dossier artifact name is required")
-	}
-	if name == "." || name == ".." {
-		return "", fmt.Errorf("pipeline: dossier artifact name must be a file name")
-	}
-	if strings.Contains(name, "/") || strings.Contains(name, string(filepath.Separator)) {
-		return "", fmt.Errorf("pipeline: dossier artifact name must be a file name")
-	}
-	return filepath.Join(dir, name), nil
-}
-
-const llmTaskSchemaVersion = 1
-
-type llmTaskStatus string
+type llmTaskStatus = llmlifecycle.Status
 
 const (
-	llmTaskStatusSucceeded      llmTaskStatus = "succeeded"
-	llmTaskStatusFailedIsolated llmTaskStatus = "failed_isolated"
-	llmTaskStatusFailedBlocking llmTaskStatus = "failed_blocking"
+	llmTaskStatusSucceeded      llmTaskStatus = llmlifecycle.StatusSucceeded
+	llmTaskStatusFailedIsolated llmTaskStatus = llmlifecycle.StatusFailedIsolated
+	llmTaskStatusFailedBlocking llmTaskStatus = llmlifecycle.StatusFailedBlocking
 )
 
-type llmTaskMetadata struct {
-	SchemaVersion       int                      `json:"schema_version"`
-	TaskID              string                   `json:"task_id"`
-	Phase               string                   `json:"phase"`
-	DependencyTaskIDs   []string                 `json:"dependency_task_ids,omitempty"`
-	InputFingerprint    string                   `json:"input_fingerprint"`
-	AgentID             string                   `json:"agent_id,omitempty"`
-	Status              llmTaskStatus            `json:"status"`
-	SessionRowID        string                   `json:"session_row_id,omitempty"`
-	ProviderSessionID   string                   `json:"provider_session_id,omitempty"`
-	Adapter             string                   `json:"adapter,omitempty"`
-	Model               string                   `json:"model,omitempty"`
-	Effort              string                   `json:"effort,omitempty"`
-	LogPath             string                   `json:"log_path,omitempty"`
-	ValidatedOutputPath string                   `json:"validated_output_path,omitempty"`
-	Error               string                   `json:"error,omitempty"`
-	Attempts            []llmTaskAttemptMetadata `json:"attempts,omitempty"`
-}
-
-type llmTaskAttemptMetadata struct {
-	Attempt           string `json:"attempt"`
-	ProviderSessionID string `json:"provider_session_id,omitempty"`
-	RawOutputPath     string `json:"raw_output_path,omitempty"`
-	DecodeError       string `json:"decode_error,omitempty"`
-}
+type llmTaskMetadata = llmlifecycle.Metadata
 
 var errLLMTaskFailedBlocking = errors.New("pipeline: blocking LLM task failed")
 
@@ -482,6 +337,7 @@ type namedSessionState struct {
 type selectionSetupRequest struct {
 	PRRef            gitprovider.PRRef
 	Profile          config.Profile
+	PostingIdentity  gitprovider.Identity
 	AgentDirs        []string
 	ReviewBaseSHA    string
 	ReviewHeadSHA    string
@@ -502,6 +358,7 @@ type preparedSelectionContext struct {
 	parsed           ParsedDiff
 	changedFiles     []string
 	threads          []gitprovider.InlineThread
+	threadContext    []threadcontext.Thread
 	reviews          []gitprovider.Review
 	issueComments    []gitprovider.IssueComment
 	catalog          agents.Catalog
@@ -523,6 +380,7 @@ type selectionPhaseRequest struct {
 	Catalog                     agents.Catalog
 	ParsedDiff                  ParsedDiff
 	Threads                     []gitprovider.InlineThread
+	ThreadContext               []threadcontext.Thread
 	Artifacts                   ArtifactPaths
 	ResumeSessionID             string
 	MaxAgents                   int
@@ -586,6 +444,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
 		PRRef:            req.PRRef,
 		Profile:          req.Profile,
+		PostingIdentity:  req.PostingIdentity,
 		AgentDirs:        req.AgentDirs,
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
@@ -633,6 +492,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		Catalog:                     prepared.catalog,
 		ParsedDiff:                  prepared.parsed,
 		Threads:                     prepared.threads,
+		ThreadContext:               prepared.threadContext,
 		Artifacts:                   prepared.artifacts,
 		MaxAgents:                   opts.maxAgents(),
 	})
@@ -663,7 +523,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	now := opts.now()
 	maxAgents := opts.maxAgents()
 	maxConcurrency := opts.maxConcurrency(maxAgents)
-	runID := opts.newRunID()
+	runID := ""
 	if mode.live {
 		runID = mode.run.RunID
 	}
@@ -671,12 +531,27 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	if err != nil {
 		return Result{}, err
 	}
+	var resumedDryRun *ledger.Run
+	if !mode.live && !req.Rerun {
+		run, ok, err := findIncompleteDryRun(ctx, opts.Store, req, reviewCtx.reviewPR)
+		if err != nil {
+			return Result{}, err
+		}
+		if ok {
+			resumedDryRun = &run
+			runID = run.RunID
+		}
+	}
+	if !mode.live && strings.TrimSpace(runID) == "" {
+		runID = opts.newRunID()
+	}
 	if sameIdentity(reviewCtx.pr.Author, req.PostingIdentity) && req.Profile.ReviewerCredentials != nil && !req.AllowSelfReview {
 		return Result{}, fmt.Errorf("pipeline: reviewer credentials resolve to PR author %q; pass --allow-self-review to continue", req.PostingIdentity.Login)
 	}
 	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
 		PRRef:            req.PRRef,
 		Profile:          req.Profile,
+		PostingIdentity:  req.PostingIdentity,
 		AgentDirs:        req.AgentDirs,
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
@@ -685,6 +560,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		ResolveArtifacts: func(reviewPR gitprovider.PR) (ArtifactPaths, error) {
 			if mode.live {
 				return ArtifactPathsFromDir(mode.run.ArtifactPath), nil
+			}
+			if resumedDryRun != nil {
+				return ArtifactPathsFromDir(resumedDryRun.ArtifactPath), nil
 			}
 			return ArtifactPathsForRun(opts.Layout, req.PRRef, reviewPR, req.ProfileName, postingKey(req.PostingIdentity), runID)
 		},
@@ -696,20 +574,27 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	result := prepared.reviewResult()
 	run := mode.run
 	if !mode.live {
-		run, err = opts.Store.AllocateRun(ctx, ledger.AllocateRunParams{
-			PRKey:           prepared.prKey,
-			PRURL:           req.PRURL,
-			RunID:           runID,
-			SHA:             prepared.reviewPR.Head.SHA,
-			BaseSHA:         prepared.reviewPR.Base.SHA,
-			Profile:         req.ProfileName,
-			PostingIdentity: postingKey(req.PostingIdentity),
-			PostMode:        ledger.PostModeDryRun,
-			StartedAt:       now,
-			ArtifactPath:    prepared.artifacts.Dir,
-		})
-		if err != nil {
-			return Result{}, err
+		if resumedDryRun != nil {
+			run = *resumedDryRun
+		} else {
+			run, err = opts.Store.AllocateRun(ctx, ledger.AllocateRunParams{
+				PRKey:           prepared.prKey,
+				PRURL:           req.PRURL,
+				RunID:           runID,
+				SHA:             prepared.reviewPR.Head.SHA,
+				BaseSHA:         prepared.reviewPR.Base.SHA,
+				Profile:         req.ProfileName,
+				PostingIdentity: postingKey(req.PostingIdentity),
+				PostMode:        ledger.PostModeDryRun,
+				StartedAt:       now,
+				ArtifactPath:    prepared.artifacts.Dir,
+			})
+			if err != nil {
+				return Result{}, err
+			}
+			if err := runartifact.WriteMarker(prepared.artifacts.Dir, runartifact.KindReview, run.RunID); err != nil {
+				return Result{}, err
+			}
 		}
 		defer func() {
 			if !completed {
@@ -777,6 +662,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			Catalog:                     prepared.catalog,
 			ParsedDiff:                  prepared.parsed,
 			Threads:                     prepared.threads,
+			ThreadContext:               prepared.threadContext,
 			Artifacts:                   prepared.artifacts,
 			ResumeSessionID:             namedSession.resumeID(),
 			MaxAgents:                   maxAgents,
@@ -792,6 +678,13 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		namedSession.recordSessionID(selectionSession)
 
 		selectionTaskIDs := []string{orchestratorSelectionStage}
+		threadResponses, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext)
+		if err != nil {
+			if errors.Is(err, errLLMTaskFailedBlocking) {
+				failureOutcome = ledger.OutcomeIncomplete
+			}
+			return Result{}, err
+		}
 		findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, reviewerFindingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency)
 		if err != nil {
 			if errors.Is(err, errLLMTaskFailedBlocking) {
@@ -861,6 +754,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 
 		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
+			threadResponses:  threadResponses,
 			hasRun:           true,
 			selection:        selectionSession,
 			reviewers:        reviewerSessions,
@@ -876,26 +770,32 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		result.Plan = plan
 	}
+	ledgerFindings := make([]ledger.Finding, 0, len(result.Plan.AnchoredFindings))
 	for _, finding := range result.Plan.AnchoredFindings {
 		rowID, err := sessionRowIDForFinding(finding, findingSession)
 		if err != nil {
 			return Result{}, err
 		}
-		ledgerFinding := ledgerFinding(run.RunID, rowID, finding)
-		if err := opts.Store.InsertFinding(ctx, ledgerFinding); err != nil {
-			return Result{}, err
-		}
+		ledgerFindings = append(ledgerFindings, ledgerFinding(run.RunID, rowID, finding))
 	}
+	plannedActions := make([]ledger.PlannedAction, 0, len(result.Plan.Actions))
 	for _, action := range result.Plan.Actions {
-		planned, err := plannedAction(run.RunID, action)
+		planned, err := plannedactions.FromReviewPlan(run.RunID, action)
 		if err != nil {
 			return Result{}, err
 		}
-		if err := opts.Store.InsertPlannedAction(ctx, planned); err != nil {
-			return Result{}, err
-		}
-		result.PlannedActions = append(result.PlannedActions, planned)
+		plannedActions = append(plannedActions, planned)
 	}
+	_, existingActions, hasPersistedPlanning, err := persistedPlanning(ctx, opts.Store, run.RunID)
+	if err != nil {
+		return Result{}, err
+	}
+	if hasPersistedPlanning {
+		plannedActions = existingActions
+	} else if err := opts.Store.InsertPlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
+		return Result{}, err
+	}
+	result.PlannedActions = plannedActions
 	if err := writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection)); err != nil {
 		return Result{}, err
 	}
@@ -907,6 +807,62 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	completed = true
 	result.FailOnTriggered = failOnTriggered(result.Findings, req.FailOn)
 	return result, nil
+}
+
+func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitprovider.PR) (ledger.Run, bool, error) {
+	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		return ledger.Run{}, false, err
+	}
+	postingIdentity := postingKey(req.PostingIdentity)
+	runs, err := store.ListRunsForHeadScope(ctx, ledger.ListRunsForHeadScopeParams{
+		PRKey:           prKey,
+		SHA:             pr.Head.SHA,
+		Profile:         req.ProfileName,
+		PostingIdentity: postingIdentity,
+	})
+	if err != nil {
+		return ledger.Run{}, false, err
+	}
+	var best ledger.Run
+	found := false
+	for _, run := range runs {
+		if run.BaseSHA != pr.Base.SHA || run.PostMode != ledger.PostModeDryRun {
+			continue
+		}
+		if run.Outcome != nil && *run.Outcome != ledger.OutcomeIncomplete {
+			continue
+		}
+		if strings.TrimSpace(run.ArtifactPath) == "" {
+			continue
+		}
+		if !runartifact.MarkerMatches(run.ArtifactPath, runartifact.KindReview, run.RunID) {
+			continue
+		}
+		if !found || run.Attempt > best.Attempt || (run.Attempt == best.Attempt && run.StartedAt.After(best.StartedAt)) {
+			best = run
+			found = true
+		}
+	}
+	return best, found, nil
+}
+
+func persistedPlanning(ctx context.Context, store Store, runID string) ([]ledger.Finding, []ledger.PlannedAction, bool, error) {
+	findings, err := store.ListFindings(ctx, runID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	actions, err := store.ListPlannedActions(ctx, runID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if len(findings) == 0 && len(actions) == 0 {
+		return nil, nil, false, nil
+	}
+	if len(actions) == 0 {
+		return nil, nil, false, fmt.Errorf("pipeline: persisted planning for run %s has findings but no planned actions", runID)
+	}
+	return findings, actions, true, nil
 }
 
 func (c preparedSelectionContext) reviewResult() Result {
@@ -1006,12 +962,19 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		return preparedSelectionContext{}, err
 	}
 	var threads []gitprovider.InlineThread
+	var threadContext []threadcontext.Thread
 	var reviews []gitprovider.Review
 	var issueComments []gitprovider.IssueComment
 	if !reviewCtx.pinnedReview {
 		threads, err = opts.Provider.ListInlineThreads(ctx, req.PRRef)
 		if err != nil {
 			return preparedSelectionContext{}, err
+		}
+		if strings.TrimSpace(req.PostingIdentity.ID) != "" || strings.TrimSpace(req.PostingIdentity.Login) != "" {
+			threadContext, err = threadcontext.Normalize(threads, threadcontext.Options{PostingIdentity: req.PostingIdentity})
+			if err != nil {
+				return preparedSelectionContext{}, err
+			}
 		}
 		reviews, err = opts.Provider.ListReviews(ctx, req.PRRef)
 		if err != nil {
@@ -1044,6 +1007,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		parsed:           parsed,
 		changedFiles:     patchPaths(parsed.Patches),
 		threads:          threads,
+		threadContext:    threadContext,
 		reviews:          reviews,
 		issueComments:    issueComments,
 		catalog:          catalog,
@@ -1107,6 +1071,11 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 
 	promptInput, promptDeps, err := selectionPromptInputFromArtifacts(req.Artifacts, req.Threads)
+	knownThreadIDs := knownThreads(req.Threads)
+	if len(req.ThreadContext) > 0 {
+		promptInput, promptDeps, err = selectionPromptInputFromThreadContext(req.Artifacts, req.ThreadContext)
+		knownThreadIDs = map[string]bool{}
+	}
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
 	}
@@ -1127,7 +1096,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 		return llm.DecodeSelection(data, llm.SelectionOptions{
 			KnownAgents:  knownAgents(req.Catalog),
 			ChangedFiles: changedFiles(req.ParsedDiff.Patches),
-			KnownThreads: knownThreads(req.Threads),
+			KnownThreads: knownThreadIDs,
 		})
 	}
 	if strings.TrimSpace(req.RunID) != "" {
@@ -1151,12 +1120,64 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 		selection = opts.capSelectionAgents(selection, req.MaxAgents)
 		return selection, selectionSession, ledgerSession, nil
 	}
-	selection, selectionSession, err := runStructuredResume(ctx, opts, ledger.SessionRoleOrchestrator, nil, model, effort, selectionLog, selectionPrompt, req.ResumeSessionID, decode)
+	selectionFingerprint := llmTaskFingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, fingerprintDeps)
+	if err := resetLLMTaskIfInputFingerprintChanged(req.Artifacts, orchestratorSelectionStage, selectionFingerprint); err != nil {
+		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+	}
+	selection, selectionSession, _, err := runStructuredTask(ctx, opts, llmTaskSpec{
+		taskID:            orchestratorSelectionStage,
+		phase:             "selection",
+		allowNoRunCache:   true,
+		dependencyTaskIDs: dependencyTaskIDs,
+		inputFingerprint:  selectionFingerprint,
+		artifacts:         req.Artifacts,
+		role:              ledger.SessionRoleOrchestrator,
+		model:             model,
+		effort:            effort,
+		logPath:           selectionLog,
+		prompt:            selectionPrompt,
+		resumeSessionID:   req.ResumeSessionID,
+	}, decode)
 	if err != nil {
 		return llm.Selection{}, selectionSession, ledger.Session{}, err
 	}
 	selection = opts.capSelectionAgents(selection, req.MaxAgents)
 	return selection, selectionSession, ledger.Session{}, nil
+}
+
+func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts ArtifactPaths, threads []threadcontext.Thread) ([]review.ThreadResponseAction, error) {
+	eligible := threadcontext.PendingCRAuthoredFindingThreads(threads)
+	if len(eligible) == 0 {
+		return nil, nil
+	}
+	runtimeConfig, err := resolveThreadAnalysisRuntimeConfig(req.Profile)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]threadanalysis.Result, 0, len(eligible))
+	for _, thread := range eligible {
+		logPath, err := artifacts.AgentLog("thread-analysis-" + string(thread.ID))
+		if err != nil {
+			return nil, err
+		}
+		result, err := threadanalysis.AnalyzeThread(ctx, threadanalysis.Options{
+			Store:          opts.Store,
+			RunID:          run.RunID,
+			Adapter:        opts.Adapter,
+			Model:          runtimeConfig.model,
+			Effort:         runtimeConfig.effort,
+			LogPath:        logPath,
+			LifecyclePaths: lifecyclePaths(artifacts),
+			Progress:       opts.TaskProgress,
+			Now:            opts.now,
+			NewStepID:      opts.newSessionRowID,
+		}, thread)
+		if err != nil {
+			return nil, pipelineTaskError(err)
+		}
+		results = append(results, result)
+	}
+	return threadanalysis.ResponseActions(results), nil
 }
 
 func (opts Options) capSelectionAgents(selection llm.Selection, maxAgents int) llm.Selection {
@@ -1363,37 +1384,6 @@ func reviewerTaskIDs(selected []llm.SelectedAgent) []string {
 	return out
 }
 
-func runStructuredResume[T any](ctx context.Context, opts Options, role ledger.SessionRole, agentID *string, model, effort, logPath, prompt, resumeSessionID string, decode llm.Decoder[T]) (T, sessionDraft, error) {
-	started := opts.now()
-	result, err := llm.RunStructuredWithSessionResume(ctx, opts.Adapter, resumeSessionID, llm.Request{
-		Model:   model,
-		Effort:  effort,
-		Prompt:  prompt,
-		LogPath: logPath,
-	}, decode)
-	completed := opts.now()
-	draft := sessionDraft{
-		rowID:                     opts.newSessionRowID(),
-		providerReportedSessionID: result.SessionID,
-		providerSessionID:         result.SessionID,
-		role:                      role,
-		agentID:                   agentID,
-		adapter:                   opts.Adapter.Name(),
-		model:                     model,
-		effort:                    effort,
-		startedAt:                 started,
-		completedAt:               completed,
-		response:                  result.Response,
-	}
-	if strings.TrimSpace(draft.providerSessionID) == "" {
-		draft.providerSessionID = draft.rowID
-	}
-	if strings.TrimSpace(draft.model) == "" {
-		draft.model = "default"
-	}
-	return result.Value, draft, err
-}
-
 type llmTaskSpec struct {
 	runID             string
 	taskID            string
@@ -1413,103 +1403,64 @@ type llmTaskSpec struct {
 	llmFailureStatus  llmTaskStatus
 }
 
-func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpec, decode llm.Decoder[T]) (T, sessionDraft, ledger.Session, error) {
-	if strings.TrimSpace(spec.runID) == "" && !spec.allowNoRunCache {
-		var zero T
-		return zero, sessionDraft{}, ledger.Session{}, fmt.Errorf("pipeline: structured task %q requires a persisted run", spec.taskID)
-	}
-	if loaded, draft, session, ok, err := loadStructuredTask(ctx, opts, spec, decode); err != nil || ok {
-		return loaded, draft, session, err
-	}
-	resumeSessionID := spec.resumeSessionID
-	if meta, ok, err := readLLMTaskMetadata(spec.artifacts, spec.taskID); err != nil {
-		var zero T
-		return zero, sessionDraft{}, ledger.Session{}, err
-	} else if ok && meta.Status == llmTaskStatusFailedBlocking {
-		if taskSessionID := taskResumeSessionID(meta); strings.TrimSpace(taskSessionID) != "" {
-			resumeSessionID = taskSessionID
-		}
-	}
-	progressEvent := newLLMTaskProgressEvent(spec, resumeSessionID)
-	progressSpan := startLLMTaskProgress(opts, progressEvent)
-
-	started := opts.now()
-	request := spec.baseRequest
-	request.Model = spec.model
-	request.Effort = spec.effort
-	request.Prompt = spec.prompt
-	request.LogPath = spec.logPath
-	result, err := llm.RunStructuredWithSessionResume(ctx, opts.Adapter, resumeSessionID, request, decode)
-	completed := opts.now()
-	draft := sessionDraft{
-		rowID:                     opts.newSessionRowID(),
-		providerReportedSessionID: result.SessionID,
-		providerSessionID:         result.SessionID,
-		role:                      spec.role,
-		agentID:                   spec.agentID,
-		adapter:                   opts.Adapter.Name(),
-		model:                     spec.model,
-		effort:                    spec.effort,
-		startedAt:                 started,
-		completedAt:               completed,
-		response:                  result.Response,
-	}
-	if strings.TrimSpace(draft.providerSessionID) == "" && err == nil {
-		draft.providerSessionID = draft.rowID
-	}
-	if strings.TrimSpace(draft.model) == "" {
-		draft.model = "default"
-	}
-
-	meta := baseLLMTaskMetadata(opts, spec, draft)
-	hasRun := strings.TrimSpace(spec.runID) != ""
-	var session ledger.Session
-	if hasRun && strings.TrimSpace(draft.providerSessionID) != "" {
-		session = draft.toLedger(spec.runID)
-		if err := opts.Store.InsertSession(ctx, session); err != nil {
-			meta.Status = llmTaskStatusFailedBlocking
-			meta.ProviderSessionID = draft.providerSessionID
-			var zero T
-			endLLMTaskProgress(progressSpan, err, llmTaskProgressResult(meta, result, false))
-			return zero, sessionDraft{}, ledger.Session{}, err
-		}
-	}
-
-	if err == nil {
-		meta.Status = llmTaskStatusSucceeded
-		meta.SessionRowID = session.SessionRowID
-		meta.ProviderSessionID = draft.providerSessionID
-		if writeErr := writeLLMTaskSuccess(spec.artifacts, &meta, result.Response.StructuredOutput); writeErr != nil {
-			var zero T
-			endLLMTaskProgress(progressSpan, writeErr, llmTaskProgressResult(meta, result, false))
-			return zero, sessionDraft{}, ledger.Session{}, writeErr
-		}
-		endLLMTaskProgress(progressSpan, nil, llmTaskProgressResult(meta, result, false))
-		return result.Value, draft, session, nil
-	}
-
-	meta.Error = sanitizeTaskErrorForMarkdown(err)
-	meta.Status = llmTaskFailureStatus(ctx, spec, err, result.SessionID, len(result.ValidationAttempts) > 0)
-	meta.SessionRowID = session.SessionRowID
-	meta.ProviderSessionID = draft.providerSessionID
-	if writeErr := writeLLMTaskFailure(spec.artifacts, &meta, result.ValidationAttempts); writeErr != nil {
-		var zero T
-		endLLMTaskProgress(progressSpan, writeErr, llmTaskProgressResult(meta, result, false))
-		return zero, draft, session, writeErr
-	}
-	var zero T
-	endLLMTaskProgress(progressSpan, err, llmTaskProgressResult(meta, result, false))
-	return zero, draft, session, &llmTaskError{status: meta.Status, err: err}
+func lifecyclePaths(paths ArtifactPaths) llmlifecycle.Paths {
+	return llmlifecycle.Paths{LLMTasksDir: paths.LLMTasksDir}
 }
 
-func llmTaskFailureStatus(ctx context.Context, spec llmTaskSpec, err error, providerSessionID string, hasValidationAttempt bool) llmTaskStatus {
-	supportsIsolation := spec.llmFailureStatus != ""
-	callerContextActive := ctx.Err() == nil && !isContextError(err)
-	hasTaskExecutionEvidence := errors.Is(err, llm.ErrStructuredOutputInvalidAfterRetry) || strings.TrimSpace(providerSessionID) != "" || hasValidationAttempt
-	if supportsIsolation && callerContextActive && hasTaskExecutionEvidence {
-		return spec.llmFailureStatus
+func sessionDraftFromLifecycle(draft llmlifecycle.SessionDraft) sessionDraft {
+	return sessionDraft{
+		rowID:                     draft.RowID,
+		providerReportedSessionID: draft.ProviderReportedSessionID,
+		providerSessionID:         draft.ProviderSessionID,
+		role:                      draft.Role,
+		agentID:                   draft.AgentID,
+		adapter:                   draft.Adapter,
+		model:                     draft.Model,
+		effort:                    draft.Effort,
+		startedAt:                 draft.StartedAt,
+		completedAt:               draft.CompletedAt,
+		response:                  draft.Response,
 	}
-	return llmTaskStatusFailedBlocking
+}
+
+func pipelineTaskError(err error) error {
+	var taskErr *llmlifecycle.TaskError
+	if !errors.As(err, &taskErr) {
+		return err
+	}
+	return &llmTaskError{status: llmTaskStatus(taskErr.Status()), err: errors.Unwrap(taskErr)}
+}
+
+func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpec, decode llm.Decoder[T]) (T, sessionDraft, ledger.Session, error) {
+	var zero T
+	result, err := llmlifecycle.RunStructured(ctx, llmlifecycle.Request{
+		Store:             opts.Store,
+		Adapter:           opts.Adapter,
+		RunID:             spec.runID,
+		TaskID:            spec.taskID,
+		Phase:             spec.phase,
+		DependencyTaskIDs: spec.dependencyTaskIDs,
+		AllowNoRunCache:   spec.allowNoRunCache,
+		InputFingerprint:  spec.inputFingerprint,
+		Paths:             lifecyclePaths(spec.artifacts),
+		Role:              spec.role,
+		AgentID:           spec.agentID,
+		Model:             spec.model,
+		Effort:            spec.effort,
+		LogPath:           spec.logPath,
+		Prompt:            spec.prompt,
+		BaseRequest:       spec.baseRequest,
+		ResumeSessionID:   spec.resumeSessionID,
+		FailureStatus:     llmlifecycle.Status(spec.llmFailureStatus),
+		Progress:          opts.TaskProgress,
+		Now:               opts.now,
+		NewSessionRowID:   opts.newSessionRowID,
+	}, decode)
+	draft := sessionDraftFromLifecycle(result.Draft)
+	if err != nil {
+		return zero, draft, result.Session, pipelineTaskError(err)
+	}
+	return result.Value, draft, result.Session, nil
 }
 
 func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpec, decode llm.Decoder[T]) (T, sessionDraft, ledger.Session, bool, error) {
@@ -1782,49 +1733,11 @@ func llmTaskProgressResult(meta llmTaskMetadata, result any, cached bool) LLMTas
 	return out
 }
 
-func startLLMTaskProgress(opts Options, event LLMTaskProgressEvent) LLMTaskProgressSpan {
-	if opts.TaskProgress == nil {
-		return nil
-	}
-	return opts.TaskProgress.StartLLMTask(event)
-}
-
-func endLLMTaskProgress(span LLMTaskProgressSpan, err error, result LLMTaskProgressResult) {
-	if span != nil {
-		span.End(err, result)
-	}
-}
-
 func loadLLMTaskProgress(opts Options, event LLMTaskProgressEvent, result LLMTaskProgressResult) {
 	if opts.TaskProgress == nil {
 		return
 	}
 	opts.TaskProgress.LoadLLMTask(event, result)
-}
-
-func baseLLMTaskMetadata(opts Options, spec llmTaskSpec, draft sessionDraft) llmTaskMetadata {
-	agentID := ""
-	if spec.agentID != nil {
-		agentID = *spec.agentID
-	}
-	fingerprint := strings.TrimSpace(spec.inputFingerprint)
-	if fingerprint == "" {
-		fingerprint = llmTaskFingerprint(llmTaskAdapterName(opts.Adapter), spec.taskID, spec.phase, spec.model, spec.effort, spec.prompt, spec.dependencyTaskIDs)
-	}
-	return llmTaskMetadata{
-		SchemaVersion:     llmTaskSchemaVersion,
-		TaskID:            spec.taskID,
-		Phase:             spec.phase,
-		DependencyTaskIDs: append([]string(nil), spec.dependencyTaskIDs...),
-		InputFingerprint:  fingerprint,
-		AgentID:           agentID,
-		SessionRowID:      draft.rowID,
-		ProviderSessionID: draft.providerSessionID,
-		Adapter:           opts.Adapter.Name(),
-		Model:             draft.model,
-		Effort:            draft.effort,
-		LogPath:           spec.logPath,
-	}
 }
 
 func llmTaskAdapterName(adapter llm.Adapter) string {
@@ -1863,28 +1776,6 @@ func writeLLMTaskSuccess(paths ArtifactPaths, meta *llmTaskMetadata, output []by
 		return err
 	}
 	meta.ValidatedOutputPath = outputPath
-	return writeLLMTaskMetadata(paths, *meta)
-}
-
-func writeLLMTaskFailure(paths ArtifactPaths, meta *llmTaskMetadata, attempts []llm.StructuredValidationAttempt) error {
-	for _, attempt := range attempts {
-		attemptMeta := llmTaskAttemptMetadata{
-			Attempt:           attempt.Label,
-			ProviderSessionID: attempt.SessionID,
-			DecodeError:       sanitizeTaskErrorForMarkdown(attempt.DecodeError),
-		}
-		if len(attempt.Response.StructuredOutput) > 0 {
-			rawPath, err := paths.LLMTaskRawAttempt(meta.TaskID, attempt.Label)
-			if err != nil {
-				return err
-			}
-			if err := writeFileAtomic(rawPath, append(append([]byte(nil), attempt.Response.StructuredOutput...), '\n')); err != nil {
-				return err
-			}
-			attemptMeta.RawOutputPath = rawPath
-		}
-		meta.Attempts = append(meta.Attempts, attemptMeta)
-	}
 	return writeLLMTaskMetadata(paths, *meta)
 }
 
@@ -2025,32 +1916,6 @@ func (s *namedSessionState) buildCandidate(draft sessionDraft, lastUsedAt time.T
 	}
 }
 
-func (d sessionDraft) toLedger(runID string) ledger.Session {
-	completed := d.completedAt
-	duration := d.response.DurationMS
-	session := ledger.Session{
-		SessionRowID:      d.rowID,
-		RunID:             runID,
-		ProviderSessionID: d.providerSessionID,
-		Role:              d.role,
-		AgentID:           d.agentID,
-		Adapter:           d.adapter,
-		Model:             d.model,
-		StartedAt:         d.startedAt,
-		CompletedAt:       &completed,
-		DurationMS:        &duration,
-		TokensIn:          intPtrToInt64(d.response.Usage.TokensIn),
-		TokensOut:         intPtrToInt64(d.response.Usage.TokensOut),
-		CacheRead:         intPtrToInt64(d.response.Usage.CacheRead),
-		CacheCreate:       intPtrToInt64(d.response.Usage.CacheCreate),
-		CostUSD:           d.response.Usage.CostUSD,
-	}
-	if strings.TrimSpace(d.effort) != "" {
-		session.Effort = &d.effort
-	}
-	return session
-}
-
 // planRunInputs carries the session telemetry buildPlan turns into the
 // rollup's RunSummary and finding attribution.
 type planRunInputs struct {
@@ -2059,6 +1924,7 @@ type planRunInputs struct {
 	reviewers        []sessionDraft
 	rollup           sessionDraft
 	selectedAgents   []llm.SelectedAgent
+	threadResponses  []review.ThreadResponseAction
 	findingSessions  map[review.FindingID]string
 	reviewerFailures []ReviewerFailure
 	reviewerCoverage []reviewplan.ReviewerCoverageSummary
@@ -2335,12 +2201,13 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewplan.PostMode, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool, runInputs planRunInputs) (reviewplan.Plan, error) {
 	runSummary, findingReviewers := opts.buildRunSummary(req, runInputs)
 	return reviewplan.Build(reviewplan.Request{
-		PostMode:      postMode,
-		ProviderCaps:  caps,
-		Diff:          diff,
-		Findings:      findings,
-		Rollup:        rollup,
-		ThreadActions: threadActions,
+		PostMode:        postMode,
+		ProviderCaps:    caps,
+		Diff:            diff,
+		Findings:        findings,
+		Rollup:          rollup,
+		ThreadActions:   threadActions,
+		ThreadResponses: append([]review.ThreadResponseAction(nil), runInputs.threadResponses...),
 		EventOptions: reviewplan.EventOptions{
 			MajorEventRequestsChanges: req.MajorRequestChanges,
 			PostingIdentityIsPRAuthor: sameIdentity(pr.Author, req.PostingIdentity),
@@ -2537,7 +2404,7 @@ type reviewerPromptInput struct {
 	Assignment reviewerPromptAssignment `json:"assignment"`
 }
 
-const defaultSelectionTask = "select reviewer agents and thread actions from dossier/workbench context; return selection JSON only"
+const defaultSelectionTask = "select reviewer agents from dossier/workbench context; return selection JSON only"
 
 func buildSelectionPrompt(catalog agents.Catalog, input selectionPromptInput, maxAgents int, selectionInstructions string) (string, error) {
 	threadIDs := make([]string, 0, len(input.Threads))
@@ -2641,6 +2508,23 @@ func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovide
 		"dossier_index=" + sha256Hex(indexBytes),
 		"workbench_metadata=" + sha256Hex(metaBytes),
 	}
+	return input, deps, nil
+}
+
+func selectionPromptInputFromThreadContext(paths ArtifactPaths, threads []threadcontext.Thread) (selectionPromptInput, []string, error) {
+	input, deps, err := selectionPromptInputFromArtifacts(paths, nil)
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	summaryPath, err := paths.DossierSummaryPath("discussion.json")
+	if err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	var summary dossierDiscussionSummaryArtifact
+	if err := readJSONFile(summaryPath, &summary); err != nil {
+		return selectionPromptInput{}, nil, err
+	}
+	input.Threads = selectionThreadPromptsFromContext(threads, summary)
 	return input, deps, nil
 }
 
@@ -2751,6 +2635,52 @@ func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierD
 		out = append(out, promptThread)
 	}
 	return out
+}
+
+func selectionThreadPromptsFromContext(threads []threadcontext.Thread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
+	summaryByAnchor := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
+	for _, thread := range summary.InlineThreads {
+		key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
+		summaryByAnchor[key] = thread
+	}
+	out := make([]selectionThreadPrompt, 0, len(threads))
+	for _, thread := range threads {
+		promptThread := selectionThreadPrompt{
+			ThreadID:   string(thread.ID),
+			Path:       thread.Anchor.Path,
+			Line:       thread.Anchor.Line,
+			Side:       string(thread.Anchor.Side),
+			AnchorKind: string(thread.Anchor.SubjectType),
+			Resolved:   thread.Resolved,
+		}
+		if thread.ResolvedSummary != nil {
+			promptThread.Status = "settled"
+			promptThread.Summary = singleLineExcerpt(thread.ResolvedSummary.Body, dossierFinalExcerptRunes)
+		} else if summarized, ok := summaryByAnchor[dossierInlineThreadAnchorKey(thread.Anchor.Path, string(thread.Anchor.Side), thread.Anchor.Line, string(thread.Anchor.SubjectType))]; ok {
+			promptThread.Status = summarized.Status
+			promptThread.Summary = summarized.Summary
+		} else {
+			promptThread.Status = selectionThreadStatus(thread)
+			if len(thread.Comments) > 0 {
+				promptThread.Summary = singleLineExcerpt(thread.Comments[0].Body, dossierFinalExcerptRunes)
+			}
+		}
+		out = append(out, promptThread)
+	}
+	return out
+}
+
+func selectionThreadStatus(thread threadcontext.Thread) string {
+	switch {
+	case thread.Resolved:
+		return "settled"
+	case thread.Status.PendingHumanReply:
+		return "pending_human_reply"
+	case thread.Status.CRAuthoredFinding:
+		return "cr_authored"
+	default:
+		return "unresolved"
+	}
 }
 
 func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure, reviewerCoverage []reviewplan.ReviewerCoverageSummary) (string, error) {
@@ -2880,12 +2810,12 @@ func selectionOutputContract(agents []agents.Agent, changedFiles []string, threa
 			"selected_agents[].files must contain only paths from changed_files.",
 			"selected_agents[].allowed_files must contain only paths from changed_files when present.",
 			"selected_agents must contain at most max_selected_agents entries, ordered from highest to lowest review value.",
-			"thread_actions must be an empty array when there are no threads.",
+			"thread_actions must always be an empty array. Thread lifecycle replies and resolution are handled by the thread_analysis stage.",
 		},
 		ResponseSchema: map[string]any{
 			"schema_version":  "number, required, must be 1",
 			"selected_agents": "array of {agent_id: string, rationale: string, files: string[], allowed_files?: string[]}",
-			"thread_actions":  "array of {thread_id: string, decision: string, summary: string, safe_to_resolve_rationale: string}",
+			"thread_actions":  "empty array, required",
 			"reasoning":       "string",
 		},
 		AllowedValues: map[string]any{
@@ -2893,7 +2823,6 @@ func selectionOutputContract(agents []agents.Agent, changedFiles []string, threa
 			"changed_files":       changedFiles,
 			"known_thread_ids":    threadIDs,
 			"max_selected_agents": maxAgents,
-			"thread_decisions":    []string{"skip", "summarize_only", "summarize_and_resolve"},
 		},
 		Example: example,
 	}
@@ -4734,100 +4663,6 @@ func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.
 	return out
 }
 
-func plannedAction(runID string, action reviewplan.Action) (ledger.PlannedAction, error) {
-	payload, err := actionPayload(action)
-	if err != nil {
-		return ledger.PlannedAction{}, err
-	}
-	planned := ledger.PlannedAction{
-		ActionID:    action.ActionID,
-		RunID:       runID,
-		Kind:        ledgerKind(action.Kind),
-		PlannedAt:   action.PlannedAt,
-		PayloadJSON: string(payload),
-		Status:      ledgerStatus(action.Status),
-		Required:    action.Required,
-	}
-	if action.FindingID.Assigned() {
-		id := action.FindingID.String()
-		planned.FindingID = &id
-	}
-	if strings.TrimSpace(action.ThreadID) != "" {
-		planned.ThreadID = &action.ThreadID
-	}
-	return planned, nil
-}
-
-func actionPayload(action reviewplan.Action) ([]byte, error) {
-	switch action.Kind {
-	case reviewplan.ActionKindInlineComment:
-		if action.InlineComment == nil {
-			return nil, fmt.Errorf("pipeline: inline payload missing")
-		}
-		return json.Marshal(outbox.InlineCommentPayload{
-			Body:         action.InlineComment.Body,
-			Path:         action.InlineComment.Path,
-			Side:         action.InlineComment.Side,
-			Line:         action.InlineComment.Line,
-			SubjectType:  action.InlineComment.SubjectType,
-			DiffPosition: action.InlineComment.DiffPosition,
-		})
-	case reviewplan.ActionKindThreadReply:
-		if action.ThreadReply == nil {
-			return nil, fmt.Errorf("pipeline: thread reply payload missing")
-		}
-		return json.Marshal(outbox.ThreadReplyPayload{
-			Body:    action.ThreadReply.Body,
-			Summary: action.ThreadReply.Summary,
-		})
-	case reviewplan.ActionKindResolveThread:
-		return json.Marshal(outbox.ResolveThreadPayload{})
-	case reviewplan.ActionKindRollupComment:
-		if action.RollupComment == nil {
-			return nil, fmt.Errorf("pipeline: rollup payload missing")
-		}
-		return json.Marshal(outbox.RollupCommentPayload{Body: action.RollupComment.Body})
-	case reviewplan.ActionKindSubmitReview:
-		if action.SubmitReview == nil {
-			return nil, fmt.Errorf("pipeline: submit review payload missing")
-		}
-		return json.Marshal(outbox.SubmitReviewPayload{
-			Body:  action.SubmitReview.Body,
-			Event: action.SubmitReview.Event,
-		})
-	default:
-		return nil, fmt.Errorf("pipeline: unknown action kind %q", action.Kind)
-	}
-}
-
-func ledgerKind(kind reviewplan.ActionKind) ledger.PlannedActionKind {
-	switch kind {
-	case reviewplan.ActionKindInlineComment:
-		return ledger.PlannedActionInlineComment
-	case reviewplan.ActionKindThreadReply:
-		return ledger.PlannedActionThreadReply
-	case reviewplan.ActionKindResolveThread:
-		return ledger.PlannedActionResolveThread
-	case reviewplan.ActionKindRollupComment:
-		return ledger.PlannedActionRollupComment
-	case reviewplan.ActionKindSubmitReview:
-		return ledger.PlannedActionSubmitReview
-	default:
-		return ledger.PlannedActionKind(kind)
-	}
-}
-
-func ledgerStatus(status reviewplan.ActionStatus) ledger.PlannedActionStatus {
-	switch status {
-	case reviewplan.ActionStatusPending:
-		return ledger.PlannedActionPending
-	case reviewplan.ActionStatusPlannedOnly:
-		return ledger.PlannedActionPlannedOnly
-	default:
-		return ledger.PlannedActionStatus(status)
-	}
-}
-
 func ledgerFinding(runID, sessionRowID string, finding reviewplan.AnchoredFinding) ledger.Finding {
 	out := ledger.Finding{
 		FindingID:    finding.FindingID,
@@ -4885,6 +4720,9 @@ func validateSelectionOnly(opts Options, req SelectionRequest) error {
 	if strings.TrimSpace(req.ArtifactDir) == "" {
 		return fmt.Errorf("pipeline: selection artifact dir is required")
 	}
+	if strings.TrimSpace(postingKey(req.PostingIdentity)) == "" {
+		return fmt.Errorf("pipeline: selection posting identity is required")
+	}
 	return nil
 }
 
@@ -4933,47 +4771,12 @@ func validateReviewSHAs(baseSHA, headSHA string) error {
 
 // ArtifactPathsForRun returns the artifact paths for a generated run ID.
 func ArtifactPathsForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovider.PR, profile, postingIdentity, runID string) (ArtifactPaths, error) {
-	prKey, err := statepaths.PRKey(ref.Host, ref.Owner, ref.Repo, ref.Number)
-	if err != nil {
-		return ArtifactPaths{}, err
-	}
-	scope, err := statepaths.ResumeScope(profile, postingIdentity)
-	if err != nil {
-		return ArtifactPaths{}, err
-	}
-	dir := filepath.Join(layout.DataRoot, "runs", prKey, pr.Head.SHA, pr.Base.SHA, scope, "run-"+statepaths.Encode(runID))
-	return ArtifactPaths{
-		Dir:              dir,
-		DiffPatch:        filepath.Join(dir, "diff.patch"),
-		SlicesDir:        filepath.Join(dir, "slices"),
-		FindingsJSON:     filepath.Join(dir, "findings.json"),
-		RollupMarkdown:   filepath.Join(dir, "rollup.md"),
-		AgentSourcesJSON: filepath.Join(dir, "agent-sources.json"),
-		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
-		LLMTasksDir:      filepath.Join(dir, "llm-tasks"),
-		DossierDir:       filepath.Join(dir, "dossier"),
-		WorkbenchDir:     filepath.Join(dir, "workbench"),
-		WorkbenchRepoDir: filepath.Join(dir, "workbench", "repo"),
-		WorkbenchScratch: filepath.Join(dir, "workbench", "scratch"),
-	}, nil
+	return runartifact.ForRun(layout, ref, pr, profile, postingIdentity, runID)
 }
 
 // ArtifactPathsFromDir returns the artifact path set rooted at dir.
 func ArtifactPathsFromDir(dir string) ArtifactPaths {
-	return ArtifactPaths{
-		Dir:              dir,
-		DiffPatch:        filepath.Join(dir, "diff.patch"),
-		SlicesDir:        filepath.Join(dir, "slices"),
-		FindingsJSON:     filepath.Join(dir, "findings.json"),
-		RollupMarkdown:   filepath.Join(dir, "rollup.md"),
-		AgentSourcesJSON: filepath.Join(dir, "agent-sources.json"),
-		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
-		LLMTasksDir:      filepath.Join(dir, "llm-tasks"),
-		DossierDir:       filepath.Join(dir, "dossier"),
-		WorkbenchDir:     filepath.Join(dir, "workbench"),
-		WorkbenchRepoDir: filepath.Join(dir, "workbench", "repo"),
-		WorkbenchScratch: filepath.Join(dir, "workbench", "scratch"),
-	}
+	return runartifact.FromDir(dir)
 }
 
 // HasLLMTaskMetadata reports whether an artifact directory contains at least
@@ -5215,27 +5018,59 @@ func hasDryRunStageOverrides(req Request) bool {
 }
 
 func resolveSelectionRuntimeConfig(profile config.Profile, modelOverride, effortOverride string) (llmRuntimeConfig, error) {
-	if strings.TrimSpace(modelOverride) != "" {
-		return applyStageRuntimeOverrides(modelOverride, effortOverride, "", string(modelprefs.EffortMedium)), nil
-	}
-	model, err := resolveModelTier(profile, config.ModelTierMedium)
+	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+		Profile:        profile,
+		Stage:          stagemodel.StageSelection,
+		Tier:           config.ModelTierMedium,
+		ModelOverride:  modelOverride,
+		EffortOverride: effortOverride,
+		DefaultEffort:  string(modelprefs.EffortMedium),
+	})
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return applyStageRuntimeOverrides(modelOverride, effortOverride, model, string(modelprefs.EffortMedium)), nil
+	return llmRuntimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
+}
+
+func resolveThreadAnalysisRuntimeConfig(profile config.Profile) (llmRuntimeConfig, error) {
+	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+		Profile:       profile,
+		Stage:         stagemodel.StageThreadAnalysis,
+		Tier:          config.ModelTierMedium,
+		DefaultEffort: string(modelprefs.EffortMedium),
+	})
+	if err != nil {
+		return llmRuntimeConfig{}, err
+	}
+	return llmRuntimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
 }
 
 func resolveSynthesisRuntimeConfig(req Request) (llmRuntimeConfig, error) {
-	model, err := resolveModelTier(req.Profile, config.ModelTierMedium)
+	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+		Profile:       req.Profile,
+		Stage:         stagemodel.StageSynthesis,
+		Tier:          config.ModelTierMedium,
+		DefaultEffort: string(modelprefs.EffortMedium),
+	})
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return llmRuntimeConfig{model: model, effort: string(modelprefs.EffortMedium)}, nil
+	return llmRuntimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
 }
 
 func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeConfig, error) {
 	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
-		return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, "", agent.Effort), nil
+		resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+			Profile:        req.Profile,
+			Stage:          stagemodel.StageReviewer,
+			ModelOverride:  req.ReviewerModelOverride,
+			EffortOverride: req.ReviewerEffortOverride,
+			DefaultEffort:  agent.Effort,
+		})
+		if err != nil {
+			return llmRuntimeConfig{}, err
+		}
+		return llmRuntimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
 	}
 	resolved, err := resolveAgentModel(req.Profile, req.ReviewerModelTierOverride, agent)
 	if err != nil {
@@ -5246,9 +5081,18 @@ func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeCo
 
 func resolveAgentModel(profile config.Profile, baselineOverride string, agent agents.Agent) (reviewerRuntimeResolution, error) {
 	if modelID := strings.TrimSpace(agent.ModelID); modelID != "" {
+		resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+			Profile:       profile,
+			Stage:         stagemodel.StageReviewer,
+			ModelOverride: modelID,
+			DefaultEffort: agent.Effort,
+		})
+		if err != nil {
+			return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
+		}
 		return reviewerRuntimeResolution{
 			Mode:          "exact_model",
-			ResolvedModel: modelID,
+			ResolvedModel: resolved.Model,
 		}, nil
 	}
 	floorTier := config.ModelTier(strings.TrimSpace(agent.ModelTier))
@@ -5259,8 +5103,13 @@ func resolveAgentModel(profile config.Profile, baselineOverride string, agent ag
 	if err != nil {
 		return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
 	}
-	effectiveTier := maxModelTier(baselineTier, floorTier)
-	resolved, err := resolveModelTierResolution(profile, effectiveTier)
+	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+		Profile:       profile,
+		Stage:         stagemodel.StageReviewer,
+		Tier:          baselineTier,
+		FloorTier:     floorTier,
+		DefaultEffort: agent.Effort,
+	})
 	if err != nil {
 		return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
 	}
@@ -5268,27 +5117,10 @@ func resolveAgentModel(profile config.Profile, baselineOverride string, agent ag
 		Mode:           "tier_floor",
 		FloorTier:      string(floorTier),
 		BaselineTier:   string(baselineTier),
-		EffectiveTier:  string(effectiveTier),
+		EffectiveTier:  string(resolved.Tier),
 		ResolvedModel:  resolved.Model,
 		ModelMapSource: resolved.Source,
 	}, nil
-}
-
-func resolveModelTier(profile config.Profile, tier config.ModelTier) (string, error) {
-	resolved, err := resolveModelTierResolution(profile, tier)
-	if err != nil {
-		return "", err
-	}
-	return resolved.Model, nil
-}
-
-func resolveModelTierResolution(profile config.Profile, tier config.ModelTier) (config.ModelMapResolution, error) {
-	resolved, ok := config.ResolveModelTier(profile.LLM, tier)
-	if !ok {
-		llmConfig := profile.LLM
-		return config.ModelMapResolution{}, fmt.Errorf("model_tier %q is not mapped for provider %q adapter %q", tier, llmConfig.Provider, llmConfig.Adapter)
-	}
-	return resolved, nil
 }
 
 func resolveReviewerBaselineTier(profile config.Profile, override string) (config.ModelTier, error) {
@@ -5307,26 +5139,6 @@ func resolveReviewerBaselineTier(profile config.Profile, override string) (confi
 		return "", fmt.Errorf("reviewer baseline model_tier %q is invalid; must be one of small, medium, large", tier)
 	}
 	return tier, nil
-}
-
-func maxModelTier(left, right config.ModelTier) config.ModelTier {
-	if modelTierRank(left) >= modelTierRank(right) {
-		return left
-	}
-	return right
-}
-
-func modelTierRank(tier config.ModelTier) int {
-	switch tier {
-	case config.ModelTierSmall:
-		return 1
-	case config.ModelTierMedium:
-		return 2
-	case config.ModelTierLarge:
-		return 3
-	default:
-		return 0
-	}
 }
 
 func applyStageRuntimeOverrides(modelOverride, effortOverride, model, effort string) llmRuntimeConfig {
@@ -5357,14 +5169,6 @@ func sameIdentity(left, right gitprovider.Identity) bool {
 		return strings.EqualFold(left.Login, right.Login)
 	}
 	return false
-}
-
-func intPtrToInt64(value *int) *int64 {
-	if value == nil {
-		return nil
-	}
-	converted := int64(*value)
-	return &converted
 }
 
 func int64PtrToInt(value *int64) *int {

@@ -15,6 +15,7 @@ import (
 const maxValidationErrorSummaryLen = 500
 
 var validationQuotedValueRE = regexp.MustCompile(`"([^"\\]|\\.)*"`)
+var validationUnknownFieldRE = regexp.MustCompile(`json: unknown field "([^"\\]+)"`)
 
 // ErrStructuredOutputInvalidAfterRetry marks a structured-output request whose
 // initial response and single validation retry both failed decoding.
@@ -120,6 +121,7 @@ type StructuredResult[T any] struct {
 	Response           Response
 	SessionID          string
 	ValidationAttempts []StructuredValidationAttempt
+	AcceptedOutput     []byte
 }
 
 // StructuredValidationAttempt records one failed schema-validation attempt.
@@ -179,9 +181,9 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if err != nil {
 		return StructuredResult[T]{Response: response, SessionID: sessionID}, err
 	}
-	value, decodeErr := decodeStructured(decode, response.StructuredOutput)
+	value, acceptedOutput, decodeErr := decodeStructuredAccepted(decode, response.StructuredOutput)
 	if decodeErr == nil {
-		return StructuredResult[T]{Value: value, Response: response, SessionID: sessionID}, nil
+		return StructuredResult[T]{Value: value, Response: response, SessionID: sessionID, AcceptedOutput: acceptedOutput}, nil
 	}
 	attempts := []StructuredValidationAttempt{{
 		Label:       "initial",
@@ -200,7 +202,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if err != nil {
 		return StructuredResult[T]{Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, err
 	}
-	retryValue, retryErr := decodeStructured(decode, retryResponse.StructuredOutput)
+	retryValue, retryAcceptedOutput, retryErr := decodeStructuredAccepted(decode, retryResponse.StructuredOutput)
 	if retryErr != nil {
 		attempts = append(attempts, StructuredValidationAttempt{
 			Label:       "retry",
@@ -210,29 +212,29 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 		})
 		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, &StructuredValidationError{Attempts: attempts}
 	}
-	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, nil
+	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts, AcceptedOutput: retryAcceptedOutput}, nil
 }
 
-// decodeStructured strict-decodes data, then on failure recovers a response
-// that wraps exactly one balanced top-level JSON object in surrounding prose by
-// decoding the extracted object with the same schema decoder. When the
+// decodeStructuredAccepted strict-decodes data, then on failure recovers a
+// response that wraps exactly one balanced top-level JSON object in surrounding
+// prose by decoding the extracted object with the same schema decoder. When the
 // extracted object also fails the schema, that error is returned because it
 // describes the real schema violation; otherwise the strict error stands.
-func decodeStructured[T any](decode Decoder[T], data []byte) (T, error) {
+func decodeStructuredAccepted[T any](decode Decoder[T], data []byte) (T, []byte, error) {
 	value, err := decode(data)
 	if err == nil {
-		return value, nil
+		return value, data, nil
 	}
 	var zero T
 	extracted, ok := extractSingleJSONObject(data)
 	if !ok || bytes.Equal(extracted, data) {
-		return zero, err
+		return zero, nil, err
 	}
 	extractedValue, extractedErr := decode(extracted)
 	if extractedErr != nil {
-		return zero, extractedErr
+		return zero, nil, extractedErr
 	}
-	return extractedValue, nil
+	return extractedValue, extracted, nil
 }
 
 // runOnceWithSession runs a single attempt and retries transient provider
@@ -288,8 +290,36 @@ func retryPrompt(prompt string, err error) string {
 
 func validationErrorSummary(err error) string {
 	summary := strings.Join(strings.Fields(strings.TrimSpace(err.Error())), " ")
+	unknownField := safeUnknownFieldName(summary)
 	summary = validationQuotedValueRE.ReplaceAllString(summary, `"<value>"`)
+	if unknownField != "" {
+		summary = strings.Replace(summary, `json: unknown field "<value>"`, fmt.Sprintf(`json: unknown field %q`, unknownField), 1)
+	}
 	return truncateRunes(summary, maxValidationErrorSummaryLen)
+}
+
+func safeUnknownFieldName(summary string) string {
+	matches := validationUnknownFieldRE.FindStringSubmatch(summary)
+	if len(matches) != 2 || !safeJSONFieldName(matches[1]) {
+		return ""
+	}
+	return matches[1]
+}
+
+func safeJSONFieldName(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, ch := range value {
+		if (ch >= 'a' && ch <= 'z') ||
+			(ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') ||
+			ch == '_' || ch == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func truncateRunes(value string, maxRunes int) string {

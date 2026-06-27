@@ -106,7 +106,10 @@ type Request struct {
 	Findings      []review.Finding
 	Rollup        review.Rollup
 	ThreadActions []review.ThreadAction
-	EventOptions  EventOptions
+	// ThreadResponses are lifecycle-domain replies/resolutions for existing
+	// inline discussion threads.
+	ThreadResponses []review.ThreadResponseAction
+	EventOptions    EventOptions
 
 	NoDiff                  bool
 	Profile                 string
@@ -121,6 +124,16 @@ type Request struct {
 	// FindingReviewers maps each finding to the reviewer agent ID that
 	// produced it; findings absent from the map group as unattributed.
 	FindingReviewers map[review.FindingID]string
+
+	Now         func() time.Time
+	NewActionID ActionIDGenerator
+}
+
+// ThreadResponseRequest is the pure input to BuildThreadResponses.
+type ThreadResponseRequest struct {
+	PostMode     PostMode
+	ProviderCaps ProviderCaps
+	Responses    []review.ThreadResponseAction
 
 	Now         func() time.Time
 	NewActionID ActionIDGenerator
@@ -252,6 +265,32 @@ func Build(req Request) (Plan, error) {
 		return b.buildNoDiff()
 	}
 	return b.buildReview()
+}
+
+// BuildThreadResponses turns thread response-domain values into a response-only
+// action plan. It never creates rollup comments or submit-review actions.
+func BuildThreadResponses(req ThreadResponseRequest) (Plan, error) {
+	b, err := newBuilder(Request{
+		PostMode:     req.PostMode,
+		ProviderCaps: req.ProviderCaps,
+		Now:          req.Now,
+		NewActionID:  req.NewActionID,
+	})
+	if err != nil {
+		return Plan{}, err
+	}
+	actions, err := b.threadResponseActions(req.Responses)
+	if err != nil {
+		return Plan{}, err
+	}
+	outcome := OutcomeNothingToReview
+	if len(actions) > 0 {
+		outcome = OutcomeComment
+	}
+	return Plan{
+		Outcome: outcome,
+		Actions: actions,
+	}, nil
 }
 
 // OutcomeFromReviewEvent maps a review-domain event into a planner outcome.
@@ -427,6 +466,11 @@ func (b *builder) buildReview() (Plan, error) {
 	}
 	actions = append(actions, threadReplies...)
 	actions = append(actions, resolves...)
+	responseActions, err := b.threadResponseActions(b.req.ThreadResponses)
+	if err != nil {
+		return Plan{}, err
+	}
+	actions = append(actions, responseActions...)
 
 	commentActions, err := b.commentActions(ordered)
 	if err != nil {
@@ -639,6 +683,46 @@ func (b *builder) threadActions() ([]Action, []Action, error) {
 		resolves = append(resolves, resolve)
 	}
 	return replies, resolves, nil
+}
+
+func (b *builder) threadResponseActions(responses []review.ThreadResponseAction) ([]Action, error) {
+	var replies []Action
+	var resolves []Action
+	for _, response := range responses {
+		if err := response.Validate(); err != nil {
+			return nil, fmt.Errorf("reviewplan: invalid thread response: %w", err)
+		}
+		reply, err := b.newAction(ActionKindThreadReply)
+		if err != nil {
+			return nil, err
+		}
+		reply.Required = true
+		reply.ThreadID = response.ThreadID
+		reply.Marker = MarkerPlacement{
+			BodyBearing:   true,
+			ThreadSummary: response.Kind == review.ThreadResponseSummaryReply,
+		}
+		reply.ThreadReply = &ThreadReplyPayload{
+			Body:    sanitize(response.Body),
+			Summary: response.Kind == review.ThreadResponseSummaryReply,
+		}
+		replies = append(replies, reply)
+		if !response.Resolve || !b.req.ProviderCaps.ThreadResolution {
+			continue
+		}
+		resolve, err := b.newAction(ActionKindResolveThread)
+		if err != nil {
+			return nil, err
+		}
+		resolve.Required = true
+		resolve.ThreadID = response.ThreadID
+		resolve.ResolveThread = &ResolveThreadPayload{}
+		resolves = append(resolves, resolve)
+	}
+	actions := make([]Action, 0, len(replies)+len(resolves))
+	actions = append(actions, replies...)
+	actions = append(actions, resolves...)
+	return actions, nil
 }
 
 func (b *builder) commentActions(ordered []review.Finding) ([]Action, error) {
@@ -900,6 +984,23 @@ func threadSummaryCounts(actions []review.ThreadAction, caps ProviderCaps) Threa
 		counts.Considered++
 		counts.Summarized++
 		if action.Decision == review.ThreadDecisionSummarizeAndResolve && caps.ThreadResolution {
+			counts.Resolved++
+		}
+	}
+	return counts
+}
+
+func threadResponseSummaryCounts(responses []review.ThreadResponseAction, caps ProviderCaps) ThreadCounts {
+	var counts ThreadCounts
+	for _, response := range responses {
+		if strings.TrimSpace(response.ThreadID) == "" {
+			continue
+		}
+		counts.Considered++
+		if response.Kind == review.ThreadResponseSummaryReply {
+			counts.Summarized++
+		}
+		if response.Resolve && caps.ThreadResolution {
 			counts.Resolved++
 		}
 	}

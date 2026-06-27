@@ -22,6 +22,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -39,6 +40,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/threadrespond"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -406,6 +408,9 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	if runner.pipeline.Adapter == nil || runner.pipeline.Adapter.Name() != "codex_cli" {
 		t.Fatalf("pipeline adapter = %#v, want codex_cli", runner.pipeline.Adapter)
 	}
+	if !llm.SupportsCheckoutReadonly(runner.pipeline.Adapter) {
+		t.Fatalf("pipeline adapter checkout-readonly = false, want true")
+	}
 	loadedAdapter, err := runner.pipeline.Adapter.(*lazyAdapter).get()
 	if err != nil {
 		t.Fatalf("lazy adapter get: %v", err)
@@ -414,8 +419,14 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	if !ok || progressAdapter.adapter == nil || progressAdapter.adapter.Name() != "codex_cli" {
 		t.Fatalf("loaded pipeline adapter = %#v, want wrapped codex_cli adapter", loadedAdapter)
 	}
+	if !llm.SupportsCheckoutReadonly(loadedAdapter) {
+		t.Fatalf("loaded pipeline adapter checkout-readonly = false, want true")
+	}
 	if runner.pipeline.TaskProgress == nil {
 		t.Fatal("pipeline TaskProgress = nil, want review progress wiring")
+	}
+	if runner.respond.TaskProgress == nil {
+		t.Fatal("respond TaskProgress = nil, want response progress wiring")
 	}
 }
 
@@ -423,21 +434,27 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	statedirtest.Hermetic(t)
 	cfg := testConfig()
 	cfg.Keyring.Backend = "memory"
-	profile := cfg.Profiles["work"]
+	profile := cfg.Profiles["home"]
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
-		Credential:    config.CredentialLocation{Store: "test-memory"},
-		CredentialRef: "codereview/work-reviewer",
+		Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home-reviewer"},
+		CredentialRef: "codereview/home-reviewer",
 	}
-	cfg.Profiles["work"] = profile
+	cfg.Profiles["home"] = profile
 
 	var providerCalls []config.GitConfig
+	repoProvider := &gitprovider.Fake{}
 	reviewerProvider := &gitprovider.Fake{}
+	repoProvider.SetCapabilities(gitprovider.ProviderCaps{ThreadResolution: true, BundleInlineOnSubmit: true})
+	reviewerProvider.SetCapabilities(gitprovider.ProviderCaps{NativeFileLevelComments: true})
 	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
 	withReviewRuntimeSeams(t,
 		func(git config.GitConfig, _ githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			providerCalls = append(providerCalls, git)
-			return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
+			if git.CredentialRef == "codereview/home-reviewer" {
+				return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
+			}
+			return repoProvider, gitprovider.Credential{Type: "pat", Token: "repo-token"}, nil
 		},
 		func(_ context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ githubprovider.TokenStore, _ config.Profile) (gitprovider.Identity, error) {
 			wrapped, ok := provider.(progressProvider)
@@ -459,20 +476,247 @@ func TestNewRuntimeUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	if runtime.Cleanup != nil {
 		runtime.Cleanup()
 	}
-	if len(providerCalls) != 1 || providerCalls[0].CredentialRef != "codereview/work-reviewer" {
-		t.Fatalf("provider calls = %#v, want reviewer credential ref only", providerCalls)
+	if len(providerCalls) != 2 ||
+		providerCalls[0].CredentialRef != "codereview/home" ||
+		providerCalls[1].CredentialRef != "codereview/home-reviewer" {
+		t.Fatalf("provider calls = %#v, want git read then reviewer posting providers", providerCalls)
 	}
 	runner, ok := runtime.Runner.(reviewRunner)
 	if !ok {
 		t.Fatalf("Runner type = %T, want reviewRunner", runtime.Runner)
 	}
 	pipelineProvider, ok := runner.pipeline.Provider.(progressProvider)
-	if !ok || pipelineProvider.provider != reviewerProvider {
-		t.Fatalf("pipeline provider = %#v, want wrapped reviewer provider", runner.pipeline.Provider)
+	if !ok || pipelineProvider.provider != repoProvider {
+		t.Fatalf("pipeline provider = %#v, want wrapped repository provider distinct from reviewer provider", runner.pipeline.Provider)
 	}
-	liveProvider, ok := runner.live.Provider.(progressProvider)
-	if !ok || liveProvider.provider != reviewerProvider {
-		t.Fatalf("live provider = %#v, want wrapped reviewer provider", runner.live.Provider)
+	liveProvider, ok := runner.live.Provider.(runtimeProvider)
+	if !ok {
+		t.Fatalf("live provider = %#v, want split runtime provider", runner.live.Provider)
+	}
+	readProvider, ok := liveProvider.read.(progressProvider)
+	if !ok || readProvider.provider != repoProvider {
+		t.Fatalf("live read provider = %#v, want wrapped repository provider distinct from reviewer provider", liveProvider.read)
+	}
+	writeProvider, ok := liveProvider.write.(progressProvider)
+	if !ok || writeProvider.provider != reviewerProvider {
+		t.Fatalf("live write provider = %#v, want wrapped reviewer provider", liveProvider.write)
+	}
+	prRef := gitprovider.PRRef{Host: "github.com", Owner: "open-cli", Repo: "codereview-cli", Number: 29}
+	if _, err := liveProvider.PostIssueComment(context.Background(), prRef, "rollup body"); err != nil {
+		t.Fatalf("PostIssueComment: %v", err)
+	}
+	if _, err := liveProvider.SubmitReview(context.Background(), prRef, gitprovider.ReviewRequest{
+		CommitSHA: "abc123",
+		Event:     review.ReviewEventComment,
+		Body:      "review body",
+	}); err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	if got := repoProvider.RecordedIssueComments(prRef); len(got) != 0 {
+		t.Fatalf("repo provider issue comment writes = %#v, want none", got)
+	}
+	if got := repoProvider.RecordedReviews(prRef); len(got) != 0 {
+		t.Fatalf("repo provider review writes = %#v, want none", got)
+	}
+	if got := reviewerProvider.RecordedIssueComments(prRef); len(got) != 1 || got[0] != "rollup body" {
+		t.Fatalf("reviewer provider issue comment writes = %#v, want rollup body", got)
+	}
+	if got := reviewerProvider.RecordedReviews(prRef); len(got) != 1 || got[0].Body != "review body" {
+		t.Fatalf("reviewer provider review writes = %#v, want review body", got)
+	}
+	if got := liveProvider.Capabilities(); got.ThreadResolution || got.BundleInlineOnSubmit || !got.NativeFileLevelComments {
+		t.Fatalf("live provider capabilities = %#v, want write-provider capabilities only", got)
+	}
+}
+
+func TestNewRuntimeWarnsAndContinuesWhenOpinionatedReviewAuthorityIsIneligible(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	if err := provider.SetReviewAuthority(ref, identity.Login, gitprovider.ReviewAuthority{Eligible: false, Permission: "none"}); err != nil {
+		t.Fatalf("SetReviewAuthority: %v", err)
+	}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stderr bytes.Buffer
+	opts := &root.Options{Stderr: &stderr}
+	runtime, err := newRuntime(cmd, opts, testConfig(), testConfig().Profiles["home"], RuntimeOptions{
+		PRRef:                             ref,
+		RequireOpinionatedReviewAuthority: true,
+	})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+	if !strings.Contains(stderr.String(), `warning: posting identity "review-bot" may not create GitHub reviews that count toward PR approval state`) {
+		t.Fatalf("stderr = %q, want advisory review authority warning", stderr.String())
+	}
+	if _, statErr := os.Stat(layout.LedgerDB()); statErr != nil {
+		t.Fatalf("ledger stat error = %v, want ledger created after advisory warning", statErr)
+	}
+	runsDir := filepath.Join(layout.DataRoot, "runs")
+	if _, statErr := os.Stat(runsDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("runs dir stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestNewRuntimeWarnsAndContinuesWhenOpinionatedReviewAuthorityProbeFails(t *testing.T) {
+	statedirtest.Hermetic(t)
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	provider.SetError(gitprovider.OperationReviewAuthority, gitprovider.WrapError(gitprovider.ErrPermission, gitprovider.OperationReviewAuthority, errors.New("permission probe failed")))
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stderr bytes.Buffer
+	runtime, err := newRuntime(cmd, &root.Options{Stderr: &stderr}, testConfig(), testConfig().Profiles["home"], RuntimeOptions{
+		PRRef:                             ref,
+		RequireOpinionatedReviewAuthority: true,
+	})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+	if !strings.Contains(stderr.String(), "probe failed: ReviewAuthority: gitprovider: permission denied: permission probe failed") {
+		t.Fatalf("stderr = %q, want advisory probe failure warning", stderr.String())
+	}
+}
+
+func TestNewRuntimeAbortsWhenOpinionatedReviewAuthorityProbeIsCanceled(t *testing.T) {
+	statedirtest.Hermetic(t)
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	provider.SetError(gitprovider.OperationReviewAuthority, context.Canceled)
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stderr bytes.Buffer
+	_, err := newRuntime(cmd, &root.Options{Stderr: &stderr}, testConfig(), testConfig().Profiles["home"], RuntimeOptions{
+		PRRef:                             ref,
+		RequireOpinionatedReviewAuthority: true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("newRuntime error = %v, want context.Canceled", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no advisory warning for cancellation", stderr.String())
+	}
+}
+
+func TestNewRuntimeSkipsOpinionatedReviewAuthorityCheckWhenNotRequired(t *testing.T) {
+	statedirtest.Hermetic(t)
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	provider.SetError(gitprovider.OperationReviewAuthority, gitprovider.WrapError(gitprovider.ErrPermission, gitprovider.OperationReviewAuthority, errors.New("should not be called")))
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	opts := &root.Options{Stderr: io.Discard}
+	runtime, err := newRuntime(cmd, opts, testConfig(), testConfig().Profiles["home"], RuntimeOptions{PRRef: ref})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if runtime.Cleanup != nil {
+		runtime.Cleanup()
+	}
+}
+
+func TestLiveReviewWarnsAndContinuesWhenAuthorityIsIneligible(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout, err := statepaths.DefaultLayoutEnsured()
+	if err != nil {
+		t.Fatalf("DefaultLayoutEnsured: %v", err)
+	}
+	cfg := testConfig()
+	ref, _ := reviewCommandPR(t)
+	provider := &gitprovider.Fake{}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	if err := provider.SetReviewAuthority(ref, identity.Login, gitprovider.ReviewAuthority{Eligible: false, Permission: "none"}); err != nil {
+		t.Fatalf("SetReviewAuthority: %v", err)
+	}
+	withReviewRuntimeSeams(t,
+		func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+
+	cmd, _, stderr := newTestCommandWithStderr(t, cfg, newRuntime, true)
+	err = root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
+	if !errors.Is(err, gitprovider.ErrNotFound) {
+		t.Fatalf("Execute error = %v, want provider not found after advisory authority check", err)
+	}
+	if !strings.Contains(stderr.String(), `warning: posting identity "review-bot" may not create GitHub reviews that count toward PR approval state`) {
+		t.Fatalf("stderr = %q, want advisory review authority warning", stderr.String())
+	}
+	if _, statErr := os.Stat(layout.LedgerDB()); statErr != nil {
+		t.Fatalf("ledger stat error = %v, want ledger created after advisory warning", statErr)
+	}
+	runsDir := filepath.Join(layout.DataRoot, "runs")
+	if _, statErr := os.Stat(runsDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("runs dir stat error = %v, want not exist", statErr)
 	}
 }
 
@@ -817,6 +1061,24 @@ func TestReviewNoPostIsDryRunAlias(t *testing.T) {
 	}
 	if len(runner.requests) != 1 {
 		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+}
+
+func TestReviewDryRunRerunFlagCallsDryRunner(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--rerun"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("dry runner calls = %d, want 1", len(runner.requests))
+	}
+	if len(runner.liveRequests) != 0 {
+		t.Fatalf("live runner calls = %d, want 0", len(runner.liveRequests))
+	}
+	if !runner.requests[0].Rerun {
+		t.Fatalf("dry-run request = %#v, want rerun propagated", runner.requests[0])
 	}
 }
 
@@ -1227,7 +1489,7 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 }
 
 func TestRetentionPolicyFromConfigDefaultsWhenMaxAgeOmitted(t *testing.T) {
-	got := retentionPolicyFromConfig(config.RetentionConfig{})
+	got := cmdruntime.RetentionPolicyFromConfig(config.RetentionConfig{})
 	if got.LiveForever || got.LiveMaxAge != 0 || got.DryRunMaxAge != 0 {
 		t.Fatalf("retention policy = %#v, want zero-value default policy", got)
 	}
@@ -1284,6 +1546,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 	runner := buildReviewRunner(
 		store,
 		provider,
+		provider,
 		adapter,
 		testConfig().Profiles["home"],
 		noopLimiter{},
@@ -1291,6 +1554,7 @@ func TestBuildReviewRunnerWiresNamedSessionDependencies(t *testing.T) {
 		&warnings,
 		nil,
 		runtimeOptsWithWorkbench(t, RuntimeOptions{MaxAgents: 3, MaxConcurrency: 2, Retention: retention, RetentionManualOnly: true}),
+		"review",
 	)
 
 	if runner.pipeline.NamedSessions != store {
@@ -1375,7 +1639,7 @@ func TestBuildApprovalOverrideClassifierModelResolution(t *testing.T) {
 			if warnings.Len() != 0 {
 				t.Fatalf("warnings after build = %q, want deferred warnings", warnings.String())
 			}
-			result, err := classifier.ClassifyApprovalOverride(context.Background(), approvalOverrideClassifierTestRequest())
+			result, err := classifier.ClassifyApprovalOverride(context.Background(), approvalOverrideClassifierTestRequest(t))
 			if err != nil {
 				t.Fatalf("ClassifyApprovalOverride: %v", err)
 			}
@@ -1442,6 +1706,7 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			provider,
+			provider,
 			adapter,
 			profile,
 			noopLimiter{},
@@ -1449,6 +1714,7 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1503,6 +1769,7 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			provider,
+			provider,
 			adapter,
 			profile,
 			noopLimiter{},
@@ -1510,6 +1777,7 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1527,6 +1795,100 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 	resumes := adapter.Resumes()
 	if len(resumes) != 1 || resumes[0].SessionID != "selection-session" {
 		t.Fatalf("resumes = %#v, want rollup resumed from selection", resumes)
+	}
+}
+
+func TestReviewRealRunnerResumesIncompleteRunThroughCLI(t *testing.T) {
+	cfg := testConfig()
+	agentDir := t.TempDir()
+	writeReviewAgent(t, agentDir)
+	profile := cfg.Profiles["home"]
+	profile.AgentSources = []string{agentDir}
+	cfg.Profiles["home"] = profile
+
+	fixture := newReviewCommandWorkbenchFixture(t)
+	reviewCommandFixtures.Store(reviewCommandFixtureKey(fixture.ref), fixture)
+	ref, pr := fixture.ref, fixture.pr
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	artifacts, err := pipeline.ArtifactPathsForRun(layout, ref, pr, "home", "review-bot", "resume-live")
+	if err != nil {
+		t.Fatalf("ArtifactPathsForRun: %v", err)
+	}
+	prKey, err := statepaths.PRKey(ref.Host, ref.Owner, ref.Repo, ref.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           pr.URL,
+		RunID:           "resume-live",
+		SHA:             pr.Head.SHA,
+		BaseSHA:         pr.Base.SHA,
+		Profile:         "home",
+		PostingIdentity: "review-bot",
+		PostMode:        ledger.PostModeLive,
+		StartedAt:       time.Now().Add(-time.Minute),
+		ArtifactPath:    artifacts.Dir,
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeReviewLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "no specialist needed"
+	}`))
+	adapter.Queue(fakeReviewLLMResult("rollup-session", reviewRollupJSON("approve", nil)))
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts RuntimeOptions) (Runtime, error) {
+		runner := buildReviewRunner(
+			store,
+			provider,
+			provider,
+			adapter,
+			profile,
+			noopLimiter{},
+			layout,
+			opts.Stderr,
+			nil,
+			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
+		)
+		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"review", pr.URL}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	runs, err := store.ListRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 1 || runs[0].RunID != run.RunID || runs[0].ArtifactPath != run.ArtifactPath {
+		t.Fatalf("runs = %#v, want resumed run %q artifact %q", runs, run.RunID, run.ArtifactPath)
+	}
+	if runs[0].Outcome == nil || *runs[0].Outcome != ledger.OutcomeApproved {
+		t.Fatalf("resumed run outcome = %v, want approved", runs[0].Outcome)
+	}
+	if len(adapter.Requests()) != 2 {
+		t.Fatalf("adapter requests = %d, want selection/rollup planning", len(adapter.Requests()))
 	}
 }
 
@@ -1576,6 +1938,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			provider,
+			provider,
 			adapter,
 			profile,
 			noopLimiter{},
@@ -1583,6 +1946,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1646,6 +2010,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			provider,
+			provider,
 			adapter,
 			profile,
 			noopLimiter{},
@@ -1653,6 +2018,7 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1709,6 +2075,7 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 		runner := buildReviewRunner(
 			store,
 			provider,
+			provider,
 			adapter,
 			profile,
 			noopLimiter{},
@@ -1716,6 +2083,7 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 			opts.Stderr,
 			nil,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -1895,7 +2263,8 @@ func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
 		logger := newProgressLogger(opts)
 		runner := buildReviewRunner(
 			store,
-			withProgressProvider(logger, provider),
+			withProgressProvider(logger, "review", provider),
+			withProgressProvider(logger, "review", provider),
 			adapter,
 			profile,
 			noopLimiter{},
@@ -1903,6 +2272,7 @@ func TestReviewDryRunRealRunnerQuietSuppressesProgressOnly(t *testing.T) {
 			opts.Stderr,
 			logger,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}, true)
@@ -1953,7 +2323,8 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 		logger := newProgressLogger(opts)
 		runner := buildReviewRunner(
 			store,
-			withProgressProvider(logger, provider),
+			withProgressProvider(logger, "review", provider),
+			withProgressProvider(logger, "review", provider),
 			adapter,
 			profile,
 			noopLimiter{},
@@ -1961,6 +2332,7 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 			opts.Stderr,
 			logger,
 			runtimeOptsWithWorkbench(t, runtimeOpts),
+			"review",
 		)
 		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}, false)
@@ -1996,7 +2368,7 @@ func TestProgressProviderGetPRErrorWritesErrorBreadcrumb(t *testing.T) {
 	var errOut bytes.Buffer
 	provider := &gitprovider.Fake{}
 	provider.SetError(gitprovider.OperationGetPR, gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, context.DeadlineExceeded))
-	wrapped := withProgressProvider(progress.New(&errOut, false, nil), provider)
+	wrapped := withProgressProvider(progress.New(&errOut, false, nil), "review", provider)
 
 	_, err := wrapped.GetPR(context.Background(), gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29})
 	if err == nil {
@@ -2005,6 +2377,24 @@ func TestProgressProviderGetPRErrorWritesErrorBreadcrumb(t *testing.T) {
 	stderr := errOut.String()
 	if !strings.Contains(stderr, `event=error`) || !strings.Contains(stderr, `command="review" op="fetch_pr" target="pr"`) {
 		t.Fatalf("stderr = %q, want error breadcrumb for fetch_pr", stderr)
+	}
+}
+
+func TestProgressProviderUsesRespondCommandLabel(t *testing.T) {
+	var errOut bytes.Buffer
+	provider := &gitprovider.Fake{}
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
+	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{}); err != nil {
+		t.Fatalf("SetInlineThreads: %v", err)
+	}
+	wrapped := withProgressProvider(progress.New(&errOut, false, nil), "respond", provider)
+
+	if _, err := wrapped.ListInlineThreads(context.Background(), ref); err != nil {
+		t.Fatalf("ListInlineThreads: %v", err)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="respond" op="list_threads" target="threads"`) {
+		t.Fatalf("stderr = %q, want respond breadcrumb for list_threads", stderr)
 	}
 }
 
@@ -2022,7 +2412,7 @@ func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
 			},
 		},
 	})
-	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), adapter, "openai", "codex_cli")
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), "review", adapter, "openai", "codex_cli")
 
 	stream, err := wrapped.Start(context.Background(), llm.Request{
 		Model:   "gpt-5.5",
@@ -2054,6 +2444,44 @@ func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
 	}
 }
 
+func TestProgressAdapterUsesRespondCommandLabel(t *testing.T) {
+	var errOut bytes.Buffer
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(llm.FakeResult{SessionID: "sess-respond"})
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), "respond", adapter, "openai", "codex_cli")
+
+	stream, err := wrapped.Start(context.Background(), llm.Request{Model: "gpt-5.5", Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="respond" op="start_llm" target="llm"`) {
+		t.Fatalf("stderr = %q, want respond breadcrumb for start_llm", stderr)
+	}
+}
+
+func TestPipelineTaskProgressUsesRespondCommandLabel(t *testing.T) {
+	var errOut bytes.Buffer
+	progressSink := newPipelineTaskProgress(progress.New(&errOut, false, nil), "respond")
+	if progressSink == nil {
+		t.Fatal("newPipelineTaskProgress = nil, want progress sink")
+	}
+	span := progressSink.StartLLMTask(pipeline.LLMTaskProgressEvent{
+		TaskID: "thread-analysis-thread-1",
+		Phase:  "thread_response",
+		Source: "execute",
+		Model:  "gpt-5.5",
+	})
+	span.End(nil, pipeline.LLMTaskProgressResult{Cached: false, Status: "succeeded", ProviderSessionID: "sess-respond"})
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `command="respond" op="run_llm_task" target="llm_task"`) {
+		t.Fatalf("stderr = %q, want respond breadcrumb for run_llm_task", stderr)
+	}
+}
+
 func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
 	var errOut bytes.Buffer
 	adapter := &llm.FakeAdapter{
@@ -2061,7 +2489,7 @@ func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
 		SupportsResumeValue: true,
 	}
 	adapter.Queue(llm.FakeResult{StartErr: context.DeadlineExceeded})
-	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), adapter, "openai", "codex_cli")
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), "review", adapter, "openai", "codex_cli")
 
 	_, err := wrapped.Resume(context.Background(), "stored-session", llm.Request{Model: "gpt-5.5", Prompt: "prompt"})
 	if err == nil {
@@ -2074,8 +2502,35 @@ func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
 	}
 }
 
+func TestProgressAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
+	adapter := &llm.FakeAdapter{
+		NameValue:                     "fake-llm",
+		SupportsCheckoutReadonlySet:   true,
+		SupportsCheckoutReadonlyValue: true,
+	}
+	wrapped := withProgressAdapter(progress.New(io.Discard, false, nil), "review", adapter, "openai", "codex_cli")
+
+	if !llm.SupportsCheckoutReadonly(wrapped) {
+		t.Fatal("SupportsCheckoutReadonly(wrapped) = false, want true")
+	}
+}
+
+func TestLazyAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
+	lazy := newLazyAdapter(func() (llm.Adapter, error) {
+		return &llm.FakeAdapter{
+			NameValue:                     "fake-llm",
+			SupportsCheckoutReadonlySet:   true,
+			SupportsCheckoutReadonlyValue: true,
+		}, nil
+	})
+
+	if !llm.SupportsCheckoutReadonly(lazy) {
+		t.Fatal("SupportsCheckoutReadonly(lazy) = false, want true")
+	}
+}
+
 func TestWithProgressProviderPreservesOptionalRangeDiffCapability(t *testing.T) {
-	wrapped := withProgressProvider(progress.New(io.Discard, false, nil), &gitprovider.Fake{})
+	wrapped := withProgressProvider(progress.New(io.Discard, false, nil), "review", &gitprovider.Fake{})
 	if _, ok := wrapped.(interface {
 		GetDiffBetweenRefs(context.Context, gitprovider.PRRef, string, string) (gitprovider.UnifiedDiff, error)
 	}); ok {
@@ -2121,6 +2576,7 @@ func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
 	runner := buildReviewRunner(
 		store,
 		provider,
+		provider,
 		adapter,
 		testConfig().Profiles["home"],
 		noopLimiter{},
@@ -2128,6 +2584,7 @@ func TestProgressPlannerWritesRunIDBreadcrumb(t *testing.T) {
 		&errOut,
 		logger,
 		runtimeOptsWithWorkbench(t, RuntimeOptions{PRRef: ref}),
+		"review",
 	)
 
 	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
@@ -2387,13 +2844,16 @@ func TestReviewMapsUnsafeAgentSourceError(t *testing.T) {
 }
 
 type fakeRunner struct {
-	result       pipeline.Result
-	err          error
-	requests     []pipeline.Request
-	liveResult   reviewrun.Result
-	liveErr      error
-	liveRequests []pipeline.Request
-	liveFlags    []reviewrun.Flags
+	result          pipeline.Result
+	err             error
+	requests        []pipeline.Request
+	liveResult      reviewrun.Result
+	liveErr         error
+	liveRequests    []pipeline.Request
+	liveFlags       []reviewrun.Flags
+	respondResult   threadrespond.Result
+	respondErr      error
+	respondRequests []threadrespond.Request
 }
 
 type noopLimiter struct{}
@@ -2417,9 +2877,17 @@ func (r *fakeRunner) Live(_ context.Context, req pipeline.Request, flags reviewr
 	return r.liveResult, nil
 }
 
+func (r *fakeRunner) Respond(_ context.Context, req threadrespond.Request) (threadrespond.Result, error) {
+	r.respondRequests = append(r.respondRequests, req)
+	if r.respondErr != nil {
+		return threadrespond.Result{}, r.respondErr
+	}
+	return r.respondResult, nil
+}
+
 func fakeFactory(runner *fakeRunner) RuntimeFactory {
 	return func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
-		return Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+		return Runtime{Runner: runner, Responder: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}
 }
 
@@ -2645,7 +3113,8 @@ func assertReviewTestFile(t *testing.T, path, want string) {
 	}
 }
 
-func approvalOverrideClassifierTestRequest() approvaloverride.Request {
+func approvalOverrideClassifierTestRequest(t *testing.T) approvaloverride.Request {
+	t.Helper()
 	return approvaloverride.Request{
 		PR: gitprovider.PR{
 			Title:  "Override",
@@ -2660,6 +3129,7 @@ func approvalOverrideClassifierTestRequest() approvaloverride.Request {
 			Body:        "please approve",
 			EffectiveAt: time.Date(2026, 6, 10, 12, 1, 0, 0, time.UTC),
 		}},
+		LLMTasksDir: filepath.Join(t.TempDir(), "llm-tasks"),
 	}
 }
 

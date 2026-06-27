@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
+	"strings"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -205,6 +207,7 @@ func newGitHubResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) 
 		cfg:                cfg,
 		backend:            opts.Backend,
 		backendFlagChanged: cmderr.BackendFlagChanged(cmd),
+		warnings:           opts.Stderr,
 	}, nil, nil
 }
 
@@ -213,6 +216,7 @@ type githubResolver struct {
 	backend            string
 	backendFlagChanged bool
 	options            githubprovider.Options
+	warnings           io.Writer
 	NewClient          func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
 }
 
@@ -234,6 +238,15 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 	options := r.options
 	if installationID := config.PinnedGitHubAppInstallationIDForGit(r.cfg.Profiles[profileName], git); installationID != "" {
 		options.InstallationID = installationID
+	} else if git.AuthMode == config.GitAuthModeGitHubApp {
+		cached := strings.TrimSpace(git.IdentityCache)
+		if cached == "" {
+			return gitprovider.Identity{}, fmt.Errorf("%w: profiles.%s github_app identity cannot be refreshed by cr me without a pinned installation or existing identity cache", config.ErrNotConfigured, profileName)
+		}
+		if r.warnings != nil {
+			_, _ = fmt.Fprintf(r.warnings, "warning: profiles.%s github_app identity uses repository discovery and cannot be refreshed by cr me without PR context; preserving cached identity %q\n", profileName, cached)
+		}
+		return gitprovider.Identity{Login: cached}, nil
 	}
 	client, credential, err := newClient(git, store, options)
 	if err != nil {

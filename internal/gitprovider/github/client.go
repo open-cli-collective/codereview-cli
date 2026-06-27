@@ -163,8 +163,9 @@ func (c *Client) Host() string {
 // Capabilities returns GitHub feature support.
 func (c *Client) Capabilities() gitprovider.ProviderCaps {
 	return gitprovider.ProviderCaps{
-		NativeFileLevelComments: true,
+		NativeFileLevelComments: false,
 		ThreadResolution:        true,
+		BundleInlineOnSubmit:    true,
 	}
 }
 

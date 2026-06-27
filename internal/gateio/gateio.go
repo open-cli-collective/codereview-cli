@@ -1085,6 +1085,8 @@ func maybeExecuteApprovalOverride(ctx context.Context, opts Options, req Request
 		LatestMarkerAt:  latest,
 		Candidates:      candidates,
 		LogPath:         filepath.Join(req.ArtifactPath, "agent-logs", "approval-override.jsonl"),
+		LLMTasksDir:     filepath.Join(req.ArtifactPath, "llm-tasks"),
+		Now:             opts.now,
 	})
 	if err != nil {
 		emitWarnings(opts.Warnings, []string{fmt.Sprintf("approval override classifier failed; continuing with full review: %v", err)})
