@@ -990,9 +990,7 @@ func ResolveProfileForRepositoryWithSource(cfg File, requestedName string, expli
 		}
 		for _, repo := range route.Match.Repos {
 			if repo == targetRepo {
-				routeCopy := route
-				routeCopy.Match.Repos = []string{repo}
-				repoRoutes = append(repoRoutes, routeCopy)
+				repoRoutes = append(repoRoutes, route)
 				break
 			}
 		}
