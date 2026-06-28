@@ -152,9 +152,9 @@ Route identity and mutation contract:
 - `route set` with one or more `--repo` values manages the listed repo-specific
   mappings for that `host + namespace`, assigning those repos to the requested
   profile
-- if any listed repo is already mapped to another profile, `route set` moves
-  that mapping to the requested profile and prunes it from the old repo-route
-  entry as part of the same converging mutation
+- if any listed route is already mapped to another profile, `route set` adds
+  the requested profile as another eligible profile and preserves the existing
+  profile's mapping
 - repeated `--repo` inputs converge by trim, dedupe, and deterministic sort
 - CLI-owned persistence should collapse repo-specific mappings into a
   deterministic shape: one repo-route entry per `profile + host + namespace`
@@ -164,9 +164,12 @@ Route identity and mutation contract:
 - `route unset` with one or more `--repo` values removes only those
   repo-specific mappings; if the backing repo-route entry becomes empty, remove
   the route entry entirely
+- when `--profile` is supplied to `route unset`, removal is limited to that
+  profile; without `--profile`, removal applies to matching route entries for
+  all profiles
 
-These semantics give `#166` a stable mutation contract without changing the
-runtime precedence rules already used by review/agents.
+These semantics give route mutation a stable contract while preserving
+repo-specific-over-namespace runtime precedence.
 
 ### `#169`: route preview
 

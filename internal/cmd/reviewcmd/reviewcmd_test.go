@@ -130,6 +130,43 @@ func TestReviewUsesRepositoryProfileRoute(t *testing.T) {
 	}
 }
 
+func TestReviewRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["home"]
+	work.Git.CredentialRef = "codereview/work"
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar"},
+			},
+		},
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar"},
+			},
+		},
+	}
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ RuntimeOptions) (Runtime, error) {
+		t.Fatal("runtime factory should not be called for ambiguous repository routes")
+		return Runtime{}, nil
+	})
+
+	err := root.Execute(cmd, []string{"review", "https://github.com/rianjs/bar/pull/29", "--dry-run"})
+	if !errors.Is(err, config.ErrRepositoryProfileAmbiguous) {
+		t.Fatalf("Execute error = %v, want ErrRepositoryProfileAmbiguous", err)
+	}
+	if !strings.Contains(err.Error(), "pass --profile with one of: home, work") {
+		t.Fatalf("error = %v, want profile suggestions", err)
+	}
+}
+
 func TestReviewExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]

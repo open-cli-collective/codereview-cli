@@ -234,7 +234,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			}
 			return nil
 		},
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := configPath(opts)
 			if err != nil {
 				return exitcode.AuthConfig(err)
@@ -247,17 +247,39 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return err
 			}
-			routes, changed, err := configedit.UnsetRepositoryRoutes(cfg.RepositoryProfiles, spec)
+			scopedProfile := ""
+			if root.ProfileFlagChanged(cmd) {
+				profileName, _, err := config.ResolveProfile(cfg, opts.Profile)
+				if err != nil {
+					return cmderr.Config(err)
+				}
+				scopedProfile = profileName
+			}
+			var routes []config.RepositoryProfile
+			var changed bool
+			if scopedProfile != "" {
+				routes, changed, err = configedit.UnsetRepositoryRoutesForProfile(cfg.RepositoryProfiles, scopedProfile, spec)
+			} else {
+				routes, changed, err = configedit.UnsetRepositoryRoutes(cfg.RepositoryProfiles, spec)
+			}
 			if err != nil {
 				return usageRouteError(err)
 			}
 			if !changed {
+				if scopedProfile != "" {
+					_, err := fmt.Fprintf(opts.Stdout, "Route already absent for profile %s: %s\n", scopedProfile, configedit.FormatRepositoryRouteSpec(spec))
+					return err
+				}
 				_, err := fmt.Fprintf(opts.Stdout, "Route already absent: %s\n", configedit.FormatRepositoryRouteSpec(spec))
 				return err
 			}
 			cfg.RepositoryProfiles = routes
 			if err := saveConfigFile(path, cfg); err != nil {
 				return cmderr.Config(err)
+			}
+			if scopedProfile != "" {
+				_, err = fmt.Fprintf(opts.Stdout, "Removed route for profile %s: %s\n", scopedProfile, configedit.FormatRepositoryRouteSpec(spec))
+				return err
 			}
 			_, err = fmt.Fprintf(opts.Stdout, "Removed route: %s\n", configedit.FormatRepositoryRouteSpec(spec))
 			return err

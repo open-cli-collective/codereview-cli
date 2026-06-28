@@ -492,7 +492,7 @@ type initProfileV2Layout = initLinearLayout
 type initProfileV2FieldBounds = initLinearFieldBounds
 
 func initProfileV2AppendRouteSection(document *initProfileV2Document, routeText string) {
-	document.addSection("Automatic profile selection", "Routes tell cr when to use this profile automatically. Explicit --profile still wins.")
+	document.addSection("Automatic profile selection", "Routes tell cr when to use this profile automatically. Routes may be shared by multiple profiles; ambiguous matches require explicit --profile.")
 	document.addEditableInput(initProfileV2FieldRoutes, "Route entries", "Examples: github.com/YourOrg; github.com/YourOrg/repo; github.com/YourOrg [RepoA, RepoB]. Leave blank for explicit --profile selection only.", routeText, validateInitProfileV2RouteText)
 }
 

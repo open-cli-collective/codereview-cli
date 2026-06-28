@@ -40,8 +40,8 @@ type RepositoryRouteSpec struct {
 }
 
 type repositoryRouteState struct {
-	namespace map[string]string
-	repos     map[string]string
+	namespace map[string]map[string]struct{}
+	repos     map[string]map[string]struct{}
 }
 
 // NormalizeRepositoryRouteSpec returns a normalized copy of spec.
@@ -110,11 +110,11 @@ func SetRepositoryRoutes(routes []config.RepositoryProfile, profileName string, 
 	}
 	state := newRepositoryRouteState(routes)
 	if len(spec.Repos) == 0 {
-		state.namespace[routeKey(spec.Host, spec.Namespace, "")] = profileName
+		state.addNamespace(spec.Host, spec.Namespace, profileName)
 		return state.routes(), nil
 	}
 	for _, repo := range spec.Repos {
-		state.repos[routeKey(spec.Host, spec.Namespace, repo)] = profileName
+		state.addRepo(spec.Host, spec.Namespace, repo, profileName)
 	}
 	return state.routes(), nil
 }
@@ -139,6 +139,34 @@ func UnsetRepositoryRoutes(routes []config.RepositoryProfile, spec RepositoryRou
 		key := routeKey(spec.Host, spec.Namespace, repo)
 		if _, ok := state.repos[key]; ok {
 			delete(state.repos, key)
+			changed = true
+		}
+	}
+	return state.routes(), changed, nil
+}
+
+// UnsetRepositoryRoutesForProfile removes the specified routes only for profileName.
+func UnsetRepositoryRoutesForProfile(routes []config.RepositoryProfile, profileName string, spec RepositoryRouteSpec) ([]config.RepositoryProfile, bool, error) {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		return nil, false, ErrProfileNameRequired
+	}
+	spec, err := normalizeRepositoryRouteSpec(spec)
+	if err != nil {
+		return nil, false, err
+	}
+	state := newRepositoryRouteState(routes)
+	changed := false
+	if len(spec.Repos) == 0 {
+		key := routeKey(spec.Host, spec.Namespace, "")
+		if state.removeProfile(state.namespace, key, profileName) {
+			changed = true
+		}
+		return state.routes(), changed, nil
+	}
+	for _, repo := range spec.Repos {
+		key := routeKey(spec.Host, spec.Namespace, repo)
+		if state.removeProfile(state.repos, key, profileName) {
 			changed = true
 		}
 	}
@@ -352,16 +380,16 @@ func ResetModelMap(profile config.Profile) (config.Profile, bool) {
 
 func newRepositoryRouteState(routes []config.RepositoryProfile) repositoryRouteState {
 	state := repositoryRouteState{
-		namespace: map[string]string{},
-		repos:     map[string]string{},
+		namespace: map[string]map[string]struct{}{},
+		repos:     map[string]map[string]struct{}{},
 	}
 	for _, route := range canonicalRepositoryRoutesFromConfig(routes) {
 		if len(route.Match.Repos) == 0 {
-			state.namespace[routeKey(route.Match.Host, route.Match.Namespace, "")] = route.Profile
+			state.addNamespace(route.Match.Host, route.Match.Namespace, route.Profile)
 			continue
 		}
 		for _, repo := range route.Match.Repos {
-			state.repos[routeKey(route.Match.Host, route.Match.Namespace, repo)] = route.Profile
+			state.addRepo(route.Match.Host, route.Match.Namespace, repo, route.Profile)
 		}
 	}
 	return state
@@ -403,15 +431,17 @@ func (s repositoryRouteState) routes() []config.RepositoryProfile {
 		repos     []string
 	}
 	repoGroupsByKey := map[string]*repoGroup{}
-	for key, profile := range s.repos {
+	for key, profiles := range s.repos {
 		host, namespace, repo := splitRouteKey(key)
-		profileGroupKey := routeKey(host, namespace, profile)
-		group := repoGroupsByKey[profileGroupKey]
-		if group == nil {
-			group = &repoGroup{profile: profile, host: host, namespace: namespace}
-			repoGroupsByKey[profileGroupKey] = group
+		for _, profile := range sortedProfileSet(profiles) {
+			profileGroupKey := routeKey(host, namespace, profile)
+			group := repoGroupsByKey[profileGroupKey]
+			if group == nil {
+				group = &repoGroup{profile: profile, host: host, namespace: namespace}
+				repoGroupsByKey[profileGroupKey] = group
+			}
+			group.repos = append(group.repos, repo)
 		}
-		group.repos = append(group.repos, repo)
 	}
 	repoGroupKeys := make([]string, 0, len(repoGroupsByKey))
 	for key := range repoGroupsByKey {
@@ -422,13 +452,15 @@ func (s repositoryRouteState) routes() []config.RepositoryProfile {
 	routes := make([]config.RepositoryProfile, 0, len(namespaceKeys)+len(repoGroupKeys))
 	for _, key := range namespaceKeys {
 		host, namespace, _ := splitRouteKey(key)
-		routes = append(routes, config.RepositoryProfile{
-			Profile: s.namespace[key],
-			Match: config.RepositoryProfileMatch{
-				Host:      host,
-				Namespace: namespace,
-			},
-		})
+		for _, profile := range sortedProfileSet(s.namespace[key]) {
+			routes = append(routes, config.RepositoryProfile{
+				Profile: profile,
+				Match: config.RepositoryProfileMatch{
+					Host:      host,
+					Namespace: namespace,
+				},
+			})
+		}
 	}
 	for _, key := range repoGroupKeys {
 		group := repoGroupsByKey[key]
@@ -443,6 +475,46 @@ func (s repositoryRouteState) routes() []config.RepositoryProfile {
 		})
 	}
 	return routes
+}
+
+func (s repositoryRouteState) addNamespace(host, namespace, profile string) {
+	s.addProfile(s.namespace, routeKey(host, namespace, ""), profile)
+}
+
+func (s repositoryRouteState) addRepo(host, namespace, repo, profile string) {
+	s.addProfile(s.repos, routeKey(host, namespace, repo), profile)
+}
+
+func (s repositoryRouteState) addProfile(routes map[string]map[string]struct{}, key, profile string) {
+	profile = strings.TrimSpace(profile)
+	if routes[key] == nil {
+		routes[key] = map[string]struct{}{}
+	}
+	routes[key][profile] = struct{}{}
+}
+
+func (s repositoryRouteState) removeProfile(routes map[string]map[string]struct{}, key, profile string) bool {
+	profiles, ok := routes[key]
+	if !ok {
+		return false
+	}
+	if _, ok := profiles[profile]; !ok {
+		return false
+	}
+	delete(profiles, profile)
+	if len(profiles) == 0 {
+		delete(routes, key)
+	}
+	return true
+}
+
+func sortedProfileSet(profiles map[string]struct{}) []string {
+	out := make([]string, 0, len(profiles))
+	for profile := range profiles {
+		out = append(out, profile)
+	}
+	sort.Strings(out)
+	return out
 }
 
 const routeKeySeparator = "\x00"

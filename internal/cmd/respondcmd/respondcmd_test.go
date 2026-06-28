@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -57,6 +58,43 @@ func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 	text := out.String()
 	if !strings.Contains(text, "Threads: considered 1, responded 1, provider resolved 0 (resolve planned 1, failed 0)") || !strings.Contains(text, "Planned actions: 2") {
 		t.Fatalf("stdout = %q, want respond summary", text)
+	}
+}
+
+func TestRespondRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
+	cfg := testConfig()
+	work := cfg.Profiles["home"]
+	work.Git.CredentialRef = "codereview/work"
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		},
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		},
+	}
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ cmdruntime.Options) (cmdruntime.Runtime, error) {
+		t.Fatal("runtime factory should not be called for ambiguous repository routes")
+		return cmdruntime.Runtime{}, nil
+	})
+
+	err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"})
+	if !errors.Is(err, config.ErrRepositoryProfileAmbiguous) {
+		t.Fatalf("Execute error = %v, want ErrRepositoryProfileAmbiguous", err)
+	}
+	if !strings.Contains(err.Error(), "pass --profile with one of: home, work") {
+		t.Fatalf("error = %v, want profile suggestions", err)
 	}
 }
 

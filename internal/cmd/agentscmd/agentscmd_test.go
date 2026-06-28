@@ -130,6 +130,44 @@ func TestAgentsListWithPRUsesRepositoryProfileRoute(t *testing.T) {
 	}
 }
 
+func TestAgentsListWithPRRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
+	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
+	cfg := testConfig("")
+	work := cfg.Profiles["home"]
+	work.Git.CredentialRef = "codereview/work"
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      ref.Host,
+				Namespace: ref.Owner,
+				Repos:     []string{ref.Repo},
+			},
+		},
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      ref.Host,
+				Namespace: ref.Owner,
+				Repos:     []string{ref.Repo},
+			},
+		},
+	}
+	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile) (gitprovider.GitProvider, func(), error) {
+		t.Fatal("provider factory should not be called for ambiguous repository routes")
+		return fake, nil, nil
+	})
+
+	err := root.Execute(cmd, []string{"agents", "list", prURL(ref), "--json"})
+	if !errors.Is(err, config.ErrRepositoryProfileAmbiguous) {
+		t.Fatalf("Execute error = %v, want ErrRepositoryProfileAmbiguous", err)
+	}
+	if !strings.Contains(err.Error(), "pass --profile with one of: home, work") {
+		t.Fatalf("error = %v, want profile suggestions", err)
+	}
+}
+
 func TestAgentsListExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig("")

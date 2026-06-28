@@ -32,6 +32,8 @@ var (
 	ErrNotConfigured = errors.New("config: not configured")
 	// ErrProfileNotFound means the requested profile is absent.
 	ErrProfileNotFound = errors.New("config: profile not found")
+	// ErrRepositoryProfileAmbiguous means repository routing matched multiple profiles.
+	ErrRepositoryProfileAmbiguous = errors.New("config: repository profile ambiguous")
 	// ErrSecretsStoreNotFound means the requested credential store is absent.
 	ErrSecretsStoreNotFound = errors.New("config: credential store not found")
 	// ErrSecretsProfileNotFound is the old name for ErrSecretsStoreNotFound.
@@ -41,6 +43,22 @@ var (
 	// ErrUnsupported means the config uses a known v2-only option.
 	ErrUnsupported = errors.New("config: not supported in v1")
 )
+
+// RepositoryProfileAmbiguityError describes an ambiguous repository route match.
+type RepositoryProfileAmbiguityError struct {
+	Target   RepositoryTarget
+	Profiles []string
+}
+
+// Error returns an actionable ambiguity message with --profile choices.
+func (e RepositoryProfileAmbiguityError) Error() string {
+	return fmt.Sprintf("%v: multiple repository profile routes matched %s/%s/%s; pass --profile with one of: %s", ErrRepositoryProfileAmbiguous, e.Target.Host, e.Target.Namespace, e.Target.Repo, strings.Join(e.Profiles, ", "))
+}
+
+// Unwrap supports errors.Is(err, ErrRepositoryProfileAmbiguous).
+func (e RepositoryProfileAmbiguityError) Unwrap() error {
+	return ErrRepositoryProfileAmbiguous
+}
 
 // File is the root config.yml schema.
 type File struct {
@@ -960,45 +978,61 @@ func ResolveProfileForRepositoryWithSource(cfg File, requestedName string, expli
 		return RepositoryProfileResolution{}, invalid("repository repo is required")
 	}
 
-	var namespaceRoute *RepositoryProfile
+	repoRoutes := []RepositoryProfile{}
+	namespaceRoutes := []RepositoryProfile{}
 	for _, route := range cfg.RepositoryProfiles {
 		if route.Match.Host != targetHost || route.Match.Namespace != targetNamespace {
 			continue
 		}
 		if route.Match.Repos == nil {
-			routeCopy := route
-			namespaceRoute = &routeCopy
+			namespaceRoutes = append(namespaceRoutes, route)
 			continue
 		}
 		for _, repo := range route.Match.Repos {
 			if repo == targetRepo {
-				name, profile, err := ResolveProfile(cfg, route.Profile)
-				if err != nil {
-					return RepositoryProfileResolution{}, err
-				}
 				routeCopy := route
-				return RepositoryProfileResolution{
-					ProfileName:  name,
-					Profile:      profile,
-					Source:       RepositoryProfileResolutionSourceRoute,
-					MatchedRoute: &routeCopy,
-				}, nil
+				routeCopy.Match.Repos = []string{repo}
+				repoRoutes = append(repoRoutes, routeCopy)
+				break
 			}
 		}
 	}
-	if namespaceRoute != nil {
-		name, profile, err := ResolveProfile(cfg, namespaceRoute.Profile)
-		if err != nil {
-			return RepositoryProfileResolution{}, err
-		}
-		return RepositoryProfileResolution{
-			ProfileName:  name,
-			Profile:      profile,
-			Source:       RepositoryProfileResolutionSourceRoute,
-			MatchedRoute: namespaceRoute,
-		}, nil
+	if len(repoRoutes) > 0 {
+		return resolveRepositoryRouteMatches(cfg, RepositoryTarget{Host: targetHost, Namespace: targetNamespace, Repo: targetRepo}, repoRoutes)
+	}
+	if len(namespaceRoutes) > 0 {
+		return resolveRepositoryRouteMatches(cfg, RepositoryTarget{Host: targetHost, Namespace: targetNamespace, Repo: targetRepo}, namespaceRoutes)
 	}
 	return RepositoryProfileResolution{}, fmt.Errorf("%w: no repository profile route matched %s/%s/%s; pass --profile or configure a repository route", ErrProfileNotFound, targetHost, targetNamespace, targetRepo)
+}
+
+func resolveRepositoryRouteMatches(cfg File, target RepositoryTarget, routes []RepositoryProfile) (RepositoryProfileResolution, error) {
+	profileNames := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		profileNames[route.Profile] = struct{}{}
+	}
+	names := make([]string, 0, len(profileNames))
+	for name := range profileNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) > 1 {
+		return RepositoryProfileResolution{}, RepositoryProfileAmbiguityError{
+			Target:   target,
+			Profiles: names,
+		}
+	}
+	name, profile, err := ResolveProfile(cfg, names[0])
+	if err != nil {
+		return RepositoryProfileResolution{}, err
+	}
+	routeCopy := routes[0]
+	return RepositoryProfileResolution{
+		ProfileName:  name,
+		Profile:      profile,
+		Source:       RepositoryProfileResolutionSourceRoute,
+		MatchedRoute: &routeCopy,
+	}, nil
 }
 
 // CredentialRefs returns all credential-store refs declared by profile.
@@ -1395,10 +1429,10 @@ func validateRepositoryProfiles(cfg File) error {
 		if route.Match.Repos != nil && len(route.Match.Repos) == 0 {
 			return invalid("%s.match.repos must be omitted or contain at least one repo", field)
 		}
-		namespaceKey := routeKey(host, namespace, "")
+		namespaceKey := routeProfileKey(host, namespace, "", route.Profile)
 		if route.Match.Repos == nil {
 			if previous, ok := namespaceRoutes[namespaceKey]; ok {
-				return invalid("%s duplicates repository_profiles[%d] namespace route for %s/%s", field, previous, host, namespace)
+				return invalid("%s duplicates repository_profiles[%d] namespace route for profile %s at %s/%s", field, previous, route.Profile, host, namespace)
 			}
 			namespaceRoutes[namespaceKey] = index
 			continue
@@ -1413,9 +1447,9 @@ func validateRepositoryProfiles(cfg File) error {
 				return invalid("%s.match.repos[%d] duplicates repo %q", field, repoIndex, repo)
 			}
 			seenRepos[repo] = struct{}{}
-			repoKey := routeKey(host, namespace, repo)
+			repoKey := routeProfileKey(host, namespace, repo, route.Profile)
 			if previous, ok := repoRoutes[repoKey]; ok {
-				return invalid("%s duplicates repository_profiles[%d] repo route for %s/%s/%s", field, previous, host, namespace, repo)
+				return invalid("%s duplicates repository_profiles[%d] repo route for profile %s at %s/%s/%s", field, previous, route.Profile, host, namespace, repo)
 			}
 			repoRoutes[repoKey] = index
 		}
@@ -2188,4 +2222,8 @@ func normalizeConfigHost(raw string) string {
 
 func routeKey(host, namespace, repo string) string {
 	return host + "\x00" + namespace + "\x00" + repo
+}
+
+func routeProfileKey(host, namespace, repo, profile string) string {
+	return routeKey(host, namespace, repo) + "\x00" + profile
 }

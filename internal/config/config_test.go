@@ -615,6 +615,45 @@ func TestRepositoryProfileRoutesRoundTripAndResolve(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsOverlappingRepositoryProfilesAcrossProfiles(t *testing.T) {
+	cfg := validFile()
+	cfg.RepositoryProfiles = []RepositoryProfile{
+		{
+			Profile: "home",
+			Match: RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "home",
+			Match: RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		},
+		{
+			Profile: "work",
+			Match: RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate overlapping repository profiles: %v", err)
+	}
+}
+
 func TestResolveProfileForRepositoryWithSource(t *testing.T) {
 	cfg := validFile()
 	cfg.RepositoryProfiles = []RepositoryProfile{
@@ -705,6 +744,59 @@ func TestResolveProfileForRepositoryWithSource(t *testing.T) {
 	_, err = ResolveProfileForRepositoryWithSource(cfg, "", false, RepositoryTarget{Host: "github.com", Namespace: "open-cli-collective", Repo: "codereview-cli"})
 	if !errors.Is(err, ErrProfileNotFound) || !strings.Contains(err.Error(), "no repository profile route matched github.com/open-cli-collective/codereview-cli") {
 		t.Fatalf("ResolveProfileForRepositoryWithSource unmatched error = %v, want actionable ErrProfileNotFound", err)
+	}
+}
+
+func TestResolveProfileForRepositoryRejectsAmbiguousRoutes(t *testing.T) {
+	tests := []struct {
+		name   string
+		routes []RepositoryProfile
+		target RepositoryTarget
+	}{
+		{
+			name: "repo route",
+			routes: []RepositoryProfile{
+				{Profile: "work", Match: RepositoryProfileMatch{Host: "github.com", Namespace: "rianjs", Repos: []string{"baz"}}},
+				{Profile: "home", Match: RepositoryProfileMatch{Host: "github.com", Namespace: "rianjs", Repos: []string{"baz"}}},
+			},
+			target: RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "baz"},
+		},
+		{
+			name: "namespace route",
+			routes: []RepositoryProfile{
+				{Profile: "work", Match: RepositoryProfileMatch{Host: "github.com", Namespace: "rianjs"}},
+				{Profile: "home", Match: RepositoryProfileMatch{Host: "github.com", Namespace: "rianjs"}},
+			},
+			target: RepositoryTarget{Host: "github.com", Namespace: "rianjs", Repo: "baz"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			cfg.RepositoryProfiles = tt.routes
+			_, _, err := ResolveProfileForRepository(cfg, "", false, tt.target)
+			if !errors.Is(err, ErrRepositoryProfileAmbiguous) {
+				t.Fatalf("ResolveProfileForRepository error = %v, want ErrRepositoryProfileAmbiguous", err)
+			}
+			var ambiguity RepositoryProfileAmbiguityError
+			if !errors.As(err, &ambiguity) {
+				t.Fatalf("ResolveProfileForRepository error = %T, want RepositoryProfileAmbiguityError", err)
+			}
+			if got, want := ambiguity.Profiles, []string{"home", "work"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("ambiguity profiles = %#v, want %#v", got, want)
+			}
+			if !strings.Contains(err.Error(), "pass --profile with one of: home, work") {
+				t.Fatalf("ambiguity error = %q, want profile suggestions", err)
+			}
+
+			name, _, err := ResolveProfileForRepository(cfg, "work", true, tt.target)
+			if err != nil {
+				t.Fatalf("ResolveProfileForRepository explicit profile: %v", err)
+			}
+			if name != "work" {
+				t.Fatalf("explicit profile = %q, want work", name)
+			}
+		})
 	}
 }
 
