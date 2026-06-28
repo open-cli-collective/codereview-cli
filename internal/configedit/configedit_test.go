@@ -222,6 +222,99 @@ func TestRepositoryRouteHelpersUnsetForProfile(t *testing.T) {
 	}
 }
 
+func TestRepositoryRouteHelpersShareNamespaceRoutes(t *testing.T) {
+	routes := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+
+	shared, err := configedit.SetRepositoryRoutes(routes, "work", configedit.RepositoryRouteSpec{
+		Host:      "github.com",
+		Namespace: "rianjs",
+	})
+	if err != nil {
+		t.Fatalf("SetRepositoryRoutes namespace: %v", err)
+	}
+	wantShared := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	if !reflect.DeepEqual(shared, wantShared) {
+		t.Fatalf("SetRepositoryRoutes namespace = %#v, want %#v", shared, wantShared)
+	}
+
+	homeOnly, changed, err := configedit.UnsetRepositoryRoutesForProfile(shared, "work", configedit.RepositoryRouteSpec{
+		Host:      "github.com",
+		Namespace: "rianjs",
+	})
+	if err != nil {
+		t.Fatalf("UnsetRepositoryRoutesForProfile namespace: %v", err)
+	}
+	if !changed {
+		t.Fatal("UnsetRepositoryRoutesForProfile namespace changed = false, want true")
+	}
+	if !reflect.DeepEqual(homeOnly, routes) {
+		t.Fatalf("UnsetRepositoryRoutesForProfile namespace = %#v, want %#v", homeOnly, routes)
+	}
+}
+
+func TestRepositoryRouteHelpersScopedUnsetPrunesLastOwnerAndPreservesAbsentSiblings(t *testing.T) {
+	routes := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+
+	unchanged, changed, err := configedit.UnsetRepositoryRoutesForProfile(routes, "work", configedit.RepositoryRouteSpec{
+		Host:      "github.com",
+		Namespace: "rianjs",
+	})
+	if err != nil {
+		t.Fatalf("UnsetRepositoryRoutesForProfile absent owner: %v", err)
+	}
+	if changed {
+		t.Fatal("UnsetRepositoryRoutesForProfile absent owner changed = true, want false")
+	}
+	if !reflect.DeepEqual(unchanged, routes) {
+		t.Fatalf("absent owner unset = %#v, want %#v", unchanged, routes)
+	}
+
+	pruned, changed, err := configedit.UnsetRepositoryRoutesForProfile(routes, "home", configedit.RepositoryRouteSpec{
+		Host:      "github.com",
+		Namespace: "rianjs",
+	})
+	if err != nil {
+		t.Fatalf("UnsetRepositoryRoutesForProfile last owner: %v", err)
+	}
+	if !changed {
+		t.Fatal("UnsetRepositoryRoutesForProfile last owner changed = false, want true")
+	}
+	if len(pruned) != 0 {
+		t.Fatalf("last owner unset = %#v, want empty routes", pruned)
+	}
+}
+
 func TestRepositoryRouteMutatorsValidateDirectSpecs(t *testing.T) {
 	if _, err := configedit.SetRepositoryRoutes(nil, "work", configedit.RepositoryRouteSpec{
 		Host:      "github.com",

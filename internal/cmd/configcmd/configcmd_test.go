@@ -494,6 +494,48 @@ func TestConfigRouteSetAddsEligibilityAcrossProfiles(t *testing.T) {
 	}
 }
 
+func TestConfigRouteSetAddsNamespaceEligibilityAcrossProfiles(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "set", "--host", "github.com", "--namespace", "rianjs"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, want) {
+		t.Fatalf("repository_profiles = %#v, want %#v", loaded.RepositoryProfiles, want)
+	}
+}
+
 func TestConfigRouteSetPreservesSiblingNamespaceAndRepoRoutes(t *testing.T) {
 	cfg := testConfig()
 	cfg.RepositoryProfiles = []config.RepositoryProfile{
@@ -747,6 +789,64 @@ func TestConfigRouteUnsetWithProfileRemovesOnlySelectedProfile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.RepositoryProfiles, want) {
 		t.Fatalf("repository_profiles = %#v, want %#v", loaded.RepositoryProfiles, want)
+	}
+}
+
+func TestConfigRouteUnsetWithProfilePreservesAbsentSiblingRoute(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "unset", "--host", "github.com", "--namespace", "rianjs"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Route already absent for profile work: github.com/rianjs\n" {
+		t.Fatalf("stdout = %q, want scoped absence confirmation", got)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, cfg.RepositoryProfiles) {
+		t.Fatalf("repository_profiles = %#v, want unchanged %#v", loaded.RepositoryProfiles, cfg.RepositoryProfiles)
+	}
+}
+
+func TestConfigRouteUnsetWithProfilePrunesLastOwner(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "unset", "--host", "github.com", "--namespace", "rianjs"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Removed route for profile work: github.com/rianjs\n" {
+		t.Fatalf("stdout = %q, want scoped removal confirmation", got)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.RepositoryProfiles) != 0 {
+		t.Fatalf("repository_profiles = %#v, want empty after pruning last owner", loaded.RepositoryProfiles)
 	}
 }
 
