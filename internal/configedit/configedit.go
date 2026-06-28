@@ -485,16 +485,16 @@ func (s repositoryRouteState) addRepo(host, namespace, repo, profile string) {
 	s.addProfile(s.repos, routeKey(host, namespace, repo), profile)
 }
 
-func (s repositoryRouteState) addProfile(routes map[string]map[string]struct{}, key, profile string) {
+func (s repositoryRouteState) addProfile(profilesByKey map[string]map[string]struct{}, key, profile string) {
 	profile = strings.TrimSpace(profile)
-	if routes[key] == nil {
-		routes[key] = map[string]struct{}{}
+	if profilesByKey[key] == nil {
+		profilesByKey[key] = map[string]struct{}{}
 	}
-	routes[key][profile] = struct{}{}
+	profilesByKey[key][profile] = struct{}{}
 }
 
-func (s repositoryRouteState) removeProfile(routes map[string]map[string]struct{}, key, profile string) bool {
-	profiles, ok := routes[key]
+func (s repositoryRouteState) removeProfile(profilesByKey map[string]map[string]struct{}, key, profile string) bool {
+	profiles, ok := profilesByKey[key]
 	if !ok {
 		return false
 	}
@@ -503,7 +503,7 @@ func (s repositoryRouteState) removeProfile(routes map[string]map[string]struct{
 	}
 	delete(profiles, profile)
 	if len(profiles) == 0 {
-		delete(routes, key)
+		delete(profilesByKey, key)
 	}
 	return true
 }

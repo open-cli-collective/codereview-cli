@@ -835,8 +835,9 @@ definition contents.
 
 ```text
 cr config route list [--json]
-cr config route set --host <host> --namespace <namespace> [--repo <repo> ...]
+cr --profile <profile> config route set --host <host> --namespace <namespace> [--repo <repo> ...]
 cr config route unset --host <host> --namespace <namespace> [--repo <repo> ...]
+cr --profile <profile> config route unset --host <host> --namespace <namespace> [--repo <repo> ...]
 ```
 
 Inspects and updates `repository_profiles` routing rules. `set` applies to the
