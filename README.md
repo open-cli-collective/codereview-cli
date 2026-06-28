@@ -207,7 +207,7 @@ repository_profiles:
     match:
       host: github.com
       namespace: rianjs
-      repos: [qux]
+      repos: [bar, baz]
   - profile: work
     match:
       host: github.com
@@ -226,6 +226,9 @@ profiles:
 Route matching is deterministic: `host + namespace + repo` routes beat
 `host + namespace` routes, omitted `repos` means all repos in that namespace,
 and no match fails with an actionable error asking for `--profile` or a route.
+The same route may be listed for multiple profiles; if an omitted `--profile`
+matches more than one profile at the winning specificity, `cr` fails fast and
+lists the valid `--profile` choices instead of selecting a hidden default.
 Host matching is case-insensitive after normalization, while namespace and repo
 matching are case-sensitive after trimming whitespace. An explicit `--profile`
 bypasses repository routing. Route targets still use the profile's configured
@@ -832,13 +835,17 @@ definition contents.
 
 ```text
 cr config route list [--json]
-cr config route set --host <host> --namespace <namespace> [--repo <repo> ...]
+cr --profile <profile> config route set --host <host> --namespace <namespace> [--repo <repo> ...]
 cr config route unset --host <host> --namespace <namespace> [--repo <repo> ...]
+cr --profile <profile> config route unset --host <host> --namespace <namespace> [--repo <repo> ...]
 ```
 
-Inspects and updates `repository_profiles` routing rules. `set` and `unset`
-apply to the active profile when `--profile` is supplied; omit `--repo` to make
-the route namespace-wide, or repeat `--repo` for repo-specific routes.
+Inspects and updates `repository_profiles` routing rules. `set` applies to the
+active profile and preserves matching routes for other profiles, allowing shared
+routes. `unset` removes matching routes for all profiles unless `--profile` is
+supplied, in which case it removes only that profile's matching route. Omit
+`--repo` to make the route namespace-wide, or repeat `--repo` for repo-specific
+routes.
 
 Use this command for scripted route parity instead of trying to encode routing
 inside `cr init --non-interactive`.

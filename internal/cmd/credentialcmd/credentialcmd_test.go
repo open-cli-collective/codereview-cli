@@ -20814,6 +20814,54 @@ func TestInitInteractiveRouteParsersAcceptSemicolonsNewlinesAndDeduplicate(t *te
 	}
 }
 
+func TestApplyInitProfileRoutesPreservesOtherProfilesSharedRoutes(t *testing.T) {
+	routes := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+
+	got, err := applyInitProfileRoutes(routes, "work", "gitlab.com", []configedit.RepositoryRouteSpec{
+		{
+			Host:      "gitlab.com",
+			Namespace: "rianjs",
+		},
+	})
+	if err != nil {
+		t.Fatalf("applyInitProfileRoutes: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "gitlab.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("routes = %#v, want %#v", got, want)
+	}
+}
+
 func TestInitInteractiveReconcilesRouteHostChangeBeforeSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{

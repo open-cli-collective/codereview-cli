@@ -4038,7 +4038,7 @@ func (p huhInitRoutesPrompter) EditRoutes(prompt initRoutesPrompt) (initRoutesEd
 
 func initRouteEditorFields(routeText *string, includeIntroTitle bool) []huh.Field {
 	intro := huh.NewNote().
-		Description("Routes tell cr when to use this profile automatically. Explicit --profile still wins; otherwise a matching route is required.")
+		Description("Routes tell cr when to use this profile automatically. Routes may be shared by multiple profiles; ambiguous matches require explicit --profile.")
 	if includeIntroTitle {
 		intro = intro.Title("Automatic profile selection")
 	}

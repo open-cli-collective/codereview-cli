@@ -449,7 +449,7 @@ func TestConfigRouteSetRepoRoutesConvergesDeterministically(t *testing.T) {
 	}
 }
 
-func TestConfigRouteSetMovesReposAcrossProfiles(t *testing.T) {
+func TestConfigRouteSetAddsEligibilityAcrossProfiles(t *testing.T) {
 	cfg := testConfig()
 	cfg.RepositoryProfiles = []config.RepositoryProfile{
 		{
@@ -477,7 +477,7 @@ func TestConfigRouteSetMovesReposAcrossProfiles(t *testing.T) {
 			Match: config.RepositoryProfileMatch{
 				Host:      "github.com",
 				Namespace: "rianjs",
-				Repos:     []string{"bar"},
+				Repos:     []string{"bar", "baz"},
 			},
 		},
 		{
@@ -486,6 +486,48 @@ func TestConfigRouteSetMovesReposAcrossProfiles(t *testing.T) {
 				Host:      "github.com",
 				Namespace: "rianjs",
 				Repos:     []string{"baz"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, want) {
+		t.Fatalf("repository_profiles = %#v, want %#v", loaded.RepositoryProfiles, want)
+	}
+}
+
+func TestConfigRouteSetAddsNamespaceEligibilityAcrossProfiles(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "set", "--host", "github.com", "--namespace", "rianjs"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
 			},
 		},
 	}
@@ -702,6 +744,112 @@ func TestConfigRouteUnsetPreservesSiblingNamespaceAndRepoRoutes(t *testing.T) {
 	}
 }
 
+func TestConfigRouteUnsetWithProfileRemovesOnlySelectedProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar", "baz"},
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"baz"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "unset", "--host", "github.com", "--namespace", "rianjs", "--repo", "baz"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Removed route for profile work: github.com/rianjs [baz]\n" {
+		t.Fatalf("stdout = %q, want scoped removal confirmation", got)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+				Repos:     []string{"bar", "baz"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, want) {
+		t.Fatalf("repository_profiles = %#v, want %#v", loaded.RepositoryProfiles, want)
+	}
+}
+
+func TestConfigRouteUnsetWithProfilePreservesAbsentSiblingRoute(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "unset", "--host", "github.com", "--namespace", "rianjs"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Route already absent for profile work: github.com/rianjs\n" {
+		t.Fatalf("stdout = %q, want scoped absence confirmation", got)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.RepositoryProfiles, cfg.RepositoryProfiles) {
+		t.Fatalf("repository_profiles = %#v, want unchanged %#v", loaded.RepositoryProfiles, cfg.RepositoryProfiles)
+	}
+}
+
+func TestConfigRouteUnsetWithProfilePrunesLastOwner(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "rianjs",
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, out := newTestCommand(path)
+
+	if err := root.Execute(cmd, []string{"--profile", "work", "config", "route", "unset", "--host", "github.com", "--namespace", "rianjs"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := out.String(); got != "Removed route for profile work: github.com/rianjs\n" {
+		t.Fatalf("stdout = %q, want scoped removal confirmation", got)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.RepositoryProfiles) != 0 {
+		t.Fatalf("repository_profiles = %#v, want empty after pruning last owner", loaded.RepositoryProfiles)
+	}
+}
+
 func TestConfigRouteUnsetAlreadyAbsentIsIdempotent(t *testing.T) {
 	cfg := testConfig()
 	cfg.RepositoryProfiles = []config.RepositoryProfile{
@@ -741,6 +889,41 @@ func TestConfigRouteUnsetAlreadyAbsentIsIdempotent(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.RepositoryProfiles, cfg.RepositoryProfiles) {
 		t.Fatalf("repository_profiles = %#v, want unchanged %#v", loaded.RepositoryProfiles, cfg.RepositoryProfiles)
+	}
+}
+
+func TestConfigResolveProfileRejectsAmbiguousRoute(t *testing.T) {
+	cfg := testConfig()
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{
+			Profile: "home",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		},
+		{
+			Profile: "work",
+			Match: config.RepositoryProfileMatch{
+				Host:      "github.com",
+				Namespace: "open-cli-collective",
+				Repos:     []string{"codereview-cli"},
+			},
+		},
+	}
+	path := saveTestConfig(t, cfg)
+	cmd, _ := newTestCommand(path)
+
+	err := root.Execute(cmd, []string{"config", "resolve-profile", "https://github.com/open-cli-collective/codereview-cli/pull/1"})
+	if !errors.Is(err, config.ErrRepositoryProfileAmbiguous) {
+		t.Fatalf("Execute error = %v, want ErrRepositoryProfileAmbiguous", err)
+	}
+	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
+		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
+	}
+	if !strings.Contains(err.Error(), "pass --profile with one of: home, work") {
+		t.Fatalf("error = %v, want profile suggestions", err)
 	}
 }
 
