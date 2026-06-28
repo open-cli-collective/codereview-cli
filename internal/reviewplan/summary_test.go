@@ -183,7 +183,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
-	t.Run("nit filtering drives reviewer counts", func(t *testing.T) {
+	t.Run("nits count in reviewer totals", func(t *testing.T) {
 		req := summaryRequest()
 		nit := finding("f-3", "main.go", review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 16})
 		nit.Severity = review.SeverityNits
@@ -195,21 +195,12 @@ func TestRollupSummaryRendering(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
-		if !strings.Contains(plan.RollupMarkdown, "| policies:conventions | 0 |") {
-			t.Fatalf("filtered nit counted:\n%s", plan.RollupMarkdown)
-		}
-
-		req.IncludeNits = true
-		plan, err = Build(req)
-		if err != nil {
-			t.Fatalf("Build with nits: %v", err)
-		}
 		if !strings.Contains(plan.RollupMarkdown, "| policies:conventions | 1 |") {
-			t.Fatalf("included nit not counted:\n%s", plan.RollupMarkdown)
+			t.Fatalf("nit not counted:\n%s", plan.RollupMarkdown)
 		}
 	})
 
-	t.Run("unattributed nit is filtered like attributed nits", func(t *testing.T) {
+	t.Run("nits are attributed consistently", func(t *testing.T) {
 		req := summaryRequest()
 		nit := finding("f-3", "main.go", review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 16})
 		nit.Severity = review.SeverityNits
@@ -220,13 +211,11 @@ func TestRollupSummaryRendering(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
-		if strings.Contains(plan.RollupMarkdown, "unattributed") {
-			t.Fatalf("filtered unattributed nit still rendered:\n%s", plan.RollupMarkdown)
+		if !strings.Contains(plan.RollupMarkdown, "| unattributed | 1 |") {
+			t.Fatalf("unattributed nit missing:\n%s", plan.RollupMarkdown)
 		}
-		for _, reviewer := range plan.Summary.Reviewers {
-			if reviewer.Name == UnattributedReviewer {
-				t.Fatalf("filtered unattributed nit counted: %#v", plan.Summary.Reviewers)
-			}
+		if !strings.Contains(plan.RollupMarkdown, "<summary><strong>unattributed (1 finding)</strong></summary>") {
+			t.Fatalf("unattributed nit section missing:\n%s", plan.RollupMarkdown)
 		}
 	})
 

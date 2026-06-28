@@ -182,10 +182,10 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "review dry-run json verbose",
+			name:    "review dry-run json",
 			prepare: seedConfiguredCredentials,
 			args: func(h *auditHarness) []string {
-				return []string{"review", "--dry-run", "--json", "--verbose", h.prURL}
+				return []string{"review", "--dry-run", "--json", h.prURL}
 			},
 			wantErr: true,
 		},

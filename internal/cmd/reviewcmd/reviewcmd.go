@@ -96,7 +96,6 @@ type commandFlags struct {
 	failOn            string
 	sessionName       string
 	jsonOutput        bool
-	verbose           bool
 	selectionModel    string
 	selectionEffort   string
 	selectionPrompt   string
@@ -147,7 +146,6 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().StringVar(&flags.failOn, "fail-on", "", "Exit 1 when a finding at or above severity exists")
 	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Named LLM session to reuse for live reviews")
 	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
-	cmd.Flags().BoolVar(&flags.verbose, "verbose", false, "Emit additional diagnostic details")
 	cmd.Flags().StringVar(&flags.selectionModel, "selection-model", "", "Override selection model for dry-run review")
 	cmd.Flags().StringVar(&flags.selectionEffort, "selection-effort", "", "Override selection effort for dry-run review")
 	cmd.Flags().StringVar(&flags.selectionPrompt, "selection-prompt", "", "Override selection instructions from a file for dry-run review")
@@ -330,7 +328,6 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		AllowSelfApprove:            flags.allowSelfApprove,
 		NoResolveThreads:            noResolve,
 		MajorRequestChanges:         profile.ReviewPolicy.MajorEvent == config.ReviewMajorEventRequestChanges,
-		IncludeNits:                 flags.verbose,
 		SelectionModelOverride:      selectionModel,
 		SelectionEffortOverride:     selectionEffort,
 		SelectionPromptInstructions: selectionPromptInstructions,

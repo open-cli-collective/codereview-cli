@@ -210,7 +210,7 @@ The following flags are intentionally not durable init configuration.
 | Global/root | `--backend` | Compatibility runtime credential backend selector. It cannot override explicit credential-store destinations and must not persist to config. |
 | Global/root | `--profile` | Runtime profile selector. It participates in init profile selection but is not itself a durable field. |
 | `cr review` execution mode | `--dry-run`, `--no-post`, `--rerun`, `--retry-posts` | Per-run execution behavior, not profile policy. |
-| `cr review` output/audit | `--json`, `--verbose` | Presentation and diagnostic controls. |
+| `cr review` output/audit | `--json` | Presentation and diagnostic controls. |
 | `cr review` PR/run targeting | `--review-base-sha`, `--review-head-sha`, `--session` | Per-run targeting or session reuse. |
 | `cr review` local resources | `--agents-dir`, `--max-agents`, `--max-concurrency` | Per-run resource and test controls. Durable trusted sources use `agent_sources`. |
 | `cr review` dry-run model overrides | `--selection-model`, `--selection-effort`, `--selection-prompt`, `--reviewer-model`, `--reviewer-model-tier`, `--reviewer-effort` | Dry-run override surface for experiments. Durable reviewer baseline is `llm.reviewer_model_tier`; durable tier-to-model mapping is `llm.model_map`. |

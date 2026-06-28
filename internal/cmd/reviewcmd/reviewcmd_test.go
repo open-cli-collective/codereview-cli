@@ -67,7 +67,6 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 		"--allow-self-review",
 		"--allow-self-approve",
 		"--no-resolve-threads",
-		"--verbose",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -82,7 +81,7 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	if req.FailOn == nil || *req.FailOn != review.SeverityMinor {
 		t.Fatalf("FailOn = %#v, want minor", req.FailOn)
 	}
-	if len(req.AgentDirs) != 1 || req.AgentDirs[0] != "/tmp/agents" || !req.AllowSelfReview || !req.AllowSelfApprove || !req.NoResolveThreads || !req.MajorRequestChanges || !req.IncludeNits {
+	if len(req.AgentDirs) != 1 || req.AgentDirs[0] != "/tmp/agents" || !req.AllowSelfReview || !req.AllowSelfApprove || !req.NoResolveThreads || !req.MajorRequestChanges {
 		t.Fatalf("request flags = %#v", req)
 	}
 	if req.SelectionModelOverride != "" || req.SelectionEffortOverride != "" ||
