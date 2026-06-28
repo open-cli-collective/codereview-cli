@@ -686,13 +686,13 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	if strings.Contains(selectionPrompt, provider.pr.Head.SHA) {
 		t.Fatalf("selection prompt contains current PR SHAs: %s", selectionPrompt)
 	}
-	if requests[1].CheckoutReadonly == nil {
-		t.Fatalf("reviewer request = %#v, want checkout-readonly access", requests[1])
+	if requests[1].CheckoutAccess == nil {
+		t.Fatalf("reviewer request = %#v, want checkout access", requests[1])
 	}
-	if requests[1].CheckoutReadonly.RootDir != result.Artifacts.WorkbenchRepoDir ||
-		requests[1].CheckoutReadonly.ScratchDir != result.Artifacts.WorkbenchScratch ||
-		requests[1].CheckoutReadonly.MaxToolOutputBytes != defaultCheckoutReadonlyToolOutputBytes {
-		t.Fatalf("reviewer checkout request = %#v, want workbench repo/scratch with default cap", requests[1].CheckoutReadonly)
+	if requests[1].CheckoutAccess.RootDir != result.Artifacts.WorkbenchRepoDir ||
+		requests[1].CheckoutAccess.ScratchDir != result.Artifacts.WorkbenchScratch ||
+		requests[1].CheckoutAccess.MaxToolOutputBytes != defaultCheckoutReadonlyToolOutputBytes {
+		t.Fatalf("reviewer checkout request = %#v, want workbench repo/scratch with default cap", requests[1].CheckoutAccess)
 	}
 	if provider.threadCalls != 0 {
 		t.Fatalf("thread calls = %d, want no live thread reads for pinned review", provider.threadCalls)
@@ -2584,11 +2584,11 @@ func TestPrepareCheckoutReadonlyAccessSmokeAllowsReadAndScratchWrite(t *testing.
 	if len(requests) != 1 {
 		t.Fatalf("adapter requests = %d, want one smoke invocation", len(requests))
 	}
-	if requests[0].CheckoutReadonly == nil || requests[0].CheckoutReadonly.RootDir != artifacts.WorkbenchRepoDir {
-		t.Fatalf("checkout readonly request = %#v, want workbench repo root", requests[0].CheckoutReadonly)
+	if requests[0].CheckoutAccess == nil || requests[0].CheckoutAccess.RootDir != artifacts.WorkbenchRepoDir {
+		t.Fatalf("checkout access request = %#v, want workbench repo root", requests[0].CheckoutAccess)
 	}
-	if requests[0].CheckoutReadonly.MaxToolOutputBytes != defaultCheckoutReadonlyToolOutputBytes {
-		t.Fatalf("max tool output bytes = %d, want default %d", requests[0].CheckoutReadonly.MaxToolOutputBytes, defaultCheckoutReadonlyToolOutputBytes)
+	if requests[0].CheckoutAccess.MaxToolOutputBytes != defaultCheckoutReadonlyToolOutputBytes {
+		t.Fatalf("max tool output bytes = %d, want default %d", requests[0].CheckoutAccess.MaxToolOutputBytes, defaultCheckoutReadonlyToolOutputBytes)
 	}
 	if !got.ReadOK || !got.MainContainsChanged || !got.TrackedWriteDenied || !got.UntrackedWriteDenied || !got.ScratchWriteOK {
 		t.Fatalf("smoke result = %#v, want read success, repo write denial, and scratch write success", got)
@@ -2725,12 +2725,40 @@ func TestPrepareCheckoutReadonlyAccessRejectsSymlinkTargets(t *testing.T) {
 
 func TestBuildCheckoutReadonlyRequestUnsupportedAdapterFailsWithoutFallback(t *testing.T) {
 	artifacts := ArtifactPathsFromDir(t.TempDir())
-	req, err := buildCheckoutReadonlyRequest(Options{Adapter: &llm.FakeAdapter{NameValue: "fake-unsupported", SupportsCheckoutReadonlySet: true}}, artifacts, "harness:smoke", nil, "gpt-5.5", "medium", "smoke", filepath.Join(t.TempDir(), "smoke.jsonl"))
-	if err == nil || !strings.Contains(err.Error(), "checkout-readonly capability") {
-		t.Fatalf("buildCheckoutReadonlyRequest error = %v, want missing checkout-readonly capability", err)
+	req, err := buildCheckoutReadonlyRequest(Options{Adapter: &llm.FakeAdapter{NameValue: "fake-unsupported", CheckoutAccessLevelSet: true}}, artifacts, "harness:smoke", nil, "gpt-5.5", "medium", "smoke", filepath.Join(t.TempDir(), "smoke.jsonl"))
+	if err == nil || !strings.Contains(err.Error(), "checkout access capability") {
+		t.Fatalf("buildCheckoutReadonlyRequest error = %v, want missing checkout access capability", err)
 	}
 	if (req != llm.Request{}) {
 		t.Fatalf("request = %#v, want zero request on unsupported adapter", req)
+	}
+}
+
+func TestBuildCheckoutReadonlyRequestAcceptsPermissionBoundedAdapter(t *testing.T) {
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	if err := os.MkdirAll(artifacts.WorkbenchRepoDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(repo): %v", err)
+	}
+	if err := os.MkdirAll(artifacts.WorkbenchScratch, 0o700); err != nil {
+		t.Fatalf("MkdirAll(scratch): %v", err)
+	}
+	adapter := &llm.FakeAdapter{
+		NameValue:                "fake-bounded",
+		CheckoutAccessLevelSet:   true,
+		CheckoutAccessLevelValue: llm.CheckoutAccessPermissionBounded,
+	}
+	req, err := buildCheckoutReadonlyRequest(Options{Adapter: adapter}, artifacts, "harness:smoke", nil, "gpt-5.5", "medium", "smoke", filepath.Join(t.TempDir(), "smoke.jsonl"))
+	if err != nil {
+		t.Fatalf("buildCheckoutReadonlyRequest: %v", err)
+	}
+	if req.CheckoutAccess == nil {
+		t.Fatalf("CheckoutAccess = nil, want checkout access request")
+	}
+	if req.CheckoutAccess.RootDir != artifacts.WorkbenchRepoDir || req.CheckoutAccess.ScratchDir != artifacts.WorkbenchScratch {
+		t.Fatalf("CheckoutAccess = %#v, want workbench repo/scratch", req.CheckoutAccess)
+	}
+	if req.CheckoutReadonly != nil {
+		t.Fatalf("CheckoutReadonly = %#v, want new production code to use CheckoutAccess", req.CheckoutReadonly)
 	}
 }
 
@@ -5673,13 +5701,13 @@ func TestDryRunReviewerCheckoutReadonlyAvoidsContextStuffingBudgetFailures(t *te
 					t.Fatalf("reviewer prompt leaked stuffed code field %q: %s", forbidden, reviewerPrompt)
 				}
 			}
-			if requests[1].CheckoutReadonly == nil {
-				t.Fatalf("reviewer request = %#v, want checkout-readonly access", requests[1])
+			if requests[1].CheckoutAccess == nil {
+				t.Fatalf("reviewer request = %#v, want checkout access", requests[1])
 			}
-			if requests[1].CheckoutReadonly.RootDir != result.Artifacts.WorkbenchRepoDir ||
-				requests[1].CheckoutReadonly.ScratchDir != result.Artifacts.WorkbenchScratch ||
-				requests[1].CheckoutReadonly.MaxToolOutputBytes != defaultCheckoutReadonlyToolOutputBytes {
-				t.Fatalf("reviewer checkout request = %#v, want workbench repo/scratch with default cap", requests[1].CheckoutReadonly)
+			if requests[1].CheckoutAccess.RootDir != result.Artifacts.WorkbenchRepoDir ||
+				requests[1].CheckoutAccess.ScratchDir != result.Artifacts.WorkbenchScratch ||
+				requests[1].CheckoutAccess.MaxToolOutputBytes != defaultCheckoutReadonlyToolOutputBytes {
+				t.Fatalf("reviewer checkout request = %#v, want workbench repo/scratch with default cap", requests[1].CheckoutAccess)
 			}
 			if len(result.Findings) != 1 {
 				t.Fatalf("findings len = %d, want reviewer success under bounded prompt budget", len(result.Findings))
@@ -5919,8 +5947,11 @@ type checkoutReadonlySmokeAdapter struct {
 func (a *checkoutReadonlySmokeAdapter) Name() string                   { return "checkout-readonly-smoke" }
 func (a *checkoutReadonlySmokeAdapter) SupportsResume() bool           { return false }
 func (a *checkoutReadonlySmokeAdapter) SupportsCheckoutReadonly() bool { return true }
-func (a *checkoutReadonlySmokeAdapter) SupportsCacheAccounting() bool  { return false }
-func (a *checkoutReadonlySmokeAdapter) SupportsCostReporting() bool    { return false }
+func (a *checkoutReadonlySmokeAdapter) CheckoutAccessLevel() llm.CheckoutAccessLevel {
+	return llm.CheckoutAccessReadonly
+}
+func (a *checkoutReadonlySmokeAdapter) SupportsCacheAccounting() bool { return false }
+func (a *checkoutReadonlySmokeAdapter) SupportsCostReporting() bool   { return false }
 func (a *checkoutReadonlySmokeAdapter) Quota(context.Context) (llm.Quota, bool, error) {
 	return llm.Quota{}, false, nil
 }
@@ -5931,9 +5962,9 @@ func (a *checkoutReadonlySmokeAdapter) Start(_ context.Context, req llm.Request)
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
 	a.mu.Unlock()
-	access := req.CheckoutReadonly
+	access := req.CheckoutAccess
 	if access == nil {
-		return nil, errors.New("missing checkout-readonly request")
+		return nil, errors.New("missing checkout access request")
 	}
 	mainBytes, err := os.ReadFile(filepath.Join(access.RootDir, "main.go")) // #nosec G304 -- test adapter reads only caller-provided test workbench roots.
 	if err != nil {

@@ -139,7 +139,7 @@ The prompt payload must not embed:
   effort knobs
 
 `needs_full_file_content` is deprecated in checkout-native mode. Legacy agents
-that still declare it must receive checkout-readonly review behavior instead of
+that still declare it must receive checkout-access review behavior instead of
 prompt stuffing, and agent-authoring guidance should treat checkout-native
 review as the supported path going forward.
 
@@ -224,17 +224,26 @@ but the default posture is full-checkout visibility.
 
 ## Adapter Contract
 
-Adapters that participate in checkout-native review must expose a
-checkout-readonly capability with these properties:
+Adapters that participate in checkout-native review must expose checkout access
+with these properties:
 
 - read/search/git-diff style access to `workbench/repo/`
-- write access only to `workbench/scratch/`
+- any required writes are directed to `workbench/scratch/`
 - bounded command timeouts
 - bounded tool output
 - explicit failure when the capability is unsupported
 
-Unsupported adapters must fail clearly. They must not silently fall back to
-stuffed diffs or full file bodies.
+Checkout access has levels:
+
+- `permission_bounded`: adapter/tool permissions and prompt contract allow
+  checkout inspection and direct writes to scratch, but do not provide an
+  adapter-enforced readonly guarantee for the checkout.
+- `readonly`: the adapter enforces that checkout inspection cannot write to the
+  checkout and writes are constrained away from the checkout.
+
+`readonly` satisfies the weaker checkout-access requirement. Unsupported
+adapters must fail clearly. They must not silently fall back to stuffed diffs or
+full file bodies.
 
 ## Reviewer Output Contract
 

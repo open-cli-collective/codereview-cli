@@ -1037,6 +1037,14 @@ func (a *lazyAdapter) SupportsResume() bool {
 	return adapter.SupportsResume()
 }
 
+func (a *lazyAdapter) CheckoutAccessLevel() llm.CheckoutAccessLevel {
+	adapter, err := a.get()
+	if err != nil {
+		return llm.CheckoutAccessNone
+	}
+	return llm.AdapterCheckoutAccessLevel(adapter)
+}
+
 func (a *lazyAdapter) SupportsCheckoutReadonly() bool {
 	adapter, err := a.get()
 	if err != nil {

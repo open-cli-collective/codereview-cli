@@ -118,12 +118,23 @@ func (a *SubprocessAdapter) Name() string { return string(a.kind) }
 // SupportsResume reports whether subprocess session resume is implemented.
 func (a *SubprocessAdapter) SupportsResume() bool { return a.kind == subprocessClaude }
 
+// CheckoutAccessLevel reports the subprocess adapter's checkout-native access level.
+func (a *SubprocessAdapter) CheckoutAccessLevel() CheckoutAccessLevel {
+	switch a.kind {
+	case subprocessClaude:
+		return CheckoutAccessPermissionBounded
+	case subprocessCodex:
+		return CheckoutAccessReadonly
+	default:
+		return CheckoutAccessNone
+	}
+}
+
 // SupportsCheckoutReadonly reports whether subprocess adapter can safely mount
 // a caller-owned read-only checkout and keep writes inside caller-owned scratch.
-// Codex CLI can do this with a read-only sandbox plus caller-owned scratch; the
-// current Claude background path cannot because it relies on a different launch
-// model and writable result-file handoff.
-func (a *SubprocessAdapter) SupportsCheckoutReadonly() bool { return a.kind == subprocessCodex }
+func (a *SubprocessAdapter) SupportsCheckoutReadonly() bool {
+	return a.CheckoutAccessLevel() == CheckoutAccessReadonly
+}
 
 // SupportsCacheAccounting reports whether cache usage metrics are guaranteed.
 func (a *SubprocessAdapter) SupportsCacheAccounting() bool { return false }
@@ -375,6 +386,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 			"--permission-mode", "acceptEdits",
 			"--add-dir", scratch,
 		}
+		if access := requestCheckoutAccess(req); access != nil {
+			args = append(args, "--add-dir", access.RootDir)
+		}
 		if resumeSessionID != "" {
 			args = append(args, "--resume", resumeSessionID)
 		}
@@ -396,8 +410,8 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 			"--sandbox", "read-only",
 			"--cd", scratch,
 		}
-		if req.CheckoutReadonly != nil {
-			args = append(args, "--add-dir", req.CheckoutReadonly.RootDir)
+		if access := requestCheckoutAccess(req); access != nil {
+			args = append(args, "--add-dir", access.RootDir)
 		}
 		if req.Model != "" {
 			args = append(args, "--model", req.Model)
@@ -448,12 +462,12 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 				return fmt.Errorf("%w: missing %s %q", ErrUnsafeSubprocessConfig, flag, value)
 			}
 		}
-		addDir, ok := flagValueOK(checkedArgs, "--add-dir")
-		if !ok || !sameCleanPath(addDir, scratch) {
-			return fmt.Errorf("%w: claude_cli must restrict add-dir to scratch dir", ErrUnsafeSubprocessConfig)
+		if err := validateClaudeAddDirs(checkedArgs, scratch, requestCheckoutAccess(req)); err != nil {
+			return err
 		}
 	case subprocessCodex:
-		if req.CheckoutReadonly == nil && containsFlag(checkedArgs, "--add-dir") {
+		access := requestCheckoutAccess(req)
+		if access == nil && containsFlag(checkedArgs, "--add-dir") {
 			return fmt.Errorf("%w: unsafe tool-enabling flag present", ErrUnsafeSubprocessConfig)
 		}
 		if len(checkedArgs) == 0 || checkedArgs[0] != "exec" {
@@ -465,9 +479,9 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		if flagValue(checkedArgs, "--cd") != scratch {
 			return fmt.Errorf("%w: codex_cli must use scratch cwd", ErrUnsafeSubprocessConfig)
 		}
-		if req.CheckoutReadonly != nil {
+		if access != nil {
 			addDir, ok := flagValueOK(checkedArgs, "--add-dir")
-			if !ok || !sameCleanPath(addDir, req.CheckoutReadonly.RootDir) {
+			if !ok || !sameCleanPath(addDir, access.RootDir) {
 				return fmt.Errorf("%w: codex_cli must add only the checkout-readonly root", ErrUnsafeSubprocessConfig)
 			}
 		}
@@ -480,18 +494,59 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 	return nil
 }
 
+func validateClaudeAddDirs(args []string, scratch string, access *CheckoutAccessRequest) error {
+	addDirs := flagValues(args, "--add-dir")
+	if access == nil {
+		if len(addDirs) != 1 || !sameCleanPath(addDirs[0], scratch) {
+			return fmt.Errorf("%w: claude_cli must restrict add-dir to scratch dir", ErrUnsafeSubprocessConfig)
+		}
+		return nil
+	}
+	if strings.TrimSpace(access.RootDir) == "" {
+		return fmt.Errorf("%w: checkout-readonly root dir is required", ErrUnsafeSubprocessConfig)
+	}
+	if len(addDirs) != 2 {
+		return fmt.Errorf("%w: claude_cli checkout access requires exactly scratch and checkout add-dir roots", ErrUnsafeSubprocessConfig)
+	}
+	want := []string{scratch, access.RootDir}
+	seen := make([]bool, len(want))
+	for _, addDir := range addDirs {
+		matched := -1
+		for i, wantDir := range want {
+			if sameCleanPath(addDir, wantDir) {
+				matched = i
+				break
+			}
+		}
+		if matched == -1 {
+			return fmt.Errorf("%w: claude_cli checkout access add-dir %q is outside scratch and checkout roots", ErrUnsafeSubprocessConfig, addDir)
+		}
+		if seen[matched] {
+			return fmt.Errorf("%w: claude_cli checkout access duplicate add-dir %q", ErrUnsafeSubprocessConfig, addDir)
+		}
+		seen[matched] = true
+	}
+	for i, ok := range seen {
+		if !ok {
+			return fmt.Errorf("%w: claude_cli checkout access missing add-dir %q", ErrUnsafeSubprocessConfig, want[i])
+		}
+	}
+	return nil
+}
+
 func (a *SubprocessAdapter) invocationScratchDir(req Request) (string, func() error, error) {
-	if req.CheckoutReadonly == nil {
+	access := requestCheckoutAccess(req)
+	if access == nil {
 		return a.scratchDirFactory()
 	}
-	if a.kind != subprocessCodex {
-		return "", nil, RequireCheckoutReadonly(a)
+	if err := requireRequestCheckoutCapability(a, req); err != nil {
+		return "", nil, err
 	}
-	root := strings.TrimSpace(req.CheckoutReadonly.ScratchDir)
+	root := strings.TrimSpace(access.ScratchDir)
 	if root == "" {
 		return "", nil, fmt.Errorf("%w: checkout-readonly scratch dir is required", ErrUnsafeSubprocessConfig)
 	}
-	if strings.TrimSpace(req.CheckoutReadonly.RootDir) == "" {
+	if strings.TrimSpace(access.RootDir) == "" {
 		return "", nil, fmt.Errorf("%w: checkout-readonly root dir is required", ErrUnsafeSubprocessConfig)
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -777,16 +832,17 @@ func (s *subprocessStream) setSessionID(id string) {
 }
 
 func checkoutReadonlyLogBytes(req Request) int {
-	if req.CheckoutReadonly == nil {
+	access := requestCheckoutAccess(req)
+	if access == nil {
 		return logBytesUnlimited
 	}
-	if req.CheckoutReadonly.MaxToolOutputBytes == logBytesUnlimited {
+	if access.MaxToolOutputBytes == logBytesUnlimited {
 		return logBytesUnlimited
 	}
-	if req.CheckoutReadonly.MaxToolOutputBytes < 0 {
+	if access.MaxToolOutputBytes < 0 {
 		return 0
 	}
-	return req.CheckoutReadonly.MaxToolOutputBytes
+	return access.MaxToolOutputBytes
 }
 
 type subprocessEvent struct {
@@ -1617,6 +1673,20 @@ func containsFlag(args []string, flag string) bool {
 func flagValue(args []string, flag string) string {
 	value, _ := flagValueOK(args, flag)
 	return value
+}
+
+func flagValues(args []string, flag string) []string {
+	var values []string
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			values = append(values, args[i+1])
+			continue
+		}
+		if value, ok := strings.CutPrefix(arg, flag+"="); ok {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func flagValueOK(args []string, flag string) (string, bool) {
