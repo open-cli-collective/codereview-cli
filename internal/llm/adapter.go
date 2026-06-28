@@ -32,6 +32,26 @@ type Adapter interface {
 	Resume(context.Context, string, Request) (Stream, error)
 }
 
+// CheckoutAccessLevel identifies how strongly an adapter can constrain checkout
+// access for checkout-native review.
+type CheckoutAccessLevel string
+
+const (
+	// CheckoutAccessNone means the adapter cannot inspect a caller-provided checkout.
+	CheckoutAccessNone CheckoutAccessLevel = "none"
+	// CheckoutAccessPermissionBounded means the adapter can inspect a checkout
+	// through adapter/tool permissions, without an OS-level readonly guarantee.
+	CheckoutAccessPermissionBounded CheckoutAccessLevel = "permission_bounded"
+	// CheckoutAccessReadonly means the adapter can inspect a checkout with writes
+	// constrained away from the checkout by adapter-enforced sandboxing.
+	CheckoutAccessReadonly CheckoutAccessLevel = "readonly"
+)
+
+// CheckoutAccessCapable reports the adapter's checkout-native access level.
+type CheckoutAccessCapable interface {
+	CheckoutAccessLevel() CheckoutAccessLevel
+}
+
 // CheckoutReadonlyCapable reports whether an adapter can safely inspect a
 // caller-provided read-only checkout with writes limited to a caller-owned
 // scratch root.
@@ -39,26 +59,74 @@ type CheckoutReadonlyCapable interface {
 	SupportsCheckoutReadonly() bool
 }
 
-// CheckoutReadonlyRequest describes bounded checkout access for a single LLM
+// CheckoutAccessRequest describes bounded checkout access for a single LLM
 // invocation. RootDir is the reviewer-visible read root; ScratchDir is the
 // writable scratch root owned by the harness; AllowedFiles preserves the
 // orchestrator's optional narrowing intent for logs and smoke-path assertions.
-type CheckoutReadonlyRequest struct {
+type CheckoutAccessRequest struct {
 	RootDir            string
 	ScratchDir         string
 	AllowedFiles       []string
 	MaxToolOutputBytes int
 }
 
+// CheckoutReadonlyRequest is the legacy name for CheckoutAccessRequest.
+type CheckoutReadonlyRequest = CheckoutAccessRequest
+
+// ErrCheckoutAccessUnsupported reports that an adapter cannot provide checkout
+// access for checkout-native review.
+var ErrCheckoutAccessUnsupported = errors.New("llm adapter: missing checkout access capability")
+
 // ErrCheckoutReadonlyUnsupported reports that an adapter cannot safely provide
 // checkout-readonly review access.
 var ErrCheckoutReadonlyUnsupported = errors.New("llm adapter: missing checkout-readonly capability")
 
+// AdapterCheckoutAccessLevel returns adapter's checkout access level.
+func AdapterCheckoutAccessLevel(adapter Adapter) CheckoutAccessLevel {
+	capable, ok := adapter.(CheckoutAccessCapable)
+	if ok {
+		switch level := capable.CheckoutAccessLevel(); level {
+		case CheckoutAccessPermissionBounded, CheckoutAccessReadonly:
+			return level
+		case CheckoutAccessNone:
+			return CheckoutAccessNone
+		default:
+			return CheckoutAccessNone
+		}
+	}
+	if SupportsCheckoutReadonly(adapter) {
+		return CheckoutAccessReadonly
+	}
+	return CheckoutAccessNone
+}
+
+// SupportsCheckoutAccess reports whether adapter can inspect a prepared checkout
+// for checkout-native review.
+func SupportsCheckoutAccess(adapter Adapter) bool {
+	return AdapterCheckoutAccessLevel(adapter) != CheckoutAccessNone
+}
+
 // SupportsCheckoutReadonly reports whether adapter exposes the supplemental
 // checkout-readonly capability.
 func SupportsCheckoutReadonly(adapter Adapter) bool {
+	if capable, ok := adapter.(CheckoutAccessCapable); ok {
+		return capable.CheckoutAccessLevel() == CheckoutAccessReadonly
+	}
 	capable, ok := adapter.(CheckoutReadonlyCapable)
 	return ok && capable.SupportsCheckoutReadonly()
+}
+
+// RequireCheckoutAccess returns a stable error when adapter cannot inspect the
+// prepared checkout for checkout-native review.
+func RequireCheckoutAccess(adapter Adapter) error {
+	if SupportsCheckoutAccess(adapter) {
+		return nil
+	}
+	name := "<nil>"
+	if adapter != nil {
+		name = adapter.Name()
+	}
+	return fmt.Errorf("%w: %s", ErrCheckoutAccessUnsupported, name)
 }
 
 // RequireCheckoutReadonly returns a stable error when adapter does not expose
@@ -81,6 +149,7 @@ type Request struct {
 	Prompt  string
 	LogPath string
 
+	CheckoutAccess   *CheckoutAccessRequest
 	CheckoutReadonly *CheckoutReadonlyRequest
 }
 
@@ -262,10 +331,8 @@ func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string
 		stream Stream
 		err    error
 	)
-	if req.CheckoutReadonly != nil {
-		if err := RequireCheckoutReadonly(adapter); err != nil {
-			return "", Response{}, err
-		}
+	if err := requireRequestCheckoutCapability(adapter, req); err != nil {
+		return "", Response{}, err
 	}
 	if strings.TrimSpace(resumeSessionID) != "" && adapter.SupportsResume() {
 		stream, err = adapter.Resume(ctx, resumeSessionID, req)
@@ -277,6 +344,23 @@ func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string
 	}
 	response, err := stream.Wait(ctx)
 	return stream.SessionID(), response, err
+}
+
+func requestCheckoutAccess(req Request) *CheckoutAccessRequest {
+	if req.CheckoutAccess != nil {
+		return req.CheckoutAccess
+	}
+	return req.CheckoutReadonly
+}
+
+func requireRequestCheckoutCapability(adapter Adapter, req Request) error {
+	if req.CheckoutReadonly != nil {
+		return RequireCheckoutReadonly(adapter)
+	}
+	if req.CheckoutAccess != nil {
+		return RequireCheckoutAccess(adapter)
+	}
+	return nil
 }
 
 func cloneResponse(response Response) Response {

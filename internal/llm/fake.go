@@ -15,6 +15,8 @@ type FakeAdapter struct {
 	SupportsResumeValue           bool
 	SupportsCheckoutReadonlySet   bool
 	SupportsCheckoutReadonlyValue bool
+	CheckoutAccessLevelSet        bool
+	CheckoutAccessLevelValue      CheckoutAccessLevel
 	SupportsCacheAccountingValue  bool
 	SupportsCostReportingValue    bool
 
@@ -63,10 +65,26 @@ func (f *FakeAdapter) SupportsResume() bool {
 func (f *FakeAdapter) SupportsCheckoutReadonly() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.CheckoutAccessLevelSet {
+		return f.CheckoutAccessLevelValue == CheckoutAccessReadonly
+	}
 	if !f.SupportsCheckoutReadonlySet {
 		return true
 	}
 	return f.SupportsCheckoutReadonlyValue
+}
+
+// CheckoutAccessLevel reports the fake's checkout access level.
+func (f *FakeAdapter) CheckoutAccessLevel() CheckoutAccessLevel {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.CheckoutAccessLevelSet {
+		return f.CheckoutAccessLevelValue
+	}
+	if !f.SupportsCheckoutReadonlySet || f.SupportsCheckoutReadonlyValue {
+		return CheckoutAccessReadonly
+	}
+	return CheckoutAccessNone
 }
 
 // SupportsCacheAccounting reports whether cache usage metrics are supported.

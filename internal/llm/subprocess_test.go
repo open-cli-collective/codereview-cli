@@ -135,6 +135,147 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	}
 }
 
+func TestSubprocessCheckoutAccessLevels(t *testing.T) {
+	claude := NewClaudeCLIAdapter(SubprocessOptions{})
+	if got := AdapterCheckoutAccessLevel(claude); got != CheckoutAccessPermissionBounded {
+		t.Fatalf("Claude checkout access = %s, want %s", got, CheckoutAccessPermissionBounded)
+	}
+	if !SupportsCheckoutAccess(claude) {
+		t.Fatal("Claude SupportsCheckoutAccess = false, want true")
+	}
+	if SupportsCheckoutReadonly(claude) {
+		t.Fatal("Claude SupportsCheckoutReadonly = true, want false")
+	}
+
+	codex := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
+	if got := AdapterCheckoutAccessLevel(codex); got != CheckoutAccessReadonly {
+		t.Fatalf("Codex checkout access = %s, want %s", got, CheckoutAccessReadonly)
+	}
+	if !SupportsCheckoutAccess(codex) {
+		t.Fatal("Codex SupportsCheckoutAccess = false, want true")
+	}
+	if !SupportsCheckoutReadonly(codex) {
+		t.Fatal("Codex SupportsCheckoutReadonly = false, want true")
+	}
+}
+
+func TestSubprocessClaudeCheckoutAccessLaunch(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	scratchRoot := filepath.Join(tempDir, "workbench-scratch")
+	if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll(scratchRoot): %v", err)
+	}
+	repoRoot := filepath.Join(tempDir, "workbench-repo")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll(repoRoot): %v", err)
+	}
+	adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Model:  "claude-sonnet-4-6",
+		Effort: "high",
+		Prompt: "prompt",
+		CheckoutAccess: &CheckoutAccessRequest{
+			RootDir:            repoRoot,
+			ScratchDir:         scratchRoot,
+			MaxToolOutputBytes: 2048,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	record := readHelperRecord(t, recordPath)
+	addDirs := flagValues(record.AdapterArgs, "--add-dir")
+	if len(addDirs) != 2 {
+		t.Fatalf("--add-dir values = %#v, want scratch invocation dir and checkout root", addDirs)
+	}
+	if !containsSamePath(addDirs, record.AddDir) || !containsSamePath(addDirs, repoRoot) {
+		t.Fatalf("--add-dir values = %#v, want scratch %q and checkout %q", addDirs, record.AddDir, repoRoot)
+	}
+	cwd := strings.TrimPrefix(filepath.Clean(record.AddDir), "/private")
+	wantRoot := strings.TrimPrefix(filepath.Clean(scratchRoot), "/private")
+	if !strings.HasPrefix(cwd, wantRoot+string(filepath.Separator)) {
+		t.Fatalf("scratch add-dir = %q, want child under %q", record.AddDir, scratchRoot)
+	}
+	if record.PromptFileBytes == 0 || !strings.Contains(record.PromptFile, "prompt") {
+		t.Fatalf("prompt file = %q, want prompt in invocation scratch", record.PromptFile)
+	}
+}
+
+func TestSubprocessClaudeRejectsLegacyCheckoutReadonly(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	scratchRoot := filepath.Join(tempDir, "workbench-scratch")
+	if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll(scratchRoot): %v", err)
+	}
+	repoRoot := filepath.Join(tempDir, "workbench-repo")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll(repoRoot): %v", err)
+	}
+	adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Model:  "claude-sonnet-4-6",
+		Effort: "high",
+		Prompt: "prompt",
+		CheckoutReadonly: &CheckoutReadonlyRequest{
+			RootDir:            repoRoot,
+			ScratchDir:         scratchRoot,
+			MaxToolOutputBytes: 2048,
+		},
+	})
+	if stream != nil {
+		t.Fatalf("stream = %#v, want nil", stream)
+	}
+	if !errors.Is(err, ErrCheckoutReadonlyUnsupported) || !strings.Contains(err.Error(), "claude_cli") {
+		t.Fatalf("Start error = %v, want missing readonly with adapter name", err)
+	}
+}
+
+func TestSubprocessClaudeCheckoutAccessValidationRejectsUnexpectedAddDir(t *testing.T) {
+	tempDir := t.TempDir()
+	scratch := filepath.Join(tempDir, "scratch")
+	repoRoot := filepath.Join(tempDir, "repo")
+	extra := filepath.Join(tempDir, "extra")
+	for _, dir := range []string{scratch, repoRoot, extra} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
+	req := Request{
+		Prompt: "prompt",
+		CheckoutAccess: &CheckoutAccessRequest{
+			RootDir:    repoRoot,
+			ScratchDir: scratch,
+		},
+	}
+	args, err := adapter.buildArgs(req, scratch)
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
+	args = append(argsBeforePrompt(args), "--add-dir", extra, "--", "prompt")
+	if err := adapter.validateArgs(args, scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) || !strings.Contains(err.Error(), "add-dir") {
+		t.Fatalf("validateArgs unexpected add-dir error = %v, want unsafe add-dir", err)
+	}
+
+	args, err = adapter.buildArgs(req, scratch)
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
+	args = removeFlag(args, "--add-dir")
+	if err := adapter.validateArgs(args, scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) || !strings.Contains(err.Error(), "add-dir") {
+		t.Fatalf("validateArgs missing add-dir error = %v, want unsafe add-dir", err)
+	}
+}
+
 func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
@@ -1298,6 +1439,15 @@ func assertClaudeCleanup(t *testing.T, records []helperRecord, jobID string, wan
 	if !rmSeen {
 		t.Fatalf("rmSeen = false, want true in records %#v", records)
 	}
+}
+
+func containsSamePath(paths []string, want string) bool {
+	for _, path := range paths {
+		if sameCleanPath(path, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasClaudeControlRecord(records []helperRecord, verb string, jobID string) bool {

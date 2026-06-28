@@ -3509,7 +3509,7 @@ func workbenchBranchArtifactFromRef(ref gitprovider.PRBranchRef) workbenchBranch
 }
 
 func buildCheckoutReadonlyRequest(opts Options, artifacts ArtifactPaths, agentID string, allowedFiles []string, model, effort, prompt, logPath string) (llm.Request, error) {
-	if err := llm.RequireCheckoutReadonly(opts.Adapter); err != nil {
+	if err := llm.RequireCheckoutAccess(opts.Adapter); err != nil {
 		return llm.Request{}, fmt.Errorf("pipeline: %w", err)
 	}
 	access, err := prepareCheckoutReadonlyAccess(artifacts, agentID, allowedFiles, defaultCheckoutReadonlyToolOutputBytes)
@@ -3517,11 +3517,11 @@ func buildCheckoutReadonlyRequest(opts Options, artifacts ArtifactPaths, agentID
 		return llm.Request{}, err
 	}
 	return llm.Request{
-		Model:            model,
-		Effort:           effort,
-		Prompt:           prompt,
-		LogPath:          logPath,
-		CheckoutReadonly: &access,
+		Model:          model,
+		Effort:         effort,
+		Prompt:         prompt,
+		LogPath:        logPath,
+		CheckoutAccess: &access,
 	}, nil
 }
 

@@ -2481,6 +2481,36 @@ func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
 	}
 }
 
+func TestProgressAdapterStartWritesCheckoutAccessLevel(t *testing.T) {
+	var errOut bytes.Buffer
+	adapter := &llm.FakeAdapter{
+		NameValue:                "fake-llm",
+		CheckoutAccessLevelSet:   true,
+		CheckoutAccessLevelValue: llm.CheckoutAccessPermissionBounded,
+	}
+	adapter.Queue(llm.FakeResult{SessionID: "sess-checkout"})
+	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), "review", adapter, "anthropic", "claude_cli")
+
+	stream, err := wrapped.Start(context.Background(), llm.Request{
+		Model:  "claude-sonnet-4-6",
+		Prompt: "prompt",
+		CheckoutAccess: &llm.CheckoutAccessRequest{
+			RootDir:            "/tmp/repo",
+			ScratchDir:         "/tmp/scratch",
+			MaxToolOutputBytes: 1024,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if stderr := errOut.String(); !strings.Contains(stderr, `checkout_access="permission_bounded"`) {
+		t.Fatalf("stderr = %q, want checkout_access field", stderr)
+	}
+}
+
 func TestProgressAdapterUsesRespondCommandLabel(t *testing.T) {
 	var errOut bytes.Buffer
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
@@ -2541,28 +2571,73 @@ func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
 
 func TestProgressAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
 	adapter := &llm.FakeAdapter{
-		NameValue:                     "fake-llm",
-		SupportsCheckoutReadonlySet:   true,
-		SupportsCheckoutReadonlyValue: true,
+		NameValue:                "fake-llm",
+		CheckoutAccessLevelSet:   true,
+		CheckoutAccessLevelValue: llm.CheckoutAccessReadonly,
 	}
 	wrapped := withProgressAdapter(progress.New(io.Discard, false, nil), "review", adapter, "openai", "codex_cli")
 
 	if !llm.SupportsCheckoutReadonly(wrapped) {
 		t.Fatal("SupportsCheckoutReadonly(wrapped) = false, want true")
 	}
+	if got := llm.AdapterCheckoutAccessLevel(wrapped); got != llm.CheckoutAccessReadonly {
+		t.Fatalf("AdapterCheckoutAccessLevel(wrapped) = %s, want %s", got, llm.CheckoutAccessReadonly)
+	}
+}
+
+func TestProgressAdapterPreservesPermissionBoundedCheckoutAccess(t *testing.T) {
+	adapter := &llm.FakeAdapter{
+		NameValue:                "fake-llm",
+		CheckoutAccessLevelSet:   true,
+		CheckoutAccessLevelValue: llm.CheckoutAccessPermissionBounded,
+	}
+	wrapped := withProgressAdapter(progress.New(io.Discard, false, nil), "review", adapter, "anthropic", "claude_cli")
+
+	if !llm.SupportsCheckoutAccess(wrapped) {
+		t.Fatal("SupportsCheckoutAccess(wrapped) = false, want true")
+	}
+	if llm.SupportsCheckoutReadonly(wrapped) {
+		t.Fatal("SupportsCheckoutReadonly(wrapped) = true, want false")
+	}
+	if got := llm.AdapterCheckoutAccessLevel(wrapped); got != llm.CheckoutAccessPermissionBounded {
+		t.Fatalf("AdapterCheckoutAccessLevel(wrapped) = %s, want %s", got, llm.CheckoutAccessPermissionBounded)
+	}
 }
 
 func TestLazyAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
 	lazy := newLazyAdapter(func() (llm.Adapter, error) {
 		return &llm.FakeAdapter{
-			NameValue:                     "fake-llm",
-			SupportsCheckoutReadonlySet:   true,
-			SupportsCheckoutReadonlyValue: true,
+			NameValue:                "fake-llm",
+			CheckoutAccessLevelSet:   true,
+			CheckoutAccessLevelValue: llm.CheckoutAccessReadonly,
 		}, nil
 	})
 
 	if !llm.SupportsCheckoutReadonly(lazy) {
 		t.Fatal("SupportsCheckoutReadonly(lazy) = false, want true")
+	}
+	if got := llm.AdapterCheckoutAccessLevel(lazy); got != llm.CheckoutAccessReadonly {
+		t.Fatalf("AdapterCheckoutAccessLevel(lazy) = %s, want %s", got, llm.CheckoutAccessReadonly)
+	}
+}
+
+func TestLazyAdapterPreservesPermissionBoundedCheckoutAccess(t *testing.T) {
+	lazy := newLazyAdapter(func() (llm.Adapter, error) {
+		return &llm.FakeAdapter{
+			NameValue:                "fake-llm",
+			CheckoutAccessLevelSet:   true,
+			CheckoutAccessLevelValue: llm.CheckoutAccessPermissionBounded,
+		}, nil
+	})
+
+	if !llm.SupportsCheckoutAccess(lazy) {
+		t.Fatal("SupportsCheckoutAccess(lazy) = false, want true")
+	}
+	if llm.SupportsCheckoutReadonly(lazy) {
+		t.Fatal("SupportsCheckoutReadonly(lazy) = true, want false")
+	}
+	if got := llm.AdapterCheckoutAccessLevel(lazy); got != llm.CheckoutAccessPermissionBounded {
+		t.Fatalf("AdapterCheckoutAccessLevel(lazy) = %s, want %s", got, llm.CheckoutAccessPermissionBounded)
 	}
 }
 
