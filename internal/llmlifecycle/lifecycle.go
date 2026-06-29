@@ -765,6 +765,7 @@ func SessionDraftFromMetadata(meta Metadata) SessionDraft {
 		RowID:                     meta.SessionRowID,
 		ProviderReportedSessionID: meta.ProviderSessionID,
 		ProviderSessionID:         meta.ProviderSessionID,
+		AgentID:                   stringPtrIfNonEmpty(meta.AgentID),
 		Adapter:                   meta.Adapter,
 		Model:                     meta.Model,
 		Effort:                    meta.Effort,
@@ -860,6 +861,14 @@ func int64PtrToInt(value *int64) *int {
 	}
 	converted := int(*value)
 	return &converted
+}
+
+func stringPtrIfNonEmpty(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func isContextError(err error) bool {

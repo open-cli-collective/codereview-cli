@@ -94,5 +94,8 @@ func pipelineTaskProgressResultFields(result pipeline.LLMTaskProgressResult) []p
 	if result.Usage.CacheCreate != nil {
 		fields = append(fields, progress.Field{Key: "cache_create", Value: strconv.Itoa(*result.Usage.CacheCreate)})
 	}
+	if result.Usage.CostUSD != nil {
+		fields = append(fields, progress.Field{Key: "cost_usd", Value: strconv.FormatFloat(*result.Usage.CostUSD, 'f', -1, 64)})
+	}
 	return fields
 }

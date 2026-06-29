@@ -118,13 +118,24 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 		t.Fatalf("AllocateRun: %v", err)
 	}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress := &lifecycleProgressRecorder{}
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
-		Response:  llm.Response{StructuredOutput: []byte(`{"ok":true}`)},
+		Response: llm.Response{
+			StructuredOutput: []byte(`{"ok":true}`),
+			Usage: llm.Usage{
+				TokensIn:    intPtr(144),
+				TokensOut:   intPtr(89),
+				CacheRead:   intPtr(55),
+				CacheCreate: intPtr(34),
+				CostUSD:     floatPtr(1.44),
+			},
+		},
 	})
 	req := lifecycleRequest(t, store, adapter)
 	req.RunID = runID
 	req.Paths = Paths{LLMTasksDir: filepath.Join(t.TempDir(), "llm-tasks")}
+	req.Progress = progress
 	if _, err := RunStructured(ctx, req, decodeLifecyclePayload); err != nil {
 		t.Fatalf("RunStructured first: %v", err)
 	}
@@ -149,6 +160,7 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	req.Store = reopened
 	req.Adapter = cachedAdapter
+	progress.loads = nil
 	cached, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
 		t.Fatalf("RunStructured cached after reopen: %v", err)
@@ -161,6 +173,25 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 	}
 	if cached.Session.RunID != runID || cached.Session.ProviderSessionID != "provider-session-1" {
 		t.Fatalf("cached session = %#v, want reloaded ledger session", cached.Session)
+	}
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached progress loads = %#v, want one cached progress result", progress.loads)
+	}
+	assertUsage(t, "real ledger cached progress load", progress.loads[0].result.Usage, 144, 89, 55, 34, 1.44)
+}
+
+func TestSessionDraftFromMetadataRestoresAgentID(t *testing.T) {
+	draft := SessionDraftFromMetadata(Metadata{
+		SessionRowID:      "session-row",
+		ProviderSessionID: "provider-session",
+		AgentID:           "go:tests",
+	})
+	if draft.AgentID == nil || *draft.AgentID != "go:tests" {
+		t.Fatalf("draft.AgentID = %#v, want persisted agent id", draft.AgentID)
+	}
+	empty := SessionDraftFromMetadata(Metadata{AgentID: "   "})
+	if empty.AgentID != nil {
+		t.Fatalf("empty.AgentID = %#v, want nil", empty.AgentID)
 	}
 }
 
