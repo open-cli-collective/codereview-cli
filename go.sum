@@ -115,6 +115,8 @@ github.com/open-cli-collective/cli-common v0.4.0 h1:YkffqDW2OmFMWPqrT7m/yC3VoUKx
 github.com/open-cli-collective/cli-common v0.4.0/go.mod h1:3AzjCT0V8xgslHlGi1+rUkcV+Vf5wONGwISQkufLZLQ=
 github.com/open-cli-collective/cli-common v0.4.1-0.20260629140122-9ab616283573 h1:5+ad2Xvq9RHx/0YtGbs9crzq+BcBsfQRRVmlsfJC/Vo=
 github.com/open-cli-collective/cli-common v0.4.1-0.20260629140122-9ab616283573/go.mod h1:3AzjCT0V8xgslHlGi1+rUkcV+Vf5wONGwISQkufLZLQ=
+github.com/open-cli-collective/cli-common v0.4.1-0.20260629140442-d94ebb08c917 h1:5/tPbHJtT6gj1FGoJa5fjtYb+sPglcbbtKthO5QloTs=
+github.com/open-cli-collective/cli-common v0.4.1-0.20260629140442-d94ebb08c917/go.mod h1:3AzjCT0V8xgslHlGi1+rUkcV+Vf5wONGwISQkufLZLQ=
 github.com/opentracing/opentracing-go v1.2.0 h1:uEJPy/1a5RIPAJ0Ov+OIO8OxWu77jEv+1B0VhjKrZUs=
 github.com/opentracing/opentracing-go v1.2.0/go.mod h1:GxEUsuufX4nBwe+T+Wl9TAgYrxe9dPLANfrWvHYVTgc=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
