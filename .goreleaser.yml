@@ -44,8 +44,9 @@ builds:
       - -X github.com/open-cli-collective/codereview-cli/internal/version.Version={{.Version}}
       - -X github.com/open-cli-collective/codereview-cli/internal/version.Commit={{.Commit}}
       - -X github.com/open-cli-collective/codereview-cli/internal/version.Date={{.Date}}
-    # macOS code-signing — stable DR so Keychain "Always Allow" survives brew upgrade
-    # (cli-common distribution.md §2A). Logic + identity live in open-cli-collective/.github
+    # macOS code-signing — stable DR avoids ad-hoc identity churn, but self-signed
+    # builds still need the shared Keychain prompt mitigations described in
+    # cli-common/docs/distribution.md §2A. Logic + identity live in open-cli-collective/.github
     # (macos-codesign-setup), which exports CODESIGN_DARWIN_SCRIPT (absolute). Unset in
     # local builds → signing skipped.
     hooks:
