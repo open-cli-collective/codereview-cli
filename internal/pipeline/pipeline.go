@@ -1614,7 +1614,7 @@ func loadTaskSession(ctx context.Context, opts Options, runID string, meta llmTa
 
 func loadOptionalTaskSession(ctx context.Context, opts Options, runID string, meta llmTaskMetadata) (ledger.Session, sessionDraft, error) {
 	if strings.TrimSpace(meta.SessionRowID) == "" {
-		return ledger.Session{}, sessionDraft{}, nil
+		return ledger.Session{}, sessionDraftFromTaskMetadata(meta), nil
 	}
 	session, err := loadTaskSession(ctx, opts, runID, meta)
 	if err != nil {

@@ -800,7 +800,7 @@ func loadTaskSession(ctx context.Context, store Store, runID string, meta Metada
 
 func loadOptionalTaskSession(ctx context.Context, store Store, runID string, meta Metadata) (ledger.Session, SessionDraft, error) {
 	if strings.TrimSpace(meta.SessionRowID) == "" {
-		return ledger.Session{}, SessionDraft{}, nil
+		return ledger.Session{}, SessionDraftFromMetadata(meta), nil
 	}
 	session, err := loadTaskSession(ctx, store, runID, meta)
 	if err != nil {

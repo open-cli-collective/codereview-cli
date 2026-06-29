@@ -457,6 +457,43 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	assertUsage(t, "cached isolated progress load", progress.loads[0].result.Usage, 34, 13, 9, 4)
 }
 
+func TestRunStructuredLoadsSessionlessIsolatedFailureUsageFromMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := newLifecycleStore()
+	progress := &lifecycleProgressRecorder{}
+	req := lifecycleRequest(t, store, &llm.FakeAdapter{NameValue: "fake-llm"})
+	req.FailureStatus = StatusFailedIsolated
+	req.Progress = progress
+	if err := WriteMetadata(req.Paths, Metadata{
+		SchemaVersion:     SchemaVersion,
+		TaskID:            req.TaskID,
+		Phase:             req.Phase,
+		InputFingerprint:  req.InputFingerprint,
+		Adapter:           "fake-llm",
+		Status:            StatusFailedIsolated,
+		ProviderSessionID: "provider-session-1",
+		Model:             req.Model,
+		Effort:            req.Effort,
+		LogPath:           req.LogPath,
+		Error:             "validation failed",
+		TokensIn:          intPtr(89),
+		TokensOut:         intPtr(55),
+		CacheRead:         intPtr(34),
+		CacheCreate:       intPtr(21),
+	}); err != nil {
+		t.Fatalf("WriteMetadata: %v", err)
+	}
+
+	_, err := RunStructured(ctx, req, decodeLifecyclePayload)
+	if !IsTaskStatus(err, StatusFailedIsolated) {
+		t.Fatalf("RunStructured cached isolated error = %v, want cached isolated task error", err)
+	}
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached sessionless isolated progress loads = %#v, want one cached progress result", progress.loads)
+	}
+	assertUsage(t, "cached sessionless isolated progress load", progress.loads[0].result.Usage, 89, 55, 34, 21)
+}
+
 func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing.T) {
 	ctx := context.Background()
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}

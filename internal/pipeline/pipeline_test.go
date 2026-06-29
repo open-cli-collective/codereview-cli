@@ -3554,6 +3554,68 @@ func TestLoadStructuredTaskReportsCachedProgress(t *testing.T) {
 	}
 }
 
+func TestLoadStructuredTaskReportsSessionlessIsolatedFailureUsageFromMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	allocatePipelineRun(t, store, layout, "run-sessionless-isolated", ledger.PostModeDryRun, fixedNow())
+	spec := llmTaskSpec{
+		runID:            "run-sessionless-isolated",
+		taskID:           reviewerTaskID("harness:beta"),
+		phase:            "reviewer",
+		inputFingerprint: "fingerprint",
+		artifacts:        artifacts,
+		role:             ledger.SessionRoleReviewer,
+		model:            "gpt-5.4-mini",
+		effort:           "low",
+		logPath:          filepath.Join(t.TempDir(), "reviewer.jsonl"),
+		prompt:           "prompt",
+		llmFailureStatus: llmTaskStatusFailedIsolated,
+	}
+	if err := writeLLMTaskMetadata(artifacts, llmTaskMetadata{
+		SchemaVersion:     llmTaskSchemaVersion,
+		TaskID:            spec.taskID,
+		Phase:             spec.phase,
+		InputFingerprint:  spec.inputFingerprint,
+		Adapter:           "fake-llm",
+		Status:            llmTaskStatusFailedIsolated,
+		ProviderSessionID: "provider-session",
+		Model:             spec.model,
+		Effort:            spec.effort,
+		LogPath:           spec.logPath,
+		Error:             "validation failed",
+		TokensIn:          intPtr(144),
+		TokensOut:         intPtr(89),
+		CacheRead:         intPtr(55),
+		CacheCreate:       intPtr(34),
+	}); err != nil {
+		t.Fatalf("writeLLMTaskMetadata: %v", err)
+	}
+	progress := &fakeTaskProgress{}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+
+	_, _, _, ok, err := loadStructuredTask[string](ctx, Options{
+		Adapter:      adapter,
+		Store:        store,
+		TaskProgress: progress,
+	}, spec, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	var taskErr *llmTaskError
+	if !ok || !errors.As(err, &taskErr) || taskErr.status != llmTaskStatusFailedIsolated {
+		t.Fatalf("loadStructuredTask ok=%v err=%v, want cached isolated task error", ok, err)
+	}
+	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter invoked despite cached isolated metadata: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+	}
+	if len(progress.loads) != 1 {
+		t.Fatalf("progress loads=%d, want 1", len(progress.loads))
+	}
+	assertPipelineUsage(t, "cached sessionless isolated progress load", progress.loads[0].result.Usage, 144, 89, 55, 34)
+}
+
 func assertTaskPayloadContains(t *testing.T, path, want string) {
 	t.Helper()
 	if strings.TrimSpace(path) == "" {
@@ -3565,6 +3627,17 @@ func assertTaskPayloadContains(t *testing.T, path, want string) {
 	}
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("task payload %s = %s, want %q", path, data, want)
+	}
+}
+
+func assertPipelineUsage(t *testing.T, label string, usage llm.Usage, tokensIn, tokensOut, cacheRead, cacheCreate int) {
+	t.Helper()
+	if usage.TokensIn == nil || *usage.TokensIn != tokensIn ||
+		usage.TokensOut == nil || *usage.TokensOut != tokensOut ||
+		usage.CacheRead == nil || *usage.CacheRead != cacheRead ||
+		usage.CacheCreate == nil || *usage.CacheCreate != cacheCreate {
+		t.Fatalf("%s usage = %#v, want tokens_in=%d tokens_out=%d cache_read=%d cache_create=%d",
+			label, usage, tokensIn, tokensOut, cacheRead, cacheCreate)
 	}
 }
 

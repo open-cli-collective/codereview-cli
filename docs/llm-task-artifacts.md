@@ -61,6 +61,13 @@ Load-bearing metadata fields are:
 - `attempts`: failed validation attempts with attempt label, provider session
   ID, raw output path when present, and decode error.
 
+Telemetry metadata fields are optional and non-load-bearing. They do not affect
+resume eligibility, and older artifacts without them remain valid:
+
+- `tokens_in`, `tokens_out`, `cache_read`, `cache_create`, and `cost_usd`:
+  provider-reported usage copied into run summaries and durable progress
+  breadcrumbs when available.
+
 ## Status Semantics
 
 `succeeded` means the task produced validated structured output. Resume may
