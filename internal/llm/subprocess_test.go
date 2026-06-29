@@ -793,6 +793,30 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 	})
 }
 
+func TestSubprocessCodexParsesObservedUsageFields(t *testing.T) {
+	recordPath := filepath.Join(t.TempDir(), "records.jsonl")
+	adapter := newCodexHelperAdapter("codex-usage", recordPath, 5*time.Second)
+	stream, err := adapter.Start(context.Background(), Request{Model: "gpt-5.5", Effort: "high", Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %s, want ok JSON", response.StructuredOutput)
+	}
+	if response.Usage.TokensIn == nil || *response.Usage.TokensIn != 25475 ||
+		response.Usage.TokensOut == nil || *response.Usage.TokensOut != 812 ||
+		response.Usage.CacheRead == nil || *response.Usage.CacheRead != 19712 {
+		t.Fatalf("Usage = %#v, want observed Codex usage fields", response.Usage)
+	}
+	if response.Usage.CacheCreate != nil {
+		t.Fatalf("CacheCreate = %v, want nil when Codex event does not report cache creation", *response.Usage.CacheCreate)
+	}
+}
+
 func TestSubprocessCodexToolUseAndProtocolFailures(t *testing.T) {
 	t.Run("tool use kills and fails stream", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "records.jsonl")
@@ -1155,6 +1179,10 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)
 		fmt.Println(`{"type":"unknown.event","ignored":true}`)
 		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
+	case "codex-usage":
+		fmt.Println(`{"type":"thread.started","thread_id":"session-usage"}`)
+		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
+		fmt.Println(`{"type":"turn.completed","usage":{"input_tokens":25475,"cached_input_tokens":19712,"output_tokens":812,"reasoning_output_tokens":271}}`)
 	case "noisy-success":
 		fmt.Fprintln(os.Stderr, strings.Repeat("stderr-noise-", 32))
 		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)

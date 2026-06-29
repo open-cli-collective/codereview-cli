@@ -4742,6 +4742,90 @@ func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
 	}
 }
 
+func TestDryRunUsagePopulatesRollupAndLedgerSessions(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.ToolVersion = "0.0.0-test"
+	adapter := &llm.FakeAdapter{NameValue: "codex_cli"}
+	adapter.Queue(fakeLLMResultUsage("selection-session", selectionJSON("harness:reviewer", "main.go"), llm.Usage{
+		TokensIn:  intPtr(25475),
+		TokensOut: intPtr(812),
+		CacheRead: intPtr(19712),
+	}))
+	adapter.Queue(fakeLLMResultUsage("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Finding"), llm.Usage{
+		TokensIn:    intPtr(13),
+		TokensOut:   intPtr(4069),
+		CacheRead:   intPtr(861774),
+		CacheCreate: intPtr(180377),
+	}))
+	adapter.Queue(fakeLLMResultUsage("rollup-session", rollupJSON("comment", []string{"finding-1"}), llm.Usage{
+		TokensIn:  intPtr(11324),
+		TokensOut: intPtr(129),
+		CacheRead: intPtr(4480),
+	}))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-usage" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	workstreamByName := map[string]reviewplan.WorkstreamUsage{}
+	for _, workstream := range result.Plan.Summary.Run.Workstreams {
+		workstreamByName[workstream.Name] = workstream
+	}
+	selection := workstreamByName[orchestratorSelectionStage]
+	if selection.TokensIn == nil || *selection.TokensIn != 25475 ||
+		selection.TokensOut == nil || *selection.TokensOut != 812 ||
+		selection.CacheRead == nil || *selection.CacheRead != 19712 {
+		t.Fatalf("selection workstream = %#v, want Codex usage values", selection)
+	}
+	reviewer := workstreamByName["harness:reviewer"]
+	if reviewer.TokensIn == nil || *reviewer.TokensIn != 13 ||
+		reviewer.TokensOut == nil || *reviewer.TokensOut != 4069 ||
+		reviewer.CacheRead == nil || *reviewer.CacheRead != 861774 ||
+		reviewer.CacheCreate == nil || *reviewer.CacheCreate != 180377 {
+		t.Fatalf("reviewer workstream = %#v, want Claude-style cache values", reviewer)
+	}
+	for _, want := range []string{
+		"| orchestrator-selection | claude-sonnet-4-6 | 25.5k | 812 | 19.7k | unavailable |",
+		"| harness:reviewer | claude-sonnet-4-6 | 13 | 4.1k | 861.8k | 180.4k |",
+		"| orchestrator-rollup | claude-sonnet-4-6 | 11.3k | 129 | 4.5k | unavailable |",
+	} {
+		assertFileContains(t, result.Artifacts.RollupMarkdown, want)
+	}
+	sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListSessionsForRun: %v", err)
+	}
+	sessionByProviderID := map[string]ledger.Session{}
+	for _, session := range sessions {
+		sessionByProviderID[session.ProviderSessionID] = session
+	}
+	if got := sessionByProviderID["selection-session"]; got.TokensIn == nil || *got.TokensIn != 25475 ||
+		got.TokensOut == nil || *got.TokensOut != 812 ||
+		got.CacheRead == nil || *got.CacheRead != 19712 {
+		t.Fatalf("persisted selection session = %#v, want parsed Codex usage", got)
+	}
+	if got := sessionByProviderID["reviewer-session"]; got.TokensIn == nil || *got.TokensIn != 13 ||
+		got.TokensOut == nil || *got.TokensOut != 4069 ||
+		got.CacheRead == nil || *got.CacheRead != 861774 ||
+		got.CacheCreate == nil || *got.CacheCreate != 180377 {
+		t.Fatalf("persisted reviewer session = %#v, want transcript-derived Claude usage", got)
+	}
+}
+
 func TestSharedWorkstreamModel(t *testing.T) {
 	ws := func(name, model string) reviewplan.WorkstreamUsage {
 		return reviewplan.WorkstreamUsage{Name: name, Model: model}
@@ -6716,6 +6800,17 @@ func fakeLLMResult(sessionID, structured string, tokensIn, tokensOut int) llm.Fa
 		Response: llm.Response{
 			StructuredOutput: []byte(structured),
 			Usage:            llm.Usage{TokensIn: intPtr(tokensIn), TokensOut: intPtr(tokensOut)},
+			DurationMS:       123,
+		},
+	}
+}
+
+func fakeLLMResultUsage(sessionID, structured string, usage llm.Usage) llm.FakeResult {
+	return llm.FakeResult{
+		SessionID: sessionID,
+		Response: llm.Response{
+			StructuredOutput: []byte(structured),
+			Usage:            usage,
 			DurationMS:       123,
 		},
 	}

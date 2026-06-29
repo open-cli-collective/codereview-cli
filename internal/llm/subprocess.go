@@ -1007,10 +1007,10 @@ func parseUsage(raw map[string]json.RawMessage) Usage {
 		return Usage{}
 	}
 	return Usage{
-		TokensIn:    rawIntPtr(usageRaw, "tokens_in"),
-		TokensOut:   rawIntPtr(usageRaw, "tokens_out"),
-		CacheRead:   rawIntPtr(usageRaw, "cache_read"),
-		CacheCreate: rawIntPtr(usageRaw, "cache_create"),
+		TokensIn:    firstRawIntPtr(usageRaw, "tokens_in", "tokensIn", "input_tokens", "inputTokens", "input", "promptTokens", "prompt_tokens"),
+		TokensOut:   firstRawIntPtr(usageRaw, "tokens_out", "tokensOut", "output_tokens", "outputTokens", "output", "completionTokens", "completion_tokens"),
+		CacheRead:   firstRawIntPtr(usageRaw, "cache_read", "cacheRead", "cached_input_tokens", "cachedInputTokens"),
+		CacheCreate: firstRawIntPtr(usageRaw, "cache_create", "cacheCreate", "cache_write", "cacheWrite"),
 		CostUSD:     rawFloatPtr(usageRaw, "cost_usd"),
 	}
 }

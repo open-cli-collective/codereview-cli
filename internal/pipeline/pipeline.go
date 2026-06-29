@@ -1494,29 +1494,30 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 		}
 		if strings.TrimSpace(spec.runID) == "" {
 			draft := sessionDraftFromTaskMetadata(meta)
-			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
+			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, llm.Usage{}))
 			return value, draft, ledger.Session{}, true, nil
 		}
 		session, err := loadTaskSession(ctx, opts, spec.runID, meta)
 		if err != nil {
 			return zero, sessionDraft{}, ledger.Session{}, true, err
 		}
-		loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
-		return value, sessionDraftFromLedger(session), session, true, nil
+		draft := sessionDraftFromLedger(session)
+		loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.response.Usage))
+		return value, draft, session, true, nil
 	case llmTaskStatusFailedIsolated:
 		if spec.llmFailureStatus != llmTaskStatusFailedIsolated {
 			return zero, sessionDraft{}, ledger.Session{}, true, fmt.Errorf("pipeline: LLM task %q has isolated failure status outside reviewer phase", spec.taskID)
 		}
 		if strings.TrimSpace(spec.runID) == "" {
 			draft := sessionDraftFromTaskMetadata(meta)
-			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
+			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, llm.Usage{}))
 			return zero, draft, ledger.Session{}, true, &llmTaskError{status: llmTaskStatusFailedIsolated, err: errors.New(taskErrorText(meta))}
 		}
 		session, draft, err := loadOptionalTaskSession(ctx, opts, spec.runID, meta)
 		if err != nil {
 			return zero, sessionDraft{}, ledger.Session{}, true, err
 		}
-		loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
+		loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.response.Usage))
 		return zero, draft, session, true, &llmTaskError{status: llmTaskStatusFailedIsolated, err: errors.New(taskErrorText(meta))}
 	case llmTaskStatusFailedBlocking:
 		return zero, sessionDraft{}, ledger.Session{}, false, nil
@@ -1707,11 +1708,12 @@ func newLLMTaskProgressEvent(spec llmTaskSpec, resumeSessionID string) LLMTaskPr
 	}
 }
 
-func llmTaskProgressResult(meta llmTaskMetadata, result any, cached bool) LLMTaskProgressResult {
+func llmTaskProgressResult(meta llmTaskMetadata, result any, cached bool, usage llm.Usage) LLMTaskProgressResult {
 	out := LLMTaskProgressResult{
 		ProviderSessionID: meta.ProviderSessionID,
 		Status:            string(meta.Status),
 		Cached:            cached,
+		Usage:             usage,
 	}
 	switch value := result.(type) {
 	case llm.StructuredResult[llm.Selection]:

@@ -26,6 +26,7 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	ctx := context.Background()
 	store := newLifecycleStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress := &lifecycleProgressRecorder{}
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
 		Response: llm.Response{
@@ -35,6 +36,7 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 		},
 	})
 	req := lifecycleRequest(t, store, adapter)
+	req.Progress = progress
 
 	first, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
@@ -48,6 +50,10 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	}
 	if len(adapter.Requests()) != 1 {
 		t.Fatalf("adapter requests = %d, want 1", len(adapter.Requests()))
+	}
+	if len(progress.ends) != 1 || progress.ends[0].result.Usage.TokensIn == nil || *progress.ends[0].result.Usage.TokensIn != 10 ||
+		progress.ends[0].result.Usage.TokensOut == nil || *progress.ends[0].result.Usage.TokensOut != 5 {
+		t.Fatalf("fresh progress ends = %#v, want usage from provider response", progress.ends)
 	}
 	storedSession := store.session(t, "session-row-1")
 	if storedSession.RunID != "run-1" || storedSession.ProviderSessionID != "provider-session-1" || storedSession.Role != ledger.SessionRoleOrchestrator {
@@ -65,6 +71,7 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	assertFileOmits(t, meta.ValidatedOutputPath, "Here is JSON")
 
 	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress.loads = nil
 	req.Adapter = cachedAdapter
 	cached, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
@@ -75,6 +82,10 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	}
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
+	}
+	if len(progress.loads) != 1 || progress.loads[0].result.Usage.TokensIn == nil || *progress.loads[0].result.Usage.TokensIn != 10 ||
+		progress.loads[0].result.Usage.TokensOut == nil || *progress.loads[0].result.Usage.TokensOut != 5 {
+		t.Fatalf("cached progress loads = %#v, want usage loaded from ledger session", progress.loads)
 	}
 }
 
@@ -511,6 +522,39 @@ type lifecycleStore struct {
 	getErr    error
 	sessions  map[string]ledger.Session
 	inserted  []ledger.Session
+}
+
+type lifecycleProgressRecorder struct {
+	ends  []lifecycleProgressEnd
+	loads []lifecycleProgressLoad
+}
+
+type lifecycleProgressSpan struct {
+	parent *lifecycleProgressRecorder
+	event  ProgressEvent
+}
+
+type lifecycleProgressEnd struct {
+	event  ProgressEvent
+	err    error
+	result ProgressResult
+}
+
+type lifecycleProgressLoad struct {
+	event  ProgressEvent
+	result ProgressResult
+}
+
+func (r *lifecycleProgressRecorder) StartLLMTask(event ProgressEvent) ProgressSpan {
+	return lifecycleProgressSpan{parent: r, event: event}
+}
+
+func (r *lifecycleProgressRecorder) LoadLLMTask(event ProgressEvent, result ProgressResult) {
+	r.loads = append(r.loads, lifecycleProgressLoad{event: event, result: result})
+}
+
+func (s lifecycleProgressSpan) End(err error, result ProgressResult) {
+	s.parent.ends = append(s.parent.ends, lifecycleProgressEnd{event: s.event, err: err, result: result})
 }
 
 func newLifecycleStore() *lifecycleStore {

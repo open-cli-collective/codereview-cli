@@ -2541,10 +2541,46 @@ func TestPipelineTaskProgressUsesRespondCommandLabel(t *testing.T) {
 		Source: "execute",
 		Model:  "gpt-5.5",
 	})
-	span.End(nil, pipeline.LLMTaskProgressResult{Cached: false, Status: "succeeded", ProviderSessionID: "sess-respond"})
+	tokensIn, tokensOut, cacheRead, cacheCreate := 25475, 812, 19712, 9
+	span.End(nil, pipeline.LLMTaskProgressResult{
+		Cached:            false,
+		Status:            "succeeded",
+		ProviderSessionID: "sess-respond",
+		Usage: llm.Usage{
+			TokensIn:    &tokensIn,
+			TokensOut:   &tokensOut,
+			CacheRead:   &cacheRead,
+			CacheCreate: &cacheCreate,
+		},
+	})
+	progressSink.LoadLLMTask(pipeline.LLMTaskProgressEvent{
+		TaskID: "thread-analysis-thread-1",
+		Phase:  "thread_response",
+		Source: "resume",
+		Model:  "claude-sonnet-4-6",
+	}, pipeline.LLMTaskProgressResult{
+		Cached:            true,
+		Status:            "succeeded",
+		ProviderSessionID: "sess-cached",
+		Usage: llm.Usage{
+			TokensIn:    &tokensIn,
+			TokensOut:   &tokensOut,
+			CacheRead:   &cacheRead,
+			CacheCreate: &cacheCreate,
+		},
+	})
 	stderr := errOut.String()
-	if !strings.Contains(stderr, `command="respond" op="run_llm_task" target="llm_task"`) {
-		t.Fatalf("stderr = %q, want respond breadcrumb for run_llm_task", stderr)
+	for _, want := range []string{
+		`command="respond" op="run_llm_task" target="llm_task"`,
+		`command="respond" op="load_llm_task" target="llm_task"`,
+		`tokens_in="25475"`,
+		`tokens_out="812"`,
+		`cache_read="19712"`,
+		`cache_create="9"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
 	}
 }
 

@@ -119,6 +119,7 @@ type ProgressResult struct {
 	Status             string
 	ValidationAttempts int
 	Cached             bool
+	Usage              llm.Usage
 }
 
 // Request contains all dependencies and inputs for one structured LLM task.
@@ -405,8 +406,11 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		if err != nil {
 			return zero, true, err
 		}
-		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
-		return Result[T]{Value: value, Draft: SessionDraftFromLedger(session), Session: session, Cached: true}, true, nil
+		draft := SessionDraftFromLedger(session)
+		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true)
+		progress.Usage = draft.Response.Usage
+		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
+		return Result[T]{Value: value, Draft: draft, Session: session, Cached: true}, true, nil
 	case StatusFailedIsolated:
 		if req.FailureStatus != StatusFailedIsolated {
 			return zero, true, fmt.Errorf("llmlifecycle: task %q has isolated failure status outside isolated phase", req.TaskID)
@@ -423,7 +427,9 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		if err != nil {
 			return zero, true, err
 		}
-		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
+		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true)
+		progress.Usage = draft.Response.Usage
+		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 		return Result[T]{Draft: draft, Session: session, Cached: true}, true, &TaskError{status: StatusFailedIsolated, err: errors.New(TaskErrorText(meta))}
 	case StatusFailedBlocking:
 		return zero, false, nil
@@ -790,6 +796,7 @@ func progressResult[T any](meta Metadata, result llm.StructuredResult[T], cached
 		Status:             string(meta.Status),
 		ValidationAttempts: len(result.ValidationAttempts),
 		Cached:             cached,
+		Usage:              result.Response.Usage,
 	}
 }
 
