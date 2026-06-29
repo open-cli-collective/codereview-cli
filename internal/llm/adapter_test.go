@@ -86,6 +86,44 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		}
 	})
 
+	t.Run("validation retry hook can replace request state", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{SessionID: "s1", Response: Response{StructuredOutput: []byte(`{"bad":true}`)}})
+		adapter.Queue(FakeResult{SessionID: "s2", Response: Response{StructuredOutput: []byte(`"ok"`)}})
+
+		called := false
+		_, _, err := RunStructured(context.Background(), adapter, Request{
+			Prompt:            "prompt",
+			ReviewerWorkspace: &ReviewerWorkspaceRequest{RepoDir: "first"},
+			OnValidationRetry: func(req *Request) error {
+				called = true
+				req.ReviewerWorkspace = &ReviewerWorkspaceRequest{RepoDir: "retry"}
+				return nil
+			},
+		}, func(data []byte) (string, error) {
+			if string(data) != `"ok"` {
+				return "", errors.New("bad json")
+			}
+			return "ok", nil
+		})
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if !called {
+			t.Fatal("validation retry hook was not called")
+		}
+		requests := adapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("requests = %d, want initial and retry", len(requests))
+		}
+		if requests[0].ReviewerWorkspace == nil || requests[0].ReviewerWorkspace.RepoDir != "first" {
+			t.Fatalf("initial workspace = %#v, want first", requests[0].ReviewerWorkspace)
+		}
+		if requests[1].ReviewerWorkspace == nil || requests[1].ReviewerWorkspace.RepoDir != "retry" {
+			t.Fatalf("retry workspace = %#v, want retry", requests[1].ReviewerWorkspace)
+		}
+	})
+
 	t.Run("two invalid outputs fail", func(t *testing.T) {
 		adapter := &FakeAdapter{}
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad1`)}})

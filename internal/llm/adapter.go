@@ -113,6 +113,7 @@ type Request struct {
 	LogPath string
 
 	ReviewerWorkspace *ReviewerWorkspaceRequest
+	OnValidationRetry func(*Request) error
 }
 
 // Stream is a started LLM request.
@@ -224,6 +225,11 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	}}
 
 	retryReq := req
+	if retryReq.OnValidationRetry != nil {
+		if err := retryReq.OnValidationRetry(&retryReq); err != nil {
+			return StructuredResult[T]{Response: response, SessionID: sessionID, ValidationAttempts: attempts}, err
+		}
+	}
 	retryReq.Prompt = retryPrompt(req.Prompt, decodeErr)
 	retryResumeSessionID := sessionID
 	if strings.TrimSpace(retryResumeSessionID) == "" {

@@ -3180,13 +3180,34 @@ func buildReviewerWorkspaceRequest(ctx context.Context, opts Options, artifacts 
 	if err != nil {
 		return llm.Request{}, nil, err
 	}
+	currentCleanup := cleanup
+	cleanupCurrent := func() error {
+		if currentCleanup == nil {
+			return nil
+		}
+		cleanupErr := currentCleanup()
+		currentCleanup = nil
+		return cleanupErr
+	}
 	return llm.Request{
 		Model:             model,
 		Effort:            effort,
 		Prompt:            prompt,
 		LogPath:           logPath,
 		ReviewerWorkspace: &workspace,
-	}, cleanup, nil
+		OnValidationRetry: func(req *llm.Request) error {
+			if err := cleanupCurrent(); err != nil {
+				return fmt.Errorf("pipeline: cleanup reviewer workspace before retry: %w", err)
+			}
+			retryWorkspace, retryCleanup, err := prepareReviewerWorkspace(ctx, opts, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes)
+			if err != nil {
+				return err
+			}
+			currentCleanup = retryCleanup
+			req.ReviewerWorkspace = &retryWorkspace
+			return nil
+		},
+	}, cleanupCurrent, nil
 }
 
 func prepareReviewerWorkspace(ctx context.Context, opts Options, artifacts ArtifactPaths, headSHA string, agentID string, allowedFiles []string, maxToolOutputBytes int) (llm.ReviewerWorkspaceRequest, func() error, error) {

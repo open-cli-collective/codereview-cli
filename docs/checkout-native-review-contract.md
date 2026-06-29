@@ -250,7 +250,8 @@ Adapters that participate in checkout-native review must expose reviewer
 workspace support with these properties:
 
 - read/search/git-diff style access to the reviewer workspace repo
-- writes remain inside the disposable reviewer workspace and scratch/temp/cache roots
+- adapter-enforced writes remain inside the disposable reviewer workspace and
+  scratch/temp/cache roots
 - bounded command timeouts
 - bounded tool output
 - explicit failure when the capability is unsupported
@@ -265,8 +266,9 @@ Reviewer workspace support has modes:
 Provider implementations map these modes onto their native controls. Claude CLI
 reviewers run with `Read`, `Write`, and `Bash` tools when a reviewer workspace is
 provided, so deployments must treat reviewer subprocesses as executing inside a
-trusted review workbench. Codex CLI reviewers run with `workspace-write` and the
-reviewer checkout as their working directory.
+trusted review workbench rather than an OS-enforced write boundary. Codex CLI
+reviewers run with `workspace-write` and the reviewer checkout as their working
+directory.
 
 Unsupported adapters must fail clearly. They must not silently fall back to
 stuffed diffs or full file bodies.

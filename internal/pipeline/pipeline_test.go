@@ -2766,7 +2766,7 @@ func TestBuildReviewerWorkspaceRequestUnsupportedAdapterFails(t *testing.T) {
 	if cleanup != nil {
 		t.Fatalf("cleanup is non-nil, want nil")
 	}
-	if (req != llm.Request{}) {
+	if req.Model != "" || req.Effort != "" || req.Prompt != "" || req.LogPath != "" || req.ReviewerWorkspace != nil || req.OnValidationRetry != nil {
 		t.Fatalf("request = %#v, want zero request on unsupported adapter", req)
 	}
 }
@@ -3120,6 +3120,9 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 	}
 	if betaMeta.Status != llmTaskStatusFailedIsolated || len(betaMeta.Attempts) != 2 {
 		t.Fatalf("beta metadata = %#v, want failed_isolated with initial and retry attempts", betaMeta)
+	}
+	if !adapter.BetaRetrySawCleanWorkspace() {
+		t.Fatalf("beta retry reused dirty reviewer workspace; want clean workspace for validation retry")
 	}
 	for _, attempt := range betaMeta.Attempts {
 		if attempt.DecodeError == "" {
@@ -5841,11 +5844,12 @@ func (a *promptAwareAdapter) Requests() []llm.Request {
 }
 
 type reviewerIsolationAdapter struct {
-	mu              sync.Mutex
-	requests        []llm.Request
-	betaAttempts    int
-	betaProviderErr error
-	reviewerBarrier *reviewerStartBarrier
+	mu                         sync.Mutex
+	requests                   []llm.Request
+	betaAttempts               int
+	betaProviderErr            error
+	betaRetrySawCleanWorkspace bool
+	reviewerBarrier            *reviewerStartBarrier
 }
 
 func (a *reviewerIsolationAdapter) Name() string {
@@ -5898,6 +5902,19 @@ func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (ll
 		a.betaAttempts++
 		attempt := a.betaAttempts
 		a.mu.Unlock()
+		if req.ReviewerWorkspace != nil {
+			markerPath := filepath.Join(req.ReviewerWorkspace.RepoDir, "beta-attempt-marker")
+			if attempt == 1 {
+				if err := os.WriteFile(markerPath, []byte("dirty"), 0o600); err != nil {
+					return nil, err
+				}
+			} else {
+				_, err := os.Stat(markerPath)
+				a.mu.Lock()
+				a.betaRetrySawCleanWorkspace = errors.Is(err, os.ErrNotExist)
+				a.mu.Unlock()
+			}
+		}
 		sessionID := "beta-session"
 		if attempt > 1 {
 			sessionID = "beta-retry-session"
@@ -5980,6 +5997,12 @@ func (a *reviewerIsolationAdapter) ReviewerStartedCount() int {
 		return 0
 	}
 	return a.reviewerBarrier.startedCount()
+}
+
+func (a *reviewerIsolationAdapter) BetaRetrySawCleanWorkspace() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.betaRetrySawCleanWorkspace
 }
 
 type reviewerStartBarrier struct {
