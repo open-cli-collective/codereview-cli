@@ -4748,19 +4748,24 @@ func TestDryRunUsagePopulatesRollupAndLedgerSessions(t *testing.T) {
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	req.ToolVersion = "0.0.0-test"
-	adapter := &llm.FakeAdapter{NameValue: "codex_cli"}
-	adapter.Queue(fakeLLMResultUsage("selection-session", selectionJSON("harness:reviewer", "main.go"), llm.Usage{
+	systemTemp := filepath.Join(t.TempDir(), "system-temp")
+	if err := os.MkdirAll(systemTemp, 0o700); err != nil {
+		t.Fatalf("mkdir system temp: %v", err)
+	}
+	t.Setenv("TMPDIR", systemTemp)
+	adapter := &providerOriginUsageAdapter{name: "codex_cli"}
+	adapter.Queue(newCodexUsageScriptAdapter(t, "selection-session", selectionJSON("harness:reviewer", "main.go"), llm.Usage{
 		TokensIn:  intPtr(25475),
 		TokensOut: intPtr(812),
 		CacheRead: intPtr(19712),
 	}))
-	adapter.Queue(fakeLLMResultUsage("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Finding"), llm.Usage{
+	adapter.Queue(newClaudeTranscriptScriptAdapter(t, "reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Finding"), llm.Usage{
 		TokensIn:    intPtr(13),
 		TokensOut:   intPtr(4069),
 		CacheRead:   intPtr(861774),
 		CacheCreate: intPtr(180377),
 	}))
-	adapter.Queue(fakeLLMResultUsage("rollup-session", rollupJSON("comment", []string{"finding-1"}), llm.Usage{
+	adapter.Queue(newCodexUsageScriptAdapter(t, "rollup-session", rollupJSON("comment", []string{"finding-1"}), llm.Usage{
 		TokensIn:  intPtr(11324),
 		TokensOut: intPtr(129),
 		CacheRead: intPtr(4480),
@@ -6805,15 +6810,189 @@ func fakeLLMResult(sessionID, structured string, tokensIn, tokensOut int) llm.Fa
 	}
 }
 
-func fakeLLMResultUsage(sessionID, structured string, usage llm.Usage) llm.FakeResult {
-	return llm.FakeResult{
-		SessionID: sessionID,
-		Response: llm.Response{
-			StructuredOutput: []byte(structured),
-			Usage:            usage,
-			DurationMS:       123,
+type providerOriginUsageAdapter struct {
+	mu       sync.Mutex
+	name     string
+	adapters []llm.Adapter
+}
+
+func (a *providerOriginUsageAdapter) Queue(adapter llm.Adapter) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.adapters = append(a.adapters, adapter)
+}
+
+func (a *providerOriginUsageAdapter) Name() string {
+	if strings.TrimSpace(a.name) != "" {
+		return a.name
+	}
+	return "provider_origin_usage"
+}
+
+func (a *providerOriginUsageAdapter) SupportsResume() bool { return false }
+
+func (a *providerOriginUsageAdapter) SupportsCacheAccounting() bool { return false }
+
+func (a *providerOriginUsageAdapter) SupportsCostReporting() bool { return false }
+
+func (a *providerOriginUsageAdapter) SupportsCheckoutReadonly() bool { return true }
+
+func (a *providerOriginUsageAdapter) CheckoutAccessLevel() llm.CheckoutAccessLevel {
+	return llm.CheckoutAccessReadonly
+}
+
+func (a *providerOriginUsageAdapter) Quota(context.Context) (llm.Quota, bool, error) {
+	return llm.Quota{}, false, nil
+}
+
+func (a *providerOriginUsageAdapter) Start(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	a.mu.Lock()
+	if len(a.adapters) == 0 {
+		a.mu.Unlock()
+		return nil, fmt.Errorf("provider origin usage adapter: no queued adapter")
+	}
+	adapter := a.adapters[0]
+	a.adapters = a.adapters[1:]
+	a.mu.Unlock()
+	return adapter.Start(ctx, req)
+}
+
+func (a *providerOriginUsageAdapter) Resume(context.Context, string, llm.Request) (llm.Stream, error) {
+	return nil, fmt.Errorf("provider origin usage adapter: resume unsupported")
+}
+
+func newCodexUsageScriptAdapter(t *testing.T, sessionID string, structured string, usage llm.Usage) llm.Adapter {
+	t.Helper()
+	script := writeExecutableScript(t, "codex-usage", codexUsageScript(t, sessionID, structured, usage))
+	return llm.NewCodexCLIAdapter(llm.SubprocessOptions{
+		Command:                script,
+		Timeout:                5 * time.Second,
+		AllowBestEffortNoTools: true,
+	})
+}
+
+func newClaudeTranscriptScriptAdapter(t *testing.T, sessionID string, structured string, usage llm.Usage) llm.Adapter {
+	t.Helper()
+	configDir := t.TempDir()
+	workDir := t.TempDir()
+	transcriptPath := writeClaudeUsageTranscript(t, usage)
+	state := map[string]any{
+		"state":        "done",
+		"sessionId":    sessionID,
+		"linkScanPath": transcriptPath,
+		"createdAt":    "2026-06-09T20:00:00Z",
+	}
+	stateJSON := mustMarshalJSON(t, state)
+	script := writeExecutableScript(t, "claude-transcript", claudeTranscriptScript(sessionID, structured, stateJSON))
+	return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{
+		Command: script,
+		Env: []string{
+			"CLAUDE_CONFIG_DIR=" + configDir,
+			"CR_CLAUDE_BG_WORK_DIR=" + workDir,
+		},
+		Timeout: 5 * time.Second,
+	})
+}
+
+func codexUsageScript(t *testing.T, sessionID string, structured string, usage llm.Usage) string {
+	t.Helper()
+	usageFields := []string{
+		fmt.Sprintf(`"input_tokens":%d`, mustInt(t, usage.TokensIn, "TokensIn")),
+		fmt.Sprintf(`"output_tokens":%d`, mustInt(t, usage.TokensOut, "TokensOut")),
+	}
+	if usage.CacheRead != nil {
+		usageFields = append(usageFields, fmt.Sprintf(`"cached_input_tokens":%d`, *usage.CacheRead))
+	}
+	if usage.CacheCreate != nil {
+		usageFields = append(usageFields, fmt.Sprintf(`"cache_create":%d`, *usage.CacheCreate))
+	}
+	return fmt.Sprintf(`#!/bin/sh
+cat <<'JSONL'
+{"type":"thread.started","thread_id":%s}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":%s}}
+{"type":"turn.completed","usage":{%s,"reasoning_output_tokens":271}}
+JSONL
+`, mustMarshalJSON(t, sessionID), mustMarshalJSON(t, structured), strings.Join(usageFields, ","))
+}
+
+func claudeTranscriptScript(sessionID string, structured string, stateJSON string) string {
+	return fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  stop|rm) exit 0 ;;
+  agents) printf '[]'; exit 0 ;;
+esac
+add_dir=""
+want_add_dir=0
+for arg in "$@"; do
+  if [ "$want_add_dir" = "1" ]; then
+    if [ -z "$add_dir" ]; then add_dir="$arg"; fi
+    want_add_dir=0
+    continue
+  fi
+  if [ "$arg" = "--add-dir" ]; then want_add_dir=1; fi
+done
+job_id="job-%s"
+mkdir -p "$CLAUDE_CONFIG_DIR/jobs/$job_id" "$add_dir"
+cat > "$CLAUDE_CONFIG_DIR/jobs/$job_id/state.json" <<'STATE'
+%s
+STATE
+cat > "$add_dir/cr-result.json" <<'RESULT'
+%s
+RESULT
+printf 'backgrounded * %%s\n  claude attach %%s\n' "$job_id" "$job_id"
+`, sessionID, stateJSON, structured)
+}
+
+func writeClaudeUsageTranscript(t *testing.T, usage llm.Usage) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-transcript.jsonl")
+	line := map[string]any{
+		"type":      "assistant",
+		"timestamp": "2026-06-09T20:00:02Z",
+		"message": map[string]any{
+			"id": "message-1",
+			"usage": map[string]any{
+				"input_tokens":                mustInt(t, usage.TokensIn, "TokensIn"),
+				"output_tokens":               mustInt(t, usage.TokensOut, "TokensOut"),
+				"cache_read_input_tokens":     mustInt(t, usage.CacheRead, "CacheRead"),
+				"cache_creation_input_tokens": mustInt(t, usage.CacheCreate, "CacheCreate"),
+			},
 		},
 	}
+	data := mustMarshalJSON(t, line) + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write Claude usage transcript: %v", err)
+	}
+	return path
+}
+
+func writeExecutableScript(t *testing.T, name string, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name+".sh")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write %s script: %v", name, err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil { // #nosec G302 -- test helper script must be executable and lives under t.TempDir.
+		t.Fatalf("chmod %s script: %v", name, err)
+	}
+	return path
+}
+
+func mustMarshalJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON: %v", err)
+	}
+	return string(data)
+}
+
+func mustInt(t *testing.T, value *int, name string) int {
+	t.Helper()
+	if value == nil {
+		t.Fatalf("%s must be set", name)
+	}
+	return *value
 }
 
 func selectionJSON(agentID, file string) string {

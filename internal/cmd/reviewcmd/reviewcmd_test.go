@@ -2570,18 +2570,44 @@ func TestPipelineTaskProgressUsesRespondCommandLabel(t *testing.T) {
 		},
 	})
 	stderr := errOut.String()
-	for _, want := range []string{
-		`command="respond" op="run_llm_task" target="llm_task"`,
-		`command="respond" op="load_llm_task" target="llm_task"`,
-		`tokens_in="25475"`,
-		`tokens_out="812"`,
-		`cache_read="19712"`,
-		`cache_create="9"`,
-	} {
-		if !strings.Contains(stderr, want) {
-			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+	runLine := progressLineWith(stderr, `op="run_llm_task"`, `tokens_in="25475"`)
+	loadLine := progressLineWith(stderr, `op="load_llm_task"`, `tokens_in="25475"`)
+	if runLine == "" {
+		t.Fatalf("stderr = %q, want run_llm_task breadcrumb", stderr)
+	}
+	if loadLine == "" {
+		t.Fatalf("stderr = %q, want load_llm_task breadcrumb", stderr)
+	}
+	for _, line := range []string{runLine, loadLine} {
+		for _, want := range []string{
+			`command="respond"`,
+			`target="llm_task"`,
+			`tokens_in="25475"`,
+			`tokens_out="812"`,
+			`cache_read="19712"`,
+			`cache_create="9"`,
+		} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("breadcrumb = %q, want substring %q", line, want)
+			}
 		}
 	}
+}
+
+func progressLineWith(stderr string, needles ...string) string {
+	for _, line := range strings.Split(stderr, "\n") {
+		matches := true
+		for _, needle := range needles {
+			if !strings.Contains(line, needle) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return line
+		}
+	}
+	return ""
 }
 
 func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
