@@ -444,8 +444,8 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	if runner.pipeline.Adapter == nil || runner.pipeline.Adapter.Name() != "codex_cli" {
 		t.Fatalf("pipeline adapter = %#v, want codex_cli", runner.pipeline.Adapter)
 	}
-	if !llm.SupportsCheckoutReadonly(runner.pipeline.Adapter) {
-		t.Fatalf("pipeline adapter checkout-readonly = false, want true")
+	if !llm.SupportsReviewerWorkspace(runner.pipeline.Adapter) {
+		t.Fatalf("pipeline adapter reviewer workspace = false, want true")
 	}
 	loadedAdapter, err := runner.pipeline.Adapter.(*lazyAdapter).get()
 	if err != nil {
@@ -455,8 +455,8 @@ func TestNewRuntimeCreatesCodexCLIWithoutOpenAIAPIKey(t *testing.T) {
 	if !ok || progressAdapter.adapter == nil || progressAdapter.adapter.Name() != "codex_cli" {
 		t.Fatalf("loaded pipeline adapter = %#v, want wrapped codex_cli adapter", loadedAdapter)
 	}
-	if !llm.SupportsCheckoutReadonly(loadedAdapter) {
-		t.Fatalf("loaded pipeline adapter checkout-readonly = false, want true")
+	if !llm.SupportsReviewerWorkspace(loadedAdapter) {
+		t.Fatalf("loaded pipeline adapter reviewer workspace = false, want true")
 	}
 	if runner.pipeline.TaskProgress == nil {
 		t.Fatal("pipeline TaskProgress = nil, want review progress wiring")
@@ -2480,21 +2480,21 @@ func TestProgressAdapterStartAndWaitWriteStructuredBreadcrumbs(t *testing.T) {
 	}
 }
 
-func TestProgressAdapterStartWritesCheckoutAccessLevel(t *testing.T) {
+func TestProgressAdapterStartWritesReviewerWorkspaceMode(t *testing.T) {
 	var errOut bytes.Buffer
 	adapter := &llm.FakeAdapter{
-		NameValue:                "fake-llm",
-		CheckoutAccessLevelSet:   true,
-		CheckoutAccessLevelValue: llm.CheckoutAccessPermissionBounded,
+		NameValue:                  "fake-llm",
+		ReviewerWorkspaceModeSet:   true,
+		ReviewerWorkspaceModeValue: llm.ReviewerWorkspacePermissionBounded,
 	}
-	adapter.Queue(llm.FakeResult{SessionID: "sess-checkout"})
+	adapter.Queue(llm.FakeResult{SessionID: "sess-workspace"})
 	wrapped := withProgressAdapter(progress.New(&errOut, false, nil), "review", adapter, "anthropic", "claude_cli")
 
 	stream, err := wrapped.Start(context.Background(), llm.Request{
 		Model:  "claude-sonnet-4-6",
 		Prompt: "prompt",
-		CheckoutAccess: &llm.CheckoutAccessRequest{
-			RootDir:            "/tmp/repo",
+		ReviewerWorkspace: &llm.ReviewerWorkspaceRequest{
+			RepoDir:            "/tmp/repo",
 			ScratchDir:         "/tmp/scratch",
 			MaxToolOutputBytes: 1024,
 		},
@@ -2505,8 +2505,8 @@ func TestProgressAdapterStartWritesCheckoutAccessLevel(t *testing.T) {
 	if _, err := stream.Wait(context.Background()); err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if stderr := errOut.String(); !strings.Contains(stderr, `checkout_access="permission_bounded"`) {
-		t.Fatalf("stderr = %q, want checkout_access field", stderr)
+	if stderr := errOut.String(); !strings.Contains(stderr, `reviewer_workspace="permission_bounded"`) {
+		t.Fatalf("stderr = %q, want reviewer_workspace field", stderr)
 	}
 }
 
@@ -2656,75 +2656,69 @@ func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {
 	}
 }
 
-func TestProgressAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
+func TestProgressAdapterPreservesWritableReviewerWorkspaceMode(t *testing.T) {
 	adapter := &llm.FakeAdapter{
-		NameValue:                "fake-llm",
-		CheckoutAccessLevelSet:   true,
-		CheckoutAccessLevelValue: llm.CheckoutAccessReadonly,
+		NameValue:                  "fake-llm",
+		ReviewerWorkspaceModeSet:   true,
+		ReviewerWorkspaceModeValue: llm.ReviewerWorkspaceWrite,
 	}
 	wrapped := withProgressAdapter(progress.New(io.Discard, false, nil), "review", adapter, "openai", "codex_cli")
 
-	if !llm.SupportsCheckoutReadonly(wrapped) {
-		t.Fatal("SupportsCheckoutReadonly(wrapped) = false, want true")
+	if !llm.SupportsReviewerWorkspace(wrapped) {
+		t.Fatal("SupportsReviewerWorkspace(wrapped) = false, want true")
 	}
-	if got := llm.AdapterCheckoutAccessLevel(wrapped); got != llm.CheckoutAccessReadonly {
-		t.Fatalf("AdapterCheckoutAccessLevel(wrapped) = %s, want %s", got, llm.CheckoutAccessReadonly)
+	if got := llm.AdapterReviewerWorkspaceMode(wrapped); got != llm.ReviewerWorkspaceWrite {
+		t.Fatalf("AdapterReviewerWorkspaceMode(wrapped) = %s, want %s", got, llm.ReviewerWorkspaceWrite)
 	}
 }
 
-func TestProgressAdapterPreservesPermissionBoundedCheckoutAccess(t *testing.T) {
+func TestProgressAdapterPreservesPermissionBoundedReviewerWorkspaceMode(t *testing.T) {
 	adapter := &llm.FakeAdapter{
-		NameValue:                "fake-llm",
-		CheckoutAccessLevelSet:   true,
-		CheckoutAccessLevelValue: llm.CheckoutAccessPermissionBounded,
+		NameValue:                  "fake-llm",
+		ReviewerWorkspaceModeSet:   true,
+		ReviewerWorkspaceModeValue: llm.ReviewerWorkspacePermissionBounded,
 	}
 	wrapped := withProgressAdapter(progress.New(io.Discard, false, nil), "review", adapter, "anthropic", "claude_cli")
 
-	if !llm.SupportsCheckoutAccess(wrapped) {
-		t.Fatal("SupportsCheckoutAccess(wrapped) = false, want true")
+	if !llm.SupportsReviewerWorkspace(wrapped) {
+		t.Fatal("SupportsReviewerWorkspace(wrapped) = false, want true")
 	}
-	if llm.SupportsCheckoutReadonly(wrapped) {
-		t.Fatal("SupportsCheckoutReadonly(wrapped) = true, want false")
-	}
-	if got := llm.AdapterCheckoutAccessLevel(wrapped); got != llm.CheckoutAccessPermissionBounded {
-		t.Fatalf("AdapterCheckoutAccessLevel(wrapped) = %s, want %s", got, llm.CheckoutAccessPermissionBounded)
+	if got := llm.AdapterReviewerWorkspaceMode(wrapped); got != llm.ReviewerWorkspacePermissionBounded {
+		t.Fatalf("AdapterReviewerWorkspaceMode(wrapped) = %s, want %s", got, llm.ReviewerWorkspacePermissionBounded)
 	}
 }
 
-func TestLazyAdapterPreservesCheckoutReadonlyCapability(t *testing.T) {
+func TestLazyAdapterPreservesWritableReviewerWorkspaceMode(t *testing.T) {
 	lazy := newLazyAdapter(func() (llm.Adapter, error) {
 		return &llm.FakeAdapter{
-			NameValue:                "fake-llm",
-			CheckoutAccessLevelSet:   true,
-			CheckoutAccessLevelValue: llm.CheckoutAccessReadonly,
+			NameValue:                  "fake-llm",
+			ReviewerWorkspaceModeSet:   true,
+			ReviewerWorkspaceModeValue: llm.ReviewerWorkspaceWrite,
 		}, nil
 	})
 
-	if !llm.SupportsCheckoutReadonly(lazy) {
-		t.Fatal("SupportsCheckoutReadonly(lazy) = false, want true")
+	if !llm.SupportsReviewerWorkspace(lazy) {
+		t.Fatal("SupportsReviewerWorkspace(lazy) = false, want true")
 	}
-	if got := llm.AdapterCheckoutAccessLevel(lazy); got != llm.CheckoutAccessReadonly {
-		t.Fatalf("AdapterCheckoutAccessLevel(lazy) = %s, want %s", got, llm.CheckoutAccessReadonly)
+	if got := llm.AdapterReviewerWorkspaceMode(lazy); got != llm.ReviewerWorkspaceWrite {
+		t.Fatalf("AdapterReviewerWorkspaceMode(lazy) = %s, want %s", got, llm.ReviewerWorkspaceWrite)
 	}
 }
 
-func TestLazyAdapterPreservesPermissionBoundedCheckoutAccess(t *testing.T) {
+func TestLazyAdapterPreservesPermissionBoundedReviewerWorkspaceMode(t *testing.T) {
 	lazy := newLazyAdapter(func() (llm.Adapter, error) {
 		return &llm.FakeAdapter{
-			NameValue:                "fake-llm",
-			CheckoutAccessLevelSet:   true,
-			CheckoutAccessLevelValue: llm.CheckoutAccessPermissionBounded,
+			NameValue:                  "fake-llm",
+			ReviewerWorkspaceModeSet:   true,
+			ReviewerWorkspaceModeValue: llm.ReviewerWorkspacePermissionBounded,
 		}, nil
 	})
 
-	if !llm.SupportsCheckoutAccess(lazy) {
-		t.Fatal("SupportsCheckoutAccess(lazy) = false, want true")
+	if !llm.SupportsReviewerWorkspace(lazy) {
+		t.Fatal("SupportsReviewerWorkspace(lazy) = false, want true")
 	}
-	if llm.SupportsCheckoutReadonly(lazy) {
-		t.Fatal("SupportsCheckoutReadonly(lazy) = true, want false")
-	}
-	if got := llm.AdapterCheckoutAccessLevel(lazy); got != llm.CheckoutAccessPermissionBounded {
-		t.Fatalf("AdapterCheckoutAccessLevel(lazy) = %s, want %s", got, llm.CheckoutAccessPermissionBounded)
+	if got := llm.AdapterReviewerWorkspaceMode(lazy); got != llm.ReviewerWorkspacePermissionBounded {
+		t.Fatalf("AdapterReviewerWorkspaceMode(lazy) = %s, want %s", got, llm.ReviewerWorkspacePermissionBounded)
 	}
 }
 
@@ -3444,7 +3438,6 @@ func writeReviewCommandFile(t *testing.T, path, contents string) {
 
 func runtimeOptsWithWorkbench(t *testing.T, opts RuntimeOptions) RuntimeOptions {
 	t.Helper()
-	opts.AutoUnlockWorkbenchOnExit = true
 	fixture := newReviewCommandWorkbenchFixture(t)
 	if opts.PRRef != (gitprovider.PRRef{}) {
 		if cached, ok := reviewCommandFixtures.Load(reviewCommandFixtureKey(opts.PRRef)); ok {

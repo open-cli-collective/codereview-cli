@@ -44,10 +44,10 @@ import (
 )
 
 const (
-	defaultMaxAgents                       = 5
-	defaultMaxConcurrency                  = 5
-	defaultMaxPromptBytes                  = 512 * 1024
-	defaultCheckoutReadonlyToolOutputBytes = 32 * 1024
+	defaultMaxAgents                        = 5
+	defaultMaxConcurrency                   = 5
+	defaultMaxPromptBytes                   = 512 * 1024
+	defaultReviewerWorkspaceToolOutputBytes = 32 * 1024
 )
 
 // ErrStructuredOutputInvalidAfterRetry marks a selector or rollup response that
@@ -132,9 +132,8 @@ type Options struct {
 	Retention           datalifecycle.RetentionPolicy
 	RetentionManualOnly bool
 
-	GitCommand                func(context.Context, string, ...string) ([]byte, error)
-	ResolveRepoRoot           func(context.Context) (string, error)
-	AutoUnlockWorkbenchOnExit bool
+	GitCommand      func(context.Context, string, ...string) ([]byte, error)
+	ResolveRepoRoot func(context.Context) (string, error)
 }
 
 // Request identifies one dry-run review.
@@ -464,11 +463,6 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}); err != nil {
 		return SelectionResult{}, err
 	}
-	if shouldAutoUnlockWorkbenchOnExit(opts) {
-		defer func() {
-			_ = unlockWorkbenchRepo(prepared.artifacts.WorkbenchRepoDir)
-		}()
-	}
 	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
 		Profile:                 req.Profile,
 		SelectionModelOverride:  req.SelectionModelOverride,
@@ -609,11 +603,6 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		Artifacts:    prepared.artifacts,
 	}); err != nil {
 		return Result{}, err
-	}
-	if shouldAutoUnlockWorkbenchOnExit(opts) {
-		defer func() {
-			_ = unlockWorkbenchRepo(prepared.artifacts.WorkbenchRepoDir)
-		}()
 	}
 	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
 		RunID:                   run.RunID,
@@ -1315,7 +1304,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := patchPaths(parsed.Patches)
-	reviewerScope := reviewerReadableFiles(selected, changedFilePaths)
+	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
@@ -1329,10 +1318,17 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}
 	agentID := agent.ID
 	taskID := reviewerTaskID(agent.ID)
-	request, err := buildCheckoutReadonlyRequest(opts, artifacts, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
+	request, cleanupWorkspace, err := buildReviewerWorkspaceRequest(ctx, opts, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
+	defer func() {
+		if cleanupWorkspace != nil {
+			if cleanupErr := cleanupWorkspace(); cleanupErr != nil {
+				opts.emitWarning(fmt.Sprintf("cleanup reviewer workspace for %s: %v", agent.ID, cleanupErr))
+			}
+		}
+	}()
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
@@ -1352,7 +1348,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
 			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(reviewerScope),
+			ChangedFiles: stringSet(assignmentScope),
 			NewFindingID: opts.newFindingID,
 		})
 	})
@@ -1780,17 +1776,14 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 	return out
 }
 
-// reviewerReadableFiles is the schema/decoder scope: broad reviewers may read
-// every changed file, while allowed_files narrows highly specialized reviewers.
-func reviewerReadableFiles(agent llm.SelectedAgent, changedFiles []string) []string {
-	if len(agent.AllowedFiles) > 0 {
-		return copySortedStrings(agent.AllowedFiles)
-	}
+// reviewerReadableFiles is the schema/decoder scope: reviewer workspaces expose
+// the changed-file set, while assignment scope controls expected coverage.
+func reviewerReadableFiles(changedFiles []string) []string {
 	return copySortedStrings(changedFiles)
 }
 
-// reviewerAssignmentScope is the coverage expectation: broad reviewers may read
-// the whole checkout, but selected files define the work they were asked to cover.
+// reviewerAssignmentScope is the coverage expectation: selected or allowed files
+// define the work the reviewer was asked to cover.
 func reviewerAssignmentScope(agent llm.SelectedAgent, changedFiles []string) []string {
 	if len(agent.AllowedFiles) > 0 {
 		return copySortedStrings(agent.AllowedFiles)
@@ -1979,10 +1972,10 @@ func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.Se
 	if err != nil {
 		return "", nil, err
 	}
-	reviewerScope := reviewerReadableFiles(selected, changedFiles)
+	assignmentScope := reviewerAssignmentScope(selected, changedFiles)
 	payload := map[string]any{
 		"task":            "review files and return findings JSON only",
-		"output_contract": findingsOutputContract(agent.ID, reviewerScope),
+		"output_contract": findingsOutputContract(agent.ID, assignmentScope),
 		"agent":           reviewerAgentPromptFromAgent(agent),
 		"assignment":      input.Assignment,
 		"dossier":         input.Dossier,
@@ -3001,7 +2994,6 @@ func prepareWorkbenchArtifacts(ctx context.Context, opts Options, req workbenchP
 	}
 	sourceRepoRoot = filepath.Clean(sourceRepoRoot)
 
-	_ = unlockWorkbenchRepo(req.Artifacts.WorkbenchRepoDir)
 	if err := os.RemoveAll(req.Artifacts.WorkbenchDir); err != nil {
 		return fmt.Errorf("pipeline: reset workbench dir: %w", err)
 	}
@@ -3042,7 +3034,7 @@ func prepareWorkbenchArtifacts(ctx context.Context, opts Options, req workbenchP
 	if _, err := opts.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "checkout", "--detach", req.ReviewPR.Head.SHA); err != nil {
 		return fmt.Errorf("pipeline: checkout workbench head %s: %w", shortSHA(req.ReviewPR.Head.SHA), err)
 	}
-	if err := makeWorkbenchRepoReadOnly(req.Artifacts.WorkbenchRepoDir); err != nil {
+	if err := verifyWorkbenchClean(ctx, opts, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head.SHA); err != nil {
 		return err
 	}
 
@@ -3147,72 +3139,6 @@ func workbenchCommitPresent(ctx context.Context, opts Options, repoDir, sha stri
 	return err == nil
 }
 
-func makeWorkbenchRepoReadOnly(root string) error {
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		mode := info.Mode().Perm() & 0o555
-		if !entry.IsDir() {
-			mode |= 0o444
-		}
-		if err := os.Chmod(path, mode); err != nil { // #nosec G122 -- workbench paths are pipeline-owned artifact files; symlinks are skipped during the walk.
-			return fmt.Errorf("chmod %s: %w", path, err)
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("pipeline: lock workbench repo read-only: %w", err)
-	}
-	return nil
-}
-
-func unlockWorkbenchRepo(root string) error {
-	if strings.TrimSpace(root) == "" {
-		return nil
-	}
-	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		mode := info.Mode().Perm()
-		if entry.IsDir() {
-			mode |= 0o700
-			mode |= 0o055
-		} else {
-			mode |= 0o200
-			mode |= 0o444
-		}
-		if err := os.Chmod(path, mode); err != nil { // #nosec G122 -- workbench paths are pipeline-owned artifact files; symlinks are skipped during the walk.
-			return fmt.Errorf("chmod %s: %w", path, err)
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("pipeline: unlock workbench repo: %w", err)
-	}
-	return nil
-}
-
 func sameBranchRepo(left, right gitprovider.PRBranchRef) bool {
 	return strings.EqualFold(left.Host, right.Host) && left.Owner == right.Owner && left.Repo == right.Repo
 }
@@ -3228,160 +3154,168 @@ func workbenchBranchArtifactFromRef(ref gitprovider.PRBranchRef) workbenchBranch
 	}
 }
 
-func buildCheckoutReadonlyRequest(opts Options, artifacts ArtifactPaths, agentID string, allowedFiles []string, model, effort, prompt, logPath string) (llm.Request, error) {
-	if err := llm.RequireCheckoutAccess(opts.Adapter); err != nil {
-		return llm.Request{}, fmt.Errorf("pipeline: %w", err)
-	}
-	access, err := prepareCheckoutReadonlyAccess(artifacts, agentID, allowedFiles, defaultCheckoutReadonlyToolOutputBytes)
+func verifyWorkbenchClean(ctx context.Context, opts Options, repoDir string, headSHA string) error {
+	head, err := opts.gitCommand(ctx, repoDir, "rev-parse", "HEAD")
 	if err != nil {
-		return llm.Request{}, err
+		return fmt.Errorf("pipeline: verify workbench head: %w", err)
 	}
-	return llm.Request{
-		Model:          model,
-		Effort:         effort,
-		Prompt:         prompt,
-		LogPath:        logPath,
-		CheckoutAccess: &access,
-	}, nil
-}
-
-func prepareCheckoutReadonlyAccess(artifacts ArtifactPaths, agentID string, allowedFiles []string, maxToolOutputBytes int) (llm.CheckoutReadonlyRequest, error) {
-	if strings.TrimSpace(artifacts.WorkbenchRepoDir) == "" {
-		return llm.CheckoutReadonlyRequest{}, fmt.Errorf("pipeline: workbench repo dir is required for checkout-readonly access")
+	if got := strings.TrimSpace(string(head)); got != strings.TrimSpace(headSHA) {
+		return fmt.Errorf("pipeline: workbench head %s does not match expected %s", shortSHA(got), shortSHA(headSHA))
 	}
-	if strings.TrimSpace(artifacts.WorkbenchScratch) == "" {
-		return llm.CheckoutReadonlyRequest{}, fmt.Errorf("pipeline: workbench scratch dir is required for checkout-readonly access")
+	status, err := opts.gitCommand(ctx, repoDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("pipeline: verify workbench status: %w", err)
 	}
-	rootDir := artifacts.WorkbenchRepoDir
-	if len(allowedFiles) > 0 {
-		scopeDir, err := materializeCheckoutReadonlyScope(artifacts, agentID, allowedFiles)
-		if err != nil {
-			return llm.CheckoutReadonlyRequest{}, err
-		}
-		rootDir = scopeDir
-	}
-	return llm.CheckoutReadonlyRequest{
-		RootDir:            rootDir,
-		ScratchDir:         artifacts.WorkbenchScratch,
-		AllowedFiles:       append([]string(nil), allowedFiles...),
-		MaxToolOutputBytes: maxToolOutputBytes,
-	}, nil
-}
-
-func materializeCheckoutReadonlyScope(artifacts ArtifactPaths, agentID string, allowedFiles []string) (string, error) {
-	if strings.TrimSpace(agentID) == "" {
-		return "", fmt.Errorf("pipeline: agent ID is required for checkout-readonly scope")
-	}
-	scopeRoot := filepath.Join(artifacts.WorkbenchDir, "scopes", statepaths.Encode(agentID))
-	if err := resetCheckoutReadonlyScope(scopeRoot); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(scopeRoot, 0o700); err != nil {
-		return "", fmt.Errorf("pipeline: create checkout-readonly scope: %w", err)
-	}
-	for _, path := range allowedFiles {
-		clean := filepath.Clean(strings.TrimSpace(path))
-		if isCheckoutScopeEscapePath(clean) {
-			return "", fmt.Errorf("pipeline: invalid checkout-readonly allowed file %q", path)
-		}
-		target := filepath.Join(artifacts.WorkbenchRepoDir, clean)
-		if err := validateCheckoutReadonlyScopeTarget(target, clean); err != nil {
-			return "", err
-		}
-		link := filepath.Join(scopeRoot, clean)
-		if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
-			return "", fmt.Errorf("pipeline: create checkout-readonly scope dir: %w", err)
-		}
-		if err := os.Symlink(target, link); err != nil {
-			return "", fmt.Errorf("pipeline: link checkout-readonly scope file %s: %w", clean, err)
-		}
-	}
-	if err := lockCheckoutReadonlyScope(scopeRoot); err != nil {
-		return "", err
-	}
-	return scopeRoot, nil
-}
-
-func resetCheckoutReadonlyScope(scopeRoot string) error {
-	if _, err := os.Stat(scopeRoot); err == nil {
-		if unlockErr := unlockCheckoutReadonlyScope(scopeRoot); unlockErr != nil {
-			return unlockErr
-		}
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("pipeline: stat checkout-readonly scope: %w", err)
-	}
-	if err := os.RemoveAll(scopeRoot); err != nil {
-		return fmt.Errorf("pipeline: reset checkout-readonly scope: %w", err)
+	if strings.TrimSpace(string(status)) != "" {
+		return fmt.Errorf("pipeline: workbench has local changes")
 	}
 	return nil
 }
 
-func isCheckoutScopeEscapePath(clean string) bool {
+func buildReviewerWorkspaceRequest(ctx context.Context, opts Options, artifacts ArtifactPaths, headSHA string, agentID string, allowedFiles []string, model, effort, prompt, logPath string) (llm.Request, func() error, error) {
+	if err := llm.RequireReviewerWorkspace(opts.Adapter); err != nil {
+		return llm.Request{}, nil, fmt.Errorf("pipeline: %w", err)
+	}
+	workspace, cleanup, err := prepareReviewerWorkspace(ctx, opts, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes)
+	if err != nil {
+		return llm.Request{}, nil, err
+	}
+	currentCleanup := cleanup
+	cleanupCurrent := func() error {
+		if currentCleanup == nil {
+			return nil
+		}
+		cleanupErr := currentCleanup()
+		currentCleanup = nil
+		return cleanupErr
+	}
+	return llm.Request{
+		Model:             model,
+		Effort:            effort,
+		Prompt:            prompt,
+		LogPath:           logPath,
+		ReviewerWorkspace: &workspace,
+		OnValidationRetry: func(req *llm.Request) error {
+			if err := cleanupCurrent(); err != nil {
+				return fmt.Errorf("pipeline: cleanup reviewer workspace before retry: %w", err)
+			}
+			retryWorkspace, retryCleanup, err := prepareReviewerWorkspace(ctx, opts, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes)
+			if err != nil {
+				return err
+			}
+			currentCleanup = retryCleanup
+			req.ReviewerWorkspace = &retryWorkspace
+			req.FreshValidationRetrySession = true
+			return nil
+		},
+	}, cleanupCurrent, nil
+}
+
+func prepareReviewerWorkspace(ctx context.Context, opts Options, artifacts ArtifactPaths, headSHA string, agentID string, allowedFiles []string, maxToolOutputBytes int) (llm.ReviewerWorkspaceRequest, func() error, error) {
+	if strings.TrimSpace(artifacts.WorkbenchRepoDir) == "" {
+		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: workbench repo dir is required for reviewer workspace")
+	}
+	if strings.TrimSpace(artifacts.WorkbenchScratch) == "" {
+		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: workbench scratch dir is required for reviewer workspace")
+	}
+	if strings.TrimSpace(agentID) == "" {
+		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: agent ID is required for reviewer workspace")
+	}
+	encodedAgentID := statepaths.Encode(agentID)
+	workspaceRoot := filepath.Join(artifacts.WorkbenchDir, "reviewers", encodedAgentID)
+	workspaceRepo := filepath.Join(workspaceRoot, "repo")
+	workspaceScratch := filepath.Join(artifacts.WorkbenchScratch, encodedAgentID)
+	for _, dir := range []string{workspaceRoot, workspaceScratch} {
+		if err := os.RemoveAll(dir); err != nil {
+			return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: reset reviewer workspace: %w", err)
+		}
+	}
+	for _, dir := range []string{workspaceRoot, workspaceScratch} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: create reviewer workspace: %w", err)
+		}
+	}
+	cleanup := func() error {
+		var cleanupErr error
+		for _, dir := range []string{workspaceRoot, workspaceScratch} {
+			if err := os.RemoveAll(dir); err != nil && cleanupErr == nil {
+				cleanupErr = err
+			}
+		}
+		return cleanupErr
+	}
+	if _, err := opts.gitCommand(ctx, "", "clone", "--no-hardlinks", artifacts.WorkbenchRepoDir, workspaceRepo); err != nil {
+		_ = cleanup()
+		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: clone reviewer workspace: %w", err)
+	}
+	if _, err := opts.gitCommand(ctx, workspaceRepo, "checkout", "--detach", headSHA); err != nil {
+		_ = cleanup()
+		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: checkout reviewer workspace head %s: %w", shortSHA(headSHA), err)
+	}
+	if err := verifyWorkbenchClean(ctx, opts, workspaceRepo, headSHA); err != nil {
+		_ = cleanup()
+		return llm.ReviewerWorkspaceRequest{}, nil, err
+	}
+	if len(allowedFiles) > 0 {
+		for _, path := range allowedFiles {
+			clean := filepath.Clean(strings.TrimSpace(path))
+			if isReviewerWorkspaceEscapePath(clean) {
+				_ = cleanup()
+				return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: invalid reviewer workspace file %q", path)
+			}
+			if err := validateReviewerWorkspaceFileTarget(filepath.Join(workspaceRepo, clean), clean); err != nil {
+				_ = cleanup()
+				return llm.ReviewerWorkspaceRequest{}, nil, err
+			}
+		}
+	}
+	tempDir := filepath.Join(workspaceScratch, "tmp")
+	cacheDir := filepath.Join(workspaceScratch, "cache")
+	goCacheDir := filepath.Join(cacheDir, "go-build")
+	goTmpDir := filepath.Join(tempDir, "go")
+	xdgCacheDir := filepath.Join(cacheDir, "xdg")
+	for _, dir := range []string{tempDir, cacheDir, goCacheDir, goTmpDir, xdgCacheDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			_ = cleanup()
+			return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: create reviewer workspace support dir: %w", err)
+		}
+	}
+	return llm.ReviewerWorkspaceRequest{
+		RepoDir:            workspaceRepo,
+		ScratchDir:         workspaceScratch,
+		TempDir:            tempDir,
+		CacheDir:           cacheDir,
+		Env:                reviewerWorkspaceEnv(tempDir, goCacheDir, goTmpDir, xdgCacheDir),
+		AllowedFiles:       append([]string(nil), allowedFiles...),
+		MaxToolOutputBytes: maxToolOutputBytes,
+	}, cleanup, nil
+}
+
+func reviewerWorkspaceEnv(tempDir, goCacheDir, goTmpDir, xdgCacheDir string) []string {
+	return []string{
+		"TMPDIR=" + tempDir,
+		"TMP=" + tempDir,
+		"TEMP=" + tempDir,
+		"GOCACHE=" + goCacheDir,
+		"GOTMPDIR=" + goTmpDir,
+		"XDG_CACHE_HOME=" + xdgCacheDir,
+	}
+}
+
+func isReviewerWorkspaceEscapePath(clean string) bool {
 	return clean == "." || clean == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator))
 }
 
-func validateCheckoutReadonlyScopeTarget(target string, displayPath string) error {
+func validateReviewerWorkspaceFileTarget(target string, displayPath string) error {
 	info, err := os.Lstat(target) // #nosec G304 -- target is derived from the pipeline-owned workbench checkout root plus validated relative paths.
 	if err != nil {
-		return fmt.Errorf("pipeline: stat checkout-readonly scope file %s: %w", displayPath, err)
+		return fmt.Errorf("pipeline: stat reviewer workspace file %s: %w", displayPath, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("pipeline: checkout-readonly scope file %s must not be a symlink", displayPath)
+		return fmt.Errorf("pipeline: reviewer workspace file %s must not be a symlink", displayPath)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("pipeline: checkout-readonly scope file %s must be a regular file", displayPath)
-	}
-	return nil
-}
-
-func lockCheckoutReadonlyScope(scopeRoot string) error {
-	if err := filepath.Walk(scopeRoot, func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		var mode fs.FileMode
-		if info.IsDir() {
-			mode = 0o555
-		} else {
-			mode = 0o444
-		}
-		if chmodErr := os.Chmod(path, mode); chmodErr != nil { // #nosec G302,G122 -- scope files are pipeline-owned under the workbench artifact root; symlinks are skipped during the walk.
-			return chmodErr
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("pipeline: lock checkout-readonly scope: %w", err)
-	}
-	return nil
-}
-
-func unlockCheckoutReadonlyScope(scopeRoot string) error {
-	scopeRoot = strings.TrimSpace(scopeRoot)
-	if scopeRoot == "" {
-		return nil
-	}
-	if err := filepath.Walk(scopeRoot, func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		var mode fs.FileMode
-		if info.IsDir() {
-			mode = 0o700
-		} else {
-			mode = 0o600
-		}
-		if chmodErr := os.Chmod(path, mode); chmodErr != nil { // #nosec G302,G122 -- scope files are pipeline-owned under the workbench artifact root; symlinks are skipped during the walk.
-			return chmodErr
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("pipeline: unlock checkout-readonly scope: %w", err)
+		return fmt.Errorf("pipeline: reviewer workspace file %s must be a regular file", displayPath)
 	}
 	return nil
 }
@@ -4820,10 +4754,6 @@ func (opts Options) resolveRepoRoot(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("git rev-parse --show-toplevel returned empty output")
 	}
 	return root, nil
-}
-
-func shouldAutoUnlockWorkbenchOnExit(opts Options) bool {
-	return opts.AutoUnlockWorkbenchOnExit
 }
 
 func knownAgents(catalog agents.Catalog) map[string]bool {
