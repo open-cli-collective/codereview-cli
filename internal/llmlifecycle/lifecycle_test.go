@@ -32,7 +32,12 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 		Response: llm.Response{
 			StructuredOutput: []byte(`Here is JSON: {"ok":true}`),
 			DurationMS:       123,
-			Usage:            llm.Usage{TokensIn: intPtr(10), TokensOut: intPtr(5)},
+			Usage: llm.Usage{
+				TokensIn:    intPtr(10),
+				TokensOut:   intPtr(5),
+				CacheRead:   intPtr(3),
+				CacheCreate: intPtr(7),
+			},
 		},
 	})
 	req := lifecycleRequest(t, store, adapter)
@@ -51,10 +56,10 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	if len(adapter.Requests()) != 1 {
 		t.Fatalf("adapter requests = %d, want 1", len(adapter.Requests()))
 	}
-	if len(progress.ends) != 1 || progress.ends[0].result.Usage.TokensIn == nil || *progress.ends[0].result.Usage.TokensIn != 10 ||
-		progress.ends[0].result.Usage.TokensOut == nil || *progress.ends[0].result.Usage.TokensOut != 5 {
-		t.Fatalf("fresh progress ends = %#v, want usage from provider response", progress.ends)
+	if len(progress.ends) != 1 {
+		t.Fatalf("fresh progress ends = %#v, want one provider progress result", progress.ends)
 	}
+	assertUsage(t, "fresh progress end", progress.ends[0].result.Usage, 10, 5, 3, 7)
 	storedSession := store.session(t, "session-row-1")
 	if storedSession.RunID != "run-1" || storedSession.ProviderSessionID != "provider-session-1" || storedSession.Role != ledger.SessionRoleOrchestrator {
 		t.Fatalf("stored session = %#v, want run/provider/default orchestrator role", storedSession)
@@ -83,10 +88,10 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
 	}
-	if len(progress.loads) != 1 || progress.loads[0].result.Usage.TokensIn == nil || *progress.loads[0].result.Usage.TokensIn != 10 ||
-		progress.loads[0].result.Usage.TokensOut == nil || *progress.loads[0].result.Usage.TokensOut != 5 {
-		t.Fatalf("cached progress loads = %#v, want usage loaded from ledger session", progress.loads)
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached progress loads = %#v, want one cached progress result", progress.loads)
 	}
+	assertUsage(t, "cached progress load", progress.loads[0].result.Usage, 10, 5, 3, 7)
 }
 
 func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.T) {
@@ -418,14 +423,14 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 		SessionID: "provider-session-1",
 		Response: llm.Response{
 			StructuredOutput: []byte(`{"ok":"not-bool"}`),
-			Usage:            llm.Usage{TokensIn: intPtr(21), TokensOut: intPtr(8)},
+			Usage:            llm.Usage{TokensIn: intPtr(21), TokensOut: intPtr(8), CacheRead: intPtr(5), CacheCreate: intPtr(2)},
 		},
 	})
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
 		Response: llm.Response{
 			StructuredOutput: []byte(`{"ok":"still-not-bool"}`),
-			Usage:            llm.Usage{TokensIn: intPtr(34), TokensOut: intPtr(13)},
+			Usage:            llm.Usage{TokensIn: intPtr(34), TokensOut: intPtr(13), CacheRead: intPtr(9), CacheCreate: intPtr(4)},
 		},
 	})
 	req := lifecycleRequest(t, store, adapter)
@@ -446,10 +451,10 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
 	}
-	if len(progress.loads) != 1 || progress.loads[0].result.Usage.TokensIn == nil || *progress.loads[0].result.Usage.TokensIn != 34 ||
-		progress.loads[0].result.Usage.TokensOut == nil || *progress.loads[0].result.Usage.TokensOut != 13 {
-		t.Fatalf("cached isolated progress loads = %#v, want usage loaded from failed ledger session", progress.loads)
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached isolated progress loads = %#v, want one cached progress result", progress.loads)
 	}
+	assertUsage(t, "cached isolated progress load", progress.loads[0].result.Usage, 34, 13, 9, 4)
 }
 
 func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing.T) {
@@ -460,7 +465,7 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 		SessionID: "provider-session-1",
 		Response: llm.Response{
 			StructuredOutput: []byte(`{"ok":true}`),
-			Usage:            llm.Usage{TokensIn: intPtr(55), TokensOut: intPtr(21)},
+			Usage:            llm.Usage{TokensIn: intPtr(55), TokensOut: intPtr(21), CacheRead: intPtr(13), CacheCreate: intPtr(8)},
 		},
 	})
 	req := lifecycleRequest(t, nil, adapter)
@@ -483,7 +488,8 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 	if meta.SessionRowID != "" {
 		t.Fatalf("metadata session_row_id = %q, want empty for caller-owned cache", meta.SessionRowID)
 	}
-	if meta.TokensIn == nil || *meta.TokensIn != 55 || meta.TokensOut == nil || *meta.TokensOut != 21 {
+	if meta.TokensIn == nil || *meta.TokensIn != 55 || meta.TokensOut == nil || *meta.TokensOut != 21 ||
+		meta.CacheRead == nil || *meta.CacheRead != 13 || meta.CacheCreate == nil || *meta.CacheCreate != 8 {
 		t.Fatalf("metadata usage = %#v, want caller-owned cache usage persisted", meta)
 	}
 
@@ -500,10 +506,10 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
 	}
-	if len(progress.loads) != 1 || progress.loads[0].result.Usage.TokensIn == nil || *progress.loads[0].result.Usage.TokensIn != 55 ||
-		progress.loads[0].result.Usage.TokensOut == nil || *progress.loads[0].result.Usage.TokensOut != 21 {
-		t.Fatalf("cached caller-owned progress loads = %#v, want usage loaded from metadata", progress.loads)
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached caller-owned progress loads = %#v, want one cached progress result", progress.loads)
 	}
+	assertUsage(t, "cached caller-owned progress load", progress.loads[0].result.Usage, 55, 21, 13, 8)
 }
 
 func TestValidatePayloadPathRejectsEscape(t *testing.T) {
@@ -648,6 +654,17 @@ func assertFileOmits(t *testing.T, path, unwanted string) {
 
 func intPtr(value int) *int {
 	return &value
+}
+
+func assertUsage(t *testing.T, label string, usage llm.Usage, tokensIn, tokensOut, cacheRead, cacheCreate int) {
+	t.Helper()
+	if usage.TokensIn == nil || *usage.TokensIn != tokensIn ||
+		usage.TokensOut == nil || *usage.TokensOut != tokensOut ||
+		usage.CacheRead == nil || *usage.CacheRead != cacheRead ||
+		usage.CacheCreate == nil || *usage.CacheCreate != cacheCreate {
+		t.Fatalf("%s usage = %#v, want tokens_in=%d tokens_out=%d cache_read=%d cache_create=%d",
+			label, usage, tokensIn, tokensOut, cacheRead, cacheCreate)
+	}
 }
 
 var _ Store = (*lifecycleStore)(nil)
