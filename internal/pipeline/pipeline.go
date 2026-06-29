@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1463,122 +1462,6 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 	return result.Value, draft, result.Session, nil
 }
 
-func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpec, decode llm.Decoder[T]) (T, sessionDraft, ledger.Session, bool, error) {
-	var zero T
-	meta, ok, err := readLLMTaskMetadata(spec.artifacts, spec.taskID)
-	if err != nil || !ok {
-		return zero, sessionDraft{}, ledger.Session{}, ok, err
-	}
-	if err := validateLLMTaskMetadata(meta, spec, llmTaskAdapterName(opts.Adapter)); err != nil {
-		return zero, sessionDraft{}, ledger.Session{}, true, err
-	}
-	switch meta.Status {
-	case llmTaskStatusSucceeded:
-		outputPath, err := spec.artifacts.LLMTaskValidatedOutput(spec.taskID)
-		if err != nil {
-			return zero, sessionDraft{}, ledger.Session{}, true, err
-		}
-		if strings.TrimSpace(meta.ValidatedOutputPath) != "" {
-			outputPath, err = validateLLMTaskPayloadPath(spec.artifacts, spec.taskID, "validated_output_path", meta.ValidatedOutputPath)
-			if err != nil {
-				return zero, sessionDraft{}, ledger.Session{}, true, err
-			}
-		}
-		data, err := os.ReadFile(outputPath) // #nosec G304 -- validated task output path is scoped to run artifacts.
-		if err != nil {
-			return zero, sessionDraft{}, ledger.Session{}, true, fmt.Errorf("pipeline: read LLM task %q output: %w", spec.taskID, err)
-		}
-		value, err := decode(data)
-		if err != nil {
-			return zero, sessionDraft{}, ledger.Session{}, true, fmt.Errorf("pipeline: decode stored LLM task %q output: %w", spec.taskID, err)
-		}
-		if strings.TrimSpace(spec.runID) == "" {
-			draft := sessionDraftFromTaskMetadata(meta)
-			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.response.Usage))
-			return value, draft, ledger.Session{}, true, nil
-		}
-		session, err := loadTaskSession(ctx, opts, spec.runID, meta)
-		if err != nil {
-			return zero, sessionDraft{}, ledger.Session{}, true, err
-		}
-		draft := sessionDraftFromLedger(session)
-		loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.response.Usage))
-		return value, draft, session, true, nil
-	case llmTaskStatusFailedIsolated:
-		if spec.llmFailureStatus != llmTaskStatusFailedIsolated {
-			return zero, sessionDraft{}, ledger.Session{}, true, fmt.Errorf("pipeline: LLM task %q has isolated failure status outside reviewer phase", spec.taskID)
-		}
-		if strings.TrimSpace(spec.runID) == "" {
-			draft := sessionDraftFromTaskMetadata(meta)
-			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.response.Usage))
-			return zero, draft, ledger.Session{}, true, &llmTaskError{status: llmTaskStatusFailedIsolated, err: errors.New(taskErrorText(meta))}
-		}
-		session, draft, err := loadOptionalTaskSession(ctx, opts, spec.runID, meta)
-		if err != nil {
-			return zero, sessionDraft{}, ledger.Session{}, true, err
-		}
-		loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.response.Usage))
-		return zero, draft, session, true, &llmTaskError{status: llmTaskStatusFailedIsolated, err: errors.New(taskErrorText(meta))}
-	case llmTaskStatusFailedBlocking:
-		return zero, sessionDraft{}, ledger.Session{}, false, nil
-	default:
-		return zero, sessionDraft{}, ledger.Session{}, true, fmt.Errorf("pipeline: LLM task %q has unknown status %q", spec.taskID, meta.Status)
-	}
-}
-
-func validateLLMTaskPayloadPath(paths ArtifactPaths, taskID, field, recordedPath string) (string, error) {
-	recordedPath = strings.TrimSpace(recordedPath)
-	if recordedPath == "" {
-		return "", fmt.Errorf("pipeline: LLM task %q %s is empty", taskID, field)
-	}
-	taskDir, err := paths.LLMTaskDir(taskID)
-	if err != nil {
-		return "", err
-	}
-	absDir, err := filepath.Abs(taskDir)
-	if err != nil {
-		return "", fmt.Errorf("pipeline: resolve LLM task %q directory: %w", taskID, err)
-	}
-	absPath, err := filepath.Abs(recordedPath)
-	if err != nil {
-		return "", fmt.Errorf("pipeline: resolve LLM task %q %s: %w", taskID, field, err)
-	}
-	rel, err := filepath.Rel(absDir, absPath)
-	if err != nil {
-		return "", fmt.Errorf("pipeline: compare LLM task %q %s: %w", taskID, field, err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("pipeline: LLM task %q %s points outside the task artifact directory; pass --rerun to start a fresh review", taskID, field)
-	}
-	return absPath, nil
-}
-
-func validateLLMTaskMetadata(meta llmTaskMetadata, spec llmTaskSpec, adapter string) error {
-	if meta.SchemaVersion != llmTaskSchemaVersion {
-		return fmt.Errorf("pipeline: LLM task %q schema version = %d, want %d", spec.taskID, meta.SchemaVersion, llmTaskSchemaVersion)
-	}
-	if meta.TaskID != spec.taskID {
-		return fmt.Errorf("pipeline: LLM task metadata ID %q does not match %q", meta.TaskID, spec.taskID)
-	}
-	if meta.Phase != spec.phase {
-		return fmt.Errorf("pipeline: LLM task %q phase = %q, want %q", spec.taskID, meta.Phase, spec.phase)
-	}
-	if !slices.Equal(meta.DependencyTaskIDs, spec.dependencyTaskIDs) {
-		return fmt.Errorf("pipeline: LLM task %q dependency task ids = %#v, want %#v; pass --rerun to start a fresh review", spec.taskID, meta.DependencyTaskIDs, spec.dependencyTaskIDs)
-	}
-	if strings.TrimSpace(adapter) != "" && meta.Adapter != adapter {
-		return fmt.Errorf("pipeline: LLM task %q adapter = %q, want %q; pass --rerun to start a fresh review", spec.taskID, meta.Adapter, adapter)
-	}
-	fingerprint := strings.TrimSpace(spec.inputFingerprint)
-	if fingerprint == "" {
-		fingerprint = llmTaskFingerprint(adapter, spec.taskID, spec.phase, spec.model, spec.effort, spec.prompt, spec.dependencyTaskIDs)
-	}
-	if meta.InputFingerprint != fingerprint {
-		return fmt.Errorf("pipeline: LLM task %q input fingerprint changed; pass --rerun to start a fresh review", spec.taskID)
-	}
-	return nil
-}
-
 func readLLMTaskMetadata(paths ArtifactPaths, taskID string) (llmTaskMetadata, bool, error) {
 	path, err := paths.LLMTaskMetadata(taskID)
 	if err != nil {
@@ -1596,120 +1479,6 @@ func readLLMTaskMetadata(paths ArtifactPaths, taskID string) (llmTaskMetadata, b
 		return llmTaskMetadata{}, false, fmt.Errorf("pipeline: decode LLM task %q metadata: %w", taskID, err)
 	}
 	return meta, true, nil
-}
-
-func loadTaskSession(ctx context.Context, opts Options, runID string, meta llmTaskMetadata) (ledger.Session, error) {
-	if strings.TrimSpace(meta.SessionRowID) == "" {
-		return ledger.Session{}, fmt.Errorf("pipeline: LLM task %q is missing session row id", meta.TaskID)
-	}
-	session, err := opts.Store.GetSession(ctx, meta.SessionRowID)
-	if err != nil {
-		return ledger.Session{}, fmt.Errorf("pipeline: load LLM task %q session %q: %w", meta.TaskID, meta.SessionRowID, err)
-	}
-	if session.RunID != runID {
-		return ledger.Session{}, fmt.Errorf("pipeline: LLM task %q session belongs to run %q, want %q", meta.TaskID, session.RunID, runID)
-	}
-	return session, nil
-}
-
-func loadOptionalTaskSession(ctx context.Context, opts Options, runID string, meta llmTaskMetadata) (ledger.Session, sessionDraft, error) {
-	if strings.TrimSpace(meta.SessionRowID) == "" {
-		return ledger.Session{}, sessionDraftFromTaskMetadata(meta), nil
-	}
-	session, err := loadTaskSession(ctx, opts, runID, meta)
-	if err != nil {
-		return ledger.Session{}, sessionDraft{}, err
-	}
-	return session, sessionDraftFromLedger(session), nil
-}
-
-func sessionDraftFromLedger(session ledger.Session) sessionDraft {
-	return sessionDraftFromLifecycle(llmlifecycle.SessionDraftFromLedger(session))
-}
-
-func sessionDraftFromTaskMetadata(meta llmTaskMetadata) sessionDraft {
-	return sessionDraftFromLifecycle(llmlifecycle.SessionDraftFromMetadata(meta))
-}
-
-func taskResumeSessionID(meta llmTaskMetadata) string {
-	if strings.TrimSpace(meta.ProviderSessionID) != "" {
-		return meta.ProviderSessionID
-	}
-	for i := len(meta.Attempts) - 1; i >= 0; i-- {
-		if strings.TrimSpace(meta.Attempts[i].ProviderSessionID) != "" {
-			return meta.Attempts[i].ProviderSessionID
-		}
-	}
-	return ""
-}
-
-func taskErrorText(meta llmTaskMetadata) string {
-	if strings.TrimSpace(meta.Error) != "" {
-		return meta.Error
-	}
-	return fmt.Sprintf("LLM task %q failed", meta.TaskID)
-}
-
-func newLLMTaskProgressEvent(spec llmTaskSpec, resumeSessionID string) LLMTaskProgressEvent {
-	agentID := ""
-	if spec.agentID != nil {
-		agentID = *spec.agentID
-	}
-	source := "execute"
-	if strings.TrimSpace(resumeSessionID) != "" {
-		source = "resume"
-	}
-	return LLMTaskProgressEvent{
-		TaskID:          spec.taskID,
-		Phase:           spec.phase,
-		AgentID:         agentID,
-		Model:           spec.model,
-		Effort:          spec.effort,
-		LogPath:         spec.logPath,
-		ResumeSessionID: resumeSessionID,
-		Source:          source,
-	}
-}
-
-func llmTaskProgressResult(meta llmTaskMetadata, result any, cached bool, usage llm.Usage) LLMTaskProgressResult {
-	out := LLMTaskProgressResult{
-		ProviderSessionID: meta.ProviderSessionID,
-		Status:            string(meta.Status),
-		Cached:            cached,
-		Usage:             usage,
-	}
-	switch value := result.(type) {
-	case llm.StructuredResult[llm.Selection]:
-		out.ValidationAttempts = len(value.ValidationAttempts)
-		if out.ProviderSessionID == "" {
-			out.ProviderSessionID = value.SessionID
-		}
-	case llm.StructuredResult[llm.Findings]:
-		out.ValidationAttempts = len(value.ValidationAttempts)
-		if out.ProviderSessionID == "" {
-			out.ProviderSessionID = value.SessionID
-		}
-	case llm.StructuredResult[review.Rollup]:
-		out.ValidationAttempts = len(value.ValidationAttempts)
-		if out.ProviderSessionID == "" {
-			out.ProviderSessionID = value.SessionID
-		}
-	}
-	return out
-}
-
-func loadLLMTaskProgress(opts Options, event LLMTaskProgressEvent, result LLMTaskProgressResult) {
-	if opts.TaskProgress == nil {
-		return
-	}
-	opts.TaskProgress.LoadLLMTask(event, result)
-}
-
-func llmTaskAdapterName(adapter llm.Adapter) string {
-	if adapter == nil {
-		return ""
-	}
-	return adapter.Name()
 }
 
 func llmTaskFingerprint(adapter, taskID, phase, model, effort, prompt string, deps []string) string {
@@ -1730,18 +1499,6 @@ func llmTaskFingerprint(adapter, taskID, phase, model, effort, prompt string, de
 		_, _ = io.WriteString(hash, "dep="+dep+"\n")
 	}
 	return hex.EncodeToString(hash.Sum(nil))
-}
-
-func writeLLMTaskSuccess(paths ArtifactPaths, meta *llmTaskMetadata, output []byte) error {
-	outputPath, err := paths.LLMTaskValidatedOutput(meta.TaskID)
-	if err != nil {
-		return err
-	}
-	if err := writeFileAtomic(outputPath, append(append([]byte(nil), output...), '\n')); err != nil {
-		return err
-	}
-	meta.ValidatedOutputPath = outputPath
-	return writeLLMTaskMetadata(paths, *meta)
 }
 
 func writeLLMTaskMetadata(paths ArtifactPaths, meta llmTaskMetadata) error {

@@ -333,14 +333,14 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 	if hasRun && strings.TrimSpace(draft.ProviderSessionID) != "" {
 		if req.Store == nil {
 			err := fmt.Errorf("llmlifecycle: store is required")
-			endProgress(progressSpan, err, progressResult(meta, structured, false))
+			endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
 			return zero, err
 		}
 		session = draft.ToLedger(req.RunID)
 		if err := req.Store.InsertSession(ctx, session); err != nil {
 			meta.Status = StatusFailedBlocking
 			meta.ProviderSessionID = draft.ProviderSessionID
-			endProgress(progressSpan, err, progressResult(meta, structured, false))
+			endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
 			return zero, err
 		}
 	}
@@ -350,10 +350,10 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 		meta.SessionRowID = session.SessionRowID
 		meta.ProviderSessionID = draft.ProviderSessionID
 		if err := WriteSuccess(req.Paths, &meta, structured.AcceptedOutput); err != nil {
-			endProgress(progressSpan, err, progressResult(meta, structured, false))
+			endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
 			return zero, err
 		}
-		endProgress(progressSpan, nil, progressResult(meta, structured, false))
+		endProgress(progressSpan, nil, progressResult(meta, structured, false, structured.Response.Usage))
 		return Result[T]{Value: structured.Value, Draft: draft, Session: session}, nil
 	}
 
@@ -362,10 +362,10 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 	meta.SessionRowID = session.SessionRowID
 	meta.ProviderSessionID = draft.ProviderSessionID
 	if err := WriteFailure(req.Paths, &meta, structured.ValidationAttempts); err != nil {
-		endProgress(progressSpan, err, progressResult(meta, structured, false))
+		endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
 		return Result[T]{Draft: draft, Session: session}, err
 	}
-	endProgress(progressSpan, runErr, progressResult(meta, structured, false))
+	endProgress(progressSpan, runErr, progressResult(meta, structured, false, structured.Response.Usage))
 	return Result[T]{Draft: draft, Session: session}, &TaskError{status: meta.Status, err: runErr}
 }
 
@@ -401,8 +401,7 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		}
 		if strings.TrimSpace(req.RunID) == "" {
 			draft := SessionDraftFromMetadata(meta)
-			progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true)
-			progress.Usage = draft.Response.Usage
+			progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
 			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 			return Result[T]{Value: value, Draft: draft, Cached: true}, true, nil
 		}
@@ -414,8 +413,7 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 			return zero, true, err
 		}
 		draft := SessionDraftFromLedger(session)
-		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true)
-		progress.Usage = draft.Response.Usage
+		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
 		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 		return Result[T]{Value: value, Draft: draft, Session: session, Cached: true}, true, nil
 	case StatusFailedIsolated:
@@ -424,8 +422,7 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		}
 		if strings.TrimSpace(req.RunID) == "" {
 			draft := SessionDraftFromMetadata(meta)
-			progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true)
-			progress.Usage = draft.Response.Usage
+			progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
 			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 			return Result[T]{Draft: draft, Cached: true}, true, &TaskError{status: StatusFailedIsolated, err: errors.New(TaskErrorText(meta))}
 		}
@@ -436,8 +433,7 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		if err != nil {
 			return zero, true, err
 		}
-		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true)
-		progress.Usage = draft.Response.Usage
+		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
 		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 		return Result[T]{Draft: draft, Session: session, Cached: true}, true, &TaskError{status: StatusFailedIsolated, err: errors.New(TaskErrorText(meta))}
 	case StatusFailedBlocking:
@@ -809,7 +805,7 @@ func loadOptionalTaskSession(ctx context.Context, store Store, runID string, met
 	return session, SessionDraftFromLedger(session), nil
 }
 
-func progressResult[T any](meta Metadata, result llm.StructuredResult[T], cached bool) ProgressResult {
+func progressResult[T any](meta Metadata, result llm.StructuredResult[T], cached bool, usage llm.Usage) ProgressResult {
 	providerSessionID := meta.ProviderSessionID
 	if providerSessionID == "" {
 		providerSessionID = result.SessionID
@@ -819,7 +815,7 @@ func progressResult[T any](meta Metadata, result llm.StructuredResult[T], cached
 		Status:             string(meta.Status),
 		ValidationAttempts: len(result.ValidationAttempts),
 		Cached:             cached,
-		Usage:              result.Response.Usage,
+		Usage:              usage,
 	}
 }
 

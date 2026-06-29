@@ -3263,53 +3263,6 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 	}
 }
 
-func TestLoadStructuredTaskRejectsValidatedOutputOutsideTaskDir(t *testing.T) {
-	ctx := context.Background()
-	artifacts := ArtifactPathsFromDir(t.TempDir())
-	spec := llmTaskSpec{
-		runID:            "run-output-path",
-		taskID:           orchestratorSelectionStage,
-		phase:            "selection",
-		inputFingerprint: "fingerprint",
-		artifacts:        artifacts,
-		role:             ledger.SessionRoleOrchestrator,
-		model:            "model",
-		effort:           "medium",
-		prompt:           "prompt",
-	}
-	meta := llmTaskMetadata{
-		SchemaVersion:     llmTaskSchemaVersion,
-		TaskID:            spec.taskID,
-		Phase:             spec.phase,
-		InputFingerprint:  spec.inputFingerprint,
-		Adapter:           "fake-llm",
-		Status:            llmTaskStatusSucceeded,
-		SessionRowID:      "session-row",
-		ProviderSessionID: "provider-session",
-	}
-	if err := writeLLMTaskSuccess(artifacts, &meta, []byte(`"ok"`)); err != nil {
-		t.Fatalf("writeLLMTaskSuccess: %v", err)
-	}
-	outsidePath := filepath.Join(t.TempDir(), "validated-output.json")
-	if err := os.WriteFile(outsidePath, []byte(`"outside"`), 0o600); err != nil {
-		t.Fatalf("WriteFile outside: %v", err)
-	}
-	meta.ValidatedOutputPath = outsidePath
-	if err := writeLLMTaskMetadata(artifacts, meta); err != nil {
-		t.Fatalf("writeLLMTaskMetadata: %v", err)
-	}
-
-	_, _, _, ok, err := loadStructuredTask[string](ctx, Options{Adapter: &llm.FakeAdapter{NameValue: "fake-llm"}}, spec, func(data []byte) (string, error) {
-		return string(data), nil
-	})
-	if !ok {
-		t.Fatal("loadStructuredTask ok = false, want metadata considered present")
-	}
-	if err == nil || !strings.Contains(err.Error(), "outside the task artifact directory") {
-		t.Fatalf("loadStructuredTask error = %v, want outside task artifact directory", err)
-	}
-}
-
 func TestRunStructuredTaskRejectsAdapterMismatchBeforeRetry(t *testing.T) {
 	ctx := context.Background()
 	artifacts := ArtifactPathsFromDir(t.TempDir())
@@ -3480,142 +3433,6 @@ func TestRunStructuredTaskReportsProgressOnExecution(t *testing.T) {
 	}
 }
 
-func TestLoadStructuredTaskReportsCachedProgress(t *testing.T) {
-	ctx := context.Background()
-	store := openPipelineStore(t)
-	defer closeStore(t, store)
-	artifacts := ArtifactPathsFromDir(t.TempDir())
-	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
-	allocatePipelineRun(t, store, layout, "run-cached-progress", ledger.PostModeDryRun, fixedNow())
-	spec := llmTaskSpec{
-		runID:            "run-cached-progress",
-		taskID:           orchestratorSelectionStage,
-		phase:            "selection",
-		inputFingerprint: "fingerprint",
-		artifacts:        artifacts,
-		role:             ledger.SessionRoleOrchestrator,
-		model:            "gpt-5.4-mini",
-		effort:           "low",
-		logPath:          filepath.Join(t.TempDir(), "selection.jsonl"),
-		prompt:           "prompt",
-	}
-	session := ledger.Session{
-		SessionRowID:      "session-row",
-		RunID:             spec.runID,
-		ProviderSessionID: "cached-session",
-		Role:              ledger.SessionRoleOrchestrator,
-		Adapter:           "fake-llm",
-		Model:             spec.model,
-		StartedAt:         fixedNow(),
-	}
-	if err := store.InsertSession(ctx, session); err != nil {
-		t.Fatalf("InsertSession: %v", err)
-	}
-	meta := llmTaskMetadata{
-		SchemaVersion:       llmTaskSchemaVersion,
-		TaskID:              spec.taskID,
-		Phase:               spec.phase,
-		InputFingerprint:    spec.inputFingerprint,
-		Adapter:             "fake-llm",
-		Status:              llmTaskStatusSucceeded,
-		SessionRowID:        session.SessionRowID,
-		ProviderSessionID:   session.ProviderSessionID,
-		ValidatedOutputPath: "",
-	}
-	if err := writeLLMTaskSuccess(artifacts, &meta, []byte(`"cached"`)); err != nil {
-		t.Fatalf("writeLLMTaskSuccess: %v", err)
-	}
-	progress := &fakeTaskProgress{}
-
-	value, _, _, ok, err := loadStructuredTask[string](ctx, Options{
-		Adapter:      &llm.FakeAdapter{NameValue: "fake-llm"},
-		Store:        store,
-		TaskProgress: progress,
-	}, spec, func(data []byte) (string, error) {
-		return string(data), nil
-	})
-	if err != nil {
-		t.Fatalf("loadStructuredTask: %v", err)
-	}
-	if !ok || strings.TrimSpace(value) != `"cached"` {
-		t.Fatalf("ok=%v value=%q, want cached task load", ok, value)
-	}
-	if len(progress.loads) != 1 {
-		t.Fatalf("progress loads=%d, want 1", len(progress.loads))
-	}
-	if progress.loads[0].event.TaskID != orchestratorSelectionStage || progress.loads[0].event.Phase != "selection" || progress.loads[0].event.Source != "resume" {
-		t.Fatalf("load event = %#v, want selection resume event", progress.loads[0].event)
-	}
-	if progress.loads[0].event.ResumeSessionID != "cached-session" || progress.loads[0].event.Model != spec.model || progress.loads[0].event.Effort != spec.effort {
-		t.Fatalf("load event fields = %#v, want cached session/model/effort", progress.loads[0].event)
-	}
-	if !progress.loads[0].result.Cached || progress.loads[0].result.Status != string(llmTaskStatusSucceeded) || progress.loads[0].result.ProviderSessionID != "cached-session" {
-		t.Fatalf("load = %#v, want cached succeeded selection task", progress.loads[0])
-	}
-}
-
-func TestLoadStructuredTaskReportsSessionlessIsolatedFailureUsageFromMetadata(t *testing.T) {
-	ctx := context.Background()
-	store := openPipelineStore(t)
-	defer closeStore(t, store)
-	artifacts := ArtifactPathsFromDir(t.TempDir())
-	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
-	allocatePipelineRun(t, store, layout, "run-sessionless-isolated", ledger.PostModeDryRun, fixedNow())
-	spec := llmTaskSpec{
-		runID:            "run-sessionless-isolated",
-		taskID:           reviewerTaskID("harness:beta"),
-		phase:            "reviewer",
-		inputFingerprint: "fingerprint",
-		artifacts:        artifacts,
-		role:             ledger.SessionRoleReviewer,
-		model:            "gpt-5.4-mini",
-		effort:           "low",
-		logPath:          filepath.Join(t.TempDir(), "reviewer.jsonl"),
-		prompt:           "prompt",
-		llmFailureStatus: llmTaskStatusFailedIsolated,
-	}
-	if err := writeLLMTaskMetadata(artifacts, llmTaskMetadata{
-		SchemaVersion:     llmTaskSchemaVersion,
-		TaskID:            spec.taskID,
-		Phase:             spec.phase,
-		InputFingerprint:  spec.inputFingerprint,
-		Adapter:           "fake-llm",
-		Status:            llmTaskStatusFailedIsolated,
-		ProviderSessionID: "provider-session",
-		Model:             spec.model,
-		Effort:            spec.effort,
-		LogPath:           spec.logPath,
-		Error:             "validation failed",
-		TokensIn:          intPtr(144),
-		TokensOut:         intPtr(89),
-		CacheRead:         intPtr(55),
-		CacheCreate:       intPtr(34),
-	}); err != nil {
-		t.Fatalf("writeLLMTaskMetadata: %v", err)
-	}
-	progress := &fakeTaskProgress{}
-	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-
-	_, _, _, ok, err := loadStructuredTask[string](ctx, Options{
-		Adapter:      adapter,
-		Store:        store,
-		TaskProgress: progress,
-	}, spec, func(data []byte) (string, error) {
-		return string(data), nil
-	})
-	var taskErr *llmTaskError
-	if !ok || !errors.As(err, &taskErr) || taskErr.status != llmTaskStatusFailedIsolated {
-		t.Fatalf("loadStructuredTask ok=%v err=%v, want cached isolated task error", ok, err)
-	}
-	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
-		t.Fatalf("adapter invoked despite cached isolated metadata: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
-	}
-	if len(progress.loads) != 1 {
-		t.Fatalf("progress loads=%d, want 1", len(progress.loads))
-	}
-	assertPipelineUsage(t, "cached sessionless isolated progress load", progress.loads[0].result.Usage, 144, 89, 55, 34)
-}
-
 func assertTaskPayloadContains(t *testing.T, path, want string) {
 	t.Helper()
 	if strings.TrimSpace(path) == "" {
@@ -3627,17 +3444,6 @@ func assertTaskPayloadContains(t *testing.T, path, want string) {
 	}
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("task payload %s = %s, want %q", path, data, want)
-	}
-}
-
-func assertPipelineUsage(t *testing.T, label string, usage llm.Usage, tokensIn, tokensOut, cacheRead, cacheCreate int) {
-	t.Helper()
-	if usage.TokensIn == nil || *usage.TokensIn != tokensIn ||
-		usage.TokensOut == nil || *usage.TokensOut != tokensOut ||
-		usage.CacheRead == nil || *usage.CacheRead != cacheRead ||
-		usage.CacheCreate == nil || *usage.CacheCreate != cacheCreate {
-		t.Fatalf("%s usage = %#v, want tokens_in=%d tokens_out=%d cache_read=%d cache_create=%d",
-			label, usage, tokensIn, tokensOut, cacheRead, cacheCreate)
 	}
 }
 
@@ -5473,45 +5279,9 @@ func TestRunReviewerRejectsStaleWorkbenchMetadata(t *testing.T) {
 	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	secondOpts := opts
 	secondOpts.Adapter = secondAdapter
-	runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
-	if err != nil {
-		t.Fatalf("resolveReviewerRuntimeConfig: %v", err)
-	}
-	prompt, promptDeps, err := buildReviewerPrompt(prepared.artifacts, prepared.reviewPR, selection.SelectedAgents[0], agent, patchPaths(prepared.parsed.Patches))
-	if err != nil {
-		t.Fatalf("buildReviewerPrompt: %v", err)
-	}
-	logPath, err := prepared.artifacts.AgentLog(agent.ID)
-	if err != nil {
-		t.Fatalf("AgentLog: %v", err)
-	}
-	agentID := agent.ID
-	fingerprintDeps := append([]string{orchestratorSelectionStage}, promptDeps...)
-	_, _, _, ok, err = loadStructuredTask[llm.Findings](ctx, secondOpts, llmTaskSpec{
-		runID:             run.RunID,
-		taskID:            reviewerTaskID(agent.ID),
-		phase:             "reviewer",
-		dependencyTaskIDs: []string{orchestratorSelectionStage},
-		inputFingerprint:  llmTaskFingerprint(secondOpts.Adapter.Name(), reviewerTaskID(agent.ID), "reviewer", runtimeConfig.model, runtimeConfig.effort, prompt, fingerprintDeps),
-		artifacts:         prepared.artifacts,
-		role:              ledger.SessionRoleReviewer,
-		agentID:           &agentID,
-		model:             runtimeConfig.model,
-		effort:            runtimeConfig.effort,
-		logPath:           logPath,
-		prompt:            prompt,
-	}, func(data []byte) (llm.Findings, error) {
-		return llm.DecodeFindings(data, llm.FindingsOptions{
-			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(reviewerReadableFiles(selection.SelectedAgents[0], patchPaths(prepared.parsed.Patches))),
-			NewFindingID: findingSequence("reload"),
-		})
-	})
-	if !ok {
-		t.Fatal("loadStructuredTask ok = false, want persisted reviewer metadata to be loaded and rejected")
-	}
+	_, _, _, _, err = runReviewer(ctx, secondOpts, req, run.RunID, prepared.reviewPR, prepared.parsed, prepared.artifacts, selection.SelectedAgents[0], agent, []string{orchestratorSelectionStage})
 	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
-		t.Fatalf("loadStructuredTask stale workbench error = %v, want input fingerprint changed", err)
+		t.Fatalf("runReviewer stale workbench error = %v, want input fingerprint changed", err)
 	}
 	if len(secondAdapter.Requests()) != 0 || len(secondAdapter.Resumes()) != 0 {
 		t.Fatalf("adapter invoked despite stale reviewer metadata: starts=%#v resumes=%#v", secondAdapter.Requests(), secondAdapter.Resumes())
