@@ -37,6 +37,7 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 				TokensOut:   intPtr(5),
 				CacheRead:   intPtr(3),
 				CacheCreate: intPtr(7),
+				CostUSD:     floatPtr(0.15),
 			},
 		},
 	})
@@ -59,7 +60,7 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	if len(progress.ends) != 1 {
 		t.Fatalf("fresh progress ends = %#v, want one provider progress result", progress.ends)
 	}
-	assertUsage(t, "fresh progress end", progress.ends[0].result.Usage, 10, 5, 3, 7)
+	assertUsage(t, "fresh progress end", progress.ends[0].result.Usage, 10, 5, 3, 7, 0.15)
 	storedSession := store.session(t, "session-row-1")
 	if storedSession.RunID != "run-1" || storedSession.ProviderSessionID != "provider-session-1" || storedSession.Role != ledger.SessionRoleOrchestrator {
 		t.Fatalf("stored session = %#v, want run/provider/default orchestrator role", storedSession)
@@ -91,7 +92,7 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	if len(progress.loads) != 1 {
 		t.Fatalf("cached progress loads = %#v, want one cached progress result", progress.loads)
 	}
-	assertUsage(t, "cached progress load", progress.loads[0].result.Usage, 10, 5, 3, 7)
+	assertUsage(t, "cached progress load", progress.loads[0].result.Usage, 10, 5, 3, 7, 0.15)
 }
 
 func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.T) {
@@ -423,14 +424,26 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 		SessionID: "provider-session-1",
 		Response: llm.Response{
 			StructuredOutput: []byte(`{"ok":"not-bool"}`),
-			Usage:            llm.Usage{TokensIn: intPtr(21), TokensOut: intPtr(8), CacheRead: intPtr(5), CacheCreate: intPtr(2)},
+			Usage: llm.Usage{
+				TokensIn:    intPtr(21),
+				TokensOut:   intPtr(8),
+				CacheRead:   intPtr(5),
+				CacheCreate: intPtr(2),
+				CostUSD:     floatPtr(0.21),
+			},
 		},
 	})
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
 		Response: llm.Response{
 			StructuredOutput: []byte(`{"ok":"still-not-bool"}`),
-			Usage:            llm.Usage{TokensIn: intPtr(34), TokensOut: intPtr(13), CacheRead: intPtr(9), CacheCreate: intPtr(4)},
+			Usage: llm.Usage{
+				TokensIn:    intPtr(34),
+				TokensOut:   intPtr(13),
+				CacheRead:   intPtr(9),
+				CacheCreate: intPtr(4),
+				CostUSD:     floatPtr(0.34),
+			},
 		},
 	})
 	req := lifecycleRequest(t, store, adapter)
@@ -454,7 +467,7 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	if len(progress.loads) != 1 {
 		t.Fatalf("cached isolated progress loads = %#v, want one cached progress result", progress.loads)
 	}
-	assertUsage(t, "cached isolated progress load", progress.loads[0].result.Usage, 34, 13, 9, 4)
+	assertUsage(t, "cached isolated progress load", progress.loads[0].result.Usage, 34, 13, 9, 4, 0.34)
 }
 
 func TestRunStructuredLoadsSessionlessIsolatedFailureUsageFromMetadata(t *testing.T) {
@@ -480,6 +493,7 @@ func TestRunStructuredLoadsSessionlessIsolatedFailureUsageFromMetadata(t *testin
 		TokensOut:         intPtr(55),
 		CacheRead:         intPtr(34),
 		CacheCreate:       intPtr(21),
+		CostUSD:           floatPtr(0.89),
 	}); err != nil {
 		t.Fatalf("WriteMetadata: %v", err)
 	}
@@ -491,7 +505,7 @@ func TestRunStructuredLoadsSessionlessIsolatedFailureUsageFromMetadata(t *testin
 	if len(progress.loads) != 1 {
 		t.Fatalf("cached sessionless isolated progress loads = %#v, want one cached progress result", progress.loads)
 	}
-	assertUsage(t, "cached sessionless isolated progress load", progress.loads[0].result.Usage, 89, 55, 34, 21)
+	assertUsage(t, "cached sessionless isolated progress load", progress.loads[0].result.Usage, 89, 55, 34, 21, 0.89)
 }
 
 func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing.T) {
@@ -502,7 +516,7 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 		SessionID: "provider-session-1",
 		Response: llm.Response{
 			StructuredOutput: []byte(`{"ok":true}`),
-			Usage:            llm.Usage{TokensIn: intPtr(55), TokensOut: intPtr(21), CacheRead: intPtr(13), CacheCreate: intPtr(8)},
+			Usage:            llm.Usage{TokensIn: intPtr(55), TokensOut: intPtr(21), CacheRead: intPtr(13), CacheCreate: intPtr(8), CostUSD: floatPtr(0.55)},
 		},
 	})
 	req := lifecycleRequest(t, nil, adapter)
@@ -526,7 +540,8 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 		t.Fatalf("metadata session_row_id = %q, want empty for caller-owned cache", meta.SessionRowID)
 	}
 	if meta.TokensIn == nil || *meta.TokensIn != 55 || meta.TokensOut == nil || *meta.TokensOut != 21 ||
-		meta.CacheRead == nil || *meta.CacheRead != 13 || meta.CacheCreate == nil || *meta.CacheCreate != 8 {
+		meta.CacheRead == nil || *meta.CacheRead != 13 || meta.CacheCreate == nil || *meta.CacheCreate != 8 ||
+		meta.CostUSD == nil || *meta.CostUSD != 0.55 {
 		t.Fatalf("metadata usage = %#v, want caller-owned cache usage persisted", meta)
 	}
 
@@ -546,7 +561,7 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 	if len(progress.loads) != 1 {
 		t.Fatalf("cached caller-owned progress loads = %#v, want one cached progress result", progress.loads)
 	}
-	assertUsage(t, "cached caller-owned progress load", progress.loads[0].result.Usage, 55, 21, 13, 8)
+	assertUsage(t, "cached caller-owned progress load", progress.loads[0].result.Usage, 55, 21, 13, 8, 0.55)
 }
 
 func TestValidatePayloadPathRejectsEscape(t *testing.T) {
@@ -693,14 +708,19 @@ func intPtr(value int) *int {
 	return &value
 }
 
-func assertUsage(t *testing.T, label string, usage llm.Usage, tokensIn, tokensOut, cacheRead, cacheCreate int) {
+func floatPtr(value float64) *float64 {
+	return &value
+}
+
+func assertUsage(t *testing.T, label string, usage llm.Usage, tokensIn, tokensOut, cacheRead, cacheCreate int, costUSD float64) {
 	t.Helper()
 	if usage.TokensIn == nil || *usage.TokensIn != tokensIn ||
 		usage.TokensOut == nil || *usage.TokensOut != tokensOut ||
 		usage.CacheRead == nil || *usage.CacheRead != cacheRead ||
-		usage.CacheCreate == nil || *usage.CacheCreate != cacheCreate {
-		t.Fatalf("%s usage = %#v, want tokens_in=%d tokens_out=%d cache_read=%d cache_create=%d",
-			label, usage, tokensIn, tokensOut, cacheRead, cacheCreate)
+		usage.CacheCreate == nil || *usage.CacheCreate != cacheCreate ||
+		usage.CostUSD == nil || *usage.CostUSD != costUSD {
+		t.Fatalf("%s usage = %#v, want tokens_in=%d tokens_out=%d cache_read=%d cache_create=%d cost_usd=%g",
+			label, usage, tokensIn, tokensOut, cacheRead, cacheCreate, costUSD)
 	}
 }
 

@@ -65,8 +65,9 @@ Telemetry metadata fields are optional and non-load-bearing. They do not affect
 resume eligibility, and older artifacts without them remain valid:
 
 - `tokens_in`, `tokens_out`, `cache_read`, `cache_create`, and `cost_usd`:
-  provider-reported usage copied into run summaries and durable progress
-  breadcrumbs when available.
+  provider-reported usage copied into run summaries when available.
+  `tokens_in`, `tokens_out`, `cache_read`, and `cache_create` are also copied
+  into durable progress breadcrumbs when available.
 
 ## Status Semantics
 
