@@ -116,7 +116,6 @@ type Request struct {
 	PostingIdentity         string
 	HeadSHA                 string
 	AgentDefinitionsChanged bool
-	IncludeNits             bool
 	MaxInlineComments       int
 
 	// RunSummary is the execution metadata rendered in the rollup footer.
@@ -513,17 +512,7 @@ func (b *builder) buildReview() (Plan, error) {
 
 // renderedFindings filters ordered findings to those the rollup renders.
 func (b *builder) renderedFindings(ordered []review.Finding) []review.Finding {
-	if b.req.IncludeNits {
-		return ordered
-	}
-	rendered := make([]review.Finding, 0, len(ordered))
-	for _, finding := range ordered {
-		if finding.Severity == review.SeverityNits {
-			continue
-		}
-		rendered = append(rendered, finding)
-	}
-	return rendered
+	return ordered
 }
 
 func (b *builder) orderedFindings() ([]review.Finding, error) {
@@ -858,9 +847,6 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		out.WriteString("| Severity | Findings |\n")
 		out.WriteString("|----------|----------|\n")
 		for _, severity := range review.SeverityOrder() {
-			if severity == review.SeverityNits && !b.req.IncludeNits {
-				continue
-			}
 			out.WriteString("| ")
 			out.WriteString(severity.String())
 			out.WriteString(" | ")
@@ -869,9 +855,6 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		}
 		out.WriteString("\n")
 		for _, finding := range anchored {
-			if finding.Severity == review.SeverityNits && !b.req.IncludeNits {
-				continue
-			}
 			writeFindingBlock(&out, finding)
 		}
 	}
@@ -893,9 +876,6 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 func (b *builder) writeReviewerSections(out *strings.Builder, anchored []AnchoredFinding, reviewers []ReviewerSummary) {
 	grouped := map[string][]AnchoredFinding{}
 	for _, finding := range anchored {
-		if finding.Severity == review.SeverityNits && !b.req.IncludeNits {
-			continue
-		}
 		name := b.req.FindingReviewers[finding.FindingID]
 		if name == "" {
 			name = UnattributedReviewer

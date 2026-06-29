@@ -132,8 +132,8 @@ func TestRollupRenderingFallbackMetadataAndAgentNote(t *testing.T) {
 			t.Fatalf("rollup markdown missing %q:\n%s", want, plan.RollupMarkdown)
 		}
 	}
-	if strings.Contains(plan.RollupMarkdown, "nits detail") {
-		t.Fatalf("rollup included nits detail while IncludeNits=false:\n%s", plan.RollupMarkdown)
+	if !strings.Contains(plan.RollupMarkdown, "nits detail") {
+		t.Fatalf("rollup missing nit finding body after nits are always included:\n%s", plan.RollupMarkdown)
 	}
 
 	inline := actionsOfKind(plan.Actions, ActionKindInlineComment)[0].InlineComment

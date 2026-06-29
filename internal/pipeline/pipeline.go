@@ -159,7 +159,6 @@ type Request struct {
 	Rerun                       bool
 
 	FailOn              *review.Severity
-	IncludeNits         bool
 	AllowSelfReview     bool
 	AllowSelfApprove    bool
 	NoResolveThreads    bool
@@ -2219,7 +2218,6 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 		PostingIdentity:         postingKey(req.PostingIdentity),
 		HeadSHA:                 pr.Head.SHA,
 		AgentDefinitionsChanged: agentDefsChanged,
-		IncludeNits:             req.IncludeNits,
 		RunSummary:              runSummary,
 		FindingReviewers:        findingReviewers,
 		Now:                     opts.now,
