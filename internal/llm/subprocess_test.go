@@ -817,6 +817,30 @@ func TestSubprocessCodexParsesObservedUsageFields(t *testing.T) {
 	}
 }
 
+func TestSubprocessParseUsageAliases(t *testing.T) {
+	raw := map[string]json.RawMessage{
+		"usage": json.RawMessage(`{"tokensIn":1,"tokensOut":2,"cacheRead":3,"cacheWrite":4}`),
+	}
+	usage := parseUsage(raw)
+	if usage.TokensIn == nil || *usage.TokensIn != 1 ||
+		usage.TokensOut == nil || *usage.TokensOut != 2 ||
+		usage.CacheRead == nil || *usage.CacheRead != 3 ||
+		usage.CacheCreate == nil || *usage.CacheCreate != 4 {
+		t.Fatalf("Usage = %#v, want camelCase aliases parsed", usage)
+	}
+
+	raw = map[string]json.RawMessage{
+		"usage": json.RawMessage(`{"prompt_tokens":5,"completion_tokens":6,"cachedInputTokens":7,"cache_create":8}`),
+	}
+	usage = parseUsage(raw)
+	if usage.TokensIn == nil || *usage.TokensIn != 5 ||
+		usage.TokensOut == nil || *usage.TokensOut != 6 ||
+		usage.CacheRead == nil || *usage.CacheRead != 7 ||
+		usage.CacheCreate == nil || *usage.CacheCreate != 8 {
+		t.Fatalf("Usage = %#v, want prompt/completion/cache aliases parsed", usage)
+	}
+}
+
 func TestSubprocessCodexToolUseAndProtocolFailures(t *testing.T) {
 	t.Run("tool use kills and fails stream", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "records.jsonl")

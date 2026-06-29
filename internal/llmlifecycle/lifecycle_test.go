@@ -413,22 +413,31 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	ctx := context.Background()
 	store := newLifecycleStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress := &lifecycleProgressRecorder{}
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
-		Response:  llm.Response{StructuredOutput: []byte(`{"ok":"not-bool"}`)},
+		Response: llm.Response{
+			StructuredOutput: []byte(`{"ok":"not-bool"}`),
+			Usage:            llm.Usage{TokensIn: intPtr(21), TokensOut: intPtr(8)},
+		},
 	})
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
-		Response:  llm.Response{StructuredOutput: []byte(`{"ok":"still-not-bool"}`)},
+		Response: llm.Response{
+			StructuredOutput: []byte(`{"ok":"still-not-bool"}`),
+			Usage:            llm.Usage{TokensIn: intPtr(34), TokensOut: intPtr(13)},
+		},
 	})
 	req := lifecycleRequest(t, store, adapter)
 	req.FailureStatus = StatusFailedIsolated
+	req.Progress = progress
 	_, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if !IsTaskStatus(err, StatusFailedIsolated) {
 		t.Fatalf("RunStructured invalid output error = %v, want isolated task error", err)
 	}
 
 	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress.loads = nil
 	req.Adapter = cachedAdapter
 	_, err = RunStructured(ctx, req, decodeLifecyclePayload)
 	if !IsTaskStatus(err, StatusFailedIsolated) {
@@ -436,6 +445,10 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	}
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
+	}
+	if len(progress.loads) != 1 || progress.loads[0].result.Usage.TokensIn == nil || *progress.loads[0].result.Usage.TokensIn != 34 ||
+		progress.loads[0].result.Usage.TokensOut == nil || *progress.loads[0].result.Usage.TokensOut != 13 {
+		t.Fatalf("cached isolated progress loads = %#v, want usage loaded from failed ledger session", progress.loads)
 	}
 }
 

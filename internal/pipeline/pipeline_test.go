@@ -4803,13 +4803,9 @@ func TestDryRunUsagePopulatesRollupAndLedgerSessions(t *testing.T) {
 		reviewer.CacheCreate == nil || *reviewer.CacheCreate != 180377 {
 		t.Fatalf("reviewer workstream = %#v, want Claude-style cache values", reviewer)
 	}
-	for _, want := range []string{
-		"| orchestrator-selection | claude-sonnet-4-6 | 25.5k | 812 | 19.7k | unavailable |",
-		"| harness:reviewer | claude-sonnet-4-6 | 13 | 4.1k | 861.8k | 180.4k |",
-		"| orchestrator-rollup | claude-sonnet-4-6 | 11.3k | 129 | 4.5k | unavailable |",
-	} {
-		assertFileContains(t, result.Artifacts.RollupMarkdown, want)
-	}
+	assertRollupUsageRow(t, result.Artifacts.RollupMarkdown, orchestratorSelectionStage, false)
+	assertRollupUsageRow(t, result.Artifacts.RollupMarkdown, "harness:reviewer", true)
+	assertRollupUsageRow(t, result.Artifacts.RollupMarkdown, orchestratorRollupStage, false)
 	sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
 	if err != nil {
 		t.Fatalf("ListSessionsForRun: %v", err)
@@ -4828,6 +4824,11 @@ func TestDryRunUsagePopulatesRollupAndLedgerSessions(t *testing.T) {
 		got.CacheRead == nil || *got.CacheRead != 861774 ||
 		got.CacheCreate == nil || *got.CacheCreate != 180377 {
 		t.Fatalf("persisted reviewer session = %#v, want transcript-derived Claude usage", got)
+	}
+	if got := sessionByProviderID["rollup-session"]; got.TokensIn == nil || *got.TokensIn != 11324 ||
+		got.TokensOut == nil || *got.TokensOut != 129 ||
+		got.CacheRead == nil || *got.CacheRead != 4480 {
+		t.Fatalf("persisted rollup session = %#v, want parsed Codex rollup usage", got)
 	}
 }
 
@@ -6619,6 +6620,46 @@ func closeStore(t *testing.T, store *ledger.Store) {
 	if err := store.Close(); err != nil {
 		t.Fatalf("store.Close: %v", err)
 	}
+}
+
+func assertRollupUsageRow(t *testing.T, path string, workstream string, wantCacheCreate bool) {
+	t.Helper()
+	data, err := os.ReadFile(path) // #nosec G304 -- test reads an artifact path produced under t.TempDir.
+	if err != nil {
+		t.Fatalf("read rollup markdown: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		cells := markdownTableCells(line)
+		if len(cells) < 8 || cells[0] != workstream {
+			continue
+		}
+		for _, idx := range []int{2, 3, 4} {
+			if cells[idx] == "" || cells[idx] == "unavailable" {
+				t.Fatalf("rollup usage row %q cell %d = %q, want populated token/cache value in line %q", workstream, idx, cells[idx], line)
+			}
+		}
+		if wantCacheCreate && (cells[5] == "" || cells[5] == "unavailable") {
+			t.Fatalf("rollup usage row %q cache create = %q, want populated value in line %q", workstream, cells[5], line)
+		}
+		if !wantCacheCreate && cells[5] != "unavailable" {
+			t.Fatalf("rollup usage row %q cache create = %q, want unavailable when provider omitted it in line %q", workstream, cells[5], line)
+		}
+		return
+	}
+	t.Fatalf("rollup markdown %s missing usage row for %q:\n%s", path, workstream, data)
+}
+
+func markdownTableCells(line string) []string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
+		return nil
+	}
+	parts := strings.Split(strings.Trim(line, "|"), "|")
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cells = append(cells, strings.TrimSpace(part))
+	}
+	return cells
 }
 
 func allocatePipelineRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID string, mode ledger.PostMode, started time.Time) ledger.Run {
