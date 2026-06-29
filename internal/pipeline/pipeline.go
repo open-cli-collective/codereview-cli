@@ -1624,57 +1624,11 @@ func loadOptionalTaskSession(ctx context.Context, opts Options, runID string, me
 }
 
 func sessionDraftFromLedger(session ledger.Session) sessionDraft {
-	completedAt := session.StartedAt
-	if session.CompletedAt != nil {
-		completedAt = *session.CompletedAt
-	}
-	draft := sessionDraft{
-		rowID:                     session.SessionRowID,
-		providerReportedSessionID: session.ProviderSessionID,
-		providerSessionID:         session.ProviderSessionID,
-		role:                      session.Role,
-		agentID:                   session.AgentID,
-		adapter:                   session.Adapter,
-		model:                     session.Model,
-		startedAt:                 session.StartedAt,
-		completedAt:               completedAt,
-		response: llm.Response{
-			Usage: llm.Usage{
-				TokensIn:    int64PtrToInt(session.TokensIn),
-				TokensOut:   int64PtrToInt(session.TokensOut),
-				CacheRead:   int64PtrToInt(session.CacheRead),
-				CacheCreate: int64PtrToInt(session.CacheCreate),
-				CostUSD:     session.CostUSD,
-			},
-		},
-	}
-	if session.DurationMS != nil {
-		draft.response.DurationMS = *session.DurationMS
-	}
-	if session.Effort != nil {
-		draft.effort = *session.Effort
-	}
-	return draft
+	return sessionDraftFromLifecycle(llmlifecycle.SessionDraftFromLedger(session))
 }
 
 func sessionDraftFromTaskMetadata(meta llmTaskMetadata) sessionDraft {
-	return sessionDraft{
-		rowID:                     meta.SessionRowID,
-		providerReportedSessionID: meta.ProviderSessionID,
-		providerSessionID:         meta.ProviderSessionID,
-		adapter:                   meta.Adapter,
-		model:                     meta.Model,
-		effort:                    meta.Effort,
-		response: llm.Response{
-			Usage: llm.Usage{
-				TokensIn:    meta.TokensIn,
-				TokensOut:   meta.TokensOut,
-				CacheRead:   meta.CacheRead,
-				CacheCreate: meta.CacheCreate,
-				CostUSD:     meta.CostUSD,
-			},
-		},
-	}
+	return sessionDraftFromLifecycle(llmlifecycle.SessionDraftFromMetadata(meta))
 }
 
 func taskResumeSessionID(meta llmTaskMetadata) string {
@@ -5365,12 +5319,4 @@ func sameIdentity(left, right gitprovider.Identity) bool {
 		return strings.EqualFold(left.Login, right.Login)
 	}
 	return false
-}
-
-func int64PtrToInt(value *int64) *int {
-	if value == nil {
-		return nil
-	}
-	converted := int(*value)
-	return &converted
 }
