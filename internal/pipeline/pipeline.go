@@ -1972,10 +1972,10 @@ func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.Se
 	if err != nil {
 		return "", nil, err
 	}
-	reviewerScope := reviewerReadableFiles(changedFiles)
+	assignmentScope := reviewerAssignmentScope(selected, changedFiles)
 	payload := map[string]any{
 		"task":            "review files and return findings JSON only",
-		"output_contract": findingsOutputContract(agent.ID, reviewerScope),
+		"output_contract": findingsOutputContract(agent.ID, assignmentScope),
 		"agent":           reviewerAgentPromptFromAgent(agent),
 		"assignment":      input.Assignment,
 		"dossier":         input.Dossier,

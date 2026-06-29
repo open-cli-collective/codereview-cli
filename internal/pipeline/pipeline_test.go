@@ -5457,6 +5457,19 @@ func TestReviewerScopesSeparateReadAccessFromExpectedCoverage(t *testing.T) {
 	if got := reviewerAssignmentScope(llm.SelectedAgent{Files: []string{"main.go"}}, changed); !reflect.DeepEqual(got, []string{"main.go"}) {
 		t.Fatalf("broad coverage scope = %#v, want selected files", got)
 	}
+	assignmentScope := reviewerAssignmentScope(llm.SelectedAgent{AllowedFiles: []string{"schema.sql"}}, changed)
+	contract := findingsOutputContract("agent-1", assignmentScope)
+	contractAllowedValues, ok := contract.AllowedValues.(map[string]any)
+	if !ok {
+		t.Fatalf("contract allowed values type = %T, want map", contract.AllowedValues)
+	}
+	allowedValues, ok := contractAllowedValues["changed_files"].([]string)
+	if !ok {
+		t.Fatalf("contract changed_files type = %T, want []string", contractAllowedValues["changed_files"])
+	}
+	if !reflect.DeepEqual(allowedValues, []string{"schema.sql"}) {
+		t.Fatalf("contract changed_files = %#v, want assignment scope", allowedValues)
+	}
 	_, err := llm.DecodeFindings([]byte(`{
 		"schema_version": 1,
 		"agent_id": "agent-1",
@@ -5469,7 +5482,7 @@ func TestReviewerScopesSeparateReadAccessFromExpectedCoverage(t *testing.T) {
 		}]
 	}`), llm.FindingsOptions{
 		KnownAgents:  map[string]bool{"agent-1": true},
-		ChangedFiles: stringSet(reviewerAssignmentScope(llm.SelectedAgent{AllowedFiles: []string{"schema.sql"}}, changed)),
+		ChangedFiles: stringSet(assignmentScope),
 		NewFindingID: findingSequence("scope"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "not in changed files") {

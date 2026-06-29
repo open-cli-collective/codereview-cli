@@ -13,9 +13,9 @@ checkout plus compact review artifacts, then let the orchestrator and
 specialist reviewers inspect and verify code on demand inside bounded
 disposable workspaces.
 
-Current checkout-native review runs against same-repository PR heads. Fork-backed
-heads require additional fetch/auth handling and are outside this contract until
-the pipeline supports them explicitly.
+Pinned base/head review currently runs against same-repository PR heads.
+Fork-backed heads require additional fetch/auth handling before that entrypoint
+can review them explicitly.
 
 ## Runtime Sequence
 
@@ -107,9 +107,9 @@ from the checkout tree ad hoc.
 Checkout-native additions must work with caller-owned artifact roots instead of
 assuming that every selector run is ledger-backed.
 
-Workbench preparation requires base and head refs that can be fetched from the
-same repository remote. Fork-backed heads need explicit fetch and authentication
-handling before they are part of this contract.
+Pinned review entrypoints require base and head refs that can be fetched from
+the same repository remote. Fork-backed heads need explicit fetch and
+authentication handling before pinned review can accept them.
 
 ## Reviewer-Facing Context
 
@@ -246,6 +246,8 @@ commands can run with normal repository context.
 `allowed_files` is an assignment and coverage signal. It is not a sensitivity
 boundary: reviewer prompts, adapters, and operators should assume the selected
 reviewer can inspect the disposable checkout while performing its review.
+Reviewer findings are still scoped to the assignment: `allowed_files` when
+present, otherwise the selected `files`, otherwise all changed files.
 
 ## Adapter Contract
 
