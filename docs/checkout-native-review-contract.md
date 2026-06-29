@@ -73,6 +73,11 @@ Notes:
 - `workbench/reviewers/<reviewer-id>/repo/` is a disposable reviewer checkout.
 - `workbench/scratch/<reviewer-id>/` holds reviewer-owned scratch, temp, and
   cache roots.
+- Reviewer subprocesses receive scratch-local environment paths:
+  - `TMPDIR`, `TMP`, and `TEMP` point at `scratch/<reviewer-id>/tmp`
+  - `GOCACHE` points at `scratch/<reviewer-id>/cache/go-build`
+  - `GOTMPDIR` points at `scratch/<reviewer-id>/tmp/go`
+  - `XDG_CACHE_HOME` points at `scratch/<reviewer-id>/cache/xdg`
 
 The workbench is run-owned, not cache-owned. Shared clone or fetch caches are a
 possible future optimization but are not part of the correctness contract.
@@ -235,6 +240,10 @@ The orchestrator may narrow `allowed_files` for highly specialized reviewers,
 but reviewer workspaces still expose the disposable checkout so verification
 commands can run with normal repository context.
 
+`allowed_files` is an assignment and coverage signal. It is not a sensitivity
+boundary: reviewer prompts, adapters, and operators should assume the selected
+reviewer can inspect the disposable checkout while performing its review.
+
 ## Adapter Contract
 
 Adapters that participate in checkout-native review must expose reviewer
@@ -252,6 +261,12 @@ Reviewer workspace support has modes:
   reviewer workspace inspection and verification commands.
 - `workspace_write`: adapter sandboxing allows writes inside the disposable
   reviewer workspace.
+
+Provider implementations map these modes onto their native controls. Claude CLI
+reviewers run with `Read`, `Write`, and `Bash` tools when a reviewer workspace is
+provided, so deployments must treat reviewer subprocesses as executing inside a
+trusted review workbench. Codex CLI reviewers run with `workspace-write` and the
+reviewer checkout as their working directory.
 
 Unsupported adapters must fail clearly. They must not silently fall back to
 stuffed diffs or full file bodies.

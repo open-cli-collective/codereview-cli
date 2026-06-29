@@ -408,32 +408,10 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		return append(args, "--", claudeBGPositionalPrompt(scratch)), nil
 	case subprocessCodex:
 		workspace := req.ReviewerWorkspace
-		sandbox := "read-only"
-		cwd := scratch
-		args := []string{
-			"exec",
-			"--json",
-			"--ephemeral",
-			"--skip-git-repo-check",
-			"--ignore-user-config",
-			"--ignore-rules",
-			"--sandbox", sandbox,
-			"--cd", cwd,
-		}
+		args := subprocessCodexBaseArgs("read-only", scratch)
 		if workspace != nil {
-			sandbox = "workspace-write"
-			cwd = workspace.RepoDir
-			args = []string{
-				"exec",
-				"--json",
-				"--ephemeral",
-				"--skip-git-repo-check",
-				"--ignore-user-config",
-				"--ignore-rules",
-				"--sandbox", sandbox,
-				"--cd", cwd,
-				"--add-dir", scratch,
-			}
+			args = subprocessCodexBaseArgs("workspace-write", workspace.RepoDir)
+			args = append(args, "--add-dir", scratch)
 		}
 		if req.Model != "" {
 			args = append(args, "--model", req.Model)
@@ -444,6 +422,19 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		return append(args, "--", req.Prompt), nil
 	default:
 		return nil, fmt.Errorf("%w: unknown subprocess adapter %q", ErrUnsafeSubprocessConfig, a.kind)
+	}
+}
+
+func subprocessCodexBaseArgs(sandbox, cwd string) []string {
+	return []string{
+		"exec",
+		"--json",
+		"--ephemeral",
+		"--skip-git-repo-check",
+		"--ignore-user-config",
+		"--ignore-rules",
+		"--sandbox", sandbox,
+		"--cd", cwd,
 	}
 }
 
