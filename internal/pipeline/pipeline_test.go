@@ -3088,7 +3088,7 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 	writeAgent(t, req.Profile.AgentSources[0], "harness", "alpha", "alpha desc", "Review alpha.")
 	writeAgent(t, req.Profile.AgentSources[0], "harness", "beta", "beta desc", "Review beta.")
 	writeAgent(t, req.Profile.AgentSources[0], "harness", "gamma", "gamma desc", "Review gamma.")
-	adapter := &reviewerIsolationAdapter{reviewerBarrier: newReviewerStartBarrier(3)}
+	adapter := &reviewerIsolationAdapter{supportsResume: true, reviewerBarrier: newReviewerStartBarrier(3)}
 
 	result, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
@@ -5846,6 +5846,7 @@ func (a *promptAwareAdapter) Requests() []llm.Request {
 type reviewerIsolationAdapter struct {
 	mu                         sync.Mutex
 	requests                   []llm.Request
+	supportsResume             bool
 	betaAttempts               int
 	betaProviderErr            error
 	betaRetrySawCleanWorkspace bool
@@ -5857,7 +5858,7 @@ func (a *reviewerIsolationAdapter) Name() string {
 }
 
 func (a *reviewerIsolationAdapter) SupportsResume() bool {
-	return false
+	return a.supportsResume
 }
 
 func (a *reviewerIsolationAdapter) ReviewerWorkspaceMode() llm.ReviewerWorkspaceMode {
@@ -5877,7 +5878,7 @@ func (a *reviewerIsolationAdapter) Quota(context.Context) (llm.Quota, bool, erro
 }
 
 func (a *reviewerIsolationAdapter) Resume(context.Context, string, llm.Request) (llm.Stream, error) {
-	return nil, errors.New("resume unsupported")
+	return nil, errors.New("unexpected reviewer resume")
 }
 
 func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (llm.Stream, error) {

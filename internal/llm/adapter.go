@@ -112,8 +112,9 @@ type Request struct {
 	Prompt  string
 	LogPath string
 
-	ReviewerWorkspace *ReviewerWorkspaceRequest
-	OnValidationRetry func(*Request) error
+	ReviewerWorkspace           *ReviewerWorkspaceRequest
+	FreshValidationRetrySession bool
+	OnValidationRetry           func(*Request) error
 }
 
 // Stream is a started LLM request.
@@ -231,8 +232,11 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 		}
 	}
 	retryReq.Prompt = retryPrompt(req.Prompt, decodeErr)
-	retryResumeSessionID := sessionID
-	if strings.TrimSpace(retryResumeSessionID) == "" {
+	retryResumeSessionID := ""
+	if !retryReq.FreshValidationRetrySession {
+		retryResumeSessionID = sessionID
+	}
+	if strings.TrimSpace(retryResumeSessionID) == "" && !retryReq.FreshValidationRetrySession {
 		retryResumeSessionID = resumeSessionID
 	}
 	retrySessionID, retryResponse, err := runOnceWithSession(ctx, adapter, retryResumeSessionID, retryReq)

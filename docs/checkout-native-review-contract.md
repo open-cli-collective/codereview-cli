@@ -250,8 +250,8 @@ Adapters that participate in checkout-native review must expose reviewer
 workspace support with these properties:
 
 - read/search/git-diff style access to the reviewer workspace repo
-- adapter-enforced writes remain inside the disposable reviewer workspace and
-  scratch/temp/cache roots
+- writes target the disposable reviewer workspace and scratch/temp/cache roots;
+  `workspace_write` adapters enforce that boundary through their native sandbox
 - bounded command timeouts
 - bounded tool output
 - explicit failure when the capability is unsupported

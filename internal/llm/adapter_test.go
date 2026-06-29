@@ -87,17 +87,18 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 	})
 
 	t.Run("validation retry hook can replace request state", func(t *testing.T) {
-		adapter := &FakeAdapter{}
+		adapter := &FakeAdapter{SupportsResumeValue: true}
 		adapter.Queue(FakeResult{SessionID: "s1", Response: Response{StructuredOutput: []byte(`{"bad":true}`)}})
 		adapter.Queue(FakeResult{SessionID: "s2", Response: Response{StructuredOutput: []byte(`"ok"`)}})
 
 		called := false
-		_, _, err := RunStructured(context.Background(), adapter, Request{
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "existing-session", Request{
 			Prompt:            "prompt",
 			ReviewerWorkspace: &ReviewerWorkspaceRequest{RepoDir: "first"},
 			OnValidationRetry: func(req *Request) error {
 				called = true
 				req.ReviewerWorkspace = &ReviewerWorkspaceRequest{RepoDir: "retry"}
+				req.FreshValidationRetrySession = true
 				return nil
 			},
 		}, func(data []byte) (string, error) {
@@ -107,20 +108,27 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 			return "ok", nil
 		})
 		if err != nil {
-			t.Fatalf("RunStructured: %v", err)
+			t.Fatalf("RunStructuredWithSessionResume: %v", err)
+		}
+		if result.Value != "ok" {
+			t.Fatalf("value = %q, want ok", result.Value)
 		}
 		if !called {
 			t.Fatal("validation retry hook was not called")
 		}
+		resumes := adapter.Resumes()
+		if len(resumes) != 1 || resumes[0].SessionID != "existing-session" {
+			t.Fatalf("resumes = %#v, want initial resume only", resumes)
+		}
+		if resumes[0].Request.ReviewerWorkspace == nil || resumes[0].Request.ReviewerWorkspace.RepoDir != "first" {
+			t.Fatalf("initial workspace = %#v, want first", resumes[0].Request.ReviewerWorkspace)
+		}
 		requests := adapter.Requests()
-		if len(requests) != 2 {
-			t.Fatalf("requests = %d, want initial and retry", len(requests))
+		if len(requests) != 1 {
+			t.Fatalf("requests = %d, want retry start without resume", len(requests))
 		}
-		if requests[0].ReviewerWorkspace == nil || requests[0].ReviewerWorkspace.RepoDir != "first" {
-			t.Fatalf("initial workspace = %#v, want first", requests[0].ReviewerWorkspace)
-		}
-		if requests[1].ReviewerWorkspace == nil || requests[1].ReviewerWorkspace.RepoDir != "retry" {
-			t.Fatalf("retry workspace = %#v, want retry", requests[1].ReviewerWorkspace)
+		if requests[0].ReviewerWorkspace == nil || requests[0].ReviewerWorkspace.RepoDir != "retry" || !requests[0].FreshValidationRetrySession {
+			t.Fatalf("retry request = %#v, want retry workspace with fresh session", requests[0])
 		}
 	})
 

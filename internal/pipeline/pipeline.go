@@ -3205,6 +3205,7 @@ func buildReviewerWorkspaceRequest(ctx context.Context, opts Options, artifacts 
 			}
 			currentCleanup = retryCleanup
 			req.ReviewerWorkspace = &retryWorkspace
+			req.FreshValidationRetrySession = true
 			return nil
 		},
 	}, cleanupCurrent, nil
