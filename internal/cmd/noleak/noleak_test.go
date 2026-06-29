@@ -802,7 +802,6 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 		RetentionManualOnly:       runtimeOpts.RetentionManualOnly,
 		MaxAgents:                 runtimeOpts.MaxAgents,
 		MaxConcurrency:            runtimeOpts.MaxConcurrency,
-		AutoUnlockWorkbenchOnExit: true,
 		GitCommand:                noLeakGitCommand(h.prRef),
 		ResolveRepoRoot:           func(context.Context) (string, error) { return h.workbenchRepoDir, nil },
 	}

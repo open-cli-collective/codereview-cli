@@ -488,62 +488,44 @@ func TestFakeAdapterQuotaAndResume(t *testing.T) {
 	}
 }
 
-func TestCheckoutAccessCapabilityHelpers(t *testing.T) {
-	unsupported := &FakeAdapter{NameValue: "fake-unsupported", CheckoutAccessLevelSet: true}
-	if AdapterCheckoutAccessLevel(unsupported) != CheckoutAccessNone {
-		t.Fatalf("AdapterCheckoutAccessLevel = %s, want %s", AdapterCheckoutAccessLevel(unsupported), CheckoutAccessNone)
+func TestReviewerWorkspaceCapabilityHelpers(t *testing.T) {
+	unsupported := &FakeAdapter{NameValue: "fake-unsupported", ReviewerWorkspaceModeSet: true}
+	if AdapterReviewerWorkspaceMode(unsupported) != ReviewerWorkspaceNone {
+		t.Fatalf("AdapterReviewerWorkspaceMode = %s, want %s", AdapterReviewerWorkspaceMode(unsupported), ReviewerWorkspaceNone)
 	}
-	if SupportsCheckoutAccess(unsupported) {
-		t.Fatal("SupportsCheckoutAccess = true, want false")
+	if SupportsReviewerWorkspace(unsupported) {
+		t.Fatal("SupportsReviewerWorkspace = true, want false")
 	}
-	if SupportsCheckoutReadonly(unsupported) {
-		t.Fatal("SupportsCheckoutReadonly = true, want false")
-	}
-	if err := RequireCheckoutAccess(unsupported); !errors.Is(err, ErrCheckoutAccessUnsupported) || !strings.Contains(err.Error(), "fake-unsupported") {
-		t.Fatalf("RequireCheckoutAccess unsupported error = %v, want missing capability with adapter name", err)
-	}
-	if err := RequireCheckoutReadonly(unsupported); !errors.Is(err, ErrCheckoutReadonlyUnsupported) || !strings.Contains(err.Error(), "fake-unsupported") {
-		t.Fatalf("RequireCheckoutReadonly unsupported error = %v, want missing capability with adapter name", err)
+	if err := RequireReviewerWorkspace(unsupported); !errors.Is(err, ErrReviewerWorkspaceUnsupported) || !strings.Contains(err.Error(), "fake-unsupported") {
+		t.Fatalf("RequireReviewerWorkspace unsupported error = %v, want missing capability with adapter name", err)
 	}
 
-	bounded := &FakeAdapter{NameValue: "fake-bounded", CheckoutAccessLevelSet: true, CheckoutAccessLevelValue: CheckoutAccessPermissionBounded}
-	if AdapterCheckoutAccessLevel(bounded) != CheckoutAccessPermissionBounded {
-		t.Fatalf("AdapterCheckoutAccessLevel = %s, want %s", AdapterCheckoutAccessLevel(bounded), CheckoutAccessPermissionBounded)
+	bounded := &FakeAdapter{NameValue: "fake-bounded", ReviewerWorkspaceModeSet: true, ReviewerWorkspaceModeValue: ReviewerWorkspacePermissionBounded}
+	if AdapterReviewerWorkspaceMode(bounded) != ReviewerWorkspacePermissionBounded {
+		t.Fatalf("AdapterReviewerWorkspaceMode = %s, want %s", AdapterReviewerWorkspaceMode(bounded), ReviewerWorkspacePermissionBounded)
 	}
-	if !SupportsCheckoutAccess(bounded) {
-		t.Fatal("SupportsCheckoutAccess bounded = false, want true")
+	if !SupportsReviewerWorkspace(bounded) {
+		t.Fatal("SupportsReviewerWorkspace bounded = false, want true")
 	}
-	if SupportsCheckoutReadonly(bounded) {
-		t.Fatal("SupportsCheckoutReadonly bounded = true, want false")
-	}
-	if err := RequireCheckoutAccess(bounded); err != nil {
-		t.Fatalf("RequireCheckoutAccess bounded: %v", err)
-	}
-	if err := RequireCheckoutReadonly(bounded); !errors.Is(err, ErrCheckoutReadonlyUnsupported) || !strings.Contains(err.Error(), "fake-bounded") {
-		t.Fatalf("RequireCheckoutReadonly bounded error = %v, want missing readonly with adapter name", err)
+	if err := RequireReviewerWorkspace(bounded); err != nil {
+		t.Fatalf("RequireReviewerWorkspace bounded: %v", err)
 	}
 
-	supported := &FakeAdapter{NameValue: "fake-supported", CheckoutAccessLevelSet: true, CheckoutAccessLevelValue: CheckoutAccessReadonly}
-	if AdapterCheckoutAccessLevel(supported) != CheckoutAccessReadonly {
-		t.Fatalf("AdapterCheckoutAccessLevel = %s, want %s", AdapterCheckoutAccessLevel(supported), CheckoutAccessReadonly)
+	supported := &FakeAdapter{NameValue: "fake-supported", ReviewerWorkspaceModeSet: true, ReviewerWorkspaceModeValue: ReviewerWorkspaceWrite}
+	if AdapterReviewerWorkspaceMode(supported) != ReviewerWorkspaceWrite {
+		t.Fatalf("AdapterReviewerWorkspaceMode = %s, want %s", AdapterReviewerWorkspaceMode(supported), ReviewerWorkspaceWrite)
 	}
-	if !SupportsCheckoutAccess(supported) {
-		t.Fatal("SupportsCheckoutAccess readonly = false, want true")
+	if !SupportsReviewerWorkspace(supported) {
+		t.Fatal("SupportsReviewerWorkspace = false, want true")
 	}
-	if !SupportsCheckoutReadonly(supported) {
-		t.Fatal("SupportsCheckoutReadonly = false, want true")
-	}
-	if err := RequireCheckoutAccess(supported); err != nil {
-		t.Fatalf("RequireCheckoutAccess supported: %v", err)
-	}
-	if err := RequireCheckoutReadonly(supported); err != nil {
-		t.Fatalf("RequireCheckoutReadonly supported: %v", err)
+	if err := RequireReviewerWorkspace(supported); err != nil {
+		t.Fatalf("RequireReviewerWorkspace supported: %v", err)
 	}
 
 	got, _, err := RunStructured(context.Background(), unsupported, Request{
 		Prompt: "prompt",
-		CheckoutAccess: &CheckoutAccessRequest{
-			RootDir:            "/tmp/repo",
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir:            "/tmp/repo",
 			ScratchDir:         "/tmp/scratch",
 			MaxToolOutputBytes: 1024,
 		},
@@ -553,38 +535,18 @@ func TestCheckoutAccessCapabilityHelpers(t *testing.T) {
 	if got != "" {
 		t.Fatalf("RunStructured result = %q, want empty on capability failure", got)
 	}
-	if !errors.Is(err, ErrCheckoutAccessUnsupported) || !strings.Contains(err.Error(), "fake-unsupported") {
+	if !errors.Is(err, ErrReviewerWorkspaceUnsupported) || !strings.Contains(err.Error(), "fake-unsupported") {
 		t.Fatalf("RunStructured error = %v, want missing capability with adapter name", err)
 	}
 	if len(unsupported.Requests()) != 0 || len(unsupported.Resumes()) != 0 {
 		t.Fatalf("unsupported adapter should not be invoked: starts=%d resumes=%d", len(unsupported.Requests()), len(unsupported.Resumes()))
 	}
 
-	got, _, err = RunStructured(context.Background(), bounded, Request{
-		Prompt: "prompt",
-		CheckoutReadonly: &CheckoutReadonlyRequest{
-			RootDir:            "/tmp/repo",
-			ScratchDir:         "/tmp/scratch",
-			MaxToolOutputBytes: 1024,
-		},
-	}, func(data []byte) (string, error) {
-		return string(data), nil
-	})
-	if got != "" {
-		t.Fatalf("RunStructured legacy readonly result = %q, want empty on capability failure", got)
-	}
-	if !errors.Is(err, ErrCheckoutReadonlyUnsupported) || !strings.Contains(err.Error(), "fake-bounded") {
-		t.Fatalf("RunStructured legacy readonly error = %v, want missing readonly with adapter name", err)
-	}
-	if len(bounded.Requests()) != 0 {
-		t.Fatalf("bounded adapter should not be invoked for legacy readonly: starts=%d", len(bounded.Requests()))
-	}
-
 	bounded.Queue(FakeResult{Response: Response{StructuredOutput: []byte("ok")}})
 	got, _, err = RunStructured(context.Background(), bounded, Request{
 		Prompt: "prompt",
-		CheckoutAccess: &CheckoutAccessRequest{
-			RootDir:            "/tmp/repo",
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir:            "/tmp/repo",
 			ScratchDir:         "/tmp/scratch",
 			MaxToolOutputBytes: 1024,
 		},
@@ -592,7 +554,7 @@ func TestCheckoutAccessCapabilityHelpers(t *testing.T) {
 		return string(data), nil
 	})
 	if err != nil {
-		t.Fatalf("RunStructured bounded checkout access: %v", err)
+		t.Fatalf("RunStructured reviewer workspace: %v", err)
 	}
 	if got != "ok" {
 		t.Fatalf("RunStructured bounded result = %q, want ok", got)

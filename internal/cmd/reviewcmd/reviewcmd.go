@@ -887,20 +887,19 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 	taskProgress := newPipelineTaskProgress(logger, command)
 	liveProvider := runtimeProvider{read: repoProvider, write: postingProvider}
 	pipelineOpts := pipeline.Options{
-		Provider:                  repoProvider,
-		Adapter:                   adapter,
-		Store:                     ledgerStore,
-		NamedSessions:             ledgerStore,
-		Layout:                    layout,
-		Warnings:                  warnings,
-		TaskProgress:              taskProgress,
-		MaxAgents:                 runtimeOpts.MaxAgents,
-		MaxConcurrency:            runtimeOpts.MaxConcurrency,
-		Retention:                 runtimeOpts.Retention,
-		RetentionManualOnly:       runtimeOpts.RetentionManualOnly,
-		AutoUnlockWorkbenchOnExit: runtimeOpts.AutoUnlockWorkbenchOnExit,
-		ResolveRepoRoot:           runtimeOpts.ResolveRepoRoot,
-		GitCommand:                runtimeOpts.GitCommand,
+		Provider:            repoProvider,
+		Adapter:             adapter,
+		Store:               ledgerStore,
+		NamedSessions:       ledgerStore,
+		Layout:              layout,
+		Warnings:            warnings,
+		TaskProgress:        taskProgress,
+		MaxAgents:           runtimeOpts.MaxAgents,
+		MaxConcurrency:      runtimeOpts.MaxConcurrency,
+		Retention:           runtimeOpts.Retention,
+		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
+		ResolveRepoRoot:     runtimeOpts.ResolveRepoRoot,
+		GitCommand:          runtimeOpts.GitCommand,
 	}
 	return reviewRunner{
 		pipeline: pipelineOpts,
@@ -1034,20 +1033,12 @@ func (a *lazyAdapter) SupportsResume() bool {
 	return adapter.SupportsResume()
 }
 
-func (a *lazyAdapter) CheckoutAccessLevel() llm.CheckoutAccessLevel {
+func (a *lazyAdapter) ReviewerWorkspaceMode() llm.ReviewerWorkspaceMode {
 	adapter, err := a.get()
 	if err != nil {
-		return llm.CheckoutAccessNone
+		return llm.ReviewerWorkspaceNone
 	}
-	return llm.AdapterCheckoutAccessLevel(adapter)
-}
-
-func (a *lazyAdapter) SupportsCheckoutReadonly() bool {
-	adapter, err := a.get()
-	if err != nil {
-		return false
-	}
-	return llm.SupportsCheckoutReadonly(adapter)
+	return llm.AdapterReviewerWorkspaceMode(adapter)
 }
 
 func (a *lazyAdapter) SupportsCacheAccounting() bool {

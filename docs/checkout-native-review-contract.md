@@ -10,7 +10,8 @@ issues and should stay aligned with the durable LLM task model described in
 Large pull requests must be reviewable without stuffing full diffs or full file
 bodies into LLM prompts. The review harness should instead prepare a pinned
 checkout plus compact review artifacts, then let the orchestrator and
-specialist reviewers inspect code on demand through bounded read-only tools.
+specialist reviewers inspect and verify code on demand inside bounded
+disposable workspaces.
 
 ## Runtime Sequence
 
@@ -19,11 +20,11 @@ The runtime sequence for checkout-native review is:
 1. Fetch raw PR context and repo guidance from the base branch.
 2. Run the existing gate and override checks.
 3. Prepare review inputs:
-   - pinned read-only workbench
+   - clean pinned workbench
    - durable discussion summary
    - final dossier artifacts
 4. Run orchestrator selection from dossier/workbench inputs.
-5. Run specialist reviewers against the read-only checkout.
+5. Run specialist reviewers against per-reviewer disposable workspaces.
 6. Run rollup from findings, reviewer failures, and inspected coverage.
 
 This order is load-bearing. Discussion summarization happens before final
@@ -50,7 +51,13 @@ runs/<run-id>/
     index.json
   workbench/
     repo/
+    reviewers/
+      <reviewer-id>/
+        repo/
     scratch/
+      <reviewer-id>/
+        cache/
+        tmp/
     metadata.json
 ```
 
@@ -62,9 +69,10 @@ Notes:
 - `dossier/summary/` holds durable normalized discussion artifacts.
 - `dossier/final/` holds the reviewer-facing dossier files used by the
   orchestrator and specialists.
-- `workbench/repo/` is the pinned checkout at the PR head SHA.
-- `workbench/scratch/` is the only writable directory that reviewer adapters may
-  use.
+- `workbench/repo/` is a clean pinned checkout at the PR head SHA.
+- `workbench/reviewers/<reviewer-id>/repo/` is a disposable reviewer checkout.
+- `workbench/scratch/<reviewer-id>/` holds reviewer-owned scratch, temp, and
+  cache roots.
 
 The workbench is run-owned, not cache-owned. Shared clone or fetch caches are a
 possible future optimization but are not part of the correctness contract.
@@ -118,13 +126,13 @@ Reviewer-facing dossier context must not include:
 - full base or head file bodies by default
 - stale process chatter that does not improve review judgment
 
-The current `needs_full_file_content` flag is legacy prompt behavior. It should
-not participate in checkout-native reviewer execution.
+Reviewer execution must not request stuffed full-file content in the prompt
+payload.
 
 ## Reviewer Prompt Contract
 
-Checkout-native specialist reviewers receive a compact prompt contract plus
-bounded checkout access. The prompt payload is reviewer-facing context only:
+Checkout-native specialist reviewers receive a compact prompt contract plus a
+prepared reviewer workspace. The prompt payload is reviewer-facing context only:
 
 - assignment metadata, including selected files and any `allowed_files`
 - reviewer instructions
@@ -220,34 +228,33 @@ Assignments may include:
 
 `allowed_files` semantics are:
 
-- empty: reviewer may inspect the full pinned checkout
-- non-empty: reviewer is constrained to the listed paths
+- empty: reviewer assignment is broad over the changed-file set
+- non-empty: reviewer assignment is focused on the listed paths
 
 The orchestrator may narrow `allowed_files` for highly specialized reviewers,
-but the default posture is full-checkout visibility.
+but reviewer workspaces still expose the disposable checkout so verification
+commands can run with normal repository context.
 
 ## Adapter Contract
 
-Adapters that participate in checkout-native review must expose checkout access
-with these properties:
+Adapters that participate in checkout-native review must expose reviewer
+workspace support with these properties:
 
-- read/search/git-diff style access to `workbench/repo/`
-- any required writes are directed to `workbench/scratch/`
+- read/search/git-diff style access to the reviewer workspace repo
+- writes remain inside the disposable reviewer workspace and scratch/temp/cache roots
 - bounded command timeouts
 - bounded tool output
 - explicit failure when the capability is unsupported
 
-Checkout access has levels:
+Reviewer workspace support has modes:
 
 - `permission_bounded`: adapter/tool permissions and prompt contract allow
-  checkout inspection and direct writes to scratch, but do not provide an
-  adapter-enforced readonly guarantee for the checkout.
-- `readonly`: the adapter enforces that checkout inspection cannot write to the
-  checkout and writes are constrained away from the checkout.
+  reviewer workspace inspection and verification commands.
+- `workspace_write`: adapter sandboxing allows writes inside the disposable
+  reviewer workspace.
 
-`readonly` satisfies the weaker checkout-access requirement. Unsupported
-adapters must fail clearly. They must not silently fall back to stuffed diffs or
-full file bodies.
+Unsupported adapters must fail clearly. They must not silently fall back to
+stuffed diffs or full file bodies.
 
 ## Reviewer Output Contract
 
@@ -259,15 +266,14 @@ Specialist reviewers must return structured output that includes:
 - `constraints`, listing material scope, context, or tool constraints
 
 Rollup receives compact reviewer coverage summaries derived from those fields.
-`allowed_files` is intentional scope narrowing, not incomplete coverage by
-itself. Isolated reviewer failures, skipped files, missing reviewer results, and
-unassigned changed files are incomplete coverage and must not turn into a clean
-approval silently.
+`allowed_files` is assignment focus, not incomplete coverage by itself. Isolated
+reviewer failures, skipped files, missing reviewer results, and unassigned
+changed files are incomplete coverage and must not turn into a clean approval
+silently.
 
 Coverage uses two related scopes:
 
-- readable files: `allowed_files` when present, otherwise all changed files in
-  the workbench
+- readable files: all changed files in the workbench
 - assignment scope: `allowed_files` when present, otherwise `files` when the
   orchestrator supplied them, otherwise all changed files
 

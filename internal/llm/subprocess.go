@@ -118,22 +118,16 @@ func (a *SubprocessAdapter) Name() string { return string(a.kind) }
 // SupportsResume reports whether subprocess session resume is implemented.
 func (a *SubprocessAdapter) SupportsResume() bool { return a.kind == subprocessClaude }
 
-// CheckoutAccessLevel reports the subprocess adapter's checkout-native access level.
-func (a *SubprocessAdapter) CheckoutAccessLevel() CheckoutAccessLevel {
+// ReviewerWorkspaceMode reports the subprocess adapter's reviewer workspace mode.
+func (a *SubprocessAdapter) ReviewerWorkspaceMode() ReviewerWorkspaceMode {
 	switch a.kind {
 	case subprocessClaude:
-		return CheckoutAccessPermissionBounded
+		return ReviewerWorkspacePermissionBounded
 	case subprocessCodex:
-		return CheckoutAccessReadonly
+		return ReviewerWorkspaceWrite
 	default:
-		return CheckoutAccessNone
+		return ReviewerWorkspaceNone
 	}
-}
-
-// SupportsCheckoutReadonly reports whether subprocess adapter can safely mount
-// a caller-owned read-only checkout and keep writes inside caller-owned scratch.
-func (a *SubprocessAdapter) SupportsCheckoutReadonly() bool {
-	return a.CheckoutAccessLevel() == CheckoutAccessReadonly
 }
 
 // SupportsCacheAccounting reports whether cache usage metrics are guaranteed.
@@ -199,9 +193,7 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 	cmd.Cancel = func() error {
 		return procGroup.kill(cmd)
 	}
-	if len(a.env) > 0 {
-		cmd.Env = append(os.Environ(), a.env...)
-	}
+	cmd.Env = a.processEnv(req)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -246,7 +238,8 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 		cancel:       cancel,
 		done:         make(chan struct{}),
 		logFile:      logFile,
-		logBytesLeft: checkoutReadonlyLogBytes(req),
+		logBytesLeft: reviewerWorkspaceLogBytes(req),
+		allowToolUse: req.ReviewerWorkspace != nil,
 		cleanup:      cleanup,
 		processGroup: procGroup,
 	}
@@ -293,7 +286,11 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
 	// #nosec G204 -- subprocess adapters intentionally launch configured CLI binaries after validating adapter-owned safety args.
 	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
-	cmd.Dir = workDir
+	launchDir := workDir
+	if req.ReviewerWorkspace != nil {
+		launchDir = req.ReviewerWorkspace.RepoDir
+	}
+	cmd.Dir = launchDir
 	procGroup, err := newProcessGroup(cmd)
 	if err != nil {
 		cancel()
@@ -303,9 +300,7 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 	cmd.Cancel = func() error {
 		return procGroup.kill(cmd)
 	}
-	if len(a.env) > 0 {
-		cmd.Env = append(os.Environ(), a.env...)
-	}
+	cmd.Env = a.processEnv(req)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -350,12 +345,20 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 		cancel:       cancel,
 		done:         make(chan struct{}),
 		logFile:      logFile,
-		logBytesLeft: checkoutReadonlyLogBytes(req),
+		logBytesLeft: reviewerWorkspaceLogBytes(req),
 		cleanup:      cleanup,
 		processGroup: procGroup,
 	}
 	go stream.runClaudeBG(procCtx, a, cmd, stdout, stderr, scratch, workDir)
 	return stream, nil
+}
+
+func (a *SubprocessAdapter) processEnv(req Request) []string {
+	env := append(os.Environ(), a.env...)
+	if req.ReviewerWorkspace != nil {
+		env = append(env, req.ReviewerWorkspace.Env...)
+	}
+	return env
 }
 
 // Resume starts a subprocess request from an existing provider session when the
@@ -380,14 +383,18 @@ func (a *SubprocessAdapter) buildArgs(req Request, scratch string) ([]string, er
 func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, resumeSessionID string) ([]string, error) {
 	switch a.kind {
 	case subprocessClaude:
+		tools := "Read,Write"
+		if req.ReviewerWorkspace != nil {
+			tools = "Read,Write,Bash"
+		}
 		args := []string{
 			"--bg",
-			"--tools", "Read,Write",
+			"--tools", tools,
 			"--permission-mode", "acceptEdits",
 			"--add-dir", scratch,
 		}
-		if access := requestCheckoutAccess(req); access != nil {
-			args = append(args, "--add-dir", access.RootDir)
+		if workspace := req.ReviewerWorkspace; workspace != nil {
+			args = append(args, "--add-dir", workspace.RepoDir)
 		}
 		if resumeSessionID != "" {
 			args = append(args, "--resume", resumeSessionID)
@@ -400,6 +407,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		}
 		return append(args, "--", claudeBGPositionalPrompt(scratch)), nil
 	case subprocessCodex:
+		workspace := req.ReviewerWorkspace
+		sandbox := "read-only"
+		cwd := scratch
 		args := []string{
 			"exec",
 			"--json",
@@ -407,11 +417,23 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 			"--skip-git-repo-check",
 			"--ignore-user-config",
 			"--ignore-rules",
-			"--sandbox", "read-only",
-			"--cd", scratch,
+			"--sandbox", sandbox,
+			"--cd", cwd,
 		}
-		if access := requestCheckoutAccess(req); access != nil {
-			args = append(args, "--add-dir", access.RootDir)
+		if workspace != nil {
+			sandbox = "workspace-write"
+			cwd = workspace.RepoDir
+			args = []string{
+				"exec",
+				"--json",
+				"--ephemeral",
+				"--skip-git-repo-check",
+				"--ignore-user-config",
+				"--ignore-rules",
+				"--sandbox", sandbox,
+				"--cd", cwd,
+				"--add-dir", scratch,
+			}
 		}
 		if req.Model != "" {
 			args = append(args, "--model", req.Model)
@@ -452,8 +474,12 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		if !containsFlag(checkedArgs, "--bg") {
 			return fmt.Errorf("%w: claude_cli must use background jobs", ErrUnsafeSubprocessConfig)
 		}
+		requiredTools := "Read,Write"
+		if req.ReviewerWorkspace != nil {
+			requiredTools = "Read,Write,Bash"
+		}
 		required := map[string]string{
-			"--tools":           "Read,Write",
+			"--tools":           requiredTools,
 			"--permission-mode": "acceptEdits",
 		}
 		for flag, value := range required {
@@ -462,27 +488,33 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 				return fmt.Errorf("%w: missing %s %q", ErrUnsafeSubprocessConfig, flag, value)
 			}
 		}
-		if err := validateClaudeAddDirs(checkedArgs, scratch, requestCheckoutAccess(req)); err != nil {
+		if err := validateClaudeAddDirs(checkedArgs, scratch, req.ReviewerWorkspace); err != nil {
 			return err
 		}
 	case subprocessCodex:
-		access := requestCheckoutAccess(req)
-		if access == nil && containsFlag(checkedArgs, "--add-dir") {
+		workspace := req.ReviewerWorkspace
+		if workspace == nil && containsFlag(checkedArgs, "--add-dir") {
 			return fmt.Errorf("%w: unsafe tool-enabling flag present", ErrUnsafeSubprocessConfig)
 		}
 		if len(checkedArgs) == 0 || checkedArgs[0] != "exec" {
 			return fmt.Errorf("%w: codex_cli must use exec", ErrUnsafeSubprocessConfig)
 		}
-		if flagValue(checkedArgs, "--sandbox") != "read-only" {
-			return fmt.Errorf("%w: codex_cli must use read-only sandbox", ErrUnsafeSubprocessConfig)
+		wantSandbox := "read-only"
+		wantCWD := scratch
+		if workspace != nil {
+			wantSandbox = "workspace-write"
+			wantCWD = workspace.RepoDir
 		}
-		if flagValue(checkedArgs, "--cd") != scratch {
-			return fmt.Errorf("%w: codex_cli must use scratch cwd", ErrUnsafeSubprocessConfig)
+		if flagValue(checkedArgs, "--sandbox") != wantSandbox {
+			return fmt.Errorf("%w: codex_cli must use %s sandbox", ErrUnsafeSubprocessConfig, wantSandbox)
 		}
-		if access != nil {
+		if flagValue(checkedArgs, "--cd") != wantCWD {
+			return fmt.Errorf("%w: codex_cli must use configured cwd", ErrUnsafeSubprocessConfig)
+		}
+		if workspace != nil {
 			addDir, ok := flagValueOK(checkedArgs, "--add-dir")
-			if !ok || !sameCleanPath(addDir, access.RootDir) {
-				return fmt.Errorf("%w: codex_cli must add only the checkout-readonly root", ErrUnsafeSubprocessConfig)
+			if !ok || !sameCleanPath(addDir, scratch) {
+				return fmt.Errorf("%w: codex_cli must add only the invocation scratch dir", ErrUnsafeSubprocessConfig)
 			}
 		}
 		for _, flag := range []string{"--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
@@ -494,21 +526,21 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 	return nil
 }
 
-func validateClaudeAddDirs(args []string, scratch string, access *CheckoutAccessRequest) error {
+func validateClaudeAddDirs(args []string, scratch string, workspace *ReviewerWorkspaceRequest) error {
 	addDirs := flagValues(args, "--add-dir")
-	if access == nil {
+	if workspace == nil {
 		if len(addDirs) != 1 || !sameCleanPath(addDirs[0], scratch) {
 			return fmt.Errorf("%w: claude_cli must restrict add-dir to scratch dir", ErrUnsafeSubprocessConfig)
 		}
 		return nil
 	}
-	if strings.TrimSpace(access.RootDir) == "" {
-		return fmt.Errorf("%w: checkout-readonly root dir is required", ErrUnsafeSubprocessConfig)
+	if strings.TrimSpace(workspace.RepoDir) == "" {
+		return fmt.Errorf("%w: reviewer workspace repo dir is required", ErrUnsafeSubprocessConfig)
 	}
 	if len(addDirs) != 2 {
-		return fmt.Errorf("%w: claude_cli checkout access requires exactly scratch and checkout add-dir roots", ErrUnsafeSubprocessConfig)
+		return fmt.Errorf("%w: claude_cli reviewer workspace requires exactly scratch and repo add-dir roots", ErrUnsafeSubprocessConfig)
 	}
-	want := []string{scratch, access.RootDir}
+	want := []string{scratch, workspace.RepoDir}
 	seen := make([]bool, len(want))
 	for _, addDir := range addDirs {
 		matched := -1
@@ -519,42 +551,50 @@ func validateClaudeAddDirs(args []string, scratch string, access *CheckoutAccess
 			}
 		}
 		if matched == -1 {
-			return fmt.Errorf("%w: claude_cli checkout access add-dir %q is outside scratch and checkout roots", ErrUnsafeSubprocessConfig, addDir)
+			return fmt.Errorf("%w: claude_cli reviewer workspace add-dir %q is outside scratch and repo roots", ErrUnsafeSubprocessConfig, addDir)
 		}
 		if seen[matched] {
-			return fmt.Errorf("%w: claude_cli checkout access duplicate add-dir %q", ErrUnsafeSubprocessConfig, addDir)
+			return fmt.Errorf("%w: claude_cli reviewer workspace duplicate add-dir %q", ErrUnsafeSubprocessConfig, addDir)
 		}
 		seen[matched] = true
 	}
 	for i, ok := range seen {
 		if !ok {
-			return fmt.Errorf("%w: claude_cli checkout access missing add-dir %q", ErrUnsafeSubprocessConfig, want[i])
+			return fmt.Errorf("%w: claude_cli reviewer workspace missing add-dir %q", ErrUnsafeSubprocessConfig, want[i])
 		}
 	}
 	return nil
 }
 
 func (a *SubprocessAdapter) invocationScratchDir(req Request) (string, func() error, error) {
-	access := requestCheckoutAccess(req)
-	if access == nil {
+	workspace := req.ReviewerWorkspace
+	if workspace == nil {
 		return a.scratchDirFactory()
 	}
-	if err := requireRequestCheckoutCapability(a, req); err != nil {
+	if err := RequireReviewerWorkspace(a); err != nil {
 		return "", nil, err
 	}
-	root := strings.TrimSpace(access.ScratchDir)
+	root := strings.TrimSpace(workspace.ScratchDir)
 	if root == "" {
-		return "", nil, fmt.Errorf("%w: checkout-readonly scratch dir is required", ErrUnsafeSubprocessConfig)
+		return "", nil, fmt.Errorf("%w: reviewer workspace scratch dir is required", ErrUnsafeSubprocessConfig)
 	}
-	if strings.TrimSpace(access.RootDir) == "" {
-		return "", nil, fmt.Errorf("%w: checkout-readonly root dir is required", ErrUnsafeSubprocessConfig)
+	if strings.TrimSpace(workspace.RepoDir) == "" {
+		return "", nil, fmt.Errorf("%w: reviewer workspace repo dir is required", ErrUnsafeSubprocessConfig)
+	}
+	for _, dir := range []string{workspace.ScratchDir, workspace.TempDir, workspace.CacheDir} {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", nil, fmt.Errorf("llm subprocess: create reviewer workspace dir: %w", err)
+		}
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
-		return "", nil, fmt.Errorf("llm subprocess: create checkout-readonly scratch root: %w", err)
+		return "", nil, fmt.Errorf("llm subprocess: create reviewer workspace scratch root: %w", err)
 	}
 	scratch, err := os.MkdirTemp(root, "llm-subprocess-*")
 	if err != nil {
-		return "", nil, fmt.Errorf("llm subprocess: create checkout-readonly scratch dir: %w", err)
+		return "", nil, fmt.Errorf("llm subprocess: create reviewer workspace scratch dir: %w", err)
 	}
 	return scratch, func() error { return os.RemoveAll(scratch) }, nil
 }
@@ -570,6 +610,7 @@ type subprocessStream struct {
 	logFile      *os.File
 	logBytesLeft int
 	logCapped    bool
+	allowToolUse bool
 	cleanup      func() error
 	processGroup *processGroup
 }
@@ -737,7 +778,7 @@ func (s *subprocessStream) scanStdout(stdout io.Reader) scanResult {
 		if event.sessionID != "" {
 			s.setSessionID(event.sessionID)
 		}
-		if event.toolUse {
+		if event.toolUse && !s.allowToolUse {
 			s.cancel()
 			result.err = ErrToolUse
 			return result
@@ -765,7 +806,7 @@ func (w subprocessLogWriter) Write(p []byte) (int, error) {
 	}
 	if w.stream.logBytesLeft == 0 {
 		if !w.stream.logCapped {
-			if _, err := w.stream.logFile.Write([]byte("warning: checkout-readonly tool output cap reached; further subprocess logs truncated\n")); err != nil {
+			if _, err := w.stream.logFile.Write([]byte("warning: reviewer workspace tool output cap reached; further subprocess logs truncated\n")); err != nil {
 				return 0, err
 			}
 			w.stream.logCapped = true
@@ -781,7 +822,7 @@ func (w subprocessLogWriter) Write(p []byte) (int, error) {
 		w.stream.logBytesLeft -= n
 	}
 	if w.stream.logBytesLeft == 0 && !w.stream.logCapped {
-		if _, writeErr := w.stream.logFile.Write([]byte("warning: checkout-readonly tool output cap reached; further subprocess logs truncated\n")); writeErr != nil && err == nil {
+		if _, writeErr := w.stream.logFile.Write([]byte("warning: reviewer workspace tool output cap reached; further subprocess logs truncated\n")); writeErr != nil && err == nil {
 			err = writeErr
 		}
 		w.stream.logCapped = true
@@ -831,18 +872,18 @@ func (s *subprocessStream) setSessionID(id string) {
 	}
 }
 
-func checkoutReadonlyLogBytes(req Request) int {
-	access := requestCheckoutAccess(req)
-	if access == nil {
+func reviewerWorkspaceLogBytes(req Request) int {
+	workspace := req.ReviewerWorkspace
+	if workspace == nil {
 		return logBytesUnlimited
 	}
-	if access.MaxToolOutputBytes == logBytesUnlimited {
+	if workspace.MaxToolOutputBytes == logBytesUnlimited {
 		return logBytesUnlimited
 	}
-	if access.MaxToolOutputBytes < 0 {
+	if workspace.MaxToolOutputBytes < 0 {
 		return 0
 	}
-	return access.MaxToolOutputBytes
+	return workspace.MaxToolOutputBytes
 }
 
 type subprocessEvent struct {

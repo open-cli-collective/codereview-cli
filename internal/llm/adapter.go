@@ -32,114 +32,77 @@ type Adapter interface {
 	Resume(context.Context, string, Request) (Stream, error)
 }
 
-// CheckoutAccessLevel identifies how strongly an adapter can constrain checkout
-// access for checkout-native review.
-type CheckoutAccessLevel string
+// ReviewerWorkspaceMode identifies how an adapter can use a prepared reviewer
+// workspace.
+type ReviewerWorkspaceMode string
 
 const (
-	// CheckoutAccessNone means the adapter cannot inspect a caller-provided checkout.
-	CheckoutAccessNone CheckoutAccessLevel = "none"
-	// CheckoutAccessPermissionBounded means the adapter can inspect a checkout
-	// through adapter/tool permissions, without an OS-level readonly guarantee.
-	CheckoutAccessPermissionBounded CheckoutAccessLevel = "permission_bounded"
-	// CheckoutAccessReadonly means the adapter can inspect a checkout with writes
-	// constrained away from the checkout by adapter-enforced sandboxing.
-	CheckoutAccessReadonly CheckoutAccessLevel = "readonly"
+	// ReviewerWorkspaceNone means the adapter cannot inspect a caller-provided workspace.
+	ReviewerWorkspaceNone ReviewerWorkspaceMode = "none"
+	// ReviewerWorkspacePermissionBounded means the adapter can inspect a workspace
+	// through adapter/tool permissions.
+	ReviewerWorkspacePermissionBounded ReviewerWorkspaceMode = "permission_bounded"
+	// ReviewerWorkspaceWrite means the adapter can run against a writable
+	// disposable workspace.
+	ReviewerWorkspaceWrite ReviewerWorkspaceMode = "workspace_write"
 )
 
-// CheckoutAccessCapable reports the adapter's checkout-native access level.
-type CheckoutAccessCapable interface {
-	CheckoutAccessLevel() CheckoutAccessLevel
+// ReviewerWorkspaceCapable reports the adapter's reviewer workspace support.
+type ReviewerWorkspaceCapable interface {
+	ReviewerWorkspaceMode() ReviewerWorkspaceMode
 }
 
-// CheckoutReadonlyCapable reports whether an adapter can safely inspect a
-// caller-provided read-only checkout with writes limited to a caller-owned
-// scratch root.
-type CheckoutReadonlyCapable interface {
-	SupportsCheckoutReadonly() bool
-}
-
-// CheckoutAccessRequest describes bounded checkout access for a single LLM
-// invocation. RootDir is the reviewer-visible read root; ScratchDir is the
-// writable scratch root owned by the harness; AllowedFiles preserves the
-// orchestrator's optional narrowing intent for logs and smoke-path assertions.
-type CheckoutAccessRequest struct {
-	RootDir            string
+// ReviewerWorkspaceRequest describes the disposable workspace for one reviewer
+// task. RepoDir is the reviewer-visible working tree root; ScratchDir, TempDir,
+// and CacheDir are writable harness-owned roots. Env is appended to the process
+// environment before launch.
+type ReviewerWorkspaceRequest struct {
+	RepoDir            string
 	ScratchDir         string
+	TempDir            string
+	CacheDir           string
+	Env                []string
 	AllowedFiles       []string
 	MaxToolOutputBytes int
 }
 
-// CheckoutReadonlyRequest is the legacy name for CheckoutAccessRequest.
-type CheckoutReadonlyRequest = CheckoutAccessRequest
+// ErrReviewerWorkspaceUnsupported reports that an adapter cannot use a prepared
+// reviewer workspace.
+var ErrReviewerWorkspaceUnsupported = errors.New("llm adapter: missing reviewer workspace capability")
 
-// ErrCheckoutAccessUnsupported reports that an adapter cannot provide checkout
-// access for checkout-native review.
-var ErrCheckoutAccessUnsupported = errors.New("llm adapter: missing checkout access capability")
-
-// ErrCheckoutReadonlyUnsupported reports that an adapter cannot safely provide
-// checkout-readonly review access.
-var ErrCheckoutReadonlyUnsupported = errors.New("llm adapter: missing checkout-readonly capability")
-
-// AdapterCheckoutAccessLevel returns adapter's checkout access level.
-func AdapterCheckoutAccessLevel(adapter Adapter) CheckoutAccessLevel {
-	capable, ok := adapter.(CheckoutAccessCapable)
+// AdapterReviewerWorkspaceMode returns the adapter's reviewer workspace mode.
+func AdapterReviewerWorkspaceMode(adapter Adapter) ReviewerWorkspaceMode {
+	capable, ok := adapter.(ReviewerWorkspaceCapable)
 	if ok {
-		switch level := capable.CheckoutAccessLevel(); level {
-		case CheckoutAccessPermissionBounded, CheckoutAccessReadonly:
+		switch level := capable.ReviewerWorkspaceMode(); level {
+		case ReviewerWorkspacePermissionBounded, ReviewerWorkspaceWrite:
 			return level
-		case CheckoutAccessNone:
-			return CheckoutAccessNone
+		case ReviewerWorkspaceNone:
+			return ReviewerWorkspaceNone
 		default:
-			return CheckoutAccessNone
+			return ReviewerWorkspaceNone
 		}
 	}
-	if SupportsCheckoutReadonly(adapter) {
-		return CheckoutAccessReadonly
-	}
-	return CheckoutAccessNone
+	return ReviewerWorkspaceNone
 }
 
-// SupportsCheckoutAccess reports whether adapter can inspect a prepared checkout
-// for checkout-native review.
-func SupportsCheckoutAccess(adapter Adapter) bool {
-	return AdapterCheckoutAccessLevel(adapter) != CheckoutAccessNone
+// SupportsReviewerWorkspace reports whether adapter can use a prepared reviewer
+// workspace.
+func SupportsReviewerWorkspace(adapter Adapter) bool {
+	return AdapterReviewerWorkspaceMode(adapter) != ReviewerWorkspaceNone
 }
 
-// SupportsCheckoutReadonly reports whether adapter exposes the supplemental
-// checkout-readonly capability.
-func SupportsCheckoutReadonly(adapter Adapter) bool {
-	if capable, ok := adapter.(CheckoutAccessCapable); ok {
-		return capable.CheckoutAccessLevel() == CheckoutAccessReadonly
-	}
-	capable, ok := adapter.(CheckoutReadonlyCapable)
-	return ok && capable.SupportsCheckoutReadonly()
-}
-
-// RequireCheckoutAccess returns a stable error when adapter cannot inspect the
-// prepared checkout for checkout-native review.
-func RequireCheckoutAccess(adapter Adapter) error {
-	if SupportsCheckoutAccess(adapter) {
+// RequireReviewerWorkspace returns a stable error when adapter cannot inspect a
+// prepared reviewer workspace.
+func RequireReviewerWorkspace(adapter Adapter) error {
+	if SupportsReviewerWorkspace(adapter) {
 		return nil
 	}
 	name := "<nil>"
 	if adapter != nil {
 		name = adapter.Name()
 	}
-	return fmt.Errorf("%w: %s", ErrCheckoutAccessUnsupported, name)
-}
-
-// RequireCheckoutReadonly returns a stable error when adapter does not expose
-// the supplemental checkout-readonly capability.
-func RequireCheckoutReadonly(adapter Adapter) error {
-	if SupportsCheckoutReadonly(adapter) {
-		return nil
-	}
-	name := "<nil>"
-	if adapter != nil {
-		name = adapter.Name()
-	}
-	return fmt.Errorf("%w: %s", ErrCheckoutReadonlyUnsupported, name)
+	return fmt.Errorf("%w: %s", ErrReviewerWorkspaceUnsupported, name)
 }
 
 // Request describes one LLM invocation.
@@ -149,8 +112,7 @@ type Request struct {
 	Prompt  string
 	LogPath string
 
-	CheckoutAccess   *CheckoutAccessRequest
-	CheckoutReadonly *CheckoutReadonlyRequest
+	ReviewerWorkspace *ReviewerWorkspaceRequest
 }
 
 // Stream is a started LLM request.
@@ -331,8 +293,10 @@ func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string
 		stream Stream
 		err    error
 	)
-	if err := requireRequestCheckoutCapability(adapter, req); err != nil {
-		return "", Response{}, err
+	if req.ReviewerWorkspace != nil {
+		if err := RequireReviewerWorkspace(adapter); err != nil {
+			return "", Response{}, err
+		}
 	}
 	if strings.TrimSpace(resumeSessionID) != "" && adapter.SupportsResume() {
 		stream, err = adapter.Resume(ctx, resumeSessionID, req)
@@ -344,23 +308,6 @@ func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string
 	}
 	response, err := stream.Wait(ctx)
 	return stream.SessionID(), response, err
-}
-
-func requestCheckoutAccess(req Request) *CheckoutAccessRequest {
-	if req.CheckoutAccess != nil {
-		return req.CheckoutAccess
-	}
-	return req.CheckoutReadonly
-}
-
-func requireRequestCheckoutCapability(adapter Adapter, req Request) error {
-	if req.CheckoutReadonly != nil {
-		return RequireCheckoutReadonly(adapter)
-	}
-	if req.CheckoutAccess != nil {
-		return RequireCheckoutAccess(adapter)
-	}
-	return nil
 }
 
 func cloneResponse(response Response) Response {

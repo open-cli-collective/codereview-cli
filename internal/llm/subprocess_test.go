@@ -135,31 +135,25 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	}
 }
 
-func TestSubprocessCheckoutAccessLevels(t *testing.T) {
+func TestSubprocessReviewerWorkspaceModes(t *testing.T) {
 	claude := NewClaudeCLIAdapter(SubprocessOptions{})
-	if got := AdapterCheckoutAccessLevel(claude); got != CheckoutAccessPermissionBounded {
-		t.Fatalf("Claude checkout access = %s, want %s", got, CheckoutAccessPermissionBounded)
+	if got := AdapterReviewerWorkspaceMode(claude); got != ReviewerWorkspacePermissionBounded {
+		t.Fatalf("Claude reviewer workspace mode = %s, want %s", got, ReviewerWorkspacePermissionBounded)
 	}
-	if !SupportsCheckoutAccess(claude) {
-		t.Fatal("Claude SupportsCheckoutAccess = false, want true")
-	}
-	if SupportsCheckoutReadonly(claude) {
-		t.Fatal("Claude SupportsCheckoutReadonly = true, want false")
+	if !SupportsReviewerWorkspace(claude) {
+		t.Fatal("Claude SupportsReviewerWorkspace = false, want true")
 	}
 
 	codex := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
-	if got := AdapterCheckoutAccessLevel(codex); got != CheckoutAccessReadonly {
-		t.Fatalf("Codex checkout access = %s, want %s", got, CheckoutAccessReadonly)
+	if got := AdapterReviewerWorkspaceMode(codex); got != ReviewerWorkspaceWrite {
+		t.Fatalf("Codex reviewer workspace mode = %s, want %s", got, ReviewerWorkspaceWrite)
 	}
-	if !SupportsCheckoutAccess(codex) {
-		t.Fatal("Codex SupportsCheckoutAccess = false, want true")
-	}
-	if !SupportsCheckoutReadonly(codex) {
-		t.Fatal("Codex SupportsCheckoutReadonly = false, want true")
+	if !SupportsReviewerWorkspace(codex) {
+		t.Fatal("Codex SupportsReviewerWorkspace = false, want true")
 	}
 }
 
-func TestSubprocessClaudeCheckoutAccessLaunch(t *testing.T) {
+func TestSubprocessClaudeReviewerWorkspaceLaunch(t *testing.T) {
 	tempDir := t.TempDir()
 	recordPath := filepath.Join(tempDir, "records.jsonl")
 	configDir := filepath.Join(tempDir, "claude")
@@ -177,8 +171,8 @@ func TestSubprocessClaudeCheckoutAccessLaunch(t *testing.T) {
 		Model:  "claude-sonnet-4-6",
 		Effort: "high",
 		Prompt: "prompt",
-		CheckoutAccess: &CheckoutAccessRequest{
-			RootDir:            repoRoot,
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir:            repoRoot,
 			ScratchDir:         scratchRoot,
 			MaxToolOutputBytes: 2048,
 		},
@@ -192,10 +186,16 @@ func TestSubprocessClaudeCheckoutAccessLaunch(t *testing.T) {
 	record := readHelperRecord(t, recordPath)
 	addDirs := flagValues(record.AdapterArgs, "--add-dir")
 	if len(addDirs) != 2 {
-		t.Fatalf("--add-dir values = %#v, want scratch invocation dir and checkout root", addDirs)
+		t.Fatalf("--add-dir values = %#v, want scratch invocation dir and repo root", addDirs)
 	}
 	if !containsSamePath(addDirs, record.AddDir) || !containsSamePath(addDirs, repoRoot) {
-		t.Fatalf("--add-dir values = %#v, want scratch %q and checkout %q", addDirs, record.AddDir, repoRoot)
+		t.Fatalf("--add-dir values = %#v, want scratch %q and repo %q", addDirs, record.AddDir, repoRoot)
+	}
+	if !samePath(t, record.Cwd, repoRoot) {
+		t.Fatalf("cwd = %q, want reviewer workspace repo %q", record.Cwd, repoRoot)
+	}
+	if tools := flagValue(record.AdapterArgs, "--tools"); tools != "Read,Write,Bash" {
+		t.Fatalf("--tools = %q, want reviewer workspace tools", tools)
 	}
 	cwd := strings.TrimPrefix(filepath.Clean(record.AddDir), "/private")
 	wantRoot := strings.TrimPrefix(filepath.Clean(scratchRoot), "/private")
@@ -207,39 +207,7 @@ func TestSubprocessClaudeCheckoutAccessLaunch(t *testing.T) {
 	}
 }
 
-func TestSubprocessClaudeRejectsLegacyCheckoutReadonly(t *testing.T) {
-	tempDir := t.TempDir()
-	recordPath := filepath.Join(tempDir, "records.jsonl")
-	configDir := filepath.Join(tempDir, "claude")
-	scratchRoot := filepath.Join(tempDir, "workbench-scratch")
-	if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
-		t.Fatalf("MkdirAll(scratchRoot): %v", err)
-	}
-	repoRoot := filepath.Join(tempDir, "workbench-repo")
-	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
-		t.Fatalf("MkdirAll(repoRoot): %v", err)
-	}
-	adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
-
-	stream, err := adapter.Start(context.Background(), Request{
-		Model:  "claude-sonnet-4-6",
-		Effort: "high",
-		Prompt: "prompt",
-		CheckoutReadonly: &CheckoutReadonlyRequest{
-			RootDir:            repoRoot,
-			ScratchDir:         scratchRoot,
-			MaxToolOutputBytes: 2048,
-		},
-	})
-	if stream != nil {
-		t.Fatalf("stream = %#v, want nil", stream)
-	}
-	if !errors.Is(err, ErrCheckoutReadonlyUnsupported) || !strings.Contains(err.Error(), "claude_cli") {
-		t.Fatalf("Start error = %v, want missing readonly with adapter name", err)
-	}
-}
-
-func TestSubprocessClaudeCheckoutAccessValidationRejectsUnexpectedAddDir(t *testing.T) {
+func TestSubprocessClaudeReviewerWorkspaceValidationRejectsUnexpectedAddDir(t *testing.T) {
 	tempDir := t.TempDir()
 	scratch := filepath.Join(tempDir, "scratch")
 	repoRoot := filepath.Join(tempDir, "repo")
@@ -252,8 +220,8 @@ func TestSubprocessClaudeCheckoutAccessValidationRejectsUnexpectedAddDir(t *test
 	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
 	req := Request{
 		Prompt: "prompt",
-		CheckoutAccess: &CheckoutAccessRequest{
-			RootDir:    repoRoot,
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir:    repoRoot,
 			ScratchDir: scratch,
 		},
 	}
@@ -710,7 +678,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		}
 	})
 
-	t.Run("checkout readonly adds scoped read root and keeps scratch cwd", func(t *testing.T) {
+	t.Run("reviewer workspace uses repo cwd and scratch add-dir", func(t *testing.T) {
 		tempDir := t.TempDir()
 		recordPath := filepath.Join(tempDir, "records.jsonl")
 		scratchRoot := filepath.Join(tempDir, "workbench-scratch")
@@ -721,14 +689,22 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		if err := os.MkdirAll(repoRoot, 0o700); err != nil {
 			t.Fatalf("MkdirAll(repoRoot): %v", err)
 		}
+		tempRoot := filepath.Join(scratchRoot, "tmp")
+		cacheRoot := filepath.Join(scratchRoot, "cache")
+		goCache := filepath.Join(cacheRoot, "go-build")
+		goTmp := filepath.Join(tempRoot, "go")
+		xdgCache := filepath.Join(cacheRoot, "xdg")
 		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
 		stream, err := adapter.Start(context.Background(), Request{
 			Model:  "gpt-5.5",
 			Effort: "high",
 			Prompt: "prompt",
-			CheckoutReadonly: &CheckoutReadonlyRequest{
-				RootDir:            repoRoot,
+			ReviewerWorkspace: &ReviewerWorkspaceRequest{
+				RepoDir:            repoRoot,
 				ScratchDir:         scratchRoot,
+				TempDir:            tempRoot,
+				CacheDir:           cacheRoot,
+				Env:                []string{"TMPDIR=" + tempRoot, "GOCACHE=" + goCache, "GOTMPDIR=" + goTmp, "XDG_CACHE_HOME=" + xdgCache},
 				MaxToolOutputBytes: 2048,
 			},
 		})
@@ -739,18 +715,22 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			t.Fatalf("Wait: %v", err)
 		}
 		record := readHelperRecord(t, recordPath)
-		assertFlagValue(t, record.AdapterArgs, "--add-dir", repoRoot)
-		cwd := strings.TrimPrefix(filepath.Clean(record.Cwd), "/private")
-		wantRoot := strings.TrimPrefix(filepath.Clean(scratchRoot), "/private")
-		if !strings.HasPrefix(cwd, wantRoot+string(filepath.Separator)) {
-			t.Fatalf("cwd = %q, want invocation scratch under %q", record.Cwd, scratchRoot)
+		assertFlagValue(t, record.AdapterArgs, "--sandbox", "workspace-write")
+		assertFlagValue(t, record.AdapterArgs, "--add-dir", record.AddDir)
+		if cd := flagValue(record.AdapterArgs, "--cd"); !samePath(t, cd, repoRoot) {
+			t.Fatalf("--cd = %q, want repo %q", cd, repoRoot)
 		}
-		if samePath(t, record.Cwd, scratchRoot) {
-			t.Fatalf("cwd = %q, want child scratch dir rather than root", record.Cwd)
+		scratch := strings.TrimPrefix(filepath.Clean(record.AddDir), "/private")
+		wantRoot := strings.TrimPrefix(filepath.Clean(scratchRoot), "/private")
+		if !strings.HasPrefix(scratch, wantRoot+string(filepath.Separator)) {
+			t.Fatalf("--add-dir = %q, want invocation scratch under %q", record.AddDir, scratchRoot)
+		}
+		if record.TMPDir != tempRoot || record.GoCache != goCache || record.GoTmpDir != goTmp || record.XDGCacheHome != xdgCache {
+			t.Fatalf("workspace env = TMPDIR:%q GOCACHE:%q GOTMPDIR:%q XDG_CACHE_HOME:%q, want %q/%q/%q/%q", record.TMPDir, record.GoCache, record.GoTmpDir, record.XDGCacheHome, tempRoot, goCache, goTmp, xdgCache)
 		}
 	})
 
-	t.Run("checkout readonly caps subprocess logs", func(t *testing.T) {
+	t.Run("reviewer workspace caps subprocess logs", func(t *testing.T) {
 		tempDir := t.TempDir()
 		recordPath := filepath.Join(tempDir, "records.jsonl")
 		logPath := filepath.Join(tempDir, "events.log")
@@ -766,8 +746,8 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		stream, err := adapter.Start(context.Background(), Request{
 			Prompt:  "prompt",
 			LogPath: logPath,
-			CheckoutReadonly: &CheckoutReadonlyRequest{
-				RootDir:            repoRoot,
+			ReviewerWorkspace: &ReviewerWorkspaceRequest{
+				RepoDir:            repoRoot,
 				ScratchDir:         scratchRoot,
 				MaxToolOutputBytes: 64,
 			},
@@ -783,7 +763,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			t.Fatalf("ReadFile(log): %v", err)
 		}
 		logText := string(logged)
-		warningText := "warning: checkout-readonly tool output cap reached; further subprocess logs truncated\n"
+		warningText := "warning: reviewer workspace tool output cap reached; further subprocess logs truncated\n"
 		if !strings.Contains(logText, warningText) {
 			t.Fatalf("log = %q, want truncation warning", logText)
 		}
@@ -1149,6 +1129,10 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		StdinBytes:      len(stdin),
 		Stdin:           string(stdin),
 		ClaudeConfigDir: os.Getenv("CLAUDE_CONFIG_DIR"),
+		TMPDir:          os.Getenv("TMPDIR"),
+		GoCache:         os.Getenv("GOCACHE"),
+		GoTmpDir:        os.Getenv("GOTMPDIR"),
+		XDGCacheHome:    os.Getenv("XDG_CACHE_HOME"),
 	}
 	record.AddDir = flagValue(args, "--add-dir")
 	if record.AddDir != "" {
@@ -1263,6 +1247,10 @@ type helperRecord struct {
 	AddDirEntries   int      `json:"add_dir_entries"`
 	PromptFile      string   `json:"prompt_file"`
 	PromptFileBytes int      `json:"prompt_file_bytes"`
+	TMPDir          string   `json:"tmpdir"`
+	GoCache         string   `json:"gocache"`
+	GoTmpDir        string   `json:"gotmpdir"`
+	XDGCacheHome    string   `json:"xdg_cache_home"`
 }
 
 func newClaudeHelperAdapter(mode string, recordPath string, configDir string, timeout time.Duration) *SubprocessAdapter {

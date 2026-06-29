@@ -44,12 +44,8 @@ func (a progressAdapter) Name() string { return a.adapter.Name() }
 
 func (a progressAdapter) SupportsResume() bool { return a.adapter.SupportsResume() }
 
-func (a progressAdapter) CheckoutAccessLevel() llm.CheckoutAccessLevel {
-	return llm.AdapterCheckoutAccessLevel(a.adapter)
-}
-
-func (a progressAdapter) SupportsCheckoutReadonly() bool {
-	return llm.SupportsCheckoutReadonly(a.adapter)
+func (a progressAdapter) ReviewerWorkspaceMode() llm.ReviewerWorkspaceMode {
+	return llm.AdapterReviewerWorkspaceMode(a.adapter)
 }
 
 func (a progressAdapter) SupportsCacheAccounting() bool { return a.adapter.SupportsCacheAccounting() }
@@ -70,8 +66,8 @@ func (a progressAdapter) Resume(ctx context.Context, sessionID string, req llm.R
 
 func (a progressAdapter) start(ctx context.Context, op string, req llm.Request, resumeSessionID string) (llm.Stream, error) {
 	fields := llmProgressFields(a.provider, a.harness, req, resumeSessionID)
-	if req.CheckoutAccess != nil || req.CheckoutReadonly != nil {
-		fields = append(fields, progress.Field{Key: "checkout_access", Value: string(a.CheckoutAccessLevel())})
+	if req.ReviewerWorkspace != nil {
+		fields = append(fields, progress.Field{Key: "reviewer_workspace", Value: string(a.ReviewerWorkspaceMode())})
 	}
 	span := a.logger.StartFields(a.command, op, "llm", fields...)
 	var (

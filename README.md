@@ -581,18 +581,19 @@ result from `cr-result.json` in that scratch directory and records the Claude
 provider session returned by the job state. Background jobs run from a stable
 cache workdir so Claude Code can resolve resumed sessions consistently; set
 `CR_CLAUDE_BG_WORK_DIR` to override that workdir. For checkout-native reviewer
-execution, Claude CLI uses permission-bounded checkout access: the prepared
-checkout and run-owned scratch directory are made available through Claude Code
-directory permissions, but this is not an adapter-enforced readonly sandbox.
+execution, Claude CLI receives a disposable reviewer workspace, run-owned
+scratch/temp/cache directories, and `Read,Write,Bash` tools through Claude Code
+directory permissions.
 
 For OpenAI subscription profiles, `adapter: codex_cli` runs `codex exec` in an
 adapter-owned scratch directory with `--json`, `--ephemeral`,
 `--skip-git-repo-check`, `--ignore-user-config`, `--ignore-rules`, a read-only
 sandbox, and a scratch `--cd`. For checkout-native reviewer execution, Codex CLI
-adds the prepared checkout as a readonly access root and keeps writes in the
-scratch directory. The adapter rejects unsafe flags and fails the review if
-Codex emits tool-use events. This remains best-effort/beta because Codex CLI
-does not yet expose a first-class all-tools-disabled flag.
+uses `workspace-write` with the disposable reviewer workspace as `--cd`, plus
+run-owned scratch/temp/cache environment variables for verification commands.
+The adapter rejects unsafe flags. Non-reviewer Codex requests remain
+best-effort/beta because Codex CLI does not yet expose a first-class
+all-tools-disabled flag.
 
 Credential key matrix:
 

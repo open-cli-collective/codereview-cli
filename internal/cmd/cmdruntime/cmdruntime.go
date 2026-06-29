@@ -50,7 +50,6 @@ type Options struct {
 	RequireOpinionatedReviewAuthority bool
 	Retention                         datalifecycle.RetentionPolicy
 	RetentionManualOnly               bool
-	AutoUnlockWorkbenchOnExit         bool
 	ResolveRepoRoot                   func(context.Context) (string, error)
 	GitCommand                        func(context.Context, string, ...string) ([]byte, error)
 }

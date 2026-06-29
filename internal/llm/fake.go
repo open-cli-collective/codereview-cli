@@ -11,14 +11,12 @@ import (
 type FakeAdapter struct {
 	mu sync.Mutex
 
-	NameValue                     string
-	SupportsResumeValue           bool
-	SupportsCheckoutReadonlySet   bool
-	SupportsCheckoutReadonlyValue bool
-	CheckoutAccessLevelSet        bool
-	CheckoutAccessLevelValue      CheckoutAccessLevel
-	SupportsCacheAccountingValue  bool
-	SupportsCostReportingValue    bool
+	NameValue                    string
+	SupportsResumeValue          bool
+	ReviewerWorkspaceModeSet     bool
+	ReviewerWorkspaceModeValue   ReviewerWorkspaceMode
+	SupportsCacheAccountingValue bool
+	SupportsCostReportingValue   bool
 
 	QuotaValue     Quota
 	QuotaSupported bool
@@ -60,31 +58,14 @@ func (f *FakeAdapter) SupportsResume() bool {
 	return f.SupportsResumeValue
 }
 
-// SupportsCheckoutReadonly reports whether the fake supports checkout-readonly
-// invocation mode.
-func (f *FakeAdapter) SupportsCheckoutReadonly() bool {
+// ReviewerWorkspaceMode reports the fake's reviewer workspace mode.
+func (f *FakeAdapter) ReviewerWorkspaceMode() ReviewerWorkspaceMode {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.CheckoutAccessLevelSet {
-		return f.CheckoutAccessLevelValue == CheckoutAccessReadonly
+	if f.ReviewerWorkspaceModeSet {
+		return f.ReviewerWorkspaceModeValue
 	}
-	if !f.SupportsCheckoutReadonlySet {
-		return true
-	}
-	return f.SupportsCheckoutReadonlyValue
-}
-
-// CheckoutAccessLevel reports the fake's checkout access level.
-func (f *FakeAdapter) CheckoutAccessLevel() CheckoutAccessLevel {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.CheckoutAccessLevelSet {
-		return f.CheckoutAccessLevelValue
-	}
-	if !f.SupportsCheckoutReadonlySet || f.SupportsCheckoutReadonlyValue {
-		return CheckoutAccessReadonly
-	}
-	return CheckoutAccessNone
+	return ReviewerWorkspaceWrite
 }
 
 // SupportsCacheAccounting reports whether cache usage metrics are supported.
