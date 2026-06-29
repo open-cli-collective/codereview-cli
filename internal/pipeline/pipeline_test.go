@@ -5448,8 +5448,32 @@ func TestReviewerScopesSeparateReadAccessFromExpectedCoverage(t *testing.T) {
 	if got := reviewerReadableFiles(changed); !reflect.DeepEqual(got, []string{"api.go", "main.go", "schema.sql"}) {
 		t.Fatalf("reviewable files = %#v, want all changed files", got)
 	}
+	if got := reviewerAssignmentScope(llm.SelectedAgent{
+		Files:        []string{"main.go"},
+		AllowedFiles: []string{"schema.sql"},
+	}, changed); !reflect.DeepEqual(got, []string{"schema.sql"}) {
+		t.Fatalf("allowed-files scope = %#v, want allowed files", got)
+	}
 	if got := reviewerAssignmentScope(llm.SelectedAgent{Files: []string{"main.go"}}, changed); !reflect.DeepEqual(got, []string{"main.go"}) {
 		t.Fatalf("broad coverage scope = %#v, want selected files", got)
+	}
+	_, err := llm.DecodeFindings([]byte(`{
+		"schema_version": 1,
+		"agent_id": "agent-1",
+		"inspected_files": ["schema.sql"],
+		"findings": [{
+			"severity": "major",
+			"file_path": "api.go",
+			"anchor": {"kind": "file"},
+			"body": "outside assignment"
+		}]
+	}`), llm.FindingsOptions{
+		KnownAgents:  map[string]bool{"agent-1": true},
+		ChangedFiles: stringSet(reviewerAssignmentScope(llm.SelectedAgent{AllowedFiles: []string{"schema.sql"}}, changed)),
+		NewFindingID: findingSequence("scope"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in changed files") {
+		t.Fatalf("DecodeFindings outside assignment error = %v, want not in changed files", err)
 	}
 }
 
@@ -6781,10 +6805,8 @@ func (a *providerOriginUsageAdapter) SupportsCacheAccounting() bool { return fal
 
 func (a *providerOriginUsageAdapter) SupportsCostReporting() bool { return false }
 
-func (a *providerOriginUsageAdapter) SupportsCheckoutReadonly() bool { return true }
-
-func (a *providerOriginUsageAdapter) CheckoutAccessLevel() llm.CheckoutAccessLevel {
-	return llm.CheckoutAccessReadonly
+func (a *providerOriginUsageAdapter) ReviewerWorkspaceMode() llm.ReviewerWorkspaceMode {
+	return llm.ReviewerWorkspacePermissionBounded
 }
 
 func (a *providerOriginUsageAdapter) Quota(context.Context) (llm.Quota, bool, error) {

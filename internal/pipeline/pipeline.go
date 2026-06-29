@@ -1304,7 +1304,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := patchPaths(parsed.Patches)
-	reviewerScope := reviewerReadableFiles(changedFilePaths)
+	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
@@ -1348,7 +1348,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
 			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(reviewerScope),
+			ChangedFiles: stringSet(assignmentScope),
 			NewFindingID: opts.newFindingID,
 		})
 	})

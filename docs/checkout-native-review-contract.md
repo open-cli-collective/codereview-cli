@@ -13,6 +13,10 @@ checkout plus compact review artifacts, then let the orchestrator and
 specialist reviewers inspect and verify code on demand inside bounded
 disposable workspaces.
 
+Current checkout-native review runs against same-repository PR heads. Fork-backed
+heads require additional fetch/auth handling and are outside this contract until
+the pipeline supports them explicitly.
+
 ## Runtime Sequence
 
 The runtime sequence for checkout-native review is:
@@ -103,10 +107,9 @@ from the checkout tree ad hoc.
 Checkout-native additions must work with caller-owned artifact roots instead of
 assuming that every selector run is ledger-backed.
 
-Workbench preparation must also define how normal fork-backed PR heads are
-fetched and pinned. That fetch strategy belongs to the workbench implementation
-issue, but checkout-native review must support ordinary GitHub PR shapes rather
-than assuming same-repository branches only.
+Workbench preparation requires base and head refs that can be fetched from the
+same repository remote. Fork-backed heads need explicit fetch and authentication
+handling before they are part of this contract.
 
 ## Reviewer-Facing Context
 
