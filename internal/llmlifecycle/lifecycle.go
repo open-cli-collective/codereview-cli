@@ -119,6 +119,7 @@ type ProgressResult struct {
 	Status             string
 	ValidationAttempts int
 	Cached             bool
+	Usage              llm.Usage
 }
 
 // Request contains all dependencies and inputs for one structured LLM task.
@@ -213,6 +214,11 @@ type Metadata struct {
 	LogPath             string            `json:"log_path,omitempty"`
 	ValidatedOutputPath string            `json:"validated_output_path,omitempty"`
 	Error               string            `json:"error,omitempty"`
+	TokensIn            *int              `json:"tokens_in,omitempty"`
+	TokensOut           *int              `json:"tokens_out,omitempty"`
+	CacheRead           *int              `json:"cache_read,omitempty"`
+	CacheCreate         *int              `json:"cache_create,omitempty"`
+	CostUSD             *float64          `json:"cost_usd,omitempty"`
 	Attempts            []AttemptMetadata `json:"attempts,omitempty"`
 }
 
@@ -327,14 +333,14 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 	if hasRun && strings.TrimSpace(draft.ProviderSessionID) != "" {
 		if req.Store == nil {
 			err := fmt.Errorf("llmlifecycle: store is required")
-			endProgress(progressSpan, err, progressResult(meta, structured, false))
+			endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
 			return zero, err
 		}
 		session = draft.ToLedger(req.RunID)
 		if err := req.Store.InsertSession(ctx, session); err != nil {
 			meta.Status = StatusFailedBlocking
 			meta.ProviderSessionID = draft.ProviderSessionID
-			endProgress(progressSpan, err, progressResult(meta, structured, false))
+			endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
 			return zero, err
 		}
 	}
@@ -344,10 +350,10 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 		meta.SessionRowID = session.SessionRowID
 		meta.ProviderSessionID = draft.ProviderSessionID
 		if err := WriteSuccess(req.Paths, &meta, structured.AcceptedOutput); err != nil {
-			endProgress(progressSpan, err, progressResult(meta, structured, false))
+			endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
 			return zero, err
 		}
-		endProgress(progressSpan, nil, progressResult(meta, structured, false))
+		endProgress(progressSpan, nil, progressResult(meta, structured, false, structured.Response.Usage))
 		return Result[T]{Value: structured.Value, Draft: draft, Session: session}, nil
 	}
 
@@ -356,10 +362,10 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 	meta.SessionRowID = session.SessionRowID
 	meta.ProviderSessionID = draft.ProviderSessionID
 	if err := WriteFailure(req.Paths, &meta, structured.ValidationAttempts); err != nil {
-		endProgress(progressSpan, err, progressResult(meta, structured, false))
+		endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
 		return Result[T]{Draft: draft, Session: session}, err
 	}
-	endProgress(progressSpan, runErr, progressResult(meta, structured, false))
+	endProgress(progressSpan, runErr, progressResult(meta, structured, false, structured.Response.Usage))
 	return Result[T]{Draft: draft, Session: session}, &TaskError{status: meta.Status, err: runErr}
 }
 
@@ -395,7 +401,8 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		}
 		if strings.TrimSpace(req.RunID) == "" {
 			draft := SessionDraftFromMetadata(meta)
-			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
+			progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
+			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 			return Result[T]{Value: value, Draft: draft, Cached: true}, true, nil
 		}
 		if req.Store == nil {
@@ -405,15 +412,18 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		if err != nil {
 			return zero, true, err
 		}
-		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
-		return Result[T]{Value: value, Draft: SessionDraftFromLedger(session), Session: session, Cached: true}, true, nil
+		draft := SessionDraftFromLedger(session)
+		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
+		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
+		return Result[T]{Value: value, Draft: draft, Session: session, Cached: true}, true, nil
 	case StatusFailedIsolated:
 		if req.FailureStatus != StatusFailedIsolated {
 			return zero, true, fmt.Errorf("llmlifecycle: task %q has isolated failure status outside isolated phase", req.TaskID)
 		}
 		if strings.TrimSpace(req.RunID) == "" {
 			draft := SessionDraftFromMetadata(meta)
-			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
+			progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
+			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 			return Result[T]{Draft: draft, Cached: true}, true, &TaskError{status: StatusFailedIsolated, err: errors.New(TaskErrorText(meta))}
 		}
 		if req.Store == nil {
@@ -423,7 +433,8 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		if err != nil {
 			return zero, true, err
 		}
-		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
+		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
+		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 		return Result[T]{Draft: draft, Session: session, Cached: true}, true, &TaskError{status: StatusFailedIsolated, err: errors.New(TaskErrorText(meta))}
 	case StatusFailedBlocking:
 		return zero, false, nil
@@ -627,6 +638,11 @@ func BaseMetadata(req Request, draft SessionDraft) Metadata {
 		Model:             draft.Model,
 		Effort:            draft.Effort,
 		LogPath:           req.LogPath,
+		TokensIn:          draft.Response.Usage.TokensIn,
+		TokensOut:         draft.Response.Usage.TokensOut,
+		CacheRead:         draft.Response.Usage.CacheRead,
+		CacheCreate:       draft.Response.Usage.CacheCreate,
+		CostUSD:           draft.Response.Usage.CostUSD,
 	}
 }
 
@@ -749,9 +765,19 @@ func SessionDraftFromMetadata(meta Metadata) SessionDraft {
 		RowID:                     meta.SessionRowID,
 		ProviderReportedSessionID: meta.ProviderSessionID,
 		ProviderSessionID:         meta.ProviderSessionID,
+		AgentID:                   stringPtrIfNonEmpty(meta.AgentID),
 		Adapter:                   meta.Adapter,
 		Model:                     meta.Model,
 		Effort:                    meta.Effort,
+		Response: llm.Response{
+			Usage: llm.Usage{
+				TokensIn:    meta.TokensIn,
+				TokensOut:   meta.TokensOut,
+				CacheRead:   meta.CacheRead,
+				CacheCreate: meta.CacheCreate,
+				CostUSD:     meta.CostUSD,
+			},
+		},
 	}
 }
 
@@ -771,7 +797,7 @@ func loadTaskSession(ctx context.Context, store Store, runID string, meta Metada
 
 func loadOptionalTaskSession(ctx context.Context, store Store, runID string, meta Metadata) (ledger.Session, SessionDraft, error) {
 	if strings.TrimSpace(meta.SessionRowID) == "" {
-		return ledger.Session{}, SessionDraft{}, nil
+		return ledger.Session{}, SessionDraftFromMetadata(meta), nil
 	}
 	session, err := loadTaskSession(ctx, store, runID, meta)
 	if err != nil {
@@ -780,7 +806,7 @@ func loadOptionalTaskSession(ctx context.Context, store Store, runID string, met
 	return session, SessionDraftFromLedger(session), nil
 }
 
-func progressResult[T any](meta Metadata, result llm.StructuredResult[T], cached bool) ProgressResult {
+func progressResult[T any](meta Metadata, result llm.StructuredResult[T], cached bool, usage llm.Usage) ProgressResult {
 	providerSessionID := meta.ProviderSessionID
 	if providerSessionID == "" {
 		providerSessionID = result.SessionID
@@ -790,6 +816,7 @@ func progressResult[T any](meta Metadata, result llm.StructuredResult[T], cached
 		Status:             string(meta.Status),
 		ValidationAttempts: len(result.ValidationAttempts),
 		Cached:             cached,
+		Usage:              usage,
 	}
 }
 
@@ -834,6 +861,14 @@ func int64PtrToInt(value *int64) *int {
 	}
 	converted := int(*value)
 	return &converted
+}
+
+func stringPtrIfNonEmpty(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func isContextError(err error) bool {

@@ -2541,11 +2541,99 @@ func TestPipelineTaskProgressUsesRespondCommandLabel(t *testing.T) {
 		Source: "execute",
 		Model:  "gpt-5.5",
 	})
-	span.End(nil, pipeline.LLMTaskProgressResult{Cached: false, Status: "succeeded", ProviderSessionID: "sess-respond"})
+	span.End(nil, pipeline.LLMTaskProgressResult{
+		Cached:            false,
+		Status:            "succeeded",
+		ProviderSessionID: "sess-respond",
+	})
 	stderr := errOut.String()
-	if !strings.Contains(stderr, `command="respond" op="run_llm_task" target="llm_task"`) {
-		t.Fatalf("stderr = %q, want respond breadcrumb for run_llm_task", stderr)
+	runLine := progressLineWith(stderr, `op="run_llm_task"`)
+	if runLine == "" {
+		t.Fatalf("stderr = %q, want run_llm_task breadcrumb", stderr)
 	}
+	if !strings.Contains(runLine, `command="respond"`) {
+		t.Fatalf("breadcrumb = %q, want respond command label", runLine)
+	}
+}
+
+func TestPipelineTaskProgressBreadcrumbsIncludeUsageMetadata(t *testing.T) {
+	var errOut bytes.Buffer
+	progressSink := newPipelineTaskProgress(progress.New(&errOut, false, nil), "review")
+	if progressSink == nil {
+		t.Fatal("newPipelineTaskProgress = nil, want progress sink")
+	}
+	tokensIn, tokensOut, cacheRead, cacheCreate := 25475, 812, 19712, 9
+	costUSD := 0.42
+	usage := llm.Usage{
+		TokensIn:    &tokensIn,
+		TokensOut:   &tokensOut,
+		CacheRead:   &cacheRead,
+		CacheCreate: &cacheCreate,
+		CostUSD:     &costUSD,
+	}
+	span := progressSink.StartLLMTask(pipeline.LLMTaskProgressEvent{
+		TaskID: "orchestrator-selection",
+		Phase:  "selection",
+		Source: "execute",
+		Model:  "gpt-5.5",
+	})
+	span.End(nil, pipeline.LLMTaskProgressResult{
+		Cached:            false,
+		Status:            "succeeded",
+		ProviderSessionID: "sess-review",
+		Usage:             usage,
+	})
+	progressSink.LoadLLMTask(pipeline.LLMTaskProgressEvent{
+		TaskID: "orchestrator-selection",
+		Phase:  "selection",
+		Source: "resume",
+		Model:  "claude-sonnet-4-6",
+	}, pipeline.LLMTaskProgressResult{
+		Cached:            true,
+		Status:            "succeeded",
+		ProviderSessionID: "sess-cached",
+		Usage:             usage,
+	})
+	stderr := errOut.String()
+	runLine := progressLineWith(stderr, `op="run_llm_task"`, `tokens_in="25475"`)
+	loadLine := progressLineWith(stderr, `op="load_llm_task"`, `tokens_in="25475"`)
+	if runLine == "" {
+		t.Fatalf("stderr = %q, want run_llm_task breadcrumb", stderr)
+	}
+	if loadLine == "" {
+		t.Fatalf("stderr = %q, want load_llm_task breadcrumb", stderr)
+	}
+	for _, line := range []string{runLine, loadLine} {
+		for _, want := range []string{
+			`command="review"`,
+			`target="llm_task"`,
+			`tokens_in="25475"`,
+			`tokens_out="812"`,
+			`cache_read="19712"`,
+			`cache_create="9"`,
+			`cost_usd="0.42"`,
+		} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("breadcrumb = %q, want substring %q", line, want)
+			}
+		}
+	}
+}
+
+func progressLineWith(stderr string, needles ...string) string {
+	for _, line := range strings.Split(stderr, "\n") {
+		matches := true
+		for _, needle := range needles {
+			if !strings.Contains(line, needle) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return line
+		}
+	}
+	return ""
 }
 
 func TestProgressAdapterResumeErrorWritesErrorBreadcrumb(t *testing.T) {

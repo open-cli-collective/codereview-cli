@@ -26,15 +26,23 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	ctx := context.Background()
 	store := newLifecycleStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress := &lifecycleProgressRecorder{}
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
 		Response: llm.Response{
 			StructuredOutput: []byte(`Here is JSON: {"ok":true}`),
 			DurationMS:       123,
-			Usage:            llm.Usage{TokensIn: intPtr(10), TokensOut: intPtr(5)},
+			Usage: llm.Usage{
+				TokensIn:    intPtr(10),
+				TokensOut:   intPtr(5),
+				CacheRead:   intPtr(3),
+				CacheCreate: intPtr(7),
+				CostUSD:     floatPtr(0.15),
+			},
 		},
 	})
 	req := lifecycleRequest(t, store, adapter)
+	req.Progress = progress
 
 	first, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
@@ -49,6 +57,10 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	if len(adapter.Requests()) != 1 {
 		t.Fatalf("adapter requests = %d, want 1", len(adapter.Requests()))
 	}
+	if len(progress.ends) != 1 {
+		t.Fatalf("fresh progress ends = %#v, want one provider progress result", progress.ends)
+	}
+	assertUsage(t, "fresh progress end", progress.ends[0].result.Usage, 10, 5, 3, 7, 0.15)
 	storedSession := store.session(t, "session-row-1")
 	if storedSession.RunID != "run-1" || storedSession.ProviderSessionID != "provider-session-1" || storedSession.Role != ledger.SessionRoleOrchestrator {
 		t.Fatalf("stored session = %#v, want run/provider/default orchestrator role", storedSession)
@@ -65,6 +77,7 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	assertFileOmits(t, meta.ValidatedOutputPath, "Here is JSON")
 
 	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress.loads = nil
 	req.Adapter = cachedAdapter
 	cached, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
@@ -76,6 +89,10 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
 	}
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached progress loads = %#v, want one cached progress result", progress.loads)
+	}
+	assertUsage(t, "cached progress load", progress.loads[0].result.Usage, 10, 5, 3, 7, 0.15)
 }
 
 func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.T) {
@@ -101,13 +118,24 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 		t.Fatalf("AllocateRun: %v", err)
 	}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress := &lifecycleProgressRecorder{}
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
-		Response:  llm.Response{StructuredOutput: []byte(`{"ok":true}`)},
+		Response: llm.Response{
+			StructuredOutput: []byte(`{"ok":true}`),
+			Usage: llm.Usage{
+				TokensIn:    intPtr(144),
+				TokensOut:   intPtr(89),
+				CacheRead:   intPtr(55),
+				CacheCreate: intPtr(34),
+				CostUSD:     floatPtr(1.44),
+			},
+		},
 	})
 	req := lifecycleRequest(t, store, adapter)
 	req.RunID = runID
 	req.Paths = Paths{LLMTasksDir: filepath.Join(t.TempDir(), "llm-tasks")}
+	req.Progress = progress
 	if _, err := RunStructured(ctx, req, decodeLifecyclePayload); err != nil {
 		t.Fatalf("RunStructured first: %v", err)
 	}
@@ -132,6 +160,7 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	req.Store = reopened
 	req.Adapter = cachedAdapter
+	progress.loads = nil
 	cached, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
 		t.Fatalf("RunStructured cached after reopen: %v", err)
@@ -144,6 +173,25 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 	}
 	if cached.Session.RunID != runID || cached.Session.ProviderSessionID != "provider-session-1" {
 		t.Fatalf("cached session = %#v, want reloaded ledger session", cached.Session)
+	}
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached progress loads = %#v, want one cached progress result", progress.loads)
+	}
+	assertUsage(t, "real ledger cached progress load", progress.loads[0].result.Usage, 144, 89, 55, 34, 1.44)
+}
+
+func TestSessionDraftFromMetadataRestoresAgentID(t *testing.T) {
+	draft := SessionDraftFromMetadata(Metadata{
+		SessionRowID:      "session-row",
+		ProviderSessionID: "provider-session",
+		AgentID:           "go:tests",
+	})
+	if draft.AgentID == nil || *draft.AgentID != "go:tests" {
+		t.Fatalf("draft.AgentID = %#v, want persisted agent id", draft.AgentID)
+	}
+	empty := SessionDraftFromMetadata(Metadata{AgentID: "   "})
+	if empty.AgentID != nil {
+		t.Fatalf("empty.AgentID = %#v, want nil", empty.AgentID)
 	}
 }
 
@@ -402,22 +450,43 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	ctx := context.Background()
 	store := newLifecycleStore()
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress := &lifecycleProgressRecorder{}
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
-		Response:  llm.Response{StructuredOutput: []byte(`{"ok":"not-bool"}`)},
+		Response: llm.Response{
+			StructuredOutput: []byte(`{"ok":"not-bool"}`),
+			Usage: llm.Usage{
+				TokensIn:    intPtr(21),
+				TokensOut:   intPtr(8),
+				CacheRead:   intPtr(5),
+				CacheCreate: intPtr(2),
+				CostUSD:     floatPtr(0.21),
+			},
+		},
 	})
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
-		Response:  llm.Response{StructuredOutput: []byte(`{"ok":"still-not-bool"}`)},
+		Response: llm.Response{
+			StructuredOutput: []byte(`{"ok":"still-not-bool"}`),
+			Usage: llm.Usage{
+				TokensIn:    intPtr(34),
+				TokensOut:   intPtr(13),
+				CacheRead:   intPtr(9),
+				CacheCreate: intPtr(4),
+				CostUSD:     floatPtr(0.34),
+			},
+		},
 	})
 	req := lifecycleRequest(t, store, adapter)
 	req.FailureStatus = StatusFailedIsolated
+	req.Progress = progress
 	_, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if !IsTaskStatus(err, StatusFailedIsolated) {
 		t.Fatalf("RunStructured invalid output error = %v, want isolated task error", err)
 	}
 
 	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress.loads = nil
 	req.Adapter = cachedAdapter
 	_, err = RunStructured(ctx, req, decodeLifecyclePayload)
 	if !IsTaskStatus(err, StatusFailedIsolated) {
@@ -426,19 +495,66 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
 	}
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached isolated progress loads = %#v, want one cached progress result", progress.loads)
+	}
+	assertUsage(t, "cached isolated progress load", progress.loads[0].result.Usage, 34, 13, 9, 4, 0.34)
+}
+
+func TestRunStructuredLoadsSessionlessIsolatedFailureUsageFromMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := newLifecycleStore()
+	progress := &lifecycleProgressRecorder{}
+	req := lifecycleRequest(t, store, &llm.FakeAdapter{NameValue: "fake-llm"})
+	req.FailureStatus = StatusFailedIsolated
+	req.Progress = progress
+	if err := WriteMetadata(req.Paths, Metadata{
+		SchemaVersion:     SchemaVersion,
+		TaskID:            req.TaskID,
+		Phase:             req.Phase,
+		InputFingerprint:  req.InputFingerprint,
+		Adapter:           "fake-llm",
+		Status:            StatusFailedIsolated,
+		ProviderSessionID: "provider-session-1",
+		Model:             req.Model,
+		Effort:            req.Effort,
+		LogPath:           req.LogPath,
+		Error:             "validation failed",
+		TokensIn:          intPtr(89),
+		TokensOut:         intPtr(55),
+		CacheRead:         intPtr(34),
+		CacheCreate:       intPtr(21),
+		CostUSD:           floatPtr(0.89),
+	}); err != nil {
+		t.Fatalf("WriteMetadata: %v", err)
+	}
+
+	_, err := RunStructured(ctx, req, decodeLifecyclePayload)
+	if !IsTaskStatus(err, StatusFailedIsolated) {
+		t.Fatalf("RunStructured cached isolated error = %v, want cached isolated task error", err)
+	}
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached sessionless isolated progress loads = %#v, want one cached progress result", progress.loads)
+	}
+	assertUsage(t, "cached sessionless isolated progress load", progress.loads[0].result.Usage, 89, 55, 34, 21, 0.89)
 }
 
 func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing.T) {
 	ctx := context.Background()
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress := &lifecycleProgressRecorder{}
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
-		Response:  llm.Response{StructuredOutput: []byte(`{"ok":true}`)},
+		Response: llm.Response{
+			StructuredOutput: []byte(`{"ok":true}`),
+			Usage:            llm.Usage{TokensIn: intPtr(55), TokensOut: intPtr(21), CacheRead: intPtr(13), CacheCreate: intPtr(8), CostUSD: floatPtr(0.55)},
+		},
 	})
 	req := lifecycleRequest(t, nil, adapter)
 	req.RunID = ""
 	req.Store = nil
 	req.AllowNoRunCache = true
+	req.Progress = progress
 
 	first, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
@@ -454,8 +570,14 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 	if meta.SessionRowID != "" {
 		t.Fatalf("metadata session_row_id = %q, want empty for caller-owned cache", meta.SessionRowID)
 	}
+	if meta.TokensIn == nil || *meta.TokensIn != 55 || meta.TokensOut == nil || *meta.TokensOut != 21 ||
+		meta.CacheRead == nil || *meta.CacheRead != 13 || meta.CacheCreate == nil || *meta.CacheCreate != 8 ||
+		meta.CostUSD == nil || *meta.CostUSD != 0.55 {
+		t.Fatalf("metadata usage = %#v, want caller-owned cache usage persisted", meta)
+	}
 
 	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress.loads = nil
 	req.Adapter = cachedAdapter
 	cached, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
@@ -467,6 +589,10 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
 	}
+	if len(progress.loads) != 1 {
+		t.Fatalf("cached caller-owned progress loads = %#v, want one cached progress result", progress.loads)
+	}
+	assertUsage(t, "cached caller-owned progress load", progress.loads[0].result.Usage, 55, 21, 13, 8, 0.55)
 }
 
 func TestValidatePayloadPathRejectsEscape(t *testing.T) {
@@ -511,6 +637,39 @@ type lifecycleStore struct {
 	getErr    error
 	sessions  map[string]ledger.Session
 	inserted  []ledger.Session
+}
+
+type lifecycleProgressRecorder struct {
+	ends  []lifecycleProgressEnd
+	loads []lifecycleProgressLoad
+}
+
+type lifecycleProgressSpan struct {
+	parent *lifecycleProgressRecorder
+	event  ProgressEvent
+}
+
+type lifecycleProgressEnd struct {
+	event  ProgressEvent
+	err    error
+	result ProgressResult
+}
+
+type lifecycleProgressLoad struct {
+	event  ProgressEvent
+	result ProgressResult
+}
+
+func (r *lifecycleProgressRecorder) StartLLMTask(event ProgressEvent) ProgressSpan {
+	return lifecycleProgressSpan{parent: r, event: event}
+}
+
+func (r *lifecycleProgressRecorder) LoadLLMTask(event ProgressEvent, result ProgressResult) {
+	r.loads = append(r.loads, lifecycleProgressLoad{event: event, result: result})
+}
+
+func (s lifecycleProgressSpan) End(err error, result ProgressResult) {
+	s.parent.ends = append(s.parent.ends, lifecycleProgressEnd{event: s.event, err: err, result: result})
 }
 
 func newLifecycleStore() *lifecycleStore {
@@ -578,6 +737,22 @@ func assertFileOmits(t *testing.T, path, unwanted string) {
 
 func intPtr(value int) *int {
 	return &value
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
+}
+
+func assertUsage(t *testing.T, label string, usage llm.Usage, tokensIn, tokensOut, cacheRead, cacheCreate int, costUSD float64) {
+	t.Helper()
+	if usage.TokensIn == nil || *usage.TokensIn != tokensIn ||
+		usage.TokensOut == nil || *usage.TokensOut != tokensOut ||
+		usage.CacheRead == nil || *usage.CacheRead != cacheRead ||
+		usage.CacheCreate == nil || *usage.CacheCreate != cacheCreate ||
+		usage.CostUSD == nil || *usage.CostUSD != costUSD {
+		t.Fatalf("%s usage = %#v, want tokens_in=%d tokens_out=%d cache_read=%d cache_create=%d cost_usd=%g",
+			label, usage, tokensIn, tokensOut, cacheRead, cacheCreate, costUSD)
+	}
 }
 
 var _ Store = (*lifecycleStore)(nil)

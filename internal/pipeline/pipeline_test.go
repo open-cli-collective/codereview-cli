@@ -1078,6 +1078,14 @@ func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
 		secondProgress.loads[1].event.TaskID != orchestratorSelectionStage || secondProgress.loads[1].event.Phase != "selection" {
 		t.Fatalf("second progress loads = %#v, want cached dossier summary and selection loads", secondProgress.loads)
 	}
+	if secondProgress.loads[0].result.Usage.TokensIn == nil || *secondProgress.loads[0].result.Usage.TokensIn != 8 ||
+		secondProgress.loads[0].result.Usage.TokensOut == nil || *secondProgress.loads[0].result.Usage.TokensOut != 2 {
+		t.Fatalf("cached dossier summary usage = %#v, want metadata usage", secondProgress.loads[0].result.Usage)
+	}
+	if secondProgress.loads[1].result.Usage.TokensIn == nil || *secondProgress.loads[1].result.Usage.TokensIn != 10 ||
+		secondProgress.loads[1].result.Usage.TokensOut == nil || *secondProgress.loads[1].result.Usage.TokensOut != 2 {
+		t.Fatalf("cached selection usage = %#v, want metadata usage", secondProgress.loads[1].result.Usage)
+	}
 	if len(secondAdapter.Requests()) != 0 {
 		t.Fatalf("second adapter requests = %d, want cached dossier summary and selection loads", len(secondAdapter.Requests()))
 	}
@@ -3255,53 +3263,6 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 	}
 }
 
-func TestLoadStructuredTaskRejectsValidatedOutputOutsideTaskDir(t *testing.T) {
-	ctx := context.Background()
-	artifacts := ArtifactPathsFromDir(t.TempDir())
-	spec := llmTaskSpec{
-		runID:            "run-output-path",
-		taskID:           orchestratorSelectionStage,
-		phase:            "selection",
-		inputFingerprint: "fingerprint",
-		artifacts:        artifacts,
-		role:             ledger.SessionRoleOrchestrator,
-		model:            "model",
-		effort:           "medium",
-		prompt:           "prompt",
-	}
-	meta := llmTaskMetadata{
-		SchemaVersion:     llmTaskSchemaVersion,
-		TaskID:            spec.taskID,
-		Phase:             spec.phase,
-		InputFingerprint:  spec.inputFingerprint,
-		Adapter:           "fake-llm",
-		Status:            llmTaskStatusSucceeded,
-		SessionRowID:      "session-row",
-		ProviderSessionID: "provider-session",
-	}
-	if err := writeLLMTaskSuccess(artifacts, &meta, []byte(`"ok"`)); err != nil {
-		t.Fatalf("writeLLMTaskSuccess: %v", err)
-	}
-	outsidePath := filepath.Join(t.TempDir(), "validated-output.json")
-	if err := os.WriteFile(outsidePath, []byte(`"outside"`), 0o600); err != nil {
-		t.Fatalf("WriteFile outside: %v", err)
-	}
-	meta.ValidatedOutputPath = outsidePath
-	if err := writeLLMTaskMetadata(artifacts, meta); err != nil {
-		t.Fatalf("writeLLMTaskMetadata: %v", err)
-	}
-
-	_, _, _, ok, err := loadStructuredTask[string](ctx, Options{Adapter: &llm.FakeAdapter{NameValue: "fake-llm"}}, spec, func(data []byte) (string, error) {
-		return string(data), nil
-	})
-	if !ok {
-		t.Fatal("loadStructuredTask ok = false, want metadata considered present")
-	}
-	if err == nil || !strings.Contains(err.Error(), "outside the task artifact directory") {
-		t.Fatalf("loadStructuredTask error = %v, want outside task artifact directory", err)
-	}
-}
-
 func TestRunStructuredTaskRejectsAdapterMismatchBeforeRetry(t *testing.T) {
 	ctx := context.Background()
 	artifacts := ArtifactPathsFromDir(t.TempDir())
@@ -3469,80 +3430,6 @@ func TestRunStructuredTaskReportsProgressOnExecution(t *testing.T) {
 	}
 	if progress.ends[0].result.Status != string(llmTaskStatusSucceeded) || progress.ends[0].result.ProviderSessionID != "task-session" || progress.ends[0].result.Cached {
 		t.Fatalf("end result = %#v, want succeeded uncached task-session", progress.ends[0].result)
-	}
-}
-
-func TestLoadStructuredTaskReportsCachedProgress(t *testing.T) {
-	ctx := context.Background()
-	store := openPipelineStore(t)
-	defer closeStore(t, store)
-	artifacts := ArtifactPathsFromDir(t.TempDir())
-	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
-	allocatePipelineRun(t, store, layout, "run-cached-progress", ledger.PostModeDryRun, fixedNow())
-	spec := llmTaskSpec{
-		runID:            "run-cached-progress",
-		taskID:           orchestratorSelectionStage,
-		phase:            "selection",
-		inputFingerprint: "fingerprint",
-		artifacts:        artifacts,
-		role:             ledger.SessionRoleOrchestrator,
-		model:            "gpt-5.4-mini",
-		effort:           "low",
-		logPath:          filepath.Join(t.TempDir(), "selection.jsonl"),
-		prompt:           "prompt",
-	}
-	session := ledger.Session{
-		SessionRowID:      "session-row",
-		RunID:             spec.runID,
-		ProviderSessionID: "cached-session",
-		Role:              ledger.SessionRoleOrchestrator,
-		Adapter:           "fake-llm",
-		Model:             spec.model,
-		StartedAt:         fixedNow(),
-	}
-	if err := store.InsertSession(ctx, session); err != nil {
-		t.Fatalf("InsertSession: %v", err)
-	}
-	meta := llmTaskMetadata{
-		SchemaVersion:       llmTaskSchemaVersion,
-		TaskID:              spec.taskID,
-		Phase:               spec.phase,
-		InputFingerprint:    spec.inputFingerprint,
-		Adapter:             "fake-llm",
-		Status:              llmTaskStatusSucceeded,
-		SessionRowID:        session.SessionRowID,
-		ProviderSessionID:   session.ProviderSessionID,
-		ValidatedOutputPath: "",
-	}
-	if err := writeLLMTaskSuccess(artifacts, &meta, []byte(`"cached"`)); err != nil {
-		t.Fatalf("writeLLMTaskSuccess: %v", err)
-	}
-	progress := &fakeTaskProgress{}
-
-	value, _, _, ok, err := loadStructuredTask[string](ctx, Options{
-		Adapter:      &llm.FakeAdapter{NameValue: "fake-llm"},
-		Store:        store,
-		TaskProgress: progress,
-	}, spec, func(data []byte) (string, error) {
-		return string(data), nil
-	})
-	if err != nil {
-		t.Fatalf("loadStructuredTask: %v", err)
-	}
-	if !ok || strings.TrimSpace(value) != `"cached"` {
-		t.Fatalf("ok=%v value=%q, want cached task load", ok, value)
-	}
-	if len(progress.loads) != 1 {
-		t.Fatalf("progress loads=%d, want 1", len(progress.loads))
-	}
-	if progress.loads[0].event.TaskID != orchestratorSelectionStage || progress.loads[0].event.Phase != "selection" || progress.loads[0].event.Source != "resume" {
-		t.Fatalf("load event = %#v, want selection resume event", progress.loads[0].event)
-	}
-	if progress.loads[0].event.ResumeSessionID != "cached-session" || progress.loads[0].event.Model != spec.model || progress.loads[0].event.Effort != spec.effort {
-		t.Fatalf("load event fields = %#v, want cached session/model/effort", progress.loads[0].event)
-	}
-	if !progress.loads[0].result.Cached || progress.loads[0].result.Status != string(llmTaskStatusSucceeded) || progress.loads[0].result.ProviderSessionID != "cached-session" {
-		t.Fatalf("load = %#v, want cached succeeded selection task", progress.loads[0])
 	}
 }
 
@@ -4742,6 +4629,96 @@ func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
 	}
 }
 
+func TestDryRunUsagePopulatesRollupAndLedgerSessions(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.ToolVersion = "0.0.0-test"
+	systemTemp := filepath.Join(t.TempDir(), "system-temp")
+	if err := os.MkdirAll(systemTemp, 0o700); err != nil {
+		t.Fatalf("mkdir system temp: %v", err)
+	}
+	t.Setenv("TMPDIR", systemTemp)
+	adapter := &providerOriginUsageAdapter{name: "codex_cli"}
+	adapter.Queue(newCodexUsageScriptAdapter(t, "selection-session", selectionJSON("harness:reviewer", "main.go"), llm.Usage{
+		TokensIn:  intPtr(25475),
+		TokensOut: intPtr(812),
+		CacheRead: intPtr(19712),
+	}))
+	adapter.Queue(newClaudeTranscriptScriptAdapter(t, "reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Finding"), llm.Usage{
+		TokensIn:    intPtr(13),
+		TokensOut:   intPtr(4069),
+		CacheRead:   intPtr(861774),
+		CacheCreate: intPtr(180377),
+	}))
+	adapter.Queue(newCodexUsageScriptAdapter(t, "rollup-session", rollupJSON("comment", []string{"finding-1"}), llm.Usage{
+		TokensIn:  intPtr(11324),
+		TokensOut: intPtr(129),
+		CacheRead: intPtr(4480),
+	}))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-usage" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	workstreamByName := map[string]reviewplan.WorkstreamUsage{}
+	for _, workstream := range result.Plan.Summary.Run.Workstreams {
+		workstreamByName[workstream.Name] = workstream
+	}
+	selection := workstreamByName[orchestratorSelectionStage]
+	if selection.TokensIn == nil || *selection.TokensIn != 25475 ||
+		selection.TokensOut == nil || *selection.TokensOut != 812 ||
+		selection.CacheRead == nil || *selection.CacheRead != 19712 {
+		t.Fatalf("selection workstream = %#v, want Codex usage values", selection)
+	}
+	reviewer := workstreamByName["harness:reviewer"]
+	if reviewer.TokensIn == nil || *reviewer.TokensIn != 13 ||
+		reviewer.TokensOut == nil || *reviewer.TokensOut != 4069 ||
+		reviewer.CacheRead == nil || *reviewer.CacheRead != 861774 ||
+		reviewer.CacheCreate == nil || *reviewer.CacheCreate != 180377 {
+		t.Fatalf("reviewer workstream = %#v, want Claude-style cache values", reviewer)
+	}
+	assertRollupUsageRow(t, result.Artifacts.RollupMarkdown, orchestratorSelectionStage, false)
+	assertRollupUsageRow(t, result.Artifacts.RollupMarkdown, "harness:reviewer", true)
+	assertRollupUsageRow(t, result.Artifacts.RollupMarkdown, orchestratorRollupStage, false)
+	sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListSessionsForRun: %v", err)
+	}
+	sessionByProviderID := map[string]ledger.Session{}
+	for _, session := range sessions {
+		sessionByProviderID[session.ProviderSessionID] = session
+	}
+	if got := sessionByProviderID["selection-session"]; got.TokensIn == nil || *got.TokensIn != 25475 ||
+		got.TokensOut == nil || *got.TokensOut != 812 ||
+		got.CacheRead == nil || *got.CacheRead != 19712 {
+		t.Fatalf("persisted selection session = %#v, want parsed Codex usage", got)
+	}
+	if got := sessionByProviderID["reviewer-session"]; got.TokensIn == nil || *got.TokensIn != 13 ||
+		got.TokensOut == nil || *got.TokensOut != 4069 ||
+		got.CacheRead == nil || *got.CacheRead != 861774 ||
+		got.CacheCreate == nil || *got.CacheCreate != 180377 {
+		t.Fatalf("persisted reviewer session = %#v, want transcript-derived Claude usage", got)
+	}
+	if got := sessionByProviderID["rollup-session"]; got.TokensIn == nil || *got.TokensIn != 11324 ||
+		got.TokensOut == nil || *got.TokensOut != 129 ||
+		got.CacheRead == nil || *got.CacheRead != 4480 {
+		t.Fatalf("persisted rollup session = %#v, want parsed Codex rollup usage", got)
+	}
+}
+
 func TestSharedWorkstreamModel(t *testing.T) {
 	ws := func(name, model string) reviewplan.WorkstreamUsage {
 		return reviewplan.WorkstreamUsage{Name: name, Model: model}
@@ -5302,45 +5279,9 @@ func TestRunReviewerRejectsStaleWorkbenchMetadata(t *testing.T) {
 	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	secondOpts := opts
 	secondOpts.Adapter = secondAdapter
-	runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
-	if err != nil {
-		t.Fatalf("resolveReviewerRuntimeConfig: %v", err)
-	}
-	prompt, promptDeps, err := buildReviewerPrompt(prepared.artifacts, prepared.reviewPR, selection.SelectedAgents[0], agent, patchPaths(prepared.parsed.Patches))
-	if err != nil {
-		t.Fatalf("buildReviewerPrompt: %v", err)
-	}
-	logPath, err := prepared.artifacts.AgentLog(agent.ID)
-	if err != nil {
-		t.Fatalf("AgentLog: %v", err)
-	}
-	agentID := agent.ID
-	fingerprintDeps := append([]string{orchestratorSelectionStage}, promptDeps...)
-	_, _, _, ok, err = loadStructuredTask[llm.Findings](ctx, secondOpts, llmTaskSpec{
-		runID:             run.RunID,
-		taskID:            reviewerTaskID(agent.ID),
-		phase:             "reviewer",
-		dependencyTaskIDs: []string{orchestratorSelectionStage},
-		inputFingerprint:  llmTaskFingerprint(secondOpts.Adapter.Name(), reviewerTaskID(agent.ID), "reviewer", runtimeConfig.model, runtimeConfig.effort, prompt, fingerprintDeps),
-		artifacts:         prepared.artifacts,
-		role:              ledger.SessionRoleReviewer,
-		agentID:           &agentID,
-		model:             runtimeConfig.model,
-		effort:            runtimeConfig.effort,
-		logPath:           logPath,
-		prompt:            prompt,
-	}, func(data []byte) (llm.Findings, error) {
-		return llm.DecodeFindings(data, llm.FindingsOptions{
-			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(reviewerReadableFiles(selection.SelectedAgents[0], patchPaths(prepared.parsed.Patches))),
-			NewFindingID: findingSequence("reload"),
-		})
-	})
-	if !ok {
-		t.Fatal("loadStructuredTask ok = false, want persisted reviewer metadata to be loaded and rejected")
-	}
+	_, _, _, _, err = runReviewer(ctx, secondOpts, req, run.RunID, prepared.reviewPR, prepared.parsed, prepared.artifacts, selection.SelectedAgents[0], agent, []string{orchestratorSelectionStage})
 	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
-		t.Fatalf("loadStructuredTask stale workbench error = %v, want input fingerprint changed", err)
+		t.Fatalf("runReviewer stale workbench error = %v, want input fingerprint changed", err)
 	}
 	if len(secondAdapter.Requests()) != 0 || len(secondAdapter.Resumes()) != 0 {
 		t.Fatalf("adapter invoked despite stale reviewer metadata: starts=%#v resumes=%#v", secondAdapter.Requests(), secondAdapter.Resumes())
@@ -6532,6 +6473,46 @@ func closeStore(t *testing.T, store *ledger.Store) {
 	}
 }
 
+func assertRollupUsageRow(t *testing.T, path string, workstream string, wantCacheCreate bool) {
+	t.Helper()
+	data, err := os.ReadFile(path) // #nosec G304 -- test reads an artifact path produced under t.TempDir.
+	if err != nil {
+		t.Fatalf("read rollup markdown: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		cells := markdownTableCells(line)
+		if len(cells) < 8 || cells[0] != workstream {
+			continue
+		}
+		for _, idx := range []int{2, 3, 4} {
+			if cells[idx] == "" || cells[idx] == "unavailable" {
+				t.Fatalf("rollup usage row %q cell %d = %q, want populated token/cache value in line %q", workstream, idx, cells[idx], line)
+			}
+		}
+		if wantCacheCreate && (cells[5] == "" || cells[5] == "unavailable") {
+			t.Fatalf("rollup usage row %q cache create = %q, want populated value in line %q", workstream, cells[5], line)
+		}
+		if !wantCacheCreate && cells[5] != "unavailable" {
+			t.Fatalf("rollup usage row %q cache create = %q, want unavailable when provider omitted it in line %q", workstream, cells[5], line)
+		}
+		return
+	}
+	t.Fatalf("rollup markdown %s missing usage row for %q:\n%s", path, workstream, data)
+}
+
+func markdownTableCells(line string) []string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
+		return nil
+	}
+	parts := strings.Split(strings.Trim(line, "|"), "|")
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cells = append(cells, strings.TrimSpace(part))
+	}
+	return cells
+}
+
 func allocatePipelineRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID string, mode ledger.PostMode, started time.Time) ledger.Run {
 	t.Helper()
 	artifactPath := filepath.Join(layout.DataRoot, "runs", "github_open-cli_codereview-cli_29", strings.Repeat("a", 40), strings.Repeat("b", 40), "home__review-bot", runID)
@@ -6719,6 +6700,191 @@ func fakeLLMResult(sessionID, structured string, tokensIn, tokensOut int) llm.Fa
 			DurationMS:       123,
 		},
 	}
+}
+
+type providerOriginUsageAdapter struct {
+	mu       sync.Mutex
+	name     string
+	adapters []llm.Adapter
+}
+
+func (a *providerOriginUsageAdapter) Queue(adapter llm.Adapter) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.adapters = append(a.adapters, adapter)
+}
+
+func (a *providerOriginUsageAdapter) Name() string {
+	if strings.TrimSpace(a.name) != "" {
+		return a.name
+	}
+	return "provider_origin_usage"
+}
+
+func (a *providerOriginUsageAdapter) SupportsResume() bool { return false }
+
+func (a *providerOriginUsageAdapter) SupportsCacheAccounting() bool { return false }
+
+func (a *providerOriginUsageAdapter) SupportsCostReporting() bool { return false }
+
+func (a *providerOriginUsageAdapter) SupportsCheckoutReadonly() bool { return true }
+
+func (a *providerOriginUsageAdapter) CheckoutAccessLevel() llm.CheckoutAccessLevel {
+	return llm.CheckoutAccessReadonly
+}
+
+func (a *providerOriginUsageAdapter) Quota(context.Context) (llm.Quota, bool, error) {
+	return llm.Quota{}, false, nil
+}
+
+func (a *providerOriginUsageAdapter) Start(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	a.mu.Lock()
+	if len(a.adapters) == 0 {
+		a.mu.Unlock()
+		return nil, fmt.Errorf("provider origin usage adapter: no queued adapter")
+	}
+	adapter := a.adapters[0]
+	a.adapters = a.adapters[1:]
+	a.mu.Unlock()
+	return adapter.Start(ctx, req)
+}
+
+func (a *providerOriginUsageAdapter) Resume(context.Context, string, llm.Request) (llm.Stream, error) {
+	return nil, fmt.Errorf("provider origin usage adapter: resume unsupported")
+}
+
+func newCodexUsageScriptAdapter(t *testing.T, sessionID string, structured string, usage llm.Usage) llm.Adapter {
+	t.Helper()
+	script := writeExecutableScript(t, "codex-usage", codexUsageScript(t, sessionID, structured, usage))
+	return llm.NewCodexCLIAdapter(llm.SubprocessOptions{
+		Command:                script,
+		Timeout:                5 * time.Second,
+		AllowBestEffortNoTools: true,
+	})
+}
+
+func newClaudeTranscriptScriptAdapter(t *testing.T, sessionID string, structured string, usage llm.Usage) llm.Adapter {
+	t.Helper()
+	configDir := t.TempDir()
+	workDir := t.TempDir()
+	transcriptPath := writeClaudeUsageTranscript(t, usage)
+	state := map[string]any{
+		"state":        "done",
+		"sessionId":    sessionID,
+		"linkScanPath": transcriptPath,
+		"createdAt":    "2026-06-09T20:00:00Z",
+	}
+	stateJSON := mustMarshalJSON(t, state)
+	script := writeExecutableScript(t, "claude-transcript", claudeTranscriptScript(sessionID, structured, stateJSON))
+	return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{
+		Command: script,
+		Env: []string{
+			"CLAUDE_CONFIG_DIR=" + configDir,
+			"CR_CLAUDE_BG_WORK_DIR=" + workDir,
+		},
+		Timeout: 5 * time.Second,
+	})
+}
+
+func codexUsageScript(t *testing.T, sessionID string, structured string, usage llm.Usage) string {
+	t.Helper()
+	usageFields := []string{
+		fmt.Sprintf(`"input_tokens":%d`, mustInt(t, usage.TokensIn, "TokensIn")),
+		fmt.Sprintf(`"output_tokens":%d`, mustInt(t, usage.TokensOut, "TokensOut")),
+	}
+	if usage.CacheRead != nil {
+		usageFields = append(usageFields, fmt.Sprintf(`"cached_input_tokens":%d`, *usage.CacheRead))
+	}
+	if usage.CacheCreate != nil {
+		usageFields = append(usageFields, fmt.Sprintf(`"cache_create":%d`, *usage.CacheCreate))
+	}
+	return fmt.Sprintf(`#!/bin/sh
+cat <<'JSONL'
+{"type":"thread.started","thread_id":%s}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":%s}}
+{"type":"turn.completed","usage":{%s,"reasoning_output_tokens":271}}
+JSONL
+`, mustMarshalJSON(t, sessionID), mustMarshalJSON(t, structured), strings.Join(usageFields, ","))
+}
+
+func claudeTranscriptScript(sessionID string, structured string, stateJSON string) string {
+	return fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  stop|rm) exit 0 ;;
+  agents) printf '[]'; exit 0 ;;
+esac
+add_dir=""
+want_add_dir=0
+for arg in "$@"; do
+  if [ "$want_add_dir" = "1" ]; then
+    if [ -z "$add_dir" ]; then add_dir="$arg"; fi
+    want_add_dir=0
+    continue
+  fi
+  if [ "$arg" = "--add-dir" ]; then want_add_dir=1; fi
+done
+job_id="job-%s"
+mkdir -p "$CLAUDE_CONFIG_DIR/jobs/$job_id" "$add_dir"
+cat > "$CLAUDE_CONFIG_DIR/jobs/$job_id/state.json" <<'STATE'
+%s
+STATE
+cat > "$add_dir/cr-result.json" <<'RESULT'
+%s
+RESULT
+printf 'backgrounded * %%s\n  claude attach %%s\n' "$job_id" "$job_id"
+`, sessionID, stateJSON, structured)
+}
+
+func writeClaudeUsageTranscript(t *testing.T, usage llm.Usage) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-transcript.jsonl")
+	line := map[string]any{
+		"type":      "assistant",
+		"timestamp": "2026-06-09T20:00:02Z",
+		"message": map[string]any{
+			"id": "message-1",
+			"usage": map[string]any{
+				"input_tokens":                mustInt(t, usage.TokensIn, "TokensIn"),
+				"output_tokens":               mustInt(t, usage.TokensOut, "TokensOut"),
+				"cache_read_input_tokens":     mustInt(t, usage.CacheRead, "CacheRead"),
+				"cache_creation_input_tokens": mustInt(t, usage.CacheCreate, "CacheCreate"),
+			},
+		},
+	}
+	data := mustMarshalJSON(t, line) + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write Claude usage transcript: %v", err)
+	}
+	return path
+}
+
+func writeExecutableScript(t *testing.T, name string, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name+".sh")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write %s script: %v", name, err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil { // #nosec G302 -- test helper script must be executable and lives under t.TempDir.
+		t.Fatalf("chmod %s script: %v", name, err)
+	}
+	return path
+}
+
+func mustMarshalJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON: %v", err)
+	}
+	return string(data)
+}
+
+func mustInt(t *testing.T, value *int, name string) int {
+	t.Helper()
+	if value == nil {
+		t.Fatalf("%s must be set", name)
+	}
+	return *value
 }
 
 func selectionJSON(agentID, file string) string {

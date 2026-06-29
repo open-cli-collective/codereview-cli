@@ -175,6 +175,10 @@ The current load-bearing progress fields are:
 - `session_id`
 - `validation_attempts`
 
+Progress may also include optional telemetry fields when the provider reports
+them: `tokens_in`, `tokens_out`, `cache_read`, and `cache_create`. These fields
+are observable breadcrumbs, not resume inputs.
+
 Target task identities are:
 
 - `dossier-discussion-summary`
