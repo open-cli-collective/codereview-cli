@@ -1078,6 +1078,14 @@ func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
 		secondProgress.loads[1].event.TaskID != orchestratorSelectionStage || secondProgress.loads[1].event.Phase != "selection" {
 		t.Fatalf("second progress loads = %#v, want cached dossier summary and selection loads", secondProgress.loads)
 	}
+	if secondProgress.loads[0].result.Usage.TokensIn == nil || *secondProgress.loads[0].result.Usage.TokensIn != 8 ||
+		secondProgress.loads[0].result.Usage.TokensOut == nil || *secondProgress.loads[0].result.Usage.TokensOut != 2 {
+		t.Fatalf("cached dossier summary usage = %#v, want metadata usage", secondProgress.loads[0].result.Usage)
+	}
+	if secondProgress.loads[1].result.Usage.TokensIn == nil || *secondProgress.loads[1].result.Usage.TokensIn != 10 ||
+		secondProgress.loads[1].result.Usage.TokensOut == nil || *secondProgress.loads[1].result.Usage.TokensOut != 2 {
+		t.Fatalf("cached selection usage = %#v, want metadata usage", secondProgress.loads[1].result.Usage)
+	}
 	if len(secondAdapter.Requests()) != 0 {
 		t.Fatalf("second adapter requests = %d, want cached dossier summary and selection loads", len(secondAdapter.Requests()))
 	}

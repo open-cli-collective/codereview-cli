@@ -1494,7 +1494,7 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 		}
 		if strings.TrimSpace(spec.runID) == "" {
 			draft := sessionDraftFromTaskMetadata(meta)
-			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, llm.Usage{}))
+			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.response.Usage))
 			return value, draft, ledger.Session{}, true, nil
 		}
 		session, err := loadTaskSession(ctx, opts, spec.runID, meta)
@@ -1510,7 +1510,7 @@ func loadStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSp
 		}
 		if strings.TrimSpace(spec.runID) == "" {
 			draft := sessionDraftFromTaskMetadata(meta)
-			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, llm.Usage{}))
+			loadLLMTaskProgress(opts, newLLMTaskProgressEvent(spec, taskResumeSessionID(meta)), llmTaskProgressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.response.Usage))
 			return zero, draft, ledger.Session{}, true, &llmTaskError{status: llmTaskStatusFailedIsolated, err: errors.New(taskErrorText(meta))}
 		}
 		session, draft, err := loadOptionalTaskSession(ctx, opts, spec.runID, meta)
@@ -1665,6 +1665,15 @@ func sessionDraftFromTaskMetadata(meta llmTaskMetadata) sessionDraft {
 		adapter:                   meta.Adapter,
 		model:                     meta.Model,
 		effort:                    meta.Effort,
+		response: llm.Response{
+			Usage: llm.Usage{
+				TokensIn:    meta.TokensIn,
+				TokensOut:   meta.TokensOut,
+				CacheRead:   meta.CacheRead,
+				CacheCreate: meta.CacheCreate,
+				CostUSD:     meta.CostUSD,
+			},
+		},
 	}
 }
 

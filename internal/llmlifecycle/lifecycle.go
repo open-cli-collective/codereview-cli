@@ -214,6 +214,11 @@ type Metadata struct {
 	LogPath             string            `json:"log_path,omitempty"`
 	ValidatedOutputPath string            `json:"validated_output_path,omitempty"`
 	Error               string            `json:"error,omitempty"`
+	TokensIn            *int              `json:"tokens_in,omitempty"`
+	TokensOut           *int              `json:"tokens_out,omitempty"`
+	CacheRead           *int              `json:"cache_read,omitempty"`
+	CacheCreate         *int              `json:"cache_create,omitempty"`
+	CostUSD             *float64          `json:"cost_usd,omitempty"`
 	Attempts            []AttemptMetadata `json:"attempts,omitempty"`
 }
 
@@ -396,7 +401,9 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		}
 		if strings.TrimSpace(req.RunID) == "" {
 			draft := SessionDraftFromMetadata(meta)
-			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
+			progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true)
+			progress.Usage = draft.Response.Usage
+			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 			return Result[T]{Value: value, Draft: draft, Cached: true}, true, nil
 		}
 		if req.Store == nil {
@@ -417,7 +424,9 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		}
 		if strings.TrimSpace(req.RunID) == "" {
 			draft := SessionDraftFromMetadata(meta)
-			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true))
+			progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true)
+			progress.Usage = draft.Response.Usage
+			loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 			return Result[T]{Draft: draft, Cached: true}, true, &TaskError{status: StatusFailedIsolated, err: errors.New(TaskErrorText(meta))}
 		}
 		if req.Store == nil {
@@ -633,6 +642,11 @@ func BaseMetadata(req Request, draft SessionDraft) Metadata {
 		Model:             draft.Model,
 		Effort:            draft.Effort,
 		LogPath:           req.LogPath,
+		TokensIn:          draft.Response.Usage.TokensIn,
+		TokensOut:         draft.Response.Usage.TokensOut,
+		CacheRead:         draft.Response.Usage.CacheRead,
+		CacheCreate:       draft.Response.Usage.CacheCreate,
+		CostUSD:           draft.Response.Usage.CostUSD,
 	}
 }
 
@@ -758,6 +772,15 @@ func SessionDraftFromMetadata(meta Metadata) SessionDraft {
 		Adapter:                   meta.Adapter,
 		Model:                     meta.Model,
 		Effort:                    meta.Effort,
+		Response: llm.Response{
+			Usage: llm.Usage{
+				TokensIn:    meta.TokensIn,
+				TokensOut:   meta.TokensOut,
+				CacheRead:   meta.CacheRead,
+				CacheCreate: meta.CacheCreate,
+				CostUSD:     meta.CostUSD,
+			},
+		},
 	}
 }
 

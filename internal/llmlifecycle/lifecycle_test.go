@@ -455,14 +455,19 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing.T) {
 	ctx := context.Background()
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress := &lifecycleProgressRecorder{}
 	adapter.Queue(llm.FakeResult{
 		SessionID: "provider-session-1",
-		Response:  llm.Response{StructuredOutput: []byte(`{"ok":true}`)},
+		Response: llm.Response{
+			StructuredOutput: []byte(`{"ok":true}`),
+			Usage:            llm.Usage{TokensIn: intPtr(55), TokensOut: intPtr(21)},
+		},
 	})
 	req := lifecycleRequest(t, nil, adapter)
 	req.RunID = ""
 	req.Store = nil
 	req.AllowNoRunCache = true
+	req.Progress = progress
 
 	first, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
@@ -478,8 +483,12 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 	if meta.SessionRowID != "" {
 		t.Fatalf("metadata session_row_id = %q, want empty for caller-owned cache", meta.SessionRowID)
 	}
+	if meta.TokensIn == nil || *meta.TokensIn != 55 || meta.TokensOut == nil || *meta.TokensOut != 21 {
+		t.Fatalf("metadata usage = %#v, want caller-owned cache usage persisted", meta)
+	}
 
 	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	progress.loads = nil
 	req.Adapter = cachedAdapter
 	cached, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	if err != nil {
@@ -490,6 +499,10 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 	}
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
+	}
+	if len(progress.loads) != 1 || progress.loads[0].result.Usage.TokensIn == nil || *progress.loads[0].result.Usage.TokensIn != 55 ||
+		progress.loads[0].result.Usage.TokensOut == nil || *progress.loads[0].result.Usage.TokensOut != 21 {
+		t.Fatalf("cached caller-owned progress loads = %#v, want usage loaded from metadata", progress.loads)
 	}
 }
 
