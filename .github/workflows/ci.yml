@@ -58,6 +58,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+  test-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-scripts
+
   static-smoke:
     runs-on: ubuntu-latest
     env:
