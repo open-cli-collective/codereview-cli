@@ -4322,6 +4322,8 @@ func repoGuidanceUnavailableReason(sources []agents.SourceInfo) string {
 	}
 	var reason string
 	switch source.Status {
+	case agents.SourceStatusAvailable:
+		return ""
 	case agents.SourceStatusMissing:
 		reason = "Base branch `.codereview/agents/` was not present for this review."
 	case agents.SourceStatusUnreadable:
