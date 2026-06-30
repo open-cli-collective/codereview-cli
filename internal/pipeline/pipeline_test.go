@@ -2897,9 +2897,18 @@ func TestDryRunNoDiffWithMissingRepoGuidanceRequestsChanges(t *testing.T) {
 	if result.Plan.Outcome != reviewplan.OutcomeRequestChanges {
 		t.Fatalf("Plan.Outcome = %q, want %q", result.Plan.Outcome, reviewplan.OutcomeRequestChanges)
 	}
-	submit := planActionsOfKind(result.Plan.Actions, reviewplan.ActionKindSubmitReview)
-	if len(submit) != 1 || submit[0].SubmitReview.Event != review.ReviewEventRequestChanges {
-		t.Fatalf("submit actions = %#v, want single request-changes submit", submit)
+	var submitCount int
+	for _, action := range result.Plan.Actions {
+		if action.Kind != reviewplan.ActionKindSubmitReview {
+			continue
+		}
+		submitCount++
+		if action.SubmitReview.Event != review.ReviewEventRequestChanges {
+			t.Fatalf("submit event = %q, want %q", action.SubmitReview.Event, review.ReviewEventRequestChanges)
+		}
+	}
+	if submitCount != 1 {
+		t.Fatalf("submit action count = %d, want 1", submitCount)
 	}
 }
 
