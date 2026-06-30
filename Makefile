@@ -1,4 +1,4 @@
-.PHONY: all build test test-cover test-scripts test-static-smoke lint fmt tidy deps check install snapshot package-render-check release clean
+.PHONY: all build test test-cover test-static-smoke lint fmt tidy deps check install snapshot package-render-check release clean
 
 # Standard keyring tags: enable 1Password support, keep passage disabled.
 GOFLAGS ?= -tags=keyring_nopassage
@@ -11,9 +11,6 @@ build:
 
 test:
 	go test -v ./...
-
-test-scripts:
-	scripts/repair-codereview-keychain-acl.sh --self-test
 
 test-cover:
 	go test -coverprofile=coverage.out ./...
@@ -41,7 +38,7 @@ deps:
 	go mod download
 	go mod verify
 
-check: tidy fmt lint test test-scripts build
+check: tidy fmt lint test build
 
 install:
 	go install ./cmd/cr

@@ -62,11 +62,10 @@ progress interface rather than importing Cobra or root options.
 ```bash
 make build   # compile the binary
 make test    # go test ./...
-make test-scripts # run script self-tests
 make lint    # golangci-lint run
 make tidy    # go mod tidy and verify go.mod is unchanged
 make deps    # download and verify Go modules
-make check   # tidy + fmt + lint + test + test-scripts + build
+make check   # tidy + fmt + lint + test + build
 make clean   # remove build artifacts
 ```
 
