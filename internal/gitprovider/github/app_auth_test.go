@@ -56,6 +56,13 @@ func TestNewFromGitConfigBuildsGitHubAppClientAndRefreshesToken(t *testing.T) {
 				Head:  branchResponse{Ref: "feature", SHA: "head-sha"},
 				Base:  branchResponse{Ref: "main", SHA: "base-sha"},
 			})
+		case "/repos/open-cli/codereview-cli/git/ref/heads/main":
+			apiAuths = append(apiAuths, r.Header.Get("Authorization"))
+			writeJSON(t, w, gitRefResponse{
+				Object: struct {
+					SHA string `json:"sha"`
+				}{SHA: "current-base-sha"},
+			})
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
 		}
@@ -90,7 +97,12 @@ func TestNewFromGitConfigBuildsGitHubAppClientAndRefreshesToken(t *testing.T) {
 	if _, err := client.GetPR(context.Background(), ref); err != nil {
 		t.Fatalf("GetPR refresh: %v", err)
 	}
-	wantAuths := []string{"Bearer installation-token-1", "Bearer installation-token-2"}
+	wantAuths := []string{
+		"Bearer installation-token-1",
+		"Bearer installation-token-1",
+		"Bearer installation-token-2",
+		"Bearer installation-token-2",
+	}
 	if fmt.Sprint(apiAuths) != fmt.Sprint(wantAuths) {
 		t.Fatalf("API auths = %#v, want %#v", apiAuths, wantAuths)
 	}

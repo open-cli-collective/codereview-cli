@@ -40,6 +40,12 @@ func TestRESTReadMethodsMapResponses(t *testing.T) {
 					Owner: userResponse{Login: "open cli"},
 				}},
 			})
+		case r.URL.EscapedPath() == "/repos/open%20cli/repo+name/git/ref/heads/main":
+			writeJSON(t, w, gitRefResponse{
+				Object: struct {
+					SHA string `json:"sha"`
+				}{SHA: "current-base-sha"},
+			})
 		case r.URL.EscapedPath() == "/repos/open%20cli/repo+name/contents/dir/file%20name.go":
 			rawAccept = r.Header.Get("Accept")
 			if got := r.URL.Query().Get("ref"); got != "refs/heads/feature branch" {
@@ -76,7 +82,7 @@ func TestRESTReadMethodsMapResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPR: %v", err)
 	}
-	if pr.State != gitprovider.PRStateMerged || pr.Head.Owner != "author" || pr.Base.SHA != "base-sha" {
+	if pr.State != gitprovider.PRStateMerged || pr.Head.Owner != "author" || pr.Base.SHA != "current-base-sha" {
 		t.Fatalf("GetPR = %#v, want merged PR with branch repo identity", pr)
 	}
 	diff, err := client.GetDiff(context.Background(), ref)
@@ -149,18 +155,26 @@ func TestGetPRStateMapping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.EscapedPath() != "/repos/open%20cli/repo+name/pulls/42" {
+				switch r.URL.EscapedPath() {
+				case "/repos/open%20cli/repo+name/pulls/42":
+					writeJSON(t, w, prResponse{
+						Title:   "State test",
+						HTMLURL: "https://github.com/open-cli/repo/pull/42",
+						State:   tt.state,
+						Merged:  tt.merged,
+						User:    userResponse{Login: "author"},
+						Head:    branchResponse{Ref: "feature", SHA: "head-sha"},
+						Base:    branchResponse{Ref: "main", SHA: "base-sha"},
+					})
+				case "/repos/open%20cli/repo+name/git/ref/heads/main":
+					writeJSON(t, w, gitRefResponse{
+						Object: struct {
+							SHA string `json:"sha"`
+						}{SHA: "current-base-sha"},
+					})
+				default:
 					t.Fatalf("unexpected request path %s", r.URL.String())
 				}
-				writeJSON(t, w, prResponse{
-					Title:   "State test",
-					HTMLURL: "https://github.com/open-cli/repo/pull/42",
-					State:   tt.state,
-					Merged:  tt.merged,
-					User:    userResponse{Login: "author"},
-					Head:    branchResponse{Ref: "feature", SHA: "head-sha"},
-					Base:    branchResponse{Ref: "main", SHA: "base-sha"},
-				})
 			}))
 			defer server.Close()
 			client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
@@ -173,6 +187,41 @@ func TestGetPRStateMapping(t *testing.T) {
 				t.Fatalf("GetPR state = %q, want %q", pr.State, tt.want)
 			}
 		})
+	}
+}
+
+func TestGetPRResolvesCurrentBaseBranchTargetForSlashNamedBranch(t *testing.T) {
+	ref := testPRRef()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.EscapedPath() {
+		case "/repos/open%20cli/repo+name/pulls/42":
+			writeJSON(t, w, prResponse{
+				Title:   "Slash branch",
+				HTMLURL: "https://github.com/open-cli/repo/pull/42",
+				State:   "open",
+				User:    userResponse{Login: "author"},
+				Head:    branchResponse{Ref: "feature", SHA: "head-sha"},
+				Base:    branchResponse{Ref: "release/2026.06", SHA: "stale-base-sha"},
+			})
+		case "/repos/open%20cli/repo+name/git/ref/heads/release/2026.06":
+			writeJSON(t, w, gitRefResponse{
+				Object: struct {
+					SHA string `json:"sha"`
+				}{SHA: "current-release-sha"},
+			})
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	pr, err := client.GetPR(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("GetPR: %v", err)
+	}
+	if pr.Base.Name != "release/2026.06" || pr.Base.SHA != "current-release-sha" {
+		t.Fatalf("base = %#v, want current release branch target", pr.Base)
 	}
 }
 

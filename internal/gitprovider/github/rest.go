@@ -29,6 +29,12 @@ type branchResponse struct {
 	Repo *repoResponse `json:"repo"`
 }
 
+type gitRefResponse struct {
+	Object struct {
+		SHA string `json:"sha"`
+	} `json:"object"`
+}
+
 type prResponse struct {
 	Title   string         `json:"title"`
 	Body    string         `json:"body"`
@@ -101,6 +107,12 @@ func (c *Client) GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.
 	if err != nil {
 		return gitprovider.PR{}, err
 	}
+	base := c.branchRef(payload.Base, ref)
+	baseSHA, err := c.resolveBranchHeadSHA(ctx, base)
+	if err != nil {
+		return gitprovider.PR{}, err
+	}
+	base.SHA = baseSHA
 	return gitprovider.PR{
 		Ref:    ref,
 		Title:  payload.Title,
@@ -109,7 +121,7 @@ func (c *Client) GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.
 		State:  state,
 		Author: identityFromUser(payload.User),
 		Head:   c.branchRef(payload.Head, ref),
-		Base:   c.branchRef(payload.Base, ref),
+		Base:   base,
 	}, nil
 }
 
@@ -306,6 +318,23 @@ func identityFromUser(user userResponse) gitprovider.Identity {
 		ID:          stringIDFromInt(user.ID),
 		DisplayName: user.Name,
 	}
+}
+
+func (c *Client) resolveBranchHeadSHA(ctx context.Context, branch gitprovider.PRBranchRef) (string, error) {
+	if strings.TrimSpace(branch.Name) == "" {
+		return "", fmt.Errorf("%w: branch ref name is required", ErrValidation)
+	}
+	endpoint := restURL(c.baseURL, "repos", branch.Owner, branch.Repo, "git", "ref", "heads", branch.Name)
+	var payload gitRefResponse
+	_, _, err := c.doREST(ctx, gitprovider.OperationGetPR, http.MethodGet, endpoint, acceptJSON, &payload)
+	if err != nil {
+		return "", err
+	}
+	sha := strings.TrimSpace(payload.Object.SHA)
+	if sha == "" {
+		return "", fmt.Errorf("%w: branch %q resolved without a target SHA", ErrValidation, branch.Name)
+	}
+	return sha, nil
 }
 
 func (c *Client) branchRef(branch branchResponse, ref gitprovider.PRRef) gitprovider.PRBranchRef {
