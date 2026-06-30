@@ -426,7 +426,7 @@ func TestRepoLoadClassifiesMissingNestedFilesAsUnreadableSource(t *testing.T) {
 	reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: categoryPath + "/agent", Type: "tree"})
 	reader.addFile(ref, pr.Base.SHA, categoryPath+"/agent/index.yaml", []byte(agentIndexYAML("agent", "desc", "medium", "medium")))
 
-	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}})
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestRepoLoadClassifiesInvalidCatalogAsInvalidSource(t *testing.T) {
 	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
 	reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: other\ndescription: cat category\nowner: owner\n"))
 
-	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}})
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
 			pr := testPR("base-sha", "head-sha")
 			reader := newRepoReader()
 			tt.setup(reader, ref, pr)
-			catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}})
+			catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
 			if err != nil {
 				t.Fatalf("Load error = %v, want nil", err)
 			}
@@ -679,6 +679,20 @@ func TestRepoLoadRejectsMismatchedSourceRef(t *testing.T) {
 	reader.addAgent(t, ref, pr.Base.SHA, "cat", "agent", "desc", "prompt")
 
 	_, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: otherRef, PR: pr}})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Load error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestRepoLoadRejectsInvalidCatalogByDefault(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	categoryPath := repoAgentsRoot + "/cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: other\ndescription: cat category\nowner: owner\n"))
+
+	_, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("Load error = %v, want ErrInvalid", err)
 	}

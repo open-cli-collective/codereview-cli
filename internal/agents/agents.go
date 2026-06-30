@@ -166,6 +166,7 @@ type LoadOptions struct {
 	Repo                      *RepoSource
 	FlagDirs                  []string
 	RequireSafeProfileSources bool
+	AllowSoftRepoFailures     bool
 }
 
 // RepoInfo describes the trusted repo-local source, when one was considered.
@@ -234,7 +235,7 @@ func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
 			SHA:        provenance.SHA,
 			Provenance: provenance.String(),
 		}
-		agents, repoSource, err := loadRepoSource(ctx, *opts.Repo, provenance)
+		agents, repoSource, err := loadRepoSource(ctx, *opts.Repo, provenance, opts.AllowSoftRepoFailures)
 		if err != nil {
 			return Catalog{}, err
 		}
@@ -431,7 +432,7 @@ func readFileAgent(agentPath string, category Category, pathName string, provena
 	return newAgent(category, pathName, index, string(prompt), provenance), nil
 }
 
-func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance) ([]Agent, SourceInfo, error) {
+func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance, allowSoftFailures bool) ([]Agent, SourceInfo, error) {
 	repoSource := provenance.SourceInfo()
 	if source.Reader == nil {
 		return nil, repoSource, fmt.Errorf("%w: repo reader is required", ErrInvalid)
@@ -469,33 +470,48 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 			continue
 		}
 		if err := validateName("category", categoryName); err != nil {
-			return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+			if allowSoftFailures {
+				return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+			}
+			return nil, repoSource, err
 		}
 		categoryPath := path.Join(repoAgentsRoot, categoryName)
 		category, err := readRepoCategory(ctx, source.Reader, source.Ref, baseSHA, categoryPath, categoryName)
 		if err != nil {
 			if classified, ok := classifyRepoCatalogError(repoSource, err); ok {
-				return nil, classified, nil
+				if allowSoftFailures {
+					return nil, classified, nil
+				}
+				return nil, repoSource, err
 			}
 			return nil, repoSource, err
 		}
 		categoryAgents, err := readRepoAgents(ctx, source.Reader, source.Ref, baseSHA, categoryPath, category, provenance)
 		if err != nil {
 			if classified, ok := classifyRepoCatalogError(repoSource, err); ok {
-				return nil, classified, nil
+				if allowSoftFailures {
+					return nil, classified, nil
+				}
+				return nil, repoSource, err
 			}
 			return nil, repoSource, err
 		}
 		if len(categoryAgents) == 0 {
 			err := fmt.Errorf("%w: repo source %s category %q contains no agents", ErrInvalid, repoAgentsRoot, categoryName)
-			return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+			if allowSoftFailures {
+				return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+			}
+			return nil, repoSource, err
 		}
 		loadedAgent = true
 		agents = append(agents, categoryAgents...)
 	}
 	if !loadedAgent {
 		err := fmt.Errorf("%w: repo source %s contains no agents", ErrInvalid, repoAgentsRoot)
-		return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+		if allowSoftFailures {
+			return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+		}
+		return nil, repoSource, err
 	}
 	return agents, repoSource, nil
 }

@@ -988,6 +988,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		Repo:                      &agents.RepoSource{Reader: opts.Provider, Ref: req.PRRef, PR: pr},
 		FlagDirs:                  append([]string(nil), req.AgentDirs...),
 		RequireSafeProfileSources: true,
+		AllowSoftRepoFailures:     true,
 	})
 	if err != nil {
 		return preparedSelectionContext{}, err
@@ -1935,7 +1936,8 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 		Rollup:                  rollup,
 		ThreadActions:           threadActions,
 		ThreadResponses:         append([]review.ThreadResponseAction(nil), runInputs.threadResponses...),
-		RepoGuidanceUnavailable: repoGuidanceUnavailableReason(runInputs.repoSources),
+		RepoGuidanceUnavailable:       repoGuidanceUnavailableReason(runInputs.repoSources) != "",
+		RepoGuidanceUnavailableReason: repoGuidanceUnavailableReason(runInputs.repoSources),
 		EventOptions: reviewplan.EventOptions{
 			MajorEventRequestsChanges: req.MajorRequestChanges,
 			PostingIdentityIsPRAuthor: sameIdentity(pr.Author, req.PostingIdentity),

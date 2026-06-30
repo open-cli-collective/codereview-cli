@@ -487,7 +487,8 @@ func TestBuildForcesRequestChangesWhenRepoGuidanceUnavailable(t *testing.T) {
 		Decision: review.ThreadDecisionSummarizeAndResolve,
 		Summary:  "will be ignored",
 	}}
-	req.RepoGuidanceUnavailable = "Base branch `.codereview/agents/` was not present for this review."
+	req.RepoGuidanceUnavailable = true
+	req.RepoGuidanceUnavailableReason = "Base branch `.codereview/agents/` was not present for this review."
 
 	plan, err := Build(req)
 	if err != nil {
@@ -506,7 +507,7 @@ func TestBuildForcesRequestChangesWhenRepoGuidanceUnavailable(t *testing.T) {
 	if strings.Contains(plan.RollupMarkdown, "will be ignored") {
 		t.Fatalf("rollup = %q, want no thread-action content", plan.RollupMarkdown)
 	}
-	if !strings.Contains(plan.RollupMarkdown, "trusted repo-local review guidance") || !strings.Contains(plan.RollupMarkdown, req.RepoGuidanceUnavailable) {
+	if !strings.Contains(plan.RollupMarkdown, "trusted repo-local review guidance") || !strings.Contains(plan.RollupMarkdown, req.RepoGuidanceUnavailableReason) {
 		t.Fatalf("rollup = %q, want repo guidance explanation", plan.RollupMarkdown)
 	}
 }
@@ -516,7 +517,8 @@ func TestBuildNoDiffTakesPrecedenceOverRepoGuidanceUnavailable(t *testing.T) {
 	req.NoDiff = true
 	req.Findings = nil
 	req.Rollup = review.Rollup{}
-	req.RepoGuidanceUnavailable = "Base branch `.codereview/agents/` was not present for this review."
+	req.RepoGuidanceUnavailable = true
+	req.RepoGuidanceUnavailableReason = "Base branch `.codereview/agents/` was not present for this review."
 
 	plan, err := Build(req)
 	if err != nil {
@@ -528,7 +530,7 @@ func TestBuildNoDiffTakesPrecedenceOverRepoGuidanceUnavailable(t *testing.T) {
 	if got := actionKinds(plan.Actions); !reflect.DeepEqual(got, []ActionKind{ActionKindRollupComment}) {
 		t.Fatalf("action kinds = %#v, want rollup only", got)
 	}
-	if strings.Contains(plan.RollupMarkdown, req.RepoGuidanceUnavailable) {
+	if strings.Contains(plan.RollupMarkdown, req.RepoGuidanceUnavailableReason) {
 		t.Fatalf("rollup = %q, want no repo guidance override in no-diff path", plan.RollupMarkdown)
 	}
 }
