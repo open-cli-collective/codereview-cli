@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
-	github.com/open-cli-collective/cli-common v0.4.1-0.20260629140955-3d3f982b83c3
+	github.com/open-cli-collective/cli-common v0.4.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.44.0
