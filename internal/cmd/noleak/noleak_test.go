@@ -394,16 +394,22 @@ func newNoLeakWorkbenchFixture(t *testing.T) noLeakWorkbenchFixture {
 	noLeakGitMustSucceed(t, repoDir, "config", "user.name", "NoLeak Test")
 	noLeakGitMustSucceed(t, repoDir, "config", "user.email", "noleak@example.com")
 	noLeakGitMustSucceed(t, repoDir, "remote", "add", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
-	if err := os.MkdirAll(filepath.Join(repoDir, ".codereview", "agents"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(repoDir, ".codereview", "agents", "harness", "reviewer"), 0o700); err != nil {
 		t.Fatalf("mkdir repo guidance: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, ".codereview", "agents", ".keep"), []byte("repo guidance placeholder\n"), 0o600); err != nil {
-		t.Fatalf("write repo guidance: %v", err)
+	if err := os.WriteFile(filepath.Join(repoDir, ".codereview", "agents", "harness", "index.yaml"), []byte("name: harness\ndescription: harness category\nowner: owner\n"), 0o600); err != nil {
+		t.Fatalf("write repo category: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".codereview", "agents", "harness", "reviewer", "index.yaml"), []byte("name: reviewer\ndescription: noleak repo reviewer\nmodel_tier: medium\neffort: medium\n"), 0o600); err != nil {
+		t.Fatalf("write repo agent index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".codereview", "agents", "harness", "reviewer", "prompt.md"), []byte("Review changed Go files without mentioning credentials.\n"), 0o600); err != nil {
+		t.Fatalf("write repo agent prompt: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = false\n"), 0o600); err != nil {
 		t.Fatalf("write main.go: %v", err)
 	}
-	noLeakGitMustSucceed(t, repoDir, "add", ".codereview/agents/.keep", "main.go")
+	noLeakGitMustSucceed(t, repoDir, "add", ".codereview/agents", "main.go")
 	noLeakGitMustSucceed(t, repoDir, "commit", "-m", "base")
 	baseSHA := strings.TrimSpace(noLeakGitOutput(t, repoDir, "rev-parse", "HEAD"))
 	noLeakGitMustSucceed(t, repoDir, "checkout", "-b", "feature")

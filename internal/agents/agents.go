@@ -459,6 +459,7 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 	sortTreeEntries(rootEntries)
 
 	var agents []Agent
+	loadedAgent := false
 	for _, entry := range rootEntries {
 		if entry.Type != "tree" {
 			continue
@@ -485,7 +486,16 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 			}
 			return nil, repoSource, err
 		}
+		if len(categoryAgents) == 0 {
+			err := fmt.Errorf("%w: repo source %s category %q contains no agents", ErrInvalid, repoAgentsRoot, categoryName)
+			return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+		}
+		loadedAgent = true
 		agents = append(agents, categoryAgents...)
+	}
+	if !loadedAgent {
+		err := fmt.Errorf("%w: repo source %s contains no agents", ErrInvalid, repoAgentsRoot)
+		return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
 	}
 	return agents, repoSource, nil
 }

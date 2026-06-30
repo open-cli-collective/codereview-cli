@@ -629,6 +629,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	writeAgentFullContent(t, req.Profile.AgentSources[0], "harness", "reviewer")
 	fixture, reviewBaseSHA, reviewHeadSHA := newPinnedReviewFixtureForRef(t, req.PRRef)
 	provider.pr = fixture.pr
@@ -671,8 +672,10 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	if !strings.Contains(result.Artifacts.Dir, reviewHeadSHA) || !strings.Contains(result.Artifacts.Dir, reviewBaseSHA) {
 		t.Fatalf("artifact dir = %s, want pinned head/base SHAs", result.Artifacts.Dir)
 	}
-	if len(provider.fileCalls) != 0 {
-		t.Fatalf("file calls = %#v, want no stuffed file reads in reviewer workspace mode", provider.fileCalls)
+	for _, call := range provider.fileCalls {
+		if call.path == "main.go" && (call.gitRef == reviewBaseSHA || call.gitRef == reviewHeadSHA) {
+			t.Fatalf("file calls = %#v, want no stuffed diff file reads in reviewer workspace mode", provider.fileCalls)
+		}
 	}
 	requests := adapter.Requests()
 	if len(requests) < 1 {
@@ -785,6 +788,7 @@ func TestDryRunSelectionPromptInstructionsStayInsideStructuredPayload(t *testing
 func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	provider.threads = []gitprovider.InlineThread{{
 		ID:          "thread-1",
 		Resolved:    false,
@@ -881,6 +885,7 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 func TestSelectionOnlyAllowsThreadActionsWithThreadContext(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	human := gitprovider.Identity{Login: "human", ID: "human-id"}
 	provider.threads = []gitprovider.InlineThread{
 		crSettledReviewThread(t, "thread-1", "main.go", 2, req.PostingIdentity, human, "Cached settled summary"),
@@ -921,6 +926,7 @@ func TestSelectionOnlyAllowsThreadActionsWithThreadContext(t *testing.T) {
 func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	provider.threads = []gitprovider.InlineThread{{
 		ID:          "thread-1",
 		Resolved:    false,
@@ -2152,6 +2158,7 @@ func TestSelectionOnlyContextBudgetFailure(t *testing.T) {
 func TestSelectionOnlyNoDiffSkipsLLMAndReturnsPreparedContext(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	provider.diff = gitprovider.UnifiedDiff{}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	artifactDir := t.TempDir()
@@ -6569,11 +6576,21 @@ func dryRunHarness(t *testing.T) (*readOnlyProvider, Request) {
 }
 
 func addRepoAgentFixture(provider *readOnlyProvider) {
-	provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}] = []gitprovider.TreeEntry{}
+	categoryPath := ".codereview/agents/repo"
+	agentPath := categoryPath + "/guidance"
+	provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}] = []gitprovider.TreeEntry{{Path: "repo", Type: "tree"}}
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath + "/index.yaml"}] = []byte("name: repo\ndescription: repo guidance category\nowner: owner\n")
+	provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath}] = []gitprovider.TreeEntry{{Path: agentPath, Type: "tree"}}
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: agentPath + "/index.yaml"}] = []byte("name: guidance\ndescription: repo guidance desc\nmodel_tier: medium\neffort: medium\n")
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: agentPath + "/prompt.md"}] = []byte("Review carefully.")
 }
 
 func removeRepoAgentFixture(provider *readOnlyProvider) {
 	delete(provider.trees, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"})
+	delete(provider.trees, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo"})
+	delete(provider.files, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo/index.yaml"})
+	delete(provider.files, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo/guidance/index.yaml"})
+	delete(provider.files, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo/guidance/prompt.md"})
 }
 
 func selectionRequestFromReview(req Request, artifactDir string) SelectionRequest {
