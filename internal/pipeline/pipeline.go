@@ -617,16 +617,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	findingSession := map[review.FindingID]string{}
 	repoSources := append([]agents.SourceInfo(nil), prepared.catalog.Sources...)
 
-	if repoGuidanceUnavailableReason(repoSources) != "" {
-		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, nil, review.Rollup{}, nil, false, result.AgentDefsChanged, planRunInputs{
-			repoSources: repoSources,
-			startedAt:   now,
-		})
-		if err != nil {
-			return Result{}, err
-		}
-		result.Plan = plan
-	} else if len(prepared.parsed.Patches) == 0 {
+	if len(prepared.parsed.Patches) == 0 {
 		if sessionName := strings.TrimSpace(req.SessionName); sessionName != "" {
 			if !mode.live {
 				return Result{}, fmt.Errorf("pipeline: named session %q requires live review", sessionName)
@@ -634,6 +625,15 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", sessionName))
 		}
 		plan, err := opts.buildPlan(req, prepared.pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged, planRunInputs{repoSources: repoSources})
+		if err != nil {
+			return Result{}, err
+		}
+		result.Plan = plan
+	} else if repoGuidanceUnavailableReason(repoSources) != "" {
+		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, nil, review.Rollup{}, nil, false, result.AgentDefsChanged, planRunInputs{
+			repoSources: repoSources,
+			startedAt:   now,
+		})
 		if err != nil {
 			return Result{}, err
 		}

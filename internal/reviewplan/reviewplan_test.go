@@ -511,7 +511,7 @@ func TestBuildForcesRequestChangesWhenRepoGuidanceUnavailable(t *testing.T) {
 	}
 }
 
-func TestBuildRepoGuidanceUnavailableTakesPrecedenceOverNoDiff(t *testing.T) {
+func TestBuildNoDiffTakesPrecedenceOverRepoGuidanceUnavailable(t *testing.T) {
 	req := baseRequest()
 	req.NoDiff = true
 	req.Findings = nil
@@ -522,15 +522,14 @@ func TestBuildRepoGuidanceUnavailableTakesPrecedenceOverNoDiff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if plan.Outcome != OutcomeRequestChanges {
-		t.Fatalf("outcome = %q, want request_changes", plan.Outcome)
+	if plan.Outcome != OutcomeNothingToReview {
+		t.Fatalf("outcome = %q, want nothing_to_review", plan.Outcome)
 	}
-	if got := actionKinds(plan.Actions); !reflect.DeepEqual(got, []ActionKind{ActionKindRollupComment, ActionKindSubmitReview}) {
-		t.Fatalf("action kinds = %#v, want rollup + submit only", got)
+	if got := actionKinds(plan.Actions); !reflect.DeepEqual(got, []ActionKind{ActionKindRollupComment}) {
+		t.Fatalf("action kinds = %#v, want rollup only", got)
 	}
-	submit := actionsOfKind(plan.Actions, ActionKindSubmitReview)[0]
-	if submit.SubmitReview.Event != review.ReviewEventRequestChanges {
-		t.Fatalf("submit event = %q, want request_changes", submit.SubmitReview.Event)
+	if strings.Contains(plan.RollupMarkdown, req.RepoGuidanceUnavailable) {
+		t.Fatalf("rollup = %q, want no repo guidance override in no-diff path", plan.RollupMarkdown)
 	}
 }
 

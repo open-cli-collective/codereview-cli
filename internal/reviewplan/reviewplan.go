@@ -261,11 +261,11 @@ func Build(req Request) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	if strings.TrimSpace(req.RepoGuidanceUnavailable) != "" {
-		return b.buildRepoGuidanceUnavailable()
-	}
 	if req.NoDiff {
 		return b.buildNoDiff()
+	}
+	if strings.TrimSpace(req.RepoGuidanceUnavailable) != "" {
+		return b.buildRepoGuidanceUnavailable()
 	}
 	return b.buildReview()
 }

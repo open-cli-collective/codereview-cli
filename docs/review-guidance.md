@@ -33,10 +33,6 @@ artifact directory. The file `dossier/final/repo-guidance.md` records:
 - whether the base branch guidance source was available, missing, unreadable,
   or invalid
 
-When trusted base-branch repo guidance is unavailable for any reason other than
-being available, `cr review` forces a request-changes outcome instead of
-allowing a no-diff or approval path.
-
 This file is intended for reviewers and operators who need to understand which
 repo guidance influenced a review without reading pipeline code.
 

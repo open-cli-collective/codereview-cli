@@ -2867,7 +2867,7 @@ func TestDryRunNoDiffDoesNotResolveUnmappedModelTier(t *testing.T) {
 	}
 }
 
-func TestDryRunNoDiffWithMissingRepoGuidanceRequestsChanges(t *testing.T) {
+func TestDryRunNoDiffWithMissingRepoGuidanceStillReturnsNothingToReview(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -2894,21 +2894,12 @@ func TestDryRunNoDiffWithMissingRepoGuidanceRequestsChanges(t *testing.T) {
 	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
 		t.Fatalf("adapter was invoked: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
 	}
-	if result.Plan.Outcome != reviewplan.OutcomeRequestChanges {
-		t.Fatalf("Plan.Outcome = %q, want %q", result.Plan.Outcome, reviewplan.OutcomeRequestChanges)
+	if result.Plan.Outcome != reviewplan.OutcomeNothingToReview {
+		t.Fatalf("Plan.Outcome = %q, want %q", result.Plan.Outcome, reviewplan.OutcomeNothingToReview)
 	}
-	var submitCount int
-	for _, action := range result.Plan.Actions {
-		if action.Kind != reviewplan.ActionKindSubmitReview {
-			continue
-		}
-		submitCount++
-		if action.SubmitReview.Event != review.ReviewEventRequestChanges {
-			t.Fatalf("submit event = %q, want %q", action.SubmitReview.Event, review.ReviewEventRequestChanges)
-		}
-	}
-	if submitCount != 1 {
-		t.Fatalf("submit action count = %d, want 1", submitCount)
+	gotKinds := []reviewplan.ActionKind{result.Plan.Actions[0].Kind}
+	if !reflect.DeepEqual(gotKinds, []reviewplan.ActionKind{reviewplan.ActionKindRollupComment}) {
+		t.Fatalf("action kinds = %#v, want rollup only", gotKinds)
 	}
 }
 
