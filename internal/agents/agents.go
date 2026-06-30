@@ -166,6 +166,7 @@ type LoadOptions struct {
 	Repo                      *RepoSource
 	FlagDirs                  []string
 	RequireSafeProfileSources bool
+	AllowSoftRepoFailures     bool
 }
 
 // RepoInfo describes the trusted repo-local source, when one was considered.
@@ -234,14 +235,9 @@ func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
 			SHA:        provenance.SHA,
 			Provenance: provenance.String(),
 		}
-		repoSource := provenance.SourceInfo()
-		agents, found, err := loadRepoSource(ctx, *opts.Repo, provenance)
+		agents, repoSource, err := loadRepoSource(ctx, *opts.Repo, provenance, opts.AllowSoftRepoFailures)
 		if err != nil {
 			return Catalog{}, err
-		}
-		if !found {
-			repoSource.Present = false
-			repoSource.Status = SourceStatusMissing
 		}
 		sources = append(sources, repoSource)
 		merged.add(agents)
@@ -436,31 +432,35 @@ func readFileAgent(agentPath string, category Category, pathName string, provena
 	return newAgent(category, pathName, index, string(prompt), provenance), nil
 }
 
-func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance) ([]Agent, bool, error) {
+func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance, allowSoftFailures bool) ([]Agent, SourceInfo, error) {
+	repoSource := provenance.SourceInfo()
 	if source.Reader == nil {
-		return nil, false, fmt.Errorf("%w: repo reader is required", ErrInvalid)
+		return nil, repoSource, fmt.Errorf("%w: repo reader is required", ErrInvalid)
 	}
 	if err := source.Ref.Validate(); err != nil {
-		return nil, false, err
+		return nil, repoSource, err
 	}
 	if source.PR.Ref != (gitprovider.PRRef{}) && source.PR.Ref != source.Ref {
-		return nil, false, fmt.Errorf("%w: PR ref %v does not match source ref %v", ErrInvalid, source.PR.Ref, source.Ref)
+		return nil, repoSource, fmt.Errorf("%w: PR ref %v does not match source ref %v", ErrInvalid, source.PR.Ref, source.Ref)
 	}
 	baseSHA := strings.TrimSpace(source.PR.Base.SHA)
 	if baseSHA == "" {
-		return nil, false, fmt.Errorf("%w: PR base SHA is required", ErrInvalid)
+		return nil, repoSource, fmt.Errorf("%w: PR base SHA is required", ErrInvalid)
 	}
 
 	rootEntries, err := source.Reader.ListTreeAtRef(ctx, source.Ref, baseSHA, repoAgentsRoot)
 	if errors.Is(err, gitprovider.ErrNotFound) {
-		return nil, false, nil
+		repoSource.Present = false
+		repoSource.Status = SourceStatusMissing
+		return nil, repoSource, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, repoSource, err
 	}
 	sortTreeEntries(rootEntries)
 
 	var agents []Agent
+	loadedAgent := false
 	for _, entry := range rootEntries {
 		if entry.Type != "tree" {
 			continue
@@ -470,20 +470,70 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 			continue
 		}
 		if err := validateName("category", categoryName); err != nil {
-			return nil, true, err
+			if allowSoftFailures {
+				return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+			}
+			return nil, repoSource, err
 		}
 		categoryPath := path.Join(repoAgentsRoot, categoryName)
 		category, err := readRepoCategory(ctx, source.Reader, source.Ref, baseSHA, categoryPath, categoryName)
 		if err != nil {
-			return nil, true, err
+			if classified, ok := classifyRepoCatalogError(repoSource, err); ok {
+				if allowSoftFailures {
+					return nil, classified, nil
+				}
+				return nil, repoSource, err
+			}
+			return nil, repoSource, err
 		}
 		categoryAgents, err := readRepoAgents(ctx, source.Reader, source.Ref, baseSHA, categoryPath, category, provenance)
 		if err != nil {
-			return nil, true, err
+			if classified, ok := classifyRepoCatalogError(repoSource, err); ok {
+				if allowSoftFailures {
+					return nil, classified, nil
+				}
+				return nil, repoSource, err
+			}
+			return nil, repoSource, err
 		}
+		if len(categoryAgents) == 0 {
+			err := fmt.Errorf("%w: repo source %s category %q contains no agents", ErrInvalid, repoAgentsRoot, categoryName)
+			if allowSoftFailures {
+				return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+			}
+			return nil, repoSource, err
+		}
+		loadedAgent = true
 		agents = append(agents, categoryAgents...)
 	}
-	return agents, true, nil
+	if !loadedAgent {
+		err := fmt.Errorf("%w: repo source %s contains no agents", ErrInvalid, repoAgentsRoot)
+		if allowSoftFailures {
+			return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
+		}
+		return nil, repoSource, err
+	}
+	return agents, repoSource, nil
+}
+
+func classifyRepoCatalogError(source SourceInfo, err error) (SourceInfo, bool) {
+	switch {
+	case errors.Is(err, ErrInvalid):
+		return repoSourceError(source, SourceStatusInvalid, err), true
+	case errors.Is(err, gitprovider.ErrNotFound):
+		return repoSourceError(source, SourceStatusUnreadable, err), true
+	default:
+		return SourceInfo{}, false
+	}
+}
+
+func repoSourceError(source SourceInfo, status SourceStatus, err error) SourceInfo {
+	source.Present = true
+	source.Status = status
+	if err != nil {
+		source.Error = err.Error()
+	}
+	return source
 }
 
 func readRepoCategory(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath, pathName string) (Category, error) {

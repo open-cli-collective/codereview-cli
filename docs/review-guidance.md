@@ -30,10 +30,16 @@ artifact directory. The file `dossier/final/repo-guidance.md` records:
 - that repo review guidance comes from `.codereview/agents/`
 - the provenance label for the pinned base-branch source
 - the trust-boundary note that PR-head guidance changes do not affect that run
-- whether the base branch guidance source was available or missing
+- whether the base branch guidance source was available, missing, unreadable,
+  or invalid
 
 This file is intended for reviewers and operators who need to understand which
 repo guidance influenced a review without reading pipeline code.
+
+When trusted base-branch guidance is missing, unreadable, or invalid, `cr review`
+does not continue with degraded repo guidance. It short-circuits normal reviewer
+execution and submits a `request_changes` review explaining that the trusted
+repo-local guidance could not be used.
 
 ## Reviewer-Facing Context
 

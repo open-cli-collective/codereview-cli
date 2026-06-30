@@ -191,7 +191,7 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Top-level concern")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Review body")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "Guidance provenance: repo@refs/heads/main:")
-	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "Guidance source status: missing")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "Guidance source status: available")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "PR-head .codereview/agents changes do not affect this listing.")
 	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "final/discussion.md")
 	assertFileOmits(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "provider_session_id", "session_row_id", "mergeability", "approval", "CI status", "Approved body should stay out of reviewer-facing discussion")
@@ -299,6 +299,7 @@ func TestDryRunResumesPinnedReviewRunByPinnedSHAs(t *testing.T) {
 	provider, req := dryRunHarness(t)
 	fixture, reviewBaseSHA, reviewHeadSHA := newPinnedReviewFixtureForRef(t, req.PRRef)
 	provider.pr = fixture.pr
+	addRepoAgentFixture(provider)
 	provider.fixtureRepoDir = fixture.repoDir
 	provider.diffBetween = gitprovider.UnifiedDiff{}
 	req.ReviewBaseSHA = reviewBaseSHA
@@ -628,9 +629,11 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	writeAgentFullContent(t, req.Profile.AgentSources[0], "harness", "reviewer")
 	fixture, reviewBaseSHA, reviewHeadSHA := newPinnedReviewFixtureForRef(t, req.PRRef)
 	provider.pr = fixture.pr
+	addRepoAgentFixture(provider)
 	provider.fixtureRepoDir = fixture.repoDir
 	req.ReviewBaseSHA = reviewBaseSHA
 	req.ReviewHeadSHA = reviewHeadSHA
@@ -669,8 +672,10 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	if !strings.Contains(result.Artifacts.Dir, reviewHeadSHA) || !strings.Contains(result.Artifacts.Dir, reviewBaseSHA) {
 		t.Fatalf("artifact dir = %s, want pinned head/base SHAs", result.Artifacts.Dir)
 	}
-	if len(provider.fileCalls) != 0 {
-		t.Fatalf("file calls = %#v, want no stuffed file reads in reviewer workspace mode", provider.fileCalls)
+	for _, call := range provider.fileCalls {
+		if call.path == "main.go" && (call.gitRef == reviewBaseSHA || call.gitRef == reviewHeadSHA) {
+			t.Fatalf("file calls = %#v, want no stuffed diff file reads in reviewer workspace mode", provider.fileCalls)
+		}
 	}
 	requests := adapter.Requests()
 	if len(requests) < 1 {
@@ -783,6 +788,7 @@ func TestDryRunSelectionPromptInstructionsStayInsideStructuredPayload(t *testing
 func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	provider.threads = []gitprovider.InlineThread{{
 		ID:          "thread-1",
 		Resolved:    false,
@@ -879,6 +885,7 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 func TestSelectionOnlyAllowsThreadActionsWithThreadContext(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	human := gitprovider.Identity{Login: "human", ID: "human-id"}
 	provider.threads = []gitprovider.InlineThread{
 		crSettledReviewThread(t, "thread-1", "main.go", 2, req.PostingIdentity, human, "Cached settled summary"),
@@ -919,6 +926,7 @@ func TestSelectionOnlyAllowsThreadActionsWithThreadContext(t *testing.T) {
 func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	provider.threads = []gitprovider.InlineThread{{
 		ID:          "thread-1",
 		Resolved:    false,
@@ -2150,6 +2158,7 @@ func TestSelectionOnlyContextBudgetFailure(t *testing.T) {
 func TestSelectionOnlyNoDiffSkipsLLMAndReturnsPreparedContext(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
 	provider.diff = gitprovider.UnifiedDiff{}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	artifactDir := t.TempDir()
@@ -2424,6 +2433,7 @@ func TestSelectionOnlyPreparesWorkbenchInCallerOwnedArtifacts(t *testing.T) {
 	fixture := newWorkbenchGitFixture(t)
 	provider, req := dryRunHarness(t)
 	provider.pr = fixture.pr
+	addRepoAgentFixture(provider)
 	provider.diff = gitprovider.UnifiedDiff{Raw: smallDiff("main.go")}
 	req.PRRef = fixture.pr.Ref
 	req.PRURL = fixture.pr.URL
@@ -2461,6 +2471,7 @@ func TestDryRunPreparesWorkbenchInAllocatedRunArtifacts(t *testing.T) {
 	fixture := newWorkbenchGitFixture(t)
 	provider, req := dryRunHarness(t)
 	provider.pr = fixture.pr
+	addRepoAgentFixture(provider)
 	provider.diff = gitprovider.UnifiedDiff{Raw: smallDiff("main.go")}
 	req.PRRef = fixture.pr.Ref
 	req.PRURL = fixture.pr.URL
@@ -2856,6 +2867,42 @@ func TestDryRunNoDiffDoesNotResolveUnmappedModelTier(t *testing.T) {
 	}
 }
 
+func TestDryRunNoDiffWithMissingRepoGuidanceStillReturnsNothingToReview(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+	provider.diff = gitprovider.UnifiedDiff{}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-no-diff-missing-repo-guidance" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter was invoked: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeNothingToReview {
+		t.Fatalf("Plan.Outcome = %q, want %q", result.Plan.Outcome, reviewplan.OutcomeNothingToReview)
+	}
+	gotKinds := []reviewplan.ActionKind{result.Plan.Actions[0].Kind}
+	if !reflect.DeepEqual(gotKinds, []reviewplan.ActionKind{reviewplan.ActionKindRollupComment}) {
+		t.Fatalf("action kinds = %#v, want rollup only", gotKinds)
+	}
+}
+
 func TestDryRunAgentModelTierUsesProfileModelMapOverride(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -2941,6 +2988,123 @@ func TestDryRunReviewerBaselineTierRaisesReviewerModelFloor(t *testing.T) {
 		ResolvedModel:  "profile-large-model",
 		ModelMapSource: config.ModelMapSourceConfig,
 	})
+}
+
+func TestDryRunRepoGuidanceFailuresForceRequestChangesWithoutReviewerExecution(t *testing.T) {
+	tests := []struct {
+		name      string
+		setupRepo func(t *testing.T, provider *readOnlyProvider)
+		wantText  string
+		wantState agents.SourceStatus
+	}{
+		{
+			name: "missing",
+			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
+				t.Helper()
+				removeRepoAgentFixture(provider)
+			},
+			wantText:  "Base branch `.codereview/agents/` was not present for this review.",
+			wantState: agents.SourceStatusMissing,
+		},
+		{
+			name: "unreadable",
+			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
+				t.Helper()
+				removeRepoAgentFixture(provider)
+				categoryPath := ".codereview/agents/cat"
+				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}] = []gitprovider.TreeEntry{{Path: "cat", Type: "tree"}}
+				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath + "/index.yaml"}] = []byte("name: cat\ndescription: cat category\nowner: owner\n")
+				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath}] = []gitprovider.TreeEntry{{Path: categoryPath + "/agent", Type: "tree"}}
+				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath + "/agent/index.yaml"}] = []byte("name: agent\ndescription: desc\nmodel_tier: medium\neffort: medium\n")
+			},
+			wantText:  "Base branch `.codereview/agents/` could not be read as trusted review guidance.",
+			wantState: agents.SourceStatusUnreadable,
+		},
+		{
+			name: "invalid",
+			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
+				t.Helper()
+				removeRepoAgentFixture(provider)
+				categoryPath := ".codereview/agents/cat"
+				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}] = []gitprovider.TreeEntry{{Path: "cat", Type: "tree"}}
+				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath + "/index.yaml"}] = []byte("name: other\ndescription: cat category\nowner: owner\n")
+			},
+			wantText:  "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance.",
+			wantState: agents.SourceStatusInvalid,
+		},
+		{
+			name: "empty root tree",
+			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
+				t.Helper()
+				removeRepoAgentFixture(provider)
+				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}] = []gitprovider.TreeEntry{}
+			},
+			wantText:  "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance.",
+			wantState: agents.SourceStatusInvalid,
+		},
+		{
+			name: "empty category",
+			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
+				t.Helper()
+				removeRepoAgentFixture(provider)
+				categoryPath := ".codereview/agents/cat"
+				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}] = []gitprovider.TreeEntry{{Path: "cat", Type: "tree"}}
+				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath + "/index.yaml"}] = []byte("name: cat\ndescription: cat category\nowner: owner\n")
+				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath}] = []gitprovider.TreeEntry{}
+			},
+			wantText:  "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance.",
+			wantState: agents.SourceStatusInvalid,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			tt.setupRepo(t, provider)
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+
+			result, err := dryRunForTest(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:             fixedNow,
+				NewRunID:        func() string { return "run-repo-guidance-" + tt.name },
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    findingSequence("finding"),
+				NewActionID:     actionSequence(),
+				MaxConcurrency:  1,
+			}, req)
+			if err != nil {
+				t.Fatalf("DryRun: %v", err)
+			}
+			source, ok := repoGuidanceSource(result.Catalog.Sources)
+			if !ok || source.Status != tt.wantState {
+				t.Fatalf("repo source = %#v, want %q", result.Catalog.Sources, tt.wantState)
+			}
+			if result.Plan.Outcome != reviewplan.OutcomeRequestChanges {
+				t.Fatalf("outcome = %q, want request_changes", result.Plan.Outcome)
+			}
+			gotKinds := []reviewplan.ActionKind{result.Plan.Actions[0].Kind, result.Plan.Actions[1].Kind}
+			if !reflect.DeepEqual(gotKinds, []reviewplan.ActionKind{reviewplan.ActionKindRollupComment, reviewplan.ActionKindSubmitReview}) {
+				t.Fatalf("action kinds = %#v, want rollup + submit only", gotKinds)
+			}
+			if submit := result.Plan.Actions[1].SubmitReview; submit == nil || submit.Event != review.ReviewEventRequestChanges {
+				t.Fatalf("submit review = %#v, want request_changes", result.Plan.Actions[1].SubmitReview)
+			}
+			if !strings.Contains(result.Plan.RollupMarkdown, tt.wantText) {
+				t.Fatalf("rollup = %q, want %q", result.Plan.RollupMarkdown, tt.wantText)
+			}
+			for _, request := range adapter.Requests() {
+				if strings.Contains(request.Prompt, `"schema": "selection"`) || strings.Contains(request.Prompt, `"schema": "rollup"`) || strings.Contains(request.Prompt, `"task": "review files and return findings JSON only"`) {
+					t.Fatalf("unexpected review pipeline prompt: %q", request.Prompt)
+				}
+			}
+		})
+	}
 }
 
 func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
@@ -6459,6 +6623,7 @@ func dryRunHarness(t *testing.T) (*readOnlyProvider, Request) {
 		caps:           gitprovider.ProviderCaps{NativeFileLevelComments: true, ThreadResolution: true},
 		fixtureRepoDir: fixture.repoDir,
 	}
+	addRepoAgentFixture(provider)
 	req := Request{
 		PRRef:           ref,
 		PRURL:           pr.URL,
@@ -6467,6 +6632,24 @@ func dryRunHarness(t *testing.T) (*readOnlyProvider, Request) {
 		PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 	}
 	return provider, req
+}
+
+func addRepoAgentFixture(provider *readOnlyProvider) {
+	categoryPath := ".codereview/agents/repo"
+	agentPath := categoryPath + "/guidance"
+	provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}] = []gitprovider.TreeEntry{{Path: "repo", Type: "tree"}}
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath + "/index.yaml"}] = []byte("name: repo\ndescription: repo guidance category\nowner: owner\n")
+	provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath}] = []gitprovider.TreeEntry{{Path: agentPath, Type: "tree"}}
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: agentPath + "/index.yaml"}] = []byte("name: guidance\ndescription: repo guidance desc\nmodel_tier: medium\neffort: medium\n")
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: agentPath + "/prompt.md"}] = []byte("Review carefully.")
+}
+
+func removeRepoAgentFixture(provider *readOnlyProvider) {
+	delete(provider.trees, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"})
+	delete(provider.trees, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo"})
+	delete(provider.files, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo/index.yaml"})
+	delete(provider.files, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo/guidance/index.yaml"})
+	delete(provider.files, fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo/guidance/prompt.md"})
 }
 
 func selectionRequestFromReview(req Request, artifactDir string) SelectionRequest {
@@ -7307,8 +7490,8 @@ func assertAgentSourcesArtifact(t *testing.T, path, wantAgent string) {
 	if !ok {
 		t.Fatalf("artifact sources = %#v, want repo source", artifact.Sources)
 	}
-	if repoSource.Status != agents.SourceStatusMissing || repoSource.Present || repoSource.SHA == "" {
-		t.Fatalf("repo source = %#v, want missing repo source anchored to base SHA", repoSource)
+	if repoSource.Status != agents.SourceStatusAvailable || !repoSource.Present || repoSource.SHA == "" {
+		t.Fatalf("repo source = %#v, want available repo source anchored to base SHA", repoSource)
 	}
 	for _, agent := range artifact.Agents {
 		if agent.ID == wantAgent &&

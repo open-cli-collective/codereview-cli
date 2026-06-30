@@ -615,6 +615,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	}
 
 	findingSession := map[review.FindingID]string{}
+	repoSources := append([]agents.SourceInfo(nil), prepared.catalog.Sources...)
 
 	if len(prepared.parsed.Patches) == 0 {
 		if sessionName := strings.TrimSpace(req.SessionName); sessionName != "" {
@@ -623,7 +624,16 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			}
 			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", sessionName))
 		}
-		plan, err := opts.buildPlan(req, prepared.pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged, planRunInputs{})
+		plan, err := opts.buildPlan(req, prepared.pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged, planRunInputs{repoSources: repoSources})
+		if err != nil {
+			return Result{}, err
+		}
+		result.Plan = plan
+	} else if repoGuidanceUnavailableReason(repoSources) != "" {
+		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, nil, review.Rollup{}, nil, false, result.AgentDefsChanged, planRunInputs{
+			repoSources: repoSources,
+			startedAt:   now,
+		})
 		if err != nil {
 			return Result{}, err
 		}
@@ -742,6 +752,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 
 		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
 			threadResponses:  threadResponses,
+			repoSources:      repoSources,
 			hasRun:           true,
 			selection:        selectionSession,
 			reviewers:        reviewerSessions,
@@ -977,6 +988,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		Repo:                      &agents.RepoSource{Reader: opts.Provider, Ref: req.PRRef, PR: pr},
 		FlagDirs:                  append([]string(nil), req.AgentDirs...),
 		RequireSafeProfileSources: true,
+		AllowSoftRepoFailures:     true,
 	})
 	if err != nil {
 		return preparedSelectionContext{}, err
@@ -1643,6 +1655,7 @@ type planRunInputs struct {
 	rollup           sessionDraft
 	selectedAgents   []llm.SelectedAgent
 	threadResponses  []review.ThreadResponseAction
+	repoSources      []agents.SourceInfo
 	findingSessions  map[review.FindingID]string
 	reviewerFailures []ReviewerFailure
 	reviewerCoverage []reviewplan.ReviewerCoverageSummary
@@ -1916,13 +1929,15 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewplan.PostMode, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool, runInputs planRunInputs) (reviewplan.Plan, error) {
 	runSummary, findingReviewers := opts.buildRunSummary(req, runInputs)
 	return reviewplan.Build(reviewplan.Request{
-		PostMode:        postMode,
-		ProviderCaps:    caps,
-		Diff:            diff,
-		Findings:        findings,
-		Rollup:          rollup,
-		ThreadActions:   threadActions,
-		ThreadResponses: append([]review.ThreadResponseAction(nil), runInputs.threadResponses...),
+		PostMode:                postMode,
+		ProviderCaps:            caps,
+		Diff:                    diff,
+		Findings:                findings,
+		Rollup:                  rollup,
+		ThreadActions:           threadActions,
+		ThreadResponses:         append([]review.ThreadResponseAction(nil), runInputs.threadResponses...),
+		RepoGuidanceUnavailable:       repoGuidanceUnavailableReason(runInputs.repoSources) != "",
+		RepoGuidanceUnavailableReason: repoGuidanceUnavailableReason(runInputs.repoSources),
 		EventOptions: reviewplan.EventOptions{
 			MajorEventRequestsChanges: req.MajorRequestChanges,
 			PostingIdentityIsPRAuthor: sameIdentity(pr.Author, req.PostingIdentity),
@@ -4300,6 +4315,30 @@ func renderDossierRepoGuidance(repo dossierRepoContextArtifact) string {
 		out.WriteString("\nSeparate review-guidance files are not used for this review; repo-local agents are the repo-owned guidance surface.\n")
 	}
 	return out.String()
+}
+
+func repoGuidanceUnavailableReason(sources []agents.SourceInfo) string {
+	source, ok := repoGuidanceSource(sources)
+	if !ok {
+		return ""
+	}
+	var reason string
+	switch source.Status {
+	case agents.SourceStatusAvailable:
+		return ""
+	case agents.SourceStatusMissing:
+		reason = "Base branch `.codereview/agents/` was not present for this review."
+	case agents.SourceStatusUnreadable:
+		reason = "Base branch `.codereview/agents/` could not be read as trusted review guidance."
+	case agents.SourceStatusInvalid:
+		reason = "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance."
+	default:
+		return ""
+	}
+	if msg := strings.TrimSpace(source.Error); msg != "" {
+		reason += " Source detail: " + msg
+	}
+	return reason
 }
 
 func repoGuidanceSource(sources []agents.SourceInfo) (agents.SourceInfo, bool) {
