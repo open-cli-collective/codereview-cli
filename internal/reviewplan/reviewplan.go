@@ -112,6 +112,7 @@ type Request struct {
 	EventOptions    EventOptions
 
 	NoDiff                  bool
+	RepoGuidanceUnavailable string
 	Profile                 string
 	PostingIdentity         string
 	HeadSHA                 string
@@ -262,6 +263,9 @@ func Build(req Request) (Plan, error) {
 	}
 	if req.NoDiff {
 		return b.buildNoDiff()
+	}
+	if strings.TrimSpace(req.RepoGuidanceUnavailable) != "" {
+		return b.buildRepoGuidanceUnavailable()
 	}
 	return b.buildReview()
 }
@@ -432,6 +436,37 @@ func (b *builder) buildNoDiff() (Plan, error) {
 		Outcome:        OutcomeNothingToReview,
 		RollupMarkdown: body,
 		Actions:        []Action{rollup},
+	}, nil
+}
+
+func (b *builder) buildRepoGuidanceUnavailable() (Plan, error) {
+	summary := b.deriveSummary(nil)
+	body := b.renderRepoGuidanceUnavailableRollup(summary)
+
+	rollup, err := b.newAction(ActionKindRollupComment)
+	if err != nil {
+		return Plan{}, err
+	}
+	rollup.Required = true
+	rollup.Marker = actionMarker(ActionKindRollupComment, OutcomeRequestChanges)
+	rollup.RollupComment = &RollupCommentPayload{Body: body}
+
+	submit, err := b.newAction(ActionKindSubmitReview)
+	if err != nil {
+		return Plan{}, err
+	}
+	submit.Required = true
+	submit.Marker = actionMarker(ActionKindSubmitReview, "")
+	submit.SubmitReview = &SubmitReviewPayload{
+		Body:  submitReviewBody(OutcomeRequestChanges),
+		Event: review.ReviewEventRequestChanges,
+	}
+
+	return Plan{
+		Outcome:        OutcomeRequestChanges,
+		RollupMarkdown: body,
+		Actions:        []Action{rollup, submit},
+		Summary:        summary,
 	}, nil
 }
 
@@ -923,6 +958,19 @@ func (b *builder) renderNoDiffRollup() string {
 	writeRunMetadata(&out, b.req)
 	out.WriteString("### Summary\n\n")
 	out.WriteString("Nothing to review for this diff.")
+	return strings.TrimSpace(out.String())
+}
+
+func (b *builder) renderRepoGuidanceUnavailableRollup(summary Summary) string {
+	var out strings.Builder
+	out.WriteString("## Automated PR Review\n\n")
+	writeRunMetadata(&out, b.req)
+	out.WriteString("### Summary\n\n")
+	out.WriteString("Requesting changes because trusted repo-local review guidance could not be loaded from `.codereview/agents/` on the PR base branch.\n\n")
+	out.WriteString(sanitize(strings.TrimSpace(b.req.RepoGuidanceUnavailable)))
+	out.WriteString("\n\n")
+	fmt.Fprintf(&out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", summary.Threads.Considered, summary.Threads.Summarized, summary.Threads.Resolved)
+	writeRunFooter(&out, summary.Run, summary.Totals)
 	return strings.TrimSpace(out.String())
 }
 

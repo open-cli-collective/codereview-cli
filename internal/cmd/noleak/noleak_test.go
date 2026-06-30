@@ -179,7 +179,6 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", "--dry-run", h.prURL}
 			},
-			wantErr: true,
 		},
 		{
 			name:    "review dry-run json",
@@ -187,7 +186,6 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", "--dry-run", "--json", h.prURL}
 			},
-			wantErr: true,
 		},
 		{
 			name:    "review live text",
@@ -195,7 +193,6 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", h.prURL}
 			},
-			wantErr: true,
 		},
 		{
 			name:    "review live json",
@@ -203,7 +200,6 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", "--json", h.prURL}
 			},
-			wantErr: true,
 		},
 		{
 			name:    "review github app reviewer live",
@@ -211,7 +207,6 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", h.prURL}
 			},
-			wantErr: true,
 		},
 		{
 			name:    "review github app git live",
@@ -219,7 +214,6 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			args: func(h *auditHarness) []string {
 				return []string{"review", h.prURL}
 			},
-			wantErr: true,
 		},
 		{
 			name:    "review usage failure",
@@ -400,10 +394,16 @@ func newNoLeakWorkbenchFixture(t *testing.T) noLeakWorkbenchFixture {
 	noLeakGitMustSucceed(t, repoDir, "config", "user.name", "NoLeak Test")
 	noLeakGitMustSucceed(t, repoDir, "config", "user.email", "noleak@example.com")
 	noLeakGitMustSucceed(t, repoDir, "remote", "add", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".codereview", "agents"), 0o700); err != nil {
+		t.Fatalf("mkdir repo guidance: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".codereview", "agents", ".keep"), []byte("repo guidance placeholder\n"), 0o600); err != nil {
+		t.Fatalf("write repo guidance: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nvar changed = false\n"), 0o600); err != nil {
 		t.Fatalf("write main.go: %v", err)
 	}
-	noLeakGitMustSucceed(t, repoDir, "add", "main.go")
+	noLeakGitMustSucceed(t, repoDir, "add", ".codereview/agents/.keep", "main.go")
 	noLeakGitMustSucceed(t, repoDir, "commit", "-m", "base")
 	baseSHA := strings.TrimSpace(noLeakGitOutput(t, repoDir, "rev-parse", "HEAD"))
 	noLeakGitMustSucceed(t, repoDir, "checkout", "-b", "feature")
@@ -791,19 +791,19 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 		_ = store.Close()
 	}
 	pipelineOpts := pipeline.Options{
-		Provider:                  readProvider,
-		Adapter:                   adapter,
-		Store:                     ledgerStore,
-		NamedSessions:             ledgerStore,
-		Layout:                    h.layout,
-		Warnings:                  opts.Stderr,
-		Now:                       func() time.Time { return h.now },
-		Retention:                 runtimeOpts.Retention,
-		RetentionManualOnly:       runtimeOpts.RetentionManualOnly,
-		MaxAgents:                 runtimeOpts.MaxAgents,
-		MaxConcurrency:            runtimeOpts.MaxConcurrency,
-		GitCommand:                noLeakGitCommand(h.prRef),
-		ResolveRepoRoot:           func(context.Context) (string, error) { return h.workbenchRepoDir, nil },
+		Provider:            readProvider,
+		Adapter:             adapter,
+		Store:               ledgerStore,
+		NamedSessions:       ledgerStore,
+		Layout:              h.layout,
+		Warnings:            opts.Stderr,
+		Now:                 func() time.Time { return h.now },
+		Retention:           runtimeOpts.Retention,
+		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
+		MaxAgents:           runtimeOpts.MaxAgents,
+		MaxConcurrency:      runtimeOpts.MaxConcurrency,
+		GitCommand:          noLeakGitCommand(h.prRef),
+		ResolveRepoRoot:     func(context.Context) (string, error) { return h.workbenchRepoDir, nil },
 	}
 	liveProvider := noLeakRuntimeProvider{read: readProvider, write: postingProvider}
 	runner := realReviewRunner{

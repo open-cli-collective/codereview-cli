@@ -1714,6 +1714,9 @@ func TestReviewLiveRealRunnerHonorsConfiguredRetention(t *testing.T) {
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
 	}
+	if err := provider.SetTreeAtRef(ref, pr.Base.SHA, ".codereview/agents", []gitprovider.TreeEntry{}); err != nil {
+		t.Fatalf("SetTreeAtRef: %v", err)
+	}
 	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
 		t.Fatalf("SetDiff: %v", err)
 	}
@@ -1780,6 +1783,9 @@ func TestReviewLiveSessionThroughRealRunnerPersistsNamedSession(t *testing.T) {
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetTreeAtRef(ref, pr.Base.SHA, ".codereview/agents", []gitprovider.TreeEntry{}); err != nil {
+		t.Fatalf("SetTreeAtRef: %v", err)
 	}
 	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
 		t.Fatalf("SetDiff: %v", err)
@@ -1848,6 +1854,9 @@ func TestReviewRealRunnerResumesIncompleteRunThroughCLI(t *testing.T) {
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetTreeAtRef(ref, pr.Base.SHA, ".codereview/agents", []gitprovider.TreeEntry{}); err != nil {
+		t.Fatalf("SetTreeAtRef: %v", err)
 	}
 	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
 		t.Fatalf("SetDiff: %v", err)
@@ -1945,6 +1954,9 @@ func TestReviewDryRunRealRunnerHonorsConfiguredRetention(t *testing.T) {
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
 	}
+	if err := provider.SetTreeAtRef(ref, pr.Base.SHA, ".codereview/agents", []gitprovider.TreeEntry{}); err != nil {
+		t.Fatalf("SetTreeAtRef: %v", err)
+	}
 	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
 		t.Fatalf("SetDiff: %v", err)
 	}
@@ -2018,6 +2030,9 @@ func TestReviewDryRunRealRunnerHonorsConfiguredKeepLiveForever(t *testing.T) {
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
 	}
+	if err := provider.SetTreeAtRef(ref, pr.Base.SHA, ".codereview/agents", []gitprovider.TreeEntry{}); err != nil {
+		t.Fatalf("SetTreeAtRef: %v", err)
+	}
 	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
 		t.Fatalf("SetDiff: %v", err)
 	}
@@ -2082,6 +2097,9 @@ func TestReviewDryRunRealRunnerHonorsManualOnlyRetention(t *testing.T) {
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetTreeAtRef(ref, pr.Base.SHA, ".codereview/agents", []gitprovider.TreeEntry{}); err != nil {
+		t.Fatalf("SetTreeAtRef: %v", err)
 	}
 	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
 		t.Fatalf("SetDiff: %v", err)
@@ -2334,6 +2352,9 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 	provider := &gitprovider.Fake{}
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetTreeAtRef(ref, pr.Base.SHA, ".codereview/agents", []gitprovider.TreeEntry{}); err != nil {
+		t.Fatalf("SetTreeAtRef: %v", err)
 	}
 	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
 		t.Fatalf("SetDiff: %v", err)
@@ -3353,8 +3374,9 @@ func newReviewCommandWorkbenchFixture(t *testing.T) reviewCommandWorkbenchFixtur
 	reviewCommandGitMustSucceed(t, repoDir, "config", "user.name", "ReviewCmd Test")
 	reviewCommandGitMustSucceed(t, repoDir, "config", "user.email", "reviewcmd@example.com")
 	reviewCommandGitMustSucceed(t, repoDir, "remote", "add", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
+	writeReviewCommandFile(t, filepath.Join(repoDir, ".codereview", "agents", ".keep"), "repo guidance placeholder\n")
 	writeReviewCommandFile(t, filepath.Join(repoDir, "main.go"), "package main\n\nvar changed = false\n")
-	reviewCommandGitMustSucceed(t, repoDir, "add", "main.go")
+	reviewCommandGitMustSucceed(t, repoDir, "add", ".codereview/agents/.keep", "main.go")
 	reviewCommandGitMustSucceed(t, repoDir, "commit", "-m", "base")
 	baseSHA := strings.TrimSpace(reviewCommandGitOutput(t, repoDir, "rev-parse", "HEAD"))
 	reviewCommandGitMustSucceed(t, repoDir, "checkout", "-b", "feature")
@@ -3431,6 +3453,9 @@ func reviewCommandGitCommand(ref gitprovider.PRRef) func(context.Context, string
 
 func writeReviewCommandFile(t *testing.T, path, contents string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(path), err)
+	}
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s): %v", path, err)
 	}

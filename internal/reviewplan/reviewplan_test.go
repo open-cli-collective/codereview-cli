@@ -478,6 +478,39 @@ func TestEventMappingAndNothingToReview(t *testing.T) {
 	}
 }
 
+func TestBuildForcesRequestChangesWhenRepoGuidanceUnavailable(t *testing.T) {
+	req := baseRequest()
+	req.Findings = nil
+	req.Rollup = review.Rollup{}
+	req.ThreadActions = []review.ThreadAction{{
+		ThreadID: "thread-1",
+		Decision: review.ThreadDecisionSummarizeAndResolve,
+		Summary:  "will be ignored",
+	}}
+	req.RepoGuidanceUnavailable = "Base branch `.codereview/agents/` was not present for this review."
+
+	plan, err := Build(req)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if plan.Outcome != OutcomeRequestChanges {
+		t.Fatalf("outcome = %q, want request_changes", plan.Outcome)
+	}
+	if got := actionKinds(plan.Actions); !reflect.DeepEqual(got, []ActionKind{ActionKindRollupComment, ActionKindSubmitReview}) {
+		t.Fatalf("action kinds = %#v, want rollup + submit only", got)
+	}
+	submit := actionsOfKind(plan.Actions, ActionKindSubmitReview)[0]
+	if submit.SubmitReview.Event != review.ReviewEventRequestChanges {
+		t.Fatalf("submit event = %q, want request_changes", submit.SubmitReview.Event)
+	}
+	if strings.Contains(plan.RollupMarkdown, "will be ignored") {
+		t.Fatalf("rollup = %q, want no thread-action content", plan.RollupMarkdown)
+	}
+	if !strings.Contains(plan.RollupMarkdown, "trusted repo-local review guidance") || !strings.Contains(plan.RollupMarkdown, req.RepoGuidanceUnavailable) {
+		t.Fatalf("rollup = %q, want repo guidance explanation", plan.RollupMarkdown)
+	}
+}
+
 func TestOrderedFindingsMustCoverNonDroppedFindings(t *testing.T) {
 	req := baseRequest()
 	req.Findings = []review.Finding{

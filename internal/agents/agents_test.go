@@ -411,6 +411,51 @@ func TestMissingRepoAgentsTreeIsEmptySource(t *testing.T) {
 	if catalog.Repo == nil {
 		t.Fatal("repo info nil, want base trust metadata even when tree is absent")
 	}
+	if len(catalog.Sources) != 1 || catalog.Sources[0].Status != SourceStatusMissing || catalog.Sources[0].Present {
+		t.Fatalf("sources = %#v, want missing repo source", catalog.Sources)
+	}
+}
+
+func TestRepoLoadClassifiesMissingNestedFilesAsUnreadableSource(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	categoryPath := repoAgentsRoot + "/cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: categoryPath + "/agent", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/agent/index.yaml", []byte(agentIndexYAML("agent", "desc", "medium", "medium")))
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 0 {
+		t.Fatalf("agents = %#v, want none", catalog.Agents)
+	}
+	if len(catalog.Sources) != 1 || catalog.Sources[0].Status != SourceStatusUnreadable || !catalog.Sources[0].Present || catalog.Sources[0].Error == "" {
+		t.Fatalf("sources = %#v, want unreadable repo source", catalog.Sources)
+	}
+}
+
+func TestRepoLoadClassifiesInvalidCatalogAsInvalidSource(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	categoryPath := repoAgentsRoot + "/cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: other\ndescription: cat category\nowner: owner\n"))
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 0 {
+		t.Fatalf("agents = %#v, want none", catalog.Agents)
+	}
+	if len(catalog.Sources) != 1 || catalog.Sources[0].Status != SourceStatusInvalid || !catalog.Sources[0].Present || catalog.Sources[0].Error == "" {
+		t.Fatalf("sources = %#v, want invalid repo source", catalog.Sources)
+	}
 }
 
 func TestLoadRejectsEmptyFilesystemSource(t *testing.T) {
@@ -611,9 +656,15 @@ func TestRepoLoadRejectsUnsafeTreeAndYAMLNames(t *testing.T) {
 			pr := testPR("base-sha", "head-sha")
 			reader := newRepoReader()
 			tt.setup(reader, ref, pr)
-			_, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}})
-			if !errors.Is(err, ErrInvalid) {
-				t.Fatalf("Load error = %v, want ErrInvalid", err)
+			catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}})
+			if err != nil {
+				t.Fatalf("Load error = %v, want nil", err)
+			}
+			if len(catalog.Agents) != 0 {
+				t.Fatalf("agents = %#v, want none", catalog.Agents)
+			}
+			if len(catalog.Sources) != 1 || catalog.Sources[0].Status != SourceStatusInvalid || !catalog.Sources[0].Present || catalog.Sources[0].Error == "" {
+				t.Fatalf("sources = %#v, want invalid repo source", catalog.Sources)
 			}
 		})
 	}
