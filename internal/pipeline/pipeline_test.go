@@ -2996,6 +2996,29 @@ func TestDryRunRepoGuidanceFailuresForceRequestChangesWithoutReviewerExecution(t
 			wantText:  "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance.",
 			wantState: agents.SourceStatusInvalid,
 		},
+		{
+			name: "empty root tree",
+			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
+				t.Helper()
+				removeRepoAgentFixture(provider)
+				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}] = []gitprovider.TreeEntry{}
+			},
+			wantText:  "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance.",
+			wantState: agents.SourceStatusInvalid,
+		},
+		{
+			name: "empty category",
+			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
+				t.Helper()
+				removeRepoAgentFixture(provider)
+				categoryPath := ".codereview/agents/cat"
+				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents"}] = []gitprovider.TreeEntry{{Path: "cat", Type: "tree"}}
+				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath + "/index.yaml"}] = []byte("name: cat\ndescription: cat category\nowner: owner\n")
+				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath}] = []gitprovider.TreeEntry{}
+			},
+			wantText:  "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance.",
+			wantState: agents.SourceStatusInvalid,
+		},
 	}
 
 	for _, tt := range tests {

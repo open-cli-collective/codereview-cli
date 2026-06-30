@@ -2345,9 +2345,7 @@ func TestReviewDryRunRealRunnerWritesGitHubProgressToStderr(t *testing.T) {
 	if err := provider.SetPR(ref, pr); err != nil {
 		t.Fatalf("SetPR: %v", err)
 	}
-	if err := provider.SetTreeAtRef(ref, pr.Base.SHA, ".codereview/agents", []gitprovider.TreeEntry{}); err != nil {
-		t.Fatalf("SetTreeAtRef: %v", err)
-	}
+	seedReviewCommandRepoGuidance(t, provider, ref, pr.Base.SHA)
 	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: reviewSmallDiff("main.go")}); err != nil {
 		t.Fatalf("SetDiff: %v", err)
 	}
