@@ -940,6 +940,7 @@ func (h *auditHarness) handleGitHub(w http.ResponseWriter, r *http.Request) {
 	pullPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", h.prRef.Owner, h.prRef.Repo, h.prRef.Number)
 	appInstallationPath := "/app/installations/" + h.githubAppInstallationIDSecret
 	repoInstallationPath := fmt.Sprintf("/repos/%s/%s/installation", h.prRef.Owner, h.prRef.Repo)
+	baseRefPath := fmt.Sprintf("/repos/%s/%s/git/ref/heads/main", h.prRef.Owner, h.prRef.Repo)
 	switch {
 	case r.Method == http.MethodGet && r.URL.EscapedPath() == appInstallationPath:
 		if !h.requireGitHubAppJWT(w, r) {
@@ -1004,6 +1005,13 @@ func (h *auditHarness) handleGitHub(w http.ResponseWriter, r *http.Request) {
 					"owner": map[string]any{"login": h.prRef.Owner, "id": 1004, "name": h.prRef.Owner},
 				},
 			},
+		})
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == baseRefPath:
+		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
+			return
+		}
+		writeHTTPJSON(h.t, w, map[string]any{
+			"object": map[string]any{"sha": h.baseSHA},
 		})
 	case r.Method == http.MethodGet && r.URL.EscapedPath() == pullPath+"/reviews":
 		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
