@@ -62,10 +62,11 @@ progress interface rather than importing Cobra or root options.
 ```bash
 make build   # compile the binary
 make test    # go test ./...
+make test-scripts # run script self-tests
 make lint    # golangci-lint run
 make tidy    # go mod tidy and verify go.mod is unchanged
 make deps    # download and verify Go modules
-make check   # tidy + fmt + lint + test + build
+make check   # tidy + fmt + lint + test + test-scripts + build
 make clean   # remove build artifacts
 ```
 
@@ -76,6 +77,7 @@ make clean   # remove build artifacts
 - Module: `github.com/open-cli-collective/codereview-cli`
 - Intended binary: `cr`
 - Main branch: `main`
+- Support scripts are documented in `scripts/README.md`.
 - Local workflow files: `.github/workflows/ci.yml`,
   `.github/workflows/auto-release.yml`, and `.github/workflows/release.yml`
 - Packaging identity: `packaging/identity.yml`
