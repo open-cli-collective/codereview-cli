@@ -2867,6 +2867,42 @@ func TestDryRunNoDiffDoesNotResolveUnmappedModelTier(t *testing.T) {
 	}
 }
 
+func TestDryRunNoDiffWithMissingRepoGuidanceRequestsChanges(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+	provider.diff = gitprovider.UnifiedDiff{}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-no-diff-missing-repo-guidance" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter was invoked: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeRequestChanges {
+		t.Fatalf("Plan.Outcome = %q, want %q", result.Plan.Outcome, reviewplan.OutcomeRequestChanges)
+	}
+	submit := planActionsOfKind(result.Plan.Actions, reviewplan.ActionKindSubmitReview)
+	if len(submit) != 1 || submit[0].SubmitReview.Event != review.ReviewEventRequestChanges {
+		t.Fatalf("submit actions = %#v, want single request-changes submit", submit)
+	}
+}
+
 func TestDryRunAgentModelTierUsesProfileModelMapOverride(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)

@@ -511,6 +511,29 @@ func TestBuildForcesRequestChangesWhenRepoGuidanceUnavailable(t *testing.T) {
 	}
 }
 
+func TestBuildRepoGuidanceUnavailableTakesPrecedenceOverNoDiff(t *testing.T) {
+	req := baseRequest()
+	req.NoDiff = true
+	req.Findings = nil
+	req.Rollup = review.Rollup{}
+	req.RepoGuidanceUnavailable = "Base branch `.codereview/agents/` was not present for this review."
+
+	plan, err := Build(req)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if plan.Outcome != OutcomeRequestChanges {
+		t.Fatalf("outcome = %q, want request_changes", plan.Outcome)
+	}
+	if got := actionKinds(plan.Actions); !reflect.DeepEqual(got, []ActionKind{ActionKindRollupComment, ActionKindSubmitReview}) {
+		t.Fatalf("action kinds = %#v, want rollup + submit only", got)
+	}
+	submit := actionsOfKind(plan.Actions, ActionKindSubmitReview)[0]
+	if submit.SubmitReview.Event != review.ReviewEventRequestChanges {
+		t.Fatalf("submit event = %q, want request_changes", submit.SubmitReview.Event)
+	}
+}
+
 func TestOrderedFindingsMustCoverNonDroppedFindings(t *testing.T) {
 	req := baseRequest()
 	req.Findings = []review.Finding{
