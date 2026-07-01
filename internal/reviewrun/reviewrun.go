@@ -152,6 +152,9 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 			return result, err
 		}
 		result.Run = run
+		if err := applyAdvisoryThreadResolutionWarning(ctx, opts, &result); err != nil {
+			return result, err
+		}
 		failOn, err := failOnFromStore(ctx, opts.Store, gateResult.Run.RunID, req.Pipeline.FailOn)
 		if err != nil {
 			return result, err
@@ -308,13 +311,8 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 		return result, err
 	}
 	result.Run = run
-	if warning, warnErr := advisoryThreadResolutionWarning(ctx, opts.Store, result.Run.RunID); warnErr != nil {
-		return result, warnErr
-	} else if warning != "" {
-		if opts.Warnings != nil {
-			_, _ = fmt.Fprintf(opts.Warnings, "warning: %s\n", warning)
-		}
-		result.Message = warning
+	if err := applyAdvisoryThreadResolutionWarning(ctx, opts, &result); err != nil {
+		return result, err
 	}
 	return result, nil
 }
@@ -489,7 +487,7 @@ func advisoryThreadResolutionWarning(ctx context.Context, store Store, runID str
 		return "", err
 	}
 	for _, action := range actions {
-		if action.Kind != ledger.PlannedActionResolveThread || action.Status != ledger.PlannedActionPlannedOnly || action.Error == nil {
+		if action.Kind != ledger.PlannedActionResolveThread || action.Status != ledger.PlannedActionPending {
 			continue
 		}
 		if action.FailureClass == nil || *action.FailureClass != ledger.PlannedActionFailureClassAdvisory {
@@ -498,6 +496,24 @@ func advisoryThreadResolutionWarning(ctx context.Context, store Store, runID str
 		return "GitHub Apps cannot resolve discussion threads; review content was still posted and the summary comment metadata remains available for cached-review flows", nil
 	}
 	return "", nil
+}
+
+func applyAdvisoryThreadResolutionWarning(ctx context.Context, opts Options, result *Result) error {
+	if result == nil || result.ExitCode != exitOK {
+		return nil
+	}
+	warning, err := advisoryThreadResolutionWarning(ctx, opts.Store, result.Run.RunID)
+	if err != nil {
+		return err
+	}
+	if warning == "" {
+		return nil
+	}
+	if opts.Warnings != nil {
+		_, _ = fmt.Fprintf(opts.Warnings, "warning: %s\n", warning)
+	}
+	result.Message = warning
+	return nil
 }
 
 func pruneRetention(ctx context.Context, opts Options) error {

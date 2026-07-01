@@ -117,11 +117,11 @@ func TestPostTreatsGitHubAppResolveThreadLimitationAsAdvisory(t *testing.T) {
 		t.Fatalf("Post result = %#v, want comment exit 0", result)
 	}
 	action := actionByID(t, store, run.RunID, "resolve-1")
-	if action.Status != ledger.PlannedActionPlannedOnly {
-		t.Fatalf("resolve action status = %s, want planned_only", action.Status)
+	if action.Status != ledger.PlannedActionPending {
+		t.Fatalf("resolve action status = %s, want pending", action.Status)
 	}
-	if action.Error == nil || !strings.Contains(*action.Error, "GitHub App integrations cannot resolve review threads") {
-		t.Fatalf("resolve action error = %#v, want advisory detail", action.Error)
+	if action.FailureClass == nil || *action.FailureClass != ledger.PlannedActionFailureClassAdvisory {
+		t.Fatalf("resolve action failure class = %#v, want advisory", action.FailureClass)
 	}
 }
 

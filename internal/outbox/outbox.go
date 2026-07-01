@@ -230,7 +230,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 
 		if isAdvisoryThreadResolutionError(actions[i], err) {
-			if updateErr := markPlannedOnlyAdvisory(ctx, opts.Store, &actions[i], err); updateErr != nil {
+			if updateErr := recordPendingAdvisory(ctx, opts.Store, &actions[i], err); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
 			}
 			continue
@@ -741,8 +741,8 @@ func markFailedTerminal(ctx context.Context, store Store, action *ledger.Planned
 	return store.UpdatePlannedAction(ctx, *action)
 }
 
-func markPlannedOnlyAdvisory(ctx context.Context, store Store, action *ledger.PlannedAction, err error) error {
-	action.Status = ledger.PlannedActionPlannedOnly
+func recordPendingAdvisory(ctx context.Context, store Store, action *ledger.PlannedAction, err error) error {
+	action.Status = ledger.PlannedActionPending
 	action.Error = strPtr(err.Error())
 	action.FailureClass = strPtr(ledger.PlannedActionFailureClassAdvisory)
 	action.UpstreamID = nil
@@ -819,6 +819,9 @@ func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction) (ledge
 		case ledger.PlannedActionSuperseded, ledger.PlannedActionPlannedOnly:
 			continue
 		case ledger.PlannedActionPending:
+			if advisoryPending(action) {
+				continue
+			}
 			hasRequiredPending = true
 		case ledger.PlannedActionFailedTerminal:
 			hasRequiredTerminal = true
@@ -840,6 +843,13 @@ func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction) (ledge
 	default:
 		return success, exitOK
 	}
+}
+
+func advisoryPending(action ledger.PlannedAction) bool {
+	return action.Kind == ledger.PlannedActionResolveThread &&
+		action.Status == ledger.PlannedActionPending &&
+		action.FailureClass != nil &&
+		*action.FailureClass == ledger.PlannedActionFailureClassAdvisory
 }
 
 func summarize(actions []ledger.PlannedAction, outcome ledger.Outcome, exitCode int, aborted bool) Result {

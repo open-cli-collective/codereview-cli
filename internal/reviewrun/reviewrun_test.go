@@ -283,6 +283,89 @@ func TestRunWarnsWhenGitHubAppCannotResolveThreadsButPostsReview(t *testing.T) {
 	}
 }
 
+func TestRunRetryPostsWarnsWhenGitHubAppCannotResolveThreadsButArtifactsAlreadyPosted(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-retry-advisory", testBaseSHA)
+	opts := fixture.opts(&fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment})
+	var warnings bytes.Buffer
+	opts.Warnings = &warnings
+
+	for _, action := range reviewActions(t, run.RunID, review.ReviewEventComment) {
+		action.Status = ledger.PlannedActionPosted
+		action.PostedAt = strPtrTime(testNow())
+		action.UpstreamID = strPtr(action.ActionID + "-upstream")
+		if err := fixture.store.InsertPlannedAction(ctx, action); err != nil {
+			t.Fatalf("InsertPlannedAction(%s): %v", action.ActionID, err)
+		}
+	}
+	resolveFailureClass := ledger.PlannedActionFailureClassAdvisory
+	if err := fixture.store.InsertPlannedAction(ctx, ledger.PlannedAction{
+		ActionID:     "resolve-1",
+		RunID:        run.RunID,
+		Kind:         ledger.PlannedActionResolveThread,
+		ThreadID:     strPtr("thread-1"),
+		PlannedAt:    testNow(),
+		PayloadJSON:  payloadJSON(t, outbox.ResolveThreadPayload{}),
+		Status:       ledger.PlannedActionPending,
+		Required:     true,
+		Error:        strPtr("github graphql: GitHub App integrations cannot resolve review threads (resource not accessible by integration)"),
+		FailureClass: &resolveFailureClass,
+		Attempts:     1,
+		AttemptedAt:  strPtrTime(testNow()),
+	}); err != nil {
+		t.Fatalf("InsertPlannedAction(resolve): %v", err)
+	}
+	if err := fixture.store.CompleteRun(ctx, run.RunID, ledger.OutcomeComment, testNow()); err != nil {
+		t.Fatalf("CompleteRun: %v", err)
+	}
+	fixture.fake.SetError(gitprovider.OperationResolveThread,
+		gitprovider.WrapError(gitprovider.ErrThreadResolutionUnsupported, gitprovider.OperationResolveThread, errors.New("github graphql: GitHub App integrations cannot resolve review threads (resource not accessible by integration)")))
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req, Flags: Flags{RetryPosts: true}})
+	if err != nil {
+		t.Fatalf("Run retry-posts advisory: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("result exit = %d, want success", result.ExitCode)
+	}
+	if !strings.Contains(result.Message, "GitHub Apps cannot resolve discussion threads") {
+		t.Fatalf("message = %q, want advisory warning", result.Message)
+	}
+	if !strings.Contains(warnings.String(), "warning: GitHub Apps cannot resolve discussion threads") {
+		t.Fatalf("warnings = %q, want advisory warning", warnings.String())
+	}
+}
+
+func TestRunDoesNotClaimArtifactsPostedWhenAdvisoryPrecedesRequiredWriteFailure(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.req.Profile.Git.AuthMode = config.GitAuthModeGitHubApp
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, includeResolve: true}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+	var warnings bytes.Buffer
+	opts.Warnings = &warnings
+	fixture.fake.SetError(gitprovider.OperationResolveThread,
+		gitprovider.WrapError(gitprovider.ErrThreadResolutionUnsupported, gitprovider.OperationResolveThread, errors.New("github graphql: GitHub App integrations cannot resolve review threads (resource not accessible by integration)")))
+	fixture.fake.SetError(gitprovider.OperationSubmitReview,
+		gitprovider.WrapError(gitprovider.ErrPermission, gitprovider.OperationSubmitReview, errors.New("submit blocked")))
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode == 0 {
+		t.Fatalf("result = %#v, want non-success exit when submit review fails", result)
+	}
+	if strings.Contains(result.Message, "review content was still posted") {
+		t.Fatalf("message = %q, did not want advisory success message", result.Message)
+	}
+	if strings.Contains(warnings.String(), "GitHub Apps cannot resolve discussion threads") {
+		t.Fatalf("warnings = %q, did not want advisory warning on failed run", warnings.String())
+	}
+}
+
 func TestRunDoesNotCommitNamedSessionCandidateAfterOutboxStaleSHAAbort(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
@@ -1077,6 +1160,10 @@ func payloadJSON(t *testing.T, payload any) string {
 }
 
 func strPtr(value string) *string {
+	return &value
+}
+
+func strPtrTime(value time.Time) *time.Time {
 	return &value
 }
 
