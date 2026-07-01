@@ -106,7 +106,7 @@ func interactiveInitCredentialStatusProbe(opts *root.Options, deps initDeps, ses
 			return status, true
 		}
 		defer store.Close()
-		existing, err := existingInitCredentialKeys(store, ref.Ref)
+		existing, err := existingInitCredentialKeys(store, entry)
 		unavailable := ""
 		if err != nil {
 			unavailable = "credential backend status unavailable"
@@ -193,7 +193,7 @@ func buildInteractiveInitCredentialStatuses(opts *root.Options, deps initDeps, s
 			}
 		}
 		if store != nil {
-			keys, err := existingInitCredentialKeys(store, entry.Ref.Ref)
+			keys, err := existingInitCredentialKeys(store, entry)
 			if err != nil {
 				unavailable = "credential backend status unavailable"
 			} else {

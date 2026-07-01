@@ -6947,6 +6947,62 @@ func TestReviewerEntityLinearEditorManualRefPreservesConflictForUnprobedRef(t *t
 	}
 }
 
+func TestReviewerEntityLinearEditorConfiguredCurrentRefMarksEnteredSecretForOverwriteWhenStatusMissing(t *testing.T) {
+	existing := basicProfile("work")
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode: config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{
+			Store: config.LocalOSCredentialStoreID,
+			Name:  "codereview/rianjs-bot-reviewer",
+		},
+		GitHubApp: &config.GitHubAppConfig{AppID: "4021133"},
+	}
+	ctx := initPromptContext{
+		RequestedProfileName:         "work",
+		ExistingProfileName:          "work",
+		ExistingProfile:              &existing,
+		ExistingConfig:               config.File{Profiles: map[string]config.Profile{"work": existing}},
+		StandaloneReviewerEntityMode: true,
+		ReviewerEntities: map[string]initReviewerEntityDraft{
+			"reviewer-github-app": {
+				Kind:            initReviewerEntityKindGitHubApp,
+				AuthMode:        config.GitAuthModeGitHubApp,
+				AppID:           "4021133",
+				CredentialStore: config.LocalOSCredentialStoreID,
+				CredentialRef:   "codereview/rianjs-bot-reviewer",
+				DisplayName:     "rianjs-bot",
+			},
+		},
+		ProfileReviewerEntities: map[string]string{"work": "reviewer-github-app"},
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Store:   config.LocalOSCredentialStoreID,
+				Ref:     "codereview/rianjs-bot-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			Keys: []initReviewerCredentialKeyStatus{
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
+			},
+		}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, testReviewerGitHubAppPrivateKey())
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
+
+	draft, err := initReviewerEntityDraftFromDocument(ctx, seed, model.document)
+	if err != nil {
+		t.Fatalf("initReviewerEntityDraftFromDocument: %v", err)
+	}
+	if got, want := draft.ReviewerCredentialWriteRef, "codereview/rianjs-bot-reviewer"; got != want {
+		t.Fatalf("ReviewerCredentialWriteRef = %q, want %q", got, want)
+	}
+	if !draft.ReviewerCredentialOverwrite {
+		t.Fatalf("ReviewerCredentialOverwrite = false, want entered secret for configured current ref to replace existing backend value")
+	}
+}
+
 func TestReviewerEntityLinearEditorLabelDerivedRefMarksProbedExistingSecretForOverwrite(t *testing.T) {
 	existing := basicProfile("work")
 	ctx := initPromptContext{
@@ -17312,6 +17368,58 @@ func TestInitReviewerCredentialStatusIncludesStandardTemplateRefs(t *testing.T) 
 	}
 }
 
+func TestInitReviewerCredentialStatusUsesExistsWhenBundleListingIsEmpty(t *testing.T) {
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode: config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{
+			Store: config.LocalOSCredentialStoreID,
+			Name:  "codereview/rianjs-bot-reviewer",
+		},
+		GitHubApp: &config.GitHubAppConfig{AppID: "4021133"},
+	}
+	cfg := config.Normalize(config.File{
+		Profiles: map[string]config.Profile{"work": work},
+	})
+	profile := cfg.Profiles["work"]
+	store := newFakeInitStore(map[string]map[string]string{
+		"rianjs-bot-reviewer": {
+			credentials.GitHubAppPrivateKeyKey: "existing-private-key",
+		},
+	})
+	store.listBundleFunc = func(string) ([]string, error) {
+		return nil, nil
+	}
+	session := initSessionDraft{
+		cfg: cfg,
+		workspace: &initWorkspaceDraft{
+			profileName:     "work",
+			profile:         profile,
+			previousProfile: &profile,
+		},
+		writes:              map[string]map[string]string{},
+		credentialDecisions: map[initCredentialDecisionKey]initCredentialDecisionKind{},
+	}
+	deps := initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+	}
+
+	ctx := currentInteractiveInitReviewerEntityPromptContext(&root.Options{}, deps, session)
+	status, ok := initReviewerCredentialStatusForSelectionRef(
+		ctx,
+		seedInteractiveInitDraft("work", "work", &profile),
+		string(initReviewerEntityKindGitHubApp),
+		config.LocalOSCredentialStoreID,
+		"codereview/rianjs-bot-reviewer",
+	)
+	if !ok {
+		t.Fatal("reviewer credential status missing")
+	}
+	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyExisting)
+}
+
 func assertReviewerCredentialKeyState(t *testing.T, status initReviewerCredentialStatus, key string, want initReviewerCredentialKeyState) {
 	t.Helper()
 	for _, row := range status.Keys {
@@ -22439,8 +22547,9 @@ func (f *fakeInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (stri
 }
 
 type fakeInitStore struct {
-	bundles       map[string]map[string]string
-	setBundleFunc func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error)
+	bundles        map[string]map[string]string
+	listBundleFunc func(string) ([]string, error)
+	setBundleFunc  func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error)
 }
 
 func newFakeInitStore(bundles map[string]map[string]string) *fakeInitStore {
@@ -22460,6 +22569,9 @@ func (s *fakeInitStore) Exists(profile, key string) (bool, error) {
 }
 
 func (s *fakeInitStore) ListBundle(profile string) ([]string, error) {
+	if s.listBundleFunc != nil {
+		return s.listBundleFunc(profile)
+	}
 	bundle := s.bundles[profile]
 	keys := make([]string, 0, len(bundle))
 	for key := range bundle {
