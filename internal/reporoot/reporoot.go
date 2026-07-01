@@ -1,3 +1,4 @@
+// Package reporoot resolves the current Git worktree root for review safety checks.
 package reporoot
 
 import (
