@@ -50,12 +50,17 @@ func defaultGitCommand(ctx context.Context, dir string, args ...string) ([]byte,
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
 	}
-	output, err := cmd.CombinedOutput()
+	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
+	output, err := cmd.Output()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
 		message := strings.TrimSpace(string(output))
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			message = strings.TrimSpace(string(exitErr.Stderr))
+		}
 		if message == "" {
 			message = err.Error()
 		}

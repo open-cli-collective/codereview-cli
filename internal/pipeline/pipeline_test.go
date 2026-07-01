@@ -5138,6 +5138,40 @@ func TestDryRunAllowsSiblingGitCatalogOutsideInvocationRoot(t *testing.T) {
 	}
 }
 
+func TestDryRunRejectsSameRootProfileAgentSourceWithRealGitResolver(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.fixtureRepoDir = ""
+	workspace := t.TempDir()
+	trustCurrentTempFixtures(t)
+	repoRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
+	}
+	initGitRepoForPipelineTest(t, repoRoot)
+	source := filepath.Join(repoRoot, "nested", "agents")
+	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
+	req.Profile.AgentSources = []string{source}
+	t.Chdir(repoRoot)
+
+	_, err := dryRunForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:    store,
+		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:      fixedNow,
+		NewRunID: func() string {
+			t.Fatal("NewRunID called before unsafe source rejection")
+			return ""
+		},
+	}, req)
+	if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), "current invocation worktree") {
+		t.Fatalf("DryRun real resolver error = %v, want ErrUnsafeSource with invocation worktree detail", err)
+	}
+}
+
 func TestPrepareSelectionContextRejectsSameRootProfileSourceDuringLoad(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
