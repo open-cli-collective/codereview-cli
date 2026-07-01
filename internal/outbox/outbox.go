@@ -744,7 +744,7 @@ func markFailedTerminal(ctx context.Context, store Store, action *ledger.Planned
 func markPlannedOnlyAdvisory(ctx context.Context, store Store, action *ledger.PlannedAction, err error) error {
 	action.Status = ledger.PlannedActionPlannedOnly
 	action.Error = strPtr(err.Error())
-	action.FailureClass = nil
+	action.FailureClass = strPtr(ledger.PlannedActionFailureClassAdvisory)
 	action.UpstreamID = nil
 	action.PostedAt = nil
 	return store.UpdatePlannedAction(ctx, *action)

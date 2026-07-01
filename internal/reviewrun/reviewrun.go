@@ -492,7 +492,7 @@ func advisoryThreadResolutionWarning(ctx context.Context, store Store, runID str
 		if action.Kind != ledger.PlannedActionResolveThread || action.Status != ledger.PlannedActionPlannedOnly || action.Error == nil {
 			continue
 		}
-		if !strings.Contains(*action.Error, gitprovider.ErrThreadResolutionUnsupported.Error()) {
+		if action.FailureClass == nil || *action.FailureClass != ledger.PlannedActionFailureClassAdvisory {
 			continue
 		}
 		return "GitHub Apps cannot resolve discussion threads; review content was still posted and the summary comment metadata remains available for cached-review flows", nil

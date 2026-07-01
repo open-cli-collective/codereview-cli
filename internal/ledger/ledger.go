@@ -204,6 +204,7 @@ func ParsePlannedActionStatus(value string) (PlannedActionStatus, error) {
 const (
 	PlannedActionFailureClassTerminal = "terminal"
 	PlannedActionFailureClassAuth     = "auth"
+	PlannedActionFailureClassAdvisory = "advisory"
 )
 
 // Store owns the SQLite connection and serializes mutating ledger writes.
@@ -1304,7 +1305,7 @@ func validatePlannedAction(action PlannedAction) error {
 
 func validPlannedActionFailureClass(value string) bool {
 	switch value {
-	case PlannedActionFailureClassTerminal, PlannedActionFailureClassAuth:
+	case PlannedActionFailureClassTerminal, PlannedActionFailureClassAuth, PlannedActionFailureClassAdvisory:
 		return true
 	default:
 		return false
