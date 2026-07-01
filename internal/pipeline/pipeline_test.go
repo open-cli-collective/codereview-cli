@@ -5051,12 +5051,12 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T) {
 	tests := []struct {
 		name       string
-		source     func(t *testing.T) string
+		source     func(t *testing.T) (string, string)
 		wantDetail string
 	}{
 		{name: "relative", source: relativeAgentSource, wantDetail: "relative"},
 		{name: "temp", source: tempAgentSource, wantDetail: "OS temp"},
-		{name: "git worktree", source: gitWorktreeAgentSource, wantDetail: "Git worktree"},
+		{name: "same invocation worktree", source: gitWorktreeAgentSource, wantDetail: "current invocation worktree"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -5064,7 +5064,8 @@ func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T)
 			store := openPipelineStore(t)
 			defer closeStore(t, store)
 			provider, req := dryRunHarness(t)
-			req.Profile.AgentSources = []string{tt.source(t)}
+			source, invocationRoot := tt.source(t)
+			req.Profile.AgentSources = []string{source}
 
 			_, err := dryRunForTest(ctx, Options{
 				Provider: provider,
@@ -5072,6 +5073,9 @@ func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T)
 				Store:    store,
 				Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
 				Now:      fixedNow,
+				ResolveRepoRoot: func(context.Context) (string, error) {
+					return invocationRoot, nil
+				},
 				NewRunID: func() string {
 					t.Fatal("NewRunID called before unsafe source rejection")
 					return ""
@@ -5081,6 +5085,34 @@ func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T)
 				t.Fatalf("DryRun error = %v, want ErrUnsafeSource with %q", err, tt.wantDetail)
 			}
 		})
+	}
+}
+
+func TestDryRunAllowsSiblingGitCatalogOutsideInvocationRoot(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff.Raw = ""
+	source, _ := siblingGitCatalogSource(t)
+	req.Profile.AgentSources = []string{source}
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:    store,
+		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:      fixedNow,
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return provider.fixtureRepoDir, nil
+		},
+		NewRunID: func() string { return "run-allow-sibling" },
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun sibling catalog: %v", err)
+	}
+	if result.Artifacts.Dir == "" {
+		t.Fatal("artifacts dir empty, want allocated dry-run artifacts")
 	}
 }
 
@@ -7387,16 +7419,16 @@ func writeAgent(t *testing.T, rootDir, category, agent, description, prompt stri
 	writeFile(t, filepath.Join(rootDir, category, agent, "prompt.md"), prompt)
 }
 
-func relativeAgentSource(t *testing.T) string {
+func relativeAgentSource(t *testing.T) (string, string) {
 	t.Helper()
 	cwd := t.TempDir()
 	source := filepath.Join(cwd, "agents")
 	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
 	t.Chdir(cwd)
-	return "agents"
+	return "agents", ""
 }
 
-func tempAgentSource(t *testing.T) string {
+func tempAgentSource(t *testing.T) (string, string) {
 	t.Helper()
 	tempRoot := os.TempDir()
 	if err := os.MkdirAll(tempRoot, 0o700); err != nil {
@@ -7412,18 +7444,46 @@ func tempAgentSource(t *testing.T) string {
 		}
 	})
 	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
-	return source
+	return source, ""
 }
 
-func gitWorktreeAgentSource(t *testing.T) string {
+func gitWorktreeAgentSource(t *testing.T) (string, string) {
 	t.Helper()
-	repoRoot := t.TempDir()
+	workspace := t.TempDir()
+	trustCurrentTempFixtures(t)
+	repoRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
+	}
 	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
 		t.Fatalf("Mkdir .git: %v", err)
 	}
-	source := filepath.Join(repoRoot, "agents")
+	source := filepath.Join(repoRoot, "nested", "agents")
 	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
-	return source
+	return source, repoRoot
+}
+
+func siblingGitCatalogSource(t *testing.T) (string, string) {
+	t.Helper()
+	workspace := t.TempDir()
+	trustCurrentTempFixtures(t)
+	reviewRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(reviewRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(reviewRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir review .git: %v", err)
+	}
+	catalogRoot := filepath.Join(workspace, "catalog-repo")
+	if err := os.MkdirAll(catalogRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll catalog repo: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(catalogRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir catalog .git: %v", err)
+	}
+	source := filepath.Join(catalogRoot, "agents")
+	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
+	return source, reviewRoot
 }
 
 func writeAgentFullContent(t *testing.T, rootDir, category, agent string) {

@@ -276,32 +276,37 @@ func TestFilesystemSourceWarningsForRelativeTempAndGitWorktreePaths(t *testing.T
 	}
 }
 
-func TestRequireSafeProfileSourcesRejectsRelativeTempAndGitWorktreePaths(t *testing.T) {
+func TestRequireSafeProfileSourcesRejectsRelativeTempAndInvocationWorktreePaths(t *testing.T) {
 	cwd := t.TempDir()
 	relativeRoot := filepath.Join(cwd, "agents")
 	writeAgent(t, relativeRoot, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 	t.Chdir(cwd)
-	err := RequireSafeProfileSources([]string{"agents"})
+	err := RequireSafeProfileSources([]string{"agents"}, "")
 	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "relative") {
 		t.Fatalf("relative error = %v, want ErrUnsafeSource with relative warning", err)
 	}
 
 	tempRoot := t.TempDir()
 	writeAgent(t, tempRoot, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
-	err = RequireSafeProfileSources([]string{tempRoot})
+	err = RequireSafeProfileSources([]string{tempRoot}, "")
 	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "OS temp") {
 		t.Fatalf("temp error = %v, want ErrUnsafeSource with temp warning", err)
 	}
 
-	repoRoot := t.TempDir()
+	workspace := t.TempDir()
+	trustCurrentTempFixturesForAgents(t)
+	repoRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
+	}
 	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
 		t.Fatalf("Mkdir .git: %v", err)
 	}
-	gitSource := filepath.Join(repoRoot, "agents")
+	gitSource := filepath.Join(repoRoot, "nested", "agents")
 	writeAgent(t, gitSource, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
-	err = RequireSafeProfileSources([]string{gitSource})
-	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "Git worktree") {
-		t.Fatalf("git error = %v, want ErrUnsafeSource with Git worktree warning", err)
+	err = RequireSafeProfileSources([]string{gitSource}, repoRoot)
+	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "current invocation worktree") {
+		t.Fatalf("same-root error = %v, want ErrUnsafeSource with invocation worktree detail", err)
 	}
 }
 
@@ -313,6 +318,60 @@ func TestLoadRequireSafeProfileSourcesRejectsUnsafeSource(t *testing.T) {
 	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "OS temp") {
 		t.Fatalf("Load error = %v, want ErrUnsafeSource with temp warning", err)
 	}
+}
+
+func TestRequireSafeProfileSourcesAllowsSiblingGitCatalogOutsideInvocationRoot(t *testing.T) {
+	workspace := t.TempDir()
+	trustCurrentTempFixturesForAgents(t)
+	invocationRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(invocationRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll invocation root: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(invocationRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir review .git: %v", err)
+	}
+	catalogRoot := filepath.Join(workspace, "catalog-repo")
+	if err := os.MkdirAll(catalogRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll catalog root: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(catalogRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir catalog .git: %v", err)
+	}
+	source := filepath.Join(catalogRoot, "agents")
+	writeAgent(t, source, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
+
+	if err := RequireSafeProfileSources([]string{source}, invocationRoot); err != nil {
+		t.Fatalf("RequireSafeProfileSources sibling catalog: %v", err)
+	}
+}
+
+func TestRequireSafeProfileSourcesCanonicalizesInvocationRootAndSource(t *testing.T) {
+	workspace := t.TempDir()
+	trustCurrentTempFixturesForAgents(t)
+	invocationRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(invocationRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll invocation root: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(invocationRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("Mkdir review .git: %v", err)
+	}
+	source := filepath.Join(invocationRoot, "nested", "agents")
+	writeAgent(t, source, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
+	rootLink := filepath.Join(workspace, "review-link")
+	if err := os.Symlink(invocationRoot, rootLink); err != nil {
+		t.Fatalf("Symlink invocation root: %v", err)
+	}
+	sourceLink := filepath.Join(rootLink, "nested", "agents")
+
+	err := RequireSafeProfileSources([]string{sourceLink}, rootLink)
+	if !errors.Is(err, ErrUnsafeSource) || !strings.Contains(err.Error(), "current invocation worktree") {
+		t.Fatalf("symlinked same-root error = %v, want ErrUnsafeSource with invocation worktree detail", err)
+	}
+}
+
+func trustCurrentTempFixturesForAgents(t *testing.T) {
+	t.Helper()
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 }
 
 func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {

@@ -402,10 +402,12 @@ inlining `index.yaml` or `prompt.md`. Missing or unreadable sources are shown as
 deployment status in `config show`; commands that actually load agents, such as
 `cr agents` and `cr review`, fail fast until the source is fixed.
 
-Avoid profile sources under temp directories, relative paths, or Git worktrees.
-Those locations are warned because they are easy for local scripts or PR authors
-to mutate. Symlinked sources are accepted, but `cr` records the canonical path
-and fingerprints the resolved files.
+Avoid profile sources under temp directories or relative paths. Git-backed
+catalogs are allowed, but PR-shaped commands reject profile sources whose
+canonical path resolves inside the current invocation worktree for the review
+command because that checkout may be author-controlled. Other Git worktrees stay
+allowed with provenance warnings. Symlinked sources are accepted, and `cr`
+records the canonical path plus fingerprints of the resolved files.
 
 When deploying a profile without the interactive wizard, run
 `cr init --non-interactive` first to write the core non-secret profile shape,
