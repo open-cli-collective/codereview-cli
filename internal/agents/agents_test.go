@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -327,16 +328,12 @@ func TestRequireSafeProfileSourcesAllowsSiblingGitCatalogOutsideInvocationRoot(t
 	if err := os.MkdirAll(invocationRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll invocation root: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(invocationRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir review .git: %v", err)
-	}
+	initGitRepoForAgentsTest(t, invocationRoot)
 	catalogRoot := filepath.Join(workspace, "catalog-repo")
 	if err := os.MkdirAll(catalogRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll catalog root: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(catalogRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir catalog .git: %v", err)
-	}
+	initGitRepoForAgentsTest(t, catalogRoot)
 	source := filepath.Join(catalogRoot, "agents")
 	writeAgent(t, source, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 
@@ -352,9 +349,7 @@ func TestRequireSafeProfileSourcesCanonicalizesInvocationRootAndSource(t *testin
 	if err := os.MkdirAll(invocationRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll invocation root: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(invocationRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir review .git: %v", err)
-	}
+	initGitRepoForAgentsTest(t, invocationRoot)
 	source := filepath.Join(invocationRoot, "nested", "agents")
 	writeAgent(t, source, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
 	rootLink := filepath.Join(workspace, "review-link")
@@ -372,6 +367,13 @@ func TestRequireSafeProfileSourcesCanonicalizesInvocationRootAndSource(t *testin
 func trustCurrentTempFixturesForAgents(t *testing.T) {
 	t.Helper()
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
+}
+
+func initGitRepoForAgentsTest(t *testing.T, dir string) {
+	t.Helper()
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+		t.Fatalf("git init %s: %v\n%s", dir, err, out)
+	}
 }
 
 func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {

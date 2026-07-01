@@ -5138,6 +5138,31 @@ func TestDryRunAllowsSiblingGitCatalogOutsideInvocationRoot(t *testing.T) {
 	}
 }
 
+func TestPrepareSelectionContextRejectsSameRootProfileSourceDuringLoad(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	source, invocationRoot := gitWorktreeAgentSource(t)
+	req.Profile.AgentSources = []string{source}
+
+	_, err := prepareSelectionContext(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return invocationRoot, nil
+		},
+	}, selectionSetupRequest{
+		PRRef:           req.PRRef,
+		Profile:         req.Profile,
+		PostingIdentity: req.PostingIdentity,
+		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
+			return ArtifactPathsFromDir(t.TempDir()), nil
+		},
+	})
+	if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), "current invocation worktree") {
+		t.Fatalf("prepareSelectionContext error = %v, want ErrUnsafeSource with invocation worktree detail", err)
+	}
+}
+
 func TestDryRunMarksRunFailedAfterPostAllocationError(t *testing.T) {
 	ctx := context.Background()
 	inner := openPipelineStore(t)
@@ -6727,6 +6752,13 @@ func trustCurrentTempFixtures(t *testing.T) {
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 }
 
+func initGitRepoForPipelineTest(t *testing.T, dir string) {
+	t.Helper()
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+		t.Fatalf("git init %s: %v\n%s", dir, err, out)
+	}
+}
+
 func allocateLiveRun(t *testing.T, store *ledger.Store, provider *readOnlyProvider, req Request, runID string) ledger.Run {
 	t.Helper()
 	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
@@ -7477,9 +7509,7 @@ func gitWorktreeAgentSource(t *testing.T) (string, string) {
 	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll review repo: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir .git: %v", err)
-	}
+	initGitRepoForPipelineTest(t, repoRoot)
 	source := filepath.Join(repoRoot, "nested", "agents")
 	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
 	return source, repoRoot
@@ -7493,16 +7523,12 @@ func siblingGitCatalogSource(t *testing.T) (string, string) {
 	if err := os.MkdirAll(reviewRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll review repo: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(reviewRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir review .git: %v", err)
-	}
+	initGitRepoForPipelineTest(t, reviewRoot)
 	catalogRoot := filepath.Join(workspace, "catalog-repo")
 	if err := os.MkdirAll(catalogRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll catalog repo: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(catalogRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir catalog .git: %v", err)
-	}
+	initGitRepoForPipelineTest(t, catalogRoot)
 	source := filepath.Join(catalogRoot, "agents")
 	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
 	return source, reviewRoot

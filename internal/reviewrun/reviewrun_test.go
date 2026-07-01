@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -775,9 +776,7 @@ func gitWorktreeAgentSource(t *testing.T) (string, string) {
 	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll review repo: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir .git: %v", err)
-	}
+	initGitRepoForReviewrunTest(t, repoRoot)
 	source := filepath.Join(repoRoot, "nested", "agents")
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		t.Fatalf("MkdirAll git worktree agent source: %v", err)
@@ -793,16 +792,12 @@ func siblingGitCatalogSource(t *testing.T) (string, string) {
 	if err := os.MkdirAll(reviewRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll review repo: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(reviewRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir review .git: %v", err)
-	}
+	initGitRepoForReviewrunTest(t, reviewRoot)
 	catalogRoot := filepath.Join(workspace, "catalog-repo")
 	if err := os.MkdirAll(catalogRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll catalog repo: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(catalogRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir catalog .git: %v", err)
-	}
+	initGitRepoForReviewrunTest(t, catalogRoot)
 	source := filepath.Join(catalogRoot, "agents")
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		t.Fatalf("MkdirAll catalog agent source: %v", err)
@@ -813,6 +808,13 @@ func siblingGitCatalogSource(t *testing.T) (string, string) {
 func trustCurrentTempFixturesReviewrun(t *testing.T) {
 	t.Helper()
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
+}
+
+func initGitRepoForReviewrunTest(t *testing.T, dir string) {
+	t.Helper()
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+		t.Fatalf("git init %s: %v\n%s", dir, err, out)
+	}
 }
 
 func (f *fixture) allocateRun(t *testing.T, runID, baseSHA string) ledger.Run {
