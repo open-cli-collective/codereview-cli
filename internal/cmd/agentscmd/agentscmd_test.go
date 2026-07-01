@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -296,7 +297,7 @@ func TestAgentsListWithPRRejectsUnsafeProfileSource(t *testing.T) {
 	}{
 		{name: "relative", source: relativeAgentSource, wantDetail: "relative"},
 		{name: "temp", source: tempAgentSource, wantDetail: "OS temp"},
-		{name: "git worktree", source: gitWorktreeAgentSource, wantDetail: "Git worktree"},
+		{name: "same invocation worktree", source: gitWorktreeAgentSource, wantDetail: "current invocation worktree"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -312,6 +313,23 @@ func TestAgentsListWithPRRejectsUnsafeProfileSource(t *testing.T) {
 				t.Fatalf("exit code = %d, want usage", got)
 			}
 		})
+	}
+}
+
+func TestAgentsListWithPRAllowsSiblingGitCatalog(t *testing.T) {
+	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
+	cfg := testConfig(siblingGitCatalogSource(t))
+	cmd, out := newTestCommand(t, cfg, providerFactory(fake))
+
+	if err := root.Execute(cmd, []string{"agents", "list", prURL(ref), "--json"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got view.AgentsList
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+	}
+	if len(got.Sources) == 0 || got.Sources[0].Fingerprint == "" {
+		t.Fatalf("sources = %#v, want fingerprinted profile source", got.Sources)
 	}
 }
 
@@ -529,13 +547,42 @@ func tempAgentSource(t *testing.T) string {
 
 func gitWorktreeAgentSource(t *testing.T) string {
 	t.Helper()
-	repoRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir .git: %v", err)
-	}
-	source := filepath.Join(repoRoot, "agents")
-	writeAgent(t, source, "profile", "reviewer", "profile desc", "profile prompt")
+	workspace := t.TempDir()
 	trustCurrentTempFixtures(t)
+	repoRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
+	}
+	if out, err := exec.Command("git", "init", repoRoot).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+		t.Fatalf("git init review repo: %v\n%s", err, out)
+	}
+	source := filepath.Join(repoRoot, "nested", "agents")
+	writeAgent(t, source, "profile", "reviewer", "profile desc", "profile prompt")
+	t.Chdir(repoRoot)
+	return source
+}
+
+func siblingGitCatalogSource(t *testing.T) string {
+	t.Helper()
+	workspace := t.TempDir()
+	trustCurrentTempFixtures(t)
+	reviewRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(reviewRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
+	}
+	if out, err := exec.Command("git", "init", reviewRoot).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+		t.Fatalf("git init review repo: %v\n%s", err, out)
+	}
+	catalogRoot := filepath.Join(workspace, "catalog-repo")
+	if err := os.MkdirAll(catalogRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll catalog repo: %v", err)
+	}
+	if out, err := exec.Command("git", "init", catalogRoot).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+		t.Fatalf("git init catalog repo: %v\n%s", err, out)
+	}
+	source := filepath.Join(catalogRoot, "agents")
+	writeAgent(t, source, "profile", "reviewer", "profile desc", "profile prompt")
+	t.Chdir(reviewRoot)
 	return source
 }
 

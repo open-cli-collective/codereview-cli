@@ -25,6 +25,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
@@ -46,6 +47,27 @@ func selectionOnlyForTest(ctx context.Context, opts Options, req SelectionReques
 func liveForTest(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
 	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
 	return Live(ctx, opts, req, run)
+}
+
+func TestResolveInvocationRootForSafetyTreatsUnavailableAsUnknownAndOtherErrorsAsFatal(t *testing.T) {
+	root, err := resolveInvocationRootForSafety(context.Background(), Options{
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return "", reporoot.ErrUnavailable
+		},
+	})
+	if err != nil || root != "" {
+		t.Fatalf("unavailable root = (%q, %v), want empty root and nil error", root, err)
+	}
+
+	wantErr := errors.New("resolver failed")
+	root, err = resolveInvocationRootForSafety(context.Background(), Options{
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return "", wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) || root != "" {
+		t.Fatalf("resolver error = (%q, %v), want empty root and %v", root, err, wantErr)
+	}
 }
 
 func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
@@ -5051,12 +5073,12 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T) {
 	tests := []struct {
 		name       string
-		source     func(t *testing.T) string
+		source     func(t *testing.T) (string, string)
 		wantDetail string
 	}{
 		{name: "relative", source: relativeAgentSource, wantDetail: "relative"},
 		{name: "temp", source: tempAgentSource, wantDetail: "OS temp"},
-		{name: "git worktree", source: gitWorktreeAgentSource, wantDetail: "Git worktree"},
+		{name: "same invocation worktree", source: gitWorktreeAgentSource, wantDetail: "current invocation worktree"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -5064,7 +5086,8 @@ func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T)
 			store := openPipelineStore(t)
 			defer closeStore(t, store)
 			provider, req := dryRunHarness(t)
-			req.Profile.AgentSources = []string{tt.source(t)}
+			source, invocationRoot := tt.source(t)
+			req.Profile.AgentSources = []string{source}
 
 			_, err := dryRunForTest(ctx, Options{
 				Provider: provider,
@@ -5072,6 +5095,9 @@ func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T)
 				Store:    store,
 				Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
 				Now:      fixedNow,
+				ResolveRepoRoot: func(context.Context) (string, error) {
+					return invocationRoot, nil
+				},
 				NewRunID: func() string {
 					t.Fatal("NewRunID called before unsafe source rejection")
 					return ""
@@ -5081,6 +5107,93 @@ func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T)
 				t.Fatalf("DryRun error = %v, want ErrUnsafeSource with %q", err, tt.wantDetail)
 			}
 		})
+	}
+}
+
+func TestDryRunAllowsSiblingGitCatalogOutsideInvocationRoot(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff.Raw = ""
+	source, _ := siblingGitCatalogSource(t)
+	req.Profile.AgentSources = []string{source}
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:    store,
+		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:      fixedNow,
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return provider.fixtureRepoDir, nil
+		},
+		NewRunID: func() string { return "run-allow-sibling" },
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun sibling catalog: %v", err)
+	}
+	if result.Artifacts.Dir == "" {
+		t.Fatal("artifacts dir empty, want allocated dry-run artifacts")
+	}
+}
+
+func TestDryRunRejectsSameRootProfileAgentSourceWithRealGitResolver(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.fixtureRepoDir = ""
+	workspace := t.TempDir()
+	trustCurrentTempFixtures(t)
+	repoRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
+	}
+	initGitRepoForPipelineTest(t, repoRoot)
+	source := filepath.Join(repoRoot, "nested", "agents")
+	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
+	req.Profile.AgentSources = []string{source}
+	t.Chdir(repoRoot)
+
+	_, err := dryRunForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:    store,
+		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:      fixedNow,
+		NewRunID: func() string {
+			t.Fatal("NewRunID called before unsafe source rejection")
+			return ""
+		},
+	}, req)
+	if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), "current invocation worktree") {
+		t.Fatalf("DryRun real resolver error = %v, want ErrUnsafeSource with invocation worktree detail", err)
+	}
+}
+
+func TestPrepareSelectionContextRejectsSameRootProfileSourceDuringLoad(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	source, invocationRoot := gitWorktreeAgentSource(t)
+	req.Profile.AgentSources = []string{source}
+
+	_, err := prepareSelectionContext(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return invocationRoot, nil
+		},
+	}, selectionSetupRequest{
+		PRRef:           req.PRRef,
+		Profile:         req.Profile,
+		PostingIdentity: req.PostingIdentity,
+		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
+			return ArtifactPathsFromDir(t.TempDir()), nil
+		},
+	})
+	if !errors.Is(err, agents.ErrUnsafeSource) || !strings.Contains(err.Error(), "current invocation worktree") {
+		t.Fatalf("prepareSelectionContext error = %v, want ErrUnsafeSource with invocation worktree detail", err)
 	}
 }
 
@@ -6673,6 +6786,13 @@ func trustCurrentTempFixtures(t *testing.T) {
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
 }
 
+func initGitRepoForPipelineTest(t *testing.T, dir string) {
+	t.Helper()
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+		t.Fatalf("git init %s: %v\n%s", dir, err, out)
+	}
+}
+
 func allocateLiveRun(t *testing.T, store *ledger.Store, provider *readOnlyProvider, req Request, runID string) ledger.Run {
 	t.Helper()
 	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
@@ -7387,16 +7507,16 @@ func writeAgent(t *testing.T, rootDir, category, agent, description, prompt stri
 	writeFile(t, filepath.Join(rootDir, category, agent, "prompt.md"), prompt)
 }
 
-func relativeAgentSource(t *testing.T) string {
+func relativeAgentSource(t *testing.T) (string, string) {
 	t.Helper()
 	cwd := t.TempDir()
 	source := filepath.Join(cwd, "agents")
 	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
 	t.Chdir(cwd)
-	return "agents"
+	return "agents", ""
 }
 
-func tempAgentSource(t *testing.T) string {
+func tempAgentSource(t *testing.T) (string, string) {
 	t.Helper()
 	tempRoot := os.TempDir()
 	if err := os.MkdirAll(tempRoot, 0o700); err != nil {
@@ -7412,18 +7532,40 @@ func tempAgentSource(t *testing.T) string {
 		}
 	})
 	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
-	return source
+	return source, ""
 }
 
-func gitWorktreeAgentSource(t *testing.T) string {
+func gitWorktreeAgentSource(t *testing.T) (string, string) {
 	t.Helper()
-	repoRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir .git: %v", err)
+	workspace := t.TempDir()
+	trustCurrentTempFixtures(t)
+	repoRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
 	}
-	source := filepath.Join(repoRoot, "agents")
+	initGitRepoForPipelineTest(t, repoRoot)
+	source := filepath.Join(repoRoot, "nested", "agents")
 	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
-	return source
+	return source, repoRoot
+}
+
+func siblingGitCatalogSource(t *testing.T) (string, string) {
+	t.Helper()
+	workspace := t.TempDir()
+	trustCurrentTempFixtures(t)
+	reviewRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(reviewRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
+	}
+	initGitRepoForPipelineTest(t, reviewRoot)
+	catalogRoot := filepath.Join(workspace, "catalog-repo")
+	if err := os.MkdirAll(catalogRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll catalog repo: %v", err)
+	}
+	initGitRepoForPipelineTest(t, catalogRoot)
+	source := filepath.Join(catalogRoot, "agents")
+	writeAgent(t, source, "harness", "reviewer", "reviewer desc", "Review carefully.")
+	return source, reviewRoot
 }
 
 func writeAgentFullContent(t *testing.T, rootDir, category, agent string) {

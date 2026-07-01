@@ -21,6 +21,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -64,6 +65,7 @@ type Options struct {
 	ApprovalOverride        approvaloverride.Classifier
 	Retention               datalifecycle.RetentionPolicy
 	RetentionManualOnly     bool
+	ResolveRepoRoot         func(context.Context) (string, error)
 }
 
 // Flags contains live gate-affecting CLI flags.
@@ -103,7 +105,11 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 	if req.Flags.Rerun && req.Flags.RetryPosts {
 		return Result{}, fmt.Errorf("reviewrun: --rerun and --retry-posts are mutually exclusive")
 	}
-	if err := agents.RequireSafeProfileSources(req.Pipeline.Profile.AgentSources); err != nil {
+	invocationRoot, err := resolveInvocationRootForSafety(ctx, opts)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := agents.RequireSafeProfileSources(req.Pipeline.Profile.AgentSources, invocationRoot); err != nil {
 		return Result{}, err
 	}
 	if err := pruneRetention(ctx, opts); err != nil {
@@ -179,6 +185,24 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 	default:
 		return Result{}, fmt.Errorf("reviewrun: unsupported gate status %q", gateResult.Status)
 	}
+}
+
+func resolveInvocationRootForSafety(ctx context.Context, opts Options) (string, error) {
+	if opts.ResolveRepoRoot == nil {
+		root, err := reporoot.Resolve(ctx, "", nil)
+		if errors.Is(err, reporoot.ErrUnavailable) {
+			return "", nil
+		}
+		return root, err
+	}
+	root, err := opts.ResolveRepoRoot(ctx)
+	if errors.Is(err, reporoot.ErrUnavailable) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return root, nil
 }
 
 func evaluateGate(ctx context.Context, opts Options, req Request, pr gitprovider.PR, prKey string) (gateio.Result, error) {

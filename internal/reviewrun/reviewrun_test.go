@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,20 +76,24 @@ func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 func TestRunRejectsUnsafeProfileAgentSourcesBeforeFreshAllocation(t *testing.T) {
 	tests := []struct {
 		name       string
-		source     func(t *testing.T) string
+		source     func(t *testing.T) (string, string)
 		wantDetail string
 	}{
 		{name: "relative", source: relativeAgentSource, wantDetail: "relative"},
-		{name: "temp", source: func(t *testing.T) string { return t.TempDir() }, wantDetail: "OS temp"},
-		{name: "git worktree", source: gitWorktreeAgentSource, wantDetail: "Git worktree"},
+		{name: "temp", source: tempAgentSource, wantDetail: "OS temp"},
+		{name: "same invocation worktree", source: gitWorktreeAgentSource, wantDetail: "current invocation worktree"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			fixture := newFixture(t)
-			fixture.req.Profile.AgentSources = []string{tt.source(t)}
+			source, invocationRoot := tt.source(t)
+			fixture.req.Profile.AgentSources = []string{source}
 			planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
 			opts := fixture.opts(planner)
+			opts.ResolveRepoRoot = func(context.Context) (string, error) {
+				return invocationRoot, nil
+			}
 			opts.NewRunID = func() string {
 				t.Fatal("NewRunID called before unsafe source rejection")
 				return ""
@@ -109,6 +114,27 @@ func TestRunRejectsUnsafeProfileAgentSourcesBeforeFreshAllocation(t *testing.T) 
 				t.Fatalf("runs len = %d, want no live run allocation: %#v", len(runs), runs)
 			}
 		})
+	}
+}
+
+func TestRunAllowsSiblingGitCatalogOutsideInvocationRoot(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	source, invocationRoot := siblingGitCatalogSource(t)
+	fixture.req.Profile.AgentSources = []string{source}
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+	opts := fixture.opts(planner)
+	opts.ResolveRepoRoot = func(context.Context) (string, error) {
+		return invocationRoot, nil
+	}
+	opts.NewRunID = func() string { return "fresh-allow-sibling" }
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run sibling catalog: %v", err)
+	}
+	if result.Run.RunID != "fresh-allow-sibling" {
+		t.Fatalf("run id = %q, want fresh-allow-sibling", result.Run.RunID)
 	}
 }
 
@@ -726,7 +752,7 @@ func (f *fixture) opts(planner Planner) Options {
 	}
 }
 
-func relativeAgentSource(t *testing.T) string {
+func relativeAgentSource(t *testing.T) (string, string) {
 	t.Helper()
 	cwd := t.TempDir()
 	source := filepath.Join(cwd, "agents")
@@ -734,20 +760,61 @@ func relativeAgentSource(t *testing.T) string {
 		t.Fatalf("MkdirAll relative agent source: %v", err)
 	}
 	t.Chdir(cwd)
-	return "agents"
+	return "agents", ""
 }
 
-func gitWorktreeAgentSource(t *testing.T) string {
+func tempAgentSource(t *testing.T) (string, string) {
 	t.Helper()
-	repoRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
-		t.Fatalf("Mkdir .git: %v", err)
+	return t.TempDir(), ""
+}
+
+func gitWorktreeAgentSource(t *testing.T) (string, string) {
+	t.Helper()
+	workspace := t.TempDir()
+	trustCurrentTempFixturesReviewrun(t)
+	repoRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
 	}
-	source := filepath.Join(repoRoot, "agents")
+	initGitRepoForReviewrunTest(t, repoRoot)
+	source := filepath.Join(repoRoot, "nested", "agents")
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		t.Fatalf("MkdirAll git worktree agent source: %v", err)
 	}
-	return source
+	return source, repoRoot
+}
+
+func siblingGitCatalogSource(t *testing.T) (string, string) {
+	t.Helper()
+	workspace := t.TempDir()
+	trustCurrentTempFixturesReviewrun(t)
+	reviewRoot := filepath.Join(workspace, "review-repo")
+	if err := os.MkdirAll(reviewRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll review repo: %v", err)
+	}
+	initGitRepoForReviewrunTest(t, reviewRoot)
+	catalogRoot := filepath.Join(workspace, "catalog-repo")
+	if err := os.MkdirAll(catalogRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll catalog repo: %v", err)
+	}
+	initGitRepoForReviewrunTest(t, catalogRoot)
+	source := filepath.Join(catalogRoot, "agents")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatalf("MkdirAll catalog agent source: %v", err)
+	}
+	return source, reviewRoot
+}
+
+func trustCurrentTempFixturesReviewrun(t *testing.T) {
+	t.Helper()
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
+}
+
+func initGitRepoForReviewrunTest(t *testing.T, dir string) {
+	t.Helper()
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+		t.Fatalf("git init %s: %v\n%s", dir, err, out)
+	}
 }
 
 func (f *fixture) allocateRun(t *testing.T, runID, baseSHA string) ledger.Run {

@@ -301,6 +301,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		RequireOpinionatedReviewAuthority: !flags.dryRun,
 		Retention:                         cmdruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
+		ResolveRepoRoot:                   cmdruntime.ResolveRepoRoot,
 	}
 	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
 	runtime, err := factory(cmd, opts, cfg, profile, runtimeOpts)
@@ -914,6 +915,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 			ApprovalOverride:        withProgressApprovalOverrideClassifier(logger, buildApprovalOverrideClassifier(profile, adapter, warnings)),
 			Retention:               runtimeOpts.Retention,
 			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
+			ResolveRepoRoot:         runtimeOpts.ResolveRepoRoot,
 		},
 		respond: threadrespond.Options{
 			Store:        ledgerStore,

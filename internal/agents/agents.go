@@ -166,6 +166,7 @@ type LoadOptions struct {
 	Repo                      *RepoSource
 	FlagDirs                  []string
 	RequireSafeProfileSources bool
+	SafeProfileSourceRoot     string
 	AllowSoftRepoFailures     bool
 }
 
@@ -212,7 +213,7 @@ func Load(ctx context.Context, opts LoadOptions) (Catalog, error) {
 			return Catalog{}, err
 		}
 		if opts.RequireSafeProfileSources {
-			if err := unsafeSourceError(source); err != nil {
+			if err := unsafeSourceError(source, opts.SafeProfileSourceRoot); err != nil {
 				return Catalog{}, err
 			}
 		}
@@ -269,24 +270,44 @@ func InspectProfileSources(dirs []string) []SourceInfo {
 
 // RequireSafeProfileSources fails when profile sources are mutable or
 // ambiguous for PR review execution.
-func RequireSafeProfileSources(dirs []string) error {
+func RequireSafeProfileSources(dirs []string, invocationRoot string) error {
 	for _, dir := range dirs {
 		source, err := inspectFileSource(dir, Provenance{Kind: SourceProfile})
 		if err != nil {
 			return err
 		}
-		if err := unsafeSourceError(source); err != nil {
+		if err := unsafeSourceError(source, invocationRoot); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func unsafeSourceError(source SourceInfo) error {
-	if len(source.Warnings) == 0 {
+func unsafeSourceError(source SourceInfo, invocationRoot string) error {
+	reasons := unsafeSourceReasons(source, invocationRoot)
+	if len(reasons) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: profile agent source %s is not trusted for PR review: %s", ErrUnsafeSource, source.ConfiguredPath, strings.Join(source.Warnings, "; "))
+	return fmt.Errorf("%w: profile agent source %s is not trusted for PR review: %s", ErrUnsafeSource, source.ConfiguredPath, strings.Join(reasons, "; "))
+}
+
+func unsafeSourceReasons(source SourceInfo, invocationRoot string) []string {
+	var reasons []string
+	expanded, err := expandPath(source.ConfiguredPath)
+	if err == nil && !filepath.IsAbs(expanded) {
+		reasons = append(reasons, "configured path is relative; use an absolute org-managed path for rollout")
+	}
+	if pathWithin(source.CanonicalPath, os.TempDir()) {
+		reasons = append(reasons, "canonical path is under the OS temp directory; temp locations are mutable")
+	}
+	if pathWithin(source.CanonicalPath, invocationRoot) {
+		root := invocationRoot
+		if canonicalRoot, err := canonicalizePath(invocationRoot); err == nil {
+			root = canonicalRoot
+		}
+		reasons = append(reasons, fmt.Sprintf("canonical path resolves inside the current invocation worktree %s; PR authors may be able to mutate it", root))
+	}
+	return reasons
 }
 
 type catalogBuilder struct {
@@ -864,9 +885,20 @@ func sourceWarnings(expanded, canonical string) []string {
 		warnings = append(warnings, "canonical path is under the OS temp directory; temp locations are mutable")
 	}
 	if root, ok := gitWorktreeRoot(canonical); ok {
-		warnings = append(warnings, fmt.Sprintf("canonical path is inside Git worktree %s; PR authors may be able to mutate it", root))
+		warnings = append(warnings, fmt.Sprintf("canonical path is inside Git worktree %s; PR review only blocks sources inside the current invocation worktree", root))
 	}
 	return warnings
+}
+
+func canonicalizePath(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	resolved, err := filepath.EvalSymlinks(raw)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(resolved)
 }
 
 func pathWithin(child, parent string) bool {

@@ -33,6 +33,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/pricing"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
@@ -434,7 +435,11 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	if err := validateSelectionOnly(opts, req); err != nil {
 		return SelectionResult{}, err
 	}
-	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources); err != nil {
+	invocationRoot, err := resolveInvocationRootForSafety(ctx, opts)
+	if err != nil {
+		return SelectionResult{}, err
+	}
+	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources, invocationRoot); err != nil {
 		return SelectionResult{}, err
 	}
 
@@ -500,7 +505,11 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	if err := validate(opts, req); err != nil {
 		return Result{}, err
 	}
-	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources); err != nil {
+	invocationRoot, err := resolveInvocationRootForSafety(ctx, opts)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources, invocationRoot); err != nil {
 		return Result{}, err
 	}
 	completed := false
@@ -983,11 +992,16 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 			return preparedSelectionContext{}, err
 		}
 	}
+	invocationRoot, err := resolveInvocationRootForSafety(ctx, opts)
+	if err != nil {
+		return preparedSelectionContext{}, err
+	}
 	catalog, err := agents.Load(ctx, agents.LoadOptions{
 		ProfileDirs:               append([]string(nil), req.Profile.AgentSources...),
 		Repo:                      &agents.RepoSource{Reader: opts.Provider, Ref: req.PRRef, PR: pr},
 		FlagDirs:                  append([]string(nil), req.AgentDirs...),
 		RequireSafeProfileSources: true,
+		SafeProfileSourceRoot:     invocationRoot,
 		AllowSoftRepoFailures:     true,
 	})
 	if err != nil {
@@ -1929,13 +1943,13 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewplan.PostMode, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool, runInputs planRunInputs) (reviewplan.Plan, error) {
 	runSummary, findingReviewers := opts.buildRunSummary(req, runInputs)
 	return reviewplan.Build(reviewplan.Request{
-		PostMode:                postMode,
-		ProviderCaps:            caps,
-		Diff:                    diff,
-		Findings:                findings,
-		Rollup:                  rollup,
-		ThreadActions:           threadActions,
-		ThreadResponses:         append([]review.ThreadResponseAction(nil), runInputs.threadResponses...),
+		PostMode:                      postMode,
+		ProviderCaps:                  caps,
+		Diff:                          diff,
+		Findings:                      findings,
+		Rollup:                        rollup,
+		ThreadActions:                 threadActions,
+		ThreadResponses:               append([]review.ThreadResponseAction(nil), runInputs.threadResponses...),
 		RepoGuidanceUnavailable:       repoGuidanceUnavailableReason(runInputs.repoSources) != "",
 		RepoGuidanceUnavailableReason: repoGuidanceUnavailableReason(runInputs.repoSources),
 		EventOptions: reviewplan.EventOptions{
@@ -4784,13 +4798,16 @@ func (opts Options) resolveRepoRoot(ctx context.Context) (string, error) {
 	if opts.ResolveRepoRoot != nil {
 		return opts.ResolveRepoRoot(ctx)
 	}
-	out, err := opts.gitCommand(ctx, "", "rev-parse", "--show-toplevel")
+	return reporoot.Resolve(ctx, "", opts.GitCommand)
+}
+
+func resolveInvocationRootForSafety(ctx context.Context, opts Options) (string, error) {
+	root, err := opts.resolveRepoRoot(ctx)
+	if errors.Is(err, reporoot.ErrUnavailable) {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
-	}
-	root := strings.TrimSpace(string(out))
-	if root == "" {
-		return "", fmt.Errorf("git rev-parse --show-toplevel returned empty output")
 	}
 	return root, nil
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/threadrespond"
 )
@@ -112,6 +113,13 @@ func RetentionPolicyFromConfig(retention config.RetentionConfig) datalifecycle.R
 		return datalifecycle.RetentionPolicy{LiveForever: true}
 	}
 	return datalifecycle.RetentionPolicy{LiveMaxAge: time.Duration(maxAgeDays) * 24 * time.Hour}
+}
+
+// ResolveRepoRoot returns the current invocation worktree root or
+// reporoot.ErrUnavailable when the command is not running inside a Git
+// worktree.
+func ResolveRepoRoot(ctx context.Context) (string, error) {
+	return reporoot.Resolve(ctx, "", nil)
 }
 
 // MissingResponderError reports that a command runtime cannot execute response runs.
