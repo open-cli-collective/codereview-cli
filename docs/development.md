@@ -101,6 +101,14 @@ LLM auth mode is `api_key`, the wizard saves the non-secret profile shape and
 prints a follow-up `cr set-credential` command instead of collecting the API key
 inline.
 
+Interactive secret fields stay blank even when a credential key already exists.
+The helper text carries the state instead: missing secrets prompt for entry,
+known existing secrets say blank preserves the current value and a new value
+replaces it, and staged values distinguish new secrets from replacement of an
+exact known credential ref. Init only treats an inline secret as overwrite
+intent when the exact credential ref is known to exist; otherwise the normal
+conflict check still protects against accidental name collisions.
+
 Interactive `git.host` edits now route through the repository-route stage when
 the target profile already participates in `repository_profiles` routing. The
 wizard shows the affected routes, lets the user reconcile or remove them, and

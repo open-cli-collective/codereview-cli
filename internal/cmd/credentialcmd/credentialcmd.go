@@ -255,6 +255,7 @@ type initPromptContext struct {
 	PendingRepositoryAccessDeletes     map[string]initPendingRepositoryAccessDelete
 	PendingReviewerEntityDeletes       map[string]initPendingReviewerEntityDelete
 	PendingLLMRuntimeDeletes           map[string]initPendingLLMRuntimeDelete
+	ProbeCredentialStatus              func(config.CredentialRef) (initReviewerCredentialStatus, bool)
 }
 
 type initDraftAction string
