@@ -582,6 +582,9 @@ func applyRepositoryAccessCredentialDraftFromDocument(draft *initDraft, ctx init
 		return
 	}
 	writes, overwrite := repositoryAccessCredentialWritesFromDocument(originalStatus, document)
+	if len(writes) > 0 && repositoryAccessKeepsCurrentCredentialRef(ctx, document) {
+		overwrite = true
+	}
 	draft.GitCredentialWriteRef = ref
 	draft.GitCredentialStore = initCredentialStoreDraftValue(status.Ref.Store)
 	draft.GitCredentialWriteStore = status.SecretsProfile

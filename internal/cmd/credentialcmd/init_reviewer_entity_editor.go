@@ -782,6 +782,9 @@ func applyReviewerEntityCredentialDraftFromDocument(editDraft *initDraft, ctx in
 		return
 	}
 	writes, overwrite := reviewerEntityCredentialWritesFromDocument(originalStatus, document)
+	if len(writes) > 0 && reviewerEntityKeepsCurrentCredentialRef(state, document) {
+		overwrite = true
+	}
 	editDraft.ReviewerCredentialWriteRef = ref
 	editDraft.ReviewerCredentialStore = initCredentialStoreDraftValue(status.Ref.Store)
 	editDraft.ReviewerCredentialWriteStore = status.SecretsProfile

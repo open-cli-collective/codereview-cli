@@ -7070,7 +7070,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 				}
 				return initWorkspaceDraft{}, cmderr.Credential(err)
 			}
-			targetKeys, err := existingInitCredentialKeys(activeStore, entry.Ref.Ref)
+			targetKeys, err := existingInitCredentialKeys(activeStore, entry)
 			if err != nil {
 				return initWorkspaceDraft{}, cmderr.Credential(err)
 			}
@@ -7332,18 +7332,20 @@ func credentialStatusHasAnyKeys(status credentials.CredentialStatus) bool {
 	return false
 }
 
-func existingInitCredentialKeys(store initStore, ref string) (map[string]bool, error) {
-	parsed, err := credentials.ParseRef(ref)
+func existingInitCredentialKeys(store initStore, entry initCredentialPlanEntry) (map[string]bool, error) {
+	parsed, err := credentials.ParseRef(entry.Ref.Ref)
 	if err != nil {
 		return nil, err
 	}
-	keys, err := store.ListBundle(parsed.Profile)
-	if err != nil {
-		return nil, err
-	}
-	present := make(map[string]bool, len(keys))
-	for _, key := range keys {
-		present[key] = true
+	present := make(map[string]bool, len(entry.KeySpecs))
+	for _, spec := range entry.KeySpecs {
+		ok, err := store.Exists(parsed.Profile, spec.Key)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			present[spec.Key] = true
+		}
 	}
 	return present, nil
 }
