@@ -508,7 +508,7 @@ func addReviewerEntityCredentialValueFields(document *initLinearDocument, kind i
 	document.addEditableSecretInput(
 		initReviewerEntityFieldGitToken,
 		"GitHub PAT",
-		"Required for PAT reviewers. Leave blank only when the status above already shows git_token as existing or staged.",
+		"Enter a value for this secret.",
 		"",
 		nil,
 		initLinearFieldOptions{Hidden: hidden || kind != initReviewerEntityKindPAT},
@@ -516,7 +516,7 @@ func addReviewerEntityCredentialValueFields(document *initLinearDocument, kind i
 	document.addEditableSecretTextarea(
 		initReviewerEntityFieldGitHubAppPrivateKey,
 		"GitHub App private key",
-		"Required for GitHub App reviewers. Paste the PEM private key; ctrl+j or alt+enter inserts a newline.",
+		"Enter a value for this secret. Paste the PEM private key; ctrl+j or alt+enter inserts a newline.",
 		"",
 	)
 	if index := document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey); index >= 0 {
@@ -621,6 +621,10 @@ func initReviewerCredentialStatusWithDocumentWrites(status initReviewerCredentia
 		if strings.TrimSpace(credentials.TrimSecretIngress(document.fieldValue(fieldID))) == "" {
 			continue
 		}
+		if status.Keys[index].State == initReviewerCredentialKeyExisting {
+			status.Keys[index].State = initReviewerCredentialKeyReplacement
+			continue
+		}
 		status.Keys[index].State = initReviewerCredentialKeyStaged
 	}
 	return status
@@ -684,6 +688,12 @@ func baseReviewerCredentialStatusForDocument(ctx initPromptContext, seed initDra
 		return initReviewerCredentialStatus{}, false
 	}
 	if initReviewerEntityUsesAutoDefaultSecretLocation(state, document) && !initReviewerCredentialStatusListContains(ctx.ReviewerCredentialStatuses, status.Ref) {
+		if ctx.ProbeCredentialStatus != nil {
+			if probed, ok := ctx.ProbeCredentialStatus(status.Ref); ok {
+				status = probed
+				return status, true
+			}
+		}
 		if initReviewerCredentialStatusListContainsUnavailable(ctx.ReviewerCredentialStatuses) {
 			status = synthesizeUnavailableReviewerCredentialStatus(ctx, status.Ref)
 		} else {
@@ -739,7 +749,7 @@ func missingReviewerEntityInlineCredentialKeys(state reviewerEntityEditorState, 
 			continue
 		}
 		switch key.State {
-		case initReviewerCredentialKeyExisting, initReviewerCredentialKeyStaged:
+		case initReviewerCredentialKeyExisting, initReviewerCredentialKeyStaged, initReviewerCredentialKeyReplacement:
 			continue
 		case initReviewerCredentialKeyUnavailable:
 			if keepsCurrentRef {
@@ -772,6 +782,9 @@ func applyReviewerEntityCredentialDraftFromDocument(editDraft *initDraft, ctx in
 		return
 	}
 	writes, overwrite := reviewerEntityCredentialWritesFromDocument(originalStatus, document)
+	if len(writes) > 0 && reviewerEntityKeepsCurrentCredentialRef(state, document) {
+		overwrite = true
+	}
 	editDraft.ReviewerCredentialWriteRef = ref
 	editDraft.ReviewerCredentialStore = initCredentialStoreDraftValue(status.Ref.Store)
 	editDraft.ReviewerCredentialWriteStore = status.SecretsProfile
@@ -782,11 +795,6 @@ func applyReviewerEntityCredentialDraftFromDocument(editDraft *initDraft, ctx in
 
 func reviewerEntityCredentialWritesFromDocument(status initReviewerCredentialStatus, document initLinearDocument) (map[string]string, bool) {
 	writes := map[string]string{}
-	keyStates := make(map[string]initReviewerCredentialKeyState, len(status.Keys))
-	for _, key := range status.Keys {
-		keyStates[key.Key] = key.State
-	}
-	overwrite := false
 	for _, key := range status.Keys {
 		fieldID := initReviewerEntityCredentialFieldID(key.Key)
 		if fieldID == "" || document.fieldHidden(fieldID) {
@@ -797,13 +805,8 @@ func reviewerEntityCredentialWritesFromDocument(status initReviewerCredentialSta
 			continue
 		}
 		writes[key.Key] = value
-		switch keyStates[key.Key] {
-		case initReviewerCredentialKeyExisting:
-			overwrite = true
-		case initReviewerCredentialKeyMissing, initReviewerCredentialKeyStaged, initReviewerCredentialKeyDeferred, initReviewerCredentialKeySkippedOptional, initReviewerCredentialKeyOptional, initReviewerCredentialKeyUnavailable:
-		}
 	}
-	return writes, overwrite
+	return writes, initCredentialWriteRequiresOverwrite(status, writes)
 }
 
 func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPromptContext, seed initDraft, resetDetails bool) {
@@ -897,6 +900,20 @@ func reviewerEntityGitHubAppIDFromDocument(kind initReviewerEntityKind, document
 func initReviewerEntityRefreshCredentialStatus(model *initLinearEditorModel, ctx initPromptContext, seed initDraft, state reviewerEntityEditorState) {
 	if status, ok := reviewerCredentialStatusForDocument(ctx, seed, state, model.document); ok {
 		model.setFieldDescription(initReviewerEntityFieldCredentialStatus, initReviewerCredentialStatusDescription(status))
+		model.setFieldDescription(
+			initReviewerEntityFieldGitToken,
+			initSecretFieldDescription(
+				initReviewerCredentialStatusKeyState(status, credentials.GitTokenKey),
+				"Enter a value for this secret.",
+			),
+		)
+		model.setFieldDescription(
+			initReviewerEntityFieldGitHubAppPrivateKey,
+			initSecretFieldDescription(
+				initReviewerCredentialStatusKeyState(status, credentials.GitHubAppPrivateKeyKey),
+				"Enter a value for this secret. Paste the PEM private key; ctrl+j or alt+enter inserts a newline.",
+			),
+		)
 	}
 }
 

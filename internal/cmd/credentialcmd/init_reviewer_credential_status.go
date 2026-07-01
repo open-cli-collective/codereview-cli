@@ -15,6 +15,7 @@ const (
 	initReviewerCredentialKeyMissing         initReviewerCredentialKeyState = "missing"
 	initReviewerCredentialKeyExisting        initReviewerCredentialKeyState = "existing"
 	initReviewerCredentialKeyStaged          initReviewerCredentialKeyState = "staged"
+	initReviewerCredentialKeyReplacement     initReviewerCredentialKeyState = "replacement staged"
 	initReviewerCredentialKeySkippedOptional initReviewerCredentialKeyState = "skipped optional"
 	initReviewerCredentialKeyDeferred        initReviewerCredentialKeyState = "deferred"
 	initReviewerCredentialKeyOptional        initReviewerCredentialKeyState = "optional"
@@ -41,6 +42,7 @@ func currentInteractiveInitReviewerEntityPromptContext(opts *root.Options, deps 
 		ctx.BackendArg = opts.Backend
 	}
 	ctx.BackendFlagSet = session.backendFlagSet
+	ctx.ProbeCredentialStatus = interactiveInitCredentialStatusProbe(opts, deps, session)
 	ctx.ReviewerCredentialStatuses = buildInteractiveInitReviewerCredentialStatuses(opts, deps, session)
 	return ctx
 }
@@ -51,8 +53,80 @@ func currentInteractiveInitRepositoryAccessPromptContext(opts *root.Options, dep
 		ctx.BackendArg = opts.Backend
 	}
 	ctx.BackendFlagSet = session.backendFlagSet
+	ctx.ProbeCredentialStatus = interactiveInitCredentialStatusProbe(opts, deps, session)
 	ctx.RepositoryAccessCredentialStatuses = buildInteractiveInitRepositoryAccessCredentialStatuses(opts, deps, session)
 	return ctx
+}
+
+func interactiveInitCredentialStatusProbe(opts *root.Options, deps initDeps, session initSessionDraft) func(config.CredentialRef) (initReviewerCredentialStatus, bool) {
+	var previousProfile *config.Profile
+	if session.workspace != nil {
+		previousProfile = session.workspace.previousProfile
+	}
+	return func(ref config.CredentialRef) (initReviewerCredentialStatus, bool) {
+		ref.Store = initCredentialStoreDraftValue(ref.Store)
+		resolved, err := credentials.ResolveCredentialStore(session.cfg, ref.Store)
+		if err != nil {
+			return synthesizeUnavailableReviewerCredentialStatus(initPromptContext{
+				ExistingConfig:  session.cfg,
+				ExistingProfile: previousProfile,
+			}, ref), true
+		}
+		specs, err := credentials.KeySpecsForPurpose(ref)
+		if err != nil {
+			return synthesizeUnavailableReviewerCredentialStatus(initPromptContext{
+				ExistingConfig:  session.cfg,
+				ExistingProfile: previousProfile,
+			}, ref), true
+		}
+		entry := initCredentialPlanEntry{
+			Ref:            ref,
+			SecretsProfile: resolved,
+			KeySpecs:       append([]credentials.KeySpec(nil), specs...),
+		}
+		if !canOpenInitStoreForReviewerStatus(deps, entry) {
+			status := initReviewerCredentialStatusFromEntry(entry, nil, nil, nil, "credential backend status unavailable")
+			status.Destination = initCredentialDestinationDescription(initCredentialDestinationContext{
+				Entry:          entry,
+				Config:         session.cfg,
+				BackendArg:     initBackendArgFromOptions(opts),
+				BackendFlagSet: session.backendFlagSet,
+			})
+			return status, true
+		}
+		store, err := openInitStoreForEntry(deps, opts, session.backendFlagSet, session.cfg, entry)
+		if err != nil || store == nil {
+			status := initReviewerCredentialStatusFromEntry(entry, nil, nil, nil, "credential backend status unavailable")
+			status.Destination = initCredentialDestinationDescription(initCredentialDestinationContext{
+				Entry:          entry,
+				Config:         session.cfg,
+				BackendArg:     initBackendArgFromOptions(opts),
+				BackendFlagSet: session.backendFlagSet,
+			})
+			return status, true
+		}
+		defer store.Close()
+		existing, err := existingInitCredentialKeys(store, entry)
+		unavailable := ""
+		if err != nil {
+			unavailable = "credential backend status unavailable"
+		}
+		status := initReviewerCredentialStatusFromEntry(entry, nil, nil, existing, unavailable)
+		status.Destination = initCredentialDestinationDescription(initCredentialDestinationContext{
+			Entry:          entry,
+			Config:         session.cfg,
+			BackendArg:     initBackendArgFromOptions(opts),
+			BackendFlagSet: session.backendFlagSet,
+		})
+		return status, true
+	}
+}
+
+func initBackendArgFromOptions(opts *root.Options) string {
+	if opts == nil {
+		return ""
+	}
+	return opts.Backend
 }
 
 func buildInteractiveInitRepositoryAccessCredentialStatuses(opts *root.Options, deps initDeps, session initSessionDraft) []initReviewerCredentialStatus {
@@ -119,7 +193,7 @@ func buildInteractiveInitCredentialStatuses(opts *root.Options, deps initDeps, s
 			}
 		}
 		if store != nil {
-			keys, err := existingInitCredentialKeys(store, entry.Ref.Ref)
+			keys, err := existingInitCredentialKeys(store, entry)
 			if err != nil {
 				unavailable = "credential backend status unavailable"
 			} else {
@@ -260,6 +334,9 @@ func initReviewerCredentialStatusFromEntry(entry initCredentialPlanEntry, planne
 
 func deriveInitReviewerCredentialKeyState(entry initCredentialPlanEntry, spec credentials.KeySpec, planned map[string]string, decisions map[initCredentialDecisionKey]initCredentialDecisionKind, existing map[string]bool, unavailable bool) initReviewerCredentialKeyState {
 	if _, ok := planned[spec.Key]; ok {
+		if existing[spec.Key] {
+			return initReviewerCredentialKeyReplacement
+		}
 		return initReviewerCredentialKeyStaged
 	}
 	decision := decisions[initCredentialDecisionMapKey(entry, spec.Key)]
@@ -314,6 +391,11 @@ func initReviewerCredentialStatusForSelectionRef(ctx initPromptContext, seed ini
 	}
 	backendStatusesWereComputed := ctx.ReviewerCredentialStatuses != nil
 	if backendStatusesWereComputed {
+		if ctx.ProbeCredentialStatus != nil {
+			if status, ok := ctx.ProbeCredentialStatus(statusRef); ok {
+				return status, true
+			}
+		}
 		return synthesizeUnavailableReviewerCredentialStatus(ctx, statusRef), true
 	}
 	return synthesizeReviewerCredentialStatus(ctx, statusRef), true
@@ -363,6 +445,54 @@ func synthesizeUnavailableReviewerCredentialStatus(ctx initPromptContext, ref co
 		status.Keys[i].State = initReviewerCredentialKeyUnavailable
 	}
 	return status
+}
+
+func initReviewerCredentialStatusKeyState(status initReviewerCredentialStatus, key string) initReviewerCredentialKeyState {
+	for _, row := range status.Keys {
+		if row.Key == key {
+			return row.State
+		}
+	}
+	return ""
+}
+
+func initSecretFieldDescription(state initReviewerCredentialKeyState, missingMsg string) string {
+	switch state {
+	case initReviewerCredentialKeyExisting:
+		return "Leave blank to keep existing. Enter a new value to replace it."
+	case initReviewerCredentialKeyReplacement:
+		return "Replacement secret value staged."
+	case initReviewerCredentialKeyStaged:
+		return "New secret value staged."
+	case initReviewerCredentialKeyMissing,
+		initReviewerCredentialKeySkippedOptional,
+		initReviewerCredentialKeyDeferred,
+		initReviewerCredentialKeyOptional,
+		initReviewerCredentialKeyUnavailable:
+		return missingMsg
+	default:
+		return missingMsg
+	}
+}
+
+func initCredentialWriteRequiresOverwrite(status initReviewerCredentialStatus, writes map[string]string) bool {
+	for _, key := range status.Keys {
+		if _, ok := writes[key.Key]; !ok {
+			continue
+		}
+		switch key.State {
+		case initReviewerCredentialKeyExisting, initReviewerCredentialKeyReplacement:
+			return true
+		case initReviewerCredentialKeyMissing,
+			initReviewerCredentialKeyStaged,
+			initReviewerCredentialKeySkippedOptional,
+			initReviewerCredentialKeyDeferred,
+			initReviewerCredentialKeyOptional,
+			initReviewerCredentialKeyUnavailable:
+			continue
+		}
+	}
+	return false
 }
 
 func reviewerCredentialAuthModeForKind(kind initReviewerEntityKind) config.GitAuthMode {

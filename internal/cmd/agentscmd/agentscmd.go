@@ -18,6 +18,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -155,7 +156,14 @@ func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, f
 		FlagDirs:    append([]string(nil), flags.agentsDirs...),
 	}
 	if hasPR {
+		invocationRoot, err := reporoot.Resolve(ctx, "", nil)
+		if errors.Is(err, reporoot.ErrUnavailable) {
+			invocationRoot = ""
+		} else if err != nil {
+			return agents.Catalog{}, exitcode.Usage(err)
+		}
 		loadOptions.RequireSafeProfileSources = true
+		loadOptions.SafeProfileSourceRoot = invocationRoot
 		if !prref.SameHost(ref.Host, profile.Git.Host) {
 			return agents.Catalog{}, exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
 		}

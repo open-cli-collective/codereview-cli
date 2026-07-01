@@ -6867,7 +6867,7 @@ func TestReviewerEntityLinearEditorGitHubAppRequiresInlineSecretsBeforeStaging(t
 	}
 }
 
-func TestReviewerEntityLinearEditorLabelDerivedRefDoesNotMarkMissingStatusAsOverwrite(t *testing.T) {
+func TestReviewerEntityLinearEditorLabelDerivedRefPreservesConflictForUnprobedRef(t *testing.T) {
 	existing := basicProfile("work")
 	ctx := initPromptContext{
 		RequestedProfileName: "work",
@@ -6903,11 +6903,11 @@ func TestReviewerEntityLinearEditorLabelDerivedRefDoesNotMarkMissingStatusAsOver
 		t.Fatalf("ReviewerCredentialWriteRef = %q, want %q", got, want)
 	}
 	if draft.ReviewerCredentialOverwrite {
-		t.Fatalf("ReviewerCredentialOverwrite = true, want missing label-derived ref to preserve no-overwrite preflight")
+		t.Fatalf("ReviewerCredentialOverwrite = true, want unprobed label-derived ref to preserve conflict detection")
 	}
 }
 
-func TestReviewerEntityLinearEditorManualRefDoesNotMarkUnavailableStatusAsOverwrite(t *testing.T) {
+func TestReviewerEntityLinearEditorManualRefPreservesConflictForUnprobedRef(t *testing.T) {
 	existing := basicProfile("work")
 	ctx := initPromptContext{
 		RequestedProfileName: "work",
@@ -6943,7 +6943,159 @@ func TestReviewerEntityLinearEditorManualRefDoesNotMarkUnavailableStatusAsOverwr
 		t.Fatalf("ReviewerCredentialWriteRef = %q, want %q", got, want)
 	}
 	if draft.ReviewerCredentialOverwrite {
-		t.Fatalf("ReviewerCredentialOverwrite = true, want unavailable manual ref to preserve no-overwrite preflight")
+		t.Fatalf("ReviewerCredentialOverwrite = true, want unprobed manual ref to preserve conflict detection")
+	}
+}
+
+func TestReviewerEntityLinearEditorConfiguredCurrentRefMarksEnteredSecretForOverwriteWhenStatusMissing(t *testing.T) {
+	existing := basicProfile("work")
+	existing.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode: config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{
+			Store: config.LocalOSCredentialStoreID,
+			Name:  "codereview/rianjs-bot-reviewer",
+		},
+		GitHubApp: &config.GitHubAppConfig{AppID: "4021133"},
+	}
+	ctx := initPromptContext{
+		RequestedProfileName:         "work",
+		ExistingProfileName:          "work",
+		ExistingProfile:              &existing,
+		ExistingConfig:               config.File{Profiles: map[string]config.Profile{"work": existing}},
+		StandaloneReviewerEntityMode: true,
+		ReviewerEntities: map[string]initReviewerEntityDraft{
+			"reviewer-github-app": {
+				Kind:            initReviewerEntityKindGitHubApp,
+				AuthMode:        config.GitAuthModeGitHubApp,
+				AppID:           "4021133",
+				CredentialStore: config.LocalOSCredentialStoreID,
+				CredentialRef:   "codereview/rianjs-bot-reviewer",
+				DisplayName:     "rianjs-bot",
+			},
+		},
+		ProfileReviewerEntities: map[string]string{"work": "reviewer-github-app"},
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Store:   config.LocalOSCredentialStoreID,
+				Ref:     "codereview/rianjs-bot-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			Keys: []initReviewerCredentialKeyStatus{
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
+			},
+		}},
+	}
+	seed := seedInteractiveInitDraft("work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, testReviewerGitHubAppPrivateKey())
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
+
+	draft, err := initReviewerEntityDraftFromDocument(ctx, seed, model.document)
+	if err != nil {
+		t.Fatalf("initReviewerEntityDraftFromDocument: %v", err)
+	}
+	if got, want := draft.ReviewerCredentialWriteRef, "codereview/rianjs-bot-reviewer"; got != want {
+		t.Fatalf("ReviewerCredentialWriteRef = %q, want %q", got, want)
+	}
+	if !draft.ReviewerCredentialOverwrite {
+		t.Fatalf("ReviewerCredentialOverwrite = false, want entered secret for configured current ref to replace existing backend value")
+	}
+}
+
+func TestReviewerEntityLinearEditorLabelDerivedRefMarksProbedExistingSecretForOverwrite(t *testing.T) {
+	existing := basicProfile("work")
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			Keys: []initReviewerCredentialKeyStatus{
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
+			},
+		}},
+		ProbeCredentialStatus: func(ref config.CredentialRef) (initReviewerCredentialStatus, bool) {
+			if ref.Ref != "codereview/rianjs-bot-reviewer" {
+				return initReviewerCredentialStatus{}, false
+			}
+			return initReviewerCredentialStatus{
+				Ref: ref,
+				Keys: []initReviewerCredentialKeyStatus{
+					{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyExisting},
+				},
+			}, true
+		},
+	}
+	seed := seedInteractiveInitDraft("work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+	model.setFieldValue(initReviewerEntityFieldLabel, "rianjs-bot")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldLabel))
+	model.setFieldValue(initReviewerEntityFieldGitHubAppID, "12345")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppID))
+	model.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, testReviewerGitHubAppPrivateKey())
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
+
+	draft, err := initReviewerEntityDraftFromDocument(ctx, seed, model.document)
+	if err != nil {
+		t.Fatalf("initReviewerEntityDraftFromDocument: %v", err)
+	}
+	if !draft.ReviewerCredentialOverwrite {
+		t.Fatalf("ReviewerCredentialOverwrite = false, want exact probed existing ref treated as overwrite/write intent")
+	}
+}
+
+func TestReviewerEntityLinearEditorManualRefMarksProbedExistingSecretForOverwrite(t *testing.T) {
+	existing := basicProfile("work")
+	ctx := initPromptContext{
+		RequestedProfileName: "work",
+		ExistingProfileName:  "work",
+		ExistingProfile:      &existing,
+		ExistingConfig:       config.File{Profiles: map[string]config.Profile{"work": existing}},
+		ReviewerCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			Keys: []initReviewerCredentialKeyStatus{
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
+			},
+		}},
+		ProbeCredentialStatus: func(ref config.CredentialRef) (initReviewerCredentialStatus, bool) {
+			if ref.Ref != "codereview/manual-reviewer" {
+				return initReviewerCredentialStatus{}, false
+			}
+			return initReviewerCredentialStatus{
+				Ref: ref,
+				Keys: []initReviewerCredentialKeyStatus{
+					{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyExisting},
+				},
+			}, true
+		},
+	}
+	seed := seedInteractiveInitDraft("work", "work", &existing)
+	model := newInitLinearEditorModel(initReviewerEntityLinearEditor(ctx, seed), 120, 40)
+	model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
+	model.setFieldValue(initReviewerEntityFieldSecretLocation, "codereview/manual-reviewer")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldSecretLocation))
+	model.setFieldValue(initReviewerEntityFieldGitHubAppID, "12345")
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppID))
+	model.setFieldValue(initReviewerEntityFieldGitHubAppPrivateKey, testReviewerGitHubAppPrivateKey())
+	model.afterFieldChange(model.document.fieldIndexByID(initReviewerEntityFieldGitHubAppPrivateKey))
+
+	draft, err := initReviewerEntityDraftFromDocument(ctx, seed, model.document)
+	if err != nil {
+		t.Fatalf("initReviewerEntityDraftFromDocument: %v", err)
+	}
+	if !draft.ReviewerCredentialOverwrite {
+		t.Fatalf("ReviewerCredentialOverwrite = false, want exact probed existing ref treated as overwrite/write intent")
 	}
 }
 
@@ -15041,6 +15193,84 @@ func TestInitInteractiveMenuStagesStandaloneRepositoryAccess(t *testing.T) {
 	}
 }
 
+func TestInitInteractiveMenuRepositoryAccessOverwritesExistingBundle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := config.File{
+		Profiles: map[string]config.Profile{},
+		RepositoryAccess: map[string]config.RepositoryAccessConfig{
+			"work-git": {
+				DisplayName: "work-git",
+				Git: config.GitConfig{
+					Host:     "github.com",
+					AuthMode: config.GitAuthModePAT,
+					Credential: config.CredentialLocation{
+						Store: config.LocalOSCredentialStoreID,
+						Name:  "codereview/work-git",
+					},
+				},
+			},
+		},
+	}
+	saveCredentialTestConfig(t, path, cfg)
+	var stdout bytes.Buffer
+	opts := &root.Options{
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &bytes.Buffer{},
+		ConfigPath: path,
+	}
+	store := newFakeInitStore(map[string]map[string]string{
+		"work-git": {
+			credentials.GitTokenKey: "existing-token",
+		},
+	})
+	deps := initDeps{
+		menuPrompter: &fakeInitMenuPrompter{
+			actions: []initMenuAction{
+				initMenuActionRepositoryAccess,
+				initMenuActionSave,
+			},
+		},
+		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+			return initFinalizeActionSave, nil
+		}),
+		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+			model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(prompt.Context, initDraft{}), 160, 60)
+			model = selectInitLinearFieldValue(t, model, initRepositoryAccessFieldSelection, "work-git")
+			model.setFieldValue(initRepositoryAccessFieldGitToken, "replacement-token")
+			model.afterFieldChange(model.document.fieldIndexByID(initRepositoryAccessFieldGitToken))
+			model = focusInitLinearField(t, model, initRepositoryAccessFieldAction)
+			model = selectInitLinearFieldValue(t, model, initRepositoryAccessFieldAction, initDetailActionEdit)
+
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			next, ok := updated.(initLinearEditorModel)
+			if !ok {
+				t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+			}
+			if next.resultAction != initDetailActionEdit {
+				t.Fatalf("resultAction = %q, want staged repository access; action error = %q", next.resultAction, next.document[next.document.fieldIndexByID(initRepositoryAccessFieldAction)].Error)
+			}
+			return initRepositoryAccessDraftFromDocument(prompt.Context, initDraft{}, next.document), nil
+		}),
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+		configPath: func(*root.Options) (string, error) { return path, nil },
+		loadConfig: loadConfigForInit,
+		saveConfig: config.Save,
+	}
+
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
+	}
+	if got := store.bundles["work-git"][credentials.GitTokenKey]; got != "replacement-token" {
+		t.Fatalf("stored git token = %q, want replacement-token", got)
+	}
+	if !strings.Contains(stdout.String(), "Saved staged init changes") {
+		t.Fatalf("stdout = %q, want successful save summary", stdout.String())
+	}
+}
+
 func TestInitRepositoryAccessEditorMarksConfiguredRepositoryAccessDeletable(t *testing.T) {
 	ctx := initPromptContext{
 		GitScopes: map[string]initGitScopeDraft{
@@ -15346,6 +15576,44 @@ func TestInitRepositoryAccessEditorAcceptsExistingPATCredential(t *testing.T) {
 
 	if err := validateRepositoryAccessDocument(ctx, model.document); err != nil {
 		t.Fatalf("validateRepositoryAccessDocument: %v", err)
+	}
+}
+
+func TestInitRepositoryAccessEditorEnteredSecretMarksOverwriteAndUpdatesHelperText(t *testing.T) {
+	oldGitConfig := initRepositoryAccessGitConfigValue
+	t.Cleanup(func() { initRepositoryAccessGitConfigValue = oldGitConfig })
+	initRepositoryAccessGitConfigValue = func(string) string { return "" }
+	resolved, err := credentials.ResolveCredentialStore(config.File{}, config.LocalOSCredentialStoreID)
+	if err != nil {
+		t.Fatalf("ResolveCredentialStore: %v", err)
+	}
+	ctx := initPromptContext{
+		RepositoryAccessCredentialStatuses: []initReviewerCredentialStatus{{
+			Ref:            config.CredentialRef{Purpose: "git", Store: config.LocalOSCredentialStoreID, Ref: "codereview/github-com-pat", Mode: string(config.GitAuthModePAT)},
+			SecretsProfile: resolved,
+			Keys:           []initReviewerCredentialKeyStatus{{Key: credentials.GitTokenKey, Required: true, State: initReviewerCredentialKeyExisting}},
+		}},
+	}
+	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
+
+	tokenIndex := model.document.fieldIndexByID(initRepositoryAccessFieldGitToken)
+	if tokenIndex < 0 {
+		t.Fatal("git token field missing")
+	}
+	if got := model.document[tokenIndex].Description; got != "Leave blank to keep existing. Enter a new value to replace it." {
+		t.Fatalf("initial token description = %q", got)
+	}
+
+	model.setFieldValue(initRepositoryAccessFieldGitToken, "replacement-token")
+	model.afterFieldChange(tokenIndex)
+
+	if got := model.document[tokenIndex].Description; got != "Replacement secret value staged." {
+		t.Fatalf("updated token description = %q", got)
+	}
+
+	draft := initRepositoryAccessDraftFromDocument(ctx, initDraft{}, model.document)
+	if !draft.GitCredentialOverwrite {
+		t.Fatal("GitCredentialOverwrite = false, want true after explicit inline secret entry")
 	}
 }
 
@@ -16761,6 +17029,22 @@ func TestInitReviewerCredentialStatusStates(t *testing.T) {
 	}
 }
 
+func TestInitSecretFieldDescription(t *testing.T) {
+	missing := "Enter a value for this secret."
+	if got := initSecretFieldDescription(initReviewerCredentialKeyMissing, missing); got != missing {
+		t.Fatalf("missing description = %q, want %q", got, missing)
+	}
+	if got := initSecretFieldDescription(initReviewerCredentialKeyExisting, missing); got != "Leave blank to keep existing. Enter a new value to replace it." {
+		t.Fatalf("existing description = %q", got)
+	}
+	if got := initSecretFieldDescription(initReviewerCredentialKeyStaged, missing); got != "New secret value staged." {
+		t.Fatalf("staged description = %q", got)
+	}
+	if got := initSecretFieldDescription(initReviewerCredentialKeyReplacement, missing); got != "Replacement secret value staged." {
+		t.Fatalf("replacement description = %q", got)
+	}
+}
+
 func TestInitReviewerCredentialStatusDeferPreservesPartialExistingKeys(t *testing.T) {
 	entry := initCredentialPlanEntry{
 		Ref: config.CredentialRef{
@@ -17082,6 +17366,58 @@ func TestInitReviewerCredentialStatusIncludesStandardTemplateRefs(t *testing.T) 
 	if strings.Contains(initReviewerCredentialStatusDescription(status), "existing-token") {
 		t.Fatalf("status description leaked secret value: %s", initReviewerCredentialStatusDescription(status))
 	}
+}
+
+func TestInitReviewerCredentialStatusUsesExistsWhenBundleListingIsEmpty(t *testing.T) {
+	work := basicProfile("work")
+	work.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode: config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{
+			Store: config.LocalOSCredentialStoreID,
+			Name:  "codereview/rianjs-bot-reviewer",
+		},
+		GitHubApp: &config.GitHubAppConfig{AppID: "4021133"},
+	}
+	cfg := config.Normalize(config.File{
+		Profiles: map[string]config.Profile{"work": work},
+	})
+	profile := cfg.Profiles["work"]
+	store := newFakeInitStore(map[string]map[string]string{
+		"rianjs-bot-reviewer": {
+			credentials.GitHubAppPrivateKeyKey: "existing-private-key",
+		},
+	})
+	store.listBundleFunc = func(string) ([]string, error) {
+		return nil, nil
+	}
+	session := initSessionDraft{
+		cfg: cfg,
+		workspace: &initWorkspaceDraft{
+			profileName:     "work",
+			profile:         profile,
+			previousProfile: &profile,
+		},
+		writes:              map[string]map[string]string{},
+		credentialDecisions: map[initCredentialDecisionKey]initCredentialDecisionKind{},
+	}
+	deps := initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) {
+			return store, nil
+		},
+	}
+
+	ctx := currentInteractiveInitReviewerEntityPromptContext(&root.Options{}, deps, session)
+	status, ok := initReviewerCredentialStatusForSelectionRef(
+		ctx,
+		seedInteractiveInitDraft("work", "work", &profile),
+		string(initReviewerEntityKindGitHubApp),
+		config.LocalOSCredentialStoreID,
+		"codereview/rianjs-bot-reviewer",
+	)
+	if !ok {
+		t.Fatal("reviewer credential status missing")
+	}
+	assertReviewerCredentialKeyState(t, status, credentials.GitHubAppPrivateKeyKey, initReviewerCredentialKeyExisting)
 }
 
 func assertReviewerCredentialKeyState(t *testing.T, status initReviewerCredentialStatus, key string, want initReviewerCredentialKeyState) {
@@ -17422,7 +17758,7 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndD
 	}
 }
 
-func TestInitInteractiveMenuLabelDerivedReviewerRefDoesNotOverwriteUnconfiguredExistingBundle(t *testing.T) {
+func TestInitInteractiveMenuLabelDerivedReviewerRefOverwritesExistingBundle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -17484,25 +17820,21 @@ func TestInitInteractiveMenuLabelDerivedReviewerRefDoesNotOverwriteUnconfiguredE
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
-		saveConfig: func(string, config.File) error {
-			t.Fatal("saveConfig called despite existing label-derived reviewer bundle conflict")
-			return nil
-		},
+		saveConfig: config.Save,
 	}
 
-	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
-	if err == nil || !strings.Contains(err.Error(), credstore.ErrExists.Error()) {
-		t.Fatalf("runInitWithDeps error = %v, want no-overwrite conflict", err)
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if got := store.bundles["rianjs-bot-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != "existing-private-key" {
-		t.Fatalf("stored private key = %q, want existing value preserved after conflict", got)
+	if got := store.bundles["rianjs-bot-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != privateKey {
+		t.Fatalf("stored private key = %q, want replacement value", got)
 	}
-	if strings.Contains(stdout.String(), "Saved staged init changes") {
-		t.Fatalf("stdout = %q, want save blocked by no-overwrite conflict", stdout.String())
+	if !strings.Contains(stdout.String(), "Saved staged init changes") {
+		t.Fatalf("stdout = %q, want successful save summary", stdout.String())
 	}
 }
 
-func TestInitInteractiveMenuManualReviewerRefDoesNotOverwriteUnconfiguredExistingBundle(t *testing.T) {
+func TestInitInteractiveMenuManualReviewerRefOverwritesExistingBundle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -17564,21 +17896,17 @@ func TestInitInteractiveMenuManualReviewerRefDoesNotOverwriteUnconfiguredExistin
 		},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
-		saveConfig: func(string, config.File) error {
-			t.Fatal("saveConfig called despite existing manual reviewer bundle conflict")
-			return nil
-		},
+		saveConfig: config.Save,
 	}
 
-	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
-	if err == nil || !strings.Contains(err.Error(), credstore.ErrExists.Error()) {
-		t.Fatalf("runInitWithDeps error = %v, want no-overwrite conflict", err)
+	if err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps); err != nil {
+		t.Fatalf("runInitWithDeps: %v", err)
 	}
-	if got := store.bundles["manual-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != "existing-private-key" {
-		t.Fatalf("stored private key = %q, want existing value preserved after conflict", got)
+	if got := store.bundles["manual-reviewer"][credentials.GitHubAppPrivateKeyKey]; got != privateKey {
+		t.Fatalf("stored private key = %q, want replacement value", got)
 	}
-	if strings.Contains(stdout.String(), "Saved staged init changes") {
-		t.Fatalf("stdout = %q, want save blocked by no-overwrite conflict", stdout.String())
+	if !strings.Contains(stdout.String(), "Saved staged init changes") {
+		t.Fatalf("stdout = %q, want successful save summary", stdout.String())
 	}
 }
 
@@ -22219,8 +22547,9 @@ func (f *fakeInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (stri
 }
 
 type fakeInitStore struct {
-	bundles       map[string]map[string]string
-	setBundleFunc func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error)
+	bundles        map[string]map[string]string
+	listBundleFunc func(string) ([]string, error)
+	setBundleFunc  func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error)
 }
 
 func newFakeInitStore(bundles map[string]map[string]string) *fakeInitStore {
@@ -22240,6 +22569,9 @@ func (s *fakeInitStore) Exists(profile, key string) (bool, error) {
 }
 
 func (s *fakeInitStore) ListBundle(profile string) ([]string, error) {
+	if s.listBundleFunc != nil {
+		return s.listBundleFunc(profile)
+	}
 	bundle := s.bundles[profile]
 	keys := make([]string, 0, len(bundle))
 	for key := range bundle {
