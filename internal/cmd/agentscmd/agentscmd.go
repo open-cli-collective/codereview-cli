@@ -11,7 +11,6 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -157,7 +156,7 @@ func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, f
 		FlagDirs:    append([]string(nil), flags.agentsDirs...),
 	}
 	if hasPR {
-		invocationRoot, err := cmdruntime.ResolveRepoRoot(ctx)
+		invocationRoot, err := reporoot.Resolve(ctx, "", nil)
 		if errors.Is(err, reporoot.ErrUnavailable) {
 			invocationRoot = ""
 		} else if err != nil {

@@ -25,6 +25,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
@@ -46,6 +47,27 @@ func selectionOnlyForTest(ctx context.Context, opts Options, req SelectionReques
 func liveForTest(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
 	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
 	return Live(ctx, opts, req, run)
+}
+
+func TestResolveInvocationRootForSafetyTreatsUnavailableAsUnknownAndOtherErrorsAsFatal(t *testing.T) {
+	root, err := resolveInvocationRootForSafety(context.Background(), Options{
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return "", reporoot.ErrUnavailable
+		},
+	})
+	if err != nil || root != "" {
+		t.Fatalf("unavailable root = (%q, %v), want empty root and nil error", root, err)
+	}
+
+	wantErr := errors.New("resolver failed")
+	root, err = resolveInvocationRootForSafety(context.Background(), Options{
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return "", wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) || root != "" {
+		t.Fatalf("resolver error = (%q, %v), want empty root and %v", root, err, wantErr)
+	}
 }
 
 func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
