@@ -14,6 +14,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gate"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
@@ -227,13 +228,14 @@ func evaluateGate(ctx context.Context, opts Options, req Request, pr gitprovider
 			Warnings:                opts.Warnings,
 			ApprovalOverride:        opts.ApprovalOverride,
 		}, gateio.Request{
-			PRRef:              req.Pipeline.PRRef,
-			PR:                 pr,
-			PRKey:              prKey,
-			Profile:            req.Pipeline.ProfileName,
-			PostingIdentity:    req.Pipeline.PostingIdentity,
-			PostingIdentityKey: postingKey(req.Pipeline.PostingIdentity),
-			FreshRunID:         runID,
+			PRRef:                           req.Pipeline.PRRef,
+			PR:                              pr,
+			PRKey:                           prKey,
+			Profile:                         req.Pipeline.ProfileName,
+			PostingIdentity:                 req.Pipeline.PostingIdentity,
+			PostingIdentityKey:              postingKey(req.Pipeline.PostingIdentity),
+			ResolveThreadPermissionAdvisory: reviewPostingUsesGitHubApp(req.Pipeline.Profile),
+			FreshRunID:                      runID,
 			Flags: gate.Flags{
 				Rerun:      req.Flags.Rerun,
 				RetryPosts: req.Flags.RetryPosts,
@@ -291,10 +293,11 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 		Limiter:  opts.Limiter,
 		Now:      opts.Now,
 	}, outbox.Request{
-		Run:             result.Run,
-		PRRef:           req.Pipeline.PRRef,
-		PostingIdentity: req.Pipeline.PostingIdentity,
-		DesiredOutcome:  desired,
+		Run:                             result.Run,
+		PRRef:                           req.Pipeline.PRRef,
+		PostingIdentity:                 req.Pipeline.PostingIdentity,
+		DesiredOutcome:                  desired,
+		ResolveThreadPermissionAdvisory: reviewPostingUsesGitHubApp(req.Pipeline.Profile),
 	})
 	result.Outbox = postResult
 	result.ExitCode = postResult.ExitCode
@@ -534,6 +537,13 @@ func pruneRetention(ctx context.Context, opts Options) error {
 		}
 	}
 	return nil
+}
+
+func reviewPostingUsesGitHubApp(profile config.Profile) bool {
+	if profile.ReviewerCredentials != nil && profile.ReviewerCredentials.AuthMode == config.GitAuthModeGitHubApp {
+		return true
+	}
+	return profile.Git.AuthMode == config.GitAuthModeGitHubApp
 }
 
 func exitForDecision(decision gate.Decision) int {

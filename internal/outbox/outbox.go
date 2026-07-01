@@ -44,10 +44,11 @@ type Options struct {
 
 // Request identifies the run and PR being posted.
 type Request struct {
-	Run             ledger.Run
-	PRRef           gitprovider.PRRef
-	PostingIdentity gitprovider.Identity
-	DesiredOutcome  ledger.Outcome
+	Run                             ledger.Run
+	PRRef                           gitprovider.PRRef
+	PostingIdentity                 gitprovider.Identity
+	DesiredOutcome                  ledger.Outcome
+	ResolveThreadPermissionAdvisory bool
 }
 
 // Result summarizes post-phase state after Post returns.
@@ -229,7 +230,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 			return result, nil
 		}
 
-		if isAdvisoryThreadResolutionError(actions[i], err) {
+		if isAdvisoryThreadResolutionError(actions[i], req.ResolveThreadPermissionAdvisory, err) {
 			if updateErr := recordPendingAdvisory(ctx, opts.Store, &actions[i], err); updateErr != nil {
 				return Result{ExitCode: exitFailed}, updateErr
 			}
@@ -789,9 +790,14 @@ func classifyProviderError(err error) failureClass {
 	}
 }
 
-func isAdvisoryThreadResolutionError(action ledger.PlannedAction, err error) bool {
-	return action.Kind == ledger.PlannedActionResolveThread &&
-		errors.Is(err, gitprovider.ErrThreadResolutionUnsupported)
+func isAdvisoryThreadResolutionError(action ledger.PlannedAction, advisoryEnabled bool, err error) bool {
+	if action.Kind != ledger.PlannedActionResolveThread {
+		return false
+	}
+	if errors.Is(err, gitprovider.ErrThreadResolutionUnsupported) {
+		return true
+	}
+	return advisoryEnabled && errors.Is(err, gitprovider.ErrPermission)
 }
 
 func classifyConflictCause(err error) failureClass {

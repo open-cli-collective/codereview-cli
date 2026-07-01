@@ -74,15 +74,16 @@ type Options struct {
 
 // Request identifies one gate evaluation.
 type Request struct {
-	PRRef              gitprovider.PRRef
-	PR                 gitprovider.PR
-	PRKey              string
-	Profile            string
-	PostingIdentity    gitprovider.Identity
-	PostingIdentityKey string
-	FreshRunID         string
-	Flags              gate.Flags
-	ArtifactPath       string
+	PRRef                           gitprovider.PRRef
+	PR                              gitprovider.PR
+	PRKey                           string
+	Profile                         string
+	PostingIdentity                 gitprovider.Identity
+	PostingIdentityKey              string
+	ResolveThreadPermissionAdvisory bool
+	FreshRunID                      string
+	Flags                           gate.Flags
+	ArtifactPath                    string
 }
 
 // Result is the outcome of one gate IO evaluation.
@@ -609,10 +610,11 @@ func executeRepair(ctx context.Context, opts Options, req Request, decision gate
 		Limiter:  opts.Limiter,
 		Now:      opts.Now,
 	}, outbox.Request{
-		Run:             run,
-		PRRef:           req.PRRef,
-		PostingIdentity: req.PostingIdentity,
-		DesiredOutcome:  desired,
+		Run:                             run,
+		PRRef:                           req.PRRef,
+		PostingIdentity:                 req.PostingIdentity,
+		DesiredOutcome:                  desired,
+		ResolveThreadPermissionAdvisory: req.ResolveThreadPermissionAdvisory,
 	})
 	if err != nil {
 		return repairExecution{postResult: postResult, run: run, outboxInvoked: true}, err
@@ -646,10 +648,11 @@ func executeApprovalOverride(ctx context.Context, opts Options, req Request) (ap
 		Limiter:  opts.Limiter,
 		Now:      opts.Now,
 	}, outbox.Request{
-		Run:             run,
-		PRRef:           req.PRRef,
-		PostingIdentity: req.PostingIdentity,
-		DesiredOutcome:  ledger.OutcomeApproved,
+		Run:                             run,
+		PRRef:                           req.PRRef,
+		PostingIdentity:                 req.PostingIdentity,
+		DesiredOutcome:                  ledger.OutcomeApproved,
+		ResolveThreadPermissionAdvisory: req.ResolveThreadPermissionAdvisory,
 	})
 	if err != nil {
 		return approvalOverrideExecution{postResult: postResult, run: run, outboxInvoked: true}, err
@@ -687,10 +690,11 @@ func executeRetryPosts(ctx context.Context, opts Options, req Request, run ledge
 		Limiter:  opts.Limiter,
 		Now:      opts.Now,
 	}, outbox.Request{
-		Run:             run,
-		PRRef:           req.PRRef,
-		PostingIdentity: req.PostingIdentity,
-		DesiredOutcome:  desired,
+		Run:                             run,
+		PRRef:                           req.PRRef,
+		PostingIdentity:                 req.PostingIdentity,
+		DesiredOutcome:                  desired,
+		ResolveThreadPermissionAdvisory: req.ResolveThreadPermissionAdvisory,
 	})
 	if err != nil {
 		return retryExecution{postResult: postResult, outboxInvoked: true}, err
