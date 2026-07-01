@@ -497,9 +497,10 @@ func retryEligible(run RunSummary) bool {
 		return false
 	}
 	switch run.State {
-	case RunStateRunning, RunStateIncomplete, RunStateFailed:
+	case RunStateRunning, RunStateIncomplete, RunStateFailed,
+		RunStateApproved, RunStateRequestChanges, RunStateComment, RunStateNothingToReview:
 		return true
-	case RunStateApproved, RunStateRequestChanges, RunStateComment, RunStateNothingToReview, RunStateDryRun, RunStateAborted:
+	case RunStateDryRun, RunStateAborted:
 		return false
 	default:
 		return false

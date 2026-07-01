@@ -234,6 +234,16 @@ func TestDecideCrossProduct(t *testing.T) {
 			want: Decision{Kind: DecisionRetryPosts, RunID: "run-incomplete"},
 		},
 		{
+			name: "retry posts can target completed run with required pending work",
+			req: requestWithPR(PRSummary{State: PRStateFresh}, func(req *Request) {
+				req.Flags.RetryPosts = true
+				req.ExactRuns = []RunSummary{
+					runWithPending(liveRun("run-complete", 1, RunStateComment), 1, 0),
+				}
+			}),
+			want: Decision{Kind: DecisionRetryPosts, RunID: "run-complete"},
+		},
+		{
 			name: "retry posts wins before resumable exact row and stale-base abort",
 			req: requestWithPR(PRSummary{
 				State: PRStateCompleteReview,

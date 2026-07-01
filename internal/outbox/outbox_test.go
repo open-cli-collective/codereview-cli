@@ -84,6 +84,47 @@ func TestPostEmbedsMarkersAndPostsInCanonicalOrder(t *testing.T) {
 	}
 }
 
+func TestPostTreatsGitHubAppResolveThreadLimitationAsAdvisory(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	ref := testPRRef()
+
+	insertAction(t, store, plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup body"}))
+	insertAction(t, store, plannedAction(run.RunID, "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{
+		Body:  "review body",
+		Event: review.ReviewEventComment,
+	}))
+	insertAction(t, store, plannedAction(run.RunID, "resolve-1", ledger.PlannedActionResolveThread, true, "thread-1", ResolveThreadPayload{}))
+	provider.SetError(gitprovider.OperationResolveThread,
+		gitprovider.WrapError(gitprovider.ErrThreadResolutionUnsupported, gitprovider.OperationResolveThread, errors.New("github graphql: GitHub App integrations cannot resolve review threads (resource not accessible by integration)")))
+
+	result, err := Post(context.Background(), Options{
+		Store:    store,
+		Provider: provider,
+		Limiter:  noopLimiter{},
+		Now:      fixedClock(),
+	}, Request{
+		Run:             run,
+		PRRef:           ref,
+		PostingIdentity: botIdentity(),
+		DesiredOutcome:  ledger.OutcomeComment,
+	})
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if result.ExitCode != exitOK || result.Outcome != ledger.OutcomeComment {
+		t.Fatalf("Post result = %#v, want comment exit 0", result)
+	}
+	action := actionByID(t, store, run.RunID, "resolve-1")
+	if action.Status != ledger.PlannedActionPending {
+		t.Fatalf("resolve action status = %s, want pending", action.Status)
+	}
+	if action.FailureClass == nil || *action.FailureClass != ledger.PlannedActionFailureClassAdvisory {
+		t.Fatalf("resolve action failure class = %#v, want advisory", action.FailureClass)
+	}
+}
+
 func TestPostBundlesInlineCommentsIntoSubmitReviewWhenProviderSupportsIt(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, ledger.PostModeLive)

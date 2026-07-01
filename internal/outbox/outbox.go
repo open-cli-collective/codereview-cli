@@ -44,10 +44,11 @@ type Options struct {
 
 // Request identifies the run and PR being posted.
 type Request struct {
-	Run             ledger.Run
-	PRRef           gitprovider.PRRef
-	PostingIdentity gitprovider.Identity
-	DesiredOutcome  ledger.Outcome
+	Run                             ledger.Run
+	PRRef                           gitprovider.PRRef
+	PostingIdentity                 gitprovider.Identity
+	DesiredOutcome                  ledger.Outcome
+	ResolveThreadPermissionAdvisory bool
 }
 
 // Result summarizes post-phase state after Post returns.
@@ -227,6 +228,13 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 			}
 			result := summarize(actions, ledger.OutcomeAborted, exitUpstream, true)
 			return result, nil
+		}
+
+		if isAdvisoryThreadResolutionError(actions[i], req.ResolveThreadPermissionAdvisory, err) {
+			if updateErr := recordPendingAdvisory(ctx, opts.Store, &actions[i], err); updateErr != nil {
+				return Result{ExitCode: exitFailed}, updateErr
+			}
+			continue
 		}
 
 		if errors.Is(err, gitprovider.ErrConflict) {
@@ -734,6 +742,15 @@ func markFailedTerminal(ctx context.Context, store Store, action *ledger.Planned
 	return store.UpdatePlannedAction(ctx, *action)
 }
 
+func recordPendingAdvisory(ctx context.Context, store Store, action *ledger.PlannedAction, err error) error {
+	action.Status = ledger.PlannedActionPending
+	action.Error = strPtr(err.Error())
+	action.FailureClass = strPtr(ledger.PlannedActionFailureClassAdvisory)
+	action.UpstreamID = nil
+	action.PostedAt = nil
+	return store.UpdatePlannedAction(ctx, *action)
+}
+
 type failureClass int
 
 const (
@@ -773,6 +790,16 @@ func classifyProviderError(err error) failureClass {
 	}
 }
 
+func isAdvisoryThreadResolutionError(action ledger.PlannedAction, advisoryEnabled bool, err error) bool {
+	if action.Kind != ledger.PlannedActionResolveThread {
+		return false
+	}
+	if errors.Is(err, gitprovider.ErrThreadResolutionUnsupported) {
+		return true
+	}
+	return advisoryEnabled && errors.Is(err, gitprovider.ErrPermission)
+}
+
 func classifyConflictCause(err error) failureClass {
 	switch {
 	case errors.Is(err, gitprovider.ErrRetryable):
@@ -798,6 +825,9 @@ func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction) (ledge
 		case ledger.PlannedActionSuperseded, ledger.PlannedActionPlannedOnly:
 			continue
 		case ledger.PlannedActionPending:
+			if advisoryPending(action) {
+				continue
+			}
 			hasRequiredPending = true
 		case ledger.PlannedActionFailedTerminal:
 			hasRequiredTerminal = true
@@ -819,6 +849,13 @@ func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction) (ledge
 	default:
 		return success, exitOK
 	}
+}
+
+func advisoryPending(action ledger.PlannedAction) bool {
+	return action.Kind == ledger.PlannedActionResolveThread &&
+		action.Status == ledger.PlannedActionPending &&
+		action.FailureClass != nil &&
+		*action.FailureClass == ledger.PlannedActionFailureClassAdvisory
 }
 
 func summarize(actions []ledger.PlannedAction, outcome ledger.Outcome, exitCode int, aborted bool) Result {

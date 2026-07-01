@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -85,6 +86,10 @@ func mapResolveThreadGraphQLErrors(op gitprovider.Operation, gqlErrors []graphQL
 	if isAlreadyResolvedGraphQLError(gqlErrors) {
 		return nil
 	}
+	if isGitHubAppThreadResolutionUnsupportedGraphQLError(gqlErrors) {
+		return gitprovider.WrapError(gitprovider.ErrThreadResolutionUnsupported, op,
+			fmt.Errorf("github graphql: GitHub App integrations cannot resolve review threads (resource not accessible by integration)"))
+	}
 	return mapGraphQLErrors(op, gqlErrors)
 }
 
@@ -95,4 +100,23 @@ func isAlreadyResolvedGraphQLError(gqlErrors []graphQLError) bool {
 	err := gqlErrors[0]
 	return strings.EqualFold(strings.TrimSpace(err.Type), "UNPROCESSABLE") &&
 		strings.EqualFold(strings.TrimSpace(err.Message), "Review thread is already resolved")
+}
+
+func isGitHubAppThreadResolutionUnsupportedGraphQLError(gqlErrors []graphQLError) bool {
+	if len(gqlErrors) != 1 {
+		return false
+	}
+	err := gqlErrors[0]
+	classification := strings.ToUpper(strings.TrimSpace(err.Type))
+	if classification == "" && err.Extensions != nil {
+		if value, ok := err.Extensions["type"].(string); ok {
+			classification = strings.ToUpper(strings.TrimSpace(value))
+		}
+		if value, ok := err.Extensions["code"].(string); ok && classification == "" {
+			classification = strings.ToUpper(strings.TrimSpace(value))
+		}
+	}
+	message := strings.ToUpper(strings.TrimSpace(err.Message))
+	return strings.Contains(classification, "FORBIDDEN") &&
+		strings.Contains(message, "RESOURCE NOT ACCESSIBLE BY INTEGRATION")
 }

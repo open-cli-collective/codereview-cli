@@ -14,6 +14,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gate"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
@@ -152,6 +153,9 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 			return result, err
 		}
 		result.Run = run
+		if err := applyAdvisoryThreadResolutionWarning(ctx, opts, &result); err != nil {
+			return result, err
+		}
 		failOn, err := failOnFromStore(ctx, opts.Store, gateResult.Run.RunID, req.Pipeline.FailOn)
 		if err != nil {
 			return result, err
@@ -224,13 +228,14 @@ func evaluateGate(ctx context.Context, opts Options, req Request, pr gitprovider
 			Warnings:                opts.Warnings,
 			ApprovalOverride:        opts.ApprovalOverride,
 		}, gateio.Request{
-			PRRef:              req.Pipeline.PRRef,
-			PR:                 pr,
-			PRKey:              prKey,
-			Profile:            req.Pipeline.ProfileName,
-			PostingIdentity:    req.Pipeline.PostingIdentity,
-			PostingIdentityKey: postingKey(req.Pipeline.PostingIdentity),
-			FreshRunID:         runID,
+			PRRef:                           req.Pipeline.PRRef,
+			PR:                              pr,
+			PRKey:                           prKey,
+			Profile:                         req.Pipeline.ProfileName,
+			PostingIdentity:                 req.Pipeline.PostingIdentity,
+			PostingIdentityKey:              postingKey(req.Pipeline.PostingIdentity),
+			ResolveThreadPermissionAdvisory: reviewPostingUsesGitHubApp(req.Pipeline.Profile),
+			FreshRunID:                      runID,
 			Flags: gate.Flags{
 				Rerun:      req.Flags.Rerun,
 				RetryPosts: req.Flags.RetryPosts,
@@ -288,10 +293,11 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 		Limiter:  opts.Limiter,
 		Now:      opts.Now,
 	}, outbox.Request{
-		Run:             result.Run,
-		PRRef:           req.Pipeline.PRRef,
-		PostingIdentity: req.Pipeline.PostingIdentity,
-		DesiredOutcome:  desired,
+		Run:                             result.Run,
+		PRRef:                           req.Pipeline.PRRef,
+		PostingIdentity:                 req.Pipeline.PostingIdentity,
+		DesiredOutcome:                  desired,
+		ResolveThreadPermissionAdvisory: reviewPostingUsesGitHubApp(req.Pipeline.Profile),
 	})
 	result.Outbox = postResult
 	result.ExitCode = postResult.ExitCode
@@ -308,6 +314,9 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 		return result, err
 	}
 	result.Run = run
+	if err := applyAdvisoryThreadResolutionWarning(ctx, opts, &result); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
@@ -472,6 +481,44 @@ func failOnFromStore(ctx context.Context, store Store, runID string, threshold *
 	return false, nil
 }
 
+func advisoryThreadResolutionWarning(ctx context.Context, store Store, runID string) (string, error) {
+	if strings.TrimSpace(runID) == "" {
+		return "", nil
+	}
+	actions, err := store.ListPlannedActions(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	for _, action := range actions {
+		if action.Kind != ledger.PlannedActionResolveThread || action.Status != ledger.PlannedActionPending {
+			continue
+		}
+		if action.FailureClass == nil || *action.FailureClass != ledger.PlannedActionFailureClassAdvisory {
+			continue
+		}
+		return "GitHub Apps cannot resolve discussion threads; review content was still posted and the summary comment metadata remains available for cached-review flows", nil
+	}
+	return "", nil
+}
+
+func applyAdvisoryThreadResolutionWarning(ctx context.Context, opts Options, result *Result) error {
+	if result == nil || result.ExitCode != exitOK {
+		return nil
+	}
+	warning, err := advisoryThreadResolutionWarning(ctx, opts.Store, result.Run.RunID)
+	if err != nil {
+		return err
+	}
+	if warning == "" {
+		return nil
+	}
+	if opts.Warnings != nil {
+		_, _ = fmt.Fprintf(opts.Warnings, "warning: %s\n", warning)
+	}
+	result.Message = warning
+	return nil
+}
+
 func pruneRetention(ctx context.Context, opts Options) error {
 	if opts.RetentionManualOnly {
 		return nil
@@ -490,6 +537,13 @@ func pruneRetention(ctx context.Context, opts Options) error {
 		}
 	}
 	return nil
+}
+
+func reviewPostingUsesGitHubApp(profile config.Profile) bool {
+	if profile.ReviewerCredentials != nil && profile.ReviewerCredentials.AuthMode == config.GitAuthModeGitHubApp {
+		return true
+	}
+	return profile.Git.AuthMode == config.GitAuthModeGitHubApp
 }
 
 func exitForDecision(decision gate.Decision) int {
