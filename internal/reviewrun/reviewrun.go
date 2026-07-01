@@ -308,6 +308,14 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 		return result, err
 	}
 	result.Run = run
+	if warning, warnErr := advisoryThreadResolutionWarning(ctx, opts.Store, result.Run.RunID); warnErr != nil {
+		return result, warnErr
+	} else if warning != "" {
+		if opts.Warnings != nil {
+			_, _ = fmt.Fprintf(opts.Warnings, "warning: %s\n", warning)
+		}
+		result.Message = warning
+	}
 	return result, nil
 }
 
@@ -470,6 +478,26 @@ func failOnFromStore(ctx context.Context, store Store, runID string, threshold *
 		}
 	}
 	return false, nil
+}
+
+func advisoryThreadResolutionWarning(ctx context.Context, store Store, runID string) (string, error) {
+	if strings.TrimSpace(runID) == "" {
+		return "", nil
+	}
+	actions, err := store.ListPlannedActions(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	for _, action := range actions {
+		if action.Kind != ledger.PlannedActionResolveThread || action.Status != ledger.PlannedActionPlannedOnly || action.Error == nil {
+			continue
+		}
+		if !strings.Contains(*action.Error, gitprovider.ErrThreadResolutionUnsupported.Error()) {
+			continue
+		}
+		return "GitHub Apps cannot resolve discussion threads; review content was still posted and the summary comment metadata remains available for cached-review flows", nil
+	}
+	return "", nil
 }
 
 func pruneRetention(ctx context.Context, opts Options) error {

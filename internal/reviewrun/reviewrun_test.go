@@ -1,6 +1,7 @@
 package reviewrun
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -251,6 +252,34 @@ func TestRunCommitsNamedSessionCandidateAfterPostSuccess(t *testing.T) {
 		stored.Profile != candidate.Profile ||
 		stored.Host != candidate.Host {
 		t.Fatalf("stored named session = %#v, want %#v", stored, candidate)
+	}
+}
+
+func TestRunWarnsWhenGitHubAppCannotResolveThreadsButPostsReview(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.req.Profile.Git.AuthMode = config.GitAuthModeGitHubApp
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, includeResolve: true}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+	var warnings bytes.Buffer
+	opts.Warnings = &warnings
+
+	fixture.fake.SetError(gitprovider.OperationResolveThread,
+		gitprovider.WrapError(gitprovider.ErrThreadResolutionUnsupported, gitprovider.OperationResolveThread, errors.New("github graphql: GitHub App integrations cannot resolve review threads (resource not accessible by integration)")))
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != 0 || result.Outbox.Outcome != ledger.OutcomeComment {
+		t.Fatalf("result = %#v, want successful live review", result)
+	}
+	if !strings.Contains(result.Message, "GitHub Apps cannot resolve discussion threads") {
+		t.Fatalf("message = %q, want advisory thread-resolution warning", result.Message)
+	}
+	if !strings.Contains(warnings.String(), "warning: GitHub Apps cannot resolve discussion threads") {
+		t.Fatalf("warnings = %q, want emitted warning", warnings.String())
 	}
 }
 
@@ -960,6 +989,7 @@ type fakePlanner struct {
 	store          *ledger.Store
 	outcome        reviewplan.Outcome
 	namedCandidate *ledger.NamedSession
+	includeResolve bool
 	calls          int
 	runs           []ledger.Run
 }
@@ -985,6 +1015,20 @@ func (p *fakePlanner) Live(_ context.Context, _ pipeline.Request, run ledger.Run
 	}
 	for _, action := range reviewActions(nil, run.RunID, event) {
 		if err := p.store.InsertPlannedAction(context.Background(), action); err != nil {
+			return pipeline.Result{}, err
+		}
+	}
+	if p.includeResolve {
+		if err := p.store.InsertPlannedAction(context.Background(), ledger.PlannedAction{
+			ActionID:    "resolve-1",
+			RunID:       run.RunID,
+			Kind:        ledger.PlannedActionResolveThread,
+			ThreadID:    strPtr("thread-1"),
+			PlannedAt:   testNow(),
+			PayloadJSON: payloadJSON(nil, outbox.ResolveThreadPayload{}),
+			Status:      ledger.PlannedActionPending,
+			Required:    true,
+		}); err != nil {
 			return pipeline.Result{}, err
 		}
 	}

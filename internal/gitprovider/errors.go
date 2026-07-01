@@ -10,6 +10,9 @@ import (
 var (
 	ErrAuth       = errors.New("gitprovider: authentication failed")
 	ErrPermission = errors.New("gitprovider: permission denied")
+	// ErrThreadResolutionUnsupported indicates the provider accepted review
+	// posting writes, but the active credential cannot resolve review threads.
+	ErrThreadResolutionUnsupported = errors.New("gitprovider: thread resolution unsupported for current credential")
 	// ErrIneligibleReviewAuthority indicates the credential can talk to the
 	// host, but the resolved posting identity is not eligible for GitHub to
 	// count APPROVE/REQUEST_CHANGES toward PR state on the target repository.

@@ -284,6 +284,11 @@ permissions needed by the enabled review workflow:
 
 Thread resolution uses the pull request review-thread GraphQL surface, so keep
 Pull requests write access when `review_policy.resolve_threads` is enabled.
+GitHub Apps can still hit a platform limitation here: they can post reviews,
+inline replies, and summary comments, but GitHub may refuse thread resolution
+with `Resource not accessible by integration`. In that case `cr` keeps the
+posted review artifacts, warns, and relies on the summary comment metadata as
+the durable cached-review artifact.
 
 Example non-secret config template:
 
@@ -1283,7 +1288,9 @@ other users do not satisfy `cr`'s idempotency checks.
 
 Planned actions can include inline comments, file-level or rollup comments,
 review submission, thread summary replies, and thread resolution. Thread
-summary content uses separate summary markers. Model-generated marker-looking
+summary content uses separate summary markers. When GitHub App credentials
+cannot resolve review threads, the summary comment still carries the metadata
+used to observe and reuse cached review output. Model-generated marker-looking
 text is escaped before posting.
 
 ### Session Reuse

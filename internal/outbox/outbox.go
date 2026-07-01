@@ -229,6 +229,13 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 			return result, nil
 		}
 
+		if isAdvisoryThreadResolutionError(actions[i], err) {
+			if updateErr := markPlannedOnlyAdvisory(ctx, opts.Store, &actions[i], err); updateErr != nil {
+				return Result{ExitCode: exitFailed}, updateErr
+			}
+			continue
+		}
+
 		if errors.Is(err, gitprovider.ErrConflict) {
 			refetched, readErr := readHostState(ctx, opts.Provider, req.PRRef)
 			if readErr != nil {
@@ -734,6 +741,15 @@ func markFailedTerminal(ctx context.Context, store Store, action *ledger.Planned
 	return store.UpdatePlannedAction(ctx, *action)
 }
 
+func markPlannedOnlyAdvisory(ctx context.Context, store Store, action *ledger.PlannedAction, err error) error {
+	action.Status = ledger.PlannedActionPlannedOnly
+	action.Error = strPtr(err.Error())
+	action.FailureClass = nil
+	action.UpstreamID = nil
+	action.PostedAt = nil
+	return store.UpdatePlannedAction(ctx, *action)
+}
+
 type failureClass int
 
 const (
@@ -771,6 +787,11 @@ func classifyProviderError(err error) failureClass {
 	default:
 		return failureTerminal
 	}
+}
+
+func isAdvisoryThreadResolutionError(action ledger.PlannedAction, err error) bool {
+	return action.Kind == ledger.PlannedActionResolveThread &&
+		errors.Is(err, gitprovider.ErrThreadResolutionUnsupported)
 }
 
 func classifyConflictCause(err error) failureClass {

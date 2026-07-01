@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -113,6 +114,26 @@ func TestAlreadyResolvedGraphQLErrorIsResolveThreadLocal(t *testing.T) {
 	_, err := client.ReplyToThread(context.Background(), testPRRef(), "thread-1", "body")
 	if !errors.Is(err, ErrUnhandledGraphQL) {
 		t.Fatalf("ReplyToThread already-resolved error = %v, want shared classifier fallback", err)
+	}
+}
+
+func TestResolveThreadGitHubAppLimitationReturnsTypedWarningError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = readGraphQLRequestAtEndpoint(t, r)
+		writeJSON(t, w, map[string]any{"errors": []graphQLError{{
+			Type:    "FORBIDDEN",
+			Message: "Resource not accessible by integration",
+		}}})
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	err := client.ResolveThread(context.Background(), testPRRef(), "thread-1")
+	if !errors.Is(err, gitprovider.ErrThreadResolutionUnsupported) {
+		t.Fatalf("ResolveThread error = %v, want ErrThreadResolutionUnsupported", err)
+	}
+	if !strings.Contains(err.Error(), "GitHub App integrations cannot resolve review threads") {
+		t.Fatalf("ResolveThread error = %v, want GitHub App detail", err)
 	}
 }
 
