@@ -29,6 +29,12 @@ a change could regress review composition or dependency boundaries rather than
 cloning broad review assertions. Retire or promote the workstream context
 document when issue #420 completes.
 
+The current #420 acceptance harnesses are:
+
+- `TestReviewCommandAcceptanceHarnessComposesDryRun` in `internal/cmd/reviewcmd`
+- `TestReviewPipelineAcceptanceHarnessDryRunWithFakes` in `internal/pipeline`
+- `TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask` in `internal/pipeline`
+
 Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
 `SelectionOnly`. `DryRun` and `Live` execute the full review pipeline, while
 `SelectionOnly` runs just the selection phase with caller-owned artifact paths

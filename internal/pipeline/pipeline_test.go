@@ -445,6 +445,11 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	if len(resumes) != 1 || resumes[0].SessionID != "rollup-retry-session" {
 		t.Fatalf("second adapter resumes = %#v, want only failed rollup retry session", resumes)
 	}
+	resumeReq := resumes[0].Request
+	if resumeReq.Model != "claude-sonnet-4-6" || resumeReq.Effort != "medium" {
+		t.Fatalf("resume request = model:%q effort:%q, want claude-sonnet-4-6/medium", resumeReq.Model, resumeReq.Effort)
+	}
+	assertPromptContains(t, resumeReq.Prompt, "finding-1", "harness:reviewer", "main.go")
 	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
 		t.Fatalf("result findings = %#v, want cached reviewer finding", result.Findings)
 	}
