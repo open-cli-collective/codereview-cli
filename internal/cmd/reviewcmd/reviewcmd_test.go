@@ -114,7 +114,7 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 	runner := &fakeRunner{result: result}
 	var gotRuntime RuntimeOptions
 	var cleanupCalled bool
-	cmd, out := newTestCommand(t, testConfig(), func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile, opts RuntimeOptions) (Runtime, error) {
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile, opts RuntimeOptions) (Runtime, error) {
 		gotRuntime = opts
 		if profile.Git.CredentialRef != "codereview/home" {
 			t.Fatalf("runtime profile credential ref = %q, want repository-routed home profile", profile.Git.CredentialRef)
@@ -124,7 +124,7 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 			Cleanup:         func() { cleanupCalled = true },
 		}, nil
-	})
+	}, false)
 
 	err := root.Execute(cmd, []string{
 		"--quiet",
@@ -141,6 +141,9 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty when --quiet is set", errOut.String())
 	}
 	if !cleanupCalled {
 		t.Fatal("runtime cleanup was not called")
@@ -182,18 +185,14 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 	assertJSONPath(t, rendered, "actions", 0, "id", "inline_comment-1")
 	assertJSONPath(t, rendered, "actions", 0, "status", "planned_only")
 	assertJSONPath(t, rendered, "actions", 0, "payload", "path", "main.go")
-	for _, forbidden := range []string{
-		"provider_session_id",
-		"session_row_id",
-		"retry",
-		"ledger",
-		"outbox",
-		"gate",
-	} {
-		if strings.Contains(out.String(), forbidden) {
-			t.Fatalf("dry-run JSON leaked harness-only field %q:\n%s", forbidden, out.String())
-		}
-	}
+	assertJSONOmitsKeys(t, rendered, map[string]bool{
+		"provider_session_id": true,
+		"session_row_id":      true,
+		"retry":               true,
+		"ledger":              true,
+		"outbox":              true,
+		"gate":                true,
+	})
 }
 
 func TestReviewUsesRepositoryProfileRoute(t *testing.T) {
@@ -3211,6 +3210,23 @@ func assertJSONPath(t *testing.T, root any, path ...any) {
 	want := path[len(path)-1]
 	if got := current; got != want {
 		t.Fatalf("JSON path %v = %#v, want %#v", path[:len(path)-1], got, want)
+	}
+}
+
+func assertJSONOmitsKeys(t *testing.T, value any, forbidden map[string]bool) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if forbidden[key] {
+				t.Fatalf("dry-run JSON leaked harness-only key %q", key)
+			}
+			assertJSONOmitsKeys(t, child, forbidden)
+		}
+	case []any:
+		for _, child := range typed {
+			assertJSONOmitsKeys(t, child, forbidden)
+		}
 	}
 }
 
