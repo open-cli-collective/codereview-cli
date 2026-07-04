@@ -154,6 +154,13 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	if len(requests) != 4 {
 		t.Fatalf("requests len = %d, want dossier-summary/selection/reviewer/rollup", len(requests))
 	}
+	assertPromptContains(t, requests[0].Prompt, "Top-level concern", "Inline concern")
+	assertPromptContains(t, requests[1].Prompt, "Document the checkout-native review contract.", `"workbench"`, provider.pr.Head.SHA)
+	assertPromptContains(t, requests[2].Prompt, "Document the checkout-native review contract.", `"id": "harness:reviewer"`, "main.go")
+	if requests[2].ReviewerWorkspace == nil {
+		t.Fatalf("reviewer request = %#v, want prepared reviewer workspace", requests[2])
+	}
+	assertPromptContains(t, requests[3].Prompt, "finding-1", "harness:reviewer", "main.go")
 	for _, request := range requests {
 		if request.Model != "claude-sonnet-4-6" || request.Effort != "medium" {
 			t.Fatalf("request = model:%q effort:%q, want claude-sonnet-4-6/medium from agent config", request.Model, request.Effort)
@@ -395,11 +402,13 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 		t.Fatalf("first run outcome = %#v, want incomplete", stored.Outcome)
 	}
 	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	successMetadata := map[string]llmTaskMetadata{}
 	for _, taskID := range []string{orchestratorSelectionStage, reviewerTaskID("harness:reviewer")} {
 		meta, ok, err := readLLMTaskMetadata(artifacts, taskID)
 		if err != nil || !ok || meta.Status != llmTaskStatusSucceeded {
 			t.Fatalf("task %s metadata = %#v ok %v err %v, want succeeded", taskID, meta, ok, err)
 		}
+		successMetadata[taskID] = meta
 	}
 	rollupMeta, ok, err := readLLMTaskMetadata(artifacts, orchestratorRollupStage)
 	if err != nil || !ok || rollupMeta.Status != llmTaskStatusFailedBlocking {
@@ -438,6 +447,15 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	}
 	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
 		t.Fatalf("result findings = %#v, want cached reviewer finding", result.Findings)
+	}
+	for taskID, want := range successMetadata {
+		got, ok, err := readLLMTaskMetadata(artifacts, taskID)
+		if err != nil || !ok {
+			t.Fatalf("task %s metadata after resume = %#v ok %v err %v, want reused metadata", taskID, got, ok, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("task %s metadata after resume = %#v, want unchanged %#v", taskID, got, want)
+		}
 	}
 	stored, err = store.GetRun(ctx, run.RunID)
 	if err != nil {
@@ -6877,6 +6895,15 @@ func sessionWithProviderID(sessions []ledger.Session, providerSessionID string) 
 		}
 	}
 	return ledger.Session{}, false
+}
+
+func assertPromptContains(t *testing.T, prompt string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
 }
 
 func assertRollupUsageRow(t *testing.T, path string, workstream string, wantCacheCreate bool) {
