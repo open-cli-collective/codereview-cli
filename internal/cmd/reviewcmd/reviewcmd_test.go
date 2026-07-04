@@ -127,10 +127,10 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 	}, false)
 
 	err := root.Execute(cmd, []string{
-		"--quiet",
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
 		"--dry-run",
 		"--json",
+		"--quiet",
 		"--agents-dir", "/tmp/agents",
 		"--fail-on", "minor",
 		"--max-agents", "3",

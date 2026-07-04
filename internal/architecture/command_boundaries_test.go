@@ -4,6 +4,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -67,28 +68,7 @@ func TestCommandPackagesDoNotAddFeatureCommandImports(t *testing.T) {
 func TestApplicationPackagesStayOutOfCommandAndViewLayers(t *testing.T) {
 	repoRoot := repoRootFromTest(t)
 	modulePath := "github.com/open-cli-collective/codereview-cli"
-	appRoots := []string{
-		"internal/agents",
-		"internal/approvaloverride",
-		"internal/benchmark",
-		"internal/config",
-		"internal/credentials",
-		"internal/datalifecycle",
-		"internal/gate",
-		"internal/gateio",
-		"internal/ledger",
-		"internal/llmlifecycle",
-		"internal/outbox",
-		"internal/pipeline",
-		"internal/plannedactions",
-		"internal/review",
-		"internal/reviewplan",
-		"internal/reviewrun",
-		"internal/stagemodel",
-		"internal/threadanalysis",
-		"internal/threadcontext",
-		"internal/threadrespond",
-	}
+	appRoots := applicationPackageRoots(t, repoRoot)
 	forbidden := []string{
 		modulePath + "/internal/cmd",
 		modulePath + "/internal/view",
@@ -98,6 +78,30 @@ func TestApplicationPackagesStayOutOfCommandAndViewLayers(t *testing.T) {
 	for _, root := range appRoots {
 		checkApplicationRootImports(t, repoRoot, root, forbidden)
 	}
+}
+
+func applicationPackageRoots(t *testing.T, repoRoot string) []string {
+	t.Helper()
+	internalRoot := filepath.Join(repoRoot, "internal")
+	entries, err := os.ReadDir(internalRoot)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", internalRoot, err)
+	}
+	excluded := map[string]bool{
+		"cmd":  true,
+		"view": true,
+	}
+	var roots []string
+	for _, entry := range entries {
+		if !entry.IsDir() || excluded[entry.Name()] {
+			continue
+		}
+		roots = append(roots, filepath.ToSlash(filepath.Join("internal", entry.Name())))
+	}
+	if len(roots) == 0 {
+		t.Fatal("no application package roots discovered under internal")
+	}
+	return roots
 }
 
 func checkApplicationRootImports(t *testing.T, repoRoot, root string, forbidden []string) {

@@ -24,10 +24,10 @@ writes, inline thread lifecycle, and retention live in
 
 The temporary architecture refactor workstream context for issue #420 lives in
 [`docs/architecture-refactor-workstream.md`](architecture-refactor-workstream.md).
-While that workstream is active, extend the named acceptance harness tests in
-`internal/cmd/reviewcmd`, `internal/pipeline`, and `internal/architecture`
-rather than cloning broad review assertions. Retire or promote the workstream
-context document when issue #420 completes.
+While that workstream is active, extend the named acceptance harness tests when
+a change could regress review composition or dependency boundaries rather than
+cloning broad review assertions. Retire or promote the workstream context
+document when issue #420 completes.
 
 Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
 `SelectionOnly`. `DryRun` and `Live` execute the full review pipeline, while

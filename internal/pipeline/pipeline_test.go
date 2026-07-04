@@ -164,8 +164,9 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 			t.Fatalf("session = model:%q effort:%v, want claude-sonnet-4-6/medium from agent config", session.Model, session.Effort)
 		}
 	}
-	if got := result.Sessions[1].ProviderSessionID; got != "reviewer-session" {
-		t.Fatalf("reviewer provider session = %q", got)
+	reviewerSession, ok := sessionWithProviderID(result.Sessions, "reviewer-session")
+	if !ok {
+		t.Fatalf("sessions = %#v, want reviewer provider session", result.Sessions)
 	}
 	if len(result.PlannedActions) != 3 {
 		t.Fatalf("planned actions len = %d, want inline/rollup/submit", len(result.PlannedActions))
@@ -193,8 +194,8 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListFindings: %v", err)
 	}
-	if len(storedFindings) != 1 || storedFindings[0].SessionRowID != "session-3" {
-		t.Fatalf("stored findings = %#v, want reviewer session FK", storedFindings)
+	if len(storedFindings) != 1 || storedFindings[0].SessionRowID != reviewerSession.SessionRowID {
+		t.Fatalf("stored findings = %#v, want reviewer session FK %q", storedFindings, reviewerSession.SessionRowID)
 	}
 	storedActions, err := store.ListPlannedActions(ctx, "run-1")
 	if err != nil {
@@ -6867,6 +6868,15 @@ func closeStore(t *testing.T, store *ledger.Store) {
 	if err := store.Close(); err != nil {
 		t.Fatalf("store.Close: %v", err)
 	}
+}
+
+func sessionWithProviderID(sessions []ledger.Session, providerSessionID string) (ledger.Session, bool) {
+	for _, session := range sessions {
+		if session.ProviderSessionID == providerSessionID {
+			return session, true
+		}
+	}
+	return ledger.Session{}, false
 }
 
 func assertRollupUsageRow(t *testing.T, path string, workstream string, wantCacheCreate bool) {
