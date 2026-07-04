@@ -8,6 +8,11 @@ This is not a status tracker, execution log, or replacement for tests. It is a
 small map of the invariants every child issue should preserve while the code is
 being moved into clearer layers.
 
+Durable repo-local guidance still belongs in `docs/development.md` and
+`docs/architecture.md`. Treat this file as issue #420 context and sequencing
+memory only; if it appears to introduce a standalone repo policy, update the
+durable guide or this temporary context so they agree.
+
 ## Thesis
 
 This workstream is not about moving code into smaller files. It is about turning
