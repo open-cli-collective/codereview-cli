@@ -72,6 +72,10 @@ func TestApplicationPackagesStayOutOfCommandAndViewLayers(t *testing.T) {
 	forbidden := []string{
 		modulePath + "/internal/cmd",
 		modulePath + "/internal/view",
+		"github.com/charmbracelet/bubbles",
+		"github.com/charmbracelet/bubbletea",
+		"github.com/charmbracelet/huh",
+		"github.com/charmbracelet/lipgloss",
 		"github.com/spf13/cobra",
 	}
 
