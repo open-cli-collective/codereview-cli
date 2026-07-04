@@ -28,14 +28,8 @@ While that workstream is active, extend the named acceptance harness tests when
 a change could regress review composition or dependency boundaries rather than
 cloning broad review assertions. Retire or promote the workstream context
 document when issue #420 completes.
-
-The current #420 acceptance harnesses are:
-
-- `TestCommandPackagesDoNotAddFeatureCommandImports` in `internal/architecture`
-- `TestApplicationPackagesStayOutOfCommandAndViewLayers` in `internal/architecture`
-- `TestReviewCommandAcceptanceHarnessComposesDryRun` in `internal/cmd/reviewcmd`
-- `TestReviewPipelineAcceptanceHarnessDryRunWithFakes` in `internal/pipeline`
-- `TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask` in `internal/pipeline`
+The current #420 harness inventory is maintained in that workstream doc under
+"Harness And Guardrails".
 
 Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
 `SelectionOnly`. `DryRun` and `Live` execute the full review pipeline, while
