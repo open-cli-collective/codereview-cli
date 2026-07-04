@@ -31,6 +31,8 @@ document when issue #420 completes.
 
 The current #420 acceptance harnesses are:
 
+- `TestCommandPackagesDoNotAddFeatureCommandImports` in `internal/architecture`
+- `TestApplicationPackagesStayOutOfCommandAndViewLayers` in `internal/architecture`
 - `TestReviewCommandAcceptanceHarnessComposesDryRun` in `internal/cmd/reviewcmd`
 - `TestReviewPipelineAcceptanceHarnessDryRunWithFakes` in `internal/pipeline`
 - `TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask` in `internal/pipeline`
