@@ -70,7 +70,7 @@ func TestResolveInvocationRootForSafetyTreatsUnavailableAsUnknownAndOtherErrorsA
 	}
 }
 
-func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
+func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -105,15 +105,58 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 		Author: gitprovider.Identity{Login: "approver"},
 		Event:  review.ReviewEventApprove,
 	}}
-	adapter := &llm.FakeAdapter{
+	baseAdapter := &llm.FakeAdapter{
 		NameValue:      "fake-llm",
 		QuotaValue:     llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
 		QuotaSupported: true,
 	}
-	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body"}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
-	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
-	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	baseAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body"}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
+	baseAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	baseAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	baseAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	adapter := newPromptValidatingAdapter(baseAdapter,
+		promptValidation{
+			stage: "dossier summary",
+			wants: []string{
+				"Top-level concern",
+				"Inline concern",
+				"Review body",
+			},
+		},
+		promptValidation{
+			stage: "selection",
+			wants: []string{
+				"Document the checkout-native review contract.",
+				"Top-level concern",
+				"Inline concern",
+				"Review body",
+				`"workbench"`,
+				provider.pr.Head.SHA,
+				`"id": "harness:reviewer"`,
+			},
+		},
+		promptValidation{
+			stage:            "reviewer",
+			requireWorkspace: true,
+			wants: []string{
+				"Document the checkout-native review contract.",
+				"Review carefully.",
+				`"id": "harness:reviewer"`,
+				"go file changed",
+				"Guidance provenance: repo@refs/heads/main:",
+				"main.go",
+			},
+		},
+		promptValidation{
+			stage: "rollup",
+			wants: []string{
+				"finding-1",
+				"harness:reviewer",
+				"main.go",
+				"Fix this",
+			},
+		},
+	)
 	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
 	oldDryRun := allocatePipelineRun(t, store, layout, "old-dry-run", ledger.PostModeDryRun, fixedNow().Add(-8*24*time.Hour))
 	provider.onGetPR = func() {
@@ -137,6 +180,7 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
+	adapter.AssertConsumed(t)
 
 	if result.Run.RunID != "run-1" || result.Run.PostMode != ledger.PostModeDryRun {
 		t.Fatalf("run = %#v, want dry-run run-1", result.Run)
@@ -154,6 +198,13 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	if len(requests) != 4 {
 		t.Fatalf("requests len = %d, want dossier-summary/selection/reviewer/rollup", len(requests))
 	}
+	assertPromptContains(t, requests[0].Prompt, "Top-level concern", "Inline concern", "Review body")
+	assertPromptContains(t, requests[1].Prompt, "Document the checkout-native review contract.", `"workbench"`, provider.pr.Head.SHA)
+	assertPromptContains(t, requests[2].Prompt, "Document the checkout-native review contract.", `"id": "harness:reviewer"`, "main.go")
+	if requests[2].ReviewerWorkspace == nil {
+		t.Fatalf("reviewer request = %#v, want prepared reviewer workspace", requests[2])
+	}
+	assertPromptContains(t, requests[3].Prompt, "finding-1", "harness:reviewer", "main.go")
 	for _, request := range requests {
 		if request.Model != "claude-sonnet-4-6" || request.Effort != "medium" {
 			t.Fatalf("request = model:%q effort:%q, want claude-sonnet-4-6/medium from agent config", request.Model, request.Effort)
@@ -164,8 +215,9 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 			t.Fatalf("session = model:%q effort:%v, want claude-sonnet-4-6/medium from agent config", session.Model, session.Effort)
 		}
 	}
-	if got := result.Sessions[1].ProviderSessionID; got != "reviewer-session" {
-		t.Fatalf("reviewer provider session = %q", got)
+	reviewerSession, ok := sessionWithProviderID(result.Sessions, "reviewer-session")
+	if !ok {
+		t.Fatalf("sessions = %#v, want reviewer provider session", result.Sessions)
 	}
 	if len(result.PlannedActions) != 3 {
 		t.Fatalf("planned actions len = %d, want inline/rollup/submit", len(result.PlannedActions))
@@ -193,8 +245,8 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListFindings: %v", err)
 	}
-	if len(storedFindings) != 1 || storedFindings[0].SessionRowID != "session-3" {
-		t.Fatalf("stored findings = %#v, want reviewer session FK", storedFindings)
+	if len(storedFindings) != 1 || storedFindings[0].SessionRowID != reviewerSession.SessionRowID {
+		t.Fatalf("stored findings = %#v, want reviewer session FK %q", storedFindings, reviewerSession.SessionRowID)
 	}
 	storedActions, err := store.ListPlannedActions(ctx, "run-1")
 	if err != nil {
@@ -207,6 +259,8 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	assertFileContains(t, result.Artifacts.DiffPatch, "diff --git a/main.go b/main.go")
 	assertFileContains(t, result.Artifacts.FindingsJSON, `"severity": "major"`)
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
+	assertFileContains(t, result.Artifacts.WorkbenchMetadataPath(), `"schema_version": 1`)
+	assertFileContains(t, result.Artifacts.WorkbenchMetadataPath(), `"repo_path":`)
 	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "pr-intent.md"), "Document the checkout-native review contract.")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "main.go:2")
@@ -355,7 +409,7 @@ func TestDryRunResumesPinnedReviewRunByPinnedSHAs(t *testing.T) {
 	}
 }
 
-func TestDryRunResumeLoadsCompletedTasksAndRerunsFailedTaskOnly(t *testing.T) {
+func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -392,11 +446,13 @@ func TestDryRunResumeLoadsCompletedTasksAndRerunsFailedTaskOnly(t *testing.T) {
 		t.Fatalf("first run outcome = %#v, want incomplete", stored.Outcome)
 	}
 	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	successMetadata := map[string]llmTaskMetadata{}
 	for _, taskID := range []string{orchestratorSelectionStage, reviewerTaskID("harness:reviewer")} {
 		meta, ok, err := readLLMTaskMetadata(artifacts, taskID)
 		if err != nil || !ok || meta.Status != llmTaskStatusSucceeded {
 			t.Fatalf("task %s metadata = %#v ok %v err %v, want succeeded", taskID, meta, ok, err)
 		}
+		successMetadata[taskID] = meta
 	}
 	rollupMeta, ok, err := readLLMTaskMetadata(artifacts, orchestratorRollupStage)
 	if err != nil || !ok || rollupMeta.Status != llmTaskStatusFailedBlocking {
@@ -433,8 +489,22 @@ func TestDryRunResumeLoadsCompletedTasksAndRerunsFailedTaskOnly(t *testing.T) {
 	if len(resumes) != 1 || resumes[0].SessionID != "rollup-retry-session" {
 		t.Fatalf("second adapter resumes = %#v, want only failed rollup retry session", resumes)
 	}
+	resumeReq := resumes[0].Request
+	if resumeReq.Model != "claude-sonnet-4-6" || resumeReq.Effort != "medium" {
+		t.Fatalf("resume request = model:%q effort:%q, want claude-sonnet-4-6/medium", resumeReq.Model, resumeReq.Effort)
+	}
+	assertPromptContains(t, resumeReq.Prompt, "finding-1", "harness:reviewer", "main.go")
 	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
 		t.Fatalf("result findings = %#v, want cached reviewer finding", result.Findings)
+	}
+	for taskID, want := range successMetadata {
+		got, ok, err := readLLMTaskMetadata(artifacts, taskID)
+		if err != nil || !ok {
+			t.Fatalf("task %s metadata after resume = %#v ok %v err %v, want reused metadata", taskID, got, ok, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("task %s metadata after resume = %#v, want unchanged %#v", taskID, got, want)
+		}
 	}
 	stored, err = store.GetRun(ctx, run.RunID)
 	if err != nil {
@@ -6864,6 +6934,123 @@ func closeStore(t *testing.T, store *ledger.Store) {
 	t.Helper()
 	if err := store.Close(); err != nil {
 		t.Fatalf("store.Close: %v", err)
+	}
+}
+
+func sessionWithProviderID(sessions []ledger.Session, providerSessionID string) (ledger.Session, bool) {
+	for _, session := range sessions {
+		if session.ProviderSessionID == providerSessionID {
+			return session, true
+		}
+	}
+	return ledger.Session{}, false
+}
+
+type promptValidation struct {
+	stage            string
+	wants            []string
+	requireWorkspace bool
+}
+
+type promptValidatingAdapter struct {
+	base *llm.FakeAdapter
+
+	mu          sync.Mutex
+	validations []promptValidation
+}
+
+func newPromptValidatingAdapter(base *llm.FakeAdapter, validations ...promptValidation) *promptValidatingAdapter {
+	return &promptValidatingAdapter{
+		base:        base,
+		validations: append([]promptValidation(nil), validations...),
+	}
+}
+
+func (a *promptValidatingAdapter) Name() string {
+	return a.base.Name()
+}
+
+func (a *promptValidatingAdapter) SupportsResume() bool {
+	return a.base.SupportsResume()
+}
+
+func (a *promptValidatingAdapter) ReviewerWorkspaceMode() llm.ReviewerWorkspaceMode {
+	return a.base.ReviewerWorkspaceMode()
+}
+
+func (a *promptValidatingAdapter) SupportsCacheAccounting() bool {
+	return a.base.SupportsCacheAccounting()
+}
+
+func (a *promptValidatingAdapter) SupportsCostReporting() bool {
+	return a.base.SupportsCostReporting()
+}
+
+func (a *promptValidatingAdapter) Quota(ctx context.Context) (llm.Quota, bool, error) {
+	return a.base.Quota(ctx)
+}
+
+func (a *promptValidatingAdapter) Start(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	validation, ok := a.nextValidation()
+	if !ok {
+		return nil, fmt.Errorf("unexpected LLM request with prompt:\n%s", req.Prompt)
+	}
+	if err := validation.validate(req); err != nil {
+		return nil, err
+	}
+	return a.base.Start(ctx, req)
+}
+
+func (a *promptValidatingAdapter) Resume(ctx context.Context, sessionID string, req llm.Request) (llm.Stream, error) {
+	return a.base.Resume(ctx, sessionID, req)
+}
+
+func (a *promptValidatingAdapter) Requests() []llm.Request {
+	return a.base.Requests()
+}
+
+func (a *promptValidatingAdapter) AssertConsumed(t *testing.T) {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.validations) != 0 {
+		t.Fatalf("unused prompt validations = %#v", a.validations)
+	}
+}
+
+func (a *promptValidatingAdapter) nextValidation() (promptValidation, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.validations) == 0 {
+		return promptValidation{}, false
+	}
+	validation := a.validations[0]
+	a.validations = a.validations[1:]
+	return validation, true
+}
+
+func (v promptValidation) validate(req llm.Request) error {
+	var missing []string
+	if v.requireWorkspace && req.ReviewerWorkspace == nil {
+		missing = append(missing, "reviewer workspace")
+	}
+	for _, want := range v.wants {
+		if !strings.Contains(req.Prompt, want) {
+			missing = append(missing, want)
+		}
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("%s prompt missing %s:\n%s", v.stage, strings.Join(missing, ", "), req.Prompt)
+	}
+	return nil
+}
+
+func assertPromptContains(t *testing.T, prompt string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
