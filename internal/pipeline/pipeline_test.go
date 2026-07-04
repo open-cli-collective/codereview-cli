@@ -70,7 +70,7 @@ func TestResolveInvocationRootForSafetyTreatsUnavailableAsUnknownAndOtherErrorsA
 	}
 }
 
-func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
+func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -207,6 +207,8 @@ func TestDryRunPlansAndPersistsWithoutProviderWrites(t *testing.T) {
 	assertFileContains(t, result.Artifacts.DiffPatch, "diff --git a/main.go b/main.go")
 	assertFileContains(t, result.Artifacts.FindingsJSON, `"severity": "major"`)
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
+	assertFileContains(t, result.Artifacts.WorkbenchMetadataPath(), `"schema_version": 1`)
+	assertFileContains(t, result.Artifacts.WorkbenchMetadataPath(), `"repo_path":`)
 	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "pr-intent.md"), "Document the checkout-native review contract.")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "main.go:2")
@@ -355,7 +357,7 @@ func TestDryRunResumesPinnedReviewRunByPinnedSHAs(t *testing.T) {
 	}
 }
 
-func TestDryRunResumeLoadsCompletedTasksAndRerunsFailedTaskOnly(t *testing.T) {
+func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)

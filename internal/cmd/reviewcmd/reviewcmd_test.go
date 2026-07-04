@@ -100,6 +100,102 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	}
 }
 
+func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
+	result := testPipelineResult(false)
+	result.Plan.Summary = reviewplan.Summary{
+		Reviewers: []reviewplan.ReviewerSummary{{Name: "harness:reviewer", Findings: 1}},
+		Run: reviewplan.RunSummary{
+			Adapter:           "fake-llm",
+			Model:             "claude-sonnet-4-6",
+			PostingIdentity:   "review-bot",
+			SelectedReviewers: []string{"harness:reviewer"},
+		},
+	}
+	runner := &fakeRunner{result: result}
+	var gotRuntime RuntimeOptions
+	var cleanupCalled bool
+	cmd, out := newTestCommand(t, testConfig(), func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile, opts RuntimeOptions) (Runtime, error) {
+		gotRuntime = opts
+		if profile.Git.CredentialRef != "codereview/home" {
+			t.Fatalf("runtime profile credential ref = %q, want repository-routed home profile", profile.Git.CredentialRef)
+		}
+		return Runtime{
+			Runner:          runner,
+			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+			Cleanup:         func() { cleanupCalled = true },
+		}, nil
+	})
+
+	err := root.Execute(cmd, []string{
+		"--quiet",
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--json",
+		"--agents-dir", "/tmp/agents",
+		"--fail-on", "minor",
+		"--max-agents", "3",
+		"--max-concurrency", "2",
+		"--allow-self-review",
+		"--allow-self-approve",
+		"--no-resolve-threads",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("runtime cleanup was not called")
+	}
+	if gotRuntime.MaxAgents != 3 || gotRuntime.MaxConcurrency != 2 {
+		t.Fatalf("runtime opts = %#v, want max agents/concurrency", gotRuntime)
+	}
+	if gotRuntime.PRRef.Number != 29 || gotRuntime.PRRef.Owner != "open-cli-collective" || gotRuntime.PRRef.Repo != "codereview-cli" {
+		t.Fatalf("runtime PR ref = %#v, want parsed issue fixture PR", gotRuntime.PRRef)
+	}
+	if gotRuntime.RequireOpinionatedReviewAuthority {
+		t.Fatal("dry-run runtime should not require opinionated review authority")
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	req := runner.requests[0]
+	if req.PRRef.Number != 29 || req.ProfileName != "home" || req.PostingIdentity.Login != "review-bot" {
+		t.Fatalf("request identity/ref = %#v", req)
+	}
+	if req.FailOn == nil || *req.FailOn != review.SeverityMinor {
+		t.Fatalf("FailOn = %#v, want minor", req.FailOn)
+	}
+	if len(req.AgentDirs) != 1 || req.AgentDirs[0] != "/tmp/agents" || !req.AllowSelfReview || !req.AllowSelfApprove || !req.NoResolveThreads || !req.MajorRequestChanges {
+		t.Fatalf("request flags = %#v", req)
+	}
+
+	var rendered map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rendered); err != nil {
+		t.Fatalf("unmarshal dry-run JSON: %v\n%s", err, out.String())
+	}
+	assertJSONPath(t, rendered, "run", "run_id", "run-1")
+	assertJSONPath(t, rendered, "run", "post_mode", "dry_run")
+	assertJSONPath(t, rendered, "run", "artifact_path", "/tmp/run-1")
+	assertJSONPath(t, rendered, "artifacts", "findings_json", "/tmp/run-1/findings.json")
+	assertJSONPath(t, rendered, "summary", "reviewers", 0, "name", "harness:reviewer")
+	assertJSONPath(t, rendered, "summary", "run", "posting_identity", "review-bot")
+	assertJSONPath(t, rendered, "findings", 0, "id", "finding-1")
+	assertJSONPath(t, rendered, "actions", 0, "id", "inline_comment-1")
+	assertJSONPath(t, rendered, "actions", 0, "status", "planned_only")
+	assertJSONPath(t, rendered, "actions", 0, "payload", "path", "main.go")
+	for _, forbidden := range []string{
+		"provider_session_id",
+		"session_row_id",
+		"retry",
+		"ledger",
+		"outbox",
+		"gate",
+	} {
+		if strings.Contains(out.String(), forbidden) {
+			t.Fatalf("dry-run JSON leaked harness-only field %q:\n%s", forbidden, out.String())
+		}
+	}
+}
+
 func TestReviewUsesRepositoryProfileRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]
@@ -3085,6 +3181,36 @@ func (r *fakeRunner) Respond(_ context.Context, req threadrespond.Request) (thre
 func fakeFactory(runner *fakeRunner) RuntimeFactory {
 	return func(*cobra.Command, *root.Options, config.File, config.Profile, RuntimeOptions) (Runtime, error) {
 		return Runtime{Runner: runner, Responder: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	}
+}
+
+func assertJSONPath(t *testing.T, root any, path ...any) {
+	t.Helper()
+	current := root
+	for _, segment := range path[:len(path)-1] {
+		switch key := segment.(type) {
+		case string:
+			object, ok := current.(map[string]any)
+			if !ok {
+				t.Fatalf("JSON path %v segment %q reached %T, want object", path, key, current)
+			}
+			current = object[key]
+		case int:
+			array, ok := current.([]any)
+			if !ok {
+				t.Fatalf("JSON path %v segment %d reached %T, want array", path, key, current)
+			}
+			if key < 0 || key >= len(array) {
+				t.Fatalf("JSON path %v segment %d out of bounds len %d", path, key, len(array))
+			}
+			current = array[key]
+		default:
+			t.Fatalf("unsupported JSON path segment %T", segment)
+		}
+	}
+	want := path[len(path)-1]
+	if got := current; got != want {
+		t.Fatalf("JSON path %v = %#v, want %#v", path[:len(path)-1], got, want)
 	}
 }
 
