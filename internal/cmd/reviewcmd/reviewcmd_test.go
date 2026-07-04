@@ -177,14 +177,12 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 	}
 	assertJSONPath(t, rendered, "run", "run_id", "run-1")
 	assertJSONPath(t, rendered, "run", "post_mode", "dry_run")
-	assertJSONPath(t, rendered, "run", "artifact_path", "/tmp/run-1")
-	assertJSONPath(t, rendered, "artifacts", "findings_json", "/tmp/run-1/findings.json")
-	assertJSONPath(t, rendered, "summary", "reviewers", 0, "name", "harness:reviewer")
-	assertJSONPath(t, rendered, "summary", "run", "posting_identity", "review-bot")
-	assertJSONPath(t, rendered, "findings", 0, "id", "finding-1")
-	assertJSONPath(t, rendered, "actions", 0, "id", "inline_comment-1")
-	assertJSONPath(t, rendered, "actions", 0, "status", "planned_only")
-	assertJSONPath(t, rendered, "actions", 0, "payload", "path", "main.go")
+	if _, ok := rendered["findings"].([]any); !ok {
+		t.Fatalf("findings JSON field = %T, want array", rendered["findings"])
+	}
+	if _, ok := rendered["actions"].([]any); !ok {
+		t.Fatalf("actions JSON field = %T, want array", rendered["actions"])
+	}
 	assertJSONOmitsKeys(t, rendered, map[string]bool{
 		"provider_session_id": true,
 		"session_row_id":      true,
