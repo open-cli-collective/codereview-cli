@@ -154,7 +154,7 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	if len(requests) != 4 {
 		t.Fatalf("requests len = %d, want dossier-summary/selection/reviewer/rollup", len(requests))
 	}
-	assertPromptContains(t, requests[0].Prompt, "Top-level concern", "Inline concern")
+	assertPromptContains(t, requests[0].Prompt, "Top-level concern", "Inline concern", "Review body")
 	assertPromptContains(t, requests[1].Prompt, "Document the checkout-native review contract.", `"workbench"`, provider.pr.Head.SHA)
 	assertPromptContains(t, requests[2].Prompt, "Document the checkout-native review contract.", `"id": "harness:reviewer"`, "main.go")
 	if requests[2].ReviewerWorkspace == nil {

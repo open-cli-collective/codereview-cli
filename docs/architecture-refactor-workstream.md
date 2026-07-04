@@ -82,7 +82,7 @@ criterion.
 The first child issue established named executable surfaces for future
 workstream changes:
 
-- `internal/cmd/reviewcmd`: command-level `cr review --dry-run --json --quiet`
+- `internal/cmd/reviewcmd`: command-level `cr review <PR> --dry-run --json --quiet`
   composition from config/profile/flags through rendering.
 - `internal/pipeline`: real dry-run review composition with fake provider,
   fake LLM, real ledger, temp state layout, deterministic IDs, dossier,
