@@ -19,7 +19,8 @@ version plumbing in `internal/version`. Review orchestration is split across
 `internal/gateio`.
 
 Architecture guardrails for LLM execution, model resolution, Git provider
-writes, inline thread lifecycle, and retention live in
+writes, command and review harness boundaries, inline thread lifecycle, and
+retention live in
 [`docs/architecture.md`](architecture.md).
 
 The temporary architecture refactor workstream context for issue #420 lives in
@@ -27,9 +28,9 @@ The temporary architecture refactor workstream context for issue #420 lives in
 While that workstream is active, extend the named acceptance harness tests when
 a change could regress review composition or dependency boundaries rather than
 cloning broad review assertions. Retire or promote the workstream context
-document when issue #420 completes.
-The current #420 harness inventory is maintained in that workstream doc under
-"Harness And Guardrails".
+document when issue #420 completes. That temporary doc tracks #420-specific
+sequencing and the current child-issue harness inventory under "Harness And
+Guardrails".
 
 Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
 `SelectionOnly`. `DryRun` and `Live` execute the full review pipeline, while
