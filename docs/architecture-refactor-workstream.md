@@ -89,6 +89,15 @@ CR_SESSION="issue-${ISSUE_NUMBER}-pr-${PR_NUMBER}"
 "$CR_BIN" review "$CR_PR" --session "$CR_SESSION"
 ```
 
+If a prior live review already approved the PR or left a marker that would
+short-circuit the next dogfood pass, keep the same named session and add
+`--rerun` for that follow-up pass so the current branch still exercises the live
+review loop:
+
+```bash
+"$CR_BIN" review "$CR_PR" --session "$CR_SESSION" --rerun
+```
+
 For issues that do not primarily touch review behavior, this is a dogfood
 guardrail, not the issue's only acceptance criterion.
 
@@ -102,6 +111,9 @@ workstream changes:
 - `internal/pipeline`: real dry-run review composition with fake provider,
   fake LLM, real ledger, temp state layout, deterministic IDs, dossier,
   workbench, planned actions, and durable-task resume behavior.
+- `internal/reviewruntime`: command-independent review runtime assembly,
+  credential-store cleanup, provider/adapter construction, and PR-scoped GitHub
+  App installation lookup.
 - `internal/architecture`: mechanical dependency guardrails for command
   coupling and application-layer imports of command/UI packages.
 
