@@ -420,9 +420,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		return append(args, "--", claudeBGPositionalPrompt(scratch)), nil
 	case subprocessCodex:
 		workspace := req.ReviewerWorkspace
-		args := subprocessCodexBaseArgs("read-only", scratch)
+		args := subprocessCodexBaseArgs([]string{"exec"}, "read-only", scratch)
 		if workspace != nil {
-			args = subprocessCodexBaseArgs("workspace-write", workspace.RepoDir)
+			args = subprocessCodexBaseArgs([]string{"exec"}, "workspace-write", workspace.RepoDir)
 			args = append(args, "--add-dir", scratch)
 		}
 		if req.Model != "" {
@@ -432,7 +432,16 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 			args = append(args, "-c", "model_reasoning_effort="+req.Effort)
 		}
 		if resumeSessionID != "" {
-			args = append([]string{"exec", "resume"}, args[1:]...)
+			args = subprocessCodexBaseArgs([]string{"exec", "resume"}, flagValue(args, "--sandbox"), flagValue(args, "--cd"))
+			if workspace != nil {
+				args = append(args, "--add-dir", scratch)
+			}
+			if req.Model != "" {
+				args = append(args, "--model", req.Model)
+			}
+			if req.Effort != "" {
+				args = append(args, "-c", "model_reasoning_effort="+req.Effort)
+			}
 			args = append(args, resumeSessionID)
 		}
 		return append(args, "--", req.Prompt), nil
@@ -441,9 +450,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 	}
 }
 
-func subprocessCodexBaseArgs(sandbox, cwd string) []string {
-	return []string{
-		"exec",
+func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string) []string {
+	args := append([]string(nil), prefix...)
+	args = append(args,
 		"--json",
 		"--ephemeral",
 		"--skip-git-repo-check",
@@ -451,7 +460,8 @@ func subprocessCodexBaseArgs(sandbox, cwd string) []string {
 		"--ignore-rules",
 		"--sandbox", sandbox,
 		"--cd", cwd,
-	}
+	)
+	return args
 }
 
 func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Request) error {

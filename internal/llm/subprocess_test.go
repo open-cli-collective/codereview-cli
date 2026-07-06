@@ -1056,6 +1056,13 @@ func TestSubprocessResumeSupport(t *testing.T) {
 	}
 }
 
+func TestSubprocessCodexResumeRetainsSafetyGuard(t *testing.T) {
+	adapter := NewCodexCLIAdapter(SubprocessOptions{})
+	if _, err := adapter.Resume(context.Background(), "prior-session", Request{Prompt: "prompt"}); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+		t.Fatalf("Resume error = %v, want ErrUnsafeSubprocessConfig", err)
+	}
+}
+
 func TestSubprocessToolUseDetectionIsPreciseAndBounded(t *testing.T) {
 	event, err := parseSubprocessEvent([]byte(`{"type":"message","delta":{"tool_use":0,"tool_call":false,"function_call":""},"structured_output":{"ok":true}}`))
 	if err != nil {
