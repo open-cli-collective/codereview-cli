@@ -2,7 +2,9 @@ package appruntime
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,7 +41,11 @@ func TestResolveRepoRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRepoRoot: %v", err)
 	}
-	if filepath.Base(root) != "codereview-cli" {
-		t.Fatalf("repo root = %q, want codereview-cli checkout", root)
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatalf("ReadFile(go.mod): %v", err)
+	}
+	if !strings.Contains(string(data), "module github.com/open-cli-collective/codereview-cli") {
+		t.Fatalf("repo root = %q, want codereview-cli module root", root)
 	}
 }
