@@ -662,7 +662,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		if len(record.AdapterArgs) == 0 || record.AdapterArgs[0] != "exec" {
 			t.Fatalf("args = %#v, want codex exec", record.AdapterArgs)
 		}
-		for _, flag := range []string{"--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
+		for _, flag := range []string{"--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
 			if !containsFlag(record.AdapterArgs, flag) {
 				t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
 			}
@@ -675,6 +675,27 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			if containsFlag(record.AdapterArgs, flag) {
 				t.Fatalf("args = %#v, do not want %s", record.AdapterArgs, flag)
 			}
+		}
+	})
+
+	t.Run("durable session start omits ephemeral", func(t *testing.T) {
+		recordPath := filepath.Join(t.TempDir(), "records.jsonl")
+		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+		stream, err := adapter.Start(context.Background(), Request{
+			Model:          "gpt-5.5",
+			Effort:         "high",
+			Prompt:         "prompt",
+			DurableSession: true,
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err := stream.Wait(context.Background()); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		record := readHelperRecord(t, recordPath)
+		if containsFlag(record.AdapterArgs, "--ephemeral") {
+			t.Fatalf("args = %#v, do not want --ephemeral for durable session", record.AdapterArgs)
 		}
 	})
 
@@ -720,9 +741,8 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		}
 	})
 
-	t.Run("resume reviewer workspace avoids unsupported argv flags", func(t *testing.T) {
+	t.Run("resume reviewer workspace is rejected", func(t *testing.T) {
 		tempDir := t.TempDir()
-		recordPath := filepath.Join(tempDir, "records.jsonl")
 		scratchRoot := filepath.Join(tempDir, "workbench-scratch")
 		if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
 			t.Fatalf("MkdirAll(scratchRoot): %v", err)
@@ -733,8 +753,8 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		}
 		tempRoot := filepath.Join(scratchRoot, "tmp")
 		cacheRoot := filepath.Join(scratchRoot, "cache")
-		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
-		stream, err := adapter.Resume(context.Background(), "prior-session", Request{
+		adapter := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
+		_, err := adapter.Resume(context.Background(), "prior-session", Request{
 			Model:  "gpt-5.5",
 			Effort: "high",
 			Prompt: "resume prompt",
@@ -745,35 +765,8 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 				CacheDir:   cacheRoot,
 			},
 		})
-		if err != nil {
-			t.Fatalf("Resume: %v", err)
-		}
-		if _, err := stream.Wait(context.Background()); err != nil {
-			t.Fatalf("Wait: %v", err)
-		}
-		if stream.SessionID() != "session-1" {
-			t.Fatalf("SessionID = %q, want session-1", stream.SessionID())
-		}
-		record := readHelperRecord(t, recordPath)
-		if len(record.AdapterArgs) < 2 || record.AdapterArgs[0] != "exec" || record.AdapterArgs[1] != "resume" {
-			t.Fatalf("args = %#v, want codex exec resume", record.AdapterArgs)
-		}
-		if !samePath(t, record.Cwd, repoRoot) {
-			t.Fatalf("cwd = %q, want reviewer repo %q", record.Cwd, repoRoot)
-		}
-		for _, flag := range []string{"--sandbox", "--cd", "--add-dir"} {
-			if containsFlag(record.AdapterArgs, flag) {
-				t.Fatalf("args = %#v, do not want unsupported resume flag %s", record.AdapterArgs, flag)
-			}
-		}
-		assertFlagValue(t, record.AdapterArgs, "--model", "gpt-5.5")
-		assertFlagValue(t, record.AdapterArgs, "-c", "model_reasoning_effort=high")
-		promptIndex := len(argsBeforePrompt(record.AdapterArgs))
-		if promptIndex+2 != len(record.AdapterArgs) || record.AdapterArgs[promptIndex] != "--" || record.AdapterArgs[promptIndex+1] != "resume prompt" {
-			t.Fatalf("args = %#v, want -- separated resumed prompt", record.AdapterArgs)
-		}
-		if got := record.AdapterArgs[promptIndex-1]; got != "prior-session" {
-			t.Fatalf("resume session arg = %q in %#v, want prior-session immediately before prompt separator", got, record.AdapterArgs)
+		if !errors.Is(err, ErrUnsafeSubprocessConfig) {
+			t.Fatalf("Resume error = %v, want ErrUnsafeSubprocessConfig", err)
 		}
 	})
 

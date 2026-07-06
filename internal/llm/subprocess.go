@@ -386,6 +386,9 @@ func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Re
 		if sessionID == "" {
 			return a.Start(ctx, req)
 		}
+		if req.ReviewerWorkspace != nil {
+			return nil, fmt.Errorf("%w: codex_cli resume does not support reviewer workspace roots", ErrUnsafeSubprocessConfig)
+		}
 		return a.startJSONLSubprocess(ctx, req, sessionID)
 	default:
 		return nil, fmt.Errorf("llm subprocess: resume unsupported for %s", a.kind)
@@ -424,9 +427,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		return append(args, "--", claudeBGPositionalPrompt(scratch)), nil
 	case subprocessCodex:
 		workspace := req.ReviewerWorkspace
-		args := subprocessCodexBaseArgs([]string{"exec"}, "read-only", scratch)
+		args := subprocessCodexBaseArgs([]string{"exec"}, "read-only", scratch, req.DurableSession)
 		if workspace != nil {
-			args = subprocessCodexBaseArgs([]string{"exec"}, "workspace-write", workspace.RepoDir)
+			args = subprocessCodexBaseArgs([]string{"exec"}, "workspace-write", workspace.RepoDir, req.DurableSession)
 			args = append(args, "--add-dir", scratch)
 		}
 		if req.Model != "" {
@@ -451,10 +454,13 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 	}
 }
 
-func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string) []string {
+func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string, durable bool) []string {
 	args := append([]string(nil), prefix...)
+	args = append(args, "--json")
+	if !durable {
+		args = append(args, "--ephemeral")
+	}
 	args = append(args,
-		"--json",
 		"--skip-git-repo-check",
 		"--ignore-user-config",
 		"--ignore-rules",
@@ -551,6 +557,13 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 				if !ok || !sameCleanPath(addDir, scratch) {
 					return fmt.Errorf("%w: codex_cli must add only the invocation scratch dir", ErrUnsafeSubprocessConfig)
 				}
+			}
+			if req.DurableSession {
+				if containsFlag(checkedArgs, "--ephemeral") {
+					return fmt.Errorf("%w: codex_cli durable sessions must not use --ephemeral", ErrUnsafeSubprocessConfig)
+				}
+			} else if !containsFlag(checkedArgs, "--ephemeral") {
+				return fmt.Errorf("%w: codex_cli fresh sessions must use --ephemeral unless durability is requested", ErrUnsafeSubprocessConfig)
 			}
 		}
 		for _, flag := range []string{"--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {

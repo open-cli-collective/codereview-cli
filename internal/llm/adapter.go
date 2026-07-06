@@ -112,6 +112,7 @@ type Request struct {
 	Prompt  string
 	LogPath string
 
+	DurableSession              bool
 	ReviewerWorkspace           *ReviewerWorkspaceRequest
 	FreshValidationRetrySession bool
 	OnValidationRetry           func(*Request) error

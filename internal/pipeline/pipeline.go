@@ -370,6 +370,7 @@ type preparedSelectionContext struct {
 
 type selectionPhaseRequest struct {
 	RunID                       string
+	DurableSession              bool
 	Profile                     config.Profile
 	SelectionModelOverride      string
 	SelectionEffortOverride     string
@@ -660,6 +661,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 
 		selection, selectionSession, selectionLedgerSession, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
 			RunID:                       run.RunID,
+			DurableSession:              namedSession.enabled && namedSession.supportsResume,
 			Profile:                     req.Profile,
 			SelectionModelOverride:      req.SelectionModelOverride,
 			SelectionEffortOverride:     req.SelectionEffortOverride,
@@ -1126,6 +1128,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 			effort:            effort,
 			logPath:           selectionLog,
 			prompt:            selectionPrompt,
+			baseRequest:       llm.Request{DurableSession: req.DurableSession},
 			resumeSessionID:   req.ResumeSessionID,
 		}, decode)
 		if err != nil {
@@ -1150,6 +1153,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 		effort:            effort,
 		logPath:           selectionLog,
 		prompt:            selectionPrompt,
+		baseRequest:       llm.Request{DurableSession: req.DurableSession},
 		resumeSessionID:   req.ResumeSessionID,
 	}, decode)
 	if err != nil {
