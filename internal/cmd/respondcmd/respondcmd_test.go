@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -67,27 +68,52 @@ func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 }
 
 func TestRespondPassesRetentionConfigToRuntimeFactory(t *testing.T) {
-	cfg := testConfig()
-	maxAgeDays := 0
-	cfg.Data.Retention = config.RetentionConfig{
-		MaxAgeDays:  &maxAgeDays,
-		Enforcement: config.RetentionManualOnly,
+	tests := []struct {
+		name           string
+		maxAgeDays     int
+		enforcement    config.RetentionEnforcement
+		wantLiveMaxAge time.Duration
+		wantForever    bool
+		wantManualOnly bool
+	}{
+		{
+			name:           "manual forever",
+			maxAgeDays:     0,
+			enforcement:    config.RetentionManualOnly,
+			wantForever:    true,
+			wantManualOnly: true,
+		},
+		{
+			name:           "automatic positive max age",
+			maxAgeDays:     30,
+			wantLiveMaxAge: 30 * 24 * time.Hour,
+			wantManualOnly: false,
+		},
 	}
-	responder := &fakeResponder{result: testThreadRespondResult(ledger.OutcomeDryRun)}
-	var got reviewruntime.OpenRequest
-	cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
-		got = req
-		return reviewruntime.Runtime{
-			Responder:       responder,
-			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
-		}, nil
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Data.Retention = config.RetentionConfig{
+				MaxAgeDays:  &tt.maxAgeDays,
+				Enforcement: tt.enforcement,
+			}
+			responder := &fakeResponder{result: testThreadRespondResult(ledger.OutcomeDryRun)}
+			var got reviewruntime.OpenRequest
+			cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+				got = req
+				return reviewruntime.Runtime{
+					Responder:       responder,
+					PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+				}, nil
+			})
 
-	if err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
-		t.Fatalf("Execute respond: %v", err)
-	}
-	if !got.Retention.LiveForever || !got.RetentionManualOnly {
-		t.Fatalf("runtime retention = %#v manual %v, want keep-forever manual-only policy", got.Retention, got.RetentionManualOnly)
+			if err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+				t.Fatalf("Execute respond: %v", err)
+			}
+			if got.Retention.LiveForever != tt.wantForever || got.Retention.LiveMaxAge != tt.wantLiveMaxAge || got.RetentionManualOnly != tt.wantManualOnly {
+				t.Fatalf("runtime retention = %#v manual %v, want forever=%v max_age=%s manual=%v", got.Retention, got.RetentionManualOnly, tt.wantForever, tt.wantLiveMaxAge, tt.wantManualOnly)
+			}
+		})
 	}
 }
 
