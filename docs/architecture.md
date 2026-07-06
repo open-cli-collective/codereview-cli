@@ -82,9 +82,10 @@ dependencies, call typed helpers, render through the view layer, and return
 errors. Feature command packages should not import sibling feature command
 packages; shared command infrastructure belongs in packages such as
 `internal/cmd/cmderr`, `internal/cmd/cmdruntime`, `internal/cmd/exitcode`, and
-`internal/cmd/root`. Command-independent application runtime helpers, such as
-retention-policy conversion and repository-root resolution, belong in
-`internal/appruntime`. Review lifecycle runtime assembly belongs in
+`internal/cmd/root`. Command-independent helpers used to compose review and
+response application runtimes, such as retention-policy conversion and
+repository-root resolution, belong in `internal/appruntime` rather than
+`internal/cmd/cmdruntime`. Review lifecycle runtime assembly belongs in
 `internal/reviewruntime`; `cr review` and `cr respond` command packages should
 construct `reviewruntime.OpenRequest` values and keep CLI-only validation,
 rendering, config-path selection, and error mapping at the command boundary.
@@ -94,7 +95,7 @@ depend on Cobra, command packages, or view packages. Those packages should
 return typed domain data so command and view code remain replaceable shells.
 `internal/architecture/command_boundaries_test.go` enforces these dependency
 directions with narrow allowances for command-tree integration tests and keeps
-application runtime contracts out of `internal/cmd/cmdruntime`.
+review/response application runtime contracts out of `internal/cmd/cmdruntime`.
 
 Review behavior should be protected through named acceptance harnesses rather
 than cloned broad assertions. The command-level harness verifies `cr review`

@@ -13,11 +13,11 @@ data lifecycle commands.
 
 The current Go code is a Cobra command tree in `internal/cmd/*` with a thin
 `cmd/cr` entrypoint, shared exit-code mapping in `internal/cmd/exitcode`, and
-version plumbing in `internal/version`. Command-independent application
-runtime helpers live in `internal/appruntime`; command packages keep CLI
-composition, rendering, config-path selection, and error mapping. Review
-orchestration is split across `internal/reviewruntime`, `internal/pipeline`,
-`internal/reviewrun`,
+version plumbing in `internal/version`. Command-independent helpers used to
+compose review and response application runtimes live in `internal/appruntime`;
+command packages keep CLI composition, rendering, config-path selection, and
+error mapping. Review orchestration is split across `internal/reviewruntime`,
+`internal/pipeline`, `internal/reviewrun`,
 `internal/threadrespond`, `internal/reviewplan`, `internal/outbox`,
 `internal/gate`, and `internal/gateio`. Command packages construct typed
 runtime requests, while `internal/reviewruntime` owns the reusable provider,
@@ -98,7 +98,7 @@ make clean   # remove build artifacts
 - Current distribution status: GitHub release archives plus standard package
   channels declared in `packaging/identity.yml`.
 - Application package layering follows the active codereview implementation:
-  command glue in `internal/cmd/*`, app runtime helpers in
+  command glue in `internal/cmd/*`, review/response app runtime helpers in
   `internal/appruntime`, presentation in `internal/view`,
   state/config adapters in `internal/config`, `internal/ledger`, and
   `internal/statepaths`, provider/LLM adapters in their owning packages, and

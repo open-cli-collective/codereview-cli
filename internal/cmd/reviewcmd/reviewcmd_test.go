@@ -848,12 +848,13 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ResolveRepoRoot: %v", err)
 			}
-			data, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
+			cwd, err := os.Getwd()
 			if err != nil {
-				t.Fatalf("ReadFile(go.mod): %v", err)
+				t.Fatalf("Getwd: %v", err)
 			}
-			if !strings.Contains(string(data), "module github.com/open-cli-collective/codereview-cli") {
-				t.Fatalf("repo root = %q, want codereview-cli module root", repoRoot)
+			wantRoot := filepath.Clean(filepath.Join(cwd, "..", "..", ".."))
+			if repoRoot != wantRoot {
+				t.Fatalf("repo root = %q, want %q", repoRoot, wantRoot)
 			}
 		})
 	}

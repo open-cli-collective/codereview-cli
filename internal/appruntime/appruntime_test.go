@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -41,11 +40,12 @@ func TestResolveRepoRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRepoRoot: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	cwd, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("ReadFile(go.mod): %v", err)
+		t.Fatalf("Getwd: %v", err)
 	}
-	if !strings.Contains(string(data), "module github.com/open-cli-collective/codereview-cli") {
-		t.Fatalf("repo root = %q, want codereview-cli module root", root)
+	want := filepath.Clean(filepath.Join(cwd, "..", ".."))
+	if root != want {
+		t.Fatalf("repo root = %q, want %q", root, want)
 	}
 }
