@@ -81,6 +81,7 @@ type SelectionOpenRequest struct {
 	Profile            config.Profile
 	Backend            string
 	BackendFlagChanged bool
+	PRRef              gitprovider.PRRef
 	Dependencies       Dependencies
 }
 

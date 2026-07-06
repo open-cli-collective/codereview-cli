@@ -27,12 +27,13 @@ import (
 )
 
 var (
-	openSelectionRuntime = func(ctx context.Context, backend string, backendFlagChanged bool, cfg config.File, profile config.Profile) (reviewruntime.SelectionRuntime, error) {
+	openSelectionRuntime = func(ctx context.Context, backend string, backendFlagChanged bool, cfg config.File, profile config.Profile, ref gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
 		return reviewruntime.OpenSelection(ctx, reviewruntime.SelectionOpenRequest{
 			Config:             cfg,
 			Profile:            profile,
 			Backend:            backend,
 			BackendFlagChanged: backendFlagChanged,
+			PRRef:              ref,
 		})
 	}
 	runSelectionOnly = pipeline.SelectionOnly
@@ -51,6 +52,15 @@ type selectionRuntimeState struct {
 	runtime     reviewruntime.SelectionRuntime
 	err         error
 }
+
+type selectionRuntimeKey struct {
+	profileName string
+	host        string
+	owner       string
+	repo        string
+}
+
+type selectionRuntimeResolver func(profileName string, ref gitprovider.PRRef) selectionRuntimeState
 
 func newSelectCommand(opts *root.Options) *cobra.Command {
 	var flags selectFlags
@@ -118,11 +128,8 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 			cleanups[i]()
 		}
 	}()
-	runtimes := map[string]selectionRuntimeState{}
-	resolveRuntime := func(profileName string) selectionRuntimeState {
-		if state, ok := runtimes[profileName]; ok {
-			return state
-		}
+	runtimes := map[selectionRuntimeKey]selectionRuntimeState{}
+	resolveRuntime := func(profileName string, ref gitprovider.PRRef) selectionRuntimeState {
 		runtimeSpan := logger.Start("benchmark.select", "open_runtime", profileName)
 		resolvedName, profile, resolveErr := config.ResolveProfile(cfg, profileName)
 		state := selectionRuntimeState{
@@ -132,15 +139,24 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 		if resolveErr != nil {
 			state.err = cmdruntime.MapRunError(resolveErr)
 		}
+		key := selectionRuntimeKey{profileName: resolvedName, host: ref.Host, owner: ref.Owner, repo: ref.Repo}
 		if resolveErr == nil {
-			runtime, runtimeErr := openSelectionRuntime(ctx, opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, profile)
+			if state, ok := runtimes[key]; ok {
+				runtimeSpan.End(state.err)
+				return state
+			}
+		}
+		if resolveErr == nil {
+			runtime, runtimeErr := openSelectionRuntime(ctx, opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, profile, ref)
 			state.runtime = runtime
 			state.err = cmdruntime.MapRunError(runtimeErr)
 			if runtimeErr == nil && runtime.Cleanup != nil {
 				cleanups = append(cleanups, runtime.Cleanup)
 			}
 		}
-		runtimes[profileName] = state
+		if resolveErr == nil {
+			runtimes[key] = state
+		}
 		if state.err != nil {
 			runtimeSpan.End(state.err)
 		} else {
@@ -173,11 +189,10 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 
 	matrixIndex := 0
 	for candidateIndex, candidate := range selectedCandidates {
-		state := resolveRuntime(candidate.Profile)
 		for caseIndex, benchCase := range selectedCases {
 			matrixIndex++
 			runID := benchmarkRunID(matrixIndex, candidateIndex, caseIndex, candidate, benchCase)
-			runSummary, runErr := executeBenchmarkSelectRun(ctx, logger, suiteDir, resultsDir, runID, candidate, benchCase, state)
+			runSummary, runErr := executeBenchmarkSelectRun(ctx, logger, suiteDir, resultsDir, runID, candidate, benchCase, resolveRuntime)
 			if runErr != nil {
 				return benchmarkSuiteSummary{}, runErr
 			}
@@ -210,7 +225,7 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 	return summary, nil
 }
 
-func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, suiteDir, resultsDir, runID string, candidate benchmark.Candidate, benchCase benchmark.Case, state selectionRuntimeState) (benchmarkRun, error) {
+func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, suiteDir, resultsDir, runID string, candidate benchmark.Candidate, benchCase benchmark.Case, resolveRuntime selectionRuntimeResolver) (benchmarkRun, error) {
 	runSpan := logger.Start("benchmark.select", "execute_run", runID)
 	runDir := filepath.Join(resultsDir, runID)
 	if err := os.MkdirAll(runDir, artifactDirPerm); err != nil {
@@ -249,6 +264,17 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 		stderrBody       []byte
 		rawSelectionJSON []byte
 	)
+	parseSpan := logger.Start("benchmark.select", "parse_pr", runID)
+	ref, err := prref.ParseGitHubPullURL(benchCase.PR)
+	if err != nil {
+		recordSelectionRunFailure(&runSummary, &stderrBody, err)
+		parseSpan.End(err)
+		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
+		return finalized, endProgressSpan(runSpan, ferr)
+	}
+	parseSpan.End(nil)
+
+	state := resolveRuntime(candidate.Profile, ref)
 	if state.err != nil {
 		recordSelectionRunFailure(&runSummary, &stderrBody, state.err)
 		finalized, err := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
@@ -270,16 +296,6 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 		return finalized, endProgressSpan(runSpan, ferr)
 	}
 	promptSpan.End(nil)
-
-	parseSpan := logger.Start("benchmark.select", "parse_pr", runID)
-	ref, err := prref.ParseGitHubPullURL(benchCase.PR)
-	if err != nil {
-		recordSelectionRunFailure(&runSummary, &stderrBody, err)
-		parseSpan.End(err)
-		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, endProgressSpan(runSpan, ferr)
-	}
-	parseSpan.End(nil)
 
 	selectionSpan := logger.Start("benchmark.select", "selection_pipeline", runID)
 	selectionResult, err := runSelectionOnly(ctx, pipeline.Options{

@@ -5,7 +5,6 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
-	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 )
 
@@ -34,10 +33,9 @@ func OpenSelection(ctx context.Context, req SelectionOpenRequest) (SelectionRunt
 		cleanup()
 		return SelectionRuntime{}, err
 	}
-	// Selection-only paths read with the profile git credential. Reviewer
-	// credentials are applied by the review runtime where posting identity and
-	// PR-scoped GitHub App installation lookup are available.
-	provider, _, err := deps.NewGitProvider(profile.Git, gitStore, githubprovider.Options{})
+	// Selection-only paths read with the profile git credential while keeping
+	// PR-scoped GitHub App installation lookup aligned with review runs.
+	provider, _, err := deps.NewGitProvider(profile.Git, gitStore, gitProviderOptions(profile, profile.Git, req.PRRef))
 	if err != nil {
 		cleanup()
 		return SelectionRuntime{}, err

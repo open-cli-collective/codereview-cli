@@ -395,6 +395,89 @@ func TestOpenPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T) {
 	}
 }
 
+func TestOpenSelectionPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T) {
+	tests := []struct {
+		name               string
+		mutate             func(*config.File)
+		wantLookup         *githubprovider.InstallationLookup
+		wantInstallationID string
+	}{
+		{
+			name: "repository lookup",
+			mutate: func(cfg *config.File) {
+				profile := cfg.Profiles["home"]
+				profile.Git.AuthMode = config.GitAuthModeGitHubApp
+				cfg.Profiles["home"] = profile
+			},
+			wantLookup: &githubprovider.InstallationLookup{Owner: "open-cli", Repo: "codereview-cli"},
+		},
+		{
+			name: "pinned reviewer installation",
+			mutate: func(cfg *config.File) {
+				credential := config.CredentialLocation{Store: "test-memory", Name: "codereview/cr-reviewer"}
+				profile := cfg.Profiles["home"]
+				profile.Git.AuthMode = config.GitAuthModeGitHubApp
+				profile.Git.Credential = credential
+				profile.Git.CredentialRef = "codereview/cr-reviewer"
+				profile.ReviewerCredentials = &config.ReviewerCredentials{ // #nosec G101 -- test credential reference, not secret material.
+					AuthMode:      config.GitAuthModeGitHubApp,
+					Credential:    credential,
+					CredentialRef: "codereview/cr-reviewer",
+				}
+				profile.Reviewer = config.ProfileReviewer{
+					Kind:   config.ProfileReviewerKindEntity,
+					Entity: "cr-reviewer",
+					GitHubAppInstallation: &config.ProfileReviewerGitHubAppInstallation{
+						Mode:           config.ProfileReviewerGitHubAppInstallationPinned,
+						InstallationID: "42",
+					},
+				}
+				cfg.Profiles["home"] = profile
+			},
+			wantInstallationID: "42",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			tt.mutate(&cfg)
+			var gotLookup *githubprovider.InstallationLookup
+			var gotInstallationID string
+			runtime, err := OpenSelection(context.Background(), SelectionOpenRequest{
+				Config:  cfg,
+				Profile: cfg.Profiles["home"],
+				PRRef:   testPRRef(),
+				Dependencies: Dependencies{
+					NewGitProvider: func(_ config.GitConfig, _ githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+						gotLookup = opts.InstallationLookup
+						gotInstallationID = opts.InstallationID
+						return &gitprovider.Fake{}, gitprovider.Credential{Type: "github_app", Token: "installation-token"}, nil
+					},
+					NewAdapter: func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+						return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("OpenSelection: %v", err)
+			}
+			if runtime.Cleanup != nil {
+				runtime.Cleanup()
+			}
+			if tt.wantLookup == nil {
+				if gotLookup != nil {
+					t.Fatalf("InstallationLookup = %#v, want nil", gotLookup)
+				}
+			} else if gotLookup == nil || gotLookup.Owner != tt.wantLookup.Owner || gotLookup.Repo != tt.wantLookup.Repo {
+				t.Fatalf("InstallationLookup = %#v, want %#v", gotLookup, tt.wantLookup)
+			}
+			if gotInstallationID != tt.wantInstallationID {
+				t.Fatalf("InstallationID = %q, want %q", gotInstallationID, tt.wantInstallationID)
+			}
+		})
+	}
+}
+
 func TestOpenRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
 	cfg := testConfig()
 	cfg.Secrets = config.SecretsConfig{

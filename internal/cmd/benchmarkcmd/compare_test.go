@@ -14,6 +14,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
@@ -235,7 +236,7 @@ func TestCompareConsumesRealBenchmarkSelectArtifacts(t *testing.T) {
 	resultsDir := filepath.Join(t.TempDir(), "results")
 
 	withBenchmarkSelectSeams(t,
-		func(context.Context, string, bool, config.File, config.Profile) (reviewruntime.SelectionRuntime, error) {
+		func(context.Context, string, bool, config.File, config.Profile, gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
 			return reviewruntime.SelectionRuntime{Cleanup: func() {}}, nil
 		},
 		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
