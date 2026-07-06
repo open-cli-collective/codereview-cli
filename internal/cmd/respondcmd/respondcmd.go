@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
@@ -113,7 +114,7 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory Ru
 		Progress:            progress.New(opts.Stderr, opts.Quiet, nil),
 		Warnings:            opts.Stderr,
 		PRRef:               ref,
-		Retention:           cmdruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
+		Retention:           appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 	})
 	if err != nil {

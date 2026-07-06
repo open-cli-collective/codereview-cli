@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
+	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -799,29 +800,60 @@ func TestReviewProfileResolveThreadsNeverDisablesThreadResolution(t *testing.T) 
 }
 
 func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
-	cfg := testConfig()
-	maxAgeDays := 0
-	cfg.Data.Retention = config.RetentionConfig{
-		MaxAgeDays:  &maxAgeDays,
-		Enforcement: config.RetentionManualOnly,
+	tests := []struct {
+		name           string
+		maxAgeDays     int
+		enforcement    config.RetentionEnforcement
+		wantLiveMaxAge time.Duration
+		wantForever    bool
+		wantManualOnly bool
+	}{
+		{
+			name:           "manual forever",
+			maxAgeDays:     0,
+			enforcement:    config.RetentionManualOnly,
+			wantForever:    true,
+			wantManualOnly: true,
+		},
+		{
+			name:           "automatic positive max age",
+			maxAgeDays:     30,
+			wantLiveMaxAge: 30 * 24 * time.Hour,
+			wantManualOnly: false,
+		},
 	}
-	runner := &fakeRunner{result: testPipelineResult(false)}
-	var got reviewruntime.OpenRequest
-	cmd, _ := newTestCommand(t, cfg, func(_ context.Context, opts reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
-		got = opts
-		return reviewruntime.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Data.Retention = config.RetentionConfig{
+				MaxAgeDays:  &tt.maxAgeDays,
+				Enforcement: tt.enforcement,
+			}
+			runner := &fakeRunner{result: testPipelineResult(false)}
+			var got reviewruntime.OpenRequest
+			cmd, _ := newTestCommand(t, cfg, func(_ context.Context, opts reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+				got = opts
+				return reviewruntime.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+			})
 
-	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !got.Retention.LiveForever || !got.RetentionManualOnly {
-		t.Fatalf("runtime retention = %#v manual %v, want keep-forever manual-only policy", got.Retention, got.RetentionManualOnly)
+			if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got.Retention.LiveForever != tt.wantForever || got.Retention.LiveMaxAge != tt.wantLiveMaxAge || got.RetentionManualOnly != tt.wantManualOnly {
+				t.Fatalf("runtime retention = %#v manual %v, want forever=%v max_age=%s manual=%v", got.Retention, got.RetentionManualOnly, tt.wantForever, tt.wantLiveMaxAge, tt.wantManualOnly)
+			}
+			if got.ResolveRepoRoot == nil {
+				t.Fatal("runtime ResolveRepoRoot is nil")
+			}
+			if gotPtr, wantPtr := reflect.ValueOf(got.ResolveRepoRoot).Pointer(), reflect.ValueOf(appruntime.ResolveRepoRoot).Pointer(); gotPtr != wantPtr {
+				t.Fatalf("ResolveRepoRoot pointer = %x, want %x", gotPtr, wantPtr)
+			}
+		})
 	}
 }
 
 func TestRetentionPolicyFromConfigDefaultsWhenMaxAgeOmitted(t *testing.T) {
-	got := cmdruntime.RetentionPolicyFromConfig(config.RetentionConfig{})
+	got := appruntime.RetentionPolicyFromConfig(config.RetentionConfig{})
 	if got.LiveForever || got.LiveMaxAge != 0 || got.DryRunMaxAge != 0 {
 		t.Fatalf("retention policy = %#v, want zero-value default policy", got)
 	}

@@ -1,6 +1,7 @@
 package architecture_test
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -107,6 +108,88 @@ func TestApplicationPackagesStayOutOfCommandAndViewLayers(t *testing.T) {
 
 	for _, root := range appRoots {
 		checkApplicationRootImports(t, repoRoot, root, forbidden)
+	}
+}
+
+func TestCommandRuntimeDoesNotOwnApplicationRuntimeContracts(t *testing.T) {
+	repoRoot := repoRootFromTest(t)
+	modulePath := "github.com/open-cli-collective/codereview-cli"
+	cmdRuntimeDir := filepath.Join(repoRoot, "internal", "cmd", "cmdruntime")
+	allowedImports := map[string]bool{
+		"errors": true,
+		"fmt":    true,
+
+		"github.com/open-cli-collective/cli-common/credstore": true,
+
+		modulePath + "/internal/agents":       true,
+		modulePath + "/internal/cmd/cmderr":   true,
+		modulePath + "/internal/cmd/exitcode": true,
+		modulePath + "/internal/cmd/root":     true,
+		modulePath + "/internal/config":       true,
+		modulePath + "/internal/credentials":  true,
+		modulePath + "/internal/gitprovider":  true,
+	}
+	allowedExports := map[string]bool{
+		"ConfigPath":            true,
+		"MapRunError":           true,
+		"MissingResponderError": true,
+	}
+	allowedFunctions := map[string]bool{
+		"ConfigPath":            true,
+		"MapRunError":           true,
+		"MissingResponderError": true,
+	}
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(cmdRuntimeDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		parsed, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, spec := range parsed.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return err
+			}
+			if !allowedImports[importPath] {
+				pos := fset.Position(spec.Pos())
+				t.Fatalf("%s imports %s; cmdruntime should stay limited to command-layer config/error helpers", pos, importPath)
+			}
+		}
+		for _, decl := range parsed.Decls {
+			switch typed := decl.(type) {
+			case *ast.FuncDecl:
+				if typed.Name == nil {
+					continue
+				}
+				if !allowedFunctions[typed.Name.Name] {
+					pos := fset.Position(typed.Pos())
+					t.Fatalf("%s declares %s; cmdruntime should only keep the approved command-layer helper surface", pos, typed.Name.Name)
+				}
+				if ast.IsExported(typed.Name.Name) && !allowedExports[typed.Name.Name] {
+					pos := fset.Position(typed.Pos())
+					t.Fatalf("%s exports %s; cmdruntime should only export command-layer config/error helpers", pos, typed.Name.Name)
+				}
+			case *ast.GenDecl:
+				if typed.Tok == token.IMPORT {
+					continue
+				}
+				pos := fset.Position(typed.Pos())
+				t.Fatalf("%s declares %s; cmdruntime should not own top-level %s beyond imports", pos, typed.Tok.String(), typed.Tok.String())
+			default:
+				pos := fset.Position(decl.Pos())
+				t.Fatalf("%s declares unsupported top-level syntax in cmdruntime", pos)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(%s): %v", cmdRuntimeDir, err)
 	}
 }
 
