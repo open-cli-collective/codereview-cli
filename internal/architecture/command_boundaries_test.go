@@ -1,6 +1,7 @@
 package architecture_test
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -107,6 +108,57 @@ func TestApplicationPackagesStayOutOfCommandAndViewLayers(t *testing.T) {
 
 	for _, root := range appRoots {
 		checkApplicationRootImports(t, repoRoot, root, forbidden)
+	}
+}
+
+func TestCommandRuntimeDoesNotOwnApplicationRuntimeContracts(t *testing.T) {
+	repoRoot := repoRootFromTest(t)
+	modulePath := "github.com/open-cli-collective/codereview-cli"
+	cmdRuntimeDir := filepath.Join(repoRoot, "internal", "cmd", "cmdruntime")
+	forbiddenImports := map[string]string{
+		modulePath + "/internal/datalifecycle": "retention policy mapping belongs in internal/appruntime",
+		modulePath + "/internal/reporoot":      "repo-root resolution belongs in internal/appruntime",
+	}
+	forbiddenFuncs := map[string]string{
+		"RetentionPolicyFromConfig": "retention policy mapping belongs in internal/appruntime",
+		"ResolveRepoRoot":           "repo-root resolution belongs in internal/appruntime",
+	}
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(cmdRuntimeDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		parsed, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, spec := range parsed.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return err
+			}
+			if reason, forbidden := forbiddenImports[importPath]; forbidden {
+				pos := fset.Position(spec.Pos())
+				t.Fatalf("%s imports %s; %s", pos, importPath, reason)
+			}
+		}
+		for _, decl := range parsed.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name == nil {
+				continue
+			}
+			if reason, forbidden := forbiddenFuncs[fn.Name.Name]; forbidden {
+				pos := fset.Position(fn.Pos())
+				t.Fatalf("%s defines %s; %s", pos, fn.Name.Name, reason)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(%s): %v", cmdRuntimeDir, err)
 	}
 }
 

@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
+	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -821,7 +821,7 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 }
 
 func TestRetentionPolicyFromConfigDefaultsWhenMaxAgeOmitted(t *testing.T) {
-	got := cmdruntime.RetentionPolicyFromConfig(config.RetentionConfig{})
+	got := appruntime.RetentionPolicyFromConfig(config.RetentionConfig{})
 	if got.LiveForever || got.LiveMaxAge != 0 || got.DryRunMaxAge != 0 {
 		t.Fatalf("retention policy = %#v, want zero-value default policy", got)
 	}

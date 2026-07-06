@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
@@ -264,9 +265,9 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		MaxConcurrency:                    flags.maxConcurrency,
 		PRRef:                             ref,
 		RequireOpinionatedReviewAuthority: !flags.dryRun,
-		Retention:                         cmdruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
+		Retention:                         appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
-		ResolveRepoRoot:                   cmdruntime.ResolveRepoRoot,
+		ResolveRepoRoot:                   appruntime.ResolveRepoRoot,
 	}
 	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
 	runtime, err := factory(ctx, runtimeReq)

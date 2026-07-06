@@ -66,6 +66,31 @@ func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 	}
 }
 
+func TestRespondPassesRetentionConfigToRuntimeFactory(t *testing.T) {
+	cfg := testConfig()
+	maxAgeDays := 0
+	cfg.Data.Retention = config.RetentionConfig{
+		MaxAgeDays:  &maxAgeDays,
+		Enforcement: config.RetentionManualOnly,
+	}
+	responder := &fakeResponder{result: testThreadRespondResult(ledger.OutcomeDryRun)}
+	var got reviewruntime.OpenRequest
+	cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+		got = req
+		return reviewruntime.Runtime{
+			Responder:       responder,
+			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+		}, nil
+	})
+
+	if err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
+		t.Fatalf("Execute respond: %v", err)
+	}
+	if !got.Retention.LiveForever || !got.RetentionManualOnly {
+		t.Fatalf("runtime retention = %#v manual %v, want keep-forever manual-only policy", got.Retention, got.RetentionManualOnly)
+	}
+}
+
 func TestRespondRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]

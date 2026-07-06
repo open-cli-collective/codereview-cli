@@ -114,8 +114,11 @@ workstream changes:
 - `internal/reviewruntime`: command-independent review runtime assembly,
   credential-store cleanup, provider/adapter construction, and PR-scoped GitHub
   App installation lookup.
+- `internal/appruntime`: command-independent application runtime helpers such
+  as retention-policy conversion and repository-root resolution.
 - `internal/architecture`: mechanical dependency guardrails for command
-  coupling and application-layer imports of command/UI packages.
+  coupling, application-layer imports of command/UI packages, and keeping
+  application runtime contracts out of command helpers.
 
 Future child issues should extend these named surfaces when their seam could
 regress review composition or dependency direction. They should not clone broad
