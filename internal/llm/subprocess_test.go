@@ -758,6 +758,9 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		if len(record.AdapterArgs) < 2 || record.AdapterArgs[0] != "exec" || record.AdapterArgs[1] != "resume" {
 			t.Fatalf("args = %#v, want codex exec resume", record.AdapterArgs)
 		}
+		if !samePath(t, record.Cwd, repoRoot) {
+			t.Fatalf("cwd = %q, want reviewer repo %q", record.Cwd, repoRoot)
+		}
 		for _, flag := range []string{"--sandbox", "--cd", "--add-dir"} {
 			if containsFlag(record.AdapterArgs, flag) {
 				t.Fatalf("args = %#v, do not want unsupported resume flag %s", record.AdapterArgs, flag)

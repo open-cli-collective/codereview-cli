@@ -184,7 +184,11 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
 	// #nosec G204 -- subprocess adapters intentionally launch configured CLI binaries after validating adapter-owned safety args.
 	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
-	cmd.Dir = scratch
+	launchDir := scratch
+	if a.kind == subprocessCodex && resumeSessionID != "" && req.ReviewerWorkspace != nil {
+		launchDir = req.ReviewerWorkspace.RepoDir
+	}
+	cmd.Dir = launchDir
 	cmd.Stdin = nil
 	procGroup, err := newProcessGroup(cmd)
 	if err != nil {
