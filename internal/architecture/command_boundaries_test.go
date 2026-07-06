@@ -134,6 +134,11 @@ func TestCommandRuntimeDoesNotOwnApplicationRuntimeContracts(t *testing.T) {
 		"MapRunError":           true,
 		"MissingResponderError": true,
 	}
+	allowedFunctions := map[string]bool{
+		"ConfigPath":            true,
+		"MapRunError":           true,
+		"MissingResponderError": true,
+	}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(cmdRuntimeDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -157,13 +162,28 @@ func TestCommandRuntimeDoesNotOwnApplicationRuntimeContracts(t *testing.T) {
 			}
 		}
 		for _, decl := range parsed.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Name == nil {
-				continue
-			}
-			if ast.IsExported(fn.Name.Name) && !allowedExports[fn.Name.Name] {
-				pos := fset.Position(fn.Pos())
-				t.Fatalf("%s exports %s; cmdruntime should only export command-layer config/error helpers", pos, fn.Name.Name)
+			switch typed := decl.(type) {
+			case *ast.FuncDecl:
+				if typed.Name == nil {
+					continue
+				}
+				if !allowedFunctions[typed.Name.Name] {
+					pos := fset.Position(typed.Pos())
+					t.Fatalf("%s declares %s; cmdruntime should only keep the approved command-layer helper surface", pos, typed.Name.Name)
+				}
+				if ast.IsExported(typed.Name.Name) && !allowedExports[typed.Name.Name] {
+					pos := fset.Position(typed.Pos())
+					t.Fatalf("%s exports %s; cmdruntime should only export command-layer config/error helpers", pos, typed.Name.Name)
+				}
+			case *ast.GenDecl:
+				if typed.Tok == token.IMPORT {
+					continue
+				}
+				pos := fset.Position(typed.Pos())
+				t.Fatalf("%s declares %s; cmdruntime should not own top-level %s beyond imports", pos, typed.Tok.String(), typed.Tok.String())
+			default:
+				pos := fset.Position(decl.Pos())
+				t.Fatalf("%s declares unsupported top-level syntax in cmdruntime", pos)
 			}
 		}
 		return nil
